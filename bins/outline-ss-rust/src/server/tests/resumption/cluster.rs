@@ -93,6 +93,9 @@ const CLUSTER_VLESS_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 struct ClusterNode {
     listen_addr: SocketAddr,
     mesh_addr: SocketAddr,
+    /// This node's park registry, so a test can wait for a session to land
+    /// rather than sleeping for it.
+    registry: Arc<OrphanRegistry>,
     ws_task: JoinHandle<Result<()>>,
     mesh_task: JoinHandle<Result<()>>,
 }
@@ -273,6 +276,7 @@ async fn spawn_cluster_node(
         None,
         Some(Arc::clone(&cluster)),
     );
+    let registry = Arc::clone(&services.orphan_registry);
     let ws_task =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
     let mesh_task =
@@ -282,6 +286,7 @@ async fn spawn_cluster_node(
         ClusterNode {
             listen_addr,
             mesh_addr,
+            registry,
             ws_task,
             mesh_task,
         },
@@ -320,6 +325,7 @@ async fn spawn_combined_ws_node(
         None,
         Some(Arc::clone(&cluster)),
     );
+    let registry = Arc::clone(&services.orphan_registry);
     let ws_task =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
     let mesh_task =
@@ -329,6 +335,7 @@ async fn spawn_combined_ws_node(
         ClusterNode {
             listen_addr,
             mesh_addr,
+            registry,
             ws_task,
             mesh_task,
         },
@@ -365,6 +372,7 @@ async fn spawn_throttle_node(
         None,
         Some(Arc::clone(&cluster)),
     );
+    let registry = Arc::clone(&services.orphan_registry);
     let ws_task =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
     let mesh_task =
@@ -374,6 +382,7 @@ async fn spawn_throttle_node(
         ClusterNode {
             listen_addr,
             mesh_addr,
+            registry,
             ws_task,
             mesh_task,
         },
@@ -549,12 +558,64 @@ async fn spawn_flood_target(bytes: usize) -> Result<SocketAddr> {
     Ok(addr)
 }
 
+/// Establishes a session **against the home**, lets it park, and returns the id
+/// the home minted for it.
+///
+/// Every SS relay case starts here now. With client crypto terminating on the
+/// edge, the mesh carries one thing only: a session the home already holds. A
+/// home with no park under the id refuses before the client is upgraded, and the
+/// edge serves a fresh local session instead — so a test that wants the *relay*
+/// exercised has to create the park first. Fabricating a plausible-looking id
+/// (`resume_id_for_shard`) is no longer enough; that now tests the fallback.
+///
+/// `payload` is echoed by the target when non-empty, which is what proves the
+/// upstream is live before it is parked.
+async fn park_session_on_home(
+    home: &ClusterNode,
+    user: &UserKey,
+    target: SocketAddr,
+    payload: &[u8],
+) -> Result<SessionId> {
+    let (mut socket, issued) = connect_ws_h1(home.listen_addr, "/tcp", None, true).await?;
+    let issued = issued.context("the home must mint a resume id for a resume-capable client")?;
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(user, target, payload)?))
+        .await?;
+    if !payload.is_empty() {
+        let _ = expect_binary_reply(&mut socket).await?;
+    }
+    socket.close(None).await?;
+    drop(socket);
+    wait_for_park(home, issued).await?;
+    Ok(issued)
+}
+
+/// Waits until `node` holds a park under `id`. The park lands when the carrier
+/// ends, on the server's own schedule, so every case that resumes has to wait
+/// for it rather than assume it.
+async fn wait_for_park(node: &ClusterNode, id: SessionId) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !node.registry.has_park(id) {
+        if tokio::time::Instant::now() >= deadline {
+            bail!("the node never parked the session under {}", id.to_hex());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    Ok(())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// Survival across an edge switch: a session established through one edge is
-/// resumed through a *different* edge, both relaying to the same home over the
-/// mesh. The home reuses the parked upstream, so the echo target sees exactly
-/// one accept across the two connects.
+/// Survival across an edge switch: a session parked on its home is resumed
+/// through one edge, then through a *different* edge, both relaying to that home
+/// over the mesh. The home reuses the parked upstream throughout, so the echo
+/// target sees exactly one accept across all three connects.
+///
+/// The first connect goes to the home directly because that is the only thing
+/// that mints a park: with client crypto on the edge, the mesh carries only
+/// sessions the home already owns. The second edge additionally proves the home
+/// **re-parks** the upstream after the first relay ends — a session that
+/// survived one switch and not the next would still pass a two-connect test.
 #[tokio::test]
 async fn cluster_session_survives_edge_switch() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-survival-psk";
@@ -568,13 +629,24 @@ async fn cluster_session_survives_edge_switch() -> Result<()> {
         spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4), None, None).await?;
     let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4), None, None).await?;
 
-    // The client holds a home-shard resume id (as if the home minted it on a
-    // prior connect). Both edges route it to the home over the mesh.
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // Session #0 on the home itself: one upstream, parked under the id the home
+    // minted. Both edges route that id back here over the mesh.
+    let session_id = park_session_on_home(&home, &user, echo_addr, b"via-home").await?;
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the first session must open exactly one upstream"
+    );
 
-    // Session #1 via edge A: the home misses (never parked) → fresh upstream,
-    // then parks on close under the id the client presented.
-    let (mut sock_a, _) = connect_ws_h1(edge_a.listen_addr, "/tcp", Some(session_id), true).await?;
+    // Session #1 via edge A: the edge authenticates the client itself and takes
+    // the upstream over the mesh — the home's take_for_resume hits.
+    let (mut sock_a, echoed_a) =
+        connect_ws_h1(edge_a.listen_addr, "/tcp", Some(session_id), true).await?;
+    assert_eq!(
+        echoed_a,
+        Some(session_id),
+        "a relayed session must echo the id the home parks under",
+    );
     sock_a
         .send(WsMessage::Binary(ss_handshake_frame(&user, echo_addr, b"via-edge-a")?))
         .await?;
@@ -582,15 +654,14 @@ async fn cluster_session_survives_edge_switch() -> Result<()> {
     assert_eq!(
         echo_accepts.load(Ordering::SeqCst),
         1,
-        "first relay must open exactly one upstream"
+        "the relay must reuse the parked upstream (no fresh connect)"
     );
     sock_a.close(None).await?;
     drop(sock_a);
-    // Let the mesh stream finish and the home park the upstream on the FIN.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The home re-parks the upstream once the mesh carrier ends.
+    wait_for_park(&home, session_id).await?;
 
-    // Session #2 via edge B, same id: the home's take_for_resume hits → the
-    // parked upstream is reattached, with no fresh connect.
+    // Session #2 via edge B, same id: a second switch, still the same upstream.
     let (mut sock_b, _) = connect_ws_h1(edge_b.listen_addr, "/tcp", Some(session_id), true).await?;
     sock_b
         .send(WsMessage::Binary(ss_handshake_frame(&user, echo_addr, b"via-edge-b")?))
@@ -611,13 +682,14 @@ async fn cluster_session_survives_edge_switch() -> Result<()> {
 #[tokio::test]
 async fn cluster_relay_preserves_large_payload() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-integrity-psk";
-    let (echo_addr, _accepts) = spawn_echo_target().await?;
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
     let (home, user) =
         spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, None).await?;
 
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // The relay only carries a session the home holds, so park one there first.
+    let session_id = park_session_on_home(&home, &user, echo_addr, b"warmup").await?;
 
     // Deterministic 512 KiB pattern.
     let payload: Vec<u8> = (0..512 * 1024usize)
@@ -654,6 +726,13 @@ async fn cluster_relay_preserves_large_payload() -> Result<()> {
         plaintext == payload,
         "relayed payload was corrupted or reordered across the mesh"
     );
+    // Still the parked upstream: proof this went over the mesh rather than
+    // degrading to a local session, which would echo just as faithfully.
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the payload must have crossed the mesh, not a fresh local upstream"
+    );
     Ok(())
 }
 
@@ -672,13 +751,14 @@ async fn cluster_relay_streams_large_transfer_sha256() -> Result<()> {
     const TOTAL: usize = 16 * 1024 * 1024;
     const CHUNK: usize = 256 * 1024;
 
-    let (echo_addr, _accepts) = spawn_echo_target().await?;
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
     let (home, user) =
         spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(8), None, None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(8), None, None).await?;
 
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // The relay only carries a session the home holds, so park one there first.
+    let session_id = park_session_on_home(&home, &user, echo_addr, b"warmup").await?;
 
     // Deterministic 16 MiB payload and its reference SHA-256.
     let payload: Vec<u8> = (0..TOTAL)
@@ -739,6 +819,13 @@ async fn cluster_relay_streams_large_transfer_sha256() -> Result<()> {
         sent_digest.as_ref(),
         "SHA-256 mismatch: the mesh relay corrupted or reordered the large transfer"
     );
+    // Still the parked upstream: proof the transfer crossed the mesh rather
+    // than degrading to a local session.
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the transfer must have crossed the mesh, not a fresh local upstream"
+    );
     Ok(())
 }
 
@@ -786,7 +873,9 @@ async fn cluster_stalled_relay_tears_down_on_health_budget() -> Result<()> {
     let (edge, _) =
         spawn_cluster_node(PSK, 2, peers, Duration::from_millis(300), None, None).await?;
 
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // Park the black hole on the home first — the relay only ever carries a
+    // session the home holds, and it is the home's upstream that must stall.
+    let session_id = park_session_on_home(&home, &user, blackhole, b"").await?;
 
     // Large enough to overflow the target socket buffer, the home's read buffer
     // and the mesh QUIC send window, so the edge's uplink write genuinely
@@ -838,7 +927,10 @@ async fn cluster_h3_edge_relays_to_home() -> Result<()> {
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) = spawn_h3_edge_node(PSK, 2, peers, Duration::from_secs(4)).await?;
 
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // The park is minted on the home over its own WS carrier; the h3 edge then
+    // resumes it across transports, which is the cross-transport half of the
+    // same guarantee.
+    let session_id = park_session_on_home(&home, &user, echo_addr, b"via-home").await?;
 
     // h3 client → edge, presenting the home-shard resume id.
     let mut endpoint = Endpoint::client((Ipv4Addr::LOCALHOST, 0).into())?;
@@ -916,17 +1008,21 @@ async fn cluster_xhttp_edge_relays_to_home() -> Result<()> {
         Result::<_, anyhow::Error>::Ok(got)
     });
 
-    // Home resolves the `/ssx` xhttp_ss route (for the relayed carrier's user
-    // lookup) and runs the mesh listener; the edge serves `/ssx` and relays.
-    let (home, _user) =
+    // The home owns the session and runs the mesh listener; the edge serves
+    // `/ssx` and relays. The home no longer needs the `/ssx` route itself — with
+    // client crypto on the edge it never authenticates this carrier — but it is
+    // left configured so the case still covers a symmetric deployment.
+    let (home, user) =
         spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), Some("/ssx"), None)
             .await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) =
         spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), Some("/ssx"), None).await?;
 
-    // Home-shard resume id, presented by the client on the XHTTP dial.
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // Park the upstream on the home first (over its own WS carrier, with no
+    // payload so the target's single 4-byte read is the relayed "ping"); the
+    // XHTTP edge then resumes that id.
+    let session_id = park_session_on_home(&home, &user, upstream_addr, b"").await?;
     let client_resume = ClientSessionId::from_bytes(*session_id.as_bytes());
 
     // Real client: SS-over-XHTTP (h2 packet-up) to the edge, resuming the
@@ -1992,32 +2088,40 @@ async fn cluster_vless_udp_survives_edge_switch() -> Result<()> {
     Ok(())
 }
 
-/// The whole edge→hint→home→OCTL→client path, end to end. With padding + throttle
-/// detection enabled on a dedicated path, a client that stalls its downlink read
-/// while the home floods it makes the edge's client-facing send block; the edge
-/// detects the stall, sends a `THROTTLE_HINT` mesh datagram to the home, which
-/// routes it to the relayed session's monitor and injects an `OCTL` cover frame.
-/// The client decodes that frame as `ThrottleSwitchUplink`.
+/// Throttle detection on a relayed SS-TCP session, end to end. With padding +
+/// throttle detection enabled on a dedicated path, a client that stalls its
+/// downlink read while the home floods it through the mesh makes the edge's
+/// client-facing send block; the edge detects the stall and injects an `OCTL`
+/// cover frame, which the client decodes as `ThrottleSwitchUplink`.
+///
+/// The detection is **local to the edge** here, and no `THROTTLE_HINT` datagram
+/// is involved: with client crypto terminating on the edge, the node that owns
+/// the throttled last mile is also the node that owns the padded writer, so it
+/// signals its own client directly. The mesh hint mechanism still serves the
+/// carriers whose edge relays ciphertext (VLESS, SS-UDP), and keeps its own
+/// coverage in `transport::mesh_relay`'s tests.
 ///
 /// Padding is a process-global; it is scoped to this test's own path so the
 /// other cluster tests' `/tcp` carriers stay unpadded (and nothing else in the
 /// test binary calls `carrier_padding::init`).
 ///
-/// `#[ignore]`d in CI: firing the edge detector needs a client-facing `send`
-/// that blocks for longer than the 1s detection-window floor, which in turn
-/// needs the socket buffers between home→mesh→edge→client to be *full*. Whether
-/// a bounded flood fills them before the stall elapses depends on the OS's TCP
-/// buffer autotuning (small on macOS, large on Linux) and on the edge send
-/// buffer, which the test cannot size — so it passes locally but flakes on a
-/// Linux CI runner where the flood is absorbed and no send blocks. The detector
-/// itself (real THROTTLE_HINT over a real mesh + the stall/cooldown decision) is
-/// covered deterministically by `mesh_relay`'s
-/// `edge_detector_signals_throttle_hint_over_the_mesh` and the `StallTracker`
-/// unit tests; the home route→signal→OCTL half by the `ThrottleRegistry` and
-/// `ws_writer` tests. Run this one manually with `--ignored` to exercise the
-/// full wire path.
+/// `#[ignore]`d in CI, and **currently red even when run manually**: firing a
+/// detector needs the socket buffers between home→mesh→edge→client to be *full*
+/// within the stall, which depends on OS TCP buffer autotuning the test cannot
+/// size. It was already timing-dependent when the edge relayed ciphertext and
+/// signalled over the mesh; with SS-TCP now detecting locally, the window that
+/// has to trip is the rate-based one (`window_is_throttled`), whose inbound side
+/// is the *mesh* rather than the internet — so the tunables above need
+/// re-deriving before this can be relied on. Left in place, retargeted and
+/// honestly labelled rather than deleted: the wire path it walks is real.
+///
+/// The pieces are covered deterministically elsewhere: the mesh hint itself
+/// (still used by the VLESS / SS-UDP edges) by `mesh_relay`'s
+/// `edge_detector_signals_throttle_hint_over_the_mesh` plus the `StallTracker`
+/// unit tests, the rate-based window by the `throughput_monitor` tests, and the
+/// signal→OCTL half by the `ThrottleRegistry` and `ws_writer` tests.
 #[tokio::test]
-#[ignore = "backpressure/timing-dependent (OS TCP buffer sizes); covered deterministically elsewhere"]
+#[ignore = "known-red: throttle tunables need re-deriving for edge-local detection (see doc)"]
 async fn cluster_edge_throttle_hint_injects_octl_to_client() -> Result<()> {
     const PSK: &[u8] = b"cluster-throttle-octl-psk";
     const PATH: &str = "/throttle-e2e";
@@ -2048,7 +2152,19 @@ async fn cluster_edge_throttle_hint_injects_octl_to_client() -> Result<()> {
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) = spawn_throttle_node(PSK, 2, peers, Duration::from_secs(30), PATH).await?;
 
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // Park the flood target on the home so the edge really relays this session
+    // rather than degrading to a local one.
+    let (mut warmup, issued) = connect_ws_h1(home.listen_addr, PATH, None, true).await?;
+    let session_id = issued.context("the home must mint a resume id")?;
+    let ss_warmup = ss_handshake_frame(&user, flood_addr, b"warmup")?;
+    let mut framed_warmup = Vec::new();
+    encode_frame_into(&mut framed_warmup, &ss_warmup, &[]).expect("padding frame within bounds");
+    warmup.send(WsMessage::Binary(framed_warmup.into())).await?;
+    let _ = expect_binary_reply(&mut warmup).await?;
+    warmup.close(None).await?;
+    drop(warmup);
+    wait_for_park(&home, session_id).await?;
+
     let (socket, _) = connect_ws_h1(edge.listen_addr, PATH, Some(session_id), true).await?;
     let (mut sink, mut stream) = socket.split();
 
@@ -2089,8 +2205,8 @@ async fn cluster_edge_throttle_hint_injects_octl_to_client() -> Result<()> {
 
     assert!(
         matches!(got_octl, Ok(true)),
-        "client must decode an OCTL ThrottleSwitchUplink cover frame injected by the home \
-         after the edge signalled the throttled client segment (got {got_octl:?})",
+        "client must decode an OCTL ThrottleSwitchUplink cover frame injected on the edge \
+         after it detected the throttled client segment (got {got_octl:?})",
     );
     Ok(())
 }

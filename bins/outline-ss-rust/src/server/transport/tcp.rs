@@ -7,10 +7,7 @@ use axum::extract::ws::WebSocket;
 use bytes::Bytes;
 use std::time::Duration;
 
-use tokio::{
-    io::AsyncWriteExt,
-    sync::{Notify, mpsc},
-};
+use tokio::sync::{Notify, mpsc};
 use tracing::{debug, warn};
 
 /// Failure modes returned by [`handle_tcp_binary_frame`]. [`run_tcp_relay`]
@@ -62,6 +59,9 @@ use super::super::scratch::ScratchBuf;
 use super::carrier_padding;
 use super::resume_headers::ResumeContext;
 use super::sink;
+use super::upstream_source::{
+    HarvestedUpstream, MeshUpstreamHalves, MeshUpstreamSetup, UpstreamSource, UpstreamWriter,
+};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
 use outline_wire::padding::{PaddingDecoder, PaddingScheme};
@@ -104,11 +104,12 @@ pub(in crate::server) struct WsTcpRouteCtx {
 
 /// Relay-task return type used by the TCP-WS path. Carries either a
 /// closed outcome (no parking possible) or the harvested reader half so
-/// that [`run_tcp_relay`] can park it after the client disconnects.
-type RelayTaskOutput = Result<UpstreamRelayOutcome<tokio::net::tcp::OwnedReadHalf>>;
+/// that [`run_tcp_relay`] can park it after the client disconnects. A
+/// relayed (mesh) upstream harvests nothing — it is never parked here.
+type RelayTaskOutput = Result<UpstreamRelayOutcome<HarvestedUpstream>>;
 
 struct WsTcpRelayState {
-    upstream_writer: Option<tokio::net::tcp::OwnedWriteHalf>,
+    upstream_writer: Option<UpstreamWriter>,
     /// `AbortOnDrop` ensures the upstream→client task is cancelled on every
     /// exit path of the owning `run_tcp_relay` future — including the `?`
     /// returns that skip teardown entirely, as when a client vanishes
@@ -187,6 +188,11 @@ struct WsTcpRelayState {
     /// bytes) and the `ChannelSink` (fed send backlog). The writer half is fed
     /// by `run_ws_writer`.
     throttle_monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
+    /// Cluster edge: the mesh relay this session's upstream lives behind, taken
+    /// once the client authenticates (which is when the home can finally be told
+    /// *who* it is resuming). `None` on a direct carrier — this node connects
+    /// out itself and owns the socket.
+    mesh_upstream: Option<MeshUpstreamSetup>,
 }
 
 struct WsTcpFrameOutput<'a, Msg> {
@@ -200,6 +206,7 @@ impl WsTcpRelayState {
         resume: ResumeContext,
         padding: PaddingScheme,
         throttle_monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
+        upstream: UpstreamSource,
     ) -> Self {
         Self {
             upstream_writer: None,
@@ -228,6 +235,10 @@ impl WsTcpRelayState {
             // path pads. Disabled scheme → no decoder → plain path.
             padding_decoder: padding.is_enabled().then(PaddingDecoder::new),
             throttle_monitor,
+            mesh_upstream: match upstream {
+                UpstreamSource::Direct => None,
+                UpstreamSource::Mesh(setup) => Some(setup),
+            },
         }
     }
 }
@@ -289,6 +300,16 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
     }
 }
 
+/// Serves one SS-over-WS/XHTTP TCP session: authenticate the client, take an
+/// upstream, and pump both directions until either end goes away.
+///
+/// `upstream` decides where that upstream comes from. [`UpstreamSource::Direct`]
+/// is a node serving the session itself: it resumes a local park or connects out
+/// to the target. [`UpstreamSource::Mesh`] is a cluster **edge** — the socket
+/// lives on the home, so this node authenticates the client, attests the user
+/// over the mesh and exchanges plaintext with the home instead of dialling. A
+/// mesh session is never parked here (see [`try_park_on_drop`]).
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     socket: T,
     server: &WsTcpServerCtx,
@@ -296,6 +317,7 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     resume: ResumeContext,
     peer_addr: Option<SocketAddr>,
     injected_monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
+    upstream: UpstreamSource,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) =
@@ -352,7 +374,7 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
         decryptor.set_user_hint(Some(hint));
     }
     let mut plaintext_buffer = ScratchBuf::take();
-    let mut state = WsTcpRelayState::new(resume, route.padding, throttle_monitor);
+    let mut state = WsTcpRelayState::new(resume, route.padding, throttle_monitor, upstream);
     let mut client_closed = false;
 
     // Periodic WebSocket Ping sent from server to client.
@@ -546,6 +568,13 @@ async fn try_park_on_drop(
     if !server.orphan_registry.enabled() {
         return false;
     }
+    // A relayed (cluster-edge) session is never parked here: the upstream socket
+    // lives on the home, which parks it under the id the client already holds.
+    // Parking on the edge would register a session whose upstream this node does
+    // not own, and would compete with the home's own park for the same id.
+    if state.upstream_writer.as_ref().is_some_and(UpstreamWriter::is_mesh) {
+        return false;
+    }
     let Some(session_id) = state.issued_session_id else {
         return false;
     };
@@ -570,7 +599,11 @@ async fn try_park_on_drop(
     // wants the task to run to completion so its reader half can be
     // harvested for parking. Mirrors the VLESS park (`try_park_vless_tcp`).
     let reader = match task.into_inner().await {
-        Ok(Ok(UpstreamRelayOutcome::Cancelled(reader))) => reader,
+        Ok(Ok(UpstreamRelayOutcome::Cancelled(HarvestedUpstream::Tcp(reader)))) => reader,
+        // Unreachable: the mesh guard above returns before the harvest. Kept as
+        // a refusal rather than a panic — nothing here can park a relayed
+        // upstream, whichever way this state were reached.
+        Ok(Ok(UpstreamRelayOutcome::Cancelled(HarvestedUpstream::Mesh))) => return false,
         Ok(Ok(UpstreamRelayOutcome::Closed)) => {
             // Upstream EOF'd before our cancel was observed; nothing
             // worth parking.
@@ -585,7 +618,10 @@ async fn try_park_on_drop(
             return false;
         },
     };
-    let writer = state.upstream_writer.take().expect("checked above");
+    // `into_tcp` cannot fail here: the mesh guard at the top already returned.
+    let Some(writer) = state.upstream_writer.take().and_then(UpstreamWriter::into_tcp) else {
+        return false;
+    };
     let user = match state.authenticated_user.take() {
         Some(user) => user,
         None => {
@@ -639,6 +675,149 @@ async fn try_park_on_drop(
     );
     server.orphan_registry.park(session_id, Parked::Tcp(parked));
     true
+}
+
+/// Tags a direct relay task's outcome with the upstream kind, so the park path
+/// can tell a harvestable TCP reader from a mesh one it must never park.
+fn harvest_tcp(
+    outcome: Result<UpstreamRelayOutcome<tokio::net::tcp::OwnedReadHalf>>,
+) -> RelayTaskOutput {
+    outcome.map(|outcome| match outcome {
+        UpstreamRelayOutcome::Closed => UpstreamRelayOutcome::Closed,
+        UpstreamRelayOutcome::Cancelled(reader) => {
+            UpstreamRelayOutcome::Cancelled(HarvestedUpstream::Tcp(reader))
+        },
+    })
+}
+
+/// Cluster edge: completes the v5 mesh hand-off for a session whose upstream
+/// lives on the home, and wires the mesh stream in where a TCP socket would be.
+///
+/// Runs the second phase of the two-phase OPEN. The home acked phase 1 ("a park
+/// exists under this id") before the client carrier was upgraded; only now, with
+/// the client authenticated under **this node's** credentials, can the edge name
+/// the user — so the USER frame goes out here, and the home answers the owner
+/// check by either splicing the park onto the stream or resetting it.
+///
+/// The home's [`crate::server::cluster::mesh::UpstreamAckFrame`] is translated
+/// straight into the Ack-Prefix v1 control frame the client already understands.
+/// A fresh edge holds none of the previous carrier's uplink and could not replay
+/// from that offset itself — but it does not have to: the offset belongs to the
+/// *client*, which keeps the replay buffer, and the direct path hands it over
+/// the same way on a local resume hit. Passing it on is what keeps the request
+/// body whole across a node switch; dropping it would leave the client either
+/// resending bytes the target already took or skipping bytes it never did.
+#[allow(clippy::too_many_arguments)]
+async fn attach_mesh_upstream<Msg>(
+    state: &mut WsTcpRelayState,
+    setup: MeshUpstreamSetup,
+    user: UserKey,
+    user_id: Arc<str>,
+    decryptor: &AeadStreamDecryptor,
+    server: &WsTcpServerCtx,
+    route: &WsTcpRouteCtx,
+    outbound: &WsTcpFrameOutput<'_, Msg>,
+    target_display: Arc<str>,
+) -> Result<(), FrameError>
+where
+    Msg: Send + 'static,
+{
+    // A hand-off that fails here — the home refused the owner check, or the mesh
+    // broke — is retryable, not a protocol fault: the client is authenticated,
+    // so it gets a "try again" close and reconnects, and the next attempt finds
+    // no park and is served locally. `Fatal` would instead run the
+    // anti-fingerprinting inbound sink, which exists for unauthenticated probes.
+    let MeshUpstreamHalves { writer, reader, upstream_acked } =
+        setup.attach(&user_id).await.map_err(|error| {
+            FrameError::UpstreamConnectFailed(error.context("mesh relay hand-off failed"))
+        })?;
+    let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())
+        .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+
+    // Ack-Prefix Protocol v1, sealed under this edge's own key. Ordering is the
+    // same as the direct path's: ahead of any relayed byte, on the same FIFO
+    // channel, so it lands before whatever the spawned relay task produces.
+    if state.ack_prefix_requested {
+        let payload = build_v1_payload(upstream_acked);
+        let mut out = bytes::BytesMut::new();
+        encryptor
+            .encrypt_chunk(&payload, &mut out)
+            .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+        let ciphertext = out.split().freeze();
+        let make_binary = outbound.make_binary;
+        outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
+            FrameError::Fatal(anyhow!(
+                "ack-prefix control frame send failed: WS data channel closed"
+            ))
+        })?;
+        debug!(
+            user = user.id(),
+            path = %route.path,
+            up_acked = upstream_acked,
+            "emitted ack-prefix control frame for a relayed session",
+        );
+    }
+
+    let tx = outbound.data_tx.clone();
+    let make_binary = outbound.make_binary;
+    let make_close = outbound.make_close;
+    let relay_metrics = Arc::clone(&server.metrics);
+    let sink_metrics = Arc::clone(&server.metrics);
+    let relay_user_id = Arc::clone(&user_id);
+    let protocol = route.protocol;
+    let sink_padding = route.padding;
+    let monitor_for_sink = state.throttle_monitor.clone();
+    let monitor_for_relay = state.throttle_monitor.clone();
+    // Registered as on the direct path, though nothing here ever parks: the
+    // notify is what lets teardown stop the reader cooperatively instead of
+    // aborting it mid-write to the client.
+    let cancel = Arc::new(Notify::new());
+    let cancel_for_task = Arc::clone(&cancel);
+    state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
+        super::super::relay::relay_upstream_to_client(
+            reader,
+            ChannelSink {
+                tx,
+                make_binary,
+                make_close,
+                metrics: sink_metrics,
+                padding: sink_padding,
+                monitor: monitor_for_sink,
+            },
+            &mut encryptor,
+            relay_metrics,
+            protocol,
+            AppProtocol::Shadowsocks,
+            relay_user_id,
+            Some(cancel_for_task),
+            // No v2 ring: the ring belongs to the node that owns the park, and
+            // this session's park lives on the home, which captures into its own.
+            None,
+            monitor_for_relay,
+        )
+        .await
+        .map(|outcome| match outcome {
+            UpstreamRelayOutcome::Closed => UpstreamRelayOutcome::Closed,
+            UpstreamRelayOutcome::Cancelled(_) => {
+                UpstreamRelayOutcome::Cancelled(HarvestedUpstream::Mesh)
+            },
+        })
+    })));
+    state.relay_cancel = Some(cancel);
+    server.metrics.record_tcp_authenticated_session(
+        Arc::clone(&user_id),
+        route.protocol,
+        AppProtocol::Shadowsocks,
+    );
+    state.user_counters = Some(server.metrics.user_counters(&user_id));
+    // No `upstream_guard`: that gauge counts real upstream sockets, and this
+    // node holds none — the home opened the socket and still counts it. Leaving
+    // it `None` also keeps the park path refusing this session for a third,
+    // independent reason.
+    state.authenticated_user = Some(user);
+    state.upstream_writer = Some(writer);
+    state.upstream_target_display = Some(target_display);
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -731,6 +910,28 @@ where
         // not "simplify" this back to `user.id_arc()`.
         let user_id = user.effective_label(peer_addr.map(|a| a.ip()));
         let target_display: Arc<str> = Arc::from(target.to_string());
+
+        // Cluster edge: the upstream lives on the home, which is still waiting
+        // to be told *who* this session belongs to. Neither the local registry
+        // nor an outbound connect is consulted — the home owns both, and the
+        // target parsed above is deliberately ignored for the same reason a
+        // local resume hit ignores it: the parked target is authoritative.
+        if let Some(setup) = state.mesh_upstream.take() {
+            attach_mesh_upstream(
+                state,
+                setup,
+                user,
+                Arc::clone(&user_id),
+                decryptor,
+                server,
+                route,
+                &outbound,
+                target_display,
+            )
+            .await?;
+            plaintext_buffer.drain(..consumed);
+            return forward_plaintext_to_writer(state, plaintext_buffer, route.protocol).await;
+        }
 
         // Resume attempt: if the client offered a Session ID and the
         // registry has a parked TCP entry for this authenticated user,
@@ -913,31 +1114,33 @@ where
             let cancel_for_task = Arc::clone(&cancel);
             let parked_reader = parked.upstream_reader;
             state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
-                super::super::relay::relay_upstream_to_client(
-                    parked_reader,
-                    ChannelSink {
-                        tx,
-                        make_binary,
-                        make_close,
-                        metrics: sink_metrics,
-                        padding: sink_padding,
-                        monitor: monitor_for_sink,
-                    },
-                    &mut encryptor,
-                    relay_metrics,
-                    protocol,
-                    AppProtocol::Shadowsocks,
-                    relay_user_id,
-                    Some(cancel_for_task),
-                    ring_for_task,
-                    monitor_for_relay,
+                harvest_tcp(
+                    super::super::relay::relay_upstream_to_client(
+                        parked_reader,
+                        ChannelSink {
+                            tx,
+                            make_binary,
+                            make_close,
+                            metrics: sink_metrics,
+                            padding: sink_padding,
+                            monitor: monitor_for_sink,
+                        },
+                        &mut encryptor,
+                        relay_metrics,
+                        protocol,
+                        AppProtocol::Shadowsocks,
+                        relay_user_id,
+                        Some(cancel_for_task),
+                        ring_for_task,
+                        monitor_for_relay,
+                    )
+                    .await,
                 )
-                .await
             })));
             state.relay_cancel = Some(cancel);
             state.user_counters = Some(parked.user_counters);
             state.authenticated_user = Some(parked_user);
-            state.upstream_writer = Some(parked.upstream_writer);
+            state.upstream_writer = Some(UpstreamWriter::Tcp(parked.upstream_writer));
             state.upstream_guard = Some(parked.upstream_guard);
             state.upstream_target_display = Some(parked.target_display);
             // Move the parked counter back into the relay state so the
@@ -1039,26 +1242,28 @@ where
         let monitor_for_sink = state.throttle_monitor.clone();
         let monitor_for_relay = state.throttle_monitor.clone();
         state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
-            super::super::relay::relay_upstream_to_client(
-                upstream_reader,
-                ChannelSink {
-                    tx,
-                    make_binary,
-                    make_close,
-                    metrics: sink_metrics,
-                    padding: sink_padding,
-                    monitor: monitor_for_sink,
-                },
-                &mut encryptor,
-                relay_metrics,
-                protocol,
-                AppProtocol::Shadowsocks,
-                relay_user_id,
-                Some(cancel_for_task),
-                ring_for_task,
-                monitor_for_relay,
+            harvest_tcp(
+                super::super::relay::relay_upstream_to_client(
+                    upstream_reader,
+                    ChannelSink {
+                        tx,
+                        make_binary,
+                        make_close,
+                        metrics: sink_metrics,
+                        padding: sink_padding,
+                        monitor: monitor_for_sink,
+                    },
+                    &mut encryptor,
+                    relay_metrics,
+                    protocol,
+                    AppProtocol::Shadowsocks,
+                    relay_user_id,
+                    Some(cancel_for_task),
+                    ring_for_task,
+                    monitor_for_relay,
+                )
+                .await,
             )
-            .await
         })));
         state.relay_cancel = Some(cancel);
         server.metrics.record_tcp_authenticated_session(
@@ -1073,7 +1278,7 @@ where
         ));
         state.user_counters = Some(server.metrics.user_counters(&user_id));
         state.authenticated_user = Some(user);
-        state.upstream_writer = Some(writer);
+        state.upstream_writer = Some(UpstreamWriter::Tcp(writer));
         state.upstream_target_display = Some(target_display);
         plaintext_buffer.drain(..consumed);
     }
@@ -1083,7 +1288,7 @@ where
 
 /// Forwards any decrypted payload waiting in `plaintext_buffer` to the
 /// active upstream writer. Returns `Ok(())` if there is nothing to write
-/// or the write succeeded; otherwise wraps the error in `FrameError::Fatal`.
+/// or the write succeeded; otherwise wraps the error in a [`FrameError`].
 async fn forward_plaintext_to_writer(
     state: &mut WsTcpRelayState,
     plaintext_buffer: &mut Vec<u8>,
@@ -1098,11 +1303,25 @@ async fn forward_plaintext_to_writer(
                 .increment(plaintext_buffer.len() as u64);
         }
         let payload_len = plaintext_buffer.len() as u64;
+        // A relayed upstream that fails — most often a mesh write stalling past
+        // the health budget — is a retryable condition, not a protocol fault:
+        // the client is already authenticated, so it gets a "try again" close
+        // and reconnects (to this node or another), while the home's park
+        // TTL-expires. Routing it through `Fatal` instead would first run the
+        // anti-fingerprinting inbound sink, which exists for *unauthenticated*
+        // probes and would hold a wedged carrier open for its whole duration.
+        let is_mesh = writer.is_mesh();
         writer
             .write_all(plaintext_buffer)
             .await
             .context("failed to write decrypted data upstream")
-            .map_err(FrameError::Fatal)?;
+            .map_err(|error| {
+                if is_mesh {
+                    FrameError::UpstreamConnectFailed(error)
+                } else {
+                    FrameError::Fatal(error)
+                }
+            })?;
         // Bump the per-session upstream-acked counter only on successful
         // `write_all`. The kernel TCP send buffer accepts the bytes
         // here — past this point they belong to the upstream socket's
@@ -1121,9 +1340,13 @@ pub(super) async fn handle_tcp_connection(
     route: WsTcpRouteCtx,
     resume: ResumeContext,
     peer_addr: Option<SocketAddr>,
+    upstream: UpstreamSource,
 ) -> Result<()> {
-    // Direct carrier: no injected monitor — local detection runs (`None`).
-    run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, peer_addr, None).await
+    // Client-terminating carrier either way: no injected monitor, so local
+    // throttle detection runs — including for a relayed session, where this node
+    // owns the last mile to the client.
+    run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, peer_addr, None, upstream)
+        .await
 }
 
 pub(in crate::server) async fn handle_tcp_h3_connection(
@@ -1132,8 +1355,9 @@ pub(in crate::server) async fn handle_tcp_h3_connection(
     route: WsTcpRouteCtx,
     resume: ResumeContext,
     peer_addr: Option<SocketAddr>,
+    upstream: UpstreamSource,
 ) -> Result<()> {
-    run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, peer_addr, None).await
+    run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, peer_addr, None, upstream).await
 }
 
 #[cfg(test)]

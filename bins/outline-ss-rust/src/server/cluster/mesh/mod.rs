@@ -29,12 +29,13 @@ pub(in crate::server) use endpoint::{
 };
 pub(in crate::server) use frame::{
     CarrierKind, CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, OpenHeader, OpenHeaderV5,
-    RelayOpen, UpstreamAckFrame, UserFrame,
+    RelayOpen, UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame,
 };
-// Setup-phase constants: the *reading* peer needs them, and until the edge
-// speaks v5 the only reader here is the test that stands in for it.
+// Setup-phase constant the *reading* peer needs. The edge reads the ack through
+// `PooledRelay::await_ack`, so outside this module only the test standing in for
+// an edge names the byte itself.
 #[cfg(test)]
-pub(in crate::server) use frame::{OPEN_ACK_ACCEPTED, UPSTREAM_ACK_FRAME_LEN};
+pub(in crate::server) use frame::OPEN_ACK_ACCEPTED;
 pub(in crate::server) use peer_pool::{MeshPeerPool, PooledRelay};
 pub(in crate::server) use throttle::ThrottleRegistry;
 pub(in crate::server) use tls::MeshIdentity;

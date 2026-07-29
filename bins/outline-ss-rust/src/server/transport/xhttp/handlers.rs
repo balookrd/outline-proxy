@@ -25,20 +25,22 @@ use tracing::{debug, warn};
 use outline_wire::xhttp::{SsPathKind, decode_kind};
 
 use crate::metrics::{AppProtocol, Protocol, Transport};
-use crate::server::cluster::mesh::{CarrierKind, PooledRelay};
+use crate::server::cluster::mesh::{CarrierKind, MeshFraming, PooledRelay};
 use crate::server::cluster::{ClusterCtx, RouteDecision};
 use crate::server::resumption::{OrphanRegistry, SessionId};
 use outline_wire::cluster::ShardId;
 
 use super::super::super::state::{AppState, Services, TransportRoute, VlessTransportRoute};
 use super::super::mesh_relay::{
-    EdgeThrottleCtx, edge_relay, edge_relay_udp, edge_throttle_ctx, open_edge_relay,
+    EdgeThrottleCtx, EdgeUpstream, edge_relay, edge_relay_udp, edge_throttle_ctx, edge_upstream,
+    open_edge_relay, open_edge_relay_v5,
 };
 use super::super::resume_headers::{
     EdgeResumeAdvert, ResumeContext, ResumeResponseEcho, edge_route,
 };
-use super::super::tcp::{WsTcpRouteCtx, run_tcp_relay};
+use super::super::tcp::{WsTcpRouteCtx, WsTcpServerCtx, run_tcp_relay};
 use super::super::udp::{UdpRouteCtx, run_udp_relay};
+use super::super::upstream_source::UpstreamSource;
 use super::super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::padding::post_response_headers;
@@ -809,6 +811,36 @@ pub(in crate::server::transport::xhttp) fn xhttp_issued_id(
     }
 }
 
+/// Opens a **v5** mesh relay for an XHTTP edge plan: the SS byte-stream carrier
+/// terminates its client crypto here, so the home is asked only for the park
+/// behind the resume id. `None` (not clustered, home unreachable, or no such
+/// park) means serve a fresh local session over the same duplex.
+///
+/// Unlike the WS and h3 edges, this runs *after* the session-creating response —
+/// XHTTP has no single upgrade moment to gate on, and the response is what
+/// carries the session id. A refusal therefore arrives once the client has
+/// already been told its id continues; the session is still served, but as a
+/// fresh local one. Pre-existing to this task (the v4 path had the same shape
+/// for its own refusals) and worth closing separately: it needs the registry's
+/// create decision and the mesh open to be interleaved.
+async fn open_xhttp_mesh_v5(
+    edge: Option<EdgeRelayPlan>,
+    peer_addr: SocketAddr,
+    server: &WsTcpServerCtx,
+) -> Option<EdgeUpstream> {
+    let plan = edge?;
+    let pooled =
+        open_edge_relay_v5(&plan.cluster, plan.shard, &plan.advert, MeshFraming::Tcp, peer_addr)
+            .await?;
+    Some(edge_upstream(
+        pooled,
+        &plan.advert,
+        &plan.cluster,
+        &server.metrics,
+        &server.orphan_registry,
+    ))
+}
+
 /// Opens the mesh relay for an XHTTP edge plan, returning the pooled relay and
 /// the health budget on success, or `None` (not clustered / home unreachable)
 /// so the caller serves a fresh local session over the same duplex.
@@ -933,7 +965,6 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
             // and applied here exactly like the WS path — the relay's decode
             // (uplink) and `ChannelSink` encode (downlink) cover both carriers.
             let padding = crate::server::transport::carrier_padding::scheme_for_path(&base_path);
-            let relay_path = Arc::clone(&base_path);
             let route_ctx = WsTcpRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
@@ -949,36 +980,27 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
             );
             tokio::spawn(async move {
                 let _relay_permit = relay_permit;
-                let relay =
-                    open_xhttp_mesh(edge, CarrierKind::SsXhttp, &relay_path, peer_addr).await;
-                let socket = XhttpDuplex::with_udp_records(Arc::clone(&session_for_task), false);
-                let result = match relay {
-                    Some((pooled, budget, detect)) => {
-                        let (send, recv, _permit) = pooled.into_parts();
-                        edge_relay::<XhttpDuplex>(
-                            socket,
-                            send,
-                            recv,
-                            budget,
-                            detect,
-                            Arc::clone(&server.metrics),
-                        )
-                        .await
-                    },
-                    None => {
-                        // Served locally (this node is the home): direct carrier,
-                        // no injected monitor — local detection runs.
-                        run_tcp_relay::<XhttpDuplex>(
-                            socket,
-                            &server,
-                            &route_ctx,
-                            resume,
-                            Some(peer_addr),
-                            None,
-                        )
-                        .await
-                    },
+                // Cluster edge (v5): the client is authenticated here whichever
+                // way this goes — only the upstream may live on the home. A home
+                // holding no park refuses, and this node serves a fresh local
+                // session over the very same duplex.
+                let (resume, upstream) = match open_xhttp_mesh_v5(edge, peer_addr, &server).await {
+                    Some(edge) => (edge.resume, edge.source),
+                    None => (resume, UpstreamSource::Direct),
                 };
+                let socket = XhttpDuplex::with_udp_records(Arc::clone(&session_for_task), false);
+                // No injected monitor either way: this node owns the last mile to
+                // the client, so local throttle detection is the right one.
+                let result = run_tcp_relay::<XhttpDuplex>(
+                    socket,
+                    &server,
+                    &route_ctx,
+                    resume,
+                    Some(peer_addr),
+                    None,
+                    upstream,
+                )
+                .await;
                 session_for_task.close();
                 registry.remove(&session_id);
                 finish_ws_session(metrics_session, classify_relay_result(result), "ss");

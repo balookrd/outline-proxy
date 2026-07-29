@@ -7,22 +7,32 @@
 //! long-poll — because that is the only shape where an orphaned reader
 //! waits forever instead of exiting on the next upstream EOF.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 use std::num::NonZeroUsize;
 
 use axum::http::HeaderMap;
 use bytes::BytesMut;
+use outline_wire::cluster::ShardId;
+use quinn::VarInt;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{Semaphore, oneshot};
 
+use super::super::mesh_relay::{EdgeUpstream, edge_upstream, open_edge_relay_v5};
+use super::super::resume_headers::EdgeResumeAdvert;
 use super::super::ws_socket::{WsFrame, WsSocket};
 use super::*;
 use crate::config::CipherKind;
 use crate::protocol::TargetAddr;
 use crate::server::abort::AbortOnDrop;
+use crate::server::cluster::ClusterCtx;
+use crate::server::cluster::mesh::{
+    CloseReason, MeshEndpoint, MeshFraming, MeshIdentity, MeshPeerPool, OPEN_ACK_ACCEPTED,
+    RelayOpen, ThrottleRegistry, UpstreamAckFrame, UserFrame,
+};
 use crate::server::nat::UdpResponseSender;
 use crate::server::peer_user_cache::PeerUserCache;
+use crate::server::resumption::ResumptionConfig;
 use crate::server::tests::sample_config;
 
 /// One scripted inbound event on the client side of the carrier.
@@ -32,6 +42,10 @@ enum Step {
     /// `recv` fails: the client vanished without a closing handshake
     /// (TCP RST, QUIC reset, tungstenite `ResetWithoutClosingHandshake`).
     Reset,
+    /// The client stays connected and silent until the test releases it.
+    /// Without this a script's last frame would immediately EOF the carrier,
+    /// tearing the session down before any downlink could arrive.
+    Idle(oneshot::Receiver<()>),
 }
 
 enum MockMsg {
@@ -39,9 +53,25 @@ enum MockMsg {
     Ctrl,
 }
 
+/// Every Binary message the relay sent to the client, in order. Shared with the
+/// test so it can decrypt the downlink under the key it expects.
+type SentFrames = Arc<parking_lot::Mutex<Vec<Bytes>>>;
+
 struct MockWs {
     steps: VecDeque<Step>,
     writer_alive: oneshot::Sender<()>,
+    sent: SentFrames,
+}
+
+impl MockWs {
+    /// A carrier driven by `steps`, discarding whatever is sent back.
+    fn new(steps: VecDeque<Step>, writer_alive: oneshot::Sender<()>) -> Self {
+        Self {
+            steps,
+            writer_alive,
+            sent: SentFrames::default(),
+        }
+    }
 }
 
 struct MockReader(VecDeque<Step>);
@@ -53,6 +83,7 @@ struct MockWriter {
     /// outbound data sender — including the one the relay task holds in
     /// its `ChannelSink` — is gone.
     _writer_alive: oneshot::Sender<()>,
+    sent: SentFrames,
 }
 
 impl WsSocket for MockWs {
@@ -61,20 +92,36 @@ impl WsSocket for MockWs {
     type Writer = MockWriter;
 
     fn split_io(self) -> (Self::Reader, Self::Writer) {
-        (MockReader(self.steps), MockWriter { _writer_alive: self.writer_alive })
+        (
+            MockReader(self.steps),
+            MockWriter {
+                _writer_alive: self.writer_alive,
+                sent: self.sent,
+            },
+        )
     }
 
     async fn recv(reader: &mut Self::Reader) -> Result<Option<Self::Msg>> {
-        match reader.0.pop_front() {
-            Some(Step::Binary(data)) => Ok(Some(MockMsg::Binary(data))),
-            Some(Step::Reset) => Err(anyhow!("connection reset without closing handshake")),
-            // Script exhausted: the client stream ended without a Close
-            // frame, which the relay reads as end-of-stream.
-            None => Ok(None),
+        loop {
+            match reader.0.pop_front() {
+                Some(Step::Binary(data)) => return Ok(Some(MockMsg::Binary(data))),
+                Some(Step::Reset) => {
+                    return Err(anyhow!("connection reset without closing handshake"));
+                },
+                Some(Step::Idle(release)) => {
+                    let _ = release.await;
+                },
+                // Script exhausted: the client stream ended without a Close
+                // frame, which the relay reads as end-of-stream.
+                None => return Ok(None),
+            }
         }
     }
 
-    async fn send(_writer: &mut Self::Writer, _msg: Self::Msg) -> Result<()> {
+    async fn send(writer: &mut Self::Writer, msg: Self::Msg) -> Result<()> {
+        if let MockMsg::Binary(data) = msg {
+            writer.sent.lock().push(data);
+        }
         Ok(())
     }
 
@@ -189,6 +236,567 @@ fn ss_handshake_frame(user: &UserKey, target: SocketAddr) -> Result<Bytes> {
     Ok(buf.freeze())
 }
 
+// ── Cluster edge: SS-TCP with the upstream on the home (v5) ───────────────────
+
+/// A stand-in home: it speaks the home half of the v5 mesh protocol over a real
+/// mesh QUIC connection, but owns no park and no upstream socket — the test
+/// plays the target itself. Everything the edge is *supposed* to do is therefore
+/// observable here: the OPEN version, the attested user, and whether what
+/// crosses the mesh is plaintext or ciphertext.
+struct FakeHome {
+    /// The USER frame the edge sent after authenticating its client.
+    user: Option<oneshot::Receiver<UserFrame>>,
+    /// Plaintext chunks the edge relayed toward the target.
+    uplink: mpsc::UnboundedReceiver<Vec<u8>>,
+    /// Plaintext the test wants the "target" to answer with.
+    downlink: mpsc::UnboundedSender<Vec<u8>>,
+    _task: AbortOnDrop<()>,
+}
+
+impl FakeHome {
+    /// The user name the edge attested, waiting for it if it has not arrived.
+    async fn user_frame(&mut self) -> UserFrame {
+        let rx = self.user.take().expect("the USER frame is read once");
+        tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .expect("the edge must send a USER frame after authenticating")
+            .expect("the home task must not drop before the USER frame")
+    }
+
+    /// Reads until at least `want` bytes of uplink have arrived, then returns
+    /// them.
+    async fn upstream_received(&mut self, want: usize) -> Vec<u8> {
+        let mut got = Vec::new();
+        let collect = async {
+            while got.len() < want {
+                match self.uplink.recv().await {
+                    Some(chunk) => got.extend_from_slice(&chunk),
+                    None => break,
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), collect)
+            .await
+            .expect("the edge must relay the client's plaintext to the home");
+        got
+    }
+
+    fn send_plaintext_downlink(&self, data: &[u8]) {
+        self.downlink
+            .send(data.to_vec())
+            .expect("the home task must still be running");
+    }
+}
+
+/// How the fake home answers the edge's OPEN.
+enum HomeAnswer {
+    /// A park exists: ack, take the USER frame, then splice.
+    Park { acked_uplink: u64 },
+    /// No park under this id: refuse before the edge upgrades its client.
+    NoSession,
+}
+
+/// The edge's own cluster runtime plus the fake home it relays to. The edge's
+/// credentials are its own: the home in these tests holds no key at all, which
+/// is the property the whole change exists to allow.
+struct EdgeHarness {
+    cluster: ClusterCtx,
+    shard: ShardId,
+    server: WsTcpServerCtx,
+    route: WsTcpRouteCtx,
+    registry: Arc<OrphanRegistry>,
+    user: UserKey,
+    session_id: SessionId,
+    _home_endpoint: MeshEndpoint,
+}
+
+impl EdgeHarness {
+    /// An edge serving `user`/`secret`, wired to a home answering `answer`.
+    async fn with_credentials(user: &str, secret: &str, answer: HomeAnswer) -> (Self, FakeHome) {
+        let psk = b"edge-v5-tcp-psk";
+        let home_endpoint =
+            MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
+        let home_addr = home_endpoint.local_addr().unwrap();
+        let home = spawn_fake_home(home_endpoint.clone(), answer);
+
+        let shard = ShardId::new(1).unwrap();
+        let edge_endpoint =
+            MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
+        let cluster = ClusterCtx {
+            pool: Arc::new(MeshPeerPool::new(
+                edge_endpoint.clone(),
+                HashMap::from([(shard, home_addr)]),
+                8,
+            )),
+            endpoint: edge_endpoint,
+            relay_budget: Duration::from_secs(5),
+            throttle_registry: ThrottleRegistry::new(),
+            relay_permits: Arc::new(Semaphore::new(8)),
+            metrics: test_metrics(),
+        };
+
+        let user =
+            UserKey::new(user, secret, None, CipherKind::Chacha20IetfPoly1305, None).unwrap();
+        // Resumption is *on* here: a disabled registry could never park, so it
+        // would prove nothing about an edge declining to.
+        let registry = Arc::new(OrphanRegistry::new(
+            ResumptionConfig {
+                enabled: true,
+                ..ResumptionConfig::defaults_disabled()
+            },
+            test_metrics(),
+        ));
+        let server = WsTcpServerCtx {
+            metrics: test_metrics(),
+            dns_cache: DnsCache::new(Duration::from_secs(60)),
+            prefer_ipv4_upstream: false,
+            outbound_ipv6: None,
+            orphan_registry: Arc::clone(&registry),
+            ws_data_channel_capacity: 8,
+        };
+        let route = WsTcpRouteCtx {
+            users: Arc::from(vec![user.clone()]),
+            protocol: Protocol::Http1,
+            path: Arc::from("/tcp"),
+            candidate_users: Arc::from(vec![user.id_arc()]),
+            peer_user_cache: Arc::new(PeerUserCache::with_capacity(8)),
+            padding: PaddingScheme::disabled(),
+        };
+        (
+            Self {
+                cluster,
+                shard,
+                server,
+                route,
+                registry,
+                user,
+                session_id: SessionId::from_bytes([7u8; 16]),
+                _home_endpoint: home_endpoint,
+            },
+            home,
+        )
+    }
+
+    fn advert(&self) -> EdgeResumeAdvert {
+        EdgeResumeAdvert {
+            session_id: self.session_id,
+            resume_capable: true,
+            ack_prefix: true,
+            symmetric_replay: false,
+            down_acked: 0,
+        }
+    }
+
+    /// Runs phase 1 of the relay: `None` means the home refused and the caller
+    /// serves the client locally instead.
+    async fn open_relay(&self) -> Option<EdgeUpstream> {
+        let advert = self.advert();
+        let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 40404));
+        let pooled = tokio::time::timeout(
+            Duration::from_secs(5),
+            open_edge_relay_v5(&self.cluster, self.shard, &advert, MeshFraming::Tcp, peer),
+        )
+        .await
+        .expect("the home must answer the OPEN, not hang the upgrade")?;
+        Some(edge_upstream(
+            pooled,
+            &advert,
+            &self.cluster,
+            &self.server.metrics,
+            &self.registry,
+        ))
+    }
+
+    fn local_registry_size(&self) -> usize {
+        self.registry.len()
+    }
+}
+
+/// Drives the home half of one v5 relay stream: version-checks the OPEN,
+/// answers it, and — when it admitted the relay — pumps plaintext both ways.
+fn spawn_fake_home(endpoint: MeshEndpoint, answer: HomeAnswer) -> FakeHome {
+    let (user_tx, user_rx) = oneshot::channel();
+    let (uplink_tx, uplink_rx) = mpsc::unbounded_channel();
+    let (downlink_tx, mut downlink_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let task = tokio::spawn(async move {
+        let conn = endpoint
+            .accept()
+            .await
+            .expect("the edge must dial the home")
+            .expect("mesh handshake");
+        let (mut send, mut recv) = conn.accept_bi().await.expect("the edge must open a relay");
+        let mut len = [0u8; 4];
+        recv.read_exact(&mut len).await.expect("reading the OPEN length");
+        let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
+        recv.read_exact(&mut buf).await.expect("reading the OPEN header");
+        let header = match RelayOpen::parse(&buf).expect("parsing the OPEN header") {
+            RelayOpen::V5(header) => header,
+            RelayOpen::V4(_) => panic!("an SS-TCP edge must open v5, not v4"),
+        };
+        assert_eq!(
+            header.framing,
+            MeshFraming::Tcp,
+            "an SS byte-stream carrier is TCP-framed on the mesh",
+        );
+        let acked_uplink = match answer {
+            HomeAnswer::Park { acked_uplink } => acked_uplink,
+            HomeAnswer::NoSession => {
+                let code = VarInt::from_u32(CloseReason::NoSession.code());
+                let _ = send.reset(code);
+                let _ = recv.stop(code);
+                return;
+            },
+        };
+        send.write_all(&[OPEN_ACK_ACCEPTED])
+            .await
+            .expect("writing the OPEN ack");
+
+        let mut prefix = [0u8; 1];
+        recv.read_exact(&mut prefix).await.expect("reading the USER length");
+        let mut frame = vec![0u8; 1 + prefix[0] as usize];
+        frame[0] = prefix[0];
+        recv.read_exact(&mut frame[1..])
+            .await
+            .expect("reading the USER frame");
+        let _ = user_tx.send(UserFrame::parse(&frame).expect("parsing the USER frame"));
+
+        if header.ack_prefix {
+            send.write_all(&UpstreamAckFrame { upstream_acked: acked_uplink }.encode())
+                .await
+                .expect("writing the upstream-ack frame");
+        }
+
+        tokio::join!(
+            async {
+                while let Ok(Some(chunk)) = recv.read_chunk(64 * 1024, true).await {
+                    if uplink_tx.send(chunk.bytes.to_vec()).is_err() {
+                        break;
+                    }
+                }
+            },
+            async {
+                while let Some(data) = downlink_rx.recv().await {
+                    if send.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+            },
+        );
+    });
+    FakeHome {
+        user: Some(user_rx),
+        uplink: uplink_rx,
+        downlink: downlink_tx,
+        _task: AbortOnDrop::new(task),
+    }
+}
+
+fn loopback() -> SocketAddr {
+    "127.0.0.1:0".parse().unwrap()
+}
+
+fn test_metrics() -> Arc<Metrics> {
+    Metrics::new(&sample_config((Ipv4Addr::LOCALHOST, 3000).into()))
+}
+
+/// One SS-AEAD chunk carrying the target address plus `payload`.
+fn ss_frame_with_payload(user: &UserKey, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
+    let mut plaintext = TargetAddr::from(target).to_wire_bytes()?;
+    plaintext.extend_from_slice(payload);
+    let mut encryptor = AeadStreamEncryptor::new(user, None)?;
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(&plaintext, &mut buf)?;
+    Ok(buf.freeze())
+}
+
+/// A target address nothing listens on: a relayed session must never dial it,
+/// so a regression that connects out fails the test rather than silently
+/// working.
+fn unreachable_target() -> SocketAddr {
+    SocketAddr::from((Ipv4Addr::LOCALHOST, 1))
+}
+
+/// Decrypts everything the relay sent the client under `user`'s key.
+fn decrypt_downlink(user: &UserKey, frames: &[Bytes]) -> Result<Vec<u8>> {
+    let mut decryptor = AeadStreamDecryptor::new(Arc::from(vec![user.clone()]));
+    let mut plaintext = Vec::new();
+    for frame in frames {
+        decryptor.feed_ciphertext(frame);
+        let mut chunk = Vec::new();
+        decryptor.drain_plaintext(&mut chunk)?;
+        plaintext.extend_from_slice(&chunk);
+    }
+    Ok(plaintext)
+}
+
+/// The whole point: the edge's key is one the home does not hold, and the relay
+/// still works because the edge — not the home — decrypts the client. The user
+/// it authenticated is attested over the mesh, and what crosses the mesh is
+/// plaintext.
+#[tokio::test]
+async fn edge_authenticates_with_its_own_credentials_then_sends_the_user_frame() -> Result<()> {
+    let (harness, mut home) = EdgeHarness::with_credentials(
+        "beerloga",
+        "edge-secret",
+        HomeAnswer::Park { acked_uplink: 0 },
+    )
+    .await;
+    let edge = harness.open_relay().await.expect("the home holds a park");
+
+    let (writer_alive, _writer_gone) = oneshot::channel();
+    let (release, released) = oneshot::channel();
+    let socket = MockWs::new(
+        VecDeque::from_iter([
+            Step::Binary(ss_frame_with_payload(
+                &harness.user,
+                unreachable_target(),
+                b"hello upstream",
+            )?),
+            Step::Idle(released),
+        ]),
+        writer_alive,
+    );
+    let relay = tokio::spawn(async move {
+        let _ = run_tcp_relay::<MockWs>(
+            socket,
+            &harness.server,
+            &harness.route,
+            edge.resume,
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 40404))),
+            None,
+            edge.source,
+        )
+        .await;
+    });
+
+    assert_eq!(
+        home.user_frame().await.user,
+        "beerloga",
+        "the edge must attest the user it authenticated"
+    );
+    assert_eq!(
+        home.upstream_received(b"hello upstream".len()).await,
+        b"hello upstream",
+        "the mesh must carry plaintext, not ciphertext"
+    );
+    let _ = release.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(5), relay).await;
+    Ok(())
+}
+
+/// The downlink is sealed under the edge's own key: the home hands over
+/// plaintext and the client, which only ever knew the edge's credentials, reads
+/// it back. This is the half that makes per-node credentials possible.
+#[tokio::test]
+async fn edge_seals_the_downlink_under_its_own_key() -> Result<()> {
+    let (harness, mut home) = EdgeHarness::with_credentials(
+        "beerloga",
+        "edge-secret",
+        HomeAnswer::Park { acked_uplink: 0 },
+    )
+    .await;
+    let edge = harness.open_relay().await.expect("the home holds a park");
+
+    let (writer_alive, _writer_gone) = oneshot::channel();
+    let (release, released) = oneshot::channel();
+    let socket = MockWs::new(
+        VecDeque::from_iter([
+            Step::Binary(ss_frame_with_payload(&harness.user, unreachable_target(), b"go")?),
+            Step::Idle(released),
+        ]),
+        writer_alive,
+    );
+    let sent = Arc::clone(&socket.sent);
+    let user = harness.user.clone();
+    let relay = tokio::spawn(async move {
+        let _ = run_tcp_relay::<MockWs>(
+            socket,
+            &harness.server,
+            &harness.route,
+            edge.resume,
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 40404))),
+            None,
+            edge.source,
+        )
+        .await;
+    });
+    // Ordering: the home only splices once it has the USER frame.
+    let _ = home.user_frame().await;
+    home.send_plaintext_downlink(b"payload from upstream");
+
+    // The client decrypts with the edge's key and gets the plaintext back. The
+    // Ack-Prefix control frame the home's offset produces comes first on the
+    // same stream, exactly as on a direct resume.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let want = build_v1_payload(0).len() + b"payload from upstream".len();
+    loop {
+        let frames = sent.lock().clone();
+        let plaintext = decrypt_downlink(&user, &frames)?;
+        if plaintext.len() >= want {
+            assert_eq!(
+                &plaintext[build_v1_payload(0).len()..],
+                b"payload from upstream",
+                "the client must read the home's plaintext under the edge's key",
+            );
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the downlink never reached the client");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let _ = release.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(5), relay).await;
+    Ok(())
+}
+
+/// A home that holds no park refuses **before** the client carrier is upgraded,
+/// so the edge still has the choice to serve the client itself. That refusal is
+/// now the ordinary case: fresh sessions are never created over the mesh.
+#[tokio::test]
+async fn edge_serves_locally_when_the_home_reports_no_session() -> Result<()> {
+    let (harness, _home) =
+        EdgeHarness::with_credentials("beerloga", "edge-secret", HomeAnswer::NoSession).await;
+
+    assert!(
+        harness.open_relay().await.is_none(),
+        "a NoSession refusal must leave the edge free to serve a fresh local session",
+    );
+    let rendered = harness.cluster.metrics.render_prometheus();
+    assert!(
+        rendered.lines().any(|line| {
+            line.starts_with("outline_ss_mesh_relay_opened_total{outcome=\"refused\"}")
+                && line.ends_with(" 1")
+        }),
+        "an explicit refusal must be counted apart from an unreachable home:\n{rendered}",
+    );
+    Ok(())
+}
+
+/// Parking is a home concern: the edge holds no upstream socket to park, and a
+/// park here would compete with the home's own for the same id.
+#[tokio::test]
+async fn edge_never_parks_a_relayed_session() -> Result<()> {
+    let (harness, mut home) = EdgeHarness::with_credentials(
+        "beerloga",
+        "edge-secret",
+        HomeAnswer::Park { acked_uplink: 0 },
+    )
+    .await;
+    let mut edge = harness.open_relay().await.expect("the home holds a park");
+    // Deliberately hand the relayed session an issued id, which `edge_upstream`
+    // never does: with that field empty the park path bails before it ever looks
+    // at the upstream, so the test would pass even with the mesh guard gone.
+    assert!(
+        edge.resume.issued_session_id.is_none(),
+        "a relayed session mints no local id of its own",
+    );
+    edge.resume.issued_session_id = Some(harness.session_id);
+
+    let (writer_alive, _writer_gone) = oneshot::channel();
+    // No idle step: the script ends, which is the client disconnecting.
+    let socket = MockWs::new(
+        VecDeque::from_iter([Step::Binary(ss_frame_with_payload(
+            &harness.user,
+            unreachable_target(),
+            b"x",
+        )?)]),
+        writer_alive,
+    );
+    let _ = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_tcp_relay::<MockWs>(
+            socket,
+            &harness.server,
+            &harness.route,
+            edge.resume,
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 40404))),
+            None,
+            edge.source,
+        ),
+    )
+    .await
+    .expect("a relayed session must tear down, not hang");
+
+    assert_eq!(
+        harness.local_registry_size(),
+        0,
+        "the edge must not park a session whose upstream lives on the home",
+    );
+    assert!(
+        !harness.registry.has_park(harness.session_id),
+        "least of all under the id the home parks it with",
+    );
+    // The uplink still reached the home before the teardown.
+    assert_eq!(home.upstream_received(1).await, b"x");
+    Ok(())
+}
+
+/// The home's acked-uplink offset is not the edge's to act on — it holds none of
+/// the previous carrier's request body. It belongs to the client, which does,
+/// so the edge re-emits it as the Ack-Prefix v1 frame under its own key. Without
+/// this the client would replay from the wrong offset across a node switch.
+#[tokio::test]
+async fn edge_forwards_the_homes_acked_offset_to_the_client() -> Result<()> {
+    let (harness, mut home) = EdgeHarness::with_credentials(
+        "beerloga",
+        "edge-secret",
+        HomeAnswer::Park { acked_uplink: 4096 },
+    )
+    .await;
+    let edge = harness.open_relay().await.expect("the home holds a park");
+    assert!(
+        edge.resume.ack_prefix_requested,
+        "the capability must survive into the relayed session, or the client will \
+         misread the control frame as payload",
+    );
+
+    let (writer_alive, _writer_gone) = oneshot::channel();
+    let (release, released) = oneshot::channel();
+    let socket = MockWs::new(
+        VecDeque::from_iter([
+            Step::Binary(ss_frame_with_payload(&harness.user, unreachable_target(), b"go")?),
+            Step::Idle(released),
+        ]),
+        writer_alive,
+    );
+    let sent = Arc::clone(&socket.sent);
+    let user = harness.user.clone();
+    let relay = tokio::spawn(async move {
+        let _ = run_tcp_relay::<MockWs>(
+            socket,
+            &harness.server,
+            &harness.route,
+            edge.resume,
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 40404))),
+            None,
+            edge.source,
+        )
+        .await;
+    });
+    let _ = home.user_frame().await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let frames = sent.lock().clone();
+        let plaintext = decrypt_downlink(&user, &frames)?;
+        if plaintext.len() >= build_v1_payload(0).len() {
+            assert_eq!(
+                plaintext,
+                build_v1_payload(4096).to_vec(),
+                "the client must be told how far the home's upstream actually got",
+            );
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the edge never emitted the ack-prefix frame"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let _ = release.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(5), relay).await;
+    Ok(())
+}
+
 /// A client that vanishes mid-session without a Close frame makes `T::recv`
 /// error, and the `?` unwinds `run_tcp_relay` past every teardown branch.
 /// The spawned upstream→client task must still be cancelled: otherwise it
@@ -201,16 +809,13 @@ async fn client_reset_cancels_upstream_relay_task() -> Result<()> {
     let user = test_user()?;
     let (server, route) = test_contexts(&user);
     let (writer_alive, writer_gone) = oneshot::channel();
-    let socket = MockWs {
-        steps: VecDeque::from_iter([
-            Step::Binary(ss_handshake_frame(&user, upstream_addr)?),
-            Step::Reset,
-        ]),
+    let socket = MockWs::new(
+        VecDeque::from_iter([Step::Binary(ss_handshake_frame(&user, upstream_addr)?), Step::Reset]),
         writer_alive,
-    };
+    );
     let resume = ResumeContext::from_request_headers(&HeaderMap::new(), &server.orphan_registry);
 
-    run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, None)
+    run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, None, UpstreamSource::Direct)
         .await
         .expect_err("a client reset must surface as an error");
 
@@ -240,15 +845,23 @@ async fn client_eof_without_close_does_not_hang_teardown() -> Result<()> {
     let user = test_user()?;
     let (server, route) = test_contexts(&user);
     let (writer_alive, _writer_gone) = oneshot::channel();
-    let socket = MockWs {
-        steps: VecDeque::from_iter([Step::Binary(ss_handshake_frame(&user, upstream_addr)?)]),
+    let socket = MockWs::new(
+        VecDeque::from_iter([Step::Binary(ss_handshake_frame(&user, upstream_addr)?)]),
         writer_alive,
-    };
+    );
     let resume = ResumeContext::from_request_headers(&HeaderMap::new(), &server.orphan_registry);
 
     tokio::time::timeout(
         Duration::from_secs(5),
-        run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, None),
+        run_tcp_relay::<MockWs>(
+            socket,
+            &server,
+            &route,
+            resume,
+            None,
+            None,
+            UpstreamSource::Direct,
+        ),
     )
     .await
     .map_err(|_| anyhow!("teardown hung joining the upstream→client relay task"))??;
