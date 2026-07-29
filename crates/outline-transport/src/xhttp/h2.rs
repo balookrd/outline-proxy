@@ -8,6 +8,7 @@
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -565,7 +566,19 @@ async fn driver_loop_h2(
     // keep hyper's connection, and the socket under it, alive until the POST's
     // own deadline expires.
     let mut posts: JoinSet<()> = JoinSet::new();
-    let mut next_seq: u64 = 0;
+    // Shared with the FIN guard, which needs the current seq even when this task
+    // is aborted mid-loop rather than reaching the bottom of the function.
+    let next_seq = Arc::new(AtomicU64::new(0));
+    // Ends the session's uplink on every exit from this loop — the client's own
+    // close *and* the abort that tearing the transport down produces.
+    let mut fin = {
+        let send_request = send_request.clone();
+        let uri_prefix = Arc::clone(&uri_prefix);
+        let base_headers = Arc::clone(&base_headers);
+        super::FinOnDrop::new(Arc::clone(&next_seq), move |seq| {
+            Box::pin(send_fin(send_request, uri_prefix, base_headers, seq))
+        })
+    };
     loop {
         let queued = match out_rx.recv().await {
             Some(queued) => queued,
@@ -582,8 +595,7 @@ async fn driver_loop_h2(
             Message::Close(_) => break,
             _ => continue,
         };
-        let seq = next_seq;
-        next_seq = next_seq.saturating_add(1);
+        let seq = next_seq.fetch_add(1, Ordering::Relaxed);
         let mut send = send_request.clone();
         let base_headers = Arc::clone(&base_headers);
         let uri_prefix = Arc::clone(&uri_prefix);
@@ -596,6 +608,7 @@ async fn driver_loop_h2(
         if let Err(error) = send.ready().await {
             warn!(?error, "xhttp h2 connection lost while waiting for capacity");
             let _ = in_tx.send_control(Err(io_ws_err("xhttp h2 stream not ready"))).await;
+            fin.disarm();
             break;
         }
         posts.spawn(async move {
@@ -621,7 +634,34 @@ async fn driver_loop_h2(
     // `JoinSet` aborts the in-flight POSTs instead, which is what bounds the
     // leak.
     while posts.join_next().await.is_some() {}
+    // Dropping `fin` here — after the drain — is what puts the FIN on the wire,
+    // and the ordering is the point: the FIN collapses the server's uplink, so
+    // an earlier one would discard the tail of this session's upload. On an
+    // aborted driver there is no tail to protect (the in-flight POSTs are
+    // aborted with it), and the same drop fires from wherever it lands.
+    drop(fin);
     debug!("xhttp driver exiting");
+}
+
+/// Closes the session's uplink: one empty POST carrying `X-Xhttp-Fin`, so the
+/// server tears the session down (and parks what it holds) now instead of on the
+/// idle sweep. Best-effort by design — see [`super::FinOnDrop`].
+async fn send_fin(
+    mut send: http2::SendRequest<RequestBody>,
+    uri_prefix: Arc<str>,
+    base_headers: Arc<HeaderMap>,
+    seq: u64,
+) {
+    if send.ready().await.is_err() {
+        return;
+    }
+    let headers = super::fin_post_headers(&base_headers);
+    let post = post_one(send, &uri_prefix, &headers, seq, Bytes::new());
+    match timeout(super::FIN_TIMEOUT, post).await {
+        Ok(Ok(())) => {},
+        Ok(Err(error)) => debug!(?error, seq, "xhttp FIN POST failed"),
+        Err(_) => debug!(seq, "xhttp FIN POST timed out"),
+    }
 }
 
 /// Header map shared by every packet-up POST in an h2 session: the

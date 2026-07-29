@@ -38,6 +38,9 @@ use crate::config::TransportMode;
 struct CapturedPosts {
     seqs: Vec<u64>,
     bodies: Vec<Bytes>,
+    /// Whether each POST carried the `X-Xhttp-Fin` hint, positionally aligned
+    /// with `seqs` / `bodies`.
+    fins: Vec<bool>,
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -49,31 +52,7 @@ async fn xhttp_h1_client_round_trip_through_mock_server() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
 
-    let captured_for_server = Arc::clone(&captured);
-    let down_rx_for_server = Arc::clone(&down_rx);
-    let _server = tokio::spawn(async move {
-        // Accept loop, not single-connection — h1 driver opens two
-        // sockets per session (GET + POST), so the mock has to
-        // serve both. Each accepted socket is owned by its own
-        // task so the GET stream-out doesn't block POST handling.
-        loop {
-            let (stream, _) = match listener.accept().await {
-                Ok(pair) => pair,
-                Err(_) => break,
-            };
-            let captured = Arc::clone(&captured_for_server);
-            let down_rx_slot = Arc::clone(&down_rx_for_server);
-            tokio::spawn(async move {
-                let io = TokioIo::new(stream);
-                let svc = service_fn(move |req: Request<Incoming>| {
-                    let captured = Arc::clone(&captured);
-                    let down_rx_slot = Arc::clone(&down_rx_slot);
-                    async move { handle(req, captured, down_rx_slot).await }
-                });
-                let _ = ServerBuilder::new().serve_connection(io, svc).await;
-            });
-        }
-    });
+    let _server = spawn_mock_server(listener, Arc::clone(&captured), Arc::clone(&down_rx));
 
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
@@ -117,8 +96,87 @@ async fn xhttp_h1_client_round_trip_through_mock_server() -> Result<()> {
     assert_eq!(posts.seqs, vec![0, 1]);
     assert_eq!(posts.bodies[0].as_ref(), b"hello");
     assert_eq!(posts.bodies[1].as_ref(), b"world");
+    assert_eq!(posts.fins, vec![false, false], "a data POST must not carry the FIN hint");
 
     Ok(())
+}
+
+/// Closing the sink must put an `X-Xhttp-Fin` POST on the wire: packet-up has no
+/// transport-level end-of-stream, so this header is the server's only prompt
+/// signal that the carrier is done. Without it the session (and, on an SS-UDP
+/// path, the park a cross-transport resume takes over) lingers until the
+/// server's 180 s idle sweep.
+///
+/// It must be the *last* POST — the server collapses its uplink on it, so an
+/// early FIN would discard the tail of the upload — and carry no payload.
+#[tokio::test(flavor = "multi_thread")]
+async fn xhttp_h1_close_sends_fin_post_after_the_uplink() -> Result<()> {
+    let captured: Arc<Mutex<CapturedPosts>> = Arc::new(Mutex::new(CapturedPosts::default()));
+    let (_down_tx, down_rx) = mpsc::channel::<Bytes>(8);
+    let down_rx = Arc::new(tokio::sync::Mutex::new(Some(down_rx)));
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let _server = spawn_mock_server(listener, Arc::clone(&captured), Arc::clone(&down_rx));
+
+    let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
+    let cache = DnsCache::new(Duration::from_secs(30));
+    let (mut stream, _issued, _ack_prefix_echo, _symmetric_replay_echo) = super::connect_xhttp(
+        &cache,
+        &base_url,
+        TransportMode::XhttpH1,
+        None,
+        false,
+        None,
+        false,
+        false,
+        0,
+        None,
+        false,
+    )
+    .await?;
+
+    stream.send(Message::Binary(Bytes::from_static(b"hello"))).await?;
+    // `Sink::close` is what the carrier's writer task calls on a client close;
+    // the driver turns it into the FIN.
+    stream.close().await?;
+
+    let posts = wait_for_posts(&captured, 2).await;
+    assert_eq!(posts.seqs, vec![0, 1], "the FIN takes the next seq, after every data POST");
+    assert_eq!(posts.fins, vec![false, true], "only the closing POST carries the FIN hint");
+    assert!(posts.bodies[1].is_empty(), "the FIN POST carries no payload");
+
+    Ok(())
+}
+
+/// Spawns the h1 mock: an accept loop, not a single connection — the h1 driver
+/// opens two sockets per session (GET + POST) because h1 cannot multiplex. Each
+/// accepted socket is served by its own task so the GET's streaming body does
+/// not block POST handling.
+fn spawn_mock_server(
+    listener: TcpListener,
+    captured: Arc<Mutex<CapturedPosts>>,
+    down_rx: Arc<tokio::sync::Mutex<Option<mpsc::Receiver<Bytes>>>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(_) => break,
+            };
+            let captured = Arc::clone(&captured);
+            let down_rx_slot = Arc::clone(&down_rx);
+            tokio::spawn(async move {
+                let io = TokioIo::new(stream);
+                let svc = service_fn(move |req: Request<Incoming>| {
+                    let captured = Arc::clone(&captured);
+                    let down_rx_slot = Arc::clone(&down_rx_slot);
+                    async move { handle(req, captured, down_rx_slot).await }
+                });
+                let _ = ServerBuilder::new().serve_connection(io, svc).await;
+            });
+        }
+    })
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -197,6 +255,7 @@ async fn wait_for_posts(captured: &Arc<Mutex<CapturedPosts>>, expected: usize) -
                 return CapturedPosts {
                     seqs: guard.seqs.clone(),
                     bodies: guard.bodies.clone(),
+                    fins: guard.fins.clone(),
                 };
             }
         }
@@ -205,6 +264,7 @@ async fn wait_for_posts(captured: &Arc<Mutex<CapturedPosts>>, expected: usize) -
             return CapturedPosts {
                 seqs: guard.seqs.clone(),
                 bodies: guard.bodies.clone(),
+                fins: guard.fins.clone(),
             };
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -255,6 +315,7 @@ async fn handle(
                 .rsplit_once('/')
                 .and_then(|(_, tail)| tail.parse().ok())
                 .unwrap_or(u64::MAX);
+            let fin = req.headers().contains_key(crate::xhttp::FIN_HEADER);
             let body_bytes = match req.into_body().collect().await {
                 Ok(collected) => collected.to_bytes(),
                 Err(_) => Bytes::new(),
@@ -266,6 +327,7 @@ async fn handle(
                 let mut guard = captured.lock();
                 guard.seqs.push(seq);
                 guard.bodies.push(body_bytes);
+                guard.fins.push(fin);
             }
             Ok(Response::builder().status(StatusCode::OK).body(empty_body()).unwrap())
         },
