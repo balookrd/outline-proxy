@@ -21,7 +21,7 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, DisconnectReason, Metrics, Transport, WebSocketSessionGuard};
 
 use super::cluster::RouteDecision;
-use super::cluster::mesh::{CarrierKind, MeshFraming};
+use super::cluster::mesh::{CarrierKind, MeshFraming, MeshProtocol};
 use super::h3::vendored::H3WsError;
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
@@ -105,6 +105,7 @@ async fn tcp_upgrade_for_path(
                     shard,
                     &advert,
                     MeshFraming::Tcp,
+                    MeshProtocol::Ss,
                     peer_addr,
                 )
                 .await
@@ -203,6 +204,7 @@ pub(super) async fn vless_websocket_upgrade(
                     shard,
                     &advert,
                     MeshFraming::Tcp,
+                    MeshProtocol::Vless,
                     peer_addr,
                 )
                 .await

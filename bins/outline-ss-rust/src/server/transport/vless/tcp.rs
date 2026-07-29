@@ -129,9 +129,16 @@ pub(super) async fn try_park_vless_tcp(
     };
     // Third guard against parking a relayed session: only a socket this node
     // owns can be handed to the registry, and only a real socket carries the
-    // upstream-connection gauge the parked entry keeps alive.
-    let (Some(upstream_writer), Some(upstream_guard)) = (writer.into_tcp(), guard) else {
-        return false;
+    // upstream-connection gauge the parked entry keeps alive. Unreachable — the
+    // mesh guard at the top of this function already returned — but it ends the
+    // upstream the way every other early return here does, so a future path into
+    // it cannot degrade the FIN that helper exists to preserve.
+    let (upstream_writer, upstream_guard) = match (writer, guard) {
+        (UpstreamWriter::Tcp(writer), Some(guard)) => (writer, guard),
+        (writer, guard) => {
+            shutdown_unparked_tcp(writer, guard).await;
+            return false;
+        },
     };
     let owner = user.label_arc();
     let parked = ParkedTcp {

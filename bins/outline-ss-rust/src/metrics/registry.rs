@@ -248,11 +248,17 @@ pub(super) fn register_descriptions() {
          under the relayed resume id, or it expired between the two setup phases; \
          unknown_user = a park exists but belongs to another user, so user names \
          disagree across the cluster (or it is a genuine security event); \
-         udp_unsupported = the peer asked for plaintext UDP framing this build does \
-         not serve yet; framing_mismatch = the park under that id is not the kind \
-         the relayed framing needs; bad_setup = the home sent its ack but the \
-         second-phase USER frame was malformed or never arrived. The edge degrades \
-         to a fresh local session)."
+         park_shape = a park exists under that id but is VLESS-UDP, VLESS-mux or \
+         SS-UDP shaped, which no mesh splice carries yet — an ordinary outcome, \
+         and refused without consuming the park (distinct from no_session, which \
+         means nothing is there at all); protocol_mismatch = the park was \
+         authenticated under the other proxy protocol (SS vs VLESS), so user names \
+         denote different people, or the same person on two protocols, across the \
+         cluster; udp_unsupported = the peer asked for plaintext UDP framing this \
+         build does not serve yet; framing_mismatch = the park under that id is not \
+         the kind the relayed framing needs; bad_setup = the home sent its ack but \
+         the second-phase USER frame was malformed or never arrived. The edge \
+         degrades to a fresh local session)."
     );
     describe_counter!(
         "outline_ss_mesh_relay_outcome_total",

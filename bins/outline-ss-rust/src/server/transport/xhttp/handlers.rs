@@ -25,7 +25,7 @@ use tracing::{debug, warn};
 use outline_wire::xhttp::{SsPathKind, decode_kind};
 
 use crate::metrics::{AppProtocol, Protocol, Transport};
-use crate::server::cluster::mesh::{CarrierKind, MeshFraming, PooledRelay};
+use crate::server::cluster::mesh::{CarrierKind, MeshFraming, MeshProtocol, PooledRelay};
 use crate::server::cluster::{ClusterCtx, RouteDecision};
 use crate::server::resumption::{OrphanRegistry, SessionId};
 use outline_wire::cluster::ShardId;
@@ -920,19 +920,29 @@ pub(in crate::server::transport::xhttp) async fn xhttp_edge(
     };
     // SS-UDP stays on v4: its relay is opened by the relay task, and its
     // datagram-framed home path lands with a later task.
-    let (metrics, orphan_registry) = match route {
-        XhttpRoute::Ss(_) => (&services.tcp_server.metrics, &services.tcp_server.orphan_registry),
-        XhttpRoute::Vless(_) => {
-            (&services.vless_server.metrics, &services.vless_server.orphan_registry)
-        },
+    let (metrics, orphan_registry, protocol) = match route {
+        XhttpRoute::Ss(_) => (
+            &services.tcp_server.metrics,
+            &services.tcp_server.orphan_registry,
+            MeshProtocol::Ss,
+        ),
+        XhttpRoute::Vless(_) => (
+            &services.vless_server.metrics,
+            &services.vless_server.orphan_registry,
+            MeshProtocol::Vless,
+        ),
         XhttpRoute::SsUdp(_) => return XhttpEdge { stream: None, v4: Some(plan) },
     };
-    let stream =
-        open_edge_relay_v5(&plan.cluster, plan.shard, &plan.advert, MeshFraming::Tcp, peer_addr)
-            .await
-            .map(|pooled| {
-                edge_upstream(pooled, &plan.advert, &plan.cluster, metrics, orphan_registry)
-            });
+    let stream = open_edge_relay_v5(
+        &plan.cluster,
+        plan.shard,
+        &plan.advert,
+        MeshFraming::Tcp,
+        protocol,
+        peer_addr,
+    )
+    .await
+    .map(|pooled| edge_upstream(pooled, &plan.advert, &plan.cluster, metrics, orphan_registry));
     XhttpEdge { stream, v4: None }
 }
 

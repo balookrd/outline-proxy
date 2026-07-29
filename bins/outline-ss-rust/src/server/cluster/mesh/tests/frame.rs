@@ -151,6 +151,7 @@ fn no_session_close_reason_roundtrips_on_the_wire() {
 fn v5_header_roundtrips_without_peer_addr() {
     let header = OpenHeaderV5 {
         framing: MeshFraming::Tcp,
+        protocol: MeshProtocol::Ss,
         session_id: [7u8; 16],
         resume_capable: true,
         ack_prefix: true,
@@ -166,6 +167,7 @@ fn v5_header_roundtrips_without_peer_addr() {
 fn v5_header_roundtrips_with_peer_addr() {
     let header = OpenHeaderV5 {
         framing: MeshFraming::Udp,
+        protocol: MeshProtocol::Vless,
         session_id: [9u8; 16],
         resume_capable: true,
         ack_prefix: false,
@@ -181,6 +183,7 @@ fn v5_header_roundtrips_with_peer_addr() {
 fn v5_parser_refuses_a_v4_frame_and_vice_versa() {
     let v5 = OpenHeaderV5 {
         framing: MeshFraming::Tcp,
+        protocol: MeshProtocol::Ss,
         session_id: [1u8; 16],
         resume_capable: false,
         ack_prefix: false,
@@ -200,6 +203,7 @@ fn v5_parser_refuses_a_v4_frame_and_vice_versa() {
 fn peek_open_version_reads_the_leading_byte_without_consuming() {
     let v5 = OpenHeaderV5 {
         framing: MeshFraming::Udp,
+        protocol: MeshProtocol::Vless,
         session_id: [2u8; 16],
         resume_capable: false,
         ack_prefix: false,
@@ -219,6 +223,30 @@ fn mesh_framing_covers_only_the_two_shapes() {
     assert_eq!(MeshFraming::from_u8(0).unwrap(), MeshFraming::Tcp);
     assert_eq!(MeshFraming::from_u8(1).unwrap(), MeshFraming::Udp);
     assert!(MeshFraming::from_u8(2).is_err());
+}
+
+/// The protocol rides a spare flag bit, so a v5 peer built before the bit
+/// existed — necessarily an SS edge — must still parse, and its cleared bit must
+/// read as Shadowsocks rather than as "unknown".
+#[test]
+fn a_v5_header_without_the_vless_flag_reads_as_shadowsocks() {
+    let vless = OpenHeaderV5 {
+        framing: MeshFraming::Tcp,
+        protocol: MeshProtocol::Vless,
+        session_id: [3u8; 16],
+        resume_capable: true,
+        ack_prefix: true,
+        symmetric_replay: false,
+        client_down_acked: 0,
+        peer_addr: None,
+    };
+    let mut encoded = vless.encode();
+    // Byte 2 is the flag byte; clearing FLAG_VLESS is exactly what an older
+    // edge's encoder produces.
+    encoded[2] &= !FLAG_VLESS;
+    let parsed = OpenHeaderV5::parse(&encoded).expect("an older v5 header still parses");
+    assert_eq!(parsed.protocol, MeshProtocol::Ss);
+    assert_eq!(parsed.session_id, vless.session_id, "the rest of the header is unaffected");
 }
 
 #[test]

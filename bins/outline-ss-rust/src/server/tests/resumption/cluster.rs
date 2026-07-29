@@ -38,8 +38,8 @@ use outline_transport::{
 use outline_wire::cluster::{ObfuscationKey, ShardId};
 use outline_wire::padding::{ControlSignal, PaddingDecoder, PaddingScheme, encode_frame_into};
 use outline_wire::resume::{
-    ACK_PREFIX_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER,
-    SYMMETRIC_REPLAY_HEADER,
+    ACK_PREFIX_HEADER, FRAME_LEN_V1, ParseResult, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
+    SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER, parse_v1,
 };
 use quinn::Endpoint;
 use ring::rand::SystemRandom;
@@ -82,8 +82,8 @@ use super::vless::{
     vless_udp_request,
 };
 use super::{
-    connect_ws_h1, expect_binary_reply, spawn_delayed_echo_udp_target, spawn_echo_target,
-    spawn_echo_udp_target,
+    connect_ws_h1, connect_ws_h1_ack_prefix, expect_binary_reply, spawn_delayed_echo_udp_target,
+    spawn_echo_target, spawn_echo_udp_target,
 };
 use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn, PaddingConfig};
 use crate::crypto::{
@@ -2360,6 +2360,86 @@ async fn cluster_vless_tcp_survives_edge_switch() -> Result<()> {
     Ok(())
 }
 
+/// A relayed VLESS-TCP session hands the client the home's uplink offset, as the
+/// Ack-Prefix v1 control frame the client already understands, ahead of every
+/// relayed byte.
+///
+/// This is the one number that keeps a request body whole across a node switch:
+/// the home counts what its upstream socket actually took and reports it over
+/// the mesh ([`crate::server::cluster::mesh::UpstreamAckFrame`]), and the edge —
+/// which owns the client's crypto now — re-emits it in the client's own
+/// vocabulary. A client replaying from a wrong offset either duplicates or skips
+/// part of its request, and neither is visible in a payload echo, so both halves
+/// are asserted here: the value, and its position.
+///
+/// The position is asserted by parsing the byte stream in order. `"ORSM"` at
+/// exactly the offset after the VLESS response header is what proves nothing
+/// relayed was emitted first — a payload byte there would fail the parse rather
+/// than be silently tolerated, which is precisely the failure mode the client
+/// suffers.
+#[tokio::test]
+async fn cluster_vless_relayed_session_emits_the_homes_acked_offset_first() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-vless-ackprefix-psk";
+    // Written by the home's own session, so its upstream socket has taken these
+    // bytes — and its `upstream_bytes_acked` is non-zero — by the time it parks.
+    const VIA_HOME: &[u8] = b"seventeen-bytes!!";
+    const VIA_EDGE: &[u8] = b"after-the-switch";
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+
+    let (home, _user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, None).await?;
+
+    let session_id = park_vless_session_on_home(&home, echo_addr, VIA_HOME).await?;
+
+    // Resume through the edge as a v1-capable client: the advertisement is what
+    // puts the frame on the wire at all.
+    let (mut socket, echoed, ack_prefix_confirmed) =
+        connect_ws_h1_ack_prefix(edge.listen_addr, "/vless", Some(session_id), true, true).await?;
+    assert_eq!(echoed, Some(session_id), "the relayed session continues under the home's id");
+    assert!(
+        ack_prefix_confirmed,
+        "a relayed session still confirms v1 — the edge re-emits the home's offset",
+    );
+
+    socket
+        .send(WsMessage::Binary(vless_tcp_request(CLUSTER_VLESS_UUID, echo_addr, VIA_EDGE)?))
+        .await?;
+
+    // VLESS rides a byte stream, so read it as one: response header, then the
+    // control frame, then the echoed payload — in that order, whatever the frame
+    // boundaries turn out to be.
+    let want = 2 + FRAME_LEN_V1 + VIA_EDGE.len();
+    let mut stream: Vec<u8> = Vec::new();
+    while stream.len() < want {
+        let frame = expect_binary_reply(&mut socket).await?;
+        stream.extend_from_slice(&frame);
+    }
+    assert_eq!(&stream[..2], &[VLESS_VERSION, 0x00], "the VLESS response header leads");
+    match parse_v1(&stream[2..2 + FRAME_LEN_V1]) {
+        ParseResult::Valid { up_acked } => assert_eq!(
+            up_acked,
+            VIA_HOME.len() as u64,
+            "the edge must pass on the home's real upstream offset, not a fresh zero",
+        ),
+        other => bail!("expected an ack-prefix v1 frame right after the header, got {other:?}"),
+    }
+    assert_eq!(
+        &stream[2 + FRAME_LEN_V1..want],
+        VIA_EDGE,
+        "the relayed payload follows the control frame",
+    );
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the offset is only meaningful if this really resumed the parked upstream",
+    );
+
+    socket.close(None).await?;
+    Ok(())
+}
+
 /// A VLESS-UDP session presenting a foreign-shard resume id is served **locally**
 /// by the edge, and still works.
 ///
@@ -2435,8 +2515,9 @@ async fn cluster_vless_udp_foreign_shard_is_served_locally() -> Result<()> {
 /// *temporary* rather than destructive, and it is what this test now pins: the
 /// home's park is neither consumed nor damaged by the edge that could not use
 /// it. Two independent barriers are exercised at once — the home's phase-1
-/// `has_tcp_park` refusing a UDP-shaped park before anything is taken, and the
-/// edge releasing the relay the moment it reads a non-TCP command. A regression
+/// `probe_park` answering `ParkProbe::OtherShape` for a UDP-shaped park, before
+/// anything is taken, and the edge releasing the relay the moment it reads a
+/// non-TCP command. A regression
 /// in either would show up as the third connect binding a *third* source port,
 /// because the park would have been destroyed by the second.
 #[tokio::test]
@@ -2621,6 +2702,19 @@ async fn cluster_vless_tcp_on_a_udp_shaped_park_leaves_it_intact() -> Result<()>
 /// It also pins the scope decision that VLESS-mux sub-connections stay on the
 /// direct path: the sub-connection below reaches its target from the edge, on a
 /// socket the edge dialled itself.
+///
+/// Finally it pins the *echo*, which is deliberately not truthful here and
+/// cannot be made so: the `101` goes out before the edge has read a single
+/// client byte, so at the moment it is written the relay is still admitted and
+/// the only correct id to echo is the home's. Only the first VLESS frame reveals
+/// the mux command, and by then the id is on the wire. The cost is bounded and
+/// non-destructive — the client comes back with the home's id, the home still
+/// holds that park, and the edge serves it locally again — where the two
+/// alternatives are worse: withholding the id from every VLESS upgrade would
+/// give up continuity for the TCP command this whole path exists for, and
+/// delaying the `101` until the first frame would break the upgrade handshake
+/// itself. The session served here is simply not resumable (`edge_upstream`
+/// leaves `issued_session_id` unset, so nothing parks locally either).
 #[tokio::test]
 async fn cluster_vless_mux_releases_the_relay_and_preserves_the_park() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-vless-mux-release-psk";
@@ -2637,7 +2731,17 @@ async fn cluster_vless_mux_releases_the_relay_and_preserves_the_park() -> Result
 
     // Same id, but a mux command: the edge must release the relay and serve the
     // mux locally.
-    let (mut socket, _) = connect_ws_h1(edge.listen_addr, "/vless", Some(session_id), true).await?;
+    let (mut socket, echoed_id) =
+        connect_ws_h1(edge.listen_addr, "/vless", Some(session_id), true).await?;
+    // Deliberate, and documented above: the echo was written while the relay was
+    // still admitted, so it names the home's id even though this session ends up
+    // served locally and parks nothing. Pinned rather than left unasserted, so a
+    // future change to the echo is a decision and not a surprise.
+    assert_eq!(
+        echoed_id,
+        Some(session_id),
+        "an admitted relay echoes the home's id, even on the path that later releases it",
+    );
     socket
         .send(WsMessage::Binary(vless_mux_request(CLUSTER_VLESS_UUID)?))
         .await?;

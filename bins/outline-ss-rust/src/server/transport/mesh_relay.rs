@@ -49,14 +49,15 @@ use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     AcceptRelayError, CarrierKind, CloseIntent, CloseReason, ControlDatagram, MAX_USER_LEN,
-    MeshFraming, MeshStream, OpenHeader, OpenHeaderV5, PooledRelay, RelayOpen, UpstreamAckFrame,
-    UserFrame, accept_relay, encode_throttle_hint, parse_control_datagram, read_datagram,
-    write_datagram, write_open_ack,
+    MeshFraming, MeshProtocol, MeshStream, OpenHeader, OpenHeaderV5, PooledRelay, RelayOpen,
+    UpstreamAckFrame, UserFrame, accept_relay, encode_throttle_hint, parse_control_datagram,
+    read_datagram, write_datagram, write_open_ack,
 };
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::resumption::downlink_ring::ReplayOutcome;
 use crate::server::resumption::{
     OrphanRegistry, ParkProbe, Parked, ParkedTcp, ResumeMiss, ResumeOutcome, SessionId,
+    TcpProtocolContext,
 };
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::state::{
@@ -236,12 +237,13 @@ impl StallTracker {
 /// Edge-side relay for SS-UDP: the last v4 splice, and the only carrier still
 /// using one. The edge does not decode the SS layer — it moves the WS binary
 /// payload verbatim (padding + ciphertext) so the home strips both — but unlike
-/// a byte stream it preserves datagram boundaries. An SS-UDP packet is atomic — one client `Binary` frame is one
-/// AEAD-sealed packet with no length prefix — so a raw byte splice would let
-/// QUIC coalesce or split packets and the home's per-packet AEAD open would then
-/// fail on a mis-boundaried buffer. Each direction therefore length-frames the
-/// datagram onto the mesh stream ([`write_datagram`]) and de-frames it off the
-/// other side ([`read_datagram`]). One writer per direction, so backpressure
+/// a byte stream it preserves datagram boundaries. An SS-UDP packet is atomic —
+/// one client `Binary` frame is one AEAD-sealed packet with no length prefix —
+/// so a raw byte splice would let QUIC coalesce or split packets and the home's
+/// per-packet AEAD open would then fail on a mis-boundaried buffer. Each
+/// direction therefore length-frames the datagram onto the mesh stream
+/// ([`write_datagram`]) and de-frames it off the other side
+/// ([`read_datagram`]). One writer per direction, so backpressure
 /// rides the QUIC / WS windows. The health `budget` bounds a single uplink
 /// datagram write: when the home stops draining, the QUIC send window fills and
 /// the write blocks, and exceeding `budget` resets the stream with
@@ -419,6 +421,12 @@ fn open_ack_wait(relay_budget: Duration) -> Duration {
 /// check follows one phase later, when the edge sends the USER frame
 /// ([`super::upstream_source::MeshUpstreamSetup::attach`]).
 ///
+/// `protocol` is the one thing about the client's crypto the header still
+/// carries, and only because the home cannot otherwise apply the cross-protocol
+/// rule both direct resume paths enforce: a park authenticated under SS is never
+/// handed to a VLESS carrier, or the other way round. Unlike the user, the edge
+/// knows it before it reads a single client byte.
+///
 /// `None` means serve the client locally: the home is unreachable, or it holds
 /// no park under this id — an ordinary outcome now that fresh sessions are never
 /// created over the mesh. The caller then becomes the home for a fresh session.
@@ -427,10 +435,12 @@ pub(in crate::server) async fn open_edge_relay_v5(
     shard: ShardId,
     advert: &EdgeResumeAdvert,
     framing: MeshFraming,
+    protocol: MeshProtocol,
     peer_addr: SocketAddr,
 ) -> Option<PooledRelay> {
     let header = OpenHeaderV5 {
         framing,
+        protocol,
         session_id: *advert.session_id.as_bytes(),
         resume_capable: advert.resume_capable,
         ack_prefix: advert.ack_prefix,
@@ -1067,6 +1077,18 @@ async fn read_user_frame(recv: &mut RecvStream) -> Result<UserFrame> {
     UserFrame::parse(&frame)
 }
 
+/// Whether a parked TCP session may be spliced onto a relay the edge opened for
+/// `relayed`. The mesh carries plaintext, so nothing about the body depends on
+/// this — only the invariant that a session stays inside the protocol it was
+/// authenticated under.
+fn protocol_matches(relayed: MeshProtocol, parked: &TcpProtocolContext) -> bool {
+    matches!(
+        (relayed, parked),
+        (MeshProtocol::Ss, TcpProtocolContext::Ss(_))
+            | (MeshProtocol::Vless, TcpProtocolContext::Vless)
+    )
+}
+
 /// Serves one v5 relayed session: the two-phase resume hand-off.
 ///
 /// Where [`serve_relayed`] admits a still-encrypted carrier and re-runs the
@@ -1207,7 +1229,7 @@ async fn serve_relayed_v5(
     };
     let Parked::Tcp(parked) = parked else {
         // The OPEN's framing disagrees with what is actually parked under the
-        // id. Phase 1 (`has_tcp_park`) rejects a committed park of the wrong
+        // id. Phase 1 (`probe_park`) rejects a committed park of the wrong
         // shape, so what is left here is the reservation window — a park that
         // was still landing when phase 1 looked and committed as some other
         // shape by now — or a forged peer. Refuse rather than panic; the park is
@@ -1218,6 +1240,33 @@ async fn serve_relayed_v5(
         refuse_relay(stream, CloseReason::Abort);
         return Ok(());
     };
+    // Cross-protocol resume, refused exactly as the two direct paths refuse it
+    // (`transport::tcp` and `transport::vless::tcp`): an SS-authenticated carrier
+    // never reattaches to a park minted under VLESS, or the other way round. The
+    // owner check above already binds an id to one user identity, so reaching
+    // here means SS and VLESS users share an identifier across the cluster — a
+    // configuration error worth surfacing rather than silently splicing a
+    // session onto the wrong protocol's carrier.
+    //
+    // Checked here, after the park is taken, for the same reason the direct
+    // paths check it there: the protocol is a property of the *park*, and asking
+    // in phase 1 would only narrow the window, not close it (a reservation
+    // carries no protocol either). Unlike a UDP- or mux-shaped park — routine
+    // now that VLESS multiplexes three shapes onto one id — this is not
+    // something a healthy cluster produces, so it does not earn the phase-1
+    // lookup that `park_shape` does.
+    if !protocol_matches(header.protocol, &parked.protocol_context) {
+        cluster.metrics.record_mesh_relay_rejected("protocol_mismatch");
+        cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+        warn!(
+            relayed = header.protocol.label(),
+            parked_kind = parked.protocol_context.label(),
+            "refusing a relayed resume across proxy protocols — check that user names denote the \
+             same person, and the same protocol, on every cluster node",
+        );
+        refuse_relay(stream, CloseReason::Abort);
+        return Ok(());
+    }
     // The `hit` itself is recorded by the splice on its way out, where the
     // close intent that labels it is finally known; `outline_ss_mesh_relay_active`
     // is what counts the relay while it runs.
