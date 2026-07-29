@@ -40,11 +40,6 @@ pub struct ThrottleDetectParams {
     /// for the "throttled" verdict to be actionable — avoids false positives on
     /// genuinely low-bandwidth flows. Home-side (rate detector) only.
     pub min_in_bytes_per_sec: u64,
-    /// Inert: floor for the mesh `THROTTLE_HINT` edge stall detector, whose only
-    /// sender went with the retired v4 relay. Assigned from
-    /// `PaddingSection::throttle_edge_min_bytes_per_sec` (kept for config
-    /// compatibility) but never read.
-    pub edge_min_bytes_per_sec: u64,
     /// Minimum gap between two signals on the same carrier.
     pub signal_cooldown: Duration,
 }
@@ -58,10 +53,6 @@ impl Default for ThrottleDetectParams {
             sustain_windows: 5,
             // ~8 Mbit/s: below this a "throttle" is not worth a carrier switch.
             min_in_bytes_per_sec: 1_000_000,
-            // ~512 Kbit/s: below this the edge treats a stalled client as merely
-            // slow (or idle), not throttled — well under any last-mile throttle
-            // target worth switching uplinks for.
-            edge_min_bytes_per_sec: 64_000,
             signal_cooldown: Duration::from_secs(30),
         }
     }

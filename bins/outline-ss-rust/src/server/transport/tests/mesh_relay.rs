@@ -22,8 +22,8 @@ use crate::protocol::TargetAddr;
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CloseIntent, CloseReason, MeshEndpoint, MeshFraming, MeshIdentity, MeshPeerPool, MeshProtocol,
-    OPEN_ACK_ACCEPTED, OpenHeader, ThrottleRegistry, UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame,
-    UserFrame, read_datagram, write_datagram,
+    OPEN_ACK_ACCEPTED, OpenHeader, UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame,
+    read_datagram, write_datagram,
 };
 use crate::server::dns_cache::DnsCache;
 use crate::server::nat::{NatKey, NatTable, ServerSessionId};
@@ -63,7 +63,6 @@ fn home_runtime(
         pool: Arc::new(MeshPeerPool::new(endpoint.clone(), HashMap::new(), 8)),
         endpoint,
         relay_budget: Duration::from_secs(5),
-        throttle_registry: ThrottleRegistry::new(),
         relay_permits: Arc::new(Semaphore::new(relay_cap)),
         metrics: Arc::clone(&metrics),
     });
@@ -121,9 +120,8 @@ async fn wait_for_active_relays(metrics: &Arc<Metrics>, want: u32) {
 
 /// A relay stream whose OPEN this build cannot parse (a peer mid rolling
 /// upgrade) is a *per-stream* failure, not a connection one: the QUIC
-/// connection stays live, and the relays already riding it — plus the
-/// control-datagram receiver the accept loop owns — depend on the loop staying
-/// up. So the loop must drop that one stream and keep accepting.
+/// connection stays live, and the relays already riding it depend on the loop
+/// staying up. So the loop must drop that one stream and keep accepting.
 #[tokio::test]
 async fn an_unparsable_open_header_does_not_stop_the_accept_loop() {
     let harness = MeshHomeHarness::new().await;
@@ -178,8 +176,7 @@ async fn a_v4_open_is_refused_and_the_edge_serves_locally() {
 }
 
 /// The one exit condition: when the peer closes the QUIC connection, the accept
-/// loop must return (releasing the control-datagram receiver with it) rather
-/// than spin on a dead connection.
+/// loop must return rather than spin on a dead connection.
 #[tokio::test]
 async fn a_closed_connection_ends_the_accept_loop() {
     let psk = b"mesh-accept-close-psk";
