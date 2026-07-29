@@ -27,12 +27,14 @@ pub(in crate::server) use datagram::{read_datagram, write_datagram};
 pub(in crate::server) use endpoint::{
     AcceptRelayError, MeshEndpoint, MeshStream, accept_relay, write_open_ack,
 };
-#[cfg(test)]
-pub(in crate::server) use frame::OPEN_ACK_ACCEPTED;
 pub(in crate::server) use frame::{
-    CarrierKind, CloseReason, MAX_USER_LEN, MeshFraming, OpenHeader, OpenHeaderV5, RelayOpen,
-    UserFrame,
+    CarrierKind, CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, OpenHeader, OpenHeaderV5,
+    RelayOpen, UpstreamAckFrame, UserFrame,
 };
+// Setup-phase constants: the *reading* peer needs them, and until the edge
+// speaks v5 the only reader here is the test that stands in for it.
+#[cfg(test)]
+pub(in crate::server) use frame::{OPEN_ACK_ACCEPTED, UPSTREAM_ACK_FRAME_LEN};
 pub(in crate::server) use peer_pool::{MeshPeerPool, PooledRelay};
 pub(in crate::server) use throttle::ThrottleRegistry;
 pub(in crate::server) use tls::MeshIdentity;

@@ -20,10 +20,18 @@
 //! splices onto it directly — no route table, no crypto, no accept path. The
 //! accept loop dispatches on the OPEN version byte; the two paths share only
 //! the stream and the refusal helper.
+//!
+//! Two v5-only signals keep a resumed session whole; the cluster mesh `frame`
+//! module documents the layout of both. The home opens a resumed splice with an
+//! [`UpstreamAckFrame`] saying how far its upstream socket actually got, and the
+//! edge closes one with a [`CloseIntent`] saying whether to expect the client
+//! back.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -40,9 +48,10 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    AcceptRelayError, CarrierKind, CloseReason, ControlDatagram, MAX_USER_LEN, MeshFraming,
-    MeshStream, OpenHeader, OpenHeaderV5, PooledRelay, RelayOpen, UserFrame, accept_relay,
-    encode_throttle_hint, parse_control_datagram, read_datagram, write_datagram, write_open_ack,
+    AcceptRelayError, CarrierKind, CloseIntent, CloseReason, ControlDatagram, MAX_USER_LEN,
+    MeshFraming, MeshStream, OpenHeader, OpenHeaderV5, PooledRelay, RelayOpen, UpstreamAckFrame,
+    UserFrame, accept_relay, encode_throttle_hint, parse_control_datagram, read_datagram,
+    write_datagram, write_open_ack,
 };
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::resumption::downlink_ring::ReplayOutcome;
@@ -1256,6 +1265,30 @@ impl SpliceEnd {
         }
     }
 
+    /// Whether the upstream this splice held is still worth handing to a later
+    /// carrier — the health verdict both halves agreed on.
+    fn upstream_healthy(&self) -> bool {
+        match self {
+            SpliceEnd::Graceful { upstream_healthy }
+            | SpliceEnd::Faulted { upstream_healthy, .. } => *upstream_healthy,
+        }
+    }
+
+    /// Whether the session goes back into the registry once the splice ends.
+    ///
+    /// Two independent questions, and both must say yes. A broken or EOF'd
+    /// upstream is never parked, as before. On top of that,
+    /// [`CloseIntent::ClientDone`] never parks a *healthy* one either: the
+    /// client that owns the session has finished with it, so the park would
+    /// never be claimed — it would hold one of the user's `orphan_per_user_cap`
+    /// slots until the TTL (where it can evict a park still wanted) while the
+    /// target waits for a request-body FIN that never comes. The caller's
+    /// non-park path half-closes the upstream, which is exactly what that
+    /// client's target is owed.
+    fn reparks(&self, intent: CloseIntent) -> bool {
+        matches!(intent, CloseIntent::CarrierEnded) && self.upstream_healthy()
+    }
+
     /// Marks the parked upstream unusable whatever else this end says. Used when
     /// the *other* half already found the socket EOF'd or broken: a resume would
     /// reattach to something with nothing left to read.
@@ -1277,6 +1310,15 @@ enum DownlinkEnd {
     /// The uplink asked the pump to stop and it returned at a read boundary,
     /// with the upstream socket intact.
     Stopped,
+    /// The edge stopped the downlink half with [`CloseIntent::ClientDone`],
+    /// failing whatever write was in flight. Not a fault: the client is done, so
+    /// downlink bytes it will never read are worth nothing, and the upstream
+    /// socket is untouched. Distinct from [`DownlinkEnd::Stopped`] because it
+    /// arrives *while the uplink is still running* — and the uplink must keep
+    /// running, or the tail of the request body still buffered on the mesh would
+    /// be dropped instead of reaching the target, which is the very hole the
+    /// close intent exists to close.
+    ClientDone,
 }
 
 /// Writes one relayed uplink chunk to the parked upstream, counting every byte
@@ -1330,6 +1372,35 @@ async fn write_uplink_chunk<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
+/// Reads the [`CloseIntent`] the edge attached to a v5 stream, without waiting
+/// for one to arrive.
+///
+/// The intent rides the `STOP_SENDING` the edge applies to this send half, which
+/// it emits together with the FIN on the other half — so by the time the home
+/// has seen the FIN, the code is already in quinn's stream state and a single
+/// poll observes it. Polling instead of awaiting is deliberate: an edge that
+/// merely switched carriers sends no `STOP_SENDING` at all, and awaiting one
+/// would delay every re-park by however long the wait was, holding the session
+/// out of the registry exactly while the next carrier is trying to resume it.
+///
+/// Missing the code (a lost or reordered packet) yields
+/// [`CloseIntent::CarrierEnded`], the pre-v5 behaviour: the session is re-parked
+/// and expires on its TTL. Nothing is lost that way — only reclaimed late.
+///
+/// Must be called before the send half is finished or reset: after that quinn
+/// reports the stream closed rather than stopped.
+fn close_intent(send: &SendStream) -> CloseIntent {
+    let stopped = send.stopped();
+    let mut stopped = std::pin::pin!(stopped);
+    // A no-op waker is right here and nowhere else: this future is polled once
+    // and dropped, so there is no later wakeup to deliver.
+    let mut cx = TaskContext::from_waker(Waker::noop());
+    match stopped.as_mut().poll(&mut cx) {
+        Poll::Ready(Ok(Some(code))) => CloseIntent::from_code(code.into_inner()),
+        Poll::Ready(_) | Poll::Pending => CloseIntent::CarrierEnded,
+    }
+}
+
 /// Merges the two halves' verdicts once both have ended.
 ///
 /// The uplink decides what the edge sees — it is the half that ended first and
@@ -1341,7 +1412,7 @@ fn splice_end(
     downlink: Result<DownlinkEnd, SpliceFault>,
 ) -> SpliceEnd {
     let downlink_healthy = match &downlink {
-        Ok(DownlinkEnd::Stopped) => true,
+        Ok(DownlinkEnd::Stopped | DownlinkEnd::ClientDone) => true,
         Ok(DownlinkEnd::UpstreamEof) => false,
         Err(fault) => fault.upstream_healthy,
     };
@@ -1382,10 +1453,13 @@ fn splice_end(
 ///   The one exception is a stream the downlink already finished on upstream
 ///   EOF: quinn accepts a reset after a finish and drops the still-unacked tail,
 ///   so resetting there would turn a *complete* response into an abort.
-/// * **The session is re-parked.** When the client side goes away while the
-///   upstream is healthy, the upstream halves go back into the registry under
-///   the same id, mirroring the direct path's `try_park_on_drop`. Without it a
-///   v5 session would survive exactly one carrier switch.
+/// * **The session is re-parked — unless the client is done with it.** When the
+///   carrier ends while the upstream is healthy, the upstream halves go back
+///   into the registry under the same id, mirroring the direct path's
+///   `try_park_on_drop`. Without it a v5 session would survive exactly one
+///   carrier switch. The exception is a [`CloseIntent::ClientDone`] close: that
+///   client is not coming back, so the upstream is half-closed instead of
+///   parked (see [`SpliceEnd::reparks`]).
 /// * **The hand-off loses no bytes.** Because the session is re-parked, a pump
 ///   dropped mid-operation would silently punch a hole in the client's stream.
 ///   The downlink is therefore stopped cooperatively at a read boundary (as the
@@ -1426,6 +1500,21 @@ async fn splice_plaintext_tcp(
     let up_bytes = cluster.metrics.mesh_bytes_counter("home", "up", "tcp");
     let down_bytes = cluster.metrics.mesh_bytes_counter("home", "down", "tcp");
     let budget = cluster.relay_budget;
+
+    // Uplink continuity: how far the upstream socket actually got before this
+    // carrier. The home may have consumed uplink bytes off a dying mesh carrier
+    // that the socket never took, so without this the resuming edge would either
+    // skip them (a hole in the request body at the target) or resend from zero.
+    // First on the wire, ahead of the replay suffix and of any fresh byte —
+    // the same order the direct path emits its v1 frame before the v2 "ORDR" one.
+    if header.ack_prefix {
+        let frame = UpstreamAckFrame {
+            upstream_acked: upstream_bytes_acked.load(Ordering::Relaxed),
+        };
+        send.write_all(&frame.encode())
+            .await
+            .context("sending the upstream-ack frame over the mesh")?;
+    }
 
     // Byte-continuity: everything the session emitted past the offset the client
     // acknowledged goes out first, ahead of any fresh upstream byte, so the
@@ -1544,6 +1633,17 @@ async fn splice_plaintext_tcp(
                 }
                 match tokio::time::timeout(budget, send.write_all(&buf[..len])).await {
                     Ok(Ok(())) => {},
+                    // The edge stopping this half with `ClientDone` is a
+                    // deliberate end, not a fault: it wants no more downlink and
+                    // the uplink must go on draining to its FIN so the target
+                    // sees the whole request body. Any other stop code (a bare
+                    // carrier drop sends `0`) stays a fault, which re-parks and
+                    // lets the next carrier replay from the acked offset.
+                    Ok(Err(quinn::WriteError::Stopped(code)))
+                        if CloseIntent::from_code(code.into_inner()) == CloseIntent::ClientDone =>
+                    {
+                        return Ok(DownlinkEnd::ClientDone);
+                    },
                     Ok(Err(error)) => {
                         return Err(SpliceFault::mesh(
                             anyhow::Error::new(error).context("relayed downlink write to the mesh"),
@@ -1592,6 +1692,12 @@ async fn splice_plaintext_tcp(
         }
     };
 
+    // Why the edge ended, read off the still-open send half before it is closed:
+    // "the client is done" and "the carrier ended" want opposite things from the
+    // parked upstream.
+    let intent = close_intent(&send);
+    let reparks = end.reparks(intent);
+
     match end.stream_close(stream_finished) {
         StreamClose::Reset(reason) => {
             let _ = send.reset(VarInt::from_u32(reason.code()));
@@ -1601,12 +1707,12 @@ async fn splice_plaintext_tcp(
         },
     }
 
-    let (upstream_healthy, error) = match end {
-        SpliceEnd::Graceful { upstream_healthy } => (upstream_healthy, None),
-        SpliceEnd::Faulted { upstream_healthy, error, .. } => (upstream_healthy, Some(error)),
+    let error = match end {
+        SpliceEnd::Graceful { .. } => None,
+        SpliceEnd::Faulted { error, .. } => Some(error),
     };
 
-    if upstream_healthy && registry.enabled() {
+    if reparks && registry.enabled() {
         // Mirror of the direct path's `transport::tcp::try_park_on_drop`: the
         // client side went away while the upstream is healthy, so the whole
         // bundle goes back under the same id for the next carrier to resume.
@@ -1635,9 +1741,17 @@ async fn splice_plaintext_tcp(
             }),
         );
     } else {
-        // Nothing worth parking (the upstream EOF'd or failed, or resumption is
-        // off): half-close so the target sees the end of the request body. The
-        // upstream guard drops with this scope, releasing the gauge.
+        // Nothing worth parking (the upstream EOF'd or failed, the client said
+        // it was done, or resumption is off): half-close so the target sees the
+        // end of the request body — a half-close-then-read protocol hangs
+        // without it. The upstream guard drops with this scope, releasing the
+        // gauge, and both socket halves drop with it.
+        debug!(
+            user = %owner,
+            target = %target_display,
+            ?intent,
+            "closing a relayed tcp upstream instead of re-parking it",
+        );
         let _ = upstream_writer.shutdown().await;
     }
 
