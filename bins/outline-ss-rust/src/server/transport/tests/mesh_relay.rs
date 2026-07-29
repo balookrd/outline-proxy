@@ -22,9 +22,9 @@ use crate::crypto::UserKey;
 use crate::metrics::{AppProtocol, Metrics, Protocol};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    CarrierKind, CloseReason, ControlDatagram, MeshEndpoint, MeshFraming, MeshIdentity,
-    MeshPeerPool, OPEN_ACK_ACCEPTED, OpenHeader, OpenHeaderV5, ThrottleRegistry, UserFrame,
-    parse_control_datagram,
+    CarrierKind, CloseIntent, CloseReason, ControlDatagram, MeshEndpoint, MeshFraming,
+    MeshIdentity, MeshPeerPool, OPEN_ACK_ACCEPTED, OpenHeader, OpenHeaderV5, ThrottleRegistry,
+    UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame, parse_control_datagram,
 };
 use crate::server::dns_cache::DnsCache;
 use crate::server::nat::NatTable;
@@ -680,6 +680,17 @@ impl TestUpstream {
         buf
     }
 
+    /// Whether the target saw the end of the request body: a read that returns
+    /// zero bytes, i.e. the home half-closed (or closed) the upstream socket.
+    /// `false` on a timeout — the socket is still open — or on a read error.
+    async fn saw_eof(&mut self) -> bool {
+        let mut buf = [0u8; 1];
+        matches!(
+            tokio::time::timeout(Duration::from_secs(5), self.peer.read(&mut buf)).await,
+            Ok(Ok(0)),
+        )
+    }
+
     /// Writes `data` as if the target server answered.
     async fn write(&mut self, data: &[u8]) {
         self.peer
@@ -804,6 +815,17 @@ async fn park_parked_tcp(
     TestUpstream { peer }
 }
 
+/// Waits until `id` is parked again, panicking after 10 s. The re-park happens
+/// on the home's own schedule once the mesh carrier ends, so every test that
+/// resumes a session twice has to wait for it rather than assume it.
+async fn wait_for_park(registry: &OrphanRegistry, id: SessionId) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !registry.has_park(id) {
+        assert!(Instant::now() < deadline, "the home never re-parked the relayed session");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// A v5 OPEN header for a TCP-framed relayed session under `id`.
 fn v5_header(id: SessionId) -> OpenHeaderV5 {
     OpenHeaderV5 {
@@ -838,6 +860,9 @@ impl V5Outcome {
 struct V5Session {
     send: SendStream,
     recv: RecvStream,
+    /// What the home's `UpstreamAckFrame` reported at setup, or `0` when the
+    /// OPEN did not advertise the ACK-PREFIX capability (no frame is sent then).
+    acked_uplink_offset: u64,
 }
 
 impl V5Session {
@@ -850,6 +875,19 @@ impl V5Session {
             .expect("writing plaintext to the home");
     }
 
+    /// How far the home said its upstream socket had actually got when this
+    /// carrier took over the session.
+    fn acked_uplink_offset(&self) -> u64 {
+        self.acked_uplink_offset
+    }
+
+    /// Replays a request body the edge still holds, skipping the prefix the
+    /// upstream already took — what an edge does with the acked offset on a
+    /// resume.
+    async fn edge_write_from_offset(&mut self, data: &[u8], acked: u64) {
+        self.edge_write(&data[acked as usize..]).await;
+    }
+
     /// Reads exactly `n` plaintext bytes the home relayed back.
     async fn edge_read(&mut self, n: usize) -> Vec<u8> {
         let mut buf = vec![0u8; n];
@@ -860,15 +898,27 @@ impl V5Session {
         buf
     }
 
-    /// Ends the edge's half as a carrier switch does, then waits for the home to
-    /// close its own. The client-gone path is the one failure-free end, so the
-    /// home must answer it with a FIN rather than a reset.
-    async fn edge_finish(mut self) {
+    /// Ends the edge's half as a carrier switch does — a bare FIN, no close
+    /// intent — then waits for the home to close its own. A carrier switch is a
+    /// failure-free end, so the home must answer it with a FIN rather than a
+    /// reset.
+    async fn close_with_carrier_ended(mut self) {
         self.send.finish().expect("finishing the edge half");
         tokio::time::timeout(Duration::from_secs(5), self.recv.read_to_end(4096))
             .await
             .expect("the home must close its half once the edge finishes")
-            .expect("a client-gone end must be a clean FIN, not a reset");
+            .expect("a carrier switch must be a clean FIN, not a reset");
+    }
+
+    /// Ends the edge's half as a client that is done for good does: the FIN
+    /// still carries every uplink byte, and the `STOP_SENDING` on the downlink
+    /// half carries the [`CloseIntent::ClientDone`] code that says not to expect
+    /// this client back.
+    fn close_with_client_done(mut self) {
+        self.send.finish().expect("finishing the edge half");
+        self.recv
+            .stop(VarInt::from_u32(CloseIntent::ClientDone.code()))
+            .expect("stopping the home's downlink half");
     }
 
     /// Aborts the edge's uplink half without a FIN, as a client carrier that
@@ -1003,7 +1053,22 @@ impl MeshHomeHarness {
         send.write_all(&UserFrame { user: user.to_string() }.encode())
             .await
             .expect("writing the USER frame");
-        V5Session { send, recv }
+        // A real edge reads the continuity prologue it asked for before any
+        // downlink byte; the frame is present exactly when the OPEN set the
+        // ACK-PREFIX flag.
+        let acked_uplink_offset = if header.ack_prefix {
+            let mut frame = [0u8; UPSTREAM_ACK_FRAME_LEN];
+            tokio::time::timeout(Duration::from_secs(5), recv.read_exact(&mut frame))
+                .await
+                .expect("the home must send the upstream-ack frame")
+                .expect("reading the upstream-ack frame");
+            UpstreamAckFrame::parse(&frame)
+                .expect("the upstream-ack frame parses")
+                .upstream_acked
+        } else {
+            0
+        };
+        V5Session { send, recv, acked_uplink_offset }
     }
 
     /// Drives a v4 OPEN and reports whether it reached the untouched v4 path.
@@ -1280,14 +1345,10 @@ async fn a_v5_session_can_be_resumed_twice() {
     assert_eq!(upstream.read(5).await, b"first");
     upstream.write(b"one").await;
     assert_eq!(first.edge_read(3).await, b"one");
-    first.edge_finish().await;
+    first.close_with_carrier_ended().await;
 
     // The home must have re-parked the still-healthy upstream.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !harness.registry().has_park(id) {
-        assert!(Instant::now() < deadline, "the home never re-parked the relayed session");
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    wait_for_park(harness.registry(), id).await;
 
     // Second carrier: the same upstream socket, still live.
     let mut second = harness.serve_v5_ok(v5_header(id), "beerloga").await;
@@ -1422,11 +1483,7 @@ async fn a_carrier_switch_mid_downlink_loses_no_bytes() {
     assert!(delivered.len() < payload.len(), "the switch must land mid-payload");
 
     // The home must have re-parked the still-healthy upstream.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !registry.has_park(id) {
-        assert!(Instant::now() < deadline, "the home never re-parked the relayed session");
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    wait_for_park(&registry, id).await;
 
     // Second carrier: the remainder must continue exactly where the first left
     // off — no hole, no duplicate.
@@ -1457,7 +1514,7 @@ async fn a_cancelled_uplink_write_accounts_for_every_byte_the_socket_took() {
     let harness = MeshHomeHarness::with_registry(Arc::clone(&registry)).await;
     let id = SessionId::from_bytes([30u8; 16]);
     let upstream = park_test_session_with_tiny_buffers(&registry, id, "beerloga").await;
-    let V5Session { mut send, mut recv } = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+    let V5Session { mut send, mut recv, .. } = harness.serve_v5_ok(v5_header(id), "beerloga").await;
 
     let (mut peer_reader, mut peer_writer) = upstream.split();
     // The target keeps answering into a mesh stream the edge never reads, so the
@@ -1496,11 +1553,7 @@ async fn a_cancelled_uplink_write_accounts_for_every_byte_the_socket_took() {
     recv.stop(VarInt::from_u32(CloseReason::Abort.code()))
         .expect("stopping the edge downlink half");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !registry.has_park(id) {
-        assert!(Instant::now() < deadline, "the home never re-parked the relayed session");
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    wait_for_park(&registry, id).await;
     let ResumeOutcome::Hit(Parked::Tcp(parked)) = registry.take_for_resume(id, "beerloga").await
     else {
         panic!("the re-parked tcp session must be takeable");
@@ -1672,4 +1725,205 @@ async fn a_cancelled_uplink_chunk_write_counts_only_what_the_socket_took() {
         3000,
         "every byte the socket took must be accounted for at the cancellation point",
     );
+}
+
+// ── v5 resume continuity: close intent + acked uplink offset ──────────────────
+
+/// A client that is done for good must not leave a live upstream parked. Reading
+/// every mesh FIN as a carrier switch left the target waiting for a request-body
+/// FIN it never got (a half-close-then-read protocol hangs until `orphan_ttl_tcp`)
+/// while the dead session held one of the user's `orphan_per_user_cap` slots,
+/// where it can evict a park that is still wanted.
+#[tokio::test]
+async fn a_client_done_close_does_not_park_and_finishes_the_upstream() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([32u8; 16]);
+    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
+    let session = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    session.close_with_client_done();
+
+    assert!(
+        upstream.saw_eof().await,
+        "a finished client must let the target see the request-body FIN",
+    );
+    assert!(
+        !harness.registry().has_park(id),
+        "a session the client finished must not occupy an orphan slot",
+    );
+}
+
+/// The other half of the contract: a bare FIN still means "the carrier ended,
+/// expect a resume", so the session is re-parked exactly as before.
+#[tokio::test]
+async fn a_carrier_ended_close_still_parks() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([33u8; 16]);
+    let _upstream = park_test_session(harness.registry(), id, "beerloga").await;
+    let session = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    session.close_with_carrier_ended().await;
+
+    wait_for_park(harness.registry(), id).await;
+}
+
+/// The home must tell a resuming edge how far its upstream socket actually got.
+/// The number is reported at the head of the *resumed* carrier — where the edge
+/// needs it and where it is final — exactly as the direct path emits its
+/// Ack-Prefix v1 frame at the head of a resumed session.
+#[tokio::test]
+async fn the_home_reports_the_acked_uplink_offset_to_the_edge() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([34u8; 16]);
+    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    let mut first = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+    assert_eq!(first.acked_uplink_offset(), 0, "nothing had reached the upstream yet");
+    first.edge_write(b"twelve bytes").await;
+    assert_eq!(upstream.read(12).await, b"twelve bytes");
+    first.close_with_carrier_ended().await;
+    wait_for_park(harness.registry(), id).await;
+
+    let second = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    assert_eq!(
+        second.acked_uplink_offset(),
+        12,
+        "the edge must learn how far the upstream actually got",
+    );
+}
+
+/// The hole this task exists to close: bytes consumed from the mesh but not yet
+/// written to the upstream must be recoverable, and already-written bytes must
+/// not be sent twice.
+#[tokio::test]
+async fn a_resume_replays_uplink_from_the_acked_offset_without_duplicating() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([35u8; 16]);
+    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    let mut first = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+    first.edge_write(b"AAAABBBB").await;
+    assert_eq!(upstream.read(8).await, b"AAAABBBB");
+    first.close_with_carrier_ended().await;
+    wait_for_park(harness.registry(), id).await;
+
+    // The resuming edge still holds the whole request body and replays only the
+    // suffix the target never took.
+    let mut second = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+    let acked = second.acked_uplink_offset();
+    second.edge_write_from_offset(b"AAAABBBBCCCC", acked).await;
+
+    assert_eq!(
+        upstream.read(4).await,
+        b"CCCC",
+        "the upstream must see each byte exactly once across the switch",
+    );
+}
+
+/// An edge that never advertised the Ack-Prefix capability gets no frame at all,
+/// so the byte after the USER frame is the first relayed byte. The flag is the
+/// only thing that makes the prologue unambiguous on a stream with no framing.
+#[tokio::test]
+async fn no_ack_prefix_capability_means_no_continuity_prologue() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([36u8; 16]);
+    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    let mut header = v5_header(id);
+    header.ack_prefix = false;
+    let mut session = harness.serve_v5_ok(header, "beerloga").await;
+
+    upstream.write(b"HTTP/1.1 200 OK\r\n\r\n").await;
+    assert_eq!(
+        session.edge_read(19).await,
+        b"HTTP/1.1 200 OK\r\n\r\n",
+        "the downlink must start with the target's own bytes",
+    );
+}
+
+/// The park decision is the AND of two independent questions: is the upstream
+/// still usable, and does the client still want it. Asserted on the decision
+/// itself — the end-to-end tests above cover the wire, this pins the table.
+#[test]
+fn a_client_done_close_never_reparks() {
+    let healthy = SpliceEnd::Graceful { upstream_healthy: true };
+    assert!(healthy.reparks(CloseIntent::CarrierEnded));
+    assert!(!healthy.reparks(CloseIntent::ClientDone));
+
+    let eofed = SpliceEnd::Graceful { upstream_healthy: false };
+    assert!(!eofed.reparks(CloseIntent::CarrierEnded));
+    assert!(!eofed.reparks(CloseIntent::ClientDone));
+
+    // A mesh fault leaves the upstream healthy, so it re-parks — unless the
+    // edge also said the client was done with it.
+    let mesh_fault = SpliceFault::mesh(anyhow::anyhow!("the edge carrier died")).into_end();
+    assert!(mesh_fault.reparks(CloseIntent::CarrierEnded));
+    assert!(!mesh_fault.reparks(CloseIntent::ClientDone));
+
+    let broken = SpliceFault::upstream(anyhow::anyhow!("rst")).into_end();
+    assert!(!broken.reparks(CloseIntent::CarrierEnded));
+    assert!(!broken.reparks(CloseIntent::ClientDone));
+}
+
+/// A `ClientDone` close must never truncate the request body, even when it
+/// lands while the home is inside a downlink write.
+///
+/// The intent rides a `STOP_SENDING`, which fails that write — and the ordinary
+/// reading of a failed downlink is "the relay is over", which would drop the
+/// uplink pump with request-body bytes still buffered on the mesh. There is no
+/// resume behind a finished client to replay them, so the target would simply
+/// never see the tail. The home must instead keep draining the uplink to its FIN
+/// and only then close the upstream.
+///
+/// Forced rather than raced: the target floods a mesh stream the edge never
+/// reads, so the home is certainly inside a downlink write, while the request
+/// body is far larger than the mesh window and the (shrunken) upstream socket
+/// buffers put together, so most of it is certainly still in flight.
+#[tokio::test]
+async fn a_client_done_close_still_drains_the_request_body() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([37u8; 16]);
+    let upstream = park_test_session_with_tiny_buffers(harness.registry(), id, "beerloga").await;
+    let V5Session { mut send, mut recv, .. } = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    let (mut peer_reader, mut peer_writer) = upstream.split();
+    let target = tokio::spawn(async move {
+        let _ = peer_writer.write_all(&flood_payload(0x11)).await;
+        peer_writer
+    });
+
+    let body = flood_payload(0x22);
+    let edge = {
+        let body = body.clone();
+        tokio::spawn(async move {
+            send.write_all(&body)
+                .await
+                .expect("the client sends its whole request body");
+            send.finish().expect("finishing the edge half");
+            send
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // The client is done: stop the downlink half with the intent code, which
+    // fails the home's pending downlink write.
+    recv.stop(VarInt::from_u32(CloseIntent::ClientDone.code()))
+        .expect("stopping the home's downlink half");
+
+    let mut got = vec![0u8; body.len()];
+    tokio::time::timeout(Duration::from_secs(20), peer_reader.read_exact(&mut got))
+        .await
+        .expect("the target must receive the whole request body")
+        .expect("reading the relayed request body");
+    assert_eq!(got, body, "every request-body byte must reach the target exactly once");
+
+    // ...and once the relay is done the session is not parked: the client is
+    // finished with it. (The upstream's own FIN is asserted by the test above;
+    // here the target is still being flooded, so the close is an RST.)
+    wait_for_active_relays(harness.metrics(), 0).await;
+    assert!(!harness.registry().has_park(id), "a finished client leaves no park");
+
+    let _ = edge.await;
+    let _ = target.await;
 }
