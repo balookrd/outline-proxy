@@ -22,8 +22,7 @@ use super::super::super::state::Services;
 use super::super::is_normal_h3_shutdown;
 use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
 use super::handlers::{
-    XhttpRoute, apply_udp_records_echo, negotiate_udp_records, spawn_relay, xhttp_edge_plan,
-    xhttp_issued_id,
+    XhttpRoute, apply_udp_records_echo, negotiate_udp_records, spawn_relay, xhttp_edge,
 };
 use super::padding::post_response_headers;
 use super::{
@@ -131,11 +130,23 @@ async fn xhttp_h3_get(
     // the response like the h1/h2 XHTTP handlers do.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
-    let edge =
-        xhttp_edge_plan(ctx.cluster.as_ref(), &ctx.services.orphan_registry, &request_headers);
+    let edge = xhttp_edge(
+        ctx.cluster.as_ref(),
+        &ctx.services,
+        &ctx.registry,
+        &ctx.route,
+        &session_id,
+        &request_headers,
+        peer_addr,
+    )
+    .await;
+    // Snapshot before `edge` moves into `spawn_relay`: a relayed session answers
+    // with the mesh's own echo, which withholds the v2 confirmation this node
+    // cannot honour over the mesh.
+    let relayed_echo = edge.relayed_echo();
     let (session, created) = match ctx
         .registry
-        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+        .get_or_create(&session_id, edge.issued_id(&resume_for_create))
     {
         Some(pair) => pair,
         None => {
@@ -186,12 +197,13 @@ async fn xhttp_h3_get(
         .body(())
         .context("failed to build xhttp/h3 GET response")?;
     apply_response_masquerade(response.headers_mut());
-    ResumeResponseEcho {
-        session_id: issued_for_response,
-        ack_prefix: ack_prefix_for_response,
-        symmetric_replay: symmetric_replay_for_response,
-    }
-    .apply(response.headers_mut());
+    relayed_echo
+        .unwrap_or(ResumeResponseEcho {
+            session_id: issued_for_response,
+            ack_prefix: ack_prefix_for_response,
+            symmetric_replay: symmetric_replay_for_response,
+        })
+        .apply(response.headers_mut());
     apply_udp_records_echo(response.headers_mut(), udp_records);
     if let Err(error) = stream.send_response(response).await {
         session.detach_get();
@@ -228,11 +240,22 @@ async fn xhttp_h3_post(
     // like the h1/h2 XHTTP handlers do.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
-    let edge = xhttp_edge_plan(ctx.cluster.as_ref(), &ctx.services.orphan_registry, &headers);
+    let edge = xhttp_edge(
+        ctx.cluster.as_ref(),
+        &ctx.services,
+        &ctx.registry,
+        &ctx.route,
+        &session_id,
+        &headers,
+        peer_addr,
+    )
+    .await;
+    // Snapshot before `edge` moves into `spawn_relay`; see `xhttp_h3_get`.
+    let relayed_echo = edge.relayed_echo();
     let (session, created) = if seq == 0 {
         match ctx
             .registry
-            .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+            .get_or_create(&session_id, edge.issued_id(&resume_for_create))
         {
             Some(pair) => pair,
             None => {
@@ -344,12 +367,13 @@ async fn xhttp_h3_post(
     if let Some((name, value)) = generate_padding_header() {
         resp_headers.insert(name, value);
     }
-    ResumeResponseEcho {
-        session_id: session.issued_resume_id,
-        ack_prefix: ack_prefix_for_response,
-        symmetric_replay: symmetric_replay_for_response,
-    }
-    .apply(resp_headers);
+    relayed_echo
+        .unwrap_or(ResumeResponseEcho {
+            session_id: session.issued_resume_id,
+            ack_prefix: ack_prefix_for_response,
+            symmetric_replay: symmetric_replay_for_response,
+        })
+        .apply(resp_headers);
     apply_udp_records_echo(resp_headers, udp_records);
     stream
         .send_response(response)
@@ -378,10 +402,21 @@ async fn xhttp_h3_stream_one(
     // like the h1/h2 XHTTP handlers do.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
-    let edge = xhttp_edge_plan(ctx.cluster.as_ref(), &ctx.services.orphan_registry, &headers);
+    let edge = xhttp_edge(
+        ctx.cluster.as_ref(),
+        &ctx.services,
+        &ctx.registry,
+        &ctx.route,
+        &session_id,
+        &headers,
+        peer_addr,
+    )
+    .await;
+    // Snapshot before `edge` moves into `spawn_relay`; see `xhttp_h3_get`.
+    let relayed_echo = edge.relayed_echo();
     let (session, created) = match ctx
         .registry
-        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+        .get_or_create(&session_id, edge.issued_id(&resume_for_create))
     {
         Some(pair) => pair,
         None => {
@@ -428,12 +463,13 @@ async fn xhttp_h3_stream_one(
         .body(())
         .context("failed to build xhttp/h3 stream-one response")?;
     apply_response_masquerade(response.headers_mut());
-    ResumeResponseEcho {
-        session_id: session.issued_resume_id,
-        ack_prefix: ack_prefix_for_response,
-        symmetric_replay: symmetric_replay_for_response,
-    }
-    .apply(response.headers_mut());
+    relayed_echo
+        .unwrap_or(ResumeResponseEcho {
+            session_id: session.issued_resume_id,
+            ack_prefix: ack_prefix_for_response,
+            symmetric_replay: symmetric_replay_for_response,
+        })
+        .apply(response.headers_mut());
     apply_udp_records_echo(response.headers_mut(), udp_records);
     if let Err(error) = stream.send_response(response).await {
         session.detach_get();

@@ -13,14 +13,19 @@ use std::num::NonZeroUsize;
 
 use axum::http::HeaderMap;
 use bytes::BytesMut;
-use outline_wire::cluster::ShardId;
+use outline_wire::cluster::{ObfuscationKey, ShardId};
 use quinn::VarInt;
+use ring::rand::SystemRandom;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, oneshot};
 
-use super::super::mesh_relay::{EdgeUpstream, edge_upstream, open_edge_relay_v5};
-use super::super::resume_headers::EdgeResumeAdvert;
+use super::super::mesh_relay::{EdgeUpstream, edge_upstream, open_edge_relay_v5, ss_edge_echo};
+use super::super::resume_headers::{
+    ACK_PREFIX_HEADER, EdgeResumeAdvert, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
+    SYMMETRIC_REPLAY_HEADER,
+};
 use super::super::ws_socket::{WsFrame, WsSocket};
+use super::super::xhttp::handlers::XhttpEdge;
 use super::*;
 use crate::config::CipherKind;
 use crate::protocol::TargetAddr;
@@ -338,14 +343,23 @@ impl EdgeHarness {
         let user =
             UserKey::new(user, secret, None, CipherKind::Chacha20IetfPoly1305, None).unwrap();
         // Resumption is *on* here: a disabled registry could never park, so it
-        // would prove nothing about an edge declining to.
-        let registry = Arc::new(OrphanRegistry::new(
-            ResumptionConfig {
-                enabled: true,
-                ..ResumptionConfig::defaults_disabled()
-            },
-            test_metrics(),
-        ));
+        // would prove nothing about an edge declining to. A non-zero downlink
+        // ring is on too, so a client advertising v2 is actually negotiating it
+        // locally — otherwise "the relayed echo withholds v2" would be vacuous.
+        let obfuscation = ObfuscationKey::derive_from_psk(psk);
+        let registry = Arc::new(
+            OrphanRegistry::new(
+                ResumptionConfig {
+                    enabled: true,
+                    downlink_buffer_bytes: 64 * 1024,
+                    ..ResumptionConfig::defaults_disabled()
+                },
+                test_metrics(),
+            )
+            // This edge owns a *different* shard from the home below, which is
+            // what makes the client's resume id a foreign one to route away.
+            .with_cluster(obfuscation.clone(), ShardId::new(2).unwrap()),
+        );
         let server = WsTcpServerCtx {
             metrics: test_metrics(),
             dns_cache: DnsCache::new(Duration::from_secs(60)),
@@ -370,7 +384,9 @@ impl EdgeHarness {
                 route,
                 registry,
                 user,
-                session_id: SessionId::from_bytes([7u8; 16]),
+                // A resume id the *home* shard minted, as if on a prior connect.
+                session_id: SessionId::random_with_shard(&SystemRandom::new(), &obfuscation, shard)
+                    .unwrap(),
                 _home_endpoint: home_endpoint,
             },
             home,
@@ -382,9 +398,26 @@ impl EdgeHarness {
             session_id: self.session_id,
             resume_capable: true,
             ack_prefix: true,
-            symmetric_replay: false,
+            symmetric_replay: true,
             down_acked: 0,
         }
+    }
+
+    /// The request headers the client behind [`Self::advert`] presents: a
+    /// resume-capable v1+v2 client offering the foreign-shard id.
+    fn resume_headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(RESUME_CAPABLE_HEADER, "1".parse().unwrap());
+        headers.insert(ACK_PREFIX_HEADER, "1".parse().unwrap());
+        headers.insert(SYMMETRIC_REPLAY_HEADER, "1".parse().unwrap());
+        headers.insert(RESUME_REQUEST_HEADER, self.session_id.to_hex().parse().unwrap());
+        headers
+    }
+
+    /// The resume negotiation this node would run on its own, i.e. what every
+    /// entry point falls back to when no relay is in play.
+    fn local_resume(&self) -> ResumeContext {
+        ResumeContext::from_request_headers(&self.resume_headers(), &self.registry)
     }
 
     /// Runs phase 1 of the relay: `None` means the home refused and the caller
@@ -667,6 +700,120 @@ async fn edge_serves_locally_when_the_home_reports_no_session() -> Result<()> {
                 && line.ends_with(" 1")
         }),
         "an explicit refusal must be counted apart from an unreachable home:\n{rendered}",
+    );
+    Ok(())
+}
+
+/// A refused relay must never echo the id the client presented.
+///
+/// The session is served here now, and this node parks under its *own* freshly
+/// minted id. Echoing the foreign one back would send every reconnect to the
+/// home that just refused it, be refused again, and be served locally again —
+/// an XHTTP or WS session that can never resume, forever.
+///
+/// Covers the axum WS upgrade and the h3 extended-CONNECT upgrade, which both
+/// resolve their response echo through [`ss_edge_echo`].
+#[tokio::test]
+async fn a_refused_relay_echoes_a_local_id_on_the_ws_and_h3_edges() -> Result<()> {
+    let (harness, _home) =
+        EdgeHarness::with_credentials("beerloga", "edge-secret", HomeAnswer::NoSession).await;
+    let edge = harness.open_relay().await;
+    assert!(edge.is_none(), "the fixture must actually refuse, or this proves nothing");
+
+    let local = harness.local_resume();
+    let echo = ss_edge_echo(edge.as_ref(), &local);
+    let echoed = echo
+        .session_id
+        .expect("a resume-capable client must be told an id it can come back with");
+    assert_ne!(
+        echoed, harness.session_id,
+        "a refused relay must not echo the foreign id the client presented",
+    );
+    assert_eq!(
+        Some(echoed),
+        local.issued_session_id,
+        "the echoed id must be the one this node will park under",
+    );
+    Ok(())
+}
+
+/// The XHTTP twin of the test above: both XHTTP entry points (axum h1/h2 and h3)
+/// record and echo whatever [`XhttpEdge::issued_id`] returns, so a refused relay
+/// must put the locally minted id into the registry slot as well as on the wire.
+#[tokio::test]
+async fn a_refused_relay_echoes_a_local_id_on_the_xhttp_edges() -> Result<()> {
+    let (harness, _home) =
+        EdgeHarness::with_credentials("beerloga", "edge-secret", HomeAnswer::NoSession).await;
+    let edge = XhttpEdge { ss: harness.open_relay().await, v4: None };
+    assert!(edge.ss.is_none(), "the fixture must actually refuse, or this proves nothing");
+
+    let local = harness.local_resume();
+    assert!(
+        edge.relayed_echo().is_none(),
+        "a refused relay leaves the handler's own echo in force",
+    );
+    let issued = edge.issued_id(&local);
+    assert_ne!(
+        issued,
+        Some(harness.session_id),
+        "a refused relay must not record the foreign id the client presented",
+    );
+    assert_eq!(
+        issued, local.issued_session_id,
+        "the recorded id must be the one this node will park under",
+    );
+    Ok(())
+}
+
+/// An admitted relay echoes the presented id — and never confirms v2.
+///
+/// The home replays its unacked downlink suffix as undelimited plaintext at the
+/// head of the mesh body, which the edge cannot wrap in the framed `ORDR` reply
+/// a v2 client expects. Confirming v2 anyway would make the client parse those
+/// payload bytes as a frame header and kill the session. v1 still rides through:
+/// the edge re-emits the home's acked uplink offset itself.
+#[tokio::test]
+async fn an_admitted_relay_echoes_continuity_but_never_confirms_symmetric_replay() -> Result<()> {
+    let (harness, _home) = EdgeHarness::with_credentials(
+        "beerloga",
+        "edge-secret",
+        HomeAnswer::Park { acked_uplink: 0 },
+    )
+    .await;
+    let edge = harness.open_relay().await.expect("the home holds a park");
+
+    let local = harness.local_resume();
+    assert!(
+        local.symmetric_replay_requested,
+        "the fixture must locally negotiate v2, or the assertions below are vacuous",
+    );
+
+    // WS / h3.
+    let echo = ss_edge_echo(Some(&edge), &local);
+    assert_eq!(
+        echo.session_id,
+        Some(harness.session_id),
+        "continuity: the home parks under the id the client presented",
+    );
+    assert!(echo.ack_prefix, "v1 rides through — the edge re-emits the home's acked offset");
+    assert!(
+        !echo.symmetric_replay,
+        "v2 cannot be honoured over the mesh, so it is not confirmed"
+    );
+
+    // Both XHTTP entry points, which answer with the same echo.
+    let xhttp = XhttpEdge { ss: Some(edge), v4: None };
+    let relayed = xhttp
+        .relayed_echo()
+        .expect("an admitted relay answers with the mesh echo, not the local negotiation");
+    assert!(
+        !relayed.symmetric_replay,
+        "the XHTTP echo must not confirm v2 either — it is built from the mesh's answer",
+    );
+    assert_eq!(
+        xhttp.issued_id(&local),
+        Some(harness.session_id),
+        "the id recorded on the XHTTP session is the id echoed",
     );
     Ok(())
 }

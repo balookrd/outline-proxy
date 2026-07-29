@@ -26,6 +26,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::OwnedSemaphorePermit;
 
+use crate::crypto::MAX_CHUNK_SIZE;
 use crate::metrics::Metrics;
 use crate::server::cluster::mesh::{
     CloseIntent, CloseReason, MAX_USER_LEN, MeshStream, PooledRelay, UPSTREAM_ACK_FRAME_LEN,
@@ -36,7 +37,17 @@ use crate::server::relay::UpstreamRead;
 /// Read granularity of the mesh→client direction on the edge, and the upper
 /// bound on a single read from the home: a peer can never drive a larger
 /// allocation here however much it sends.
-const MESH_UPSTREAM_CHUNK: usize = 64 * 1024;
+///
+/// Pinned to [`MAX_CHUNK_SIZE`] rather than a round 64 KiB, because
+/// [`MeshUpstream::try_read_buf`] hands the whole chunk to the relay in one
+/// piece. A direct upstream cannot exceed that ceiling — `try_read_buf` on a
+/// `TcpStream` fills only the spare capacity the relay reserved — but a chunk
+/// read off the mesh is `put_slice`d in whole, so the buffer ends up exactly
+/// this long. One byte over and `encrypt_chunk` rejects the chunk outright on an
+/// SS-2022 cipher (a legacy cipher would silently split it instead), tearing
+/// down the relay. Pinned by
+/// `server::tests::relay::a_mesh_sized_chunk_survives_an_ss2022_relay`.
+pub(in crate::server) const MESH_UPSTREAM_CHUNK: usize = MAX_CHUNK_SIZE;
 
 /// Where a TCP-shaped relay takes its upstream from.
 pub(in crate::server) enum UpstreamSource {
@@ -172,11 +183,13 @@ pub(in crate::server::transport) enum UpstreamWriter {
     /// A mesh stream to the home that owns the target socket.
     Mesh {
         send: SendStream,
-        /// Bounds one uplink write. When the home stops draining, the QUIC send
-        /// window fills and the write blocks; exceeding the budget means a
-        /// stalled relay, so the stream is reset with [`CloseReason::Budget`] —
-        /// the client reconnects and the home's park TTL-expires. It measures
-        /// *progress*, not RTT: a high but flowing RTT keeps completing writes.
+        /// Bounds one write to the mesh, not one buffer. When the home stops
+        /// draining, the QUIC send window fills and the write blocks; exceeding
+        /// the budget means a stalled relay, so the stream is reset with
+        /// [`CloseReason::Budget`] — the client reconnects and the home's park
+        /// TTL-expires. It measures *progress*, not RTT: a peer that keeps
+        /// taking bytes keeps renewing it, so only a full stall trips it. Same
+        /// rule the home's `write_uplink_chunk` applies to its own socket.
         budget: Duration,
         bytes: Counter,
         _permit: Arc<OwnedSemaphorePermit>,
@@ -185,27 +198,45 @@ pub(in crate::server::transport) enum UpstreamWriter {
 
 impl UpstreamWriter {
     /// Writes one plaintext buffer upstream.
+    ///
+    /// The mesh arm counts every byte the stream took *as it takes it*, rather
+    /// than adding the buffer length once the whole write lands: a write that
+    /// stalls past the budget is abandoned part-way, and the `role="edge"`
+    /// uplink counter must still name the bytes that actually reached the home.
+    /// The home's own uplink accounting works the same way.
     pub(in crate::server::transport) async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         match self {
             UpstreamWriter::Tcp(writer) => writer.write_all(buf).await,
             UpstreamWriter::Mesh { send, budget, bytes, .. } => {
-                match tokio::time::timeout(*budget, send.write_all(buf)).await {
-                    Ok(Ok(())) => {
-                        bytes.increment(buf.len() as u64);
-                        Ok(())
-                    },
-                    Ok(Err(error)) => Err(io::Error::other(error)),
-                    Err(_elapsed) => {
-                        // Stalled past the budget: the home is not draining.
-                        // Reset rather than finish, so the home reads a failure
-                        // instead of a clean end of the request body.
-                        let _ = send.reset(VarInt::from_u32(CloseReason::Budget.code()));
-                        Err(io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "mesh relay stalled past the health budget",
-                        ))
-                    },
+                let mut written = 0usize;
+                while written < buf.len() {
+                    match tokio::time::timeout(*budget, send.write(&buf[written..])).await {
+                        // A stream that takes nothing is not going to take the
+                        // rest either; looping on it would spin.
+                        Ok(Ok(0)) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::WriteZero,
+                                "mesh relay uplink write accepted no bytes",
+                            ));
+                        },
+                        Ok(Ok(n)) => {
+                            written += n;
+                            bytes.increment(n as u64);
+                        },
+                        Ok(Err(error)) => return Err(io::Error::other(error)),
+                        Err(_elapsed) => {
+                            // Stalled past the budget: the home is not draining.
+                            // Reset rather than finish, so the home reads a
+                            // failure instead of a clean end of the request body.
+                            let _ = send.reset(VarInt::from_u32(CloseReason::Budget.code()));
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "mesh relay stalled past the health budget",
+                            ));
+                        },
+                    }
                 }
+                Ok(())
             },
         }
     }
