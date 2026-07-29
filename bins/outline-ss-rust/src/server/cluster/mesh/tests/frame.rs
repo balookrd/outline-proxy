@@ -253,21 +253,65 @@ fn an_unknown_close_intent_reads_as_a_carrier_switch() {
     }
 }
 
+/// Calls `visit` once for every [`CloseReason`] variant, in declaration order.
+///
+/// Exhaustive by construction, which is the whole point: the `match` hands back
+/// each variant's successor, so a variant added later stops this file compiling
+/// until it is linked into the chain — where a hand-written list would have let
+/// it slip past the checks below in silence.
+fn for_each_close_reason(mut visit: impl FnMut(CloseReason)) {
+    let mut next = Some(CloseReason::Fin);
+    while let Some(reason) = next {
+        visit(reason);
+        next = match reason {
+            CloseReason::Fin => Some(CloseReason::Abort),
+            CloseReason::Abort => Some(CloseReason::Budget),
+            CloseReason::Budget => Some(CloseReason::Capacity),
+            CloseReason::Capacity => Some(CloseReason::NoRoute),
+            CloseReason::NoRoute => Some(CloseReason::NoSession),
+            CloseReason::NoSession => None,
+        };
+    }
+}
+
+/// The [`CloseIntent`] twin of [`for_each_close_reason`], exhaustive the same
+/// way.
+fn for_each_close_intent(mut visit: impl FnMut(CloseIntent)) {
+    let mut next = Some(CloseIntent::CarrierEnded);
+    while let Some(intent) = next {
+        visit(intent);
+        next = match intent {
+            CloseIntent::CarrierEnded => Some(CloseIntent::ClientDone),
+            CloseIntent::ClientDone => None,
+        };
+    }
+}
+
 #[test]
 fn close_intent_codes_never_collide_with_a_close_reason() {
     // They ride different QUIC frames on the same stream (STOP_SENDING vs
     // RESET_STREAM), so an overlap would only ever confuse a reader — but a
     // disjoint range is what makes a stray code obviously one or the other.
-    for reason in [
-        CloseReason::Fin,
-        CloseReason::Abort,
-        CloseReason::Budget,
-        CloseReason::Capacity,
-        CloseReason::NoRoute,
-        CloseReason::NoSession,
-    ] {
-        for intent in [CloseIntent::CarrierEnded, CloseIntent::ClientDone] {
-            assert_ne!(reason.code(), intent.code());
-        }
-    }
+    let mut reasons = 0;
+    for_each_close_reason(|reason| {
+        reasons += 1;
+        for_each_close_intent(|intent| {
+            assert_ne!(reason.code(), intent.code(), "{reason:?} collides with {intent:?}");
+        });
+    });
+    // Guards the chain itself: an arm rewired to skip a variant shows up here
+    // rather than as a silently narrower sweep above.
+    assert_eq!(reasons, 6, "every CloseReason variant must be swept");
+}
+
+#[test]
+fn every_close_intent_has_its_own_metric_label() {
+    // The `close` label on `outline_ss_mesh_relay_outcome_total` is only a
+    // usable ratio if the two intents never render as the same string.
+    let mut labels = Vec::new();
+    for_each_close_intent(|intent| labels.push(intent.metric_label()));
+    labels.sort_unstable();
+    let count = labels.len();
+    labels.dedup();
+    assert_eq!(labels.len(), count, "two intents share a metric label: {labels:?}");
 }
