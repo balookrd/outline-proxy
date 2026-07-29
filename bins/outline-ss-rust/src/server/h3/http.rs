@@ -27,7 +27,7 @@ use super::super::{
         is_normal_h3_shutdown,
         mesh_relay::{
             edge_relay_h3, edge_relay_h3_udp, edge_throttle_ctx, edge_upstream, open_edge_relay,
-            open_edge_relay_v5,
+            open_edge_relay_v5, ss_edge_echo,
         },
     },
 };
@@ -325,41 +325,33 @@ async fn handle_h3_request(
     // the client presented (the home parks under exactly that one), nothing is
     // resumed or parked locally, and the Ack-Prefix capability still rides
     // through because this node re-emits the home's acked offset to the client.
-    let (resume, edge_echo, upstream) = match ss_edge {
-        Some(edge) => (edge.resume, Some(edge.echo), edge.source),
-        None => {
-            let resume = if path_is_tcp {
-                ResumeContext::from_request_headers(
-                    request.headers(),
-                    &ctx.tcp_server.orphan_registry,
-                )
-            } else if path_is_udp {
-                ResumeContext::from_request_headers(
-                    request.headers(),
-                    &ctx.udp_server.orphan_registry,
-                )
-            } else if path_is_vless {
-                ResumeContext::from_request_headers(
-                    request.headers(),
-                    &ctx.vless_server.orphan_registry,
-                )
-            } else {
-                ResumeContext::default()
-            };
-            (resume, None, UpstreamSource::Direct)
-        },
+    // A home that refused leaves the local negotiation in force, so the echo
+    // carries the locally minted id — the only one this node can honour.
+    let local = if path_is_tcp {
+        ResumeContext::from_request_headers(request.headers(), &ctx.tcp_server.orphan_registry)
+    } else if path_is_udp {
+        ResumeContext::from_request_headers(request.headers(), &ctx.udp_server.orphan_registry)
+    } else if path_is_vless {
+        ResumeContext::from_request_headers(request.headers(), &ctx.vless_server.orphan_registry)
+    } else {
+        ResumeContext::default()
     };
-    let mut response = build_extended_connect_response(None, None);
     // Mirror the h1/h2 upgrade paths: SS-WS and VLESS-WS confirm the v1/v2
     // capabilities so the client arms its ORSM/ORDR frame consumption (the
     // relay already emits them on a resume hit regardless of carrier — an
     // unconfirmed client would misread the control frames as payload). The
-    // UDP datagram path echoes only the Session ID, as on h1/h2.
-    let echo = match edge_echo {
-        Some(echo) => echo,
-        None if path_is_udp => resume.session_echo(),
-        None => resume.response_echo(),
+    // UDP datagram path echoes only the Session ID, as on h1/h2 — and never
+    // relays over v5, so `ss_edge` is always `None` there.
+    let echo = if path_is_udp {
+        local.session_echo()
+    } else {
+        ss_edge_echo(ss_edge.as_ref(), &local)
     };
+    let (resume, upstream) = match ss_edge {
+        Some(edge) => (edge.resume, edge.source),
+        None => (local, UpstreamSource::Direct),
+    };
+    let mut response = build_extended_connect_response(None, None);
     echo.apply(response.headers_mut());
 
     stream

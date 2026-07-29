@@ -33,12 +33,12 @@ use outline_wire::cluster::ShardId;
 use super::super::super::state::{AppState, Services, TransportRoute, VlessTransportRoute};
 use super::super::mesh_relay::{
     EdgeThrottleCtx, EdgeUpstream, edge_relay, edge_relay_udp, edge_throttle_ctx, edge_upstream,
-    open_edge_relay, open_edge_relay_v5,
+    open_edge_relay, open_edge_relay_v5, ss_edge_session_id,
 };
 use super::super::resume_headers::{
     EdgeResumeAdvert, ResumeContext, ResumeResponseEcho, edge_route,
 };
-use super::super::tcp::{WsTcpRouteCtx, WsTcpServerCtx, run_tcp_relay};
+use super::super::tcp::{WsTcpRouteCtx, run_tcp_relay};
 use super::super::udp::{UdpRouteCtx, run_udp_relay};
 use super::super::upstream_source::UpstreamSource;
 use super::super::vless::{VlessWsRouteCtx, run_vless_relay};
@@ -310,14 +310,23 @@ async fn xhttp_get(
     // (a) v1 also requested and (b) registry has v2 capacity, so a
     // true value here is safe to surface in the response.
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
-    let edge = xhttp_edge_plan(
+    let edge = xhttp_edge(
         state.parent.cluster.as_ref(),
-        &state.parent.services.orphan_registry,
+        &state.parent.services,
+        &state.registry,
+        &route,
+        &session_id,
         headers,
-    );
+        peer_addr,
+    )
+    .await;
+    // Snapshot before `edge` moves into `spawn_relay`. A relayed session answers
+    // with the mesh's own echo, which withholds the v2 confirmation this node
+    // cannot honour over the mesh.
+    let relayed_echo = edge.relayed_echo();
     let (session, created) = match state
         .registry
-        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+        .get_or_create(&session_id, edge.issued_id(&resume_for_create))
     {
         Some(pair) => pair,
         None => {
@@ -364,11 +373,11 @@ async fn xhttp_get(
         "xhttp downlink attached"
     );
 
-    let echo = ResumeResponseEcho {
+    let echo = relayed_echo.unwrap_or(ResumeResponseEcho {
         session_id: session.issued_resume_id,
         ack_prefix: ack_prefix_for_response,
         symmetric_replay: symmetric_replay_for_response,
-    };
+    });
     let body = build_downlink_body(Arc::clone(&session));
     let mut response = (StatusCode::OK, body).into_response();
     apply_response_masquerade(response.headers_mut());
@@ -425,15 +434,22 @@ async fn xhttp_post(
     // is allowed to establish the session. Refuse seq>0 against a
     // dead session — at that point the client is replaying old
     // packets to a registry slot that has been swept.
-    let edge = xhttp_edge_plan(
+    let edge = xhttp_edge(
         state.parent.cluster.as_ref(),
-        &state.parent.services.orphan_registry,
+        &state.parent.services,
+        &state.registry,
+        &route,
+        &session_id,
         &headers,
-    );
+        peer_addr,
+    )
+    .await;
+    // Snapshot before `edge` moves into `spawn_relay`; see `xhttp_get`.
+    let relayed_echo = edge.relayed_echo();
     let (session, created) = if seq == 0 {
         match state
             .registry
-            .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+            .get_or_create(&session_id, edge.issued_id(&resume_for_create))
         {
             Some(pair) => pair,
             None => {
@@ -516,12 +532,13 @@ async fn xhttp_post(
     if let Some((name, value)) = generate_padding_header() {
         resp_headers.insert(name, value);
     }
-    ResumeResponseEcho {
-        session_id: session.issued_resume_id,
-        ack_prefix: ack_prefix_for_response,
-        symmetric_replay: symmetric_replay_for_response,
-    }
-    .apply(resp_headers);
+    relayed_echo
+        .unwrap_or(ResumeResponseEcho {
+            session_id: session.issued_resume_id,
+            ack_prefix: ack_prefix_for_response,
+            symmetric_replay: symmetric_replay_for_response,
+        })
+        .apply(resp_headers);
     apply_udp_records_echo(resp_headers, udp_records);
     response
 }
@@ -566,14 +583,21 @@ async fn xhttp_stream_one(
     // (a) v1 also requested and (b) registry has v2 capacity, so a
     // true value here is safe to surface in the response.
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
-    let edge = xhttp_edge_plan(
+    let edge = xhttp_edge(
         state.parent.cluster.as_ref(),
-        &state.parent.services.orphan_registry,
+        &state.parent.services,
+        &state.registry,
+        &route,
+        &session_id,
         &headers,
-    );
+        peer_addr,
+    )
+    .await;
+    // Snapshot before `edge` moves into `spawn_relay`; see `xhttp_get`.
+    let relayed_echo = edge.relayed_echo();
     let (session, created) = match state
         .registry
-        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+        .get_or_create(&session_id, edge.issued_id(&resume_for_create))
     {
         Some(pair) => pair,
         None => {
@@ -649,11 +673,11 @@ async fn xhttp_stream_one(
         session_for_uplink.close_uplink();
     });
 
-    let echo = ResumeResponseEcho {
+    let echo = relayed_echo.unwrap_or(ResumeResponseEcho {
         session_id: session.issued_resume_id,
         ack_prefix: ack_prefix_for_response,
         symmetric_replay: symmetric_replay_for_response,
-    };
+    });
     let body = build_downlink_body(Arc::clone(&session));
     let mut response = (StatusCode::OK, body).into_response();
     apply_response_masquerade(response.headers_mut());
@@ -773,7 +797,7 @@ pub(in crate::server::transport::xhttp) fn apply_udp_records_echo(
 /// The edge relay decision for a session-creating XHTTP request: relay a
 /// foreign-shard resume to its home over the mesh. Carries the shard the id
 /// decoded to and the raw advertisement to forward.
-pub(in crate::server::transport::xhttp) struct EdgeRelayPlan {
+pub(in crate::server::transport) struct EdgeRelayPlan {
     cluster: Arc<ClusterCtx>,
     shard: ShardId,
     advert: EdgeResumeAdvert,
@@ -798,47 +822,110 @@ pub(in crate::server::transport::xhttp) fn xhttp_edge_plan(
     }
 }
 
-/// The resume id to record on a new session: when relaying, the id the client
-/// presented (continuity — the home parks the upstream under it); otherwise the
-/// freshly minted one.
-pub(in crate::server::transport::xhttp) fn xhttp_issued_id(
-    edge: &Option<EdgeRelayPlan>,
-    resume: &ResumeContext,
-) -> Option<SessionId> {
-    match edge {
-        Some(plan) => Some(plan.advert.session_id),
-        None => resume.issued_session_id,
+/// The edge decision a session-creating XHTTP request has already committed to
+/// by the time it answers.
+///
+/// The SS byte-stream half is resolved *here*, before the response: its echo has
+/// to say which id the client should come back with, and only the home's answer
+/// settles that. The VLESS and SS-UDP halves are still v4 and still open their
+/// relay inside the relay task — those carriers echo the presented id
+/// unconditionally, exactly as before.
+pub(in crate::server::transport) struct XhttpEdge {
+    /// A v5 SS upstream on the home. `None` when this request is not relaying an
+    /// SS byte stream: not clustered, an own-shard id, a non-SS route, or a home
+    /// that refused (no such park — the ordinary answer now that fresh sessions
+    /// are never created over the mesh).
+    pub(in crate::server::transport) ss: Option<EdgeUpstream>,
+    /// A v4 relay plan (VLESS / SS-UDP), opened later inside the relay task.
+    pub(in crate::server::transport) v4: Option<EdgeRelayPlan>,
+}
+
+impl XhttpEdge {
+    /// Neither half relays: serve this request locally.
+    fn local() -> Self {
+        Self { ss: None, v4: None }
+    }
+
+    /// The resume id to record on a new session — and, on the SS path, exactly
+    /// the id the response echoes.
+    ///
+    /// v4 keeps its own rule (the id the client presented, which the home parks
+    /// under). The SS path defers to [`ss_edge_session_id`], the same decision
+    /// the WS and h3 upgrades make: the presented id when the home admitted the
+    /// relay, the locally minted one when it did not.
+    pub(in crate::server::transport) fn issued_id(
+        &self,
+        resume: &ResumeContext,
+    ) -> Option<SessionId> {
+        match &self.v4 {
+            Some(plan) => Some(plan.advert.session_id),
+            None => ss_edge_session_id(self.ss.as_ref(), resume),
+        }
+    }
+
+    /// The response echo a relayed SS session answers with, or `None` when this
+    /// request is not relaying one and the caller's local echo stands.
+    ///
+    /// Captured before `self` moves into [`spawn_relay`]; [`ResumeResponseEcho`]
+    /// is `Copy`.
+    pub(in crate::server::transport) fn relayed_echo(&self) -> Option<ResumeResponseEcho> {
+        self.ss.as_ref().map(|edge| edge.echo)
     }
 }
 
-/// Opens a **v5** mesh relay for an XHTTP edge plan: the SS byte-stream carrier
-/// terminates its client crypto here, so the home is asked only for the park
-/// behind the resume id. `None` (not clustered, home unreachable, or no such
-/// park) means serve a fresh local session over the same duplex.
+/// Resolves the edge decision for one XHTTP request, opening the **v5** mesh
+/// relay for an SS byte-stream carrier before the caller answers.
 ///
-/// Unlike the WS and h3 edges, this runs *after* the session-creating response —
-/// XHTTP has no single upgrade moment to gate on, and the response is what
-/// carries the session id. A refusal therefore arrives once the client has
-/// already been told its id continues; the session is still served, but as a
-/// fresh local one. Pre-existing to this task (the v4 path had the same shape
-/// for its own refusals) and worth closing separately: it needs the registry's
-/// create decision and the mesh open to be interleaved.
-async fn open_xhttp_mesh_v5(
-    edge: Option<EdgeRelayPlan>,
+/// The SS carrier terminates its client crypto here, so the home is asked only
+/// for the park behind the resume id — and it is asked *now*, not from inside
+/// the relay task, because the response is what tells the client which session
+/// id continues. A home that refuses must therefore be known before the headers
+/// go out, exactly as on the WS and h3 upgrades.
+///
+/// Only a session-creating request may open a relay. An id already live in the
+/// registry is being served by whatever request created it, so a relay opened
+/// here would be dropped unused — resetting a stream the home has already acked,
+/// for nothing. The check races with a concurrent creator; losing that race
+/// costs one such wasted open and nothing else.
+pub(in crate::server::transport::xhttp) async fn xhttp_edge(
+    cluster: Option<&Arc<ClusterCtx>>,
+    services: &Services,
+    registry: &XhttpRegistry,
+    route: &XhttpRoute,
+    session_id: &str,
+    headers: &HeaderMap,
     peer_addr: SocketAddr,
-    server: &WsTcpServerCtx,
-) -> Option<EdgeUpstream> {
-    let plan = edge?;
-    let pooled =
-        open_edge_relay_v5(&plan.cluster, plan.shard, &plan.advert, MeshFraming::Tcp, peer_addr)
-            .await?;
-    Some(edge_upstream(
-        pooled,
-        &plan.advert,
+) -> XhttpEdge {
+    if registry.get(session_id).is_some() {
+        return XhttpEdge::local();
+    }
+    let Some(plan) = xhttp_edge_plan(cluster, &services.orphan_registry, headers) else {
+        return XhttpEdge::local();
+    };
+    // VLESS and SS-UDP stay on v4: their relay is opened by the relay task.
+    if !matches!(route, XhttpRoute::Ss(_)) {
+        return XhttpEdge { ss: None, v4: Some(plan) };
+    }
+    let server = &services.tcp_server;
+    let ss = match open_edge_relay_v5(
         &plan.cluster,
-        &server.metrics,
-        &server.orphan_registry,
-    ))
+        plan.shard,
+        &plan.advert,
+        MeshFraming::Tcp,
+        peer_addr,
+    )
+    .await
+    {
+        Some(pooled) => Some(edge_upstream(
+            pooled,
+            &plan.advert,
+            &plan.cluster,
+            &server.metrics,
+            &server.orphan_registry,
+        )),
+        None => None,
+    };
+    XhttpEdge { ss, v4: None }
 }
 
 /// Opens the mesh relay for an XHTTP edge plan, returning the pooled relay and
@@ -863,11 +950,12 @@ async fn open_xhttp_mesh(
 /// path carries. VLESS rides `run_vless_relay`; SS rides the same
 /// `run_tcp_relay` the WS path uses — both are generic over the
 /// frame-oriented [`XhttpDuplex`] socket, so only the route context and
-/// the metrics `AppProtocol` label differ. When `edge` is set (a foreign-shard
-/// resume on a clustered node), the reassembled byte stream is relayed to the
-/// home over the mesh instead of served locally, falling back to a fresh local
-/// session if the mesh open fails. SS-UDP relays too, but datagram-framed
-/// (`edge_relay_udp`) so per-packet boundaries survive the mesh hop.
+/// the metrics `AppProtocol` label differ. When `edge` carries a relay (a
+/// foreign-shard resume on a clustered node), the session is relayed to the home
+/// instead of served locally: the SS byte stream over an upstream the caller
+/// already opened, VLESS and SS-UDP over a v4 splice opened here — the latter
+/// falling back to a fresh local session if that open fails. SS-UDP is
+/// datagram-framed (`edge_relay_udp`) so per-packet boundaries survive the hop.
 /// Returns `false` when the process-wide relay-task ceiling
 /// (`tuning.xhttp_max_concurrent_relay_tasks`) is reached: no task is spawned,
 /// the just-created registry slot is torn down, and the caller must reject the
@@ -883,8 +971,11 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
     protocol: Protocol,
     peer_addr: SocketAddr,
     resume: ResumeContext,
-    edge: Option<EdgeRelayPlan>,
+    edge: XhttpEdge,
 ) -> bool {
+    // The SS half is already open (resolved before the response); the v4 half is
+    // still opened by the relay task below.
+    let XhttpEdge { ss: edge_ss, v4: edge } = edge;
     // Reserve a slot against the global relay-task ceiling before spawning.
     // Held for the relay task's lifetime (moved into the spawned future) so
     // the semaphore reflects in-flight work.
@@ -982,9 +1073,9 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 let _relay_permit = relay_permit;
                 // Cluster edge (v5): the client is authenticated here whichever
                 // way this goes — only the upstream may live on the home. A home
-                // holding no park refuses, and this node serves a fresh local
-                // session over the very same duplex.
-                let (resume, upstream) = match open_xhttp_mesh_v5(edge, peer_addr, &server).await {
+                // holding no park refused back in `xhttp_edge`, and this node
+                // serves a fresh local session over the very same duplex.
+                let (resume, upstream) = match edge_ss {
                     Some(edge) => (edge.resume, edge.source),
                     None => (resume, UpstreamSource::Direct),
                 };

@@ -26,6 +26,18 @@ pub struct StreamResponseContext {
     pub(super) request_salt: Arc<[u8]>,
 }
 
+impl StreamResponseContext {
+    /// The context an SS-2022 responder derives from the request salt it just
+    /// authenticated. In production it only ever comes from
+    /// [`AeadStreamDecryptor::response_context`]; this constructor exists so a
+    /// test can drive the *encryptor* without first replaying a whole SS-2022
+    /// request handshake, which says nothing about what it is testing.
+    #[cfg(test)]
+    pub(crate) fn for_test(request_salt: &[u8]) -> Self {
+        Self { request_salt: Arc::from(request_salt) }
+    }
+}
+
 struct ActiveStream {
     user: UserKey,
     /// Position of [`Self::user`] inside the original `users` slice. Exposed

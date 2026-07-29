@@ -482,6 +482,26 @@ pub(in crate::server) async fn open_edge_relay(
     Some(pooled)
 }
 
+/// Ceiling on how long a v5 OPEN ack is waited for, whatever the relay's
+/// progress budget is.
+///
+/// The wait sits in front of the client's `101`, so every foreign-shard
+/// reconnect pays it — and a home that is reachable but wedged answers no OPEN
+/// at all. Reusing `relay_budget` there would stall each such upgrade for the
+/// full progress budget (30 s on some fleet nodes) before falling back to a
+/// local session, turning one sick home into a fleet-wide upgrade stall. A setup
+/// round trip is a *latency* question, unlike the budget's *progress* one, so it
+/// gets its own, much shorter deadline. Still generous next to any real
+/// cross-region mesh RTT, and a node whose budget is deliberately tighter keeps
+/// its own value (the wait is the smaller of the two).
+const OPEN_ACK_WAIT: Duration = Duration::from_secs(3);
+
+/// The deadline for a v5 OPEN ack: [`OPEN_ACK_WAIT`], never longer than the
+/// relay's own progress budget.
+fn open_ack_wait(relay_budget: Duration) -> Duration {
+    relay_budget.min(OPEN_ACK_WAIT)
+}
+
 /// Opens a v5 mesh relay to the home for an edge-routed carrier: asks whether a
 /// park exists under the client's resume id, and waits for the answer *before*
 /// the client carrier is upgraded.
@@ -524,7 +544,7 @@ pub(in crate::server) async fn open_edge_relay_v5(
             return None;
         },
     };
-    if let Err(error) = pooled.await_ack(cluster.relay_budget).await {
+    if let Err(error) = pooled.await_ack(open_ack_wait(cluster.relay_budget)).await {
         cluster.metrics.record_mesh_relay_opened("refused");
         // Not a warning: with edge-terminated crypto a refusal is the expected
         // answer whenever the home holds no park — every fresh session, and
@@ -604,6 +624,49 @@ pub(in crate::server) fn edge_upstream(
             ack_prefix,
             symmetric_replay: false,
         },
+    }
+}
+
+/// The session id an SS byte-stream edge records and echoes for this carrier.
+///
+/// `Some(edge)` — the home admitted the relay — yields the id the client
+/// presented, because the home parks the upstream under exactly that id; that is
+/// what makes the session survive a node switch.
+///
+/// `None` — not clustered, an own-shard id, or a home that refused — yields the
+/// **locally minted** id instead. This node has just become the session's home,
+/// so echoing the foreign id back would send the client's next reconnect
+/// straight to the home that already refused it, be refused again, and be served
+/// locally again: a session that can never resume. The id the client is told
+/// must be the id something is actually parked under.
+///
+/// Every SS byte-stream entry point resolves its echoed id through here — the
+/// axum WS upgrade, the h3 extended-CONNECT upgrade (both via
+/// [`ss_edge_echo`]) and the two XHTTP handlers — so the invariant cannot hold
+/// on one carrier and lapse on another.
+pub(in crate::server) fn ss_edge_session_id(
+    edge: Option<&EdgeUpstream>,
+    local: &ResumeContext,
+) -> Option<SessionId> {
+    match edge {
+        Some(edge) => edge.echo.session_id,
+        None => local.issued_session_id,
+    }
+}
+
+/// The full response echo for an SS byte-stream edge: the relay's own echo when
+/// the home admitted it, the local negotiation otherwise.
+///
+/// The relayed echo is deliberately *not* the local one with a different id: it
+/// also withholds the v2 Symmetric Downlink Replay confirmation, which a relayed
+/// session cannot honour (see [`edge_upstream`]).
+pub(in crate::server) fn ss_edge_echo(
+    edge: Option<&EdgeUpstream>,
+    local: &ResumeContext,
+) -> ResumeResponseEcho {
+    match edge {
+        Some(edge) => edge.echo,
+        None => local.response_echo(),
     }
 }
 
