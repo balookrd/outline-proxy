@@ -956,7 +956,26 @@ git commit -m "feat(cluster): carry acked uplink offset and close intent on the 
 
 ---
 
-### Task 5: Edge side — SS-TCP (milestone: end-to-end)
+### Task 5: Edge side — SS byte-stream (milestone: end-to-end)
+
+**Scope covers every SS byte-stream entry point**, not just the WS one:
+`CarrierKind::SsTcp` from the axum-WS path (`transport/mod.rs:107`) and from the
+h3 path (`h3/http.rs:223`), plus `CarrierKind::SsXhttp`
+(`xhttp/handlers.rs:953`). In v5 the carrier byte narrows to framing alone
+(`MeshFraming::Tcp`) because crypto is the edge's business, so those three are
+the same thing; splitting them would leave the carrier half-migrated and leave
+`SsXhttp` unowned — Task 6 is VLESS, Task 8 is SS-UDP, and Task 9 cannot retire
+v4 while any SS byte-stream entry point still speaks it.
+
+**Two of the 24 end-to-end cluster tests encode v4 behaviour this design
+deliberately removes** ("fresh sessions are never created over the mesh any
+more") and must be adapted rather than preserved:
+`cluster_session_survives_edge_switch` (`cluster.rs:559`) and
+`cluster_stalled_relay_tears_down_on_health_budget` (`cluster.rs:778`). Both
+currently rely on the *home* minting a fresh session for a carrier that arrives
+with no park. Re-point them at the invariant the feature actually claims —
+establish the session against the home, then resume it through an edge — so they
+prove one upstream surviving a node switch. Do not weaken what they assert.
 
 **Files:**
 - Create: `bins/outline-ss-rust/src/server/transport/upstream_source.rs`
