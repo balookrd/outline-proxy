@@ -986,12 +986,9 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                     None => (resume, UpstreamSource::Direct),
                 };
                 let socket = XhttpDuplex::with_udp_records(Arc::clone(&session_for_task), false);
-                // No injected monitor either way: this node owns the last mile
-                // to the client, so local throttle detection is the right one.
-                let result = run_vless_relay::<XhttpDuplex>(
-                    socket, &server, &route_ctx, resume, None, upstream,
-                )
-                .await;
+                let result =
+                    run_vless_relay::<XhttpDuplex>(socket, &server, &route_ctx, resume, upstream)
+                        .await;
                 // Always drop the registry slot: even on a clean exit
                 // the session id should not be reused for a fresh
                 // handshake.
@@ -1031,15 +1028,12 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                     None => (resume, UpstreamSource::Direct),
                 };
                 let socket = XhttpDuplex::with_udp_records(Arc::clone(&session_for_task), false);
-                // No injected monitor either way: this node owns the last mile to
-                // the client, so local throttle detection is the right one.
                 let result = run_tcp_relay::<XhttpDuplex>(
                     socket,
                     &server,
                     &route_ctx,
                     resume,
                     Some(peer_addr),
-                    None,
                     upstream,
                 )
                 .await;
@@ -1086,11 +1080,8 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                     Arc::clone(&session_for_task),
                     session_for_task.udp_records(),
                 );
-                // No injected monitor either way: this node owns the last mile to
-                // the client, so local throttle detection is the right one.
                 let result =
-                    run_udp_relay::<XhttpDuplex>(socket, server, route_ctx, resume, None, upstream)
-                        .await;
+                    run_udp_relay::<XhttpDuplex>(socket, server, route_ctx, resume, upstream).await;
                 session_for_task.close();
                 registry.remove(&session_id);
                 finish_ws_session(metrics_session, classify_relay_result(result), "ss-udp");
