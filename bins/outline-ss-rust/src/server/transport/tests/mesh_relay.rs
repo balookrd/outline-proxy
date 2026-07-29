@@ -8,7 +8,7 @@ use arc_swap::ArcSwap;
 use quinn::{Connection, ReadError, ReadToEndError, RecvStream, SendStream, VarInt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::time::Instant;
 
 use outline_wire::CipherKind;
@@ -21,14 +21,16 @@ use super::{
 };
 use crate::crypto::UserKey;
 use crate::metrics::{AppProtocol, Metrics, Protocol};
+use crate::protocol::TargetAddr;
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CarrierKind, CloseIntent, CloseReason, ControlDatagram, MeshEndpoint, MeshFraming,
     MeshIdentity, MeshPeerPool, MeshProtocol, OPEN_ACK_ACCEPTED, OpenHeader, OpenHeaderV5,
     ThrottleRegistry, UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame, parse_control_datagram,
+    read_datagram, write_datagram,
 };
 use crate::server::dns_cache::DnsCache;
-use crate::server::nat::NatTable;
+use crate::server::nat::{NatKey, NatTable, ServerSessionId};
 use crate::server::peer_user_cache::PeerUserCache;
 use crate::server::replay::ReplayStore;
 use crate::server::resumption::downlink_ring::DownlinkRing;
@@ -968,6 +970,145 @@ impl V5Session {
     async fn end_reason(self) -> Option<CloseReason> {
         self.drain(4096).await.err()
     }
+
+    /// Writes one length-framed datagram toward the home, as a v5 SS-UDP edge
+    /// does once it has opened a client packet: the SOCKS5-wrapped body, with no
+    /// crypto left on it.
+    async fn edge_send_datagram(&mut self, datagram: &[u8]) {
+        write_datagram(&mut self.send, datagram)
+            .await
+            .expect("writing a relayed datagram to the home");
+    }
+
+    /// Reads one datagram the home relayed back, failing the test if none comes.
+    async fn edge_recv_datagram(&mut self) -> Vec<u8> {
+        self.edge_recv_datagram_within(Duration::from_secs(5))
+            .await
+            .expect("the home must relay the upstream response")
+    }
+
+    /// Reads one datagram if the home sends one inside `wait`. `None` covers
+    /// both "nothing arrived" and "the home ended the stream" — either way no
+    /// response reached this carrier.
+    async fn edge_recv_datagram_within(&mut self, wait: Duration) -> Option<Vec<u8>> {
+        let mut buf = Vec::new();
+        match tokio::time::timeout(wait, read_datagram(&mut self.recv, &mut buf)).await {
+            Ok(Ok(Some(_))) => Some(buf),
+            Ok(Ok(None)) => None,
+            Ok(Err(error)) => panic!("reading a relayed datagram: {error}"),
+            Err(_elapsed) => None,
+        }
+    }
+}
+
+/// A v5 OPEN header for a **datagram**-framed relayed session under `id`. Always
+/// Shadowsocks: an SS-UDP park has no other way to be minted.
+fn v5_udp_header(id: SessionId) -> OpenHeaderV5 {
+    OpenHeaderV5 {
+        framing: MeshFraming::Udp,
+        ..v5_header(id)
+    }
+}
+
+/// A UDP echo target standing in for the internet: it bounces every datagram
+/// back and records the address it came from, which is how a test tells *which*
+/// NAT socket carried it — a reattached parked entry or a freshly created one.
+struct UdpEcho {
+    addr: SocketAddr,
+    sources: mpsc::UnboundedReceiver<SocketAddr>,
+    _task: crate::server::abort::AbortOnDrop<()>,
+}
+
+impl UdpEcho {
+    /// The source address of the next datagram this target receives.
+    async fn next_source(&mut self) -> SocketAddr {
+        tokio::time::timeout(Duration::from_secs(5), self.sources.recv())
+            .await
+            .expect("the target must receive a datagram")
+            .expect("the echo task outlives the test")
+    }
+}
+
+async fn spawn_udp_echo() -> UdpEcho {
+    let socket = tokio::net::UdpSocket::bind(loopback()).await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    let (tx, sources) = mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        while let Ok((len, from)) = socket.recv_from(&mut buf).await {
+            let _ = tx.send(from);
+            let _ = socket.send_to(&buf[..len], from).await;
+        }
+    });
+    UdpEcho {
+        addr,
+        sources,
+        _task: crate::server::abort::AbortOnDrop::new(task),
+    }
+}
+
+/// The SOCKS5-wrapped body of an SS-UDP packet: `TargetAddr || payload`. This is
+/// exactly what a v5 edge forwards once it has stripped the client's crypto, and
+/// what the home routes on.
+fn socks5_wrap(target: SocketAddr, payload: &[u8]) -> Vec<u8> {
+    let mut wrapped = TargetAddr::from(target)
+        .to_wire_bytes()
+        .expect("a socket address always encodes");
+    wrapped.extend_from_slice(payload);
+    wrapped
+}
+
+/// The NAT key an SS-UDP session under `id` owns for `target`. `scope` is what
+/// keeps two sessions to the same target on separate entries, and it is taken
+/// from the session — never from a datagram.
+fn udp_nat_key(owner: &str, id: SessionId, target: SocketAddr) -> NatKey {
+    NatKey {
+        user_id: Arc::from(owner),
+        fwmark: None,
+        target,
+        scope: Some(*id.as_bytes()),
+    }
+}
+
+/// Parks an SS-UDP session under `id` with a live NAT entry per target, as a
+/// carrier drop leaves behind: the entries stay in the table (detached, still
+/// ageing) and the park keeps only their keys.
+async fn park_test_udp_session(
+    harness: &MeshHomeHarness,
+    id: SessionId,
+    owner: &str,
+    targets: &[SocketAddr],
+) -> Vec<NatKey> {
+    let keys: Vec<NatKey> = targets.iter().map(|t| udp_nat_key(owner, id, *t)).collect();
+    for key in &keys {
+        harness
+            .nat_table()
+            .get_or_create(key.clone(), ServerSessionId::Generate, Arc::clone(harness.metrics()))
+            .await
+            .expect("binding a test NAT entry");
+    }
+    harness.registry().park(
+        id,
+        Parked::SsUdpStream(ParkedSsUdpStream {
+            nat_keys: keys.clone(),
+            owner: Arc::from(owner),
+        }),
+    );
+    keys
+}
+
+/// The source port of the NAT socket behind `key` — the observable identity of
+/// the entry, and exactly what a target sees. The port alone, because the socket
+/// is wildcard-bound (`0.0.0.0`) while the target reads a concrete source IP.
+fn nat_socket_port(harness: &MeshHomeHarness, key: &NatKey) -> u16 {
+    harness
+        .nat_table()
+        .try_get(key)
+        .expect("the NAT entry is live")
+        .socket()
+        .local_addr()
+        .expect("a bound NAT socket has a local address")
+        .port()
 }
 
 /// A home node running the real mesh accept loop, plus an edge connection to
@@ -976,6 +1117,9 @@ impl V5Session {
 struct MeshHomeHarness {
     /// Held so the home endpoint and its relay-permit pool outlive the harness.
     _cluster: Arc<ClusterCtx>,
+    /// The same bundle the accept loop serves with, so a UDP test can reach the
+    /// NAT table the splice routes through.
+    services: Arc<Services>,
     registry: Arc<OrphanRegistry>,
     metrics: Arc<Metrics>,
     /// Held so the edge socket stays bound for the harness's lifetime.
@@ -997,10 +1141,15 @@ impl MeshHomeHarness {
             MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
         let (home_conn, edge_conn) = connect_edge(&cluster.endpoint, &edge_endpoint).await;
         let metrics = Arc::clone(&cluster.metrics);
-        let home =
-            tokio::spawn(handle_mesh_connection(home_conn, Arc::clone(&cluster), services, routes));
+        let home = tokio::spawn(handle_mesh_connection(
+            home_conn,
+            Arc::clone(&cluster),
+            Arc::clone(&services),
+            routes,
+        ));
         Self {
             _cluster: cluster,
+            services,
             registry,
             metrics,
             _edge_endpoint: edge_endpoint,
@@ -1015,6 +1164,10 @@ impl MeshHomeHarness {
 
     fn metrics(&self) -> &Arc<Metrics> {
         &self.metrics
+    }
+
+    fn nat_table(&self) -> &Arc<NatTable> {
+        &self.services.udp_server.nat_table
     }
 
     /// Opens a v5 relay and reports the outcome, sending the USER frame only if
@@ -1284,27 +1437,28 @@ fn park_ss_udp_stream(registry: &OrphanRegistry, id: SessionId, owner: &str) {
     );
 }
 
-/// The home does not own a plaintext SS-UDP path yet, so a v5 OPEN carrying UDP
-/// framing must be refused before anything is consumed — and, critically, before
-/// the park is taken, so the session survives for a carrier this home can serve.
+/// The mirror of [`v5_home_refuses_a_park_of_the_wrong_kind`], now that both
+/// framings splice something: a **UDP**-framed OPEN whose id resolves to a
+/// byte-stream park must be refused in phase 1 too. The shape check runs in both
+/// directions or the new splice would consume TCP parks it cannot serve —
+/// exactly the destruction loop the probe exists to prevent, reintroduced from
+/// the other side.
 #[tokio::test]
-async fn v5_home_refuses_udp_framing() {
+async fn v5_home_refuses_udp_framing_on_a_byte_stream_park() {
     let harness = MeshHomeHarness::new().await;
     let id = SessionId::from_bytes([20u8; 16]);
     let _upstream = park_test_session(harness.registry(), id, "beerloga").await;
 
-    let mut header = v5_header(id);
-    header.framing = MeshFraming::Udp;
-    let outcome_seen = harness.serve_v5(header).await;
+    let outcome_seen = harness.serve_v5(v5_udp_header(id)).await;
 
     assert!(!outcome_seen.acked(), "the refusal replaces the ack");
-    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
+    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::NoSession));
     assert!(
         harness.registry().has_park(id),
         "a refused UDP relay must leave the park untouched for a servable carrier",
     );
     let rendered = harness.metrics().render_prometheus();
-    assert_eq!(rejected(&rendered, "udp_unsupported"), 1, "{rendered}");
+    assert_eq!(rejected(&rendered, "park_shape"), 1, "{rendered}");
     assert_eq!(outcome(&rendered, "miss"), 1, "{rendered}");
 }
 
@@ -2151,4 +2305,337 @@ async fn a_client_done_close_still_drains_the_request_body() {
 
     let _ = edge.await;
     let _ = target.await;
+}
+
+// ── v5 home: the plaintext SS-UDP splice ──────────────────────────────────────
+
+/// The base case: the home routes a relayed datagram to its target and the
+/// response back, without ever holding a key. Everything it needs it has — the
+/// identity from the park (cross-checked against the edge's USER attestation)
+/// and the target from inside the datagram — so no crypto is involved on this
+/// node at all.
+#[tokio::test]
+async fn the_home_routes_plaintext_datagrams_without_decrypting() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([31u8; 16]);
+    let mut target = spawn_udp_echo().await;
+    park_test_udp_session(&harness, id, "beerloga", &[target.addr]).await;
+
+    let mut session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    session.edge_send_datagram(&socks5_wrap(target.addr, b"ping")).await;
+
+    assert_eq!(target.next_source().await.ip(), Ipv4Addr::LOCALHOST);
+    assert_eq!(
+        session.edge_recv_datagram().await,
+        socks5_wrap(target.addr, b"ping"),
+        "the echo must come back through the same session, still plaintext",
+    );
+}
+
+/// The property whose loss over XHTTP caused the production incident that
+/// started this work. Two datagrams in, two out — never one coalesced blob, in
+/// either direction.
+#[tokio::test]
+async fn datagram_boundaries_survive_the_mesh() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([32u8; 16]);
+    let target = spawn_udp_echo().await;
+    park_test_udp_session(&harness, id, "beerloga", &[target.addr]).await;
+
+    let mut session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    session.edge_send_datagram(&socks5_wrap(target.addr, b"first")).await;
+    session.edge_send_datagram(&socks5_wrap(target.addr, b"second")).await;
+
+    // Order between two datagrams to one target over loopback is not the
+    // property under test — that each arrives whole and alone is.
+    let mut got = vec![session.edge_recv_datagram().await, session.edge_recv_datagram().await];
+    got.sort();
+    let mut want = vec![socks5_wrap(target.addr, b"first"), socks5_wrap(target.addr, b"second")];
+    want.sort();
+    assert_eq!(got, want, "each datagram must cross the mesh whole and on its own");
+}
+
+/// Reattach owned: a resumed session sends from the NAT socket it parked with,
+/// not a fresh one. That socket — and therefore the source port every target
+/// sees, plus whatever upstream state is pinned to it — is the whole reason the
+/// park exists, so the assertion is on the port rather than on bookkeeping.
+#[tokio::test]
+async fn a_udp_session_reattaches_its_parked_nat_keys() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([33u8; 16]);
+    let mut target = spawn_udp_echo().await;
+    let keys = park_test_udp_session(&harness, id, "beerloga", &[target.addr]).await;
+    let parked_port = nat_socket_port(&harness, &keys[0]);
+    let entries_before = harness.nat_table().len();
+
+    let mut session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    session
+        .edge_send_datagram(&socks5_wrap(target.addr, b"resumed"))
+        .await;
+
+    assert_eq!(
+        target.next_source().await.port(),
+        parked_port,
+        "the resumed session must send from its parked NAT socket, not a fresh one",
+    );
+    assert_eq!(
+        harness.nat_table().len(),
+        entries_before,
+        "reattaching must not create a second entry for a parked target",
+    );
+}
+
+/// Create unowned: a target first reached *after* the resume is still routable.
+/// Forbidding it — the rule this task originally carried — would black-hole
+/// every new destination for the life of the session, and a live UDP session
+/// meets new destinations constantly.
+#[tokio::test]
+async fn a_resumed_session_may_still_reach_a_brand_new_target() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([35u8; 16]);
+    let parked_target = spawn_udp_echo().await;
+    let fresh_target = spawn_udp_echo().await;
+    park_test_udp_session(&harness, id, "beerloga", &[parked_target.addr]).await;
+
+    let mut session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    session
+        .edge_send_datagram(&socks5_wrap(fresh_target.addr, b"hello"))
+        .await;
+
+    assert_eq!(
+        session.edge_recv_datagram().await,
+        socks5_wrap(fresh_target.addr, b"hello"),
+        "a target first reached after the resume must still be routable",
+    );
+}
+
+/// Refuse foreign, part one: a datagram cannot reach the NAT entry another
+/// session owns, even when it names the same target address.
+///
+/// The home trusts the edge's attestation of *who* the user is, and nothing
+/// about the datagram beyond its target. Because the key is built from the
+/// session's own identity and scope, the foreign entry is not merely refused but
+/// unaddressable: the session gets an entry of its own, on its own port, and the
+/// other session's socket is never used. Sharing it would cross two clients'
+/// response streams — which is exactly what `NatKey::scope` exists to prevent,
+/// and what makes refusing the *target* the wrong rule (two sessions using one
+/// DNS resolver is the normal case, not an attack).
+#[tokio::test]
+async fn a_datagram_cannot_reach_another_sessions_nat_entry() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([34u8; 16]);
+    let other_id = SessionId::from_bytes([99u8; 16]);
+    let mine = spawn_udp_echo().await;
+    let mut shared = spawn_udp_echo().await;
+    park_test_udp_session(&harness, id, "beerloga", &[mine.addr]).await;
+    // Another session of the same user, already talking to the same target.
+    let theirs = udp_nat_key("beerloga", other_id, shared.addr);
+    harness
+        .nat_table()
+        .get_or_create(theirs.clone(), ServerSessionId::Generate, Arc::clone(harness.metrics()))
+        .await
+        .expect("binding the other session's NAT entry");
+    let foreign_port = nat_socket_port(&harness, &theirs);
+
+    let mut session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    session.edge_send_datagram(&socks5_wrap(shared.addr, b"mine")).await;
+
+    assert_ne!(
+        shared.next_source().await.port(),
+        foreign_port,
+        "a session must never send out of another session's NAT socket",
+    );
+    assert_eq!(
+        session.edge_recv_datagram().await,
+        socks5_wrap(shared.addr, b"mine"),
+        "the session still reaches the target — through an entry of its own",
+    );
+}
+
+/// Refuse foreign, part two: the reattach itself filters. A parked key naming a
+/// different user is not re-pointed at this carrier and does not come back in
+/// the re-park — the one path by which a relayed session could otherwise take
+/// over a socket that is not its own, since every other key it uses is built
+/// from its own identity.
+#[tokio::test]
+async fn a_relayed_session_never_reattaches_a_foreign_nat_key() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([36u8; 16]);
+    let mine = spawn_udp_echo().await;
+    let theirs = spawn_udp_echo().await;
+    let ours = udp_nat_key("beerloga", id, mine.addr);
+    let foreign = udp_nat_key("someone-else", id, theirs.addr);
+    for key in [&ours, &foreign] {
+        harness
+            .nat_table()
+            .get_or_create(key.clone(), ServerSessionId::Generate, Arc::clone(harness.metrics()))
+            .await
+            .expect("binding a test NAT entry");
+    }
+    harness.registry().park(
+        id,
+        Parked::SsUdpStream(ParkedSsUdpStream {
+            nat_keys: vec![ours.clone(), foreign.clone()],
+            owner: Arc::from("beerloga"),
+        }),
+    );
+
+    let session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    session.close_with_carrier_ended().await;
+    wait_for_park(harness.registry(), id).await;
+
+    let ResumeOutcome::Hit(Parked::SsUdpStream(reparked)) =
+        harness.registry().take_for_resume(id, "beerloga").await
+    else {
+        panic!("the relayed ss-udp session must be re-parked");
+    };
+    assert_eq!(
+        reparked.nat_keys,
+        vec![ours],
+        "only the keys the resuming user owns may be reattached and re-parked",
+    );
+}
+
+/// A park whose keys all belong to someone else names no identity this session
+/// could serve under, so the relay is refused rather than served with an invented
+/// one — an unmarked `fwmark`, say, would route the user's traffic outside the
+/// policy route it is configured for.
+#[tokio::test]
+async fn a_udp_park_with_no_key_for_the_attested_user_is_refused() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([37u8; 16]);
+    let target = spawn_udp_echo().await;
+    harness.registry().park(
+        id,
+        Parked::SsUdpStream(ParkedSsUdpStream {
+            nat_keys: vec![udp_nat_key("someone-else", id, target.addr)],
+            owner: Arc::from("beerloga"),
+        }),
+    );
+
+    let outcome_seen = harness.serve_v5(v5_udp_header(id)).await;
+
+    assert!(outcome_seen.acked(), "the identity check happens after phase 1");
+    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(rejected(&rendered, "park_identity"), 1, "{rendered}");
+}
+
+/// A relayed SS-UDP session survives a second carrier switch: the home re-parks
+/// its NAT keys when the mesh carrier ends, so the next edge resumes the same
+/// entries — and therefore the same source ports. Without the re-park a v5
+/// session would survive exactly one switch.
+#[tokio::test]
+async fn a_relayed_udp_session_is_reparked_for_the_next_carrier() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([38u8; 16]);
+    let mut target = spawn_udp_echo().await;
+    let keys = park_test_udp_session(&harness, id, "beerloga", &[target.addr]).await;
+    let parked_port = nat_socket_port(&harness, &keys[0]);
+
+    let mut first = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    first.edge_send_datagram(&socks5_wrap(target.addr, b"one")).await;
+    assert_eq!(target.next_source().await.port(), parked_port);
+    let _ = first.edge_recv_datagram().await;
+    first.close_with_carrier_ended().await;
+    wait_for_park(harness.registry(), id).await;
+
+    let mut second = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    second.edge_send_datagram(&socks5_wrap(target.addr, b"two")).await;
+
+    assert_eq!(
+        target.next_source().await.port(),
+        parked_port,
+        "the second carrier must resume the same NAT socket as the first",
+    );
+    assert_eq!(second.edge_recv_datagram().await, socks5_wrap(target.addr, b"two"));
+}
+
+/// A client that says it is done leaves no park behind: the session would never
+/// be claimed, and the park would hold one of the user's orphan slots until its
+/// TTL. The same rule the byte-stream splice follows, on the datagram side.
+#[tokio::test]
+async fn a_finished_udp_client_leaves_no_park() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([39u8; 16]);
+    let mut target = spawn_udp_echo().await;
+    park_test_udp_session(&harness, id, "beerloga", &[target.addr]).await;
+
+    let mut session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    session.edge_send_datagram(&socks5_wrap(target.addr, b"last")).await;
+    let _ = target.next_source().await;
+    let _ = session.edge_recv_datagram().await;
+    session.close_with_client_done();
+
+    wait_for_active_relays(harness.metrics(), 0).await;
+    assert!(!harness.registry().has_park(id), "a finished client leaves no park");
+}
+
+/// The continuity prologue is present exactly when the OPEN asked for it, on
+/// both framings — an edge parses the stream head the same way either way. Its
+/// value is `0` because a datagram session acknowledges no uplink byte offset.
+#[tokio::test]
+async fn a_relayed_udp_session_reports_a_zero_acked_offset() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([40u8; 16]);
+    let target = spawn_udp_echo().await;
+    park_test_udp_session(&harness, id, "beerloga", &[target.addr]).await;
+
+    let session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+
+    assert_eq!(session.acked_uplink_offset(), 0);
+}
+
+/// An SS-UDP park is Shadowsocks by construction, so a relay claiming VLESS over
+/// one is the same cross-protocol confusion the byte-stream splice refuses.
+#[tokio::test]
+async fn a_udp_relay_claiming_vless_is_refused() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([41u8; 16]);
+    let target = spawn_udp_echo().await;
+    park_test_udp_session(&harness, id, "beerloga", &[target.addr]).await;
+
+    let mut header = v5_udp_header(id);
+    header.protocol = MeshProtocol::Vless;
+    let outcome_seen = harness.serve_v5(header).await;
+
+    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(rejected(&rendered, "protocol_mismatch"), 1, "{rendered}");
+}
+
+/// A burst keeps every datagram whole. The uplink pump drains its in-flight
+/// relays concurrently with reading the next datagram, and the read is *not*
+/// cancel-safe — it consumes a length prefix and then a body — so a pump that
+/// let the drain cancel a part-way read would leave the stream mid-datagram and
+/// mis-frame everything after it. Two datagrams rarely interleave; a burst does.
+#[tokio::test]
+async fn a_burst_of_datagrams_stays_framed_under_concurrent_relays() {
+    const BURST: usize = 64;
+
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([42u8; 16]);
+    let target = spawn_udp_echo().await;
+    park_test_udp_session(&harness, id, "beerloga", &[target.addr]).await;
+
+    let mut session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    for index in 0..BURST {
+        session
+            .edge_send_datagram(&socks5_wrap(target.addr, format!("packet-{index:04}").as_bytes()))
+            .await;
+    }
+
+    let mut got = Vec::with_capacity(BURST);
+    for _ in 0..BURST {
+        got.push(session.edge_recv_datagram().await);
+    }
+    got.sort();
+    let mut want: Vec<Vec<u8>> = (0..BURST)
+        .map(|index| socks5_wrap(target.addr, format!("packet-{index:04}").as_bytes()))
+        .collect();
+    want.sort();
+    assert_eq!(
+        got, want,
+        "every datagram of a burst must cross the mesh whole and exactly once"
+    );
 }

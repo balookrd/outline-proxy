@@ -580,9 +580,10 @@ impl Metrics {
     /// cluster-config asymmetry: any non-zero rate needs the config fixed, not
     /// the cap. The v5 path adds `no_session` (nothing parked under the relayed
     /// resume id), `unknown_user` (the park belongs to someone else),
-    /// `udp_unsupported`, `framing_mismatch` and `bad_setup` (the peer was acked
-    /// but its USER frame was malformed or never arrived). Low cardinality: a
-    /// fixed set of static labels.
+    /// `park_shape`, `protocol_mismatch`, `park_identity` (an SS-UDP park holds
+    /// no NAT key for the attested user), `framing_mismatch` and `bad_setup`
+    /// (the peer was acked but its USER frame was malformed or never arrived).
+    /// Low cardinality: a fixed set of static labels.
     pub fn record_mesh_relay_rejected(&self, reason: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_mesh_relay_rejected_total", "reason" => reason).increment(1);
