@@ -543,6 +543,24 @@ pub(in crate::server::transport) async fn relay_socks5_datagram(
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
     entry.register_session(response_sender, ctx.coding.clone(), ctx.stream_id);
+    // Per-user accounting belongs to the node that terminates the client
+    // session; see [`UdpResponseCoding::terminates_client_session`]. On the v5
+    // relayed path that is the edge, so the home stays silent on every
+    // `user`-labelled byte/request series and counts this traffic only on its
+    // `role="home"` mesh counters — the same split `splice_plaintext_tcp`
+    // makes. Node-local drops below are recorded either way.
+    let accounts_per_user = ctx.coding.terminates_client_session();
+    let record_request = |result: &'static str| {
+        if accounts_per_user {
+            server.metrics.record_udp_request(
+                Arc::clone(&ctx.user_id),
+                ctx.protocol,
+                AppProtocol::Shadowsocks,
+                result,
+                ctx.started_at.elapsed().as_secs_f64(),
+            );
+        }
+    };
     // Track the NAT key as one this stream owns, for park-on-drop. Insertion is
     // a no-op on duplicates; past the reconcile threshold the set is swept
     // against the live NAT table so idle-evicted targets do not accumulate.
@@ -565,37 +583,21 @@ pub(in crate::server::transport) async fn relay_socks5_datagram(
             max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
             "dropping oversized udp datagram before upstream send"
         );
-        server.metrics.record_udp_request(
-            Arc::clone(&ctx.user_id),
-            ctx.protocol,
-            AppProtocol::Shadowsocks,
-            "error",
-            ctx.started_at.elapsed().as_secs_f64(),
-        );
+        record_request("error");
         return Ok(());
     }
-    entry
-        .user_counters()
-        .udp_in(AppProtocol::Shadowsocks, ctx.protocol)
-        .increment(payload.len() as u64);
+    if accounts_per_user {
+        entry
+            .user_counters()
+            .udp_in(AppProtocol::Shadowsocks, ctx.protocol)
+            .increment(payload.len() as u64);
+    }
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
-        server.metrics.record_udp_request(
-            Arc::clone(&ctx.user_id),
-            ctx.protocol,
-            AppProtocol::Shadowsocks,
-            "error",
-            ctx.started_at.elapsed().as_secs_f64(),
-        );
+        record_request("error");
         return Err(error).with_context(|| format!("failed to send UDP datagram to {resolved}"));
     }
     entry.touch();
-    server.metrics.record_udp_request(
-        Arc::clone(&ctx.user_id),
-        ctx.protocol,
-        AppProtocol::Shadowsocks,
-        "success",
-        ctx.started_at.elapsed().as_secs_f64(),
-    );
+    record_request("success");
 
     Ok(())
 }

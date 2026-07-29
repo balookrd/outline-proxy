@@ -146,6 +146,20 @@ a foreign entry lives under a key the session cannot construct. Two sessions
 naming the same target is the ordinary case (one DNS resolver, many clients) and
 gets two entries, not a refusal.
 
+**Per-user accounting stays with the node that terminates the client session.**
+A relayed session is counted on the edge, which sees the client's real protocol;
+the home records the same traffic only on its `role="home"` mesh counters, and
+emits no `user`-labelled `outline_ss_udp_*` series for it at all. Counting on
+both nodes would double every relayed user's bytes and requests, and would do it
+on the home under `protocol="http3"` — the mesh's own protocol — where the
+duplicate is indistinguishable from genuine direct H3 traffic on that node and
+cannot be subtracted back out. The byte-stream splice makes the same split. The
+decision travels with the *attachment* (`UdpResponseCoding`), so a NAT socket
+handed back and forth between a decrypting carrier and a relayed one accounts
+under whichever owns it at that moment. Drops the home itself decided on
+(oversized datagram, relay concurrency limit) are node-local facts counted
+nowhere else, and stay.
+
 **VLESS-UDP and VLESS-mux have no plaintext home path.** Their park shapes are
 indistinguishable from VLESS-TCP in the relay setup — the edge must choose the
 framing before the client's first frame reveals the command — so admitting them

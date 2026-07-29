@@ -88,6 +88,31 @@ pub(crate) enum UdpResponseCoding {
     Plaintext,
 }
 
+impl UdpResponseCoding {
+    /// Whether the carrier behind this attachment terminates the client's
+    /// session — and therefore owns its per-user byte and request accounting.
+    ///
+    /// Per-user accounting belongs to exactly one node: the one the client's
+    /// crypto ends on. `Ss` is that node by construction (it holds the key);
+    /// `Plaintext` is a v5 mesh home, whose edge already counted these same
+    /// bytes against the same user under the client's real protocol. Counting
+    /// them here too would double every relayed user's
+    /// `outline_ss_udp_payload_bytes_total`, `outline_ss_udp_requests_total` and
+    /// `outline_ss_udp_response_datagrams_total`, and would do it under
+    /// `protocol="http3"` — the mesh's protocol — where the duplicate is
+    /// indistinguishable from genuine direct H3 traffic on the same node and so
+    /// cannot even be subtracted back out. The home's share of relayed traffic
+    /// is on its `role="home"` mesh counters instead, which is the same split
+    /// `splice_plaintext_tcp` makes by dropping `ParkedTcp::user_counters`.
+    ///
+    /// Node-local facts stay unconditional either way: a drop the home decided
+    /// on (oversized datagram, relay concurrency limit) happened *here* and is
+    /// counted nowhere else.
+    pub(crate) fn terminates_client_session(&self) -> bool {
+        matches!(self, Self::Ss { .. })
+    }
+}
+
 /// A cloneable handle to the outbound path of the currently active client
 /// session.
 #[derive(Clone)]
