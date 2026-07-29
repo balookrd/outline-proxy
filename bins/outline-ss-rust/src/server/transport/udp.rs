@@ -1100,14 +1100,13 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         nat_scope: OnceCell::new(),
     });
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
-    // Per-carrier downstream-throttle monitor. A direct carrier (`None`) builds
-    // it from the route and drives the local detection tick (`Some` only on a
-    // padded SS-UDP path with detection enabled — the notice rides a cover
-    // datagram only our own padded clients can receive; else `None` keeps the
-    // plain wire unchanged). A relayed carrier (`Some`) uses the home monitor
-    // the mesh receiver pings from an edge THROTTLE_HINT and runs NO local tick —
-    // the home's send counters measure the fast home→mesh hop, not the throttled
-    // edge→client last mile.
+    // Per-carrier downstream-throttle monitor, built from the route and driving
+    // the local detection tick (`Some` only on a padded SS-UDP path with
+    // detection enabled — the notice rides a cover datagram only our own padded
+    // clients can receive; else `None` keeps the plain wire unchanged).
+    // `injected_monitor` served the retired v4 home, which drove a relayed
+    // carrier off the monitor its mesh receiver pinged from an edge
+    // THROTTLE_HINT and ran no local tick; every caller now passes `None`.
     let (throttle_monitor, run_local_tick) = match injected_monitor {
         Some(m) => (Some(m), false),
         None => (

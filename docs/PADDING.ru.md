@@ -188,10 +188,17 @@ throttle_detect_enabled = false          # следить за throughput, то�
 throttle_ratio_percent = 200             # сигнал когда inbound >= 2x outbound (200 = 2x)
 throttle_window_secs = 1                 # окно семплирования
 throttle_sustain_windows = 5             # сколько окон подряд над порогом до сигнала
-throttle_min_bytes_per_sec = 1000000     # порог inbound на home (~8 Мбит/с); ниже — не actionable
-throttle_edge_min_bytes_per_sec = 64000  # edge кластера: порог доставленной скорости (~512 Кбит/с); ставь ниже throttle-таргета последней мили
+throttle_min_bytes_per_sec = 1000000     # порог inbound (~8 Мбит/с); ниже — не actionable
 throttle_signal_cooldown_secs = 30       # мин. пауза между сигналами на одной несущей
 ```
+
+**Устарело:** `throttle_edge_min_bytes_per_sec` задавал порог stall-детектору на
+edge кластера, а тот отставлен вместе с v4-релеем mesh (см.
+[`CLUSTER.ru.md`](CLUSTER.ru.md)). Ключ по-прежнему **принимается и
+игнорируется** — секция `[padding]` отвергает незнакомые ключи, поэтому убрать
+его из схемы значило бы не загрузить конфиг, где он ещё прописан, — а конфиг с
+этим ключом пишет предупреждение при старте. Удали его; само поле уйдёт в
+следующем релизе.
 
 Валидация отвергает `enabled = true` с пустым `paths`.
 

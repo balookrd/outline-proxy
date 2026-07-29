@@ -304,19 +304,6 @@ pub(super) fn register_descriptions() {
          give the mean relayed datagram size."
     );
     describe_counter!(
-        "outline_ss_mesh_throttle_hints_received_total",
-        "THROTTLE_HINT control datagrams a home received from edges, by outcome \
-         (delivered = routed to a live relay monitor; dropped = no live monitor for \
-         the session id, e.g. torn down or unknown). Only a peer still running a \
-         pre-v5 build emits one: an edge on this build terminates the client's \
-         crypto itself and signals its own client directly, so a steady zero is \
-         the expected reading."
-    );
-    describe_counter!(
-        "outline_ss_mesh_control_datagram_errors_total",
-        "Malformed mesh control datagrams a home dropped because they failed to parse."
-    );
-    describe_counter!(
         "outline_ss_orphan_downlink_replay_bytes_total",
         "Plaintext bytes replayed to resuming clients via the v2 Symmetric \
          Downlink Replay protocol (`ORDR` frame payload), by transport."

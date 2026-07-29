@@ -222,13 +222,11 @@ See the "UDP cross-node migration" note in
     relayed uplink is reaching a home that answers nothing — check the upstream
     the home is dialling. Panels *Mesh Throughput — edge/home* and *Mesh Datagram
     Rate*.
-  - `outline_ss_mesh_throttle_hints_received_total{outcome}` /
-    `outline_ss_mesh_control_datagram_errors_total`. Throttle detection is now
-    local to the edge, so **nothing on this build sends a hint**: a steady zero on
-    the received counter is the expected reading once every node is upgraded, and
-    a non-zero one simply means some peer still runs a pre-v5 build. The home
-    decodes and counts such a hint but no longer acts on it. Panel *Mesh Throttle
-    Hints & Control Errors*.
+  - **Gone:** `outline_ss_mesh_throttle_hints_received_total{outcome}`,
+    `outline_ss_mesh_control_datagram_errors_total` and the *Mesh Throttle Hints
+    & Control Errors* panel. Throttle detection is local to the edge and the mesh
+    carries no control datagrams at all any more, in either direction. Drop the
+    panel from any dashboard copy you forked.
   - On the **client** (ws-rust dashboard, *Cluster / Soft-switch* row):
     `outline_ws_soft_switch_total{outcome}` — operator soft-switch
     migrations, dominated by `migrated` on a healthy switch; and
