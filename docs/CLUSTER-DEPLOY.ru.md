@@ -223,13 +223,11 @@ SS-UDP и VLESS-UDP предъявляют групповой shard-несущи
     что релеймый uplink доезжает до home, который ничего не отвечает: проверь
     upstream, куда ходит home. Панели *Mesh Throughput — edge/home* и *Mesh
     Datagram Rate*.
-  - `outline_ss_mesh_throttle_hints_received_total{outcome}` /
-    `outline_ss_mesh_control_datagram_errors_total`. Throttle-детект теперь
-    локален для edge, поэтому **на этой сборке hint не шлёт никто**: устойчивый
-    ноль на received — ожидаемое показание, когда все узлы обновлены, а ненулевое
-    просто означает, что какой-то пир ещё на до-v5-сборке. Такой hint home
-    декодирует и считает, но больше по нему не действует. Панель *Mesh Throttle
-    Hints & Control Errors*.
+  - **Убрано:** `outline_ss_mesh_throttle_hints_received_total{outcome}`,
+    `outline_ss_mesh_control_datagram_errors_total` и панель *Mesh Throttle Hints
+    & Control Errors*. Throttle-детект локален для edge, а control-датаграмм mesh
+    больше не носит вообще, ни в одну сторону. Если дашборд форкали — удали
+    панель и у себя.
   - На **клиенте** (дашборд ws-rust, ряд *Cluster / Soft-switch*):
     `outline_ws_soft_switch_total{outcome}` — операторские soft-switch
     миграции, на здоровом переключении доминирует `migrated`; и

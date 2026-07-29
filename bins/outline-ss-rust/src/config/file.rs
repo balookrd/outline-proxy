@@ -416,11 +416,14 @@ pub(super) struct PaddingSection {
     /// Inbound-rate floor (bytes/sec) below which the throttle verdict is not
     /// actionable. Default 1_000_000 (~8 Mbit/s). Home (rate detector) only.
     pub throttle_min_bytes_per_sec: Option<u64>,
-    /// Inert: belonged to the mesh `THROTTLE_HINT` edge stall detector, whose
-    /// only sender went with the retired v4 relay. Kept and still accepted
-    /// (`PaddingSection` denies unknown fields) so an existing config keeps
-    /// loading; assigned into `ThrottleDetectParams::edge_min_bytes_per_sec`
-    /// but never read.
+    /// **Deprecated, accepted and ignored.** It floored the edge stall detector
+    /// that fed the mesh `THROTTLE_HINT`, and both went with the retired v4
+    /// relay: an edge now terminates the client's crypto and runs the ordinary
+    /// rate detector (`throttle_min_bytes_per_sec`) over its own client-facing
+    /// carrier. Kept because this section is `deny_unknown_fields`, so dropping
+    /// the field would refuse to load a config that still sets it; loading one
+    /// logs a warning. Remove the field once the key is gone from every
+    /// deployed config.
     pub throttle_edge_min_bytes_per_sec: Option<u64>,
     /// Minimum gap between two signals on one carrier, seconds. Default 30.
     pub throttle_signal_cooldown_secs: Option<u64>,

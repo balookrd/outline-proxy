@@ -1885,7 +1885,6 @@ fn enable_combined_padding_globals() {
         throttle_window_secs: 1,
         throttle_sustain_windows: 1,
         throttle_min_bytes_per_sec: 0,
-        throttle_edge_min_bytes_per_sec: 0,
         throttle_signal_cooldown_secs: 1,
     });
     init_carrier_padding(
@@ -3200,8 +3199,8 @@ async fn cluster_vless_mux_releases_the_relay_and_preserves_the_park() -> Result
 /// involved on any carrier any more: with client crypto terminating on the edge,
 /// the node that owns the throttled last mile is also the node that owns the
 /// padded writer, so it signals its own client directly. The mesh hint went with
-/// the v4 relay it belonged to; only the home's receiver remains, for a peer
-/// still running a pre-v5 build.
+/// the v4 relay it belonged to, receiver included — the mesh carries no control
+/// datagrams at all now.
 ///
 /// Padding is a process-global; it is scoped to this test's own path so the
 /// other cluster tests' `/tcp` carriers stay unpadded (and nothing else in the
@@ -3218,11 +3217,10 @@ async fn cluster_vless_mux_releases_the_relay_and_preserves_the_park() -> Result
 /// honestly labelled rather than deleted: the wire path it walks is real.
 ///
 /// The pieces are covered deterministically elsewhere: the rate-based window by
-/// the `throughput_monitor` tests, and the signal→OCTL half by the
-/// `ThrottleRegistry` and `ws_writer` tests. The edge→home THROTTLE_HINT
-/// datagram itself went with the v4 relay — every edge now terminates the
-/// client's crypto and signals its own client directly — so only the home's
-/// receiver survives, for a peer still running a pre-v5 build.
+/// the `throughput_monitor` tests, and the signal→OCTL half by the `ws_writer`
+/// tests. The edge→home THROTTLE_HINT datagram itself is gone with the v4 relay
+/// — every edge now terminates the client's crypto and signals its own client
+/// directly.
 #[tokio::test]
 #[ignore = "known-red: throttle tunables need re-deriving for edge-local detection (see doc)"]
 async fn cluster_edge_throttle_hint_injects_octl_to_client() -> Result<()> {
@@ -3242,10 +3240,9 @@ async fn cluster_edge_throttle_hint_injects_octl_to_client() -> Result<()> {
         // Window is floored at 1s; sustain 1 fires on a single >1s stalled send.
         throttle_window_secs: 1,
         throttle_sustain_windows: 1,
-        throttle_min_bytes_per_sec: 0,
         // Floor off: this timing-driven e2e drives the stall directly and the
         // flood-throttled delivery rate is not what it asserts on.
-        throttle_edge_min_bytes_per_sec: 0,
+        throttle_min_bytes_per_sec: 0,
         throttle_signal_cooldown_secs: 1,
     });
 

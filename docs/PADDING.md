@@ -186,10 +186,16 @@ throttle_detect_enabled = false          # watch throughput, nudge client to swi
 throttle_ratio_percent = 200             # signal when inbound >= 2x outbound (200 = 2x)
 throttle_window_secs = 1                 # sampling window
 throttle_sustain_windows = 5             # consecutive over-threshold windows before signalling
-throttle_min_bytes_per_sec = 1000000     # home inbound floor (~8 Mbit/s); below this not actionable
-throttle_edge_min_bytes_per_sec = 64000  # inert: its only reader, the edge stall detector, was retired with v4
+throttle_min_bytes_per_sec = 1000000     # inbound floor (~8 Mbit/s); below this not actionable
 throttle_signal_cooldown_secs = 30       # min gap between signals on one carrier
 ```
+
+**Deprecated:** `throttle_edge_min_bytes_per_sec` floored the cluster edge's
+stall detector, which was retired together with the v4 mesh relay (see
+[`CLUSTER.md`](CLUSTER.md)). The key is still **accepted and ignored** — the
+`[padding]` section rejects unknown keys, so removing it from the schema would
+refuse to load a config that still sets it — and a config carrying it logs a
+warning at startup. Remove it; the field itself goes in a later release.
 
 Validation rejects `enabled = true` with an empty `paths`.
 
