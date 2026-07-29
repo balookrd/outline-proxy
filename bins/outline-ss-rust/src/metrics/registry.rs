@@ -290,7 +290,7 @@ pub(super) fn register_descriptions() {
     );
     describe_counter!(
         "outline_ss_mesh_bytes_total",
-        "Still-encrypted application bytes moved over the cluster mesh, by role \
+        "Plaintext application bytes moved over the cluster mesh, by role \
          (edge = this node forwarding a client to a foreign home; home = this node \
          serving a relay for a foreign edge), direction (up = toward home/target, \
          down = toward client) and transport. Edge and home count the same relayed \

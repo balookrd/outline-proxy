@@ -189,7 +189,7 @@ throttle_ratio_percent = 200             # сигнал когда inbound >= 2x
 throttle_window_secs = 1                 # окно семплирования
 throttle_sustain_windows = 5             # сколько окон подряд над порогом до сигнала
 throttle_min_bytes_per_sec = 1000000     # порог inbound на home (~8 Мбит/с); ниже — не actionable
-throttle_edge_min_bytes_per_sec = 64000  # edge кластера: порог доставленной скорости (~512 Кбит/с); ставь ниже throttle-таргета последней мили
+throttle_edge_min_bytes_per_sec = 64000  # inert: единственный читатель, edge stall detector, удалён вместе с v4
 throttle_signal_cooldown_secs = 30       # мин. пауза между сигналами на одной несущей
 ```
 
