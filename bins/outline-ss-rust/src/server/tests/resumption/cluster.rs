@@ -104,6 +104,11 @@ const CLUSTER_VLESS_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 /// these tests, which never fill the ring.
 const V2_DOWNLINK_BUFFER_BYTES: usize = 64 * 1024;
 
+/// Base64 of a 16-byte PSK — the password shape an SS-2022 cipher requires,
+/// where the legacy ciphers take any string. Used by the nodes and clients that
+/// need real SS-2022 UDP responses (see `build_cluster_parts`).
+const SS2022_PSK: &str = "MDEyMzQ1Njc4OWFiY2RlZg==";
+
 /// A running cluster node: an SS-over-WS listener plus a mesh endpoint (home
 /// listener + edge dialer). Aborts its tasks on drop so tests don't leak
 /// listeners between cases.
@@ -153,11 +158,20 @@ fn build_cluster_parts(
     ss_tcp_path: Option<&str>,
     ws_ss_path: Option<&str>,
     downlink_buffer_bytes: usize,
+    ss2022: bool,
 ) -> Result<ClusterParts> {
     // The mesh QUIC endpoint needs the process-wide rustls provider installed.
     ensure_rustls_provider_installed();
 
     let mut config = sample_config((Ipv4Addr::LOCALHOST, 0).into());
+    // SS-2022 changes what a UDP *response* carries: the server session id the
+    // NAT entry allocated, plus a per-session packet counter. The legacy cipher
+    // has no field for either, so only a 2022 node can tell whether that id was
+    // reserved at all — which is what the direct/relayed hand-off depends on.
+    if ss2022 {
+        config.method = CipherKind::Aes128Gcm2022;
+        config.users[0].password = Some(SS2022_PSK.to_string());
+    }
     config.session_resumption.enabled = true;
     // Non-zero turns on the v2 Symmetric Downlink Replay protocol for this
     // node's *own* negotiation (`OrphanRegistry::symmetric_replay_enabled`).
@@ -281,6 +295,7 @@ async fn spawn_cluster_node(
         None,
         None,
         0,
+        false,
     )?;
     boot_ws_node(parts).await
 }
@@ -351,6 +366,7 @@ async fn spawn_xhttp_v2_node(
         None,
         None,
         V2_DOWNLINK_BUFFER_BYTES,
+        false,
     )?;
     boot_ws_node(parts).await
 }
@@ -368,8 +384,37 @@ async fn spawn_combined_ws_node(
     budget: Duration,
     ws_ss_path: &str,
 ) -> Result<(ClusterNode, UserKey)> {
-    let parts =
-        build_cluster_parts(psk, shard, peers, budget, None, None, None, Some(ws_ss_path), 0)?;
+    let parts = build_cluster_parts(
+        psk,
+        shard,
+        peers,
+        budget,
+        None,
+        None,
+        None,
+        Some(ws_ss_path),
+        0,
+        false,
+    )?;
+    boot_ws_node(parts).await
+}
+
+/// Boots a WS cluster node whose shared user runs an **SS-2022** cipher.
+///
+/// The direct↔relayed hand-off tests need one: on the legacy cipher a UDP
+/// response carries no server session id, so
+/// [`crate::crypto::encrypt_udp_packet_for_response`] ignores the one the NAT
+/// entry holds and the whole `ServerSessionId::for_coding` question is invisible.
+/// On SS-2022 the seal *requires* it, so a NAT socket that changes hands between
+/// a relayed carrier and a direct one only keeps answering if the id was
+/// reserved when the entry was created.
+async fn spawn_ss2022_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+) -> Result<(ClusterNode, UserKey)> {
+    let parts = build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, true)?;
     boot_ws_node(parts).await
 }
 
@@ -384,8 +429,18 @@ async fn spawn_throttle_node(
     budget: Duration,
     ss_tcp_path: &str,
 ) -> Result<(ClusterNode, UserKey)> {
-    let parts =
-        build_cluster_parts(psk, shard, peers, budget, None, None, Some(ss_tcp_path), None, 0)?;
+    let parts = build_cluster_parts(
+        psk,
+        shard,
+        peers,
+        budget,
+        None,
+        None,
+        Some(ss_tcp_path),
+        None,
+        0,
+        false,
+    )?;
     boot_ws_node(parts).await
 }
 
@@ -412,7 +467,7 @@ async fn spawn_h3_edge_node(
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
 ) -> Result<(H3EdgeNode, UserKey)> {
-    let parts = build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0)?;
+    let parts = build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, false)?;
     boot_h3_edge_node(parts).await
 }
 
@@ -437,6 +492,7 @@ async fn spawn_xhttp_h3_v2_edge_node(
         None,
         None,
         V2_DOWNLINK_BUFFER_BYTES,
+        false,
     )?;
     boot_h3_edge_node(parts).await
 }
@@ -521,6 +577,7 @@ async fn spawn_combined_xhttp_h3_node(
         None,
         None,
         0,
+        false,
     )?;
     let ctx = H3ServeCtx {
         routes,
@@ -620,6 +677,64 @@ async fn park_session_on_home(
     socket.close(None).await?;
     drop(socket);
     wait_for_park(home, issued).await?;
+    Ok(issued)
+}
+
+/// Establishes an **SS-UDP** session against the home, round-trips one datagram
+/// so the NAT entry is real, lets it park, and returns the id the home minted.
+///
+/// The SS-UDP twin of [`park_session_on_home`], and needed for the same reason:
+/// with client crypto terminating on the edge, a v5 relay carries only a session
+/// the home already holds. A home with no park under the presented id refuses
+/// before the client is upgraded, and the edge serves a fresh local session — so
+/// a test that wants the *relay* exercised has to create the park first, and a
+/// fabricated `resume_id_for_shard` now tests the fallback instead.
+async fn park_udp_session_on_home(
+    home: &ClusterNode,
+    path: &str,
+    user: &UserKey,
+    target: SocketAddr,
+    payload: &[u8],
+) -> Result<SessionId> {
+    let (mut socket, issued) = connect_ws_h1(home.listen_addr, path, None, true).await?;
+    let issued = issued.context("the home must mint a resume id for a resume-capable client")?;
+    let mut plaintext = TargetAddr::from(target).to_wire_bytes()?;
+    plaintext.extend_from_slice(payload);
+    socket
+        .send(WsMessage::Binary(encrypt_udp_packet(user, &plaintext)?.into()))
+        .await?;
+    let _ = expect_binary_reply(&mut socket).await?;
+    socket.close(None).await?;
+    drop(socket);
+    wait_for_park(home, issued).await?;
+    Ok(issued)
+}
+
+/// The [`UdpWsTransport`] twin of [`park_udp_session_on_home`], for the homes
+/// whose SS-UDP leg the raw WS helper cannot dial — a combined-SS base, whose
+/// `/{token}` UDP discriminator only the real client encodes.
+#[allow(clippy::too_many_arguments)]
+async fn park_udp_client_session_on_home(
+    home: &ClusterNode,
+    url: &Url,
+    mode: TransportMode,
+    cipher: CipherKind,
+    password: &str,
+    kind: Option<SsPathKind>,
+    tag: &'static str,
+    target: SocketAddr,
+) -> Result<ClientSessionId> {
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let (transport, issued, _downgraded) = UdpWsTransport::connect_with_resume(
+        &cache, url, mode, cipher, password, None, false, tag, None, None, kind,
+    )
+    .await?;
+    let issued = issued.context("a resume-capable dial must be issued a session id")?;
+    transport.send_packet(&ss_first_chunk(target, b"seed")).await?;
+    let reply = transport.read_packet().await?;
+    anyhow::ensure!(reply.ends_with(b"seed"), "the home must serve the seeding datagram itself");
+    transport.close().await?;
+    wait_for_park(home, SessionId::from_bytes(*issued.as_bytes())).await?;
     Ok(issued)
 }
 
@@ -1450,7 +1565,7 @@ async fn cluster_udp_combined_xhttp_relays_to_home() -> Result<()> {
 
     // Home resolves the combined `/ssc` (both xhttp tables) and runs the mesh
     // listener; the edge serves `/ssc` and relays a foreign-shard resume.
-    let (home, _user) = spawn_cluster_node(
+    let (home, user) = spawn_cluster_node(
         PSK,
         1,
         HashMap::new(),
@@ -1464,7 +1579,10 @@ async fn cluster_udp_combined_xhttp_relays_to_home() -> Result<()> {
         spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), Some("/ssc"), Some("/ssc"))
             .await?;
 
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // Establish against the home first: a v5 relay resumes a park, it never
+    // creates a session. Seeded over the home's WS `/udp` leg — a park is a set
+    // of NAT keys and an owner, with no carrier or path attached to it.
+    let session_id = park_udp_session_on_home(&home, "/udp", &user, target_addr, b"seed").await?;
     let client_resume = ClientSessionId::from_bytes(*session_id.as_bytes());
 
     let url = Url::parse(&format!("http://{}/ssc", edge.listen_addr))?;
@@ -1559,8 +1677,20 @@ async fn cluster_udp_combined_ws_relays_to_home() -> Result<()> {
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) = spawn_combined_ws_node(PSK, 2, peers, Duration::from_secs(4), "/ssc").await?;
 
-    let session_id = resume_id_for_shard(PSK, 1)?;
-    let client_resume = ClientSessionId::from_bytes(*session_id.as_bytes());
+    // Establish against the home first: a v5 relay resumes a park, it never
+    // creates a session.
+    let home_url = Url::parse(&format!("ws://{}/ssc", home.listen_addr))?;
+    let client_resume = park_udp_client_session_on_home(
+        &home,
+        &home_url,
+        TransportMode::WsH1,
+        CipherKind::Chacha20IetfPoly1305,
+        "secret-b",
+        Some(SsPathKind::Udp),
+        "cluster-udp-combined-ws-seed",
+        target_addr,
+    )
+    .await?;
 
     let url = Url::parse(&format!("ws://{}/ssc", edge.listen_addr))?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
@@ -1817,8 +1947,10 @@ async fn cluster_udp_relays_datagrams_to_home() -> Result<()> {
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, None).await?;
 
-    // A home-shard resume id routes the edge's /udp carrier to the home.
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // The park comes first: a v5 relay carries only a session the home already
+    // holds, so a fabricated id would be refused and served locally — which
+    // would still echo, and would prove nothing about the relay.
+    let session_id = park_udp_session_on_home(&home, "/udp", &user, target_addr, b"seed").await?;
     let (mut socket, _) = connect_ws_h1(edge.listen_addr, "/udp", Some(session_id), true).await?;
 
     // Each distinct datagram size must round-trip byte-exact through the relay.
@@ -1842,11 +1974,18 @@ async fn cluster_udp_relays_datagrams_to_home() -> Result<()> {
     Ok(())
 }
 
-/// An SS-UDP session survives an edge switch: a datagram sent through one edge
-/// and then a *different* edge relay to the same home, which re-points the
-/// parked NAT entry at the new relay stream rather than binding a fresh upstream
-/// socket — so the target sees exactly one source address. The mesh counterpart
-/// of `ss_udp_resume_hit_reattaches_parked_nat_entry`.
+/// An SS-UDP session survives an edge switch: established against its home, then
+/// resumed through one edge and through a *different* edge, both relaying to that
+/// home over the mesh. The home re-points the parked NAT entry at each new relay
+/// stream instead of binding a fresh upstream socket, so the target sees exactly
+/// one source address across all three carriers. The mesh counterpart of
+/// `ss_udp_resume_hit_reattaches_parked_nat_entry`.
+///
+/// The first connect goes to the home directly because that is the only thing
+/// that mints a park: with client crypto on the edge, the mesh carries only
+/// sessions the home already owns. The second edge additionally proves the home
+/// **re-parks** the NAT keys after a relayed splice ends — a session that
+/// survived one switch and not the next would still pass a two-carrier test.
 #[tokio::test]
 async fn cluster_udp_survives_edge_switch() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-udp-switch-psk";
@@ -1860,10 +1999,13 @@ async fn cluster_udp_survives_edge_switch() -> Result<()> {
         spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4), None, None).await?;
     let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4), None, None).await?;
 
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // Session #0, direct against the home: binds the one upstream socket the
+    // whole test then follows, and parks its key on close.
+    let session_id = park_udp_session_on_home(&home, "/udp", &user, target_addr, b"udp-0").await?;
+    assert_eq!(sources.lock().await.len(), 1, "the home must open exactly one upstream source");
 
-    // Session #1 via edge A: the home misses (never parked) → fresh NAT entry,
-    // parked on close under the id the client presented.
+    // Session #1 via edge A: the home's park hits → the entry is re-pointed at
+    // the relay, and the responses are sealed by the edge.
     let (mut sock_a, _) = connect_ws_h1(edge_a.listen_addr, "/udp", Some(session_id), true).await?;
     let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(b"udp-a");
@@ -1874,15 +2016,14 @@ async fn cluster_udp_survives_edge_switch() -> Result<()> {
     assert_eq!(
         sources.lock().await.len(),
         1,
-        "first relay must open exactly one upstream source"
+        "the first relay must reuse the parked NAT entry, not bind a second socket"
     );
     sock_a.close(None).await?;
     drop(sock_a);
-    // Let the mesh stream finish and the home park the NAT keys on the FIN.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The home re-parks the NAT keys once the mesh stream ends.
+    wait_for_park(&home, session_id).await?;
 
-    // Session #2 via edge B, same id: the home's `attempt_ss_udp_resume` hits →
-    // the parked NAT entry is re-pointed at the new relay, with no fresh bind.
+    // Session #2 via edge B, same id: proves the re-park above is usable.
     let (mut sock_b, _) = connect_ws_h1(edge_b.listen_addr, "/udp", Some(session_id), true).await?;
     let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(b"udp-b");
@@ -1914,6 +2055,11 @@ async fn cluster_udp_survives_edge_switch() -> Result<()> {
 /// still receives its own echo. Buggy behaviour: A times out (its echo went to
 /// B). Uses two distinct home-shard resume ids so B is a genuinely separate
 /// session, not a resume of A.
+///
+/// Both sessions are established against the home first: a v5 relay only ever
+/// resumes a park the home already holds, so without that step each carrier
+/// would be served locally by its own edge and the two would never meet on one
+/// NAT table.
 #[tokio::test]
 async fn cluster_udp_concurrent_carriers_do_not_share_response_slot() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-udp-collision-psk";
@@ -1929,10 +2075,10 @@ async fn cluster_udp_concurrent_carriers_do_not_share_response_slot() -> Result<
         spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(8), None, None).await?;
     let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(8), None, None).await?;
 
-    // Two DISTINCT home-shard sessions (not a resume of one another): both route
-    // to the home, but each is its own carrier.
-    let session_a = resume_id_for_shard(PSK, 1)?;
-    let session_b = resume_id_for_shard(PSK, 1)?;
+    // Two DISTINCT sessions (not a resume of one another), each established
+    // against the home so each has a park for its edge to relay onto.
+    let session_a = park_udp_session_on_home(&home, "/udp", &user, target_addr, b"seed-a").await?;
+    let session_b = park_udp_session_on_home(&home, "/udp", &user, target_addr, b"seed-b").await?;
     assert_ne!(session_a, session_b, "the two sessions must be distinct");
 
     // Carrier A: register a NAT responder for `target_addr`, then send a datagram
@@ -1974,68 +2120,46 @@ async fn cluster_udp_concurrent_carriers_do_not_share_response_slot() -> Result<
     Ok(())
 }
 
-/// A relayed SS-UDP carrier whose home does not serve the edge's path must
+/// A relayed SS-UDP carrier whose home holds no park under the presented id must
 /// degrade to a fresh local session on the edge, not disappear.
 ///
-/// The home keys the relayed user lookup on the edge-supplied `header.path`, so
-/// under an asymmetric cluster config that path resolves to an *empty* route
-/// table — no configured key can authenticate a single datagram. This used to be
-/// served anyway and every packet was silently dropped for the life of the
-/// session (a black hole seen in production). The home now refuses such a stream
-/// at setup with `CloseReason::NoRoute`, and because the edge waits for the
-/// home's ack before upgrading the client carrier, it still has the choice to
-/// serve the client itself — which is what this asserts: the echo comes back,
-/// through the edge's own local session.
+/// This is the ordinary outcome now that the edge terminates the client's
+/// crypto: the home is asked only "is there a park under this id?", and answers
+/// no for every id it never minted, for every park that has expired, and for a
+/// home whose cluster config diverged. Because the edge waits for that answer
+/// before upgrading the client carrier, it still has the choice to serve the
+/// client itself — which is what this asserts, on both halves of the fallback:
+/// the datagram round-trips through the edge's own session, **and** the echoed
+/// session id is the edge's own. Echoing the presented id back would send the
+/// client's next reconnect straight to the home that just refused it, be refused
+/// again, and be served locally again: a session that can never resume.
 ///
-/// Only reachable under an asymmetric config; a symmetric cluster (matching
-/// paths and users, the supported topology) always resolves the path, as
-/// `cluster_udp_relays_datagrams_to_home` and `cluster_udp_xhttp_relays_to_home`
-/// cover across the `udp` and `xhttp_ss_udp` tables respectively.
+/// The v4 refusal this replaced (`CloseReason::NoRoute`, an asymmetric-config
+/// home resolving the edge's path to an empty route table) is still covered on
+/// the v4 path by `transport::mesh_relay`'s
+/// `a_relayed_carrier_with_no_home_route_is_refused` and
+/// `an_edge_relay_refused_for_no_route_falls_back_to_a_local_session`.
 #[tokio::test]
-async fn cluster_udp_relay_falls_back_locally_when_home_lacks_the_path() -> Result<()> {
-    const PSK: &[u8] = b"cluster-e2e-udp-emptyroute-psk";
+async fn cluster_udp_relay_falls_back_locally_when_the_home_holds_no_park() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-nopark-psk";
     let (target_addr, _sources) = spawn_echo_udp_target().await?;
 
-    // Build the home's cluster parts, then blank its `udp` route table so the
-    // relayed carrier resolves to no users — an asymmetric-config home. Only the
-    // mesh listener is needed (the client dials the edge, not the home's WS).
-    let home = build_cluster_parts(
-        PSK,
-        1,
-        HashMap::new(),
-        Duration::from_secs(4),
-        None,
-        None,
-        None,
-        None,
-        0,
-    )?;
-    {
-        let snap = home.routes.load();
-        home.routes.store(Arc::new(RouteRegistry {
-            tcp: Arc::clone(&snap.tcp),
-            udp: Arc::new(BTreeMap::new()),
-            vless: Arc::clone(&snap.vless),
-            xhttp_vless: Arc::clone(&snap.xhttp_vless),
-            xhttp_ss: Arc::clone(&snap.xhttp_ss),
-            xhttp_ss_udp: Arc::clone(&snap.xhttp_ss_udp),
-        }));
-    }
-    let mesh_addr = home.mesh_addr;
-    let user = home.user.clone();
-    let _home_mesh = tokio::spawn(run_mesh_listener(
-        home.cluster,
-        home.services,
-        home.routes,
-        ShutdownSignal::never(),
-    ));
-
-    // Edge serves /udp normally and relays a shard-1 resume to the home.
-    let peers = HashMap::from([(ShardId::new(1).unwrap(), mesh_addr)]);
+    // A healthy, reachable home that simply holds no park: nothing was ever
+    // established against it.
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, None).await?;
 
+    // A plausible-looking home-shard id the home has never seen.
     let session_id = resume_id_for_shard(PSK, 1)?;
-    let (mut socket, _) = connect_ws_h1(edge.listen_addr, "/udp", Some(session_id), true).await?;
+    let (mut socket, issued) =
+        connect_ws_h1(edge.listen_addr, "/udp", Some(session_id), true).await?;
+    let issued = issued.context("the edge must issue a session id of its own")?;
+    assert_ne!(
+        issued, session_id,
+        "a refused relay must echo the id this edge will park under, not the foreign one",
+    );
 
     let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(b"not-into-the-void");
@@ -2043,8 +2167,8 @@ async fn cluster_udp_relay_falls_back_locally_when_home_lacks_the_path() -> Resu
         .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext)?.into()))
         .await?;
 
-    // The home refused the relay for lack of a route, so the edge served this
-    // carrier locally: the datagram reaches the target and the echo comes back.
+    // The home refused the relay, so the edge served this carrier locally: the
+    // datagram reaches the target and the echo comes back.
     let reply = expect_binary_reply(&mut socket)
         .await
         .context("a relay the home refused must fall back to a local session, not be dropped")?;
@@ -2056,6 +2180,161 @@ async fn cluster_udp_relay_falls_back_locally_when_home_lacks_the_path() -> Resu
 
     socket.close(None).await?;
     Ok(())
+}
+
+/// A session established on a **direct** carrier and resumed through a **relay**
+/// keeps its upstream socket, and its responses keep arriving — now sealed by
+/// the edge instead of the home.
+///
+/// The home re-points the parked NAT entry at the relay under
+/// [`crate::server::nat::UdpResponseCoding::Plaintext`] and stops sealing
+/// anything: it holds no key. What comes back over the mesh is the same
+/// SOCKS5-wrapped body it would have encrypted, and the edge seals it under the
+/// client's own key. An SS-2022 cipher is deliberate — it is the only one whose
+/// response carries a server session id and a packet counter, so a reply the
+/// client can open proves the whole seal, not just that bytes moved.
+#[tokio::test]
+async fn cluster_udp_direct_park_resumes_through_a_relay() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-direct-to-relay-psk";
+    let (target_addr, sources) = spawn_echo_udp_target().await?;
+
+    let (home, _user) = spawn_ss2022_node(PSK, 1, HashMap::new(), Duration::from_secs(4)).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_ss2022_node(PSK, 2, peers, Duration::from_secs(4)).await?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+
+    // Leg 1, direct against the home: the NAT entry is created under
+    // `UdpResponseCoding::Ss`, so the home seals its own responses.
+    let home_url = Url::parse(&format!("ws://{}/udp", home.listen_addr))?;
+    let (direct, issued, _downgraded) = ss2022_udp_client(&cache, &home_url, None).await?;
+    let echo = ss2022_roundtrip(&direct, target_addr, b"direct").await?;
+    assert!(echo.ends_with(b"direct"), "the home must serve the direct leg: {echo:?}");
+    let issued = issued.context("a resume-capable dial must be issued a session id")?;
+    direct.close().await?;
+    wait_for_park(&home, SessionId::from_bytes(*issued.as_bytes())).await?;
+    let bound = sources.lock().await.clone();
+    assert_eq!(bound.len(), 1, "the direct leg must bind exactly one upstream socket");
+
+    // Leg 2, through the edge: the home hands the same socket to a relayed
+    // carrier and answers in plaintext; the edge seals for the client.
+    let edge_url = Url::parse(&format!("ws://{}/udp", edge.listen_addr))?;
+    let (relayed, _issued, _downgraded) =
+        ss2022_udp_client(&cache, &edge_url, Some(issued)).await?;
+    let echo = ss2022_roundtrip(&relayed, target_addr, b"relayed").await?;
+    assert!(
+        echo.ends_with(b"relayed"),
+        "the edge must seal the home's plaintext response under the client's key: {echo:?}",
+    );
+    assert_eq!(
+        sources.lock().await.clone(),
+        bound,
+        "the relayed carrier must reuse the parked upstream socket, not bind a new one",
+    );
+
+    relayed.close().await?;
+    Ok(())
+}
+
+/// The mirror direction: a NAT entry **created by a relayed carrier** is later
+/// served by a **direct** one, and its SS-2022 responses still seal.
+///
+/// A relayed carrier attaches with no key at all, so it cannot read a server
+/// session id off the datagram that creates an entry the way a decrypting
+/// carrier does. `ServerSessionId::for_coding` therefore reserves one anyway for
+/// `UdpResponseCoding::Plaintext` — eight random bytes the relayed path never
+/// reads, and exactly what a later direct carrier needs to seal responses out of
+/// that same socket. With `Omit` instead, leg 3 below fails every response with
+/// `CryptoError::InvalidHeader` and the read times out.
+///
+/// Target B is introduced *on the relayed leg* on purpose: that is the only way
+/// to make the home create an entry under the plaintext coding.
+#[tokio::test]
+async fn cluster_udp_relayed_nat_entry_resumes_on_a_direct_carrier() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-relay-to-direct-psk";
+    let (target_a, _sources_a) = spawn_echo_udp_target().await?;
+    let (target_b, sources_b) = spawn_echo_udp_target().await?;
+
+    let (home, _user) = spawn_ss2022_node(PSK, 1, HashMap::new(), Duration::from_secs(4)).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_ss2022_node(PSK, 2, peers, Duration::from_secs(4)).await?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+
+    // Leg 1, direct: establishes the session and parks it. Target A only.
+    let home_url = Url::parse(&format!("ws://{}/udp", home.listen_addr))?;
+    let (direct, issued, _downgraded) = ss2022_udp_client(&cache, &home_url, None).await?;
+    let echo = ss2022_roundtrip(&direct, target_a, b"seed").await?;
+    assert!(echo.ends_with(b"seed"), "the home must serve the seeding leg: {echo:?}");
+    let issued = issued.context("a resume-capable dial must be issued a session id")?;
+    direct.close().await?;
+    wait_for_park(&home, SessionId::from_bytes(*issued.as_bytes())).await?;
+
+    // Leg 2, relayed: the first datagram for target B creates its NAT entry
+    // while the carrier is a *relayed* one, i.e. under the plaintext coding.
+    let edge_url = Url::parse(&format!("ws://{}/udp", edge.listen_addr))?;
+    let (relayed, _issued, _downgraded) =
+        ss2022_udp_client(&cache, &edge_url, Some(issued)).await?;
+    let echo = ss2022_roundtrip(&relayed, target_b, b"via-relay").await?;
+    assert!(echo.ends_with(b"via-relay"), "the relayed leg must reach target B: {echo:?}");
+    let bound_b = sources_b.lock().await.clone();
+    assert_eq!(bound_b.len(), 1, "target B must see exactly one upstream socket");
+    relayed.close().await?;
+    wait_for_park(&home, SessionId::from_bytes(*issued.as_bytes())).await?;
+
+    // Leg 3, direct again: the home takes the plaintext-created entry back and
+    // seals target B's responses itself.
+    let (back, _issued, _downgraded) = ss2022_udp_client(&cache, &home_url, Some(issued)).await?;
+    let echo = ss2022_roundtrip(&back, target_b, b"back-direct").await?;
+    assert!(
+        echo.ends_with(b"back-direct"),
+        "a direct carrier must be able to seal responses out of a socket a relayed carrier \
+         created — that is what the reserved server session id is for: {echo:?}",
+    );
+    assert_eq!(
+        sources_b.lock().await.clone(),
+        bound_b,
+        "the hand-back must reuse the socket the relayed carrier created",
+    );
+
+    back.close().await?;
+    Ok(())
+}
+
+/// A real SS-UDP client on an **SS-2022** cipher, dialling `url` over plain WS.
+/// SS-2022 is what puts a server session id and a packet counter on every
+/// response, which is the only way a test can tell whether the id a NAT entry
+/// reserved is the one being used.
+async fn ss2022_udp_client(
+    cache: &ClientDnsCache,
+    url: &Url,
+    resume: Option<ClientSessionId>,
+) -> Result<(UdpWsTransport, Option<ClientSessionId>, Option<TransportMode>)> {
+    UdpWsTransport::connect_with_resume(
+        cache,
+        url,
+        TransportMode::WsH1,
+        CipherKind::Aes128Gcm2022,
+        SS2022_PSK,
+        None,
+        false,
+        "cluster-udp-handover-test",
+        None,
+        resume,
+        None,
+    )
+    .await
+}
+
+/// Sends one datagram and returns the echo, bounded so a seal that silently
+/// fails surfaces as a failed assertion rather than a hung test.
+async fn ss2022_roundtrip(
+    transport: &UdpWsTransport,
+    target: SocketAddr,
+    payload: &[u8],
+) -> Result<Bytes> {
+    transport.send_packet(&ss_first_chunk(target, payload)).await?;
+    tokio::time::timeout(Duration::from_secs(5), transport.read_packet())
+        .await
+        .context("no response came back — a response the client cannot open never arrives")?
 }
 
 /// SS-UDP over XHTTP relays through the mesh. The client drives the real
@@ -2071,19 +2350,23 @@ async fn cluster_udp_xhttp_relays_to_home() -> Result<()> {
 
     // Home resolves `/ssu` on its `xhttp_ss_udp` table and runs the mesh
     // listener; the edge serves `/ssu` and relays a foreign-shard resume.
-    let (home, _user) =
+    let (home, user) =
         spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, Some("/ssu"))
             .await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) =
         spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, Some("/ssu")).await?;
 
-    // Home-shard resume id: the edge routes this XHTTP UDP session to the home.
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // Establish against the home first: a v5 relay carries only a session the
+    // home already holds, so a fabricated id would be refused and served locally.
+    // The park is seeded over the home's WS `/udp` leg because a park is a set of
+    // NAT keys and an owner — it carries no carrier and no path — which makes
+    // this leg a cross-transport resume as well.
+    let session_id = park_udp_session_on_home(&home, "/udp", &user, target_addr, b"seed").await?;
     let client_resume = ClientSessionId::from_bytes(*session_id.as_bytes());
 
     // Real client: SS-UDP over XHTTP (h2 packet-up) to the edge, resuming the
-    // home-shard id so the edge relays the datagram carrier over the mesh.
+    // parked id so the edge relays the datagram carrier over the mesh.
     let url = Url::parse(&format!("http://{}/ssu", edge.listen_addr))?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
     let (transport, _issued, _downgraded) = UdpWsTransport::connect_with_resume(
@@ -2133,9 +2416,10 @@ async fn cluster_udp_h3_relays_to_home() -> Result<()> {
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) = spawn_h3_edge_node(PSK, 2, peers, Duration::from_secs(4)).await?;
 
-    let session_id = resume_id_for_shard(PSK, 1)?;
+    // The park comes first: a v5 relay carries only a session the home holds.
+    let session_id = park_udp_session_on_home(&home, "/udp", &user, target_addr, b"seed").await?;
 
-    // h3 client → edge, CONNECT `/udp` presenting the home-shard resume id.
+    // h3 client → edge, CONNECT `/udp` presenting the parked resume id.
     let mut endpoint = Endpoint::client((Ipv4Addr::LOCALHOST, 0).into())?;
     endpoint.set_default_client_config(test_h3_client_config(edge.cert_der.clone())?);
     let connection = endpoint.connect(edge.addr, "localhost")?.await?;
