@@ -22,7 +22,7 @@ use super::super::super::state::Services;
 use super::super::is_normal_h3_shutdown;
 use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
 use super::handlers::{
-    XhttpRoute, apply_udp_records_echo, negotiate_udp_records, spawn_relay, xhttp_edge,
+    XhttpEdge, XhttpRoute, apply_udp_records_echo, negotiate_udp_records, spawn_relay, xhttp_edge,
 };
 use super::padding::post_response_headers;
 use super::{
@@ -140,10 +140,6 @@ async fn xhttp_h3_get(
         peer_addr,
     )
     .await;
-    // Snapshot before `edge` moves into `spawn_relay`: a relayed session answers
-    // with the mesh's own echo, which withholds the v2 confirmation this node
-    // cannot honour over the mesh.
-    let relayed_echo = edge.relayed_echo();
     let (session, created) = match ctx
         .registry
         .get_or_create(&session_id, edge.issued_id(&resume_for_create))
@@ -158,6 +154,13 @@ async fn xhttp_h3_get(
             return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
         },
     };
+    // Snapshot before `edge` moves into `spawn_relay`: a relayed session answers
+    // with the mesh's own echo, which withholds the v2 confirmation this node
+    // cannot honour over the mesh. Only when this request created the session —
+    // otherwise `edge` is dropped unused and advertising a relay this response
+    // did not establish would tell the client a foreign id continues when it
+    // does not.
+    let relayed_echo = if created { edge.relayed_echo() } else { None };
 
     // Latch the datagram-framing negotiation before the relay spawns — it
     // reads the flag when it builds its duplex.
@@ -240,18 +243,23 @@ async fn xhttp_h3_post(
     // like the h1/h2 XHTTP handlers do.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
-    let edge = xhttp_edge(
-        ctx.cluster.as_ref(),
-        &ctx.services,
-        &ctx.registry,
-        &ctx.route,
-        &session_id,
-        &headers,
-        peer_addr,
-    )
-    .await;
-    // Snapshot before `edge` moves into `spawn_relay`; see `xhttp_h3_get`.
-    let relayed_echo = edge.relayed_echo();
+    // Only `seq == 0` can create a session, so only `seq == 0` may open a mesh
+    // relay. A later POST that opened one would drop it unused — or, against a
+    // swept session, open a relay on the home and then answer 410.
+    let edge = if seq == 0 {
+        xhttp_edge(
+            ctx.cluster.as_ref(),
+            &ctx.services,
+            &ctx.registry,
+            &ctx.route,
+            &session_id,
+            &headers,
+            peer_addr,
+        )
+        .await
+    } else {
+        XhttpEdge::local()
+    };
     let (session, created) = if seq == 0 {
         match ctx
             .registry
@@ -277,6 +285,10 @@ async fn xhttp_h3_post(
     if session.is_closed() {
         return finish_with_status(stream, StatusCode::GONE).await;
     }
+
+    // Snapshot before `edge` moves into `spawn_relay`, and only when this request
+    // created the session; see `xhttp_h3_get`.
+    let relayed_echo = if created { edge.relayed_echo() } else { None };
 
     let udp_records = negotiate_udp_records(&session, &ctx.route, &headers);
 
@@ -412,8 +424,6 @@ async fn xhttp_h3_stream_one(
         peer_addr,
     )
     .await;
-    // Snapshot before `edge` moves into `spawn_relay`; see `xhttp_h3_get`.
-    let relayed_echo = edge.relayed_echo();
     let (session, created) = match ctx
         .registry
         .get_or_create(&session_id, edge.issued_id(&resume_for_create))
@@ -431,6 +441,9 @@ async fn xhttp_h3_stream_one(
     if session.is_closed() {
         return finish_with_status(stream, StatusCode::GONE).await;
     }
+    // Snapshot before `edge` moves into `spawn_relay`, and only when this request
+    // created the session; see `xhttp_h3_get`.
+    let relayed_echo = if created { edge.relayed_echo() } else { None };
     let udp_records = negotiate_udp_records(&session, &ctx.route, &headers);
     if created
         && !spawn_relay(
