@@ -144,7 +144,7 @@ async fn tcp_upgrade_for_path(
     // the home parks under exactly that one; a home that refused leaves the
     // local negotiation — and its locally minted id — in force.
     let local = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
-    let echo = mesh_relay::ss_edge_echo(edge.as_ref(), &local);
+    let echo = mesh_relay::edge_echo(edge.as_ref(), &local);
     let (resume, upstream) = match edge {
         Some(edge) => (edge.resume, edge.source),
         None => (local, UpstreamSource::Direct),
@@ -191,36 +191,34 @@ pub(super) async fn vless_websocket_upgrade(
     let protocol = protocol_from_http_version(version);
     let path: Arc<str> = Arc::from(uri.path());
     let server = Arc::clone(&state.services.vless_server);
-    // Cluster edge: relay a foreign-shard resume to its home over the mesh.
-    // See the matching note in `tcp_upgrade_for_path`.
-    let ws = if let Some(cluster) = state.cluster.as_deref() {
-        match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
-            (RouteDecision::Relay(shard), Some(advert)) => {
-                match mesh_relay::try_relay_edge(
-                    ws,
+    // Cluster edge: a resume id whose shard is a foreign home means the session
+    // being resumed lives there. The client is still authenticated *here*, with
+    // this node's own VLESS credentials — only the upstream is taken over the
+    // mesh. See the matching note in `tcp_upgrade_for_path`.
+    let edge = match state.cluster.as_deref() {
+        Some(cluster) => {
+            match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
+                (RouteDecision::Relay(shard), Some(advert)) => mesh_relay::open_edge_relay_v5(
                     cluster,
-                    &server.metrics,
-                    mesh_relay::EdgeRelay {
-                        shard,
-                        advert,
-                        carrier: CarrierKind::VlessTcp,
-                        path: Arc::clone(&path),
-                        peer_addr,
-                        protocol,
-                        app_protocol: AppProtocol::Vless,
-                        kind: "vless",
-                    },
+                    shard,
+                    &advert,
+                    MeshFraming::Tcp,
+                    peer_addr,
                 )
                 .await
-                {
-                    Ok(response) => return response,
-                    Err(ws) => ws,
-                }
-            },
-            _ => ws,
-        }
-    } else {
-        ws
+                .map(|pooled| {
+                    mesh_relay::edge_upstream(
+                        pooled,
+                        &advert,
+                        cluster,
+                        &server.metrics,
+                        &server.orphan_registry,
+                    )
+                }),
+                _ => None,
+            }
+        },
+        None => None,
     };
     let routes_snap = state.routes.load();
     let route = routes_snap
@@ -234,11 +232,17 @@ pub(super) async fn vless_websocket_upgrade(
         server
             .metrics
             .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Vless);
-    let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
     // Captured by value before `resume` moves into the closure — see the
-    // matching note in `tcp_websocket_upgrade`. VLESS-WS echoes the same
-    // v1/v2 capabilities as the SS-WS path (v1.1).
-    let echo = resume.response_echo();
+    // matching note in `tcp_websocket_upgrade`. A direct VLESS-WS session echoes
+    // the same v1/v2 capabilities as the SS-WS path (v1.1); a relayed one
+    // answers with the mesh's own echo, which withholds the v2 confirmation the
+    // edge cannot honour and carries the id the home parks under.
+    let local = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
+    let echo = mesh_relay::edge_echo(edge.as_ref(), &local);
+    let (resume, upstream) = match edge {
+        Some(edge) => (edge.resume, edge.source),
+        None => (local, UpstreamSource::Direct),
+    };
     // Resolve the carrier-padding scheme before `path` moves into the closure.
     let padding = carrier_padding::scheme_for_path(&path);
     let mut response = ws.on_upgrade(move |socket| async move {
@@ -250,7 +254,8 @@ pub(super) async fn vless_websocket_upgrade(
             padding,
             peer: Some(peer_addr.ip()),
         };
-        let result = vless::handle_vless_connection(socket, server, route_ctx, resume).await;
+        let result =
+            vless::handle_vless_connection(socket, server, route_ctx, resume, upstream).await;
         finish_ws_session(session, result, "vless");
     });
     echo.apply(response.headers_mut());

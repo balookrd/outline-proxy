@@ -115,6 +115,32 @@ impl MeshUpstreamSetup {
         }
     }
 
+    /// Abandons an opened relay without ever attesting a user, resetting both
+    /// halves so the home learns immediately instead of waiting out its
+    /// USER-frame deadline with a relay slot held.
+    ///
+    /// The one caller is the VLESS edge: it opens the relay before it can read
+    /// the client's first frame, and only then learns whether the command is
+    /// TCP. A `Udp` or `Mux` command needs an upstream shape this splice does
+    /// not carry, so the edge serves it locally — and it must get out *before*
+    /// [`Self::attach`], because the USER frame is what makes the home consume
+    /// its park. Leaving the setup to drop would eventually say the same thing —
+    /// the home's frame read fails either way — but not until the session ends,
+    /// and this setup owns a pool permit: a long-lived mux or UDP session would
+    /// pin an edge relay slot for its whole life, and a home relay slot until the
+    /// USER-frame deadline, for a relay neither side will ever use.
+    pub(in crate::server::transport) fn refuse(self) {
+        let MeshUpstreamSetup {
+            stream: MeshStream { mut send, mut recv },
+            ..
+        } = self;
+        let code = VarInt::from_u32(CloseReason::Abort.code());
+        // Both fail only on a stream the peer has already torn down, where
+        // there is nothing left to tell it.
+        let _ = send.reset(code);
+        let _ = recv.stop(code);
+    }
+
     /// Completes the v5 hand-off: attests `user` to the home and consumes the
     /// continuity prologue it answers with.
     ///

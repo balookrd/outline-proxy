@@ -23,6 +23,7 @@ use super::carrier_padding;
 use super::resume_headers::ResumeContext;
 use super::sink;
 use super::throughput_monitor;
+use super::upstream_source::UpstreamSource;
 use super::vless_mux::{self, MuxRouteCtx, MuxServerCtx, MuxState};
 use super::vless_udp::{self, forward_vless_udp_client_frames};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
@@ -43,12 +44,29 @@ use ctx::MAX_VLESS_HEADER_BUFFER;
 use tcp::{establish_vless_tcp_upstream, shutdown_unparked_tcp, try_park_vless_tcp};
 use udp::try_park_vless_udp_single;
 
+/// Serves one VLESS-over-WS/XHTTP session: authenticate the client, take an
+/// upstream, and pump both directions until either end goes away.
+///
+/// `upstream` decides where that upstream comes from. [`UpstreamSource::Direct`]
+/// is a node serving the session itself: it resumes a local park or connects out
+/// to the target. [`UpstreamSource::Mesh`] is a cluster **edge** — the socket
+/// lives on the home, so this node terminates the client's VLESS layer, attests
+/// the user over the mesh and exchanges plaintext with the home instead of
+/// dialling. A mesh session is never parked here (see [`try_park_vless_on_drop`]
+/// and the guards in [`try_park_vless_tcp`]).
+///
+/// Only a `VlessCommand::Tcp` session can use a mesh upstream. VLESS multiplexes
+/// UDP and mux onto the same carrier, and their upstream shapes (a bound
+/// `UdpSocket`, a bundle of sub-connections) are not what the v5 splice carries —
+/// so those commands release the relay and are served locally.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     socket: T,
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     resume: ResumeContext,
     injected_monitor: Option<Arc<throughput_monitor::ThroughputMonitor>>,
+    upstream: UpstreamSource,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) =
@@ -99,7 +117,7 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     keepalive.tick().await;
 
-    let mut state = VlessRelayState::new(resume, throttle_monitor);
+    let mut state = VlessRelayState::new(resume, throttle_monitor, upstream);
     let mut client_closed = false;
     // Carrier-padding decoder for the uplink, allocated only when this path
     // pads. Held across the loop because a padding frame may span WS/h2/h3 DATA
@@ -364,7 +382,6 @@ where
     Msg: Send + 'static,
 {
     use anyhow::Context;
-    use tokio::io::AsyncWriteExt;
 
     server.metrics.record_websocket_binary_frame(
         Transport::Tcp,
@@ -383,10 +400,26 @@ where
                     .increment(data.len() as u64);
             }
             let payload_len = data.len() as u64;
+            // A relayed upstream that fails — most often a mesh write stalling
+            // past the health budget — is retryable, not a protocol fault: the
+            // client is already authenticated, so it gets a "try again" close
+            // and reconnects, while the home's park TTL-expires. Routing it
+            // through `Fatal` instead would first run the anti-fingerprinting
+            // inbound sink, which exists for *unauthenticated* probes and would
+            // hold a wedged carrier open for its whole duration. Mirrors the SS
+            // path's `forward_plaintext_to_writer`.
+            let is_mesh = tcp.writer.is_mesh();
             tcp.writer
                 .write_all(&data)
                 .await
-                .context("failed to write vless websocket data upstream")?;
+                .context("failed to write vless websocket data upstream")
+                .map_err(|error| {
+                    if is_mesh {
+                        VlessFrameError::UpstreamConnectFailed(error)
+                    } else {
+                        VlessFrameError::Fatal(error)
+                    }
+                })?;
             // Bump the per-session upstream-acked counter only on a
             // successful `write_all` — same handoff semantics as the
             // SS-WS path's `forward_plaintext_to_writer`. Survives
@@ -482,12 +515,41 @@ where
             establish_vless_tcp_upstream(state, request, user, server, route, outbound).await
         },
         VlessCommand::Udp => {
+            release_mesh_upstream(state, "udp");
             vless_udp::establish_vless_udp_upstream(state, request, user, server, route, outbound)
                 .await
         },
         VlessCommand::Mux => {
+            release_mesh_upstream(state, "mux");
             establish_vless_mux_upstream(state, request, user, server, route, outbound).await
         },
+    }
+}
+
+/// Releases a mesh relay this session turned out not to be able to use, and
+/// serves the session locally instead.
+///
+/// A cluster edge opens the relay before it can read the client's first frame,
+/// so it does not yet know which VLESS command is coming. Only `Tcp` matches the
+/// shape the v5 splice carries: `Udp` needs a bound `UdpSocket` and `Mux` a
+/// whole bundle of sub-connections, and the home's splice serves neither. Both
+/// are therefore dialled from this node, which is also why VLESS-mux
+/// sub-connections always open their own direct upstreams.
+///
+/// The timing is the point. This runs strictly **before** the USER frame, and
+/// the USER frame is what makes the home consume its park — so the home keeps
+/// whatever it was holding, and a later carrier can still resume it. That is the
+/// second of two independent barriers: the home's own phase-1 check
+/// (`OrphanRegistry::has_tcp_park`) already refuses a committed park of the
+/// wrong shape, and this closes the reservation window that check cannot see
+/// into.
+fn release_mesh_upstream(state: &mut VlessRelayState, command: &'static str) {
+    if let Some(setup) = state.mesh_upstream.take() {
+        setup.refuse();
+        debug!(
+            command,
+            "vless command needs an upstream the mesh relay cannot carry; serving it locally"
+        );
     }
 }
 
@@ -634,9 +696,12 @@ pub(super) async fn handle_vless_connection(
     server: Arc<VlessWsServerCtx>,
     route: VlessWsRouteCtx,
     resume: ResumeContext,
+    upstream: UpstreamSource,
 ) -> Result<()> {
-    // Direct carrier: no injected monitor — local detection runs (`None`).
-    run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, None).await
+    // Client-terminating carrier either way: no injected monitor, so local
+    // throttle detection runs — including for a relayed session, where this node
+    // owns the last mile to the client.
+    run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, None, upstream).await
 }
 
 pub(in crate::server) async fn handle_vless_h3_connection(
@@ -644,6 +709,7 @@ pub(in crate::server) async fn handle_vless_h3_connection(
     server: Arc<VlessWsServerCtx>,
     route: VlessWsRouteCtx,
     resume: ResumeContext,
+    upstream: UpstreamSource,
 ) -> Result<()> {
-    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, None).await
+    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, None, upstream).await
 }

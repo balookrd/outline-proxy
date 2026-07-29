@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use bytes::{Bytes, BytesMut};
-use tokio::{
-    io::AsyncWriteExt,
-    sync::{Notify, mpsc},
-};
+use tokio::sync::{Notify, mpsc};
 use tracing::{debug, warn};
 
 use outline_wire::padding::PaddingScheme;
@@ -18,10 +15,13 @@ use crate::{
 use super::super::super::{
     abort::AbortOnDrop,
     connect::connect_tcp_target,
-    relay::GREEDY_DRAIN_TARGET,
+    relay::{GREEDY_DRAIN_TARGET, UpstreamRead},
     resumption::{Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext},
 };
 use super::super::carrier_padding;
+use super::super::upstream_source::{
+    HarvestedUpstream, MeshUpstream, MeshUpstreamHalves, MeshUpstreamSetup, UpstreamWriter,
+};
 use super::ctx::{
     TcpUpstream, UpstreamSession, VlessFrameError, VlessRelayOutcome, VlessRelayState,
     VlessRelayTaskOutput, VlessWsOutbound, VlessWsRouteCtx, VlessWsServerCtx,
@@ -33,12 +33,18 @@ use super::ctx::{
 /// Mirrors the cleanup that `run_vless_relay` runs on the unparked
 /// path so that `try_park_*` early-returns don't degrade FIN→RST or
 /// drop the gauge silently.
+///
+/// Covers a mesh upstream too: `shutdown` is a QUIC FIN there, which is what
+/// tells the home this carrier is done, and the gauge is `None` because a
+/// cluster edge never opened an upstream socket to count.
 pub(super) async fn shutdown_unparked_tcp(
-    mut writer: tokio::net::tcp::OwnedWriteHalf,
-    guard: TcpUpstreamGuard,
+    mut writer: UpstreamWriter,
+    guard: Option<TcpUpstreamGuard>,
 ) {
     writer.shutdown().await.ok();
-    guard.finish();
+    if let Some(guard) = guard {
+        guard.finish();
+    }
 }
 
 pub(super) async fn try_park_vless_tcp(
@@ -47,6 +53,19 @@ pub(super) async fn try_park_vless_tcp(
     route: &VlessWsRouteCtx,
     session_id: SessionId,
 ) -> bool {
+    // A relayed (cluster-edge) session is never parked here: the upstream socket
+    // lives on the home, which parks it under the id the client already holds.
+    // Parking on the edge would register a session whose upstream this node does
+    // not own, and would compete with the home's own park for the same id.
+    // Checked before the harvest below so the still-running reader is left for
+    // the caller's ordinary teardown. `run_vless_relay` cannot even reach here
+    // for such a session (`edge_upstream` leaves `issued_session_id` unset), so
+    // this is the second of three independent guards; `into_tcp` is the third.
+    if let UpstreamSession::Tcp(tcp) = &state.upstream
+        && tcp.writer.is_mesh()
+    {
+        return false;
+    }
     let TcpUpstream {
         writer,
         reader_task,
@@ -63,7 +82,14 @@ pub(super) async fn try_park_vless_tcp(
     };
     cancel.notify_one();
     let reader = match reader_task.into_inner().await {
-        Ok(Ok(VlessRelayOutcome::Cancelled(reader))) => reader,
+        Ok(Ok(VlessRelayOutcome::Cancelled(HarvestedUpstream::Tcp(reader)))) => reader,
+        // Unreachable: the mesh guard above returns before the harvest. Kept as
+        // a refusal rather than a panic — nothing here can park a relayed
+        // upstream, whichever way this state were reached.
+        Ok(Ok(VlessRelayOutcome::Cancelled(HarvestedUpstream::Mesh))) => {
+            shutdown_unparked_tcp(writer, guard).await;
+            return false;
+        },
         Ok(Ok(VlessRelayOutcome::Closed)) => {
             shutdown_unparked_tcp(writer, guard).await;
             return false;
@@ -101,9 +127,15 @@ pub(super) async fn try_park_vless_tcp(
             return false;
         },
     };
+    // Third guard against parking a relayed session: only a socket this node
+    // owns can be handed to the registry, and only a real socket carries the
+    // upstream-connection gauge the parked entry keeps alive.
+    let (Some(upstream_writer), Some(upstream_guard)) = (writer.into_tcp(), guard) else {
+        return false;
+    };
     let owner = user.label_arc();
     let parked = ParkedTcp {
-        upstream_writer: writer,
+        upstream_writer,
         upstream_reader: reader,
         target_display,
         owner: Arc::clone(&owner),
@@ -113,7 +145,7 @@ pub(super) async fn try_park_vless_tcp(
         // stream.
         protocol_context: TcpProtocolContext::Vless,
         user_counters,
-        upstream_guard: guard,
+        upstream_guard,
         // Move the per-session Ack-Prefix counter into the parked
         // entry so the v1.1 control-frame emit on the next resume
         // hit reports the cumulative upstream byte count this
@@ -167,6 +199,26 @@ where
     let target = request.target.clone();
     let target_display = target.to_string();
     debug!(user = user.label(), path = %route.path, target = %target_display, "vless tcp target");
+
+    // Cluster edge: the upstream lives on the home, which is still waiting to be
+    // told *who* this session belongs to. Neither the local registry nor an
+    // outbound connect is consulted — the home owns both, and the target parsed
+    // above is deliberately ignored for the same reason a local resume hit
+    // ignores it: the parked target is authoritative.
+    if let Some(setup) = state.mesh_upstream.take() {
+        attach_mesh_upstream(
+            state,
+            setup,
+            request,
+            user,
+            server,
+            route,
+            outbound,
+            Arc::from(target_display.as_str()),
+        )
+        .await?;
+        return Ok(());
+    }
 
     // Resume attempt: re-attach to a parked VLESS-TCP upstream when the
     // client offered a Session ID that this user owns. The target sent
@@ -350,6 +402,7 @@ where
         let reader_task = AbortOnDrop::new(tokio::spawn(async move {
             relay_vless_upstream_to_client(
                 parked_reader,
+                HarvestedUpstream::Tcp,
                 tx,
                 make_binary,
                 make_close,
@@ -366,11 +419,11 @@ where
         state.user_counters = Some(parked.user_counters);
         state.authenticated_user = Some(user);
         state.upstream = UpstreamSession::Tcp(TcpUpstream {
-            writer: parked.upstream_writer,
+            writer: UpstreamWriter::Tcp(parked.upstream_writer),
             reader_task,
             cancel,
             target_display: parked.target_display,
-            guard: parked.upstream_guard,
+            guard: Some(parked.upstream_guard),
         });
 
         // Forward any payload bytes that arrived in the same WS frame
@@ -482,6 +535,7 @@ where
     let reader_task = AbortOnDrop::new(tokio::spawn(async move {
         relay_vless_upstream_to_client(
             upstream_reader,
+            HarvestedUpstream::Tcp,
             tx,
             outbound.make_binary,
             outbound.make_close,
@@ -508,11 +562,11 @@ where
     state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
     state.authenticated_user = Some(user);
     state.upstream = UpstreamSession::Tcp(TcpUpstream {
-        writer,
+        writer: UpstreamWriter::Tcp(writer),
         reader_task,
         cancel,
         target_display: Arc::from(target_display.as_str()),
-        guard,
+        guard: Some(guard),
     });
 
     let leftover = state.header_buffer.split_off(request.consumed);
@@ -541,9 +595,186 @@ where
     Ok(())
 }
 
+/// Cluster edge: completes the v5 mesh hand-off for a VLESS-TCP session whose
+/// upstream lives on the home, and wires the mesh stream in where a TCP socket
+/// would be.
+///
+/// Runs the second phase of the two-phase OPEN. The home acked phase 1 ("a
+/// TCP-shaped park exists under this id") before the client carrier was
+/// upgraded; only now, with the client authenticated against **this node's**
+/// VLESS credentials, can the edge name the user — so the USER frame goes out
+/// here, and the home answers the owner check by either splicing the park onto
+/// the stream or resetting it.
+///
+/// The client's UUID is matched against this edge's own route, which is why the
+/// home's UUID need not be the same one: the mesh carries VLESS *payload*, not
+/// the VLESS handshake, so the two nodes authenticate independently. The
+/// standard `[VERSION, 0x00]` response header is therefore emitted here too —
+/// the home no longer speaks VLESS on this session at all.
+///
+/// The home's [`crate::server::cluster::mesh::UpstreamAckFrame`] is translated
+/// straight into the Ack-Prefix v1 control frame the client already understands,
+/// exactly as the SS edge does: the offset belongs to the client, which keeps
+/// the replay buffer, so passing it on is what keeps the request body whole
+/// across a node switch.
 #[allow(clippy::too_many_arguments)]
-async fn relay_vless_upstream_to_client<Msg>(
-    upstream_reader: tokio::net::tcp::OwnedReadHalf,
+async fn attach_mesh_upstream<Msg>(
+    state: &mut VlessRelayState,
+    setup: MeshUpstreamSetup,
+    request: vless::VlessRequest,
+    user: VlessUser,
+    server: &VlessWsServerCtx,
+    route: &VlessWsRouteCtx,
+    outbound: VlessWsOutbound<'_, Msg>,
+    target_display: Arc<str>,
+) -> Result<(), VlessFrameError>
+where
+    Msg: Send + 'static,
+{
+    let user_id = user.label_arc();
+    // A hand-off that fails here — the home refused the owner check, or the mesh
+    // broke — is retryable, not a protocol fault: the client is authenticated,
+    // so it gets a "try again" close and reconnects, and the next attempt finds
+    // no park and is served locally. `Fatal` would instead run the
+    // anti-fingerprinting inbound sink, which exists for unauthenticated probes.
+    let MeshUpstreamHalves { writer, reader, upstream_acked } =
+        setup.attach(&user_id).await.map_err(|error| {
+            VlessFrameError::UpstreamConnectFailed(error.context("mesh relay hand-off failed"))
+        })?;
+
+    outbound
+        .data_tx
+        .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
+            route.padding,
+            Bytes::from_static(&[vless::VERSION, 0x00]),
+        )))
+        .await
+        .map_err(|error| {
+            anyhow!("failed to queue vless response header for a relayed session: {error}")
+        })?;
+
+    // Ack-Prefix Protocol v1. Ordering is the same as the direct path's: ahead
+    // of any relayed byte, on the same FIFO channel, so it lands right after the
+    // response header and before whatever the spawned relay task produces.
+    //
+    // No v2 "ORDR" frame ever follows it: `edge_upstream` leaves
+    // `symmetric_replay_requested` unset on a relayed session, because the
+    // home's replay suffix arrives as undelimited plaintext the edge cannot
+    // frame. The client consumes those bytes as ordinary stream continuation.
+    if state.ack_prefix_requested {
+        let payload = outline_wire::resume::build_v1_payload(upstream_acked);
+        outbound
+            .data_tx
+            .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
+                route.padding,
+                Bytes::copy_from_slice(&payload),
+            )))
+            .await
+            .map_err(|error| {
+                anyhow!(
+                    "failed to queue vless ack-prefix control frame for a relayed session: {error}"
+                )
+            })?;
+        debug!(
+            user = user.label(),
+            path = %route.path,
+            up_acked = upstream_acked,
+            "emitted ack-prefix control frame for a relayed vless session",
+        );
+    }
+
+    let tx = outbound.data_tx.clone();
+    let metrics = Arc::clone(&server.metrics);
+    let user_id_for_relay = Arc::clone(&user_id);
+    let protocol = route.protocol;
+    let padding = route.padding;
+    let monitor_for_task = state.throttle_monitor.clone();
+    // Registered as on the direct path, though nothing here ever parks: the
+    // notify is what lets teardown stop the reader cooperatively instead of
+    // aborting it mid-write to the client.
+    let cancel = Arc::new(Notify::new());
+    let cancel_for_task = Arc::clone(&cancel);
+    let make_binary = outbound.make_binary;
+    let make_close = outbound.make_close;
+    let reader_task = AbortOnDrop::new(tokio::spawn(async move {
+        relay_vless_upstream_to_client(
+            reader,
+            harvest_mesh,
+            tx,
+            make_binary,
+            make_close,
+            metrics,
+            protocol,
+            user_id_for_relay,
+            Some(cancel_for_task),
+            // No v2 ring: the ring belongs to the node that owns the park, and
+            // this session's park lives on the home, which captures into its own.
+            None,
+            padding,
+            monitor_for_task,
+        )
+        .await
+    }));
+    server.metrics.record_tcp_authenticated_session(
+        Arc::clone(&user_id),
+        route.protocol,
+        AppProtocol::Vless,
+    );
+    state.user_counters = Some(server.metrics.user_counters(&user_id));
+    state.authenticated_user = Some(user);
+    state.upstream = UpstreamSession::Tcp(TcpUpstream {
+        writer,
+        reader_task,
+        cancel,
+        target_display,
+        // No upstream-connection gauge: it counts real upstream sockets, and
+        // this node holds none. Leaving it `None` also keeps the park path
+        // refusing this session for a third, independent reason.
+        guard: None,
+    });
+
+    // Forward any payload bytes that arrived in the same WS frame as the VLESS
+    // request header.
+    let leftover = state.header_buffer.split_off(request.consumed);
+    state.header_buffer.clear();
+    if !leftover.is_empty()
+        && let UpstreamSession::Tcp(tcp) = &mut state.upstream
+    {
+        if let Some(counters) = &state.user_counters {
+            counters
+                .tcp_in(AppProtocol::Vless, route.protocol)
+                .increment(leftover.len() as u64);
+        }
+        let leftover_len = leftover.len() as u64;
+        // A mesh write that fails — most often a stall past the health budget —
+        // is retryable for the same reason the hand-off above is.
+        tcp.writer.write_all(&leftover).await.map_err(|error| {
+            VlessFrameError::UpstreamConnectFailed(
+                anyhow::Error::new(error)
+                    .context("failed to write initial vless payload over the mesh"),
+            )
+        })?;
+        state
+            .upstream_bytes_acked
+            .fetch_add(leftover_len, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Harvest mapping for a relayed upstream: there is nothing to hand on, because
+/// the socket lives on the home. Mirrors `tcp::harvest_tcp` on the SS side.
+fn harvest_mesh(_reader: MeshUpstream) -> HarvestedUpstream {
+    HarvestedUpstream::Mesh
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn relay_vless_upstream_to_client<R, Msg>(
+    mut upstream_reader: R,
+    // How the harvested reader is reported when the caller cancels. A direct
+    // upstream hands its `OwnedReadHalf` on for parking; a mesh one has nothing
+    // to hand on. A function pointer rather than a `From` impl so the two
+    // shapes stay explicit at each spawn site.
+    harvest: fn(R) -> HarvestedUpstream,
     tx: mpsc::Sender<Msg>,
     make_binary: fn(Bytes) -> Msg,
     make_close: fn() -> Msg,
@@ -564,6 +795,7 @@ async fn relay_vless_upstream_to_client<Msg>(
     monitor: Option<Arc<super::super::throughput_monitor::ThroughputMonitor>>,
 ) -> VlessRelayTaskOutput
 where
+    R: UpstreamRead,
     Msg: Send + 'static,
 {
     let user_counters = metrics.user_counters(&user_id);
@@ -590,7 +822,7 @@ where
                 // the upstream so a subsequent resume can reattach a
                 // new client stream. Sending Close would race the
                 // reconnect.
-                return Ok(VlessRelayOutcome::Cancelled(upstream_reader));
+                return Ok(VlessRelayOutcome::Cancelled(harvest(upstream_reader)));
             }
             ready = upstream_reader.readable() => {
                 ready.context("failed to await vless upstream")?;

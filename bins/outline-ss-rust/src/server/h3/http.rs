@@ -26,8 +26,8 @@ use super::super::{
         handle_udp_h3_connection, handle_vless_h3_connection, handle_xhttp_h3_request,
         is_normal_h3_shutdown,
         mesh_relay::{
-            edge_relay_h3, edge_relay_h3_udp, edge_throttle_ctx, edge_upstream, open_edge_relay,
-            open_edge_relay_v5, ss_edge_echo,
+            edge_echo, edge_relay_h3_udp, edge_throttle_ctx, edge_upstream, open_edge_relay,
+            open_edge_relay_v5,
         },
     },
 };
@@ -211,63 +211,31 @@ async fn handle_h3_request(
         return Ok(());
     }
 
-    // Cluster edge, SS-TCP (v5): the session being resumed lives on another
-    // node, but the client is authenticated *here*, so only the upstream is
-    // taken over the mesh. Asked before the CONNECT response, so a home holding
-    // no such park still leaves this node free to serve a fresh local session.
-    let mut ss_edge = None;
-    if path_is_tcp
-        && let Some(cluster) = ctx.cluster.as_deref()
-        && let (RouteDecision::Relay(shard), Some(advert)) =
-            edge_route(request.headers(), ctx.tcp_server.orphan_registry.cluster_identity())
-    {
-        ss_edge = open_edge_relay_v5(cluster, shard, &advert, MeshFraming::Tcp, peer_addr)
-            .await
-            .map(|pooled| {
-                edge_upstream(
-                    pooled,
-                    &advert,
-                    cluster,
-                    &ctx.tcp_server.metrics,
-                    &ctx.tcp_server.orphan_registry,
-                )
-            });
-    }
-
-    // Cluster edge: relay a foreign-shard VLESS resume to its home over the mesh
-    // (still v4 — the VLESS edge migrates with its own task). Checked before the
-    // local resume context; on relay failure we fall through to a fresh local
-    // session (this edge becomes home).
-    if path_is_vless
-        && let Some(cluster) = ctx.cluster.as_deref()
-        && let (RouteDecision::Relay(shard), Some(advert)) =
-            edge_route(request.headers(), ctx.vless_server.orphan_registry.cluster_identity())
-        && let Some(pooled) =
-            open_edge_relay(cluster, shard, &advert, CarrierKind::VlessTcp, &ws_req.path, peer_addr)
+    // Cluster edge, byte streams (v5): the session being resumed lives on
+    // another node, but the client is authenticated *here* — against this node's
+    // own SS keys or VLESS UUIDs — so only the upstream is taken over the mesh.
+    // Asked before the CONNECT response, so a home holding no such park still
+    // leaves this node free to serve a fresh local session.
+    //
+    // SS and VLESS differ only in which server context owns the registry and the
+    // metrics; the mesh hand-off itself is identical, which is the point of
+    // terminating crypto on the edge.
+    let mut edge = None;
+    if path_is_tcp || path_is_vless {
+        let server_metrics = if path_is_tcp {
+            (&ctx.tcp_server.metrics, &ctx.tcp_server.orphan_registry)
+        } else {
+            (&ctx.vless_server.metrics, &ctx.vless_server.orphan_registry)
+        };
+        let (metrics, orphan_registry) = server_metrics;
+        if let Some(cluster) = ctx.cluster.as_deref()
+            && let (RouteDecision::Relay(shard), Some(advert)) =
+                edge_route(request.headers(), orphan_registry.cluster_identity())
+        {
+            edge = open_edge_relay_v5(cluster, shard, &advert, MeshFraming::Tcp, peer_addr)
                 .await
-    {
-        // Continuity: echo the id the client presented (the home parks
-        // the relayed upstream under exactly that id).
-        let mut response = build_extended_connect_response(None, None);
-        ResumeResponseEcho {
-            session_id: Some(advert.session_id),
-            ..Default::default()
+                .map(|pooled| edge_upstream(pooled, &advert, cluster, metrics, orphan_registry));
         }
-        .apply(response.headers_mut());
-        stream
-            .send_response(response)
-            .await
-            .context("failed to send HTTP/3 websocket response")?;
-        let socket = vendored::server_ws_stream(stream, ctx.ws_config.clone());
-        let metrics = &ctx.vless_server.metrics;
-        let session =
-            metrics.open_websocket_session(Transport::Tcp, Protocol::Http3, AppProtocol::Vless);
-        let detect = edge_throttle_ctx(&pooled, advert.session_id, &ws_req.path);
-        let result =
-            edge_relay_h3(socket, pooled, cluster.relay_budget, detect, Arc::clone(metrics)).await;
-        finish_ws_session(session, result, "vless");
-        return Ok(());
-        // Relay unavailable: falls through to a fresh local session.
     }
 
     // Cluster edge: relay a foreign-shard SS-UDP resume to its home over the
@@ -341,13 +309,13 @@ async fn handle_h3_request(
     // relay already emits them on a resume hit regardless of carrier — an
     // unconfirmed client would misread the control frames as payload). The
     // UDP datagram path echoes only the Session ID, as on h1/h2 — and never
-    // relays over v5, so `ss_edge` is always `None` there.
+    // relays over v5, so `edge` is always `None` there.
     let echo = if path_is_udp {
         local.session_echo()
     } else {
-        ss_edge_echo(ss_edge.as_ref(), &local)
+        edge_echo(edge.as_ref(), &local)
     };
-    let (resume, upstream) = match ss_edge {
+    let (resume, upstream) = match edge {
         Some(edge) => (edge.resume, edge.source),
         None => (local, UpstreamSource::Direct),
     };
@@ -444,9 +412,14 @@ async fn handle_h3_request(
             padding: crate::server::transport::carrier_padding::scheme_for_path(&ws_req.path),
             peer: Some(peer_addr.ip()),
         };
-        let result =
-            handle_vless_h3_connection(socket, Arc::clone(&ctx.vless_server), route_ctx, resume)
-                .await;
+        let result = handle_vless_h3_connection(
+            socket,
+            Arc::clone(&ctx.vless_server),
+            route_ctx,
+            resume,
+            upstream,
+        )
+        .await;
         finish_ws_session(session, result, "vless");
     }
 

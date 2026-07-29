@@ -19,7 +19,7 @@ use ring::rand::SystemRandom;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, oneshot};
 
-use super::super::mesh_relay::{EdgeUpstream, edge_upstream, open_edge_relay_v5, ss_edge_echo};
+use super::super::mesh_relay::{EdgeUpstream, edge_echo, edge_upstream, open_edge_relay_v5};
 use super::super::resume_headers::{
     ACK_PREFIX_HEADER, EdgeResumeAdvert, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
     SYMMETRIC_REPLAY_HEADER,
@@ -712,7 +712,7 @@ async fn edge_serves_locally_when_the_home_reports_no_session() -> Result<()> {
 /// an XHTTP or WS session that can never resume, forever.
 ///
 /// Covers the axum WS upgrade and the h3 extended-CONNECT upgrade, which both
-/// resolve their response echo through [`ss_edge_echo`].
+/// resolve their response echo through [`edge_echo`].
 #[tokio::test]
 async fn a_refused_relay_echoes_a_local_id_on_the_ws_and_h3_edges() -> Result<()> {
     let (harness, _home) =
@@ -721,7 +721,7 @@ async fn a_refused_relay_echoes_a_local_id_on_the_ws_and_h3_edges() -> Result<()
     assert!(edge.is_none(), "the fixture must actually refuse, or this proves nothing");
 
     let local = harness.local_resume();
-    let echo = ss_edge_echo(edge.as_ref(), &local);
+    let echo = edge_echo(edge.as_ref(), &local);
     let echoed = echo
         .session_id
         .expect("a resume-capable client must be told an id it can come back with");
@@ -744,8 +744,14 @@ async fn a_refused_relay_echoes_a_local_id_on_the_ws_and_h3_edges() -> Result<()
 async fn a_refused_relay_echoes_a_local_id_on_the_xhttp_edges() -> Result<()> {
     let (harness, _home) =
         EdgeHarness::with_credentials("beerloga", "edge-secret", HomeAnswer::NoSession).await;
-    let edge = XhttpEdge { ss: harness.open_relay().await, v4: None };
-    assert!(edge.ss.is_none(), "the fixture must actually refuse, or this proves nothing");
+    let edge = XhttpEdge {
+        stream: harness.open_relay().await,
+        v4: None,
+    };
+    assert!(
+        edge.stream.is_none(),
+        "the fixture must actually refuse, or this proves nothing"
+    );
 
     let local = harness.local_resume();
     assert!(
@@ -789,7 +795,7 @@ async fn an_admitted_relay_echoes_continuity_but_never_confirms_symmetric_replay
     );
 
     // WS / h3.
-    let echo = ss_edge_echo(Some(&edge), &local);
+    let echo = edge_echo(Some(&edge), &local);
     assert_eq!(
         echo.session_id,
         Some(harness.session_id),
@@ -802,7 +808,7 @@ async fn an_admitted_relay_echoes_continuity_but_never_confirms_symmetric_replay
     );
 
     // Both XHTTP entry points, which answer with the same echo.
-    let xhttp = XhttpEdge { ss: Some(edge), v4: None };
+    let xhttp = XhttpEdge { stream: Some(edge), v4: None };
     let relayed = xhttp
         .relayed_echo()
         .expect("an admitted relay answers with the mesh echo, not the local negotiation");
