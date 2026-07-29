@@ -832,6 +832,14 @@ struct AttachedMeshUdp {
     /// blocks long enough to want concurrency — the edge resolves no DNS and
     /// binds no socket; the home does both.
     send: SendStream,
+    /// The user this carrier attested in its USER frame, and therefore the only
+    /// identity the home will route this stream's datagrams under. Every later
+    /// datagram is checked against it ([`MeshUdpEdge::forward`]).
+    attested_user: Arc<str>,
+    /// Whether the mismatch above was already logged for this carrier. The
+    /// counter carries the volume; the warning fires once, so a client cannot
+    /// amplify its own datagrams into the log.
+    mismatch_warned: bool,
     budget: Duration,
     up_bytes: Counter,
     up_datagrams: Counter,
@@ -872,9 +880,9 @@ impl MeshUdpEdge {
     /// `Err` means the mesh itself is unusable — the edge has no other upstream,
     /// so the caller tears the carrier down and the client redials (the home
     /// still holds the park). Everything a single datagram can get wrong — a
-    /// missing target address, an oversized payload — is handled here and
-    /// reported, exactly as the direct path reports it, without ending the
-    /// session.
+    /// missing target address, an oversized payload, an identity this carrier
+    /// never attested — is handled here and reported, exactly as the direct path
+    /// reports it, without ending the session.
     async fn forward(
         &mut self,
         server: &UdpServerCtx,
@@ -883,8 +891,59 @@ impl MeshUdpEdge {
         response_sender: &UdpResponseSender,
         started_at: std::time::Instant,
     ) -> Result<()> {
-        self.seal.observe(packet);
         let user_id = packet.user.id_arc();
+
+        // Everything below mirrors `relay_socks5_datagram`'s bookkeeping, which
+        // the home no longer does for a relayed session: per-user accounting
+        // belongs to the node that terminates the client, and that is this one.
+        // Note it names the *packet's* user, not the attested one — the guard
+        // right below is what keeps the two the same for anything forwarded.
+        let record_request = |result: &'static str| {
+            server.metrics.record_udp_request(
+                Arc::clone(&user_id),
+                route.protocol,
+                AppProtocol::Shadowsocks,
+                result,
+                started_at.elapsed().as_secs_f64(),
+            );
+        };
+
+        // One carrier, one identity. The USER frame attested a single user to
+        // the home, and the home routes every datagram of this stream under that
+        // user's NAT identity, fwmark and policy routing — it re-authenticates
+        // nothing, because only this node holds the keys. So a datagram that
+        // opened under a *different* credential must not ride this stream: it
+        // would egress as somebody else and be billed to them.
+        //
+        // Dropped rather than refused: a client only reaches here with a second
+        // valid credential for this path, and tearing the carrier down would let
+        // whoever holds it end the attested user's live session at will. The
+        // drop is per datagram, counted, and leaves the session untouched.
+        if let Some(attached) = self.attached.as_mut()
+            && *attached.attested_user != *user_id
+        {
+            server.metrics.record_udp_relay_drop(
+                Transport::Udp,
+                route.protocol,
+                AppProtocol::Shadowsocks,
+                "relayed_user_mismatch",
+            );
+            if !std::mem::replace(&mut attached.mismatch_warned, true) {
+                warn!(
+                    user = %user_id,
+                    attested_user = %attached.attested_user,
+                    path = %route.path,
+                    "dropping a relayed udp datagram: its user is not the one this carrier attested"
+                );
+            }
+            record_request("error");
+            return Ok(());
+        }
+        // Past the guard, so the response seal can only ever take keys from the
+        // attested user: sealing under another user's key would hand this
+        // carrier's responses to a client that cannot open them — or, worse,
+        // hand the attested user's responses to one that can.
+        self.seal.observe(packet);
         if self.attached.is_none() {
             let setup = self
                 .setup
@@ -898,18 +957,6 @@ impl MeshUdpEdge {
             .as_mut()
             .expect("the hand-off above populates it or returns");
 
-        // Everything below mirrors `relay_socks5_datagram`'s bookkeeping, which
-        // the home no longer does for a relayed session: per-user accounting
-        // belongs to the node that terminates the client, and that is this one.
-        let record_request = |result: &'static str| {
-            server.metrics.record_udp_request(
-                Arc::clone(&user_id),
-                route.protocol,
-                AppProtocol::Shadowsocks,
-                result,
-                started_at.elapsed().as_secs_f64(),
-            );
-        };
         let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
             record_request("error");
             return Err(anyhow!("udp packet is missing a complete target address"));
@@ -1004,6 +1051,8 @@ impl MeshUdpEdge {
         ));
         Ok(AttachedMeshUdp {
             send,
+            attested_user: Arc::clone(user_id),
+            mismatch_warned: false,
             budget,
             up_bytes,
             up_datagrams,
