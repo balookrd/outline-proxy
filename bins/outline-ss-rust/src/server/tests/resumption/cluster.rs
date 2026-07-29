@@ -9,7 +9,8 @@
 //! key (a resume id minted by one decodes to the same shard on all) and the
 //! same mesh mutual-auth pin. All nodes use `sample_config`, so the SS user
 //! ("bob") and its key are identical across nodes — the client encrypts once
-//! and whichever home decrypts it succeeds.
+//! and whichever node it lands on decrypts successfully, whether that node
+//! serves the session itself or relays the resulting plaintext to the home.
 //!
 //! The load-bearing probe is the echo target's accept counter (see
 //! [`super::spawn_echo_target`]): a fresh upstream connect bumps it, a resume
@@ -2062,11 +2063,12 @@ async fn cluster_node_udp_combined_xhttp_h3_no_resume_roundtrips() -> Result<()>
 }
 
 /// SS-UDP datagrams relay through the mesh byte-for-byte. Each client packet is
-/// one atomic AEAD datagram; the edge length-frames it onto the mesh stream and
-/// the home de-frames it, decrypts, forwards to the target and relays the echo
-/// back. Distinct sizes (incl. a 1200-byte packet) exercise the datagram
-/// framing that is the SS-UDP relay's main silent-corruption risk — a byte
-/// splice would coalesce or split packets and break the per-packet AEAD.
+/// one atomic AEAD datagram; the edge decrypts it and length-frames the
+/// plaintext onto the mesh stream, and the home de-frames it, forwards to the
+/// target and relays the echo back. Distinct sizes (incl. a 1200-byte packet)
+/// exercise the datagram framing that is the SS-UDP relay's main
+/// silent-corruption risk — a byte splice would coalesce or split packets and
+/// break per-packet delivery.
 #[tokio::test]
 async fn cluster_udp_relays_datagrams_to_home() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-udp-relay-psk";
@@ -2531,8 +2533,9 @@ async fn cluster_udp_xhttp_relays_to_home() -> Result<()> {
 
 /// SS-UDP relays over the HTTP/3 carrier too. An h3 client CONNECTs `/udp` on an
 /// h3 edge with a home-shard resume id; the edge splices the h3 WebSocket to the
-/// mesh with `MeshFraming::Udp`, and the home forwards to the target. A byte-exact echo proves the h3 SS-UDP accept branch end to end
-/// (the `H3Ws` carrier, a different `WsSocket` impl than the h1/h2 path).
+/// mesh with `MeshFraming::Udp`, and the home forwards to the target. A
+/// byte-exact echo proves the h3 SS-UDP accept branch end to end (the `H3Ws`
+/// carrier, a different `WsSocket` impl than the h1/h2 path).
 #[tokio::test]
 async fn cluster_udp_h3_relays_to_home() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-udp-h3-psk";
