@@ -70,6 +70,7 @@ use super::resume_headers::{EdgeResumeAdvert, ResumeContext, ResumeResponseEcho}
 use super::tcp::{WsTcpRouteCtx, run_tcp_relay};
 use super::throughput_monitor::ThrottleDetectParams;
 use super::udp::{UdpRouteCtx, run_udp_relay};
+use super::upstream_source::{MeshUpstreamSetup, UpstreamSource};
 use super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 
@@ -479,6 +480,131 @@ pub(in crate::server) async fn open_edge_relay(
     }
     cluster.metrics.record_mesh_relay_opened("ok");
     Some(pooled)
+}
+
+/// Opens a v5 mesh relay to the home for an edge-routed carrier: asks whether a
+/// park exists under the client's resume id, and waits for the answer *before*
+/// the client carrier is upgraded.
+///
+/// This is phase 1 of the two-phase OPEN. It carries no user — the edge cannot
+/// know one until it has read the client's first encrypted frame, which it
+/// cannot do until it has decided what to echo in the `101`. The home therefore
+/// answers the narrower question "is there a park under this id?", and the owner
+/// check follows one phase later, when the edge sends the USER frame
+/// ([`super::upstream_source::MeshUpstreamSetup::attach`]).
+///
+/// `None` means serve the client locally: the home is unreachable, or it holds
+/// no park under this id — an ordinary outcome now that fresh sessions are never
+/// created over the mesh. The caller then becomes the home for a fresh session.
+pub(in crate::server) async fn open_edge_relay_v5(
+    cluster: &ClusterCtx,
+    shard: ShardId,
+    advert: &EdgeResumeAdvert,
+    framing: MeshFraming,
+    peer_addr: SocketAddr,
+) -> Option<PooledRelay> {
+    let header = OpenHeaderV5 {
+        framing,
+        session_id: *advert.session_id.as_bytes(),
+        resume_capable: advert.resume_capable,
+        ack_prefix: advert.ack_prefix,
+        symmetric_replay: advert.symmetric_replay,
+        client_down_acked: advert.down_acked,
+        peer_addr: Some(peer_addr),
+    };
+    let mut pooled = match cluster.pool.open_relay_v5(shard, &header).await {
+        Ok(pooled) => pooled,
+        Err(error) => {
+            cluster.metrics.record_mesh_relay_opened("fail");
+            debug!(
+                ?error,
+                shard = shard.get(),
+                "mesh relay open failed; serving a fresh local session",
+            );
+            return None;
+        },
+    };
+    if let Err(error) = pooled.await_ack(cluster.relay_budget).await {
+        cluster.metrics.record_mesh_relay_opened("refused");
+        // Not a warning: with edge-terminated crypto a refusal is the expected
+        // answer whenever the home holds no park — every fresh session, and
+        // every session whose park has expired. The edge simply serves it.
+        debug!(
+            ?error,
+            shard = shard.get(),
+            "home holds no session for this resume id; serving a fresh local session",
+        );
+        return None;
+    }
+    cluster.metrics.record_mesh_relay_opened("ok");
+    Some(pooled)
+}
+
+/// Everything an edge needs to serve a client whose upstream it just took over
+/// the mesh: the relay itself, and the response echo that tells the client its
+/// session continued.
+pub(in crate::server) struct EdgeUpstream {
+    /// The upstream the relay must be run with.
+    pub(in crate::server) source: UpstreamSource,
+    /// Resume state for a relayed session: nothing is resumed *here* and
+    /// nothing is parked *here*, but the Ack-Prefix capability still rides
+    /// through, because the edge re-emits the home's acked offset to the client.
+    pub(in crate::server) resume: ResumeContext,
+    /// Headers to apply to the upgrade response.
+    pub(in crate::server) echo: ResumeResponseEcho,
+}
+
+/// Builds the edge-side pieces of a v5 relayed SS session from an accepted
+/// relay.
+///
+/// Two deliberate choices are encoded here.
+///
+/// *The session id echoed is the one the client presented*, because the home
+/// parks under exactly that id — that is what makes the session survive a node
+/// switch at all.
+///
+/// *The v2 Symmetric Downlink Replay capability is never confirmed*, even when
+/// the client advertised it (and the OPEN forwarded that advertisement, so the
+/// home does replay the unacked suffix). The home's suffix arrives as
+/// undelimited plaintext at the head of the mesh body, and the edge has no way
+/// to tell where it ends — so it cannot wrap it in the framed "ORDR" reply a v2
+/// client expects, and claiming v2 would make the client misread those bytes as
+/// a frame header. Left unconfirmed, the same bytes are exactly what the client
+/// is missing, in order, and it consumes them as ordinary stream continuation.
+/// Continuity is preserved; only the explicit truncation signal is not.
+pub(in crate::server) fn edge_upstream(
+    pooled: PooledRelay,
+    advert: &EdgeResumeAdvert,
+    cluster: &ClusterCtx,
+    metrics: &Metrics,
+    registry: &OrphanRegistry,
+) -> EdgeUpstream {
+    // Same gate `ResumeContext::from_request_headers` applies: with resumption
+    // off this node emits no control frames, so it must not claim otherwise.
+    let ack_prefix = advert.ack_prefix && registry.enabled();
+    EdgeUpstream {
+        source: UpstreamSource::Mesh(MeshUpstreamSetup::new(
+            pooled,
+            advert.ack_prefix,
+            cluster.relay_budget,
+            metrics,
+        )),
+        resume: ResumeContext {
+            // The home owns both halves of resumption for this session: it holds
+            // the park and it re-parks on teardown. A `None` here is also the
+            // second guard against this edge parking a socket it does not own.
+            requested_resume: None,
+            issued_session_id: None,
+            ack_prefix_requested: ack_prefix,
+            symmetric_replay_requested: false,
+            client_acked_offset: 0,
+        },
+        echo: ResumeResponseEcho {
+            session_id: Some(advert.session_id),
+            ack_prefix,
+            symmetric_replay: false,
+        },
+    }
 }
 
 /// Splices an h3 client carrier to an already-opened mesh relay. The h3 accept
@@ -938,6 +1064,8 @@ async fn serve_relayed(
                 resume,
                 peer_addr,
                 throttle_monitor.clone(),
+                // v4: the home owns the upstream and connects out itself.
+                UpstreamSource::Direct,
             )
             .await
         },
