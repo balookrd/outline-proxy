@@ -1,11 +1,11 @@
 //! Mesh interconnect transport: QUIC between cluster members over PSK-derived
-//! mutual TLS. An edge that does not own a session relays its still-encrypted
-//! application bytes to the home over this link.
+//! mutual TLS. An edge that does not own a session relays its already-decrypted
+//! application plaintext to the home over this link.
 //!
-//! Phase 4a lands the TLS foundation ([`tls`]), 4b the stream framing
-//! ([`frame`]) and 4c the transport primitives ([`endpoint`], [`peer_pool`],
-//! [`pump`]). Wiring these into the accept/relay path is phase 5. See
-//! `docs/CLUSTER.md`.
+//! This module owns the wire types: TLS identity setup ([`tls`]), the stream
+//! framing ([`frame`]), and the transport primitives ([`endpoint`],
+//! [`peer_pool`], [`pump`]) that the accept/relay path wires the mesh into.
+//! See `docs/CLUSTER.md`.
 
 mod control;
 mod datagram;

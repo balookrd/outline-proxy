@@ -40,15 +40,10 @@ pub struct ThrottleDetectParams {
     /// for the "throttled" verdict to be actionable — avoids false positives on
     /// genuinely low-bandwidth flows. Home-side (rate detector) only.
     pub min_in_bytes_per_sec: u64,
-    /// Edge-side floor (bytes/sec) on the throughput actually delivered to the
-    /// client across a stalled streak, below which the edge stall detector stays
-    /// quiet. Distinct from [`min_in_bytes_per_sec`]: the edge measures how long
-    /// each client-facing `send` blocks, and that delivered rate is capped by the
-    /// chunk size over the window (a stalled 256 KiB send spanning ≥1 s can never
-    /// exceed ~2 Mbit), so reusing the ~8 Mbit home floor would silence the edge
-    /// detector entirely. A genuinely slow (or idle) client sits below this floor
-    /// and no longer trips a spurious `OCTL`; a real last-mile throttle that still
-    /// pushes a meaningful volume clears it. Home ignores this field.
+    /// Inert: floor for the mesh `THROTTLE_HINT` edge stall detector, whose only
+    /// sender went with the retired v4 relay. Assigned from
+    /// `PaddingSection::throttle_edge_min_bytes_per_sec` (kept for config
+    /// compatibility) but never read.
     pub edge_min_bytes_per_sec: u64,
     /// Minimum gap between two signals on the same carrier.
     pub signal_cooldown: Duration,

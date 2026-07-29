@@ -273,8 +273,7 @@ pub struct PaddingConfig {
     pub throttle_window_secs: u64,
     pub throttle_sustain_windows: u32,
     pub throttle_min_bytes_per_sec: u64,
-    /// Edge-side delivered-rate floor (bytes/sec) for the cluster stall detector;
-    /// see `PaddingSection::throttle_edge_min_bytes_per_sec`.
+    /// Inert: see `PaddingSection::throttle_edge_min_bytes_per_sec`.
     pub throttle_edge_min_bytes_per_sec: u64,
     pub throttle_signal_cooldown_secs: u64,
 }

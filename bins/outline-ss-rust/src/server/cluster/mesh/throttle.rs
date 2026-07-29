@@ -1,12 +1,18 @@
 //! Home-side registry mapping a relayed session id to its live carrier monitor,
-//! so an edge `THROTTLE_HINT` control datagram can wake the right relay writer.
+//! meant to let an edge `THROTTLE_HINT` control datagram wake the right relay
+//! writer. Dormant: its only sender was the v4 edge relay, which decrypted the
+//! client's traffic and could locally detect a stalled last-mile segment. That
+//! edge is retired — the v5 edge now terminates client crypto and signals its
+//! own client directly, with nothing left upstream of the home to notice a
+//! stall and emit a hint. See `server/cluster/mod.rs` for the fuller writeup of
+//! what stays and what is dormant across the mesh throttle machinery.
 //!
-//! The home cannot run local throttle detection on a relayed carrier: its own
-//! send counters measure the home→mesh hop (fast cross-country QUIC), not the
-//! edge→client last mile that actually throttles. So the *edge* detects a
-//! stalled client segment and sends a `THROTTLE_HINT` datagram; the home looks
-//! the session up here and pings the monitor's `signal()`, which the writer
-//! turns into one client-facing OCTL cover frame (see `ws_writer`).
+//! As a result `register` has no production caller (only `control`'s
+//! round-trip tests exercise it) and `route_hint` can only return `false` in
+//! production — decoding a stray hint from a legacy peer finds no registered
+//! monitor. Kept whole rather than deleted: retiring the receiver half is a
+//! follow-up that also touches two metrics, a dashboard panel and a config
+//! knob.
 //!
 //! Entries are weak: the registry never keeps a relay's monitor alive. The live
 //! relay task holds the strong `Arc`; the registration is a RAII guard the relay
