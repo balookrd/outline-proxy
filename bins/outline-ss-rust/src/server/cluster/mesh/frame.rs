@@ -539,8 +539,19 @@ impl UpstreamAckFrame {
 /// companion signal on the other half rather than an in-band trailer, which a
 /// transparent byte stream has no way to delimit.
 ///
-/// The codes live in their own `0x50xx` range so they can never be confused with
-/// a [`CloseReason`], which travels as a `RESET_STREAM` code on the same stream.
+/// The codes live in their own `0x50xx` range, disjoint from every
+/// [`CloseReason`], so a stray code is unambiguously one or the other. The two
+/// are not interchangeable: a `CloseReason` travels as the `RESET_STREAM` code
+/// on this stream, a `CloseIntent` only ever as the `STOP_SENDING` code applied
+/// to it.
+///
+/// Keeping that true takes one deliberate step on the home, because QUIC's own
+/// answer to a `STOP_SENDING` is a `RESET_STREAM` — and quinn's
+/// `Drop for SendStream` builds it from the very code it received, which would
+/// put a `CloseIntent` code exactly where a reader looks for a `CloseReason`.
+/// The home therefore closes a stopped half itself, with
+/// [`CloseReason::Fin`], rather than letting the drop do it; see
+/// `transport::mesh_relay`'s `SpliceEnd::stream_close`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::server) enum CloseIntent {
     /// The mesh carrier ended but the client has not: it is switching carriers
@@ -579,6 +590,16 @@ impl CloseIntent {
         match u32::try_from(code) {
             Ok(CLOSE_INTENT_CLIENT_DONE) => CloseIntent::ClientDone,
             _ => CloseIntent::CarrierEnded,
+        }
+    }
+
+    /// The `close` label this intent contributes to
+    /// `outline_ss_mesh_relay_outcome_total`. Low cardinality by construction:
+    /// one static string per variant, and there are two.
+    pub(in crate::server) fn metric_label(self) -> &'static str {
+        match self {
+            CloseIntent::CarrierEnded => "carrier_ended",
+            CloseIntent::ClientDone => "client_done",
         }
     }
 }

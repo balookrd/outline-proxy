@@ -16,7 +16,8 @@ use outline_wire::cluster::ShardId;
 
 use super::{
     DownlinkEnd, EdgeThrottleCtx, EdgeThrottleDetector, SpliceEnd, SpliceFault, StallTracker,
-    StreamClose, handle_mesh_connection, open_edge_relay, splice_end, write_uplink_chunk,
+    StreamClose, handle_mesh_connection, needs_stopped_poll, open_edge_relay, splice_end,
+    write_uplink_chunk,
 };
 use crate::crypto::UserKey;
 use crate::metrics::{AppProtocol, Metrics, Protocol};
@@ -680,15 +681,26 @@ impl TestUpstream {
         buf
     }
 
-    /// Whether the target saw the end of the request body: a read that returns
-    /// zero bytes, i.e. the home half-closed (or closed) the upstream socket.
-    /// `false` on a timeout — the socket is still open — or on a read error.
+    /// Whether the target *eventually* sees the end of the request body: reads
+    /// until the socket returns zero bytes, i.e. the home half-closed (or
+    /// closed) it. Bytes still in flight are drained rather than answered with
+    /// "no EOF" — the question is whether this socket ever EOFs, not whether
+    /// one is pending at this instant. `false` on a timeout — the socket is
+    /// still open — or on a read error.
     async fn saw_eof(&mut self) -> bool {
-        let mut buf = [0u8; 1];
-        matches!(
-            tokio::time::timeout(Duration::from_secs(5), self.peer.read(&mut buf)).await,
-            Ok(Ok(0)),
-        )
+        let drain = async {
+            let mut buf = [0u8; 4096];
+            loop {
+                match self.peer.read(&mut buf).await {
+                    Ok(0) => return true,
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), drain)
+            .await
+            .unwrap_or(false)
     }
 
     /// Writes `data` as if the target server answered.
@@ -1237,10 +1249,24 @@ fn rejected(rendered: &str, reason: &str) -> u64 {
     )
 }
 
+/// Total of `outline_ss_mesh_relay_outcome_total` for `outcome`, across every
+/// `close` label it was recorded under.
 fn outcome(rendered: &str, outcome: &str) -> u64 {
+    let prefix = format!("outline_ss_mesh_relay_outcome_total{{outcome=\"{outcome}\",");
+    rendered
+        .lines()
+        .filter(|line| line.starts_with(&prefix))
+        .filter_map(|line| line.rsplit(' ').next())
+        .filter_map(|value| value.parse::<u64>().ok())
+        .sum()
+}
+
+/// The same series narrowed to one `close` label — the ratio an operator reads
+/// to see whether edges emit the close intent at all.
+fn outcome_close(rendered: &str, outcome: &str, close: &str) -> u64 {
     counter_value(
         rendered,
-        &format!("outline_ss_mesh_relay_outcome_total{{outcome=\"{outcome}\"}}"),
+        &format!("outline_ss_mesh_relay_outcome_total{{outcome=\"{outcome}\",close=\"{close}\"}}"),
     )
 }
 
@@ -1316,17 +1342,53 @@ async fn v5_relay_outcomes_are_counted_on_every_path() {
     let rejected_owner = harness.serve_v5_with_user(v5_header(stolen), "cloud").await;
     assert_eq!(rejected_owner.close_reason(), Some(CloseReason::NoSession));
 
-    // Hit: the park this user owns is spliced onto the relay.
+    // Hit: the park this user owns is spliced onto the relay. The hit is
+    // recorded when the splice ends — that is when its `close` label is known —
+    // so the carrier is ended before the counters are read.
     let served = SessionId::from_bytes([24u8; 16]);
     let _served_upstream = park_test_session(harness.registry(), served, "beerloga").await;
-    let _session = harness.serve_v5_ok(v5_header(served), "beerloga").await;
+    let session = harness.serve_v5_ok(v5_header(served), "beerloga").await;
     wait_for_active_relays(harness.metrics(), 1).await;
+    session.close_with_carrier_ended().await;
+    wait_for_active_relays(harness.metrics(), 0).await;
 
     let rendered = harness.metrics().render_prometheus();
     assert_eq!(outcome(&rendered, "hit"), 1, "{rendered}");
     assert_eq!(outcome(&rendered, "miss"), 2, "{rendered}");
     assert_eq!(rejected(&rendered, "no_session"), 1, "{rendered}");
     assert_eq!(rejected(&rendered, "unknown_user"), 1, "{rendered}");
+}
+
+/// The `close` label is the one number telling an operator whether edges emit
+/// the close intent at all, so the two intents must land on different series of
+/// `outline_ss_mesh_relay_outcome_total` — and everything that never reached a
+/// close must stay out of both.
+#[tokio::test]
+async fn a_relay_outcome_is_labelled_with_how_its_carrier_closed() {
+    let harness = MeshHomeHarness::new().await;
+
+    let switched = SessionId::from_bytes([38u8; 16]);
+    let _switched_upstream = park_test_session(harness.registry(), switched, "beerloga").await;
+    let carrier = harness.serve_v5_ok(v5_header(switched), "beerloga").await;
+    carrier.close_with_carrier_ended().await;
+    wait_for_active_relays(harness.metrics(), 0).await;
+
+    let finished = SessionId::from_bytes([39u8; 16]);
+    let mut finished_upstream = park_test_session(harness.registry(), finished, "beerloga").await;
+    let done = harness.serve_v5_ok(v5_header(finished), "beerloga").await;
+    done.close_with_client_done();
+    assert!(finished_upstream.saw_eof().await);
+    wait_for_active_relays(harness.metrics(), 0).await;
+
+    // A miss never splices, so it has no close to report.
+    let missed = harness.serve_v5(v5_header(SessionId::from_bytes([40u8; 16]))).await;
+    assert_eq!(missed.close_reason(), Some(CloseReason::NoSession));
+
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(outcome_close(&rendered, "hit", "carrier_ended"), 1, "{rendered}");
+    assert_eq!(outcome_close(&rendered, "hit", "client_done"), 1, "{rendered}");
+    assert_eq!(outcome_close(&rendered, "hit", "none"), 0, "{rendered}");
+    assert_eq!(outcome_close(&rendered, "miss", "none"), 1, "{rendered}");
 }
 
 /// A v5 session must survive more than one carrier switch. The home owns the
@@ -1360,6 +1422,9 @@ async fn a_v5_session_can_be_resumed_twice() {
     );
     upstream.write(b"two").await;
     assert_eq!(second.edge_read(3).await, b"two");
+    // Each hit is counted as its splice ends, so end the second carrier too.
+    second.close_with_carrier_ended().await;
+    wait_for_active_relays(harness.metrics(), 0).await;
 
     let rendered = harness.metrics().render_prometheus();
     assert_eq!(outcome(&rendered, "hit"), 2, "both carriers are hits:\n{rendered}");
@@ -1606,17 +1671,87 @@ async fn a_malformed_user_frame_is_refused_and_counted() {
 /// and swallows the late reset, so an end-to-end test cannot observe the harm.
 #[test]
 fn a_finished_stream_is_never_reset() {
+    let switch = CloseIntent::CarrierEnded;
+
     let faulted = SpliceFault::mesh(anyhow::anyhow!("the edge carrier died")).into_end();
-    assert_eq!(faulted.stream_close(false), StreamClose::Reset(CloseReason::Abort));
-    assert_eq!(faulted.stream_close(true), StreamClose::Finish);
+    assert_eq!(faulted.stream_close(false, switch), StreamClose::Reset(CloseReason::Abort));
+    assert_eq!(faulted.stream_close(true, switch), StreamClose::Finish);
 
     let stalled = SpliceFault::stalled_mesh(anyhow::anyhow!("the edge wedged")).into_end();
-    assert_eq!(stalled.stream_close(false), StreamClose::Reset(CloseReason::Budget));
-    assert_eq!(stalled.stream_close(true), StreamClose::Finish);
+    assert_eq!(stalled.stream_close(false, switch), StreamClose::Reset(CloseReason::Budget));
+    assert_eq!(stalled.stream_close(true, switch), StreamClose::Finish);
 
     let graceful = SpliceEnd::Graceful { upstream_healthy: true };
-    assert_eq!(graceful.stream_close(false), StreamClose::Finish);
-    assert_eq!(graceful.stream_close(true), StreamClose::Finish);
+    assert_eq!(graceful.stream_close(false, switch), StreamClose::Finish);
+    assert_eq!(graceful.stream_close(true, switch), StreamClose::Finish);
+}
+
+/// A `CloseIntent` code must never reach the wire as a stream *reset* code,
+/// where `CloseReason::from_code` would read `0x5002` as an `Abort`.
+///
+/// The intent rides a `STOP_SENDING` applied to this very half, and quinn's
+/// `finish()` on a stopped half is a silent no-op — leaving `Drop for
+/// SendStream` to reset the stream with the `STOP_SENDING` code it received.
+/// The home therefore resets it itself, with `CloseReason::Fin`: the same
+/// "nothing more is coming" the finish meant, said in the vocabulary the edge
+/// parses resets in.
+#[test]
+fn a_client_done_close_never_puts_an_intent_code_on_the_wire() {
+    let graceful = SpliceEnd::Graceful { upstream_healthy: true };
+    assert_eq!(
+        graceful.stream_close(false, CloseIntent::ClientDone),
+        StreamClose::Reset(CloseReason::Fin),
+        "a stopped half must be closed explicitly, not left to quinn's drop",
+    );
+    assert_eq!(
+        graceful.stream_close(false, CloseIntent::CarrierEnded),
+        StreamClose::Finish,
+        "a bare carrier switch still ends with a plain FIN",
+    );
+    // A stream the downlink already finished on upstream EOF still wins over
+    // everything: resetting it would hand the edge a complete response as an
+    // abort.
+    assert_eq!(graceful.stream_close(true, CloseIntent::ClientDone), StreamClose::Finish);
+}
+
+/// `SendStream::stopped()` inserts a per-stream `Arc<Notify>` into quinn's
+/// connection state the first time it polls `Pending`, and only
+/// `StreamEvent::Finished`, `StreamEvent::Stopped` or the connection dying take
+/// it back out. A reset produces none of those, so polling on a relay that is
+/// about to be reset would strand one entry per faulted relay for the life of a
+/// pooled — long-lived — mesh connection.
+///
+/// So the poll is confined to the one end that both needs an answer and finishes
+/// the stream that reaps the entry.
+#[test]
+fn the_stopped_poll_runs_only_where_it_is_both_needed_and_reaped() {
+    let healthy = SpliceEnd::Graceful { upstream_healthy: true };
+    assert!(
+        needs_stopped_poll(&healthy, CloseIntent::CarrierEnded),
+        "a bare-FIN switch with a live upstream is the case the intent exists for",
+    );
+    assert!(
+        !needs_stopped_poll(&healthy, CloseIntent::ClientDone),
+        "the downlink pump already saw the intent; asking again only leaks",
+    );
+    assert!(
+        !needs_stopped_poll(
+            &SpliceEnd::Graceful { upstream_healthy: false },
+            CloseIntent::CarrierEnded,
+        ),
+        "an EOF'd upstream never reparks, and its send half is already finished",
+    );
+    for faulted in [
+        SpliceFault::mesh(anyhow::anyhow!("the edge carrier died")).into_end(),
+        SpliceFault::stalled_mesh(anyhow::anyhow!("the edge wedged")).into_end(),
+        SpliceFault::upstream(anyhow::anyhow!("rst")).into_end(),
+        SpliceFault::stalled_upstream(anyhow::anyhow!("stuck")).into_end(),
+    ] {
+        assert!(
+            !needs_stopped_poll(&faulted, CloseIntent::CarrierEnded),
+            "a faulted relay is reset, so an entry inserted here is never reaped",
+        );
+    }
 }
 
 /// The two halves' verdicts merge: the fault decides what the edge sees, while
@@ -1625,15 +1760,15 @@ fn a_finished_stream_is_never_reset() {
 #[test]
 fn a_splice_end_merges_both_halves() {
     assert!(matches!(
-        splice_end(Ok(()), Ok(DownlinkEnd::Stopped)),
+        splice_end(Ok(()), Ok(DownlinkEnd::Stopped)).end,
         SpliceEnd::Graceful { upstream_healthy: true },
     ));
     assert!(matches!(
-        splice_end(Ok(()), Ok(DownlinkEnd::UpstreamEof)),
+        splice_end(Ok(()), Ok(DownlinkEnd::UpstreamEof)).end,
         SpliceEnd::Graceful { upstream_healthy: false },
     ));
     assert!(matches!(
-        splice_end(Err(SpliceFault::mesh(anyhow::anyhow!("gone"))), Ok(DownlinkEnd::Stopped)),
+        splice_end(Err(SpliceFault::mesh(anyhow::anyhow!("gone"))), Ok(DownlinkEnd::Stopped)).end,
         SpliceEnd::Faulted {
             upstream_healthy: true,
             reset: CloseReason::Abort,
@@ -1641,17 +1776,48 @@ fn a_splice_end_merges_both_halves() {
         },
     ));
     assert!(matches!(
-        splice_end(Err(SpliceFault::mesh(anyhow::anyhow!("gone"))), Ok(DownlinkEnd::UpstreamEof)),
+        splice_end(Err(SpliceFault::mesh(anyhow::anyhow!("gone"))), Ok(DownlinkEnd::UpstreamEof))
+            .end,
         SpliceEnd::Faulted { upstream_healthy: false, .. },
     ));
     assert!(matches!(
-        splice_end(Ok(()), Err(SpliceFault::upstream(anyhow::anyhow!("rst")))),
+        splice_end(Ok(()), Err(SpliceFault::upstream(anyhow::anyhow!("rst")))).end,
         SpliceEnd::Faulted {
             upstream_healthy: false,
             reset: CloseReason::Abort,
             ..
         },
     ));
+}
+
+/// The splice reports which half finished the mesh stream and which intent its
+/// pumps observed, so the end-of-splice decisions read facts the pumps already
+/// established rather than re-deriving them from quinn's stream state.
+#[test]
+fn a_splice_end_carries_what_the_pumps_observed() {
+    let eofed = splice_end(Ok(()), Ok(DownlinkEnd::UpstreamEof));
+    assert!(eofed.stream_finished, "only an upstream EOF finishes the stream");
+    assert_eq!(eofed.observed_intent, CloseIntent::CarrierEnded);
+
+    let done = splice_end(Ok(()), Ok(DownlinkEnd::ClientDone));
+    assert!(!done.stream_finished);
+    assert_eq!(
+        done.observed_intent,
+        CloseIntent::ClientDone,
+        "a downlink write that failed with STOP_SENDING(ClientDone) already proves the intent",
+    );
+    assert!(
+        !done.end.reparks(done.observed_intent),
+        "a finished client's session must not go back into the registry",
+    );
+
+    let switched = splice_end(Ok(()), Ok(DownlinkEnd::Stopped));
+    assert!(!switched.stream_finished);
+    assert_eq!(switched.observed_intent, CloseIntent::CarrierEnded);
+
+    let broken = splice_end(Ok(()), Err(SpliceFault::upstream(anyhow::anyhow!("rst"))));
+    assert!(!broken.stream_finished);
+    assert_eq!(broken.observed_intent, CloseIntent::CarrierEnded);
 }
 
 /// A writer that takes at most `capacity` bytes and then blocks forever, as a

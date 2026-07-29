@@ -593,14 +593,23 @@ impl Metrics {
     /// park was found and spliced; `miss` means the edge fell back to a fresh
     /// local session; `error` means setup failed before any park could be
     /// resolved. Every relay stream reaching the handler records exactly one
-    /// outcome, so the series reconciles against relays actually served. Low
-    /// cardinality: three values.
+    /// outcome, so the series reconciles against relays actually served.
+    ///
+    /// `close` says how a `hit`'s splice ended — `client_done` when the edge
+    /// signalled that its client is finished with the session, `carrier_ended`
+    /// when it only switched carriers. Their ratio is the one number that shows
+    /// whether edges emit the close intent at all. `none` everywhere the
+    /// question does not arise: a `miss` or an `error` never spliced, and a
+    /// `hit` whose setup prologue failed never reached a close. Low
+    /// cardinality: three outcomes by three closes, most combinations
+    /// unreachable.
     ///
     /// Exists because a never-working relay went unnoticed in production —
     /// success was only inferrable from byte counters.
-    pub fn record_mesh_relay_outcome(&self, outcome: &'static str) {
+    pub fn record_mesh_relay_outcome(&self, outcome: &'static str, close: &'static str) {
         with_local_recorder(&self.recorder, || {
-            counter!("outline_ss_mesh_relay_outcome_total", "outcome" => outcome).increment(1);
+            counter!("outline_ss_mesh_relay_outcome_total", "outcome" => outcome, "close" => close)
+                .increment(1);
         });
     }
 
