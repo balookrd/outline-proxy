@@ -57,7 +57,10 @@ async fn spawn_vless_resumption_server() -> Result<(ResumptionTestServer, VlessU
 /// Builds a VLESS TCP request: VERSION + UUID + opt_len(0) + cmd(TCP) +
 /// port(BE16) + atype(0x01 IPv4) + IPv4 + payload. Mirrors
 /// `vless_websocket_tcp_relay_smoke` in `tests/vless.rs`.
-fn vless_tcp_request(uuid: &str, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
+///
+/// `pub(super)` so the cluster e2e can build the same handshake when it drives a
+/// VLESS-TCP session across an edge switch.
+pub(super) fn vless_tcp_request(uuid: &str, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
     let mut request = Vec::with_capacity(32 + payload.len());
     request.push(VLESS_VERSION);
     request.extend_from_slice(&parse_uuid(uuid)?);
@@ -110,7 +113,10 @@ fn vless_udp_datagram(payload: &[u8]) -> Bytes {
 /// and sing-box omit the port/atyp/address for Mux and start the mux frame
 /// stream right after the command byte — real sub-connection targets ride
 /// inside the mux frames that follow.
-fn vless_mux_request(uuid: &str) -> Result<Bytes> {
+///
+/// `pub(super)` so the cluster e2e can prove a mux command releases a mesh relay
+/// the edge had already opened.
+pub(super) fn vless_mux_request(uuid: &str) -> Result<Bytes> {
     let mut request = Vec::with_capacity(19);
     request.push(VLESS_VERSION);
     request.extend_from_slice(&parse_uuid(uuid)?);
@@ -122,7 +128,13 @@ fn vless_mux_request(uuid: &str) -> Result<Bytes> {
 /// Builds a mux New frame for `session_id` targeting `target` with an
 /// initial TCP payload. Used by the mux resumption test to open
 /// sub-connections inside an established VLESS-mux session.
-fn vless_mux_new_tcp_frame(session_id: u16, target: SocketAddr, payload: &[u8]) -> Bytes {
+///
+/// `pub(super)` for the cluster e2e; see [`vless_mux_request`].
+pub(super) fn vless_mux_new_tcp_frame(
+    session_id: u16,
+    target: SocketAddr,
+    payload: &[u8],
+) -> Bytes {
     let mut buf = BytesMut::new();
     let target_addr = TargetAddr::from(target);
     encode_frame(
@@ -163,7 +175,7 @@ fn vless_mux_keep_frame(session_id: u16, payload: &[u8]) -> Bytes {
 /// The caller must specify exactly which session IDs to wait for —
 /// the test treats arrival order as undefined because two upstream
 /// echoes race on independent TCP sockets.
-async fn collect_mux_keep_payloads<S>(
+pub(super) async fn collect_mux_keep_payloads<S>(
     socket: &mut S,
     expected: &[u16],
 ) -> Result<std::collections::HashMap<u16, Vec<u8>>>
