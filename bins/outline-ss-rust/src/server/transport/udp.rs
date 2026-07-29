@@ -690,118 +690,133 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
 
     let mut loop_result = Ok(());
     loop {
-        tokio::select! {
-            Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
-            msg = T::recv(&mut reader) => {
-                let frame = match msg {
-                    Ok(Some(m)) => m,
-                    Ok(None) => break,
-                    Err(error) => {
-                        loop_result = Err(error);
-                        break;
-                    }
+        // The read is pinned for the whole wait and only ever *polled* by the
+        // inner select, never dropped by it. A carrier's `recv` is not required
+        // to be cancel-safe, and the mesh SS-UDP one is not: `MeshUdpCarrier`
+        // consumes a 4-byte length prefix and then the body, so dropping it
+        // part-way would leave the QUIC stream mid-datagram and mis-frame every
+        // read after it. (The direct carriers are cancel-safe — axum's and the
+        // vendored H3 split reader both keep their partial state in the reader,
+        // and the XHTTP duplex consumes nothing until a whole record is ready —
+        // but the loop is shared, so it must hold to the stricter contract.)
+        // Draining `in_flight` concurrently is still required — a
+        // `FuturesUnordered` advances only while polled, so an otherwise idle
+        // session would stall its own DNS and sends until the next datagram
+        // arrived — and this is how the two coexist.
+        let msg = {
+            let read = T::recv(&mut reader);
+            tokio::pin!(read);
+            loop {
+                tokio::select! {
+                    Some(()) = in_flight.next(), if !in_flight.is_empty() => {},
+                    result = &mut read => break result,
+                }
+            }
+        };
+        let frame = match msg {
+            Ok(Some(m)) => m,
+            Ok(None) => break,
+            Err(error) => {
+                loop_result = Err(error);
+                break;
+            },
+        };
+        match T::classify(frame) {
+            WsFrame::Binary(data) => {
+                // Strip the padding frame (when this path pads) before anything
+                // else touches the datagram. A cover frame (real_len = 0)
+                // decodes to nothing — drop it and read the next frame. The
+                // decoded buffer is the bare SS packet the relay expects.
+                let data = match padding_decoder.as_mut() {
+                    Some(decoder) => {
+                        let mut decoded = Vec::with_capacity(data.len());
+                        decoder.push(&data, &mut decoded);
+                        if decoded.is_empty() {
+                            continue;
+                        }
+                        Bytes::from(decoded)
+                    },
+                    None => data,
                 };
-                match T::classify(frame) {
-                    WsFrame::Binary(data) => {
-                        // Strip the padding frame (when this path pads) before
-                        // anything else touches the datagram. A cover frame
-                        // (real_len = 0) decodes to nothing — drop it and read
-                        // the next frame. The decoded buffer is the bare SS
-                        // packet the relay expects.
-                        let data = match padding_decoder.as_mut() {
-                            Some(decoder) => {
-                                let mut decoded = Vec::with_capacity(data.len());
-                                decoder.push(&data, &mut decoded);
-                                if decoded.is_empty() {
-                                    continue;
-                                }
-                                Bytes::from(decoded)
-                            },
-                            None => data,
-                        };
-                        server.metrics.record_websocket_binary_frame(
+                server.metrics.record_websocket_binary_frame(
+                    Transport::Udp,
+                    route.protocol,
+                    AppProtocol::Shadowsocks,
+                    "up",
+                    data.len(),
+                );
+                if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                    server.metrics.record_udp_relay_drop(
+                        Transport::Udp,
+                        route.protocol,
+                        AppProtocol::Shadowsocks,
+                        "concurrency_limit",
+                    );
+                    warn!("udp concurrent relay limit reached, dropping datagram");
+                    continue;
+                }
+                // Reserve a slot against the process-wide cap so that fan-out
+                // across WebSocket sessions cannot blow up the total in-flight
+                // task count. Drop the datagram with a distinct label when the
+                // global ceiling is reached.
+                let global_permit = match server
+                    .relay_semaphore
+                    .as_ref()
+                    .map(|sem| Arc::clone(sem).try_acquire_owned())
+                {
+                    Some(Ok(permit)) => Some(permit),
+                    Some(Err(_)) => {
+                        server.metrics.record_udp_relay_drop(
                             Transport::Udp,
                             route.protocol,
                             AppProtocol::Shadowsocks,
-                            "up",
-                            data.len(),
+                            "global_concurrency_limit",
                         );
-                        if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
-                            server.metrics.record_udp_relay_drop(
-                                Transport::Udp,
-                                route.protocol,
-                                AppProtocol::Shadowsocks,
-                                "concurrency_limit",
-                            );
-                            warn!("udp concurrent relay limit reached, dropping datagram");
-                            continue;
-                        }
-                        // Reserve a slot against the process-wide cap so that
-                        // fan-out across WebSocket sessions cannot blow up the
-                        // total in-flight task count. Drop the datagram with a
-                        // distinct label when the global ceiling is reached.
-                        let global_permit = match server.relay_semaphore
-                            .as_ref()
-                            .map(|sem| Arc::clone(sem).try_acquire_owned())
+                        warn!("global udp concurrent relay limit reached, dropping datagram");
+                        continue;
+                    },
+                    None => None,
+                };
+                let server = Arc::clone(&server);
+                let route = Arc::clone(&route);
+                let session = Arc::clone(&session);
+                let response_sender = response_sender.clone();
+                in_flight.push(
+                    async move {
+                        if let Err(error) = handle_udp_datagram_common(
+                            &server,
+                            &route,
+                            &session,
+                            data,
+                            response_sender,
+                        )
+                        .await
                         {
-                            Some(Ok(permit)) => Some(permit),
-                            Some(Err(_)) => {
-                                server.metrics.record_udp_relay_drop(
-                                    Transport::Udp,
-                                    route.protocol,
-                                    AppProtocol::Shadowsocks,
-                                    "global_concurrency_limit",
-                                );
-                                warn!(
-                                    "global udp concurrent relay limit reached, dropping datagram"
-                                );
-                                continue;
-                            }
-                            None => None,
-                        };
-                        let server = Arc::clone(&server);
-                        let route = Arc::clone(&route);
-                        let session = Arc::clone(&session);
-                        let response_sender = response_sender.clone();
-                        in_flight.push(async move {
-                            if let Err(error) = handle_udp_datagram_common(
-                                &server,
-                                &route,
-                                &session,
-                                data,
-                                response_sender,
-                            )
-                            .await
-                            {
-                                warn!(?error, "udp datagram relay failed");
-                            }
-                            // Hold the permit until the relay future completes
-                            // so the semaphore accurately reflects in-flight
-                            // work; dropping here releases the slot.
-                            drop(global_permit);
-                        }.boxed());
-                    }
-                    WsFrame::Close => {
-                        debug!("client closed udp websocket");
-                        break;
-                    }
-                    WsFrame::Ping(payload) => {
-                        if outbound_ctrl_tx
-                            .send(T::pong_msg(payload))
-                            .await
-                            .is_err()
-                        {
-                            loop_result = Err(anyhow!("failed to queue websocket pong"));
-                            break;
+                            warn!(?error, "udp datagram relay failed");
                         }
+                        // Hold the permit until the relay future completes so
+                        // the semaphore accurately reflects in-flight work;
+                        // dropping here releases the slot.
+                        drop(global_permit);
                     }
-                    WsFrame::Pong => {}
-                    WsFrame::Text => {
-                        loop_result = Err(anyhow!("text websocket frames are not supported"));
-                        break;
-                    }
+                    .boxed(),
+                );
+            },
+            WsFrame::Close => {
+                debug!("client closed udp websocket");
+                break;
+            },
+            WsFrame::Ping(payload) => {
+                if outbound_ctrl_tx.send(T::pong_msg(payload)).await.is_err() {
+                    loop_result = Err(anyhow!("failed to queue websocket pong"));
+                    break;
                 }
-            }
+            },
+            WsFrame::Pong => {},
+            WsFrame::Text => {
+                loop_result = Err(anyhow!("text websocket frames are not supported"));
+                break;
+            },
         }
     }
 
