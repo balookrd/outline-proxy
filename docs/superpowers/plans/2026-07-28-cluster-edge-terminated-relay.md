@@ -1220,13 +1220,23 @@ git commit -m "feat(cluster): edge terminates VLESS crypto and relays plaintext 
 
 ---
 
-### Task 7: v5 plaintext home paths for the non-TCP park kinds
+### Task 7: v5 plaintext SS-UDP home path
 
-**Scope covers every park kind `serve_relayed_v5` cannot serve today** —
-`Parked::SsUdpStream`, `Parked::VlessUdpSingle` and `Parked::VlessMux` — not
-SS-UDP alone. Task 6 leaves VLESS-UDP and VLESS-mux degrading to a fresh
-upstream on a foreign shard, so **this task blocks retiring v4** (Task 9):
-until it lands, v4 is the only path with cross-node continuity for them.
+**Scoped to `Parked::SsUdpStream`.** It is the one non-TCP park kind the v5 OPEN
+can already name: `MeshFraming::Udp` distinguishes it on the wire. The two VLESS
+park kinds cannot be admitted from the home alone — `(framing = Tcp,
+protocol = Vless)` is the *identical* OPEN for `Parked::Tcp`,
+`Parked::VlessUdpSingle` and `Parked::VlessMux`, and the edge must choose it
+before it can read the VLESS command — so admitting them here would reintroduce
+the repeated-park-destruction defect `probe_park` exists to prevent. They get
+their own tasks (9 and 10), each carrying the edge and wire half they need.
+
+**The NAT ownership rule.** A resumed session must reattach the `nat_keys` it
+parked with, **and** must still be able to create entries for targets it has not
+reached before — a live UDP session meets new targets constantly, so forbidding
+creation would black-hole every new destination for the life of the session.
+What must be refused is routing to an entry owned by a *different* session or
+user. Reattach owned, create unowned, refuse foreign.
 
 Task 3 refuses `MeshFraming::Udp` deliberately, because the UDP home path is not
 a splice like TCP's. A parked SS-UDP session holds only NAT keys and an owner
@@ -1305,19 +1315,44 @@ async fn a_udp_session_reattaches_its_parked_nat_keys() {
 }
 
 #[tokio::test]
-async fn a_udp_datagram_for_an_unowned_nat_key_is_dropped() {
+async fn a_datagram_for_another_sessions_nat_entry_is_refused() {
     // The home trusts the edge's user attestation, but not an arbitrary target:
-    // a session must not be able to reach a NAT entry it does not own.
+    // a session must not reach a NAT entry another session owns. It *must*
+    // still be able to create entries for targets it has not met before — a
+    // live UDP session meets new destinations constantly, and forbidding
+    // creation would black-hole every new target for the life of the session.
     let harness = MeshHomeHarness::new().await;
     let id = SessionId::from_bytes([34u8; 16]);
     let mine = spawn_udp_echo().await;
-    let other = spawn_udp_echo().await;
+    let theirs = spawn_udp_echo().await;
     park_test_udp_session(harness.registry(), id, "beerloga", &[nat_key_for(mine)]).await;
+    harness.nat_table().claim(nat_key_for(theirs), "someone-else").await;
 
     let mut session = harness.serve_v5_udp_ok(v5_udp_header(id), "beerloga").await;
-    session.edge_send_datagram(&socks5_wrap(other, b"nope")).await;
+    session.edge_send_datagram(&socks5_wrap(theirs, b"nope")).await;
 
-    assert!(session.edge_recv_datagram_timeout().await.is_none());
+    assert!(
+        session.edge_recv_datagram_timeout().await.is_none(),
+        "a foreign session's NAT entry must not be reachable"
+    );
+}
+
+#[tokio::test]
+async fn a_resumed_session_may_still_reach_a_brand_new_target() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([35u8; 16]);
+    let parked_target = spawn_udp_echo().await;
+    let fresh_target = spawn_udp_echo().await;
+    park_test_udp_session(harness.registry(), id, "beerloga", &[nat_key_for(parked_target)]).await;
+
+    let mut session = harness.serve_v5_udp_ok(v5_udp_header(id), "beerloga").await;
+    session.edge_send_datagram(&socks5_wrap(fresh_target, b"hello")).await;
+
+    assert_eq!(
+        session.edge_recv_datagram().await,
+        socks5_wrap(fresh_target, b"hello"),
+        "a target first reached after the resume must still be routable"
+    );
 }
 ```
 
@@ -1446,7 +1481,46 @@ git commit -m "feat(cluster): edge terminates SS-UDP crypto and relays plaintext
 
 ---
 
-### Task 9: Retire v4 on the home
+### Task 9: VLESS-UDP over v5 (home and edge)
+
+`Parked::VlessUdpSingle` (`vless/udp.rs:81`) cannot be admitted from the home
+alone: its v5 OPEN is byte-identical to a VLESS-TCP one, because the edge must
+send OPEN before the client's first frame reveals the VLESS command. So this
+task owns both halves plus whatever wire discriminator they need.
+
+**Files:** `server/cluster/mesh/frame.rs` (v5 only), `server/transport/mesh_relay.rs`, `server/transport/vless/`, `server/transport/vless_udp.rs`, tests alongside each.
+
+**Interfaces:** consumes the v5 home and edge paths (Tasks 3-7). Produces a way for the edge to name the park shape it needs *after* it reads the VLESS command — the constraint that makes this its own task — plus the home-side plaintext path for `VlessUdpSingle`.
+
+- [ ] **Step 1: Decide and document the discriminator.** The edge knows the command only after the `101`, and OPEN precedes it. Either the shape moves to the second phase alongside `UserFrame`, or the edge re-opens once it knows. Write the choice and its cost into the module doc before implementing; `probe_park` must still refuse a shape mismatch **before** anything is consumed.
+- [ ] **Step 2: Write the failing tests** — a VLESS-UDP session parked on the home and resumed through an edge with different paths and credentials keeps one upstream; a shape mismatch leaves the park intact; datagram boundaries survive.
+- [ ] **Step 3: Run them to verify they fail.**
+- [ ] **Step 4: Implement**, reusing `MeshUdpCarrier` for boundaries and the `SpliceEnd`/`stream_close` and cooperative-stop patterns from the TCP splice.
+- [ ] **Step 5: Restore the withdrawn claim.** `cluster_vless_udp_survives_edge_switch` had its "one upstream across an edge switch" assertion withdrawn in Task 6 — put it back, and remove the doc-comment note explaining the withdrawal.
+- [ ] **Step 6: Run the full gate and commit** (`fmt` → `clippy` → `test`; `resumption::cluster` must not drop).
+
+---
+
+### Task 10: VLESS-mux over v5 (home and edge)
+
+`Parked::VlessMux` (`vless/mod.rs:348`) has the same indistinguishable-OPEN
+problem as Task 9, and additionally carries sub-connections
+(`ParkedMuxSubKind::{Tcp, Udp}`, `resumption/parked.rs:157-166`) that each hold
+their own upstream. Task 6 left mux sub-connections on `Direct` deliberately.
+
+**Files:** `server/cluster/mesh/frame.rs` (v5 only), `server/transport/mesh_relay.rs`, `server/transport/vless/mod.rs`, `server/transport/vless_mux/`, tests alongside each.
+
+**Interfaces:** consumes Task 9's discriminator — do not invent a second one. Produces the home-side plaintext path for `VlessMux`, including how each sub-connection re-attaches.
+
+- [ ] **Step 1: Write the failing tests** — a mux session with both a TCP and a UDP sub-connection, parked on the home and resumed through an edge with different paths and credentials, keeps every sub-connection's upstream; a partially-reattachable park is refused whole rather than half-spliced.
+- [ ] **Step 2: Run them to verify they fail.**
+- [ ] **Step 3: Implement**, reusing Task 9's discriminator and the established splice patterns.
+- [ ] **Step 4: Decide sub-connection scope explicitly.** Task 6 kept mux sub-connections on `Direct` with a test pinning it. Either migrate them and replace that test, or state in the module doc why they stay direct — do not leave it implicit.
+- [ ] **Step 5: Run the full gate and commit** (`fmt` → `clippy` → `test`; `resumption::cluster` must not drop).
+
+---
+
+### Task 11: Retire v4 on the home
 
 Every edge speaks v5 after Tasks 4–6, so the v4 branch is now dead weight. This
 is the contract half of the expand/contract: delete it, and let v5 become the
@@ -1539,7 +1613,7 @@ git commit -m "refactor(cluster): retire the v4 mesh relay path now every edge s
 
 ---
 
-### Task 10: Cross-node continuity — the proof of the goal
+### Task 12: Cross-node continuity — the proof of the goal
 
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/tests/resumption/cluster.rs`
@@ -1727,7 +1801,7 @@ git commit -m "test(cluster): session continuity across nodes with different pat
 
 ---
 
-### Task 11: Validation, metrics and documentation
+### Task 13: Validation, metrics and documentation
 
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/config/` (cluster validation)
