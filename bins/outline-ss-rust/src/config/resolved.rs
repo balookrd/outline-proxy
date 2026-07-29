@@ -273,8 +273,6 @@ pub struct PaddingConfig {
     pub throttle_window_secs: u64,
     pub throttle_sustain_windows: u32,
     pub throttle_min_bytes_per_sec: u64,
-    /// Inert: see `PaddingSection::throttle_edge_min_bytes_per_sec`.
-    pub throttle_edge_min_bytes_per_sec: u64,
     pub throttle_signal_cooldown_secs: u64,
 }
 
@@ -296,7 +294,6 @@ impl Default for PaddingConfig {
             throttle_window_secs: 1,
             throttle_sustain_windows: 5,
             throttle_min_bytes_per_sec: 1_000_000,
-            throttle_edge_min_bytes_per_sec: 64_000,
             throttle_signal_cooldown_secs: 30,
         }
     }
@@ -305,6 +302,16 @@ impl Default for PaddingConfig {
 impl PaddingConfig {
     pub(super) fn from_section(section: PaddingSection) -> Self {
         let d = Self::default();
+        // Retired knob: the detector it floored went with the v4 mesh relay.
+        // Accepted (the section is `deny_unknown_fields`, so refusing it would
+        // fail a deployed config) but inert — say so instead of silently
+        // pretending it still tunes anything.
+        if section.throttle_edge_min_bytes_per_sec.is_some() {
+            tracing::warn!(
+                "ignoring retired padding.throttle_edge_min_bytes_per_sec; the cluster edge \
+                 stall detector it floored is gone — remove the key"
+            );
+        }
         let min_bytes = section.min_bytes.unwrap_or(d.min_bytes);
         // A max below min is clamped up, so the range is always well-formed
         // (mirrors `PaddingScheme::new`).
@@ -335,9 +342,6 @@ impl PaddingConfig {
             throttle_min_bytes_per_sec: section
                 .throttle_min_bytes_per_sec
                 .unwrap_or(d.throttle_min_bytes_per_sec),
-            throttle_edge_min_bytes_per_sec: section
-                .throttle_edge_min_bytes_per_sec
-                .unwrap_or(d.throttle_edge_min_bytes_per_sec),
             throttle_signal_cooldown_secs: section
                 .throttle_signal_cooldown_secs
                 .unwrap_or(d.throttle_signal_cooldown_secs),

@@ -23,19 +23,10 @@ use super::frame::OpenHeader;
 /// concurrency cap until it is dropped.
 pub(in crate::server) struct PooledRelay {
     pub(in crate::server) stream: MeshStream,
-    /// The mesh connection the stream rides, so the edge can send out-of-band
-    /// control datagrams (THROTTLE_HINT) on it alongside the relay stream.
-    conn: Connection,
     _permit: OwnedSemaphorePermit,
 }
 
 impl PooledRelay {
-    /// A handle to the mesh connection carrying this relay, for sending control
-    /// datagrams. Cloneable and cheap (quinn `Connection` is `Arc`-backed).
-    pub(in crate::server) fn connection(&self) -> Connection {
-        self.conn.clone()
-    }
-
     /// Waits for the home's setup acknowledgement, bounded by `timeout`.
     ///
     /// This is what turns a home-side refusal into a *fast, explicit* failure on
@@ -101,7 +92,7 @@ impl MeshPeerPool {
     ) -> Result<PooledRelay> {
         let (conn, permit) = self.reserve(shard).await?;
         let stream = open_relay_stream(&conn, header).await?;
-        Ok(PooledRelay { stream, conn, _permit: permit })
+        Ok(PooledRelay { stream, _permit: permit })
     }
 
     /// Takes a concurrency permit and a live connection to `shard`'s home, in

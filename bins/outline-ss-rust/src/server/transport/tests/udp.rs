@@ -30,8 +30,7 @@ use crate::server::abort::AbortOnDrop;
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CloseReason, MeshEndpoint, MeshFraming, MeshIdentity, MeshPeerPool, MeshProtocol,
-    OPEN_ACK_ACCEPTED, OpenHeader, ThrottleRegistry, UpstreamAckFrame, UserFrame, read_datagram,
-    write_datagram,
+    OPEN_ACK_ACCEPTED, OpenHeader, UpstreamAckFrame, UserFrame, read_datagram, write_datagram,
 };
 use crate::server::dns_cache::DnsCache;
 use crate::server::nat::{NatKey, NatTable, ResponseSender, UdpResponseSender};
@@ -806,7 +805,6 @@ impl UdpEdgeHarness {
             )),
             endpoint: edge_endpoint,
             relay_budget: Duration::from_secs(5),
-            throttle_registry: ThrottleRegistry::new(),
             relay_permits: Arc::new(Semaphore::new(8)),
             metrics: Arc::clone(&metrics),
         };

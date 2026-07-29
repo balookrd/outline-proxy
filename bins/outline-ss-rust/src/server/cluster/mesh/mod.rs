@@ -7,21 +7,15 @@
 //! [`peer_pool`], [`pump`]) that the accept/relay path wires the mesh into.
 //! See `docs/CLUSTER.md`.
 
-mod control;
 mod datagram;
 mod endpoint;
 mod frame;
 mod peer_pool;
 mod pump;
-mod throttle;
 mod tls;
 
 // Re-exported so the transport-side relay path can accept relayed streams and
-// splice them onto the parks this node owns. The home receiver consumes
-// `ControlDatagram`/`parse_control_datagram`; the matching encoder stays in
-// `control` for its own round-trip tests, since the edge half that emitted a
-// THROTTLE_HINT went with the retired v4 relay.
-pub(in crate::server) use control::{ControlDatagram, parse_control_datagram};
+// splice them onto the parks this node owns.
 pub(in crate::server) use datagram::{read_datagram, write_datagram};
 pub(in crate::server) use endpoint::{
     AcceptRelayError, MeshEndpoint, MeshStream, accept_relay, write_open_ack,
@@ -36,5 +30,4 @@ pub(in crate::server) use frame::{
 #[cfg(test)]
 pub(in crate::server) use frame::OPEN_ACK_ACCEPTED;
 pub(in crate::server) use peer_pool::{MeshPeerPool, PooledRelay};
-pub(in crate::server) use throttle::ThrottleRegistry;
 pub(in crate::server) use tls::MeshIdentity;

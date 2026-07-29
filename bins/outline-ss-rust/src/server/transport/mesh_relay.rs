@@ -38,9 +38,9 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    AcceptRelayError, CloseIntent, CloseReason, ControlDatagram, MAX_USER_LEN, MeshFraming,
-    MeshProtocol, MeshStream, OpenHeader, PooledRelay, UpstreamAckFrame, UserFrame, accept_relay,
-    parse_control_datagram, read_datagram, write_datagram, write_open_ack,
+    AcceptRelayError, CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshProtocol,
+    MeshStream, OpenHeader, PooledRelay, UpstreamAckFrame, UserFrame, accept_relay, read_datagram,
+    write_datagram, write_open_ack,
 };
 use crate::server::nat::{NatKey, ResponseSender, UdpResponseCoding, UdpResponseSender};
 use crate::server::resumption::downlink_ring::ReplayOutcome;
@@ -326,37 +326,9 @@ async fn handle_mesh_connection(
     cluster: Arc<ClusterCtx>,
     services: Arc<Services>,
 ) {
-    // Per-connection control-datagram receiver: routes each THROTTLE_HINT to the
-    // matching relay's carrier monitor by session id (waking its writer to inject
-    // an OCTL cover frame). Best-effort — a malformed or unknown-session datagram
-    // is dropped. Bounded: `read_datagram` errors when the connection closes, and
-    // the `AbortOnDrop` guard tears the task down when this connection ends.
-    let _control_rx = {
-        let cluster = Arc::clone(&cluster);
-        let conn = conn.clone();
-        crate::server::abort::AbortOnDrop::new(tokio::spawn(async move {
-            while let Ok(datagram) = conn.read_datagram().await {
-                match parse_control_datagram(&datagram) {
-                    Ok(ControlDatagram::ThrottleHint { session_id }) => {
-                        let outcome = if cluster.throttle_registry.route_hint(&session_id) {
-                            "delivered"
-                        } else {
-                            "dropped"
-                        };
-                        cluster.metrics.record_mesh_throttle_hint_received(outcome);
-                    },
-                    Err(error) => {
-                        cluster.metrics.record_mesh_control_datagram_error();
-                        debug!(?error, "dropping malformed mesh control datagram");
-                    },
-                }
-            }
-        }))
-    };
-
     // Ends only when the peer closes the connection. A stream that fails on its
     // way in is dropped on its own: the connection is still carrying every relay
-    // already accepted on it, plus the control-datagram receiver above.
+    // already accepted on it.
     loop {
         let (header, stream) = match accept_relay(&conn).await {
             Ok(accepted) => accepted,

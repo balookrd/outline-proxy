@@ -86,6 +86,46 @@ password = "secret"
     assert!(config.users.unwrap()[0].aliases.is_none());
 }
 
+/// Step one of retiring `padding.throttle_edge_min_bytes_per_sec`: the key it
+/// tuned is gone, but `[padding]` is `deny_unknown_fields`, so dropping the
+/// field from the schema would refuse to load a deployed config that still sets
+/// it. It must keep parsing and resolve to exactly the config it would without
+/// the key — accepted and inert, never accepted and half-applied.
+#[test]
+fn retired_padding_throttle_edge_floor_is_accepted_and_ignored() {
+    let with_key: FileConfig = toml::from_str(
+        r#"
+[server]
+listen = "0.0.0.0:3000"
+
+[padding]
+enabled = true
+paths = ["/tcp"]
+throttle_detect_enabled = true
+throttle_edge_min_bytes_per_sec = 12345
+"#,
+    )
+    .expect("a config still carrying the retired key must load");
+    let without_key: FileConfig = toml::from_str(
+        r#"
+[server]
+listen = "0.0.0.0:3000"
+
+[padding]
+enabled = true
+paths = ["/tcp"]
+throttle_detect_enabled = true
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        crate::config::PaddingConfig::from_section(with_key.padding.unwrap()),
+        crate::config::PaddingConfig::from_section(without_key.padding.unwrap()),
+        "the retired key must not reach the resolved padding config",
+    );
+}
+
 #[test]
 fn parses_server_sections() {
     let config: FileConfig = toml::from_str(

@@ -21,7 +21,7 @@ use crate::metrics::Metrics;
 use super::resumption::{ClusterIdentity, SessionId};
 
 use mesh::MeshIdentity;
-pub(in crate::server) use mesh::{MeshEndpoint, MeshPeerPool, ThrottleRegistry};
+pub(in crate::server) use mesh::{MeshEndpoint, MeshPeerPool};
 
 /// Process-wide cluster runtime: the mesh endpoint (shared by the listener
 /// accept-loop and the peer pool) and the relay progress budget. Built at
@@ -33,9 +33,6 @@ pub(in crate::server) struct ClusterCtx {
     pub(in crate::server) pool: Arc<MeshPeerPool>,
     /// Per-uplink-write stall budget for the edge relay (health budget).
     pub(in crate::server) relay_budget: Duration,
-    /// Home-side map from a relayed session id to its live carrier monitor, so
-    /// an edge `THROTTLE_HINT` datagram can wake the right relay writer.
-    pub(in crate::server) throttle_registry: ThrottleRegistry,
     /// Home-side cap on relayed sessions served concurrently, across every peer
     /// connection. One permit per admitted relay stream, held for that relay's
     /// lifetime; a stream arriving with none free is refused
@@ -75,7 +72,6 @@ impl ClusterCtx {
             endpoint,
             pool,
             relay_budget: cfg.mesh_relay_budget,
-            throttle_registry: ThrottleRegistry::new(),
             relay_permits: Arc::new(Semaphore::new(MESH_MAX_RELAYED_SESSIONS)),
             metrics,
         }))
@@ -83,21 +79,11 @@ impl ClusterCtx {
 }
 
 // The mesh transport is wired into both the home listener and the edge relay,
-// but some of it is dormant rather than used, so keep the module-level allow.
-// Two groups, both deliberate:
-//
-// * Protocol surface kept whole for symmetry — `CloseReason::from_code` (the
-//   decoder half of a code only ever *written* here), `MeshEndpoint::shutdown`,
-//   `pump`.
-// * The edge→home THROTTLE_HINT machinery, whose *sender* went with the retired
-//   v4 relay: every edge now terminates its client's crypto and signals its own
-//   client directly. `parse_control_datagram` and the receiver task stay so a
-//   straggler peer's hint is decoded and counted rather than logged as a
-//   malformed datagram, but nothing registers a monitor for it to reach, so
-//   `ThrottleRegistry::register`, `PooledRelay::connection` and
-//   `encode_throttle_hint` (still exercised by `control`'s round-trip tests)
-//   have no production caller. Retiring the receiver half is a follow-up: it
-//   also owns two metrics, a dashboard panel and a config knob.
+// and all that is dormant now is protocol surface kept whole for symmetry:
+// `CloseReason::from_code` (the decoder half of a code only ever *written*
+// here), `MeshEndpoint::shutdown`, `MeshEndpoint::local_addr` (a test reads the
+// port back off a `:0` bind) and `pump`. Nothing else — the THROTTLE_HINT
+// machinery that used to sit under this allow is gone, sender and receiver both.
 //
 // `pub(in crate::server)` so the transport-side relay can reach `MeshStream`.
 #[allow(dead_code)]
