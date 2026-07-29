@@ -320,10 +320,6 @@ async fn xhttp_get(
         peer_addr,
     )
     .await;
-    // Snapshot before `edge` moves into `spawn_relay`. A relayed session answers
-    // with the mesh's own echo, which withholds the v2 confirmation this node
-    // cannot honour over the mesh.
-    let relayed_echo = edge.relayed_echo();
     let (session, created) = match state
         .registry
         .get_or_create(&session_id, edge.issued_id(&resume_for_create))
@@ -340,6 +336,13 @@ async fn xhttp_get(
             return short_status(StatusCode::SERVICE_UNAVAILABLE);
         },
     };
+    // Snapshot before `edge` moves into `spawn_relay`. A relayed session answers
+    // with the mesh's own echo, which withholds the v2 confirmation this node
+    // cannot honour over the mesh. Only when this request created the session:
+    // otherwise `edge` is dropped unused (it is handed to `spawn_relay` only on
+    // the create branch), and advertising a relay this response did not
+    // establish would tell the client a foreign id continues when it does not.
+    let relayed_echo = if created { edge.relayed_echo() } else { None };
 
     // Latch the datagram-framing negotiation before the relay is spawned — it
     // reads the flag when it builds its duplex.
@@ -434,18 +437,24 @@ async fn xhttp_post(
     // is allowed to establish the session. Refuse seq>0 against a
     // dead session — at that point the client is replaying old
     // packets to a registry slot that has been swept.
-    let edge = xhttp_edge(
-        state.parent.cluster.as_ref(),
-        &state.parent.services,
-        &state.registry,
-        &route,
-        &session_id,
-        &headers,
-        peer_addr,
-    )
-    .await;
-    // Snapshot before `edge` moves into `spawn_relay`; see `xhttp_get`.
-    let relayed_echo = edge.relayed_echo();
+    //
+    // Only `seq == 0` can create a session, so only `seq == 0` may open a mesh
+    // relay. A later POST that opened one would drop it unused — or, against a
+    // swept session, open a relay on the home and then answer 410.
+    let edge = if seq == 0 {
+        xhttp_edge(
+            state.parent.cluster.as_ref(),
+            &state.parent.services,
+            &state.registry,
+            &route,
+            &session_id,
+            &headers,
+            peer_addr,
+        )
+        .await
+    } else {
+        XhttpEdge::local()
+    };
     let (session, created) = if seq == 0 {
         match state
             .registry
@@ -473,6 +482,10 @@ async fn xhttp_post(
     if session.is_closed() {
         return short_status(StatusCode::GONE);
     }
+
+    // Snapshot before `edge` moves into `spawn_relay`, and only when this request
+    // created the session; see `xhttp_get`.
+    let relayed_echo = if created { edge.relayed_echo() } else { None };
 
     let udp_records = negotiate_udp_records(&session, &route, &headers);
 
@@ -593,8 +606,6 @@ async fn xhttp_stream_one(
         peer_addr,
     )
     .await;
-    // Snapshot before `edge` moves into `spawn_relay`; see `xhttp_get`.
-    let relayed_echo = edge.relayed_echo();
     let (session, created) = match state
         .registry
         .get_or_create(&session_id, edge.issued_id(&resume_for_create))
@@ -614,6 +625,9 @@ async fn xhttp_stream_one(
     if session.is_closed() {
         return short_status(StatusCode::GONE);
     }
+    // Snapshot before `edge` moves into `spawn_relay`, and only when this request
+    // created the session; see `xhttp_get`.
+    let relayed_echo = if created { edge.relayed_echo() } else { None };
     let udp_records = negotiate_udp_records(&session, &route, &headers);
     if created
         && !spawn_relay(
@@ -842,7 +856,7 @@ pub(in crate::server::transport) struct XhttpEdge {
 
 impl XhttpEdge {
     /// Neither half relays: serve this request locally.
-    fn local() -> Self {
+    pub(in crate::server::transport::xhttp) fn local() -> Self {
         Self { ss: None, v4: None }
     }
 
@@ -882,11 +896,13 @@ impl XhttpEdge {
 /// id continues. A home that refuses must therefore be known before the headers
 /// go out, exactly as on the WS and h3 upgrades.
 ///
-/// Only a session-creating request may open a relay. An id already live in the
-/// registry is being served by whatever request created it, so a relay opened
-/// here would be dropped unused — resetting a stream the home has already acked,
-/// for nothing. The check races with a concurrent creator; losing that race
-/// costs one such wasted open and nothing else.
+/// Only a session-creating request may open a relay. Callers enforce that from
+/// their side — a packet-up POST calls this only on `seq == 0`, the shape that
+/// can create — and the registry check below covers the rest: an id already live
+/// is being served by whatever request created it, so a relay opened here would
+/// be dropped unused, resetting a stream the home has already acked for nothing.
+/// That check races with a concurrent creator; losing that race costs one such
+/// wasted open and nothing else.
 pub(in crate::server::transport::xhttp) async fn xhttp_edge(
     cluster: Option<&Arc<ClusterCtx>>,
     services: &Services,

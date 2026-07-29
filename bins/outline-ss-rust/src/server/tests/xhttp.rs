@@ -145,7 +145,7 @@ pub(super) fn build_vless_tcp_handshake(target: SocketAddr, payload: &[u8]) -> R
     Ok(req)
 }
 
-fn http_client() -> Client<HttpConnector, Full<Bytes>> {
+pub(super) fn http_client() -> Client<HttpConnector, Full<Bytes>> {
     let mut connector = HttpConnector::new();
     connector.set_nodelay(true);
     Client::builder(TokioExecutor::new()).build(connector)
