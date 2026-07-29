@@ -77,15 +77,19 @@ impl ResumeContext {
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.trim() == "1");
         // Cluster edge routing: a resume id whose shard is not ours belongs to
-        // another home. Until the mesh relay exists (phase 5) we cannot reach
-        // it, so drop the resume request and serve a fresh local session (this
-        // edge becomes the new home). Own-shard / unknown ids stay local.
+        // another home. Reaching it is the mesh relay's job, and that decision is
+        // taken separately by [`edge_route`] before this local negotiation runs —
+        // so *here* the foreign id is simply not resumable, and we drop it and
+        // serve a fresh local session (this edge becomes the new home). Reaching
+        // this arm therefore means one of: not clustered on the relay path, the
+        // home refused, or the relay could not be opened. Own-shard / unknown ids
+        // stay local.
         let requested_resume = match decide(registry.cluster_identity(), requested_resume_raw) {
             RouteDecision::Relay(shard) => {
                 debug!(
                     shard = shard.get(),
-                    "resume id targets a foreign shard; relay not yet implemented \
-                     (phase 5), serving a fresh local session",
+                    "resume id targets a foreign shard the mesh relay did not take; \
+                     serving a fresh local session",
                 );
                 None
             },

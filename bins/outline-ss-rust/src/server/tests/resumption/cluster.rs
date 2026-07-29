@@ -25,9 +25,11 @@ use std::{
 use anyhow::{Context, Result, bail};
 use arc_swap::ArcSwap;
 use axum::http::{Method, Request, StatusCode, Version, header};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures_util::{SinkExt, StreamExt};
 use h3::ext::Protocol as H3Protocol;
+use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use outline_transport::{
     CarrierPadding, DnsCache as ClientDnsCache, SessionId as ClientSessionId, SsPathKind,
     TcpShadowsocksReader, TcpShadowsocksWriter, TransportMode, UdpWsTransport,
@@ -35,6 +37,10 @@ use outline_transport::{
 };
 use outline_wire::cluster::{ObfuscationKey, ShardId};
 use outline_wire::padding::{ControlSignal, PaddingDecoder, PaddingScheme, encode_frame_into};
+use outline_wire::resume::{
+    ACK_PREFIX_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER,
+    SYMMETRIC_REPLAY_HEADER,
+};
 use quinn::Endpoint;
 use ring::rand::SystemRandom;
 use rustls::pki_types::CertificateDer;
@@ -42,6 +48,7 @@ use sockudo_ws::{
     Config as H3WsConfig, Http3 as H3Transport, Message as H3Message, Role as H3Role,
     Stream as H3Stream, WebSocketServer as H3WebSocketServer, WebSocketStream as H3WebSocketStream,
 };
+use std::convert::Infallible;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -64,6 +71,7 @@ use super::super::super::{
     build_transport_route_map, build_user_routes, ensure_rustls_provider_installed,
     serve_h3_server, user_keys,
 };
+use super::super::xhttp::http_client;
 use super::super::{
     connect_websocket_with_resume, cross_repo_install_test_tls_root_on_client,
     cross_repo_test_server_tls_config, sample_config, test_h3_client_config, test_h3_server_tls,
@@ -86,6 +94,12 @@ use crate::protocol::vless::{VERSION as VLESS_VERSION, VlessUser};
 /// the VLESS(-UDP) e2e shares one identity across nodes (mirrors the shared SS
 /// user "bob").
 const CLUSTER_VLESS_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
+
+/// `downlink_buffer_bytes` for the nodes that must have v2 Symmetric Downlink
+/// Replay enabled in their own resumption config. Any non-zero value flips
+/// `OrphanRegistry::symmetric_replay_enabled`; the size itself is irrelevant to
+/// these tests, which never fill the ring.
+const V2_DOWNLINK_BUFFER_BYTES: usize = 64 * 1024;
 
 /// A running cluster node: an SS-over-WS listener plus a mesh endpoint (home
 /// listener + edge dialer). Aborts its tasks on drop so tests don't leak
@@ -135,12 +149,17 @@ fn build_cluster_parts(
     xhttp_ss_udp_path: Option<&str>,
     ss_tcp_path: Option<&str>,
     ws_ss_path: Option<&str>,
+    downlink_buffer_bytes: usize,
 ) -> Result<ClusterParts> {
     // The mesh QUIC endpoint needs the process-wide rustls provider installed.
     ensure_rustls_provider_installed();
 
     let mut config = sample_config((Ipv4Addr::LOCALHOST, 0).into());
     config.session_resumption.enabled = true;
+    // Non-zero turns on the v2 Symmetric Downlink Replay protocol for this
+    // node's *own* negotiation (`OrphanRegistry::symmetric_replay_enabled`).
+    // Zero — every node but the v2 edge — leaves v2 off, as before.
+    config.session_resumption.downlink_buffer_bytes = downlink_buffer_bytes;
     // The throttle e2e serves SS on its own padded path so enabling padding for
     // it (a process-global) never touches the other tests' `/tcp` carriers.
     if let Some(path) = ss_tcp_path {
@@ -249,6 +268,25 @@ async fn spawn_cluster_node(
     xhttp_ss_path: Option<&str>,
     xhttp_ss_udp_path: Option<&str>,
 ) -> Result<(ClusterNode, UserKey)> {
+    let parts = build_cluster_parts(
+        psk,
+        shard,
+        peers,
+        budget,
+        xhttp_ss_path,
+        xhttp_ss_udp_path,
+        None,
+        None,
+        0,
+    )?;
+    boot_ws_node(parts).await
+}
+
+/// Serves built [`ClusterParts`] over a freshly bound localhost TCP listener:
+/// the axum carrier app plus this node's mesh listener (the home half). Every WS
+/// node spawner below differs only in the config it hands `build_cluster_parts`,
+/// so the wiring lives here once.
+async fn boot_ws_node(parts: ClusterParts) -> Result<(ClusterNode, UserKey)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
     let ClusterParts {
@@ -258,16 +296,7 @@ async fn spawn_cluster_node(
         cluster,
         mesh_addr,
         user,
-    } = build_cluster_parts(
-        psk,
-        shard,
-        peers,
-        budget,
-        xhttp_ss_path,
-        xhttp_ss_udp_path,
-        None,
-        None,
-    )?;
+    } = parts;
 
     let app = build_app(
         Arc::clone(&routes),
@@ -292,6 +321,35 @@ async fn spawn_cluster_node(
         },
         user,
     ))
+}
+
+/// Boots an SS-over-XHTTP cluster node whose own resumption config has v2
+/// Symmetric Downlink Replay **enabled** (`downlink_buffer_bytes > 0`).
+///
+/// That is what makes it the right edge for
+/// [`cluster_xhttp_edge_echo_withholds_symmetric_replay`]: only a node that can
+/// confirm v2 locally would echo v2 from a request-derived negotiation, so the
+/// test's "v2 must be withheld" assertion actually discriminates between the
+/// relayed echo and the local one.
+async fn spawn_xhttp_v2_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+    xhttp_ss_path: &str,
+) -> Result<(ClusterNode, UserKey)> {
+    let parts = build_cluster_parts(
+        psk,
+        shard,
+        peers,
+        budget,
+        Some(xhttp_ss_path),
+        None,
+        None,
+        None,
+        V2_DOWNLINK_BUFFER_BYTES,
+    )?;
+    boot_ws_node(parts).await
 }
 
 /// Boots a WS cluster node whose SS base path is *combined*: `ws_ss_path` puts
@@ -307,40 +365,9 @@ async fn spawn_combined_ws_node(
     budget: Duration,
     ws_ss_path: &str,
 ) -> Result<(ClusterNode, UserKey)> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let listen_addr = listener.local_addr()?;
-    let ClusterParts {
-        routes,
-        services,
-        auth,
-        cluster,
-        mesh_addr,
-        user,
-    } = build_cluster_parts(psk, shard, peers, budget, None, None, None, Some(ws_ss_path))?;
-
-    let app = build_app(
-        Arc::clone(&routes),
-        Arc::clone(&services),
-        auth,
-        None,
-        Some(Arc::clone(&cluster)),
-    );
-    let registry = Arc::clone(&services.orphan_registry);
-    let ws_task =
-        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
-    let mesh_task =
-        tokio::spawn(run_mesh_listener(cluster, services, routes, ShutdownSignal::never()));
-
-    Ok((
-        ClusterNode {
-            listen_addr,
-            mesh_addr,
-            registry,
-            ws_task,
-            mesh_task,
-        },
-        user,
-    ))
+    let parts =
+        build_cluster_parts(psk, shard, peers, budget, None, None, None, Some(ws_ss_path), 0)?;
+    boot_ws_node(parts).await
 }
 
 /// Boots a WS cluster node serving SS on a custom path (the throttle e2e). Same
@@ -354,40 +381,9 @@ async fn spawn_throttle_node(
     budget: Duration,
     ss_tcp_path: &str,
 ) -> Result<(ClusterNode, UserKey)> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let listen_addr = listener.local_addr()?;
-    let ClusterParts {
-        routes,
-        services,
-        auth,
-        cluster,
-        mesh_addr,
-        user,
-    } = build_cluster_parts(psk, shard, peers, budget, None, None, Some(ss_tcp_path), None)?;
-
-    let app = build_app(
-        Arc::clone(&routes),
-        Arc::clone(&services),
-        auth,
-        None,
-        Some(Arc::clone(&cluster)),
-    );
-    let registry = Arc::clone(&services.orphan_registry);
-    let ws_task =
-        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
-    let mesh_task =
-        tokio::spawn(run_mesh_listener(cluster, services, routes, ShutdownSignal::never()));
-
-    Ok((
-        ClusterNode {
-            listen_addr,
-            mesh_addr,
-            registry,
-            ws_task,
-            mesh_task,
-        },
-        user,
-    ))
+    let parts =
+        build_cluster_parts(psk, shard, peers, budget, None, None, Some(ss_tcp_path), None, 0)?;
+    boot_ws_node(parts).await
 }
 
 /// A running h3 edge node: an HTTP/3 WebSocket server that relays to peer homes.
@@ -413,6 +409,39 @@ async fn spawn_h3_edge_node(
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
 ) -> Result<(H3EdgeNode, UserKey)> {
+    let parts = build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0)?;
+    boot_h3_edge_node(parts).await
+}
+
+/// The XHTTP-over-h3 twin of [`spawn_h3_edge_node`]: the same edge, but serving
+/// an SS-over-XHTTP base path and with v2 Symmetric Downlink Replay enabled in
+/// its own resumption config — see [`spawn_xhttp_v2_node`] for why the test
+/// needs that.
+async fn spawn_xhttp_h3_v2_edge_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+    xhttp_ss_path: &str,
+) -> Result<(H3EdgeNode, UserKey)> {
+    let parts = build_cluster_parts(
+        psk,
+        shard,
+        peers,
+        budget,
+        Some(xhttp_ss_path),
+        None,
+        None,
+        None,
+        V2_DOWNLINK_BUFFER_BYTES,
+    )?;
+    boot_h3_edge_node(parts).await
+}
+
+/// Serves built [`ClusterParts`] over a freshly bound h3 listener with a
+/// per-call self-signed cert, returned so a raw quinn client can pin it. The
+/// edge only dials the mesh, so no mesh listener runs.
+async fn boot_h3_edge_node(parts: ClusterParts) -> Result<(H3EdgeNode, UserKey)> {
     let (tls_config, cert_der) = test_h3_server_tls()?;
     let server = H3WebSocketServer::<H3Transport>::bind(
         (Ipv4Addr::LOCALHOST, 0).into(),
@@ -424,7 +453,7 @@ async fn spawn_h3_edge_node(
 
     let ClusterParts {
         routes, services, auth, cluster, user, ..
-    } = build_cluster_parts(psk, shard, peers, budget, None, None, None, None)?;
+    } = parts;
     let ctx = H3ServeCtx {
         routes,
         services,
@@ -488,6 +517,7 @@ async fn spawn_combined_xhttp_h3_node(
         Some(xhttp_path),
         None,
         None,
+        0,
     )?;
     let ctx = H3ServeCtx {
         routes,
@@ -1085,6 +1115,229 @@ async fn cluster_xhttp_edge_relays_to_home() -> Result<()> {
 
     drop(writer);
     drop(reader);
+    Ok(())
+}
+
+/// Adds the request-side advertisement of a client that speaks both resume
+/// protocols and is resuming `parked`: Resume-Capable, the id itself,
+/// Ack-Prefix (v1) and Symmetric Downlink Replay (v2). v2 is only ever active on
+/// top of v1, so the pair always travels together.
+fn with_v2_resume_headers(
+    builder: axum::http::request::Builder,
+    parked: SessionId,
+) -> axum::http::request::Builder {
+    builder
+        .header(RESUME_CAPABLE_HEADER, "1")
+        .header(RESUME_REQUEST_HEADER, parked.to_hex())
+        .header(ACK_PREFIX_HEADER, "1")
+        .header(SYMMETRIC_REPLAY_HEADER, "1")
+}
+
+/// Asserts an XHTTP response carries the echo of a session the edge really did
+/// relay: continuity under the id the client presented, v1 confirmed, and v2
+/// **withheld**.
+///
+/// The session-id check is what keeps the v2 check honest. A local fallback (no
+/// relay opened, or a home that refused) echoes a freshly minted id, so a case
+/// that quietly stopped exercising the relay fails here instead of passing on an
+/// absent v2 header it never had a chance to emit.
+fn assert_relayed_edge_echo(
+    headers: &axum::http::HeaderMap,
+    parked: SessionId,
+    carrier: &str,
+) -> Result<()> {
+    let echoed = headers.get(SESSION_RESPONSE_HEADER).and_then(|v| v.to_str().ok());
+    if echoed != Some(parked.to_hex().as_str()) {
+        bail!(
+            "{carrier}: expected the echo to continue the relayed session {}, got {echoed:?}",
+            parked.to_hex(),
+        );
+    }
+    if headers.get(ACK_PREFIX_HEADER).and_then(|v| v.to_str().ok()) != Some("1") {
+        bail!("{carrier}: a relayed session must still confirm Ack-Prefix (v1)");
+    }
+    if headers.contains_key(SYMMETRIC_REPLAY_HEADER) {
+        bail!(
+            "{carrier}: the echo confirmed v2 Symmetric Downlink Replay, which a \
+             mesh-relayed session cannot honour — the client would read the home's \
+             undelimited plaintext replay suffix as an ORDR frame header and die",
+        );
+    }
+    Ok(())
+}
+
+/// An XHTTP edge must never confirm a capability the mesh cannot honour.
+///
+/// On a relayed session the home's v2 replay suffix arrives as undelimited
+/// plaintext at the head of the mesh body; the edge cannot wrap it in the framed
+/// `ORDR` reply a v2 client expects, so the relayed echo withholds v2 (see
+/// `mesh_relay::edge_upstream`). Answering from the request-derived negotiation
+/// instead would tell a v2-capable client the protocol is active, and the client
+/// would parse the replay suffix as a frame header and kill the session.
+///
+/// This pins all three axum entry points — packet-up GET, packet-up POST at
+/// `seq = 0`, and stream-one POST over h2 — at the level the defect lived: the
+/// response headers of a request that really did open a mesh relay. The edge has
+/// v2 enabled in its own config, so the request-derived echo it *would* produce
+/// differs from the relayed one; that is what gives the assertion teeth.
+///
+/// Each case needs its own park: a relay is opened per session-creating request,
+/// and the home admits one only while it still holds the session.
+#[tokio::test]
+async fn cluster_xhttp_edge_echo_withholds_symmetric_replay() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-xhttp-echo-psk";
+    let (echo_addr, _accepts) = spawn_echo_target().await?;
+
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), Some("/ssx"), None)
+            .await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_xhttp_v2_node(PSK, 2, peers, Duration::from_secs(4), "/ssx").await?;
+    let client = http_client();
+
+    // 1. packet-up GET — the request that opens the downlink.
+    let parked = park_session_on_home(&home, &user, echo_addr, b"").await?;
+    let request = with_v2_resume_headers(
+        Request::builder()
+            .method(Method::GET)
+            .uri(format!("http://{}/ssx/edge-echo-get", edge.listen_addr)),
+        parked,
+    )
+    .body(Full::new(Bytes::new()))?;
+    let response = client.request(request).await?;
+    assert_eq!(response.status(), StatusCode::OK, "the packet-up GET must be served");
+    assert_relayed_edge_echo(response.headers(), parked, "packet-up GET")?;
+    drop(response);
+
+    // 2. packet-up POST at seq = 0 — the other shape that can create a session.
+    let parked = park_session_on_home(&home, &user, echo_addr, b"").await?;
+    let request = with_v2_resume_headers(
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!("http://{}/ssx/edge-echo-post", edge.listen_addr))
+            .header("x-xhttp-seq", "0"),
+        parked,
+    )
+    .body(Full::new(Bytes::new()))?;
+    let response = client.request(request).await?;
+    assert_eq!(response.status(), StatusCode::OK, "the packet-up POST must be served");
+    assert_relayed_edge_echo(response.headers(), parked, "packet-up POST seq=0")?;
+
+    // 3. stream-one POST. Needs a real h2 connection (h1 cannot full-duplex, and
+    // the handler answers 505 there), so handshake h2 directly over TCP as an
+    // `xhttp_h2` client would.
+    let parked = park_session_on_home(&home, &user, echo_addr, b"").await?;
+    let tcp = tokio::net::TcpStream::connect(edge.listen_addr).await?;
+    let (mut send, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .handshake::<_, BoxBody<Bytes, Infallible>>(TokioIo::new(tcp))
+        .await?;
+    let connection_task = tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    // Hold the uplink half open through the assertion: an immediate EOF would
+    // race the relay into teardown while the response head is still in flight.
+    let (frame_tx, frame_rx) =
+        tokio::sync::mpsc::channel::<Result<hyper::body::Frame<Bytes>, Infallible>>(1);
+    let uplink = BodyExt::boxed(StreamBody::new(futures_util::stream::unfold(
+        frame_rx,
+        |mut rx| async move { rx.recv().await.map(|frame| (frame, rx)) },
+    )));
+    let request = with_v2_resume_headers(
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!("http://{}/ssx/edge-echo-stream-one?mode=stream-one", edge.listen_addr))
+            .header(header::HOST, edge.listen_addr.to_string()),
+        parked,
+    )
+    .body(uplink)?;
+    send.ready().await?;
+    let response = send.send_request(request).await?;
+    assert_eq!(response.status(), StatusCode::OK, "the stream-one POST must be served");
+    assert_relayed_edge_echo(response.headers(), parked, "stream-one POST")?;
+
+    drop(frame_tx);
+    connection_task.abort();
+    Ok(())
+}
+
+/// The xhttp/h3 twin of [`cluster_xhttp_edge_echo_withholds_symmetric_replay`],
+/// pinning the other three entry points: the h3 packet-up GET, the h3 packet-up
+/// POST at `seq = 0`, and the h3 stream-one POST. Same invariant, same reason —
+/// h3 has its own copy of the response-echo code, so it needs its own pin.
+#[tokio::test]
+async fn cluster_xhttp_h3_edge_echo_withholds_symmetric_replay() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-xhttp-h3-echo-psk";
+    let (echo_addr, _accepts) = spawn_echo_target().await?;
+
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), Some("/ssx"), None)
+            .await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) =
+        spawn_xhttp_h3_v2_edge_node(PSK, 2, peers, Duration::from_secs(4), "/ssx").await?;
+
+    let mut endpoint = Endpoint::client((Ipv4Addr::LOCALHOST, 0).into())?;
+    endpoint.set_default_client_config(test_h3_client_config(edge.cert_der.clone())?);
+    let connection = endpoint.connect(edge.addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+    let base = format!("https://localhost:{}/ssx", edge.addr.port());
+
+    // 1. packet-up GET.
+    let parked = park_session_on_home(&home, &user, echo_addr, b"").await?;
+    let request = with_v2_resume_headers(
+        Request::builder()
+            .method(Method::GET)
+            .uri(format!("{base}/edge-echo-h3-get"))
+            .version(Version::HTTP_3),
+        parked,
+    )
+    .body(())?;
+    let mut req_stream = send_request.send_request(request).await?;
+    req_stream.finish().await?;
+    let response = req_stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK, "the xhttp/h3 GET must be served");
+    assert_relayed_edge_echo(response.headers(), parked, "xhttp/h3 packet-up GET")?;
+    drop(req_stream);
+
+    // 2. packet-up POST at seq = 0. The handler drains the body to EOF before it
+    // answers, so the request stream is finished right away.
+    let parked = park_session_on_home(&home, &user, echo_addr, b"").await?;
+    let request = with_v2_resume_headers(
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!("{base}/edge-echo-h3-post"))
+            .version(Version::HTTP_3)
+            .header("x-xhttp-seq", "0"),
+        parked,
+    )
+    .body(())?;
+    let mut req_stream = send_request.send_request(request).await?;
+    req_stream.finish().await?;
+    let response = req_stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK, "the xhttp/h3 POST must be served");
+    assert_relayed_edge_echo(response.headers(), parked, "xhttp/h3 packet-up POST seq=0")?;
+    drop(req_stream);
+
+    // 3. stream-one POST: no seq, and the uplink half stays open (the carrier is
+    // one bidirectional stream), so the response head is read on the live stream.
+    let parked = park_session_on_home(&home, &user, echo_addr, b"").await?;
+    let request = with_v2_resume_headers(
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!("{base}/edge-echo-h3-stream-one"))
+            .version(Version::HTTP_3),
+        parked,
+    )
+    .body(())?;
+    let mut req_stream = send_request.send_request(request).await?;
+    let response = req_stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK, "the xhttp/h3 stream-one must be served");
+    assert_relayed_edge_echo(response.headers(), parked, "xhttp/h3 stream-one POST")?;
+
+    driver_task.abort();
     Ok(())
 }
 
@@ -1752,6 +2005,7 @@ async fn cluster_udp_relay_falls_back_locally_when_home_lacks_the_path() -> Resu
         None,
         None,
         None,
+        0,
     )?;
     {
         let snap = home.routes.load();
