@@ -271,7 +271,44 @@ window when the three nodes were being enabled one at a time and a peer's 9443
 was still closed — but not all of them, and the reason is not visible at the
 current log level.
 
-### Localised: the chain breaks on the *client*, before the mesh is reached
+### Root cause: TCP session resume never hits, and it is not a cluster bug
+
+Evidence, gathered after the section below (which drew a wrong conclusion — see
+the correction at its end):
+
+| Node | clustered | `orphan_park_total{tcp}` | `resume_hit{tcp}` | `resume_hit{vless_udp_single}` |
+|---|---|---|---|---|
+| nuxt | yes | 1208 | **0** | 5 |
+| senko | yes | 244 | **0** | 0 |
+| aeza | yes | 244 | **0** | 0 |
+| `.104` | **no** | 396 | **0** | 19 |
+
+~2100 TCP parks across the fleet and **not one TCP resume hit, ever**. Meanwhile
+`vless_udp_single` resumes fine on the same binaries — 19 hits on `.104`, 5 on
+nuxt — so the resumption machinery as a whole works. Almost every TCP park dies
+`ttl_expired` (nuxt: 1125 of 1134 at the time of measurement).
+
+Every client that carries TUN traffic shows the matching client-side symptom,
+`outline_ws_tun_tcp_events_total{event="carrier_migration_miss"}` — `.102` 16,
+cloud3 9, `.104` 2 — and no migration hits anywhere. That metric is recorded when
+the client *did* redial presenting its resume headers and the server answered
+**without** an Ack-Prefix frame, i.e. it opened a fresh upstream instead of
+re-attaching the park.
+
+**The discriminator that settles it:** one of cloud3's misses is against
+`group="russia", uplink="beerloga-1"`, which is `.104` — a node with **no
+`[cluster]` section at all** and 9443 not listening. The failure reproduces
+identically where there is no cluster. So the cluster neither causes this nor can
+fix it; the relay sits idle because the cross-shard resume that would drive it
+never happens on TCP in the first place.
+
+This defect predates the migration and is independent of it. Next step is a
+targeted instrumentation build: log, at the resume-decision point, the id the
+client presented, the shard it decoded to, and what the registry answered — then
+compare against the id the home parked under. A clean control already exists in
+`vless_udp_single`, which takes the same path and succeeds.
+
+### Superseded reading: "the chain breaks on the client"
 
 The debug drop-in was installed on senko (idle at the time; `.102` had been moved
 to aeza first so the operator's own path never rode a restarted node) and `.104`
@@ -287,10 +324,15 @@ The client side says why:
 - Its log shows plain `created TUN TCP flow … uplink=senko` lines: on switching
   it builds **fresh** flows rather than resuming.
 
-So the client never presents a resume id, the edge therefore has no cross-shard
-id to act on, and no relay can fire. The mesh is not the failing component here —
-it is idle because nothing asks it to work. This also explains the earlier
-observation that the second forced switch moved no counter at all.
+The conclusion drawn at the time — "the client never presents a resume id" — was
+**wrong**, and the section above corrects it. `carrier_migration_miss` is
+recorded only *after* the client has redialled presenting its resume headers and
+the server declined to confirm; it is evidence that the client does try, not that
+it doesn't. The right reading is that the server never confirms a TCP resume, on
+clustered and non-clustered nodes alike.
+
+What survives from this step: the edge genuinely attempted no relay, and the mesh
+is idle because nothing asks it to work.
 
 Configuration is not the cause and does not need changing: all three servers have
 `[session_resumption] enabled = true`, `downlink_buffer_bytes = 65536`,
