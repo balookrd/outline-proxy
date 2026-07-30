@@ -222,6 +222,16 @@ pub(super) fn register_descriptions() {
         "Successful cross-transport session resumes, by parked-payload kind."
     );
     describe_counter!(
+        "outline_ss_orphan_resume_cross_protocol_total",
+        "Resume hits where the parked session and the carrier that claimed it \
+         were authenticated under different proxy protocols, by parked and \
+         resumed protocol. A subset of outline_ss_orphan_resume_hit_total, \
+         counted on the node that owns the park (so a relayed crossing lands on \
+         the home). Expected to be non-zero wherever a client rotates its active \
+         wire across a set mixing SS and VLESS wires; both legs are the same \
+         account, which the owner check enforces."
+    );
+    describe_counter!(
         "outline_ss_orphan_resume_miss_total",
         "Failed cross-transport session resumes, by reason."
     );
@@ -265,10 +275,14 @@ pub(super) fn register_descriptions() {
          round — an ordinary outcome, and refused without consuming the park, on \
          either of the two probes that bracket the setup (distinct from \
          no_session, which means nothing is there at all); \
-         protocol_mismatch = the park was \
-         authenticated under the other proxy protocol (SS vs VLESS), so user names \
-         denote different people, or the same person on two protocols, across the \
-         cluster; park_identity = an SS-UDP park holds no NAT key belonging to the \
+         protocol_mismatch = a datagram or mux park was claimed under the other \
+         proxy protocol (SS vs VLESS). Those parks hold framing state the other \
+         protocol cannot express — a mux sub-connection map, a half-decoded \
+         length-prefixed frame, NAT responder slots — unlike a byte-stream park, \
+         which crosses freely and is counted on \
+         outline_ss_orphan_resume_cross_protocol_total instead. Not reachable \
+         through the shape probe, so a non-zero value means a forged peer or the \
+         reservation window; park_identity = an SS-UDP park holds no NAT key belonging to the \
          user the edge attested, so there is no identity to route its datagrams \
          under; park_incomplete = a VLESS-mux park holds no sub-connection left \
          to re-attach, so the bundle is refused whole rather than half-spliced; \
