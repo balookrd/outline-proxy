@@ -16,7 +16,6 @@ use outline_metrics as metrics;
 use outline_transport::{
     DialNetworkOptions, DialResumeOptions, SessionId, TransportDialOptions, TransportOperation,
     TransportStream, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, connect_transport,
-    global_resume_cache,
 };
 
 use crate::config::{SsPathKind, UplinkTransport};
@@ -420,10 +419,36 @@ impl UplinkManager {
         self.connect_tcp_ws_fresh(candidate, source).await
     }
 
+    /// [`Self::acquire_udp_standby_or_connect_with_store`] against the
+    /// process-wide resume caches — the shape every caller had before per-carrier
+    /// resume slots existed.
     pub async fn acquire_udp_standby_or_connect(
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
+    ) -> Result<UdpSessionTransport> {
+        self.acquire_udp_standby_or_connect_with_store(
+            candidate,
+            source,
+            &outline_transport::UdpResumeStore::ProcessWide,
+        )
+        .await
+    }
+
+    /// Acquire a UDP carrier for `candidate`, keeping its Session IDs in
+    /// `resume_store`.
+    ///
+    /// The store is what decides *whose* id this dial presents. Under
+    /// [`UdpResumeStore::ProcessWide`](outline_transport::UdpResumeStore::ProcessWide)
+    /// the SS-UDP slot is one per scope, so a caller that dials a carrier per
+    /// flow presents whatever the previous flow parked — a hit on another
+    /// session, not a missed resume. Callers with one carrier per flow pass a
+    /// private store; see that type's documentation.
+    pub async fn acquire_udp_standby_or_connect_with_store(
+        &self,
+        candidate: &UplinkCandidate,
+        source: &'static str,
+        resume_store: &outline_transport::UdpResumeStore,
     ) -> Result<UdpSessionTransport> {
         use outline_transport::UplinkConnectionBinding;
         let cache = self.inner.dns_cache.as_ref();
@@ -481,6 +506,7 @@ impl UplinkManager {
             .with_on_downgrade(Some(on_downgrade))
             .with_padding_override(candidate.uplink.padding)
             .with_resume_scope(self.resume_scope(&candidate.uplink.name).to_string())
+            .with_resume_store(resume_store.clone())
             .with_uplink_binding(binding());
             return Ok(UdpSessionTransport::Vless(mux));
         }
@@ -490,6 +516,16 @@ impl UplinkManager {
         // pooling) so we never hand a dead transport to the caller.
         let ctx = self.standby_ctx(candidate.index, TransportKind::Udp).await;
         if let Some(ws) = ctx.try_take_alive(&candidate.uplink.name).await {
+            // A pooled stream was dialled as a fresh session by the refill loop,
+            // so the server minted it an id and it is riding on the stream. Move
+            // it into this carrier's store or the flow would have no id of its
+            // own and could never migrate — the reused-standby path was the one
+            // place a TUN UDP flow silently lost its resume identity.
+            let pooled_resume_key =
+                resume_cache_key(self.resume_scope(&candidate.uplink.name), "udp");
+            resume_store
+                .ss()
+                .store_if_issued(pooled_resume_key, ws.issued_session_id());
             // `from_websocket` reads the carrier padding at build time, which on
             // the hot path runs after the dial returns — outside any dial scope.
             // Wrap the build in the per-uplink padding scope so a padded uplink's
@@ -529,7 +565,7 @@ impl UplinkManager {
         // distinguishes TCP and UDP slots so a TCP-side reconnect
         // doesn't steal the UDP-side Session ID and vice versa.
         let udp_resume_key = resume_cache_key(self.resume_scope(&candidate.uplink.name), "udp");
-        let udp_resume_request = global_resume_cache().get(&udp_resume_key);
+        let udp_resume_request = resume_store.ss().get(&udp_resume_key);
         // Scope the per-uplink padding override over the dial + build: padding
         // is read when `from_websocket` builds the transport (after the dial
         // returns), so the scope must wrap the whole future. raw QUIC (handled
@@ -553,7 +589,7 @@ impl UplinkManager {
                 .with_context(|| TransportOperation::Connect {
                     target: format!("to {}", udp_ws_url),
                 })?;
-        global_resume_cache().store_if_issued(udp_resume_key, udp_issued);
+        resume_store.ss().store_if_issued(udp_resume_key, udp_issued);
         self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
             .await;
         // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`
