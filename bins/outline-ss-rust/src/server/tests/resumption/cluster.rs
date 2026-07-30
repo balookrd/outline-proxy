@@ -86,8 +86,8 @@ use super::vless::{
     vless_udp_request,
 };
 use super::{
-    connect_ws_h1, connect_ws_h1_ack_prefix, expect_binary_reply, spawn_delayed_echo_udp_target,
-    spawn_echo_target, spawn_echo_udp_target,
+    connect_ws_h1, connect_ws_h1_ack_prefix, connect_ws_h1_symmetric_replay, expect_binary_reply,
+    spawn_delayed_echo_udp_target, spawn_echo_target, spawn_echo_udp_target,
 };
 use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn, PaddingConfig};
 use crate::crypto::{
@@ -171,6 +171,7 @@ fn build_cluster_parts(
     xhttp_ss_path: Option<&str>,
     xhttp_ss_udp_path: Option<&str>,
     ss_tcp_path: Option<&str>,
+    ss_password: Option<&str>,
     ws_ss_path: Option<&str>,
     downlink_buffer_bytes: usize,
     ss2022: bool,
@@ -197,6 +198,15 @@ fn build_cluster_parts(
     // it (a process-global) never touches the other tests' `/tcp` carriers.
     if let Some(path) = ss_tcp_path {
         config.ws_path_tcp = path.to_string();
+    }
+    // A per-node SS password. Deliberately *not* the user label, which stays
+    // "bob" on every node: the label is the park's owner and the home checks it
+    // against the name the edge attests, so it must denote the same person
+    // cluster-wide. The secret behind it is the node's own — that is the shape a
+    // real cluster has, and the one the v5 relay exists to survive, because the
+    // client's crypto terminates on whichever node it lands on.
+    if let Some(password) = ss_password {
+        config.users[0].password = Some(password.to_string());
     }
     // A combined WS-SS base: `ws_path_ss` routes both the TCP and UDP legs onto
     // one path, so it lands in both WS route tables and `build_app` registers a
@@ -318,6 +328,7 @@ async fn spawn_cluster_node(
         xhttp_ss_udp_path,
         None,
         None,
+        None,
         0,
         false,
         None,
@@ -351,9 +362,51 @@ async fn spawn_vless_cluster_node(
         None,
         None,
         None,
+        None,
         0,
         false,
         Some((vless_path, vless_uuid)),
+    )?;
+    boot_ws_node(parts).await
+}
+
+/// Boots a WS cluster node whose **SS** carrier is its own: its own path and its
+/// own per-user password, sharing only the user *label* with the rest of the
+/// cluster.
+///
+/// This is the topology that was broken in production — every node with its own
+/// paths and its own secrets — and the SS counterpart of
+/// [`spawn_vless_cluster_node`]. Under v5 it is servable because the node the
+/// client lands on terminates the client's crypto and the mesh carries
+/// plaintext: the home never sees the edge's key, and the only identity crossing
+/// the mesh is the user name the edge attests.
+///
+/// `downlink_buffer_bytes` is per node because v2 Symmetric Downlink Replay is
+/// asymmetric across a relay: only the *home* needs a ring (it is the one that
+/// replays the unacked suffix onto the mesh), while the edge forwards the
+/// client's raw advertisement regardless of its own config.
+async fn spawn_asymmetric_ss_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+    ss_tcp_path: &str,
+    ss_password: &str,
+    downlink_buffer_bytes: usize,
+) -> Result<(ClusterNode, UserKey)> {
+    let parts = build_cluster_parts(
+        psk,
+        shard,
+        peers,
+        budget,
+        None,
+        None,
+        Some(ss_tcp_path),
+        Some(ss_password),
+        None,
+        downlink_buffer_bytes,
+        false,
+        None,
     )?;
     boot_ws_node(parts).await
 }
@@ -424,6 +477,7 @@ async fn spawn_xhttp_v2_node(
         None,
         None,
         None,
+        None,
         V2_DOWNLINK_BUFFER_BYTES,
         false,
         None,
@@ -452,6 +506,7 @@ async fn spawn_combined_ws_node(
         None,
         None,
         None,
+        None,
         Some(ws_ss_path),
         0,
         false,
@@ -475,8 +530,9 @@ async fn spawn_ss2022_node(
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
 ) -> Result<(ClusterNode, UserKey)> {
-    let parts =
-        build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, true, None)?;
+    let parts = build_cluster_parts(
+        psk, shard, peers, budget, None, None, None, None, None, 0, true, None,
+    )?;
     boot_ws_node(parts).await
 }
 
@@ -499,6 +555,7 @@ async fn spawn_throttle_node(
         None,
         None,
         Some(ss_tcp_path),
+        None,
         None,
         0,
         false,
@@ -530,8 +587,9 @@ async fn spawn_h3_edge_node(
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
 ) -> Result<(H3EdgeNode, UserKey)> {
-    let parts =
-        build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, false, None)?;
+    let parts = build_cluster_parts(
+        psk, shard, peers, budget, None, None, None, None, None, 0, false, None,
+    )?;
     boot_h3_edge_node(parts).await
 }
 
@@ -552,6 +610,7 @@ async fn spawn_xhttp_h3_v2_edge_node(
         peers,
         budget,
         Some(xhttp_ss_path),
+        None,
         None,
         None,
         None,
@@ -642,6 +701,7 @@ async fn spawn_combined_xhttp_h3_node(
         budget,
         Some(xhttp_path),
         Some(xhttp_path),
+        None,
         None,
         None,
         0,
@@ -736,7 +796,20 @@ async fn park_session_on_home(
     target: SocketAddr,
     payload: &[u8],
 ) -> Result<SessionId> {
-    let (mut socket, issued) = connect_ws_h1(home.listen_addr, "/tcp", None, true).await?;
+    park_session_on_home_path(home, "/tcp", user, target, payload).await
+}
+
+/// [`park_session_on_home`] against a home that serves SS somewhere other than
+/// the default `/tcp` — the asymmetric-cluster cases, where every node has its
+/// own carrier path.
+async fn park_session_on_home_path(
+    home: &ClusterNode,
+    path: &str,
+    user: &UserKey,
+    target: SocketAddr,
+    payload: &[u8],
+) -> Result<SessionId> {
+    let (mut socket, issued) = connect_ws_h1(home.listen_addr, path, None, true).await?;
     let issued = issued.context("the home must mint a resume id for a resume-capable client")?;
     socket
         .send(WsMessage::Binary(ss_handshake_frame(user, target, payload)?))
@@ -897,6 +970,405 @@ async fn cluster_session_survives_edge_switch() -> Result<()> {
         "resume across the edge switch must reuse the parked upstream (no fresh connect)"
     );
     sock_b.close(None).await?;
+    Ok(())
+}
+
+// ── Cross-node continuity on an asymmetric cluster ────────────────────────────
+
+/// The SS carrier path and per-user secret of the node that mints the park, and
+/// of the node the session then moves to. Nothing is shared but the user label
+/// — the topology the owner's fleet actually runs, and the one the v4 relay
+/// turned into a black hole.
+const HOME_SS_PATH: &str = "/home-only-path/ss";
+const EDGE_SS_PATH: &str = "/edge-only-path/ss";
+const HOME_SS_SECRET: &str = "home-only-secret";
+const EDGE_SS_SECRET: &str = "edge-only-secret";
+
+/// Reads `want` bytes of SS plaintext off a WS carrier, decrypting the AEAD
+/// stream as it arrives.
+///
+/// The SS twin of [`read_vless_tcp_payload`], and it exists for the same reason:
+/// SS rides one continuous AEAD stream, so a resumed session's control frame and
+/// its replayed suffix may arrive in one WebSocket frame or several, and a real
+/// client decodes the stream rather than the framing. Returns as soon as `want`
+/// bytes are available, so a caller that also wants "and nothing more" asserts
+/// the length itself.
+async fn read_ss_plaintext<S>(socket: &mut S, user: &UserKey, want: usize) -> Result<Vec<u8>>
+where
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let mut decryptor = AeadStreamDecryptor::new(Arc::from(vec![user.clone()].into_boxed_slice()));
+    let mut plaintext = Vec::new();
+    while plaintext.len() < want {
+        let frame = expect_binary_reply(socket).await?;
+        decryptor.feed_ciphertext(&frame);
+        decryptor.drain_plaintext(&mut plaintext)?;
+    }
+    Ok(plaintext)
+}
+
+/// **The proof of the goal.** A session established on one node and resumed
+/// through a node with a *different path and different credentials* keeps one
+/// upstream, and the move is proven to have gone through the mesh.
+///
+/// This is the exact topology that was broken in production: every node serves
+/// SS on its own path, under its own per-user secret, and only the user *label*
+/// is shared cluster-wide. It works under v5 because the node the client lands
+/// on terminates the client's crypto and the mesh carries plaintext — the home
+/// never sees the edge's key, and the only identity that crosses the mesh is the
+/// user name the edge attests, which is what the home checks its park's owner
+/// against.
+///
+/// [`cluster_session_survives_edge_switch`] already pins the *switch* for the
+/// byte-stream shape, but on a symmetric cluster — one path, one secret — so it
+/// cannot distinguish "the relay works" from "both nodes happen to be
+/// interchangeable". The asymmetry is asserted here rather than assumed:
+/// neither node's key would open the other's client stream.
+///
+/// Three independent discriminators say this really crossed the mesh, because a
+/// local fallback also echoes faithfully: the echo target's accept counter stays
+/// at one (a fresh session would dial a second upstream), the edge echoes the
+/// id the *home* parks under rather than a freshly minted one, and the home's
+/// own mesh byte counters moved. That last one is deliberate:
+/// `mesh_bytes_total{direction="down"}` reading zero fleet-wide was the symptom
+/// a never-working relay hid behind for months, and nothing else in this suite
+/// asserts it ever moves.
+#[tokio::test]
+async fn cluster_session_survives_a_move_between_nodes_with_different_paths_and_credentials()
+-> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-asymmetric-psk";
+    const VIA_HOME: &[u8] = b"chunk-one:";
+    const VIA_EDGE: &[u8] = b"chunk-two";
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+
+    let (home, home_user) = spawn_asymmetric_ss_node(
+        PSK,
+        1,
+        HashMap::new(),
+        Duration::from_secs(4),
+        HOME_SS_PATH,
+        HOME_SS_SECRET,
+        0,
+    )
+    .await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, edge_user) = spawn_asymmetric_ss_node(
+        PSK,
+        2,
+        peers,
+        Duration::from_secs(4),
+        EDGE_SS_PATH,
+        EDGE_SS_SECRET,
+        0,
+    )
+    .await?;
+
+    // The asymmetry is the whole point, so it is proven, not assumed: same
+    // person, genuinely different secrets on the two nodes.
+    assert_eq!(home_user.id(), edge_user.id(), "the user label is shared cluster-wide");
+    assert!(
+        !home_user.matches_password(EDGE_SS_SECRET)?,
+        "the home must not hold the edge's credential",
+    );
+    assert!(
+        !edge_user.matches_password(HOME_SS_SECRET)?,
+        "the edge must not hold the home's credential",
+    );
+
+    // 1. The client establishes on the home, on the home's path, under the
+    //    home's credentials, and the home parks the upstream when it drops.
+    let session_id =
+        park_session_on_home_path(&home, HOME_SS_PATH, &home_user, echo_addr, VIA_HOME).await?;
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the first session must open exactly one upstream",
+    );
+
+    // 2. The client reconnects to the *edge*, on the edge's path, under the
+    //    edge's credentials. Under the old design this was a black hole.
+    let (mut socket, echoed) =
+        connect_ws_h1(edge.listen_addr, EDGE_SS_PATH, Some(session_id), true).await?;
+    assert_eq!(
+        echoed,
+        Some(session_id),
+        "continuity: the edge must echo the id the client already holds",
+    );
+
+    // 3. The same upstream keeps serving, through the edge — and the reply comes
+    //    back sealed under the *edge's* key, which the home does not have.
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(&edge_user, echo_addr, VIA_EDGE)?))
+        .await?;
+    let plaintext = read_ss_plaintext(&mut socket, &edge_user, VIA_EDGE.len()).await?;
+    assert_eq!(
+        plaintext.as_slice(),
+        VIA_EDGE,
+        "the parked upstream must keep streaming across the node move",
+    );
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the move must reuse the parked upstream: the target sees a single source",
+    );
+
+    socket.close(None).await?;
+    drop(socket);
+    // The outcome is recorded when the splice ends and the home re-parks, so
+    // wait for the park rather than scraping into a race.
+    wait_for_park(&home, session_id).await?;
+
+    let rendered = home.metrics.render_prometheus();
+    assert!(
+        mesh_bytes(&rendered, "up") >= VIA_EDGE.len() as u64,
+        "the home must have taken the client's uplink off the mesh:\n{rendered}",
+    );
+    assert!(
+        mesh_bytes(&rendered, "down") >= VIA_EDGE.len() as u64,
+        "the home must have pushed the reply onto the mesh — a zero here is the \
+         production symptom of a relay that never worked:\n{rendered}",
+    );
+    assert_eq!(
+        mesh_relay_outcome(&rendered, "hit"),
+        1,
+        "the home must have served exactly one relayed session:\n{rendered}",
+    );
+    assert_eq!(
+        mesh_relay_rejected(&rendered, "no_session"),
+        0,
+        "the home held the park, so nothing may have been refused:\n{rendered}",
+    );
+    Ok(())
+}
+
+/// Downlink replay across the move has no gap and no duplicate: the resumed
+/// carrier continues at exactly the offset the client acknowledged.
+///
+/// This is the half of continuity a payload echo cannot see. The home keeps a v2
+/// ring of the plaintext it committed to send; when the session moves, the edge
+/// forwards the client's raw v2 advertisement and acked offset in the mesh OPEN,
+/// and the home writes the unacked suffix — and only that suffix — ahead of any
+/// fresh byte. Replaying from `0` would duplicate what the client already has;
+/// skipping the replay would leave a hole. Neither is distinguishable from a
+/// working session by any other assertion in this suite.
+///
+/// The edge must **withhold** the v2 confirmation while doing so: the suffix
+/// arrives as undelimited plaintext at the head of the mesh body, so the edge
+/// cannot wrap it in the framed `"ORDR"` reply a v2 client expects. Both nodes
+/// have v2 enabled in their own config, which is what gives that assertion
+/// teeth — the request-derived echo the edge *would* produce confirms v2, so
+/// only a genuinely relayed echo can withhold it.
+///
+/// The resuming carrier sends a target header with an **empty** payload on
+/// purpose: nothing new reaches the target, so everything the client reads is
+/// what the move owed it, and "no duplicate" can be asserted as an exact length.
+#[tokio::test]
+async fn cluster_relayed_downlink_replay_has_no_gap_and_no_duplicate() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-replay-psk";
+    const SENT: &[u8] = b"HELLO-WORLD!";
+    /// What the client claims it observed before the carrier died — `SENT`
+    /// split so the suffix is neither empty nor the whole thing.
+    const ACKED: u64 = 5;
+    const UNACKED: &[u8] = b"-WORLD!";
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+
+    let (home, home_user) = spawn_asymmetric_ss_node(
+        PSK,
+        1,
+        HashMap::new(),
+        Duration::from_secs(4),
+        HOME_SS_PATH,
+        HOME_SS_SECRET,
+        V2_DOWNLINK_BUFFER_BYTES,
+    )
+    .await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, edge_user) = spawn_asymmetric_ss_node(
+        PSK,
+        2,
+        peers,
+        Duration::from_secs(4),
+        EDGE_SS_PATH,
+        EDGE_SS_SECRET,
+        V2_DOWNLINK_BUFFER_BYTES,
+    )
+    .await?;
+
+    // Session #0 on the home, negotiated as v1+v2 so a downlink ring exists at
+    // all, and driven far enough that the ring holds something to replay.
+    let (mut socket, first) =
+        connect_ws_h1_symmetric_replay(home.listen_addr, HOME_SS_PATH, None, 0).await?;
+    let session_id = first
+        .issued_session_id
+        .context("the home must mint a resume id for a resume-capable client")?;
+    assert!(
+        first.ack_prefix_confirmed && first.symmetric_replay_confirmed,
+        "without a v2 negotiation on the original session there is no ring to replay from: \
+         {first:?}",
+    );
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(&home_user, echo_addr, SENT)?))
+        .await?;
+    let echoed = read_ss_plaintext(&mut socket, &home_user, SENT.len()).await?;
+    assert_eq!(echoed.as_slice(), SENT, "the home's own session must reach the target");
+    socket.close(None).await?;
+    drop(socket);
+    wait_for_park(&home, session_id).await?;
+
+    // The move: a different node, a different path, a different credential — and
+    // a client that admits to having observed only the first `ACKED` bytes.
+    let (mut socket, resumed) =
+        connect_ws_h1_symmetric_replay(edge.listen_addr, EDGE_SS_PATH, Some(session_id), ACKED)
+            .await?;
+    assert_eq!(
+        resumed.issued_session_id,
+        Some(session_id),
+        "the replay is only meaningful if this really continued the parked session: {resumed:?}",
+    );
+    assert!(
+        resumed.ack_prefix_confirmed,
+        "the edge re-emits the home's upstream offset, so it owes the client v1: {resumed:?}",
+    );
+    assert!(
+        !resumed.symmetric_replay_confirmed,
+        "a relayed echo must withhold v2 — a client told v2 is active would read the undelimited \
+         replay suffix as an ORDR frame header and die: {resumed:?}",
+    );
+
+    // An empty payload: the target is given nothing new to echo, so the whole
+    // downlink is what the move owed the client.
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(&edge_user, echo_addr, b"")?))
+        .await?;
+
+    let want = FRAME_LEN_V1 + UNACKED.len();
+    let stream = read_ss_plaintext(&mut socket, &edge_user, want).await?;
+    match parse_v1(&stream[..FRAME_LEN_V1]) {
+        ParseResult::Valid { up_acked } => assert_eq!(
+            up_acked,
+            SENT.len() as u64,
+            "the edge must pass on the home's real upstream offset, not a fresh zero",
+        ),
+        other => bail!("expected an ack-prefix v1 frame at the head of the stream, got {other:?}"),
+    }
+    assert_eq!(
+        &stream[FRAME_LEN_V1..],
+        UNACKED,
+        "replay must resume precisely at the acked offset: no gap, no duplicate",
+    );
+    assert_eq!(
+        stream.len(),
+        want,
+        "nothing beyond the unacked suffix may follow: a replay from zero would show up here",
+    );
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the move must have reused the parked upstream, not dialled a fresh one",
+    );
+    socket.close(None).await?;
+    Ok(())
+}
+
+/// A refusal leaves the client **genuinely served locally**, not silently
+/// stalled — and the home says why on a counter an operator can alert on.
+///
+/// The black-hole invariant, for the byte-stream shape. The home here is healthy
+/// and reachable; it simply holds no park under the id, which is the ordinary
+/// answer for every expired session and every id it never minted. Because the
+/// edge waits for that answer before upgrading the client's carrier, it still
+/// has the choice to serve the client itself, and both halves of that are
+/// asserted: the id it echoes is its **own** (echoing the refused one back would
+/// send the client's next reconnect to the same home, to be refused and served
+/// locally again — a session that can never resume), and the payload actually
+/// round-trips through an upstream this node dialled.
+///
+/// [`cluster_udp_relay_falls_back_locally_when_the_home_holds_no_park`] pins the
+/// same fallback for SS-UDP, and
+/// [`cluster_unreachable_home_falls_back_to_local_session`] pins the *unreachable*
+/// home for the byte stream. Neither covers this one: a reachable home that
+/// refuses is a different code path on both ends — the home's `no_session`
+/// refusal runs at all, and the edge degrades after an ack it did receive — and
+/// nothing else in this suite asserts the refusal reason for a byte stream.
+#[tokio::test]
+async fn cluster_relay_refusal_leaves_the_client_served_locally() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-refusal-psk";
+    const SERVED: &[u8] = b"served locally";
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+
+    // A healthy, reachable home that simply holds no park: nothing was ever
+    // established against it.
+    let (home, _home_user) = spawn_asymmetric_ss_node(
+        PSK,
+        1,
+        HashMap::new(),
+        Duration::from_secs(4),
+        HOME_SS_PATH,
+        HOME_SS_SECRET,
+        0,
+    )
+    .await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, edge_user) = spawn_asymmetric_ss_node(
+        PSK,
+        2,
+        peers,
+        Duration::from_secs(4),
+        EDGE_SS_PATH,
+        EDGE_SS_SECRET,
+        0,
+    )
+    .await?;
+
+    // A resume id whose shard points at the home, with no park behind it.
+    let stale = resume_id_for_shard(PSK, 1)?;
+    let (mut socket, issued) =
+        connect_ws_h1(edge.listen_addr, EDGE_SS_PATH, Some(stale), true).await?;
+    let issued = issued.context("the edge must issue a session id of its own")?;
+    assert_ne!(
+        issued, stale,
+        "a fresh session mints a new id: echoing the refused one back can never resume",
+    );
+
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(&edge_user, echo_addr, SERVED)?))
+        .await?;
+    let plaintext = read_ss_plaintext(&mut socket, &edge_user, SERVED.len()).await?;
+    assert_eq!(
+        plaintext.as_slice(),
+        SERVED,
+        "the client must be genuinely served, not silently stalled",
+    );
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the edge must have dialled an upstream of its own",
+    );
+
+    // The operator-visible half. The refusal is the home's, and each node has its
+    // own recorder, so this scrape names only what the home counted. It is
+    // already settled: the edge cannot have upgraded its client before the
+    // refusal that produced these series reached it.
+    let rendered = home.metrics.render_prometheus();
+    assert_eq!(
+        mesh_relay_rejected(&rendered, "no_session"),
+        1,
+        "a home with no park must count the refusal under its own reason:\n{rendered}",
+    );
+    assert_eq!(
+        mesh_relay_outcome(&rendered, "miss"),
+        1,
+        "and record the outcome as a miss, so the series reconciles:\n{rendered}",
+    );
+    assert_eq!(mesh_relay_outcome(&rendered, "hit"), 0, "nothing was spliced:\n{rendered}",);
+    assert_eq!(
+        mesh_bytes(&rendered, "down"),
+        0,
+        "a refused relay must push nothing onto the mesh:\n{rendered}",
+    );
+
+    socket.close(None).await?;
     Ok(())
 }
 
@@ -3650,6 +4122,53 @@ fn mesh_relay_rejected(rendered: &str, reason: &str) -> u64 {
         .lines()
         .find_map(|line| line.strip_prefix(&needle))
         .map_or(0, |value| value.trim().parse().expect("a rendered counter value is an integer"))
+}
+
+/// Sums every rendered series of `metric` whose label set contains all of
+/// `labels`, treating no matching series as `0`.
+///
+/// Partial label matching is what makes this usable on the mesh counters, whose
+/// label sets carry a dimension the assertion does not care about — a relay's
+/// `close` reason, say — and it also keeps the assertion honest if a new
+/// dimension is added later: a series that stops matching would read as `0`
+/// rather than silently keep passing.
+fn metric_sum(rendered: &str, metric: &str, labels: &[(&str, &str)]) -> u64 {
+    rendered
+        .lines()
+        .filter_map(|line| line.strip_prefix(metric)?.strip_prefix('{'))
+        .filter_map(|rest| rest.split_once('}'))
+        .filter(|(label_set, _)| {
+            labels
+                .iter()
+                .all(|(name, value)| label_set.contains(&format!("{name}=\"{value}\"")))
+        })
+        .map(|(_, value)| {
+            value
+                .trim()
+                .parse::<u64>()
+                .expect("a rendered counter value is an integer")
+        })
+        .sum()
+}
+
+/// `outline_ss_mesh_bytes_total{role="home",direction=…,transport="tcp"}` off a
+/// rendered scrape.
+///
+/// `direction="down"` reading zero fleet-wide was the symptom a relay that had
+/// never worked hid behind, which is why it is asserted rather than inferred
+/// from a working round trip.
+fn mesh_bytes(rendered: &str, direction: &str) -> u64 {
+    metric_sum(
+        rendered,
+        "outline_ss_mesh_bytes_total",
+        &[("role", "home"), ("direction", direction), ("transport", "tcp")],
+    )
+}
+
+/// `outline_ss_mesh_relay_outcome_total{outcome="…"}` off a rendered scrape,
+/// summed over the `close` dimension.
+fn mesh_relay_outcome(rendered: &str, outcome: &str) -> u64 {
+    metric_sum(rendered, "outline_ss_mesh_relay_outcome_total", &[("outcome", outcome)])
 }
 
 /// Per-user counters for a park injected straight into a home's registry. The
