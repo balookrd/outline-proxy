@@ -39,8 +39,17 @@ pub(crate) struct ClusterIdentity {
 /// Reason a `take_for_resume` call did not return parked state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResumeMiss {
-    /// No entry indexed by this Session ID exists, or it expired.
+    /// Nothing is indexed by this Session ID: never minted here, already
+    /// consumed, or evicted by a cap.
     Unknown,
+    /// An entry was found, but its TTL had already passed. Distinct from
+    /// [`Self::Unknown`] because the two say opposite things about where to
+    /// look: an expired park means the client *did* present the right id and
+    /// merely arrived late (raise the TTL, or find out why the redial is slow),
+    /// while an unknown one means the id never reached this registry at all.
+    /// Folding them together — as this did before — makes a resume that can
+    /// never hit indistinguishable from one that hit the clock by a second.
+    Expired,
     /// Entry exists but belongs to a different authenticated user. We
     /// surface this externally as `Unknown` to avoid an existence oracle;
     /// the distinct variant is kept so callers can log a security event.
@@ -51,10 +60,13 @@ pub(crate) enum ResumeMiss {
 
 impl ResumeMiss {
     /// Stable label exposed via the `reason` metric dimension. Hides
-    /// `OwnerMismatch` behind `unknown` to avoid leaking ID existence.
+    /// `OwnerMismatch` behind `unknown` to avoid leaking ID existence — an
+    /// exemption `Expired` does not need, since a park that timed out is one
+    /// this server minted for the very user now asking about it.
     pub(crate) fn metric_reason(self) -> &'static str {
         match self {
             Self::Unknown | Self::OwnerMismatch => "unknown",
+            Self::Expired => "expired",
             Self::Disabled => "disabled",
         }
     }
@@ -465,10 +477,10 @@ impl OrphanRegistry {
             let kind = entry.parked.kind();
             self.metrics.record_orphan_evicted(kind, "ttl_expired");
             self.metrics
-                .record_orphan_resume_miss(ResumeMiss::Unknown.metric_reason());
+                .record_orphan_resume_miss(ResumeMiss::Expired.metric_reason());
             self.refresh_kind_gauge(kind);
             drop(entry);
-            return Some(ResumeOutcome::Miss(ResumeMiss::Unknown));
+            return Some(ResumeOutcome::Miss(ResumeMiss::Expired));
         }
         if entry.owner.as_ref() != authenticated_user {
             // Reinsert and report owner mismatch internally. The same ID
