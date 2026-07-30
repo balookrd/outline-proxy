@@ -83,9 +83,12 @@ keyed to. The home checks the name the edge attests against the park's owner
 before handing the session over, so if `beerloga` denotes different people on two
 nodes, resumes between them are refused
 (`outline_ss_mesh_relay_rejected_total{reason="unknown_user"}`). That refusal is
-the desired behaviour, not something to configure around. The same holds across
-proxy protocols: a park authenticated under SS is never handed to a VLESS carrier
-or the reverse (`reason="protocol_mismatch"`).
+the desired behaviour, not something to configure around. Proxy protocols do
+*not* have to agree: a park made under SS is handed to a VLESS carrier of the
+same account and the reverse, which is what keeps sessions alive on an uplink
+that rerolls its active wire across a mixed SS/VLESS set (`shuffle_wires`). The
+user name is what carries the identity there, so it is the one thing that must
+be right.
 
 > **This reverses an earlier requirement.** While the home did the decryption,
 > paths *and* per-user credentials had to be byte-identical fleet-wide, and any
@@ -252,8 +255,16 @@ See the "UDP cross-node migration" note in
     park under that id is owned by a different name than the edge attested (§3a).
     Usually **user names disagree across the cluster**; it can also be a user with
     `[users.aliases]` connecting from a matching subnet, which mismatches on a
-    correct config. Expect a flat zero. `reason="protocol_mismatch"` is the same
-    class (one name used for an SS user on one node and a VLESS user on another).
+    correct config. Expect a flat zero. `reason="protocol_mismatch"` should also
+    be a flat zero, but it is no longer the same class: a byte-stream park
+    crosses protocols freely, so what is left under that reason is a datagram or
+    mux park claimed under the other protocol — unreachable through the shape
+    probe, so a non-zero value means a forged peer or the narrow reservation
+    window.
+  - `outline_ss_orphan_resume_cross_protocol_total{parked,resumed}` counts the
+    crossings that *did* happen, on the node owning the park. Non-zero is normal
+    wherever an uplink rotates its active wire across a mixed SS/VLESS set; the
+    series simply says how much of your continuity depends on it.
   - `outline_ss_mesh_relay_rejected_total{reason="park_shape"}` is expected, not a
     fault: an SS-UDP park under a VLESS resume id (or the reverse) is a shape no
     relay can ask for, so the relay is refused *without consuming the park* and

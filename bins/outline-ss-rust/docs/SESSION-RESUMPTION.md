@@ -162,6 +162,18 @@ The TCP path is the simplest. The upstream `TcpStream` is split into `OwnedReadH
 
 On resume, both halves are spawned into fresh copy tasks against the new client stream.
 
+### Cross-protocol resume
+
+A parked byte-stream session may be resumed by a carrier of **either** proxy protocol: a session parked over Shadowsocks reattaches to a VLESS carrier, and the other way round. This holds on all three resume paths — the two direct ones and the cluster mesh splice.
+
+Why it is sound. Nothing in a `Parked::Tcp` belongs to the protocol that minted it: the upstream socket halves, the cumulative `up_acked` counter (bytes written to the *upstream* socket, so the same quantity under either protocol) and the v2 downlink ring (filled ahead of encryption) are all plaintext-level. What each protocol owes its client on resume — a VLESS `[VERSION, 0x00]` response header, a fresh Shadowsocks response cipher — is minted from the *resuming* stream's own authenticated user, never from the park. On the mesh the question does not arise at all: the relay body is application plaintext.
+
+Why it is needed. A client whose uplink rerolls its active wire over a set mixing SS and VLESS wires (`shuffle_wires`) lands on a different protocol than the one that parked roughly half the time, with the same account and the same Session ID — a group under `shared_resume` shares one id across its uplinks, and the id carries no protocol. Refusing those cost the client its session continuity on every reroll.
+
+**Datagram and mux parks do not cross.** They hold framing state the other protocol cannot express: a VLESS mux park is a map of sub-connections keyed by mux stream id plus a half-decoded mux frame, against a Shadowsocks carrier with no multiplex at all; a VLESS-UDP park is one connected socket plus a half-decoded 2-byte-length-prefixed frame, against an SS-UDP carrier that is many-target and frames each datagram under its own header; an SS-UDP park is a set of NAT keys whose responder slots are re-pointed under SS coding, against a single-target VLESS-UDP session. On the mesh these are also unreachable through the shape probe — an SS OPEN names one shape exactly and a VLESS one admits every shape *except* the SS datagram — so the refusals there are structural guards, counted as `mesh_relay_rejected_total{reason="protocol_mismatch"}`.
+
+Successful crossings are counted on `orphan_resume_cross_protocol_total{parked,resumed}`, a subset of `orphan_resume_hit_total`, recorded by the node that owns the park.
+
 ### UDP behavior
 
 UDP cannot be back-pressured the same way. While the client is gone:
@@ -451,6 +463,14 @@ A Session ID is a bearer token: anyone who learns it and has the user's credenti
 - **Owner check**: the resuming connection must authenticate as the same user that owns the parked session. An attacker therefore needs both the user's Shadowsocks key / VLESS UUID **and** the Session ID.
 - **Length**: 128 bits of CSPRNG output, infeasible to brute-force.
 - **Single-use semantic** at the registry level (`take()` removes from the registry on hit).
+
+#### What the owner check guarantees on its own
+
+Since a byte-stream park crosses proxy protocols, the owner check is the *only* identity signal left on that path, and it is worth stating exactly what it buys.
+
+The owner label is an account name, not a credential: `[[users]].id`, or one of that entry's `[users.aliases]` names when the peer's source IP matches. Both protocols park and resume under it — a Shadowsocks session under `UserKey::effective_label`, a VLESS one under the pre-substituted `VlessUser::label`. Within one node the namespace is injective by config validation: duplicate user ids are rejected, and an alias name may collide with neither another alias nor any user id. **One label therefore denotes exactly one `[[users]]` entry** — and that entry holds both the `password` and the `vless_id`, so a label that matches across protocols is one account reached two ways, not two accounts sharing a name. Guessing the id is not enough, and neither is holding *some* valid credential: the credential has to belong to that same entry.
+
+What it does **not** guarantee, unchanged by this: that cluster nodes agree on what a name means. A resume id minted on one node is presented to another, and the home matches the label the edge attests, so two nodes that give the same `[[users]].id` to different people hand one's session to the other. That was already true of same-protocol resume — the protocol check never spoke to it, since it only fired when the protocols *differed* — and it is the reason `[cluster]` peers must share a user table, not merely a PSK (see `docs/CLUSTER.md`). Aliases inherit the same requirement: an alias name means an account, so it must mean the same account on every node.
 
 ### Information disclosure
 
