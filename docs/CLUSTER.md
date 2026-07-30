@@ -193,6 +193,22 @@ refused whole (`relay_rejected_total{reason="park_incomplete"}`): it is one
 registry entry, and half of it on each node is a session neither could park
 again.
 
+**Client-visible on a relayed mux: frames coalesce and split.** The direct path
+emits exactly one mux frame per binary WebSocket message; a relayed one forwards
+mesh chunks, so one message may carry several frames or only part of one. A
+stream-oriented mux client — what mux.cool's own framing implies, and what every
+client we ship is (`outline-ws-rust` implements no mux at all) — sees no
+difference. A third-party client that parses one frame per message must buffer
+across messages before it can resume through a foreign edge.
+
+**A relayed mux is not re-parked when the mesh downlink faults.** The fault ends
+the relay with the uplink cancelled wherever it stood — possibly inside a
+sub-connection write, or inside the dial of a `New` frame — and a mux has neither
+an acked uplink offset nor a downlink ring to replay that hole from, unlike the
+byte-stream splice, which keeps its upstream across the same cancellation for
+exactly that reason. So the bundle is closed instead: the client re-establishes
+its mux, rather than resuming one with a silent gap in a sub-connection.
+
 The **carrier padding layer** belongs to the edge along with the crypto above it:
 the edge encodes and decodes padding for its own client and relays unpadded
 plaintext, so the home never sees a padding frame on a relayed session.
@@ -425,6 +441,7 @@ wherever the client happened to be when it opened the session.
 | home holds no park under the resume id (expired, or never minted there) | home refuses at setup (`no_session`); edge has not upgraded the client yet → fresh session on the edge | lost (ordinary — parks expire) |
 | the park is a shape no relay from this OPEN could ask for (an SS-UDP park under a VLESS resume id, or the reverse) | home refuses at setup (`park_shape`) **without consuming the park** → fresh session on the edge | lost on this carrier; the park survives for the next |
 | a mux park holds no sub-connection left to re-attach | home refuses the whole bundle (`park_incomplete`) rather than splicing part of it → the client reconnects | lost (the bundle was already empty) |
+| the mesh downlink of a **relayed mux** fails or stalls mid-session | the relay ends with the uplink cancelled at an unknown point, so the home closes the bundle instead of re-parking it → the client re-establishes its mux | lost on purpose (a re-park would hide a gap in a sub-connection) |
 | the park's shape is not the one the client's VLESS command needs | home names the shape in its ack; the edge releases the relay **before the USER frame**, so nothing is consumed → local session on the edge | lost on this carrier; the park survives for the next |
 | peer on a retired wire version | home refuses the OPEN outright, before any ack → fresh session on the edge | lost (continuity only; traffic flows) |
 
