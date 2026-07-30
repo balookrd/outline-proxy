@@ -249,19 +249,22 @@ pub(super) fn register_descriptions() {
          under the relayed resume id, or it expired between the two setup phases; \
          unknown_user = a park exists but belongs to another user, so user names \
          disagree across the cluster (or it is a genuine security event); \
-         park_shape = a park exists under that id but does not match the relayed \
-         framing — a VLESS-UDP or VLESS-mux park, which no mesh splice carries \
-         yet, or a byte-stream park asked for with datagram framing and the other \
-         way round — an ordinary outcome, and refused without consuming the park \
-         (distinct from no_session, which means nothing is there at all); \
+         park_shape = a park exists under that id but is not a shape this relay \
+         could splice — a VLESS-mux park, which no mesh splice carries yet, or a \
+         byte-stream park asked for with datagram framing and the other way \
+         round — an ordinary outcome, and refused without consuming the park, on \
+         either of the two probes that bracket the setup (distinct from \
+         no_session, which means nothing is there at all); \
          protocol_mismatch = the park was \
          authenticated under the other proxy protocol (SS vs VLESS), so user names \
          denote different people, or the same person on two protocols, across the \
          cluster; park_identity = an SS-UDP park holds no NAT key belonging to the \
          user the edge attested, so there is no identity to route its datagrams \
-         under; framing_mismatch = the park under that id is not \
-         the kind the relayed framing needs; bad_setup = the home sent its ack but \
-         the second-phase USER frame was malformed or never arrived. The edge \
+         under; framing_mismatch = the park under that id is not the kind the \
+         acked shape needs, which only the reservation window can still produce; \
+         bad_setup = the setup itself was unusable — an OPEN whose framing and \
+         protocol name no park shape, or an acked peer whose second-phase USER \
+         frame was malformed or never arrived. The edge \
          degrades to a fresh local session)."
     );
     describe_counter!(
