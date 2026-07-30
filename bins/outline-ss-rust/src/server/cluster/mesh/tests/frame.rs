@@ -155,6 +155,66 @@ fn mesh_framing_covers_only_the_two_shapes() {
     assert!(MeshFraming::from_u8(2).is_err());
 }
 
+/// An SS OPEN names its own shape, so the ack has nothing left to say: it must
+/// stay the byte every build has always sent, or an edge on an older build stops
+/// understanding a home on this one.
+#[test]
+fn a_committed_open_keeps_the_plain_ack_byte() {
+    for shape in [MeshShape::Stream, MeshShape::Datagram] {
+        let committed = Some(shape);
+        assert_eq!(open_ack_byte(committed, shape), OPEN_ACK_ACCEPTED);
+        assert_eq!(parse_open_ack(OPEN_ACK_ACCEPTED, committed).unwrap(), shape);
+        // Anything else is a home this edge does not understand; degrading to a
+        // local session is the only safe reading.
+        assert!(parse_open_ack(3, committed).is_err());
+    }
+}
+
+/// A VLESS OPEN commits to no shape, so the ack carries the park's — the whole
+/// point of the field, and the thing a third shape extends without a wire change.
+#[test]
+fn an_uncommitted_open_carries_the_parks_shape_in_the_ack() {
+    for shape in [
+        MeshShape::Stream,
+        MeshShape::Datagram,
+        MeshShape::VlessUdpSingle,
+        MeshShape::VlessMux,
+    ] {
+        let byte = open_ack_byte(None, shape);
+        assert_eq!(parse_open_ack(byte, None).unwrap(), shape, "{}", shape.label());
+    }
+    // `Stream` is deliberately the byte an older home sends: it splices nothing
+    // else, so reading its plain accept as a byte-stream park is exactly right.
+    assert_eq!(open_ack_byte(None, MeshShape::Stream), OPEN_ACK_ACCEPTED);
+    assert!(parse_open_ack(0, None).is_err(), "zero is not a shape");
+    assert!(parse_open_ack(9, None).is_err(), "a shape from a newer peer is refused, not guessed");
+}
+
+/// The shape is also the body framing, and the two datagram shapes must agree on
+/// it or a VLESS-UDP relay would be spliced as a byte stream.
+#[test]
+fn a_shapes_framing_follows_from_the_shape() {
+    assert_eq!(MeshShape::Stream.framing(), Some(MeshFraming::Tcp));
+    assert_eq!(MeshShape::Datagram.framing(), Some(MeshFraming::Udp));
+    assert_eq!(MeshShape::VlessUdpSingle.framing(), Some(MeshFraming::Udp));
+    // No splice carries a mux bundle yet, so no body ever flows under it.
+    assert_eq!(MeshShape::VlessMux.framing(), None);
+}
+
+/// Which OPENs commit to a shape and which defer is what both peers read the ack
+/// byte by, so it must follow from the header alone.
+#[test]
+fn only_a_shadowsocks_open_commits_to_a_shape() {
+    let mut header = sample(None);
+    assert_eq!(header.committed_shape(), Some(MeshShape::Stream));
+    header.framing = MeshFraming::Udp;
+    assert_eq!(header.committed_shape(), Some(MeshShape::Datagram));
+    header.protocol = MeshProtocol::Vless;
+    assert_eq!(header.committed_shape(), None, "a VLESS OPEN cannot know its command yet");
+    header.framing = MeshFraming::Tcp;
+    assert_eq!(header.committed_shape(), None);
+}
+
 /// The protocol rides a spare flag bit, so a peer built before the bit existed —
 /// necessarily an SS edge — must still parse, and its cleared bit must read as
 /// Shadowsocks rather than as "unknown".

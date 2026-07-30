@@ -13,8 +13,9 @@
 //! The body framing depends on [`MeshFraming`]: `Tcp` relays as a transparent
 //! byte stream (chunk boundaries are irrelevant; the QUIC stream *is* the
 //! channel, there is no per-chunk data frame), whereas `Udp` frames each
-//! datagram as `u32 BE length | payload` because an SS-UDP packet is atomic and
-//! must not be coalesced or split — see [`super::datagram`]. The stream closes
+//! datagram as `u32 BE length | payload` because a UDP packet is atomic — an
+//! SS-UDP one decrypts as garbage if it is coalesced or split, and a VLESS-UDP
+//! one reaches the target as a corrupt packet — see [`super::datagram`]. The stream closes
 //! with a QUIC `finish` (graceful) or `reset` whose error code is a
 //! [`CloseReason`].
 //!
@@ -74,7 +75,7 @@
 //! either the shape the home advertised is the one that command needs — so it
 //! attests the user and splices — or it is not, so it releases the relay
 //! *before* the USER frame that would make the home consume its park, and serves
-//! the client locally (`transport::vless`'s `release_mesh_upstream`). No round
+//! the client locally (`transport::vless`'s `keep_mesh_upstream_for`). No round
 //! trip, no failed session, and the park is still there for the carrier that can
 //! use it.
 //!
