@@ -20,7 +20,7 @@ use super::super::state_machine::{
 use super::super::validation::{PacketValidation, validate_existing_packet};
 use super::super::wire::ParsedTcpPacket;
 use super::super::{TCP_FLAG_ACK, TCP_FLAG_FIN};
-use super::{TunTcpEngine, ip_family_from_version, should_migrate_tcp_flow};
+use super::{ActiveUplinkVerdict, TunTcpEngine, active_uplink_verdict, ip_family_from_version};
 
 impl TunTcpEngine {
     pub(super) async fn handle_existing_flow(
@@ -33,9 +33,20 @@ impl TunTcpEngine {
             let state = flow.lock().await;
             (state.routing.uplink_index, state.routing.manager.clone(), state.key.clone())
         };
-        if should_migrate_tcp_flow(&manager, uplink_index).await {
-            self.abort_flow_with_rst(&flow_key, "global_switch").await;
-            return Ok(());
+        match active_uplink_verdict(&manager, uplink_index) {
+            ActiveUplinkVerdict::Stay => {},
+            ActiveUplinkVerdict::Abort => {
+                self.abort_flow_with_rst(&flow_key, "global_switch").await;
+                return Ok(());
+            },
+            // An operator soft switch migrates the flow instead of killing it,
+            // and the migration belongs to the flow's upstream reader — it owns
+            // the carrier and the resume handshake. All the ingress path has to
+            // do is stop resetting the flow before the reader gets there;
+            // killing it here is what made a soft switch indistinguishable from
+            // a hard one, and it also removed the flow (status `Closed`) so the
+            // reader's own attempt silently short-circuited.
+            ActiveUplinkVerdict::SoftMigrate { .. } => {},
         }
 
         let ip_family = ip_family_from_version(packet.version);

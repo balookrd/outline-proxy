@@ -932,9 +932,22 @@ Consequences worth knowing:
 - **Direct (`via = "direct"`) flows never migrate**: they own a plain socket to the origin, so there is no carrier to migrate off and nothing parked to re-attach.
 - Bounded: at most **2 attempts per flow**, none started more than 20 s after the first (the server's park TTL is 30 s), and the uplink replay ring is capped at 64 KiB per flow — a flow that sends a single chunk larger than that loses its ring, and with it the ability to prove byte-exactness, so it tears down as before rather than resuming with a hole.
 - **The migration dial asks for the uplink's configured carrier, not the capped one.** The carrier death that triggers a migration is itself reported as a runtime failure, which caps the uplink one rank down (`ws_h3` → `ws_h2`) for `mode_downgrade_secs`. Honouring that cap would hand every rescued flow the TCP-over-TCP carrier and it would keep it for life — nothing migrates a live flow back up — so a long download rescued from a dead H3 carrier would crawl where it used to reset and reconnect at full speed. The dial still falls back `h3 → h2 → h1` on its own when the carrier is genuinely broken, so ignoring the cap costs nothing when the cap was right. (Same reason the migration re-dials its own uplink rather than a re-selected one: the death may have put that uplink in cooldown.)
-- Observable on `outline_ws_rust_tun_tcp_events_total{event=…}`: `carrier_migrated`, `carrier_migration_miss`, `carrier_migration_dial_failed`, `carrier_migration_replay_failed`.
+- Observable on `outline_ws_rust_tun_tcp_events_total{event=…}`: `carrier_migrated`, `carrier_migration_miss`, `carrier_migration_dial_failed`, `carrier_migration_replay_failed`, plus one counter per reason a flow was found *ineligible* before any dial happened — `carrier_migration_disabled`, `carrier_migration_abandoned`, `carrier_migration_no_session_id`, `carrier_migration_no_replay_ring`, `carrier_migration_budget_spent`, `carrier_migration_deadline_passed`. Those six exist because a flow blocked on a precondition never dials, so none of the other counters move and "no migration was attempted" is otherwise indistinguishable from "this build has no migration code".
 
 Set `carrier_migration = false` to restore the pre-migration behaviour (a dead carrier becomes a FIN/RST immediately).
+
+#### Operator soft switch
+
+The same machinery carries live TUN TCP flows across an **operator soft switch** — `POST /control/activate {"group":"…","uplink":"…","soft":true}` on a group with `mode = "active_passive"` and `shared_resume = true`.
+
+In strict `active_passive` a group has exactly one active uplink, and a flow left on any other one is torn down with RST (`event="global_switch"`). A soft switch suspends that: instead of resetting the flow, its upstream reader **retires the old carrier and then** re-dials the **new active** uplink presenting the flow's own Session ID. Because a mesh cluster shares one resume scope and the id carries its home shard, the new edge relays to the home that parked the upstream and re-attaches it — same confirmed-hit rule, same v1/v2 replay, same "no FIN, no RST, no gap, no duplicate byte" guarantee. Anything short of a confirmed hit falls through to the RST a hard switch would have given, so a soft switch still converges; it just tries first.
+
+The retire-then-redial order is not an optimisation: unlike a carrier death, the old carrier here is perfectly healthy, and a server only holds a parked upstream once that carrier has closed. A redial that arrived first would look the id up against a still-live session, get `miss-unknown`, and be handed a fresh upstream — a guaranteed miss. Closing it first puts the flow inside the server's park-before-resume barrier, which covers the remaining race. (Same reason the client sends `X-Xhttp-Fin` on the XHTTP carriers: they have no free close signal, and the idle sweep is far too late for a soft switch.)
+
+- `soft` is honoured only on a `shared_resume` group. Everywhere else `/control/activate` clamps it to a hard switch and reports the effective value back in the response.
+- Hard switches, health failovers and any other automatic repoint stay exactly as they were: RST, counted as `global_switch`.
+- The automatic **carrier-degraded failover** and the scheduled **reselect** publish a soft switch too, so they get the same treatment.
+- Observable on `outline_ws_rust_tun_tcp_events_total{event=…}`: `soft_switch_migrated` and `soft_switch_migration_failed` (the latter is followed by the ordinary `global_switch` teardown).
 
 ### TUN PMTUD safety gate
 
