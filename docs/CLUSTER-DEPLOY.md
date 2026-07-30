@@ -96,14 +96,22 @@ or the reverse (`reason="protocol_mismatch"`).
 
 The one thing the server itself checks is that a name *could* cross the mesh at
 all. It travels in a `USER` frame whose length is a single byte, capped at 64
-bytes, so with `enabled = true` a `[[users]]` id that is empty or longer than 64
-bytes **aborts startup** with an explicit error instead of failing at the first
-relay. Nothing else about `[[users]]` is compared, and an unclustered server keeps
-accepting whatever it accepts today.
+bytes, so with `enabled = true` a name that is empty or longer than 64 bytes
+**aborts startup** with an explicit error instead of failing at the first relay.
+
+That covers every name that can reach the wire, which is more than the
+`[[users]]` ids: the attested name is the *effective accounting label*, so a
+`[users.aliases]` key becomes the name on the mesh whenever the client's source
+IP falls inside that alias's subnet. Both are checked. Nothing else about
+`[[users]]` is compared, and a server with `enabled = false` (or no `[cluster]`
+section at all) keeps accepting whatever it accepts today.
 
 After rollout, watch `outline_ss_mesh_relay_rejected_total{reason="unknown_user"}`
-instead: a non-zero rate means user names disagree across the cluster (or it is a
-genuine security event).
+instead: a non-zero rate means the park's owner is a different name than the edge
+attested — user names disagreeing across the cluster, a genuine security event,
+or a user with `[users.aliases]` connecting from a matching subnet (SS-TCP parks
+under the base id while the mesh attests the effective label, so that case
+mismatches with nothing wrong in the config).
 
 ## 4. Network / firewall
 
@@ -182,8 +190,9 @@ See the "UDP cross-node migration" note in
 
 - **Startup:** each node's log shows the mesh listener came up and no config
   validation error. A node that refuses to start with a message about the mesh
-  user name bound has a `[[users]]` id that is empty or over 64 bytes (§3a) —
-  fix the name, not the cluster config.
+  user name bound has a name that is empty or over 64 bytes — a `[[users]]` id or
+  a `[users.aliases]` key, and the error names which (§3a) — fix the name, not
+  the cluster config.
 - **Mesh reachability:** from a test client, dial one node presenting a resume
   id that decodes to a *different* node's shard (this happens by itself when a
   client moves between edges); the session is served and the upstream is not
@@ -216,6 +225,11 @@ See the "UDP cross-node migration" note in
     carriers, so the session went back into the registry). A `close` stuck at
     `carrier_ended` with no `client_done` at all means edges are not emitting the
     close intent — parks then linger to their TTL instead of being released.
+    `{outcome="unusable"}` is the one to treat as a fault: a park *was* found and
+    consumed but could not be spliced at all, so it is destroyed and that client's
+    session is over. Expect a flat zero; the matching
+    `outline_ss_mesh_relay_rejected_total` reason (`park_identity` or
+    `park_incomplete`) says which shape it was.
   - `outline_ss_mesh_relay_active` gauges how many relays a home node is serving
     right now (zero on an idle cluster is normal — mesh streams are opened on
     demand, not held). Also watch `outline_ss_orphan_resume_hit_total` on the
@@ -234,9 +248,11 @@ See the "UDP cross-node migration" note in
     `outline_ss_mesh_relay_opened_total{outcome="refused"}`. A healthy cluster
     shows a steady low rate; only a ratio near 100% of opens means something is
     wrong upstream of it.
-  - `outline_ss_mesh_relay_rejected_total{reason="unknown_user"}` rising ⇒ **user
-    names disagree across the cluster** (§3a) — the park under that id belongs to
-    someone else. Expect a flat zero. `reason="protocol_mismatch"` is the same
+  - `outline_ss_mesh_relay_rejected_total{reason="unknown_user"}` rising ⇒ the
+    park under that id is owned by a different name than the edge attested (§3a).
+    Usually **user names disagree across the cluster**; it can also be a user with
+    `[users.aliases]` connecting from a matching subnet, which mismatches on a
+    correct config. Expect a flat zero. `reason="protocol_mismatch"` is the same
     class (one name used for an SS user on one node and a VLESS user on another).
   - `outline_ss_mesh_relay_rejected_total{reason="park_shape"}` is expected, not a
     fault: an SS-UDP park under a VLESS resume id (or the reverse) is a shape no

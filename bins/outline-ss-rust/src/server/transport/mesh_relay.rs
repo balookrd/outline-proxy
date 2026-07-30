@@ -639,15 +639,24 @@ async fn serve_relayed(
         ResumeOutcome::Hit(parked) => parked,
         ResumeOutcome::Miss(miss) => {
             let reason = match miss {
-                // A park exists but under a different owner. Either a genuine
-                // security event or the shared-user-namespace invariant broken
-                // by config — worth a warning either way, and the user name is
-                // an identifier, not a secret.
+                // A park exists but under a different owner. Worth a warning —
+                // and the user name is an identifier, not a secret — but the
+                // message stops at what is observed, because the causes are not
+                // all config: besides a genuine security event and a cluster
+                // whose nodes disagree on what a name means, an SS-TCP park is
+                // keyed on the *base* user id (`transport::tcp` parks with
+                // `user.id_arc()`) while both the direct resume and this
+                // attestation use the effective accounting label, so a user with
+                // `[users.aliases]` connecting from a matching subnet mismatches
+                // here with nothing wrong in the config at all. That is a
+                // pre-existing bug in the park key, not something an operator
+                // can fix by editing names, so this log must not send them after
+                // one.
                 ResumeMiss::OwnerMismatch => {
                     warn!(
                         user = %user.user,
-                        "relayed resume rejected: the parked session belongs to another user — \
-                         check that user names denote the same person on every cluster node",
+                        "relayed resume rejected: the parked session is owned by a different user \
+                         name than the edge attested",
                     );
                     "unknown_user"
                 },
@@ -789,9 +798,21 @@ async fn serve_relayed(
         warn!(
             relayed = header.protocol.label(),
             parked_kind = parked.protocol_context.label(),
-            "refusing a relayed resume across proxy protocols — check that user names denote the \
-             same person, and the same protocol, on every cluster node",
+            "refusing a relayed resume across proxy protocols and putting the park back — check \
+             that user names denote the same person, and the same protocol, on every cluster node",
         );
+        // Put the park back, exactly as the shape-mismatch arm above does. Unlike
+        // the two cross-protocol arms beside it — which guard splices `park_query`
+        // can never hand an SS OPEN — this one is *reachable*: an SS OPEN
+        // legitimately probes `ParkShape::Stream`, and a VLESS-authenticated
+        // `Parked::Tcp` is that shape too, so phase 1 admits it and only the
+        // protocol check here rejects it. The park is untouched at this point and
+        // is still worth everything to a carrier that asks under the right
+        // protocol, so discarding it would cost the client its continuity for a
+        // session nothing is wrong with.
+        if registry.enabled() {
+            registry.park(session_id, Parked::Tcp(parked));
+        }
         refuse_relay(stream, CloseReason::Abort);
         return Ok(());
     }
@@ -1176,8 +1197,9 @@ fn splice_end(
 
 /// Splices a relayed plaintext stream onto a parked TCP upstream.
 ///
-/// Simpler than the v4 path beside it: no decryptor, no encryptor, no route
-/// context — just the unacked replay suffix followed by a bidirectional pump.
+/// Simpler than the direct relay it stands in for: no decryptor, no encryptor,
+/// no route context — just the unacked replay suffix followed by a bidirectional
+/// pump. The edge holds the client's crypto and this node holds the socket.
 /// The ring already holds **plaintext** keyed by plaintext offsets, so the
 /// suffix goes out as-is and the edge seals it under its own client key.
 ///
@@ -1208,7 +1230,11 @@ fn splice_end(
 ///   parked (see [`SpliceEnd::reparks`]), and the mesh half — which that client
 ///   already stopped — is closed with an explicit [`CloseReason::Fin`] rather
 ///   than left to quinn's drop, which would echo the [`CloseIntent`] code back
-///   as a reset code (see [`SpliceEnd::stream_close`]).
+///   as a reset code (see [`SpliceEnd::stream_close`]). A failure in the
+///   *prologue* — the ack frame or the replay suffix — re-parks too, and
+///   unconditionally: nothing has been read from or written to the upstream, so
+///   there is no close to read an intent from and the bundle goes back exactly
+///   as it came. All four splices agree on this.
 /// * **The hand-off loses no bytes.** Because the session is re-parked, a pump
 ///   dropped mid-operation would silently punch a hole in the client's stream.
 ///   The downlink is therefore stopped cooperatively at a read boundary (as the
@@ -1224,31 +1250,28 @@ async fn splice_plaintext_tcp(
     registry: &OrphanRegistry,
 ) -> Result<()> {
     let MeshStream { mut send, mut recv } = stream;
-    // Every field is kept: the plaintext splice itself needs only the socket
-    // halves and the ring, but a re-park has to hand the whole bundle back to
-    // the registry with the same field semantics the direct path parks with.
-    // The user is already authenticated (by the edge, attested in the USER
-    // frame) and the owner check is done, so neither the identity nor the SS
-    // user key does any work *here* — `owner` still keys the park and
-    // `protocol_context` still guards a later cross-protocol resume.
-    let ParkedTcp {
-        mut upstream_writer,
-        mut upstream_reader,
-        target_display,
-        owner,
-        protocol_context,
-        // Per-user byte accounting stays with the node that terminates the
-        // client session, i.e. the edge; the home counts this traffic on its
-        // `role="home"` mesh counters below.
-        user_counters,
-        upstream_guard,
-        upstream_bytes_acked,
-        downlink_ring,
-    } = parked;
 
     let up_bytes = cluster.metrics.mesh_bytes_counter("home", "up", "tcp");
     let down_bytes = cluster.metrics.mesh_bytes_counter("home", "down", "tcp");
     let budget = cluster.relay_budget;
+
+    // The prologue runs against `parked` whole, before it is taken apart, so a
+    // write that fails here can hand the bundle straight back: neither socket
+    // half has been touched, and the ring is only read (`replay_from` takes
+    // `&self` and consumes nothing), so the session is worth exactly as much to
+    // the next carrier as it was a moment ago. Discarding it instead would cost
+    // the client its continuity for a mesh fault the session had no part in —
+    // the same reasoning the VLESS-mux splice states at its own ack frame.
+    // Nothing is written to the upstream before this point either, so the edge
+    // is free to re-open the relay and get the same bytes again.
+    let bundle_intact = |parked: ParkedTcp| {
+        // A `hit` however it ends — the park *was* taken — but it ended before
+        // either pump ran, so there is no close to label it with.
+        cluster.metrics.record_mesh_relay_outcome("hit", CLOSE_NONE);
+        if registry.enabled() {
+            registry.park(session_id, Parked::Tcp(parked));
+        }
+    };
 
     // Uplink continuity: how far the upstream socket actually got before this
     // carrier. The home may have consumed uplink bytes off a dying mesh carrier
@@ -1258,13 +1281,10 @@ async fn splice_plaintext_tcp(
     // the same order the direct path emits its v1 frame before the v2 "ORDR" one.
     if header.ack_prefix {
         let frame = UpstreamAckFrame {
-            upstream_acked: upstream_bytes_acked.load(Ordering::Relaxed),
+            upstream_acked: parked.upstream_bytes_acked.load(Ordering::Relaxed),
         };
         if let Err(error) = send.write_all(&frame.encode()).await {
-            // The park was taken, so this stream is a `hit` however it ends —
-            // but it ended before either pump ran, so there is no close to
-            // label it with.
-            cluster.metrics.record_mesh_relay_outcome("hit", CLOSE_NONE);
+            bundle_intact(parked);
             return Err(
                 anyhow::Error::new(error).context("sending the upstream-ack frame over the mesh")
             );
@@ -1274,15 +1294,19 @@ async fn splice_plaintext_tcp(
     // Byte-continuity: everything the session emitted past the offset the client
     // acknowledged goes out first, ahead of any fresh upstream byte, so the
     // client's stream has no gap and no duplicate across the carrier switch.
-    if header.symmetric_replay
-        && let Some(ring) = &downlink_ring
-    {
-        let outcome = ring.lock().replay_from(header.client_down_acked);
+    let replay = match (header.symmetric_replay, &parked.downlink_ring) {
+        (true, Some(ring)) => Some(ring.lock().replay_from(header.client_down_acked)),
+        _ => None,
+    };
+    if let Some(outcome) = replay {
         match outcome {
             ReplayOutcome::Available(bytes) if !bytes.is_empty() => {
                 if let Err(error) = send.write_all(&bytes).await {
-                    // As above: a `hit` that never reached a close.
-                    cluster.metrics.record_mesh_relay_outcome("hit", CLOSE_NONE);
+                    // The suffix is still in the ring — `replay_from` only read
+                    // it — and the edge never delivered these bytes to a client,
+                    // so the next carrier replays the same suffix from the same
+                    // offset.
+                    bundle_intact(parked);
                     return Err(anyhow::Error::new(error)
                         .context("replaying the downlink suffix over the mesh"));
                 }
@@ -1304,13 +1328,36 @@ async fn splice_plaintext_tcp(
                 cluster.metrics.record_orphan_downlink_replay_truncated("tcp");
                 debug!(
                     ?other,
-                    target = %target_display,
+                    target = %parked.target_display,
                     "no replayable downlink suffix for a relayed resume; the client is not yet \
                      told about the gap",
                 );
             },
         }
     }
+
+    // Past the prologue: nothing below can hand the bundle back whole, so it is
+    // taken apart here. Every field is kept — the plaintext splice itself needs
+    // only the socket halves and the ring, but a re-park has to hand the whole
+    // bundle back to the registry with the same field semantics the direct path
+    // parks with. The user is already authenticated (by the edge, attested in
+    // the USER frame) and the owner check is done, so neither the identity nor
+    // the SS user key does any work *here* — `owner` still keys the park and
+    // `protocol_context` still guards a later cross-protocol resume.
+    let ParkedTcp {
+        mut upstream_writer,
+        mut upstream_reader,
+        target_display,
+        owner,
+        protocol_context,
+        // Per-user byte accounting stays with the node that terminates the
+        // client session, i.e. the edge; the home counts this traffic on its
+        // `role="home"` mesh counters below.
+        user_counters,
+        upstream_guard,
+        upstream_bytes_acked,
+        downlink_ring,
+    } = parked;
 
     // Cooperative stop for the downlink pump, mirroring `relay_cancel` on the
     // direct path (`super::tcp`). `select!` drops the losing future wherever it
@@ -1586,11 +1633,11 @@ impl RelayedUdpIdentity {
 /// [`UdpResponseCoding::Plaintext`] attachment) and goes onto a bounded channel
 /// the splice's downlink pump frames onto the mesh stream.
 ///
-/// No carrier padding and no throttle monitor, unlike the v4
-/// `MeshUdpResponseSender` beside it: with the client's crypto terminated on the
-/// edge, the carrier the client actually reads is the edge's, so padding and
-/// last-mile throttle detection belong there and applying them here would pad
-/// bytes the client never sees in that form.
+/// No carrier padding and no throttle monitor, unlike the direct SS-UDP sender:
+/// with the client's crypto terminated on the edge, the carrier the client
+/// actually reads is the edge's, so padding and last-mile throttle detection
+/// belong there and applying them here would pad bytes the client never sees in
+/// that form.
 struct RelayedUdpSender {
     tx: mpsc::Sender<Bytes>,
 }
@@ -1674,7 +1721,10 @@ async fn splice_plaintext_udp(
     let Some((identity, owned_keys, foreign_keys)) = RelayedUdpIdentity::from_park(&parked, user)
     else {
         cluster.metrics.record_mesh_relay_rejected("park_identity");
-        cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+        // Not a `miss`: a park *was* found under this id and taken, and it is
+        // gone now — this arm cannot hand back keys it has no identity to route
+        // under. See the `unusable` outcome's HELP text.
+        cluster.metrics.record_mesh_relay_outcome("unusable", CLOSE_NONE);
         warn!(
             user,
             "refusing a relayed SS-UDP resume: no parked NAT key belongs to the attested user",
@@ -1721,7 +1771,24 @@ async fn splice_plaintext_udp(
         let frame = UpstreamAckFrame { upstream_acked: 0 };
         if let Err(error) = send.write_all(&frame.encode()).await {
             cluster.metrics.record_mesh_relay_outcome("hit", CLOSE_NONE);
-            release_relayed_udp(&server, stream_id, &nat_keys);
+            // Detach the entries from this dead carrier and put them straight
+            // back into the registry, exactly as the teardown path below does.
+            // Not a datagram has moved, so every entry still holds the socket —
+            // and the source port — it was parked with; releasing them without
+            // re-parking would leave them ageing out with no responder attached
+            // and cost the client its continuity for a mesh fault it had no part
+            // in. `end.reparks` is not consulted because there is no close to
+            // read an intent from: the client never said it was done.
+            let detached = release_relayed_udp(&server, stream_id, &nat_keys);
+            if registry.enabled() && !detached.is_empty() {
+                registry.park(
+                    session_id,
+                    Parked::SsUdpStream(ParkedSsUdpStream {
+                        nat_keys: detached,
+                        owner: identity.user_id,
+                    }),
+                );
+            }
             return Err(
                 anyhow::Error::new(error).context("sending the upstream-ack frame over the mesh")
             );
@@ -2008,6 +2075,29 @@ async fn splice_plaintext_vless_udp(
     registry: &OrphanRegistry,
 ) -> Result<()> {
     let MeshStream { mut send, mut recv } = stream;
+
+    // Uplink continuity, for symmetry with the other splices: the frame is
+    // present exactly when the OPEN asked for it, and zero is the truthful
+    // answer — a datagram session acknowledges no byte offset.
+    //
+    // Written before the bundle is taken apart so a failure can hand it back
+    // whole: not a datagram has crossed either way, so the socket — and with it
+    // the source port the target has been talking to — is worth as much to the
+    // next carrier as it was a moment ago. Dropping it here would close it, and
+    // a mesh fault the session had no part in would cost it that port.
+    if header.ack_prefix {
+        let frame = UpstreamAckFrame { upstream_acked: 0 };
+        if let Err(error) = send.write_all(&frame.encode()).await {
+            cluster.metrics.record_mesh_relay_outcome("hit", CLOSE_NONE);
+            if registry.enabled() {
+                registry.park(session_id, Parked::VlessUdpSingle(parked));
+            }
+            return Err(
+                anyhow::Error::new(error).context("sending the upstream-ack frame over the mesh")
+            );
+        }
+    }
+
     // Every field is kept: the splice needs only the socket, but a re-park has
     // to hand the whole bundle back with the same field semantics the direct
     // path parks with. `udp_client_buffer` is the *client*-side reassembly
@@ -2021,19 +2111,6 @@ async fn splice_plaintext_vless_udp(
         user_counters,
         udp_client_buffer,
     } = parked;
-
-    // Uplink continuity, for symmetry with the other splices: the frame is
-    // present exactly when the OPEN asked for it, and zero is the truthful
-    // answer — a datagram session acknowledges no byte offset.
-    if header.ack_prefix {
-        let frame = UpstreamAckFrame { upstream_acked: 0 };
-        if let Err(error) = send.write_all(&frame.encode()).await {
-            cluster.metrics.record_mesh_relay_outcome("hit", CLOSE_NONE);
-            return Err(
-                anyhow::Error::new(error).context("sending the upstream-ack frame over the mesh")
-            );
-        }
-    }
 
     let up_bytes = cluster.metrics.mesh_bytes_counter("home", "up", "udp");
     let up_datagrams = cluster.metrics.mesh_datagrams_counter("home", "up");
@@ -2318,7 +2395,10 @@ async fn splice_plaintext_vless_mux(
     // `MuxState::is_parkable`).
     if parked.sub_conns.is_empty() {
         cluster.metrics.record_mesh_relay_rejected("park_incomplete");
-        cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+        // Not a `miss`: a park *was* found under this id and taken, and an empty
+        // bundle is worth nothing to a later carrier, so it is dropped rather
+        // than put back. See the `unusable` outcome's HELP text.
+        cluster.metrics.record_mesh_relay_outcome("unusable", CLOSE_NONE);
         warn!(
             user = %owner,
             "refusing a relayed VLESS-mux resume: the parked bundle holds no sub-connection to \

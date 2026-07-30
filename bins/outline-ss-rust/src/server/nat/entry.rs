@@ -68,10 +68,10 @@ pub(crate) trait ResponseSender: Send + Sync {
 /// socket outlives the carriers that address it and those carriers do not all
 /// terminate the client's crypto:
 ///
-/// - A client-terminating carrier — the direct SS-UDP listeners, and the v4
-///   mesh home — seals the response itself, so it hands over the user key and
+/// - A client-terminating carrier — the direct SS-UDP listeners, and a mesh
+///   *edge* — seals the response itself, so it hands over the user key and
 ///   the live [`UdpCipherMode`] the client's own datagram carried.
-/// - A **v5 mesh home** cannot: the seal needs the client session id that rides
+/// - A **mesh home** cannot: the seal needs the client session id that rides
 ///   inside a datagram the edge decrypted and this node never saw. It therefore
 ///   emits the SOCKS5-wrapped plaintext (`TargetAddr(source) || payload`) that
 ///   is exactly the body the sealed arm would have encrypted, and the edge seals

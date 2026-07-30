@@ -652,7 +652,9 @@ impl Metrics {
     }
 
     /// Pre-resolves the `outline_ss_mesh_datagrams_total` counter handle for one
-    /// `(role, direction)` pair (SS-UDP only). Same hot-path contract as
+    /// `(role, direction)` pair. Fed by the datagram-framed relays — SS-UDP and
+    /// single-target VLESS-UDP — on both the edge and the home; a byte-stream
+    /// relay leaves it untouched. Same hot-path contract as
     /// [`Self::mesh_bytes_counter`].
     pub fn mesh_datagrams_counter(&self, role: &'static str, direction: &'static str) -> Counter {
         with_local_recorder(&self.recorder, || {
