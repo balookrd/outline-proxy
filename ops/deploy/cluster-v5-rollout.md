@@ -271,10 +271,42 @@ window when the three nodes were being enabled one at a time and a peer's 9443
 was still closed — but not all of them, and the reason is not visible at the
 current log level.
 
-Next diagnostic step, not yet taken: a systemd drop-in setting
-`RUST_LOG=outline_ss_rust::server::transport::mesh_relay=debug,outline_ss_rust=info`
-on one node, then a forced switch, to see the failure reason and whether the
-OPEN carries the shard it should. It needs a restart, so drain first.
+### Localised: the chain breaks on the *client*, before the mesh is reached
+
+The debug drop-in was installed on senko (idle at the time; `.102` had been moved
+to aeza first so the operator's own path never rode a restarted node) and `.104`
+was soft-switched onto it. senko logged **nothing** and incremented **no**
+counter — it never attempted a relay at all.
+
+The client side says why:
+
+- `outline_ws_resume_lookup_total{result="miss",scope="group",transport="tcp"} 1`
+  — the client looked for a resume token for the shared-resume group and found
+  none.
+- `outline_ws_tun_tcp_events_total{event="carrier_migration_miss"} 2`.
+- Its log shows plain `created TUN TCP flow … uplink=senko` lines: on switching
+  it builds **fresh** flows rather than resuming.
+
+So the client never presents a resume id, the edge therefore has no cross-shard
+id to act on, and no relay can fire. The mesh is not the failing component here —
+it is idle because nothing asks it to work. This also explains the earlier
+observation that the second forced switch moved no counter at all.
+
+Configuration is not the cause and does not need changing: all three servers have
+`[session_resumption] enabled = true`, `downlink_buffer_bytes = 65536`,
+`orphan_per_user_cap = 128`, and the clients' `main` group has
+`shared_resume = true`.
+
+Open question for the next session: why the client's group-scope resume lookup
+misses — i.e. whether a token is ever issued and stored, or whether the switch
+path tears sessions down instead of orphaning them. That is a client-side
+investigation (`outline-ws-rust` resume registry), not a mesh one.
+
+**Declared state left on senko:**
+`/etc/systemd/system/outline-ss-rust.service.d/99-mesh-debug.conf` still sets
+`RUST_LOG=…mesh_relay=debug,…cluster=debug`. It is quiet (16 log lines/min, none
+mesh-related) so it was left in place rather than spending another production
+restart. Remove with `rm` + `daemon-reload` + restart when no longer wanted.
 
 ## Step 1 — build
 
