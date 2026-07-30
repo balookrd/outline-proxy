@@ -65,17 +65,84 @@ pub enum TransportKind {
 /// the relevant field against the index their session is pinned to and react
 /// to mismatches without having to poll the manager's async lock.
 ///
-/// `soft` marks the switch that produced this snapshot as an operator *soft*
-/// switch (migrate live sessions to the new active via cluster resume) rather
-/// than a hard one (abort them with RST). The strict-abort watcher reads it to
-/// choose redial-with-resume over teardown. Health/auto switches always publish
-/// `soft = false`.
+/// `intent` records *why* the pointer moved, which is the only thing that tells
+/// a live session on the old uplink whether it is meant to survive. See
+/// [`SwitchIntent`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ActiveUplinksSnapshot {
     pub global: Option<usize>,
     pub tcp: Option<usize>,
     pub udp: Option<usize>,
-    pub soft: bool,
+    pub intent: SwitchIntent,
+}
+
+/// Why the strict active-uplink pointer moved — and therefore what should
+/// happen to the live sessions still bound to the uplink it moved off.
+///
+/// This is deliberately three-valued rather than the `soft: bool` it replaced.
+/// A boolean could only say "the operator asked for a soft switch", which left
+/// every machine-driven repoint indistinguishable from an operator *hard*
+/// switch, i.e. from a deliberate decision to abandon those sessions. It is not
+/// one: when a probe failover or a mass carrier death moves the pointer, nobody
+/// decided the sessions should die — they die only because the strict-active
+/// check happens to reset anything it finds stranded, and it wins the race
+/// against the flow's own carrier-death migration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwitchIntent {
+    /// Operator hard switch (`POST /control/activate {"soft": false}`, a hard
+    /// scheduled reselect, or any soft request clamped off a `shared_resume`
+    /// group). The operator is draining this uplink: sessions must come off it
+    /// for real, and a migration would defeat that — under a mesh cluster a
+    /// migrated session is relayed back to its *home*, which is the very node
+    /// being drained. Live sessions are aborted.
+    ///
+    /// The default, so a snapshot that predates any explicit switch abandons
+    /// nothing it should have carried: `global`/`tcp`/`udp` are `None` there and
+    /// the verdict never reaches the intent at all.
+    #[default]
+    OperatorHard,
+    /// Operator soft switch on a `shared_resume` group: carry live sessions to
+    /// the new active via cluster resume, falling back to the abort a hard
+    /// switch would have given on anything short of success.
+    OperatorSoft,
+    /// Machine-driven repoint: probe failover, runtime-failure failover,
+    /// auto-failback, carrier-degraded failover, or the initial selection.
+    ///
+    /// Not a decision about sessions at all — so on a cluster it is treated like
+    /// [`Self::OperatorSoft`] (see [`Self::migrates_live_flows`]). The uplink it
+    /// moved off is usually unhealthy, which is exactly when a session's own
+    /// resume is worth attempting: the parked upstream lives on the *server*,
+    /// and the mesh reaches it from the new edge without the client's broken
+    /// path to the old one.
+    Failover,
+}
+
+impl SwitchIntent {
+    /// Whether a session stranded by this switch should attempt to migrate
+    /// instead of being torn down.
+    ///
+    /// `shared_resume` is load-bearing for [`Self::Failover`]: off a cluster the
+    /// new active is a different server with nothing parked for this session, so
+    /// a migration could only ever miss and the dial would be pure latency
+    /// before the same teardown. (An operator soft switch is already clamped to
+    /// hard off a cluster upstream of here, so the same gate is redundant —
+    /// applied anyway so the rule reads the same for both.)
+    pub const fn migrates_live_flows(self, shared_resume: bool) -> bool {
+        match self {
+            Self::OperatorHard => false,
+            Self::OperatorSoft | Self::Failover => shared_resume,
+        }
+    }
+
+    /// Intent an operator-originated switch carries, given the soft flag it
+    /// requested *after* clamping to the group's `shared_resume`.
+    pub const fn from_operator_soft(applied_soft: bool) -> Self {
+        if applied_soft {
+            Self::OperatorSoft
+        } else {
+            Self::OperatorHard
+        }
+    }
 }
 
 impl ActiveUplinksSnapshot {

@@ -32,6 +32,26 @@ use super::{
     ip_to_target,
 };
 
+/// Everything [`TunUdpEngine::migrate_udp_flow`] needs to move a live flow onto
+/// another uplink. The `&mut` fields are the uplink task's own carrier state:
+/// the migration replaces them in place so the drain loop carries straight on
+/// with the new carrier.
+struct MigrateUdpFlow<'a> {
+    key: &'a UdpFlowKey,
+    flow_id: u64,
+    /// Uplink the group repointed to. The redial goes *there* — unlike a TCP
+    /// carrier-death migration, which redials the flow's own uplink because that
+    /// is where the parked upstream is. Here the id carries its home shard, so a
+    /// `shared_resume` mesh edge relays the resumed carrier back to the home.
+    target: usize,
+    manager: &'a UplinkManager,
+    resume_store: &'a outline_transport::UdpResumeStore,
+    transport: &'a mut Arc<UdpSessionTransport>,
+    reader: &'a mut Option<AbortOnDrop>,
+    uplink_index: &'a mut usize,
+    uplink_name: &'a mut Arc<str>,
+}
+
 pub(super) enum CloseWork {
     Tunnel {
         flow: Arc<Mutex<UdpFlowState>>,
@@ -219,6 +239,20 @@ impl TunUdpEngine {
             // Per-client affinity key: the LAN client's source IP. Consulted
             // only under routing_scope = "per_client"; ignored otherwise.
             let client_id = key.local_ip.to_string();
+            // This flow's own resume slot. The process-wide SS-UDP cache holds
+            // ONE id per resume scope, which is sound only where one carrier
+            // exists per scope — and TUN dials one carrier per *flow*. Sharing
+            // it made a fresh flow present the id the previously-closed flow
+            // parked: on a hit the server re-points that flow's NAT entries at
+            // this carrier, and `build_client_response_packet` then re-sources
+            // its peer's datagrams from *this* flow's remote. A private slot
+            // keeps the id with the flow that was issued it, which is also what
+            // makes a soft-switch redial able to re-attach anything at all.
+            let resume_store = outline_transport::UdpResumeStore::private();
+            // Woken by every active-uplink change so an idle flow follows a
+            // switch too, instead of sitting on the old uplink until its next
+            // client datagram — which for a long-lived quiet flow may be never.
+            let mut active_rx = manager.subscribe_active_uplinks();
 
             // Drain the outbound queue into a local buffer while the carrier
             // dial is in flight. Nothing can send until we are connected, so the
@@ -275,8 +309,12 @@ impl TunUdpEngine {
                 },
             };
             let connected = {
-                let connect_fut =
-                    select_candidate_and_connect(&manager, &remote_target, Some(&client_id));
+                let connect_fut = select_candidate_and_connect(
+                    &manager,
+                    &remote_target,
+                    Some(&client_id),
+                    &resume_store,
+                );
                 tokio::pin!(connect_fut);
                 loop {
                     tokio::select! {
@@ -343,13 +381,13 @@ impl TunUdpEngine {
             // Downlink reader (upstream→client). Reassigned on reconnect so the
             // previous carrier's reader — and the transport `Arc` it holds —
             // drop and close.
-            let mut _reader = engine.spawn_flow_reader(
+            let mut reader = Some(engine.spawn_flow_reader(
                 key.clone(),
                 flow_id,
                 Arc::clone(&transport),
                 uplink_index,
                 manager.clone(),
-            );
+            ));
 
             // Uplink datagram+byte counters, cached across the drain. The group
             // is fixed for the flow; a mid-flow failover swaps `uplink_name` for
@@ -365,19 +403,52 @@ impl TunUdpEngine {
             // handshake preface) in order first, then resume the live drain.
             let mut pending = pending_datagrams.into_iter();
             loop {
+                // Follow a strict-active repoint. Checked before the wait below,
+                // not after it, so a flow with nothing to send still acts on the
+                // switch.
+                match super::udp_active_uplink_verdict(&manager, uplink_index) {
+                    super::UdpActiveUplinkVerdict::Stay => {},
+                    super::UdpActiveUplinkVerdict::Abort => {
+                        engine.close_flow_if_current(&key, flow_id, "global_switch").await;
+                        return;
+                    },
+                    super::UdpActiveUplinkVerdict::Migrate { target } => {
+                        match engine
+                            .migrate_udp_flow(MigrateUdpFlow {
+                                key: &key,
+                                flow_id,
+                                target,
+                                manager: &manager,
+                                resume_store: &resume_store,
+                                transport: &mut transport,
+                                reader: &mut reader,
+                                uplink_index: &mut uplink_index,
+                                uplink_name: &mut uplink_name,
+                            })
+                            .await
+                        {
+                            true => continue,
+                            // The redial failed: fall through to the teardown a
+                            // switch would have given anyway.
+                            false => {
+                                engine.close_flow_if_current(&key, flow_id, "global_switch").await;
+                                return;
+                            },
+                        }
+                    },
+                }
                 let raw = match pending.next() {
                     Some(raw) => raw,
-                    None => match outbound_rx.recv().await {
-                        Some(raw) => raw,
-                        None => break,
+                    None => tokio::select! {
+                        biased;
+                        // A repoint: go round and let the verdict decide.
+                        _ = active_rx.changed() => continue,
+                        maybe = outbound_rx.recv() => match maybe {
+                            Some(raw) => raw,
+                            None => break,
+                        },
                     },
                 };
-                // Follow a strict-active repoint: tear down so the client's
-                // traffic re-homes onto the newly active uplink.
-                if super::should_migrate_flow(&manager, uplink_index).await {
-                    engine.close_flow_if_current(&key, flow_id, "global_switch").await;
-                    return;
-                }
                 let effective_target = remote_target_override.as_ref().unwrap_or(&remote_target);
                 let payload = match super::build_udp_payload(effective_target, &raw) {
                     Ok(payload) => payload,
@@ -401,6 +472,7 @@ impl TunUdpEngine {
                             &manager,
                             &remote_target,
                             Some(&client_id),
+                            &resume_store,
                         )
                         .await
                         {
@@ -420,13 +492,13 @@ impl TunUdpEngine {
                                 {
                                     return;
                                 }
-                                _reader = engine.spawn_flow_reader(
+                                reader = Some(engine.spawn_flow_reader(
                                     key.clone(),
                                     flow_id,
                                     Arc::clone(&transport),
                                     uplink_index,
                                     manager.clone(),
-                                );
+                                ));
                                 if let Err(retry_error) = transport.send_packet(&payload).await {
                                     warn!(flow_id, error = %format!("{retry_error:#}"), "TUN UDP resend after reconnect failed");
                                 } else {
@@ -464,6 +536,142 @@ impl TunUdpEngine {
     /// replacing the `usize::MAX` / `"connecting"` placeholders. Returns `false`
     /// if the flow at `key` is gone or was replaced (a newer generation now
     /// owns the slot), signalling the uplink task to stop.
+    /// Carry a live TUN UDP flow over to the uplink the group just repointed to,
+    /// instead of tearing it down. Returns `false` when the redial failed and
+    /// the caller must fall through to the teardown.
+    ///
+    /// # What "migrating" means here — and what it does not
+    ///
+    /// Not byte-continuity. A parked UDP session keeps **no** back-buffer of
+    /// upstream-bound packets (`server/resumption/parked.rs`): the kernel
+    /// receive buffer fills and overflow drops, because UDP is loss-tolerant by
+    /// design. What resume preserves is the *session*: for SS-UDP the server
+    /// re-points the parked NAT entries at the new carrier, for VLESS-UDP it
+    /// re-attaches the pinned `UdpSocket` — either way the exit keeps the same
+    /// source port, so the peer's own NAT binding, its path validation and any
+    /// per-address state survive the switch. That is the whole prize, and it is
+    /// why there is no confirmed-hit rule like the TCP path's: a UDP resume miss
+    /// costs a new source port, not a spliced byte stream, so it is never worse
+    /// than the teardown this replaces.
+    ///
+    /// # Ordering
+    ///
+    /// The reader dies first, then the carrier, and only then does the redial go
+    /// out. Both halves of that are load-bearing:
+    ///
+    /// - The **reader** must go first because it tears the flow down on *any*
+    ///   read failure — including the one that closing the carrier is about to
+    ///   cause. Left running, it would remove the flow record from under this
+    ///   task and the migration would have nothing to carry over.
+    /// - The **carrier** must be closed before the redial because the server
+    ///   parks a session only once its stream has closed. A redial that arrived
+    ///   first would look this flow's id up against a still-live session, get
+    ///   `miss-unknown`, and be handed a fresh upstream — a guaranteed miss.
+    ///   Same rule the TCP soft switch follows.
+    async fn migrate_udp_flow(&self, args: MigrateUdpFlow<'_>) -> bool {
+        let MigrateUdpFlow {
+            key,
+            flow_id,
+            target,
+            manager,
+            resume_store,
+            transport,
+            reader,
+            uplink_index,
+            uplink_name,
+        } = args;
+        let group_label: Arc<str> = Arc::from(manager.group_name());
+        let Some(candidate) = manager
+            .uplinks()
+            .get(target)
+            .map(|uplink| UplinkCandidate { index: target, uplink: uplink.clone() })
+        else {
+            // The pointer named an index this group does not have. Nothing to
+            // dial; the caller tears the flow down as a switch always did.
+            metrics::record_tun_udp_event(&group_label, uplink_name, "soft_switch_target_invalid");
+            return false;
+        };
+
+        // Retire, in this order. See the ordering note above.
+        *reader = None;
+        if let Err(error) = transport.close().await {
+            debug!(
+                flow_id,
+                error = %format!("{error:#}"),
+                "closing the old TUN UDP carrier before a soft-switch redial failed"
+            );
+        }
+
+        // Did this flow ever hold an id of its own? A carrier the server issued
+        // nothing for (resumption off server-side) still migrates — the flow
+        // survives the switch, it just comes back on a fresh source port — but
+        // "migrated" and "migrated blind" must not share a counter, or a fleet
+        // with resumption misconfigured would look like a fleet with working
+        // session continuity.
+        let carried_an_id = resume_store.holds_any_id().unwrap_or(false);
+
+        let connected = manager
+            .acquire_udp_standby_or_connect_with_store(&candidate, "tun_udp", resume_store)
+            .await;
+        let fresh = match connected {
+            Ok(fresh) => fresh,
+            Err(error) => {
+                report_udp_runtime_failure(manager, target, &error).await;
+                warn!(
+                    flow_id,
+                    error = %format!("{error:#}"),
+                    "TUN UDP soft-switch redial failed; tearing the flow down as a hard switch would"
+                );
+                metrics::record_tun_udp_event(
+                    &group_label,
+                    uplink_name,
+                    "soft_switch_migration_failed",
+                );
+                return false;
+            },
+        };
+        let fresh = fresh.with_throttle_handle(outline_uplink::dial::throttle_handle(
+            manager,
+            target,
+            TransportKind::Udp,
+        ));
+
+        *transport = Arc::new(fresh);
+        *uplink_index = target;
+        *uplink_name = Arc::from(candidate.uplink.name.as_str());
+        // Re-label the flow onto the new uplink, or the verdict above would see
+        // it as stranded on the very next datagram and undo the migration.
+        if !self.bind_flow_uplink(key, flow_id, *uplink_index, uplink_name).await {
+            // The flow was replaced or evicted while the redial was in flight;
+            // the caller's teardown is a no-op against the newer generation.
+            return false;
+        }
+        *reader = Some(self.spawn_flow_reader(
+            key.clone(),
+            flow_id,
+            Arc::clone(transport),
+            *uplink_index,
+            manager.clone(),
+        ));
+        metrics::record_uplink_selected("udp", manager.group_name(), uplink_name);
+        metrics::record_tun_udp_event(
+            &group_label,
+            uplink_name,
+            if carried_an_id {
+                "soft_switch_migrated"
+            } else {
+                "soft_switch_migrated_no_resume_id"
+            },
+        );
+        debug!(
+            flow_id,
+            uplink = %uplink_name,
+            carried_an_id,
+            "TUN UDP flow followed a strict-active repoint instead of being torn down"
+        );
+        true
+    }
+
     async fn bind_flow_uplink(
         &self,
         key: &UdpFlowKey,
@@ -503,7 +711,14 @@ impl TunUdpEngine {
             let result = async {
                 let mut carried_over: Option<Bytes> = None;
                 loop {
-                    if super::should_migrate_flow(&manager, uplink_index).await {
+                    // Only the teardown verdict is the reader's to act on. A
+                    // migration replaces the carrier this task is reading, so it
+                    // belongs to the uplink task that owns it — which retires
+                    // this reader before it touches the carrier at all.
+                    if matches!(
+                        super::udp_active_uplink_verdict(&manager, uplink_index),
+                        super::UdpActiveUplinkVerdict::Abort
+                    ) {
                         engine.close_flow_if_current(&key, flow_id, "global_switch").await;
                         return Ok(());
                     }
@@ -819,6 +1034,7 @@ async fn select_candidate_and_connect(
     manager: &UplinkManager,
     remote_target: &TargetAddr,
     client: Option<&str>,
+    resume_store: &outline_transport::UdpResumeStore,
 ) -> Result<(UplinkCandidate, UdpSessionTransport)> {
     let mut last_error = None;
     let strict_transport = manager.strict_active_uplink_for(TransportKind::Udp);
@@ -829,7 +1045,10 @@ async fn select_candidate_and_connect(
         candidates
     };
     for candidate in iter {
-        match manager.acquire_udp_standby_or_connect(&candidate, "tun_udp").await {
+        match manager
+            .acquire_udp_standby_or_connect_with_store(&candidate, "tun_udp", resume_store)
+            .await
+        {
             Ok(transport) => {
                 // Install the carrier control-signal handler so a server
                 // downstream-throttle notice on this UDP carrier penalises the

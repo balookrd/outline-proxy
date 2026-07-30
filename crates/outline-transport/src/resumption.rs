@@ -277,8 +277,8 @@ impl ResumeCache {
         }
     }
 
-    /// Test/diagnostic accessor. Companion to [`Self::len`].
-    #[cfg(test)]
+    /// Whether the cache holds no entries. Read in production by
+    /// [`UdpResumeStore::holds_any_id`].
     pub fn is_empty(&self) -> bool {
         self.inner.lock().entries.is_empty()
     }
@@ -322,6 +322,79 @@ pub fn global_resume_cache() -> &'static ResumeCache {
 pub fn global_vless_udp_resume_cache() -> &'static ResumeCache {
     static CACHE: OnceLock<ResumeCache> = OnceLock::new();
     CACHE.get_or_init(ResumeCache::default)
+}
+
+/// Where one datagram carrier keeps the Session IDs the server issues it.
+///
+/// The process-wide caches above are last-write-wins per key, which is only
+/// sound where the key names a single carrier — the condition
+/// [`global_resume_cache`] documents. The **TUN** data plane breaks it: it dials
+/// one carrier *per flow*, so under [`Self::ProcessWide`] a fresh flow presents
+/// the id the previously-closed flow parked. That is not a missed resume, it is
+/// a **hit on someone else's session**: for SS-UDP the server re-points the
+/// parked flow's NAT entries at the new carrier, and the TUN reader sources the
+/// reply from its *own* remote — so one flow's peer traffic reaches the client
+/// wearing another flow's address.
+///
+/// [`Self::Private`] gives one carrier's owner its own slot under the same key
+/// strings. A fresh dial then presents nothing (there is nothing of its own to
+/// present yet) and a redial of that same carrier presents exactly its own id —
+/// the discipline the TCP path already adopted when it moved the Session ID onto
+/// the session itself.
+#[derive(Clone, Default)]
+pub enum UdpResumeStore {
+    /// The process-wide caches. Sound only where one carrier really does exist
+    /// per scope; kept as the default so a caller that has not been audited
+    /// behaves exactly as it did before this type existed.
+    #[default]
+    ProcessWide,
+    /// A slot private to one carrier's owner — one TUN UDP flow, one SOCKS5 UDP
+    /// association. Cheap to clone; the clones share the slot, which is what
+    /// lets a re-dialled carrier find the id its predecessor was issued.
+    Private(std::sync::Arc<ResumeCache>),
+}
+
+impl UdpResumeStore {
+    /// A fresh private slot. Hold it for as long as the thing that owns the
+    /// carrier lives — the id is only useful to a redial of *that* carrier.
+    pub fn private() -> Self {
+        Self::Private(std::sync::Arc::new(ResumeCache::default()))
+    }
+
+    /// Slot for SS-UDP ids (key `<resume-scope>#udp`).
+    pub fn ss(&self) -> &ResumeCache {
+        match self {
+            Self::ProcessWide => global_resume_cache(),
+            Self::Private(cache) => cache,
+        }
+    }
+
+    /// Whether this store holds any Session ID at all.
+    ///
+    /// `None` for [`Self::ProcessWide`], where the question has no answer worth
+    /// acting on: the caches are shared, so "an id is present" says nothing
+    /// about whether it belongs to the carrier asking. A [`Self::Private`] slot
+    /// holds one carrier's ids and nobody else's, so `Some(true)` there really
+    /// does mean "this carrier was issued an id and can present it".
+    pub fn holds_any_id(&self) -> Option<bool> {
+        match self {
+            Self::ProcessWide => None,
+            Self::Private(cache) => Some(!cache.is_empty()),
+        }
+    }
+
+    /// Slot for VLESS-UDP per-target ids (key `<resume-scope>#<target>`).
+    ///
+    /// Distinct from [`Self::ss`] only under [`Self::ProcessWide`], where the
+    /// two key spaces have separate capacity budgets so a burst of UDP targets
+    /// cannot evict the long-lived SS-UDP ids. A private store holds one
+    /// carrier's ids and the key strings already distinguish them.
+    pub fn vless(&self) -> &ResumeCache {
+        match self {
+            Self::ProcessWide => global_vless_udp_resume_cache(),
+            Self::Private(cache) => cache,
+        }
+    }
 }
 
 const fn hex_nibble(n: u8) -> char {

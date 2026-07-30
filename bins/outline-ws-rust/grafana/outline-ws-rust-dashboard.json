@@ -3689,6 +3689,146 @@
                   }
                 ]
               },
+              "unit": "cps"
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".* all_uplinks_failed$"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "#E24D42",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".* transport_error$"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "#FF9830",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".* connect_failed$"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "fixedColor": "#F2CC0C",
+                      "mode": "fixed"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 116,
+            "w": 24,
+            "h": 7
+          },
+          "id": 306,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "pluginVersion": "12.4.2",
+          "targets": [
+            {
+              "legendFormat": "{{instance_short}} {{event}}",
+              "refId": "A",
+              "expr": "label_replace(sum by (instance, event) (rate(outline_ws_tun_udp_events_total{job=~\"$job\",instance=~\"$instance\",event=~\"soft_switch_migrated|soft_switch_migrated_no_resume_id|soft_switch_migration_failed|soft_switch_target_invalid\"}[$__rate_interval])), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")"
+            }
+          ],
+          "title": "TUN UDP Flow Migration",
+          "type": "timeseries",
+          "description": "Outcome of a strict-active-uplink repoint on a tunnelled UDP flow. `soft_switch_migrated` — the flow followed the switch presenting its own Session ID, so the exit kept its source port. `soft_switch_migrated_no_resume_id` — it followed, but the server had issued this flow no Session ID (resumption off server-side, or a reused warm-standby stream that carried none), so the source port did change. `soft_switch_migration_failed` — the redial failed and the flow was torn down exactly as a hard switch would have. `soft_switch_target_invalid` — the pointer named an uplink that is not in the group. All four flat at zero while `outline_ws_tun_flows_total{reason=\"global_switch\"}` climbs means the verdict is aborting rather than migrating — check the group's `shared_resume` and whether the switch was an operator drain."
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "showValues": false,
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": 0
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
               "unit": "short"
             },
             "overrides": [
@@ -3741,7 +3881,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 116,
+            "y": 123,
             "w": 12,
             "h": 7
           },
@@ -3811,7 +3951,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 116,
+            "y": 123,
             "w": 12,
             "h": 7
           },
@@ -3939,7 +4079,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 123,
+            "y": 130,
             "w": 24,
             "h": 6
           },
@@ -4083,7 +4223,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 129,
+            "y": 136,
             "w": 8,
             "h": 7
           },
@@ -4207,7 +4347,7 @@
           },
           "gridPos": {
             "x": 8,
-            "y": 129,
+            "y": 136,
             "w": 8,
             "h": 7
           },
@@ -4331,7 +4471,7 @@
           },
           "gridPos": {
             "x": 16,
-            "y": 129,
+            "y": 136,
             "w": 8,
             "h": 7
           },
@@ -4424,7 +4564,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 136,
+            "y": 143,
             "w": 12,
             "h": 7
           },
@@ -4563,7 +4703,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 136,
+            "y": 143,
             "w": 12,
             "h": 7
           },
@@ -4687,7 +4827,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 143,
+            "y": 150,
             "w": 12,
             "h": 7
           },
@@ -4846,7 +4986,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 143,
+            "y": 150,
             "w": 12,
             "h": 7
           },

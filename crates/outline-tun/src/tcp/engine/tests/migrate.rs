@@ -43,7 +43,10 @@ use super::super::super::tests::{build_client_packet, test_tun_tcp_config};
 use super::super::super::wire::parse_tcp_packet_unverified;
 use super::super::super::{TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_PSH, TCP_FLAG_RST, TCP_FLAG_SYN};
 use super::super::TunTcpEngine;
-use super::{TunCapture, build_test_cluster_manager, build_test_manager};
+use super::{
+    TunCapture, build_test_cluster_manager, build_test_manager,
+    build_test_strict_standalone_manager,
+};
 
 const CLIENT_WINDOW: u16 = 65535;
 const CLIENT_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 2);
@@ -1144,4 +1147,173 @@ async fn wait_for_fin(capture: &mut TunCapture) -> bool {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     false
+}
+
+/// A **health failover** repoint must carry live flows over, not reset them.
+///
+/// This is the second half of the operator-soft-switch fix. The pointer moved
+/// because the active uplink started failing, not because anyone decided these
+/// sessions should end — but the strict-active check read the switch as a hard
+/// one and RST every flow on the old uplink, winning the race against each
+/// flow's own carrier-death migration. `SwitchIntent::Failover` is what tells
+/// the check the difference.
+#[tokio::test]
+async fn a_health_failover_repoint_migrates_live_flows_on_a_cluster() {
+    let upstream = ResumableUpstream::start().await;
+    let manager = build_test_cluster_manager(&[("a", upstream.url()), ("b", upstream.url())]).await;
+    manager.set_active_uplink_by_name("a", None, false).await.unwrap();
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager.clone()),
+        128,
+        Duration::from_secs(60),
+        false,
+        test_tun_tcp_config(),
+        Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let key = flow_key(41010);
+    let server_seq = open_flow(&engine, &mut capture, &key, 1000).await;
+    let (conn, _target) = upstream.recv().await;
+    assert_eq!(conn, 1);
+    wait_until_armed(&engine, &key).await;
+    client_sends(&engine, &key, 1001, server_seq, b"GET").await;
+    assert_eq!(upstream.recv_exactly(1, 3).await, b"GET".to_vec());
+
+    upstream.set_policy(ResumePolicy { up_acked: 3, ..ResumePolicy::default() });
+
+    // Drive the real failover machinery rather than poking the pointer: a
+    // runtime failure on the active puts it in cooldown, and the next strict
+    // selection repoints the group — publishing `SwitchIntent::Failover`.
+    force_failover_to_second_uplink(&manager).await;
+
+    client_sends(&engine, &key, 1004, server_seq, b"MORE").await;
+
+    assert!(
+        wait_for_migration(&engine, &key).await,
+        "a health failover on a cluster must migrate the flow, not reset it"
+    );
+    {
+        let flow = engine.inner.flows.get(&key).map(|e| Arc::clone(e.value())).unwrap();
+        let state = flow.lock().await;
+        assert_eq!(state.status, TcpFlowStatus::Established);
+        assert_eq!(state.routing.uplink_index, 1, "the flow follows the failover to \"b\"");
+    }
+    assert_eq!(
+        upstream.requests()[1].resume_id.as_deref(),
+        Some(format!("{:032x}", 1).as_str()),
+        "the failover redial presents the id the server issued to THIS flow"
+    );
+    assert!(
+        !saw_fin_or_rst(&mut capture).await,
+        "a health failover must not send the application a FIN or a RST"
+    );
+}
+
+/// Negative control for the rule above: **off** a cluster the same failover must
+/// still abort. There is no shared resume scope, so the new active is a
+/// different server with nothing parked — a migration could only ever miss, and
+/// dialling for it would just add latency before the same teardown.
+///
+/// Without this the test above would pass for the wrong reason: "migrates
+/// whenever the pointer moves" is a rule that also accepts a build that never
+/// aborts at all.
+#[tokio::test]
+async fn a_health_failover_repoint_still_resets_off_a_cluster() {
+    let upstream = ResumableUpstream::start().await;
+    let manager =
+        build_test_strict_standalone_manager(&[("a", upstream.url()), ("b", upstream.url())]).await;
+    manager.set_active_uplink_by_name("a", None, false).await.unwrap();
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager.clone()),
+        128,
+        Duration::from_secs(60),
+        false,
+        test_tun_tcp_config(),
+        Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let key = flow_key(41011);
+    let server_seq = open_flow(&engine, &mut capture, &key, 1000).await;
+    let _ = upstream.recv().await;
+    wait_until_armed(&engine, &key).await;
+
+    upstream.set_policy(ResumePolicy { up_acked: 0, ..ResumePolicy::default() });
+    force_failover_to_second_uplink(&manager).await;
+    client_sends(&engine, &key, 1001, server_seq, b"MORE").await;
+
+    assert!(
+        wait_for_fin(&mut capture).await,
+        "off a cluster a failover resets the flow as it always did"
+    );
+    assert!(engine.inner.flows.get(&key).is_none(), "the aborted flow leaves the table");
+}
+
+/// The scenario the fix exists for: the flow's carrier dies dirty *and* the
+/// resulting runtime failure repoints the group. The flow is eligible to
+/// migrate — before this, the repoint's abort reached the ingress path first and
+/// marked the flow `Closed`, so `plan_migration` bailed and the migration was
+/// never attempted at all.
+#[tokio::test]
+async fn a_carrier_death_that_also_repoints_the_group_still_migrates() {
+    let upstream = ResumableUpstream::start().await;
+    let manager = build_test_cluster_manager(&[("a", upstream.url()), ("b", upstream.url())]).await;
+    manager.set_active_uplink_by_name("a", None, false).await.unwrap();
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager.clone()),
+        128,
+        Duration::from_secs(60),
+        false,
+        test_tun_tcp_config(),
+        Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let key = flow_key(41012);
+    let server_seq = open_flow(&engine, &mut capture, &key, 1000).await;
+    let _ = upstream.recv().await;
+    wait_until_armed(&engine, &key).await;
+    client_sends(&engine, &key, 1001, server_seq, b"GET").await;
+    assert_eq!(upstream.recv_exactly(1, 3).await, b"GET".to_vec());
+
+    upstream.set_policy(ResumePolicy { up_acked: 3, ..ResumePolicy::default() });
+    // Both at once, in the order production sees them: the carrier dies (RST,
+    // `SO_LINGER = 0`) and the failure moves the group's pointer.
+    upstream.kill_carrier().await;
+    force_failover_to_second_uplink(&manager).await;
+    client_sends(&engine, &key, 1004, server_seq, b"MORE").await;
+
+    assert!(
+        wait_for_migration(&engine, &key).await,
+        "a carrier death under a repointed group must still migrate"
+    );
+    assert!(
+        !saw_fin_or_rst(&mut capture).await,
+        "the application must not see the carrier death"
+    );
+}
+
+/// Put the group's active uplink into runtime cooldown and run one strict
+/// selection, which is what actually repoints the pointer (publishing
+/// `SwitchIntent::Failover`). Asserts the move happened, so a test that depends
+/// on it cannot silently pass against a pointer that never left "a".
+async fn force_failover_to_second_uplink(manager: &outline_uplink::UplinkManager) {
+    manager
+        .report_runtime_failure(
+            0,
+            outline_uplink::TransportKind::Tcp,
+            &anyhow::anyhow!("carrier died"),
+        )
+        .await;
+    let target = TargetAddr::IpV4(REMOTE_IP, 443);
+    let _ = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        manager.active_uplinks_snapshot().tcp_for(true),
+        Some(1),
+        "the failover must have repointed the group to the second uplink",
+    );
 }

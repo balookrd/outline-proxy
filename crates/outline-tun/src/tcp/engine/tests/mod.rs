@@ -1925,6 +1925,50 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
 /// "global"`, `shared_resume = true`). Both uplinks dial the same mock upstream
 /// because a mesh cluster shares one resume scope: a redial through the *new*
 /// active reaches the upstream the *old* one parked.
+/// Strict `active_passive` group that is **not** a cluster (`shared_resume =
+/// false`). The negative control for every migration rule: off a cluster the new
+/// active is a different server with nothing parked for the flow, so a repoint
+/// of any intent must still abort.
+pub(in crate::tcp) async fn build_test_strict_standalone_manager(
+    uplinks: &[(&str, Url)],
+) -> UplinkManager {
+    UplinkManager::new_for_test(
+        "test",
+        uplinks
+            .iter()
+            .map(|(name, url)| test_uplink_config(name, Some(url.clone()), None))
+            .collect(),
+        test_probe_config(),
+        LoadBalancingConfig {
+            mode: outline_uplink::LoadBalancingMode::ActivePassive,
+            routing_scope: outline_uplink::RoutingScope::Global,
+            shared_resume: false,
+            ..test_load_balancing_config()
+        },
+    )
+    .unwrap()
+}
+
+/// [`build_test_cluster_manager`] with the URLs on the **UDP** dial slot. The
+/// UDP engine's tests need a cluster group whose uplinks carry datagrams.
+pub(crate) async fn build_test_cluster_udp_manager(uplinks: &[(&str, Url)]) -> UplinkManager {
+    UplinkManager::new_for_test(
+        "test",
+        uplinks
+            .iter()
+            .map(|(name, url)| test_uplink_config(name, None, Some(url.clone())))
+            .collect(),
+        test_probe_config(),
+        LoadBalancingConfig {
+            mode: outline_uplink::LoadBalancingMode::ActivePassive,
+            routing_scope: outline_uplink::RoutingScope::Global,
+            shared_resume: true,
+            ..test_load_balancing_config()
+        },
+    )
+    .unwrap()
+}
+
 pub(in crate::tcp) async fn build_test_cluster_manager(uplinks: &[(&str, Url)]) -> UplinkManager {
     UplinkManager::new_for_test(
         "test",

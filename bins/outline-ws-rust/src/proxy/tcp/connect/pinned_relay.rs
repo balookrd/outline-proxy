@@ -780,11 +780,13 @@ async fn try_soft_switch_migrate(
         return None;
     }
     let snapshot = uplinks.active_uplinks_snapshot();
-    // The gate is the published `soft` bit alone, not which mechanism set it:
-    // an operator switch, carrier-degraded failover, and scheduled/manual
-    // re-selection all migrate when they publish `soft = true`; only a hard
-    // switch (soft = false) tears the session down.
-    if !snapshot.soft {
+    // The gate is the published switch intent, not which mechanism set it: an
+    // operator soft switch, a carrier-degraded failover, a probe/runtime
+    // failover and a soft re-selection all migrate. Only a switch that means to
+    // abandon the session — an operator *hard* switch or hard reselect — tears
+    // it down. `shared_resume` was already required above, so the intent's own
+    // cluster gate is a no-op here.
+    if !snapshot.intent.migrates_live_flows(shared_resume) {
         return None;
     }
     let new_index = snapshot.tcp_for(strict_global)?;

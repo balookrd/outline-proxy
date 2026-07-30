@@ -374,15 +374,17 @@ pub(super) enum ActiveUplinkVerdict {
     /// Leave the flow alone: the group is not strict, the flow is still on the
     /// active uplink, or it is not bound to one yet.
     Stay,
-    /// The pointer moved off this flow's uplink on a *hard* switch — an operator
-    /// hard switch, a health failover, or a scheduled reselect. Tear the flow
-    /// down with RST, exactly as this group always has.
+    /// The pointer moved off this flow's uplink on a switch that is meant to
+    /// abandon it: an operator **hard** switch or hard scheduled reselect (a
+    /// drain — see [`SwitchIntent::OperatorHard`]), or any switch at all off a
+    /// `shared_resume` group, where there is nothing to migrate into. Tear the
+    /// flow down with RST, exactly as this group always has.
     Abort,
-    /// The pointer moved off this flow's uplink on an operator **soft** switch.
-    /// Carry the flow over to `target` via cluster resume instead of resetting
-    /// it. Only ever produced on a `shared_resume` group: every
-    /// `set_active_uplink_*` path clamps the soft bit to `false` elsewhere,
-    /// because off a cluster there is no shared resume scope to migrate into.
+    /// The pointer moved off this flow's uplink on a switch that is *not* a
+    /// decision to abandon it — an operator soft switch, or any machine-driven
+    /// repoint (probe/runtime failover, auto-failback, carrier-degraded, initial
+    /// selection). Carry the flow over to `target` via cluster resume instead of
+    /// resetting it. Only ever produced on a `shared_resume` group.
     SoftMigrate { target: usize },
 }
 
@@ -394,9 +396,10 @@ pub(super) enum ActiveUplinkVerdict {
 /// Reads the published [`ActiveUplinksSnapshot`] rather than the manager's async
 /// `active_uplinks` lock: the snapshot is pushed inside every mutation of that
 /// lock, so the two never disagree, and it is the only view that carries the
-/// `soft` bit at all — without which a soft switch is indistinguishable from a
-/// hard one and every live flow gets RST. Being a plain `borrow()` also keeps
-/// the TUN ingress path (which consults this per packet) off an async lock.
+/// switch [`SwitchIntent`] at all — without which every kind of repoint is
+/// indistinguishable from a drain and every live flow gets RST. Being a plain
+/// `borrow()` also keeps the TUN ingress path (which consults this per packet)
+/// off an async lock.
 pub(super) fn active_uplink_verdict(
     manager: &UplinkManager,
     flow_uplink_index: usize,
@@ -411,7 +414,7 @@ pub(super) fn active_uplink_verdict(
     if active == flow_uplink_index {
         return ActiveUplinkVerdict::Stay;
     }
-    if snapshot.soft {
+    if snapshot.intent.migrates_live_flows(manager.shared_resume()) {
         ActiveUplinkVerdict::SoftMigrate { target: active }
     } else {
         ActiveUplinkVerdict::Abort

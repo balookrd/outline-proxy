@@ -14,6 +14,7 @@ pub(super) struct TunFields {
     pub(super) tun_max_flows: IntGauge,
     pub(super) tun_idle_timeout_seconds: Gauge,
     pub(super) tun_tcp_events_total: IntCounterVec,
+    pub(super) tun_udp_events_total: IntCounterVec,
     pub(super) tun_tcp_sniff_total: IntCounterVec,
     pub(super) tun_udp_sniff_total: IntCounterVec,
     pub(super) tun_tcp_async_connects_total: IntCounterVec,
@@ -121,6 +122,13 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         IntCounterVec,
         "outline_ws_tun_tcp_events_total",
         "TCP state machine events observed on the TUN path.",
+        ["group", "uplink", "event"]
+    );
+    let tun_udp_events_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_tun_udp_events_total",
+        "Flow-lifecycle events observed on the TUN UDP path (soft-switch migration outcomes).",
         ["group", "uplink", "event"]
     );
     let tun_tcp_sniff_total = register_labeled!(
@@ -305,6 +313,7 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         tun_max_flows,
         tun_idle_timeout_seconds,
         tun_tcp_events_total,
+        tun_udp_events_total,
         tun_tcp_sniff_total,
         tun_udp_sniff_total,
         tun_tcp_async_connects_total,
