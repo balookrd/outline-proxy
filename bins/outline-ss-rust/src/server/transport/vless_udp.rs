@@ -59,17 +59,8 @@ where
     // same reason a local resume hit ignores it: the parked target is
     // authoritative, and the parked socket is already connected to it.
     if let Some(setup) = state.mesh_upstream.take() {
-        return attach_mesh_udp_upstream(
-            state,
-            setup,
-            request,
-            user,
-            server,
-            route,
-            outbound,
-            Arc::from(target_display.as_str()),
-        )
-        .await;
+        return attach_mesh_udp_upstream(state, setup, request, user, server, route, outbound)
+            .await;
     }
 
     // Resume attempt: re-attach a parked single-target VLESS-UDP
@@ -388,12 +379,15 @@ async fn attach_mesh_udp_upstream<Msg>(
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     outbound: VlessWsOutbound<'_, Msg>,
-    target_display: Arc<str>,
 ) -> Result<(), VlessFrameError>
 where
     Msg: Send + 'static,
 {
     let user_id = user.label_arc();
+    // For logs only, and deliberately the target the *client* asked for: the
+    // home's parked socket is already connected to the target it was minted for,
+    // and that one is authoritative.
+    let target_display: Arc<str> = Arc::from(request.target.to_string().as_str());
     // A hand-off that fails here — the home refused the owner check, or the mesh
     // broke — is retryable, not a protocol fault: the client is authenticated,
     // so it gets a "try again" close and reconnects. `Fatal` would instead run

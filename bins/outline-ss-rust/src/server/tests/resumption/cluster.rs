@@ -465,7 +465,8 @@ async fn spawn_ss2022_node(
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
 ) -> Result<(ClusterNode, UserKey)> {
-    let parts = build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, true, None)?;
+    let parts =
+        build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, true, None)?;
     boot_ws_node(parts).await
 }
 
@@ -519,7 +520,8 @@ async fn spawn_h3_edge_node(
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
 ) -> Result<(H3EdgeNode, UserKey)> {
-    let parts = build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, false, None)?;
+    let parts =
+        build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, false, None)?;
     boot_h3_edge_node(parts).await
 }
 
@@ -3169,11 +3171,7 @@ async fn cluster_vless_udp_relay_preserves_datagram_boundaries() -> Result<()> {
         vec![b"second".to_vec(), b"third-datagram".to_vec()],
         "two datagrams sent in one frame must arrive as two, byte-exact and in order",
     );
-    assert_eq!(
-        sources.lock().await.len(),
-        1,
-        "every datagram rode the one parked socket",
-    );
+    assert_eq!(sources.lock().await.len(), 1, "every datagram rode the one parked socket",);
     socket.close(None).await?;
     Ok(())
 }

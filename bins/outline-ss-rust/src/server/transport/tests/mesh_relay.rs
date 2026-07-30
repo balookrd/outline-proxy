@@ -2302,7 +2302,10 @@ async fn a_udp_framed_vless_relay_is_refused_before_the_park_is_touched() {
     assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
     let rendered = harness.metrics().render_prometheus();
     assert_eq!(rejected(&rendered, "bad_setup"), 1, "{rendered}");
-    assert!(harness.registry().has_park(id), "the park must survive a header it cannot serve");
+    assert!(
+        harness.registry().has_park(id),
+        "the park must survive a header it cannot serve"
+    );
 }
 
 /// A burst keeps every datagram whole. The uplink pump drains its in-flight
