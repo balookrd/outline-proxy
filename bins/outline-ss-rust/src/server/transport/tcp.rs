@@ -53,7 +53,7 @@ use super::super::relay::UpstreamRelayOutcome;
 use outline_wire::resume::build_v1_payload;
 
 use super::super::resumption::{
-    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext,
+    OrphanRegistry, Parked, ParkedProtocol, ParkedTcp, ResumeOutcome, SessionId,
 };
 use super::super::scratch::ScratchBuf;
 use super::carrier_padding;
@@ -662,7 +662,7 @@ async fn try_park_on_drop(
         upstream_reader: reader,
         target_display,
         owner: Arc::clone(&owner),
-        protocol_context: TcpProtocolContext::Ss(user),
+        protocol: ParkedProtocol::Ss,
         user_counters,
         upstream_guard,
         // Move the Arc — the relay will get a fresh `Arc<AtomicU64>`
@@ -963,33 +963,31 @@ where
             && let ResumeOutcome::Hit(Parked::Tcp(parked)) =
                 server.orphan_registry.take_for_resume(resume_id, &user_id).await
         {
-            // Cross-protocol mismatch (a SS-authenticated client
-            // presents a Session ID minted under VLESS, or vice versa)
-            // is rejected outright. The owner check inside
-            // `take_for_resume` already binds an ID to a single user
-            // identity, so this should only fire if SS and VLESS users
-            // share an identifier — a configuration error worth
-            // surfacing rather than silently re-routing.
-            let TcpProtocolContext::Ss(parked_user) = parked.protocol_context else {
-                warn!(
-                    user = user.id(),
-                    path = %route.path,
-                    parked_kind = parked.protocol_context.label(),
-                    "rejecting resume: parked session belongs to a different proxy protocol"
-                );
-                return Err(FrameError::Fatal(anyhow!(
-                    "cross-protocol resume rejected: parked session is not SS"
-                )));
-            };
+            // A park minted under VLESS is served here unchanged: nothing in a
+            // byte-stream park belongs to the protocol that made it, and the
+            // owner check inside `take_for_resume` has already bound the id to
+            // this account. See `docs/SESSION-RESUMPTION.md` § Cross-protocol
+            // resume.
+            if parked.protocol != ParkedProtocol::Ss {
+                server
+                    .metrics
+                    .record_orphan_resume_cross_protocol(parked.protocol.label(), "ss");
+            }
             debug!(
                 user = user.id(),
                 path = %route.path,
                 target = %parked.target_display,
+                parked_protocol = parked.protocol.label(),
                 "tcp upstream resumed from orphan registry"
             );
-            let mut encryptor =
-                AeadStreamEncryptor::new(&parked_user, decryptor.response_context())
-                    .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+            // Sealed under the key *this* stream authenticated with, not one
+            // carried over from the park. The two are the same account — one
+            // `[[users]]` entry, one owner label — but only this one is the key
+            // the client just dialled with, so it stays right across a protocol
+            // reroll and across a password rotation mid-park alike. Same call
+            // the fresh-connect path below makes.
+            let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())
+                .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
 
             // Ack-Prefix Protocol v1: when the client advertised the
             // capability we emit a 14-byte plaintext control frame here,
@@ -1160,7 +1158,10 @@ where
             })));
             state.relay_cancel = Some(cancel);
             state.user_counters = Some(parked.user_counters);
-            state.authenticated_user = Some(parked_user);
+            // This stream's own key, for the same reason the encryptor above
+            // uses it: if this session parks again it must park under the
+            // credential its current carrier authenticated with.
+            state.authenticated_user = Some(user);
             state.upstream_writer = Some(UpstreamWriter::Tcp(parked.upstream_writer));
             state.upstream_guard = Some(parked.upstream_guard);
             state.upstream_target_display = Some(parked.target_display);
