@@ -279,6 +279,64 @@ async fn connect_ws_h1_ack_prefix(
     Ok((socket, issued, ack_prefix_confirmed))
 }
 
+/// What a v2-capable client learned from the upgrade response: the id it must
+/// come back with, and which of the two resume protocols the server confirmed.
+#[derive(Debug)]
+struct V2HandshakeOutcome {
+    issued_session_id: Option<SessionId>,
+    ack_prefix_confirmed: bool,
+    symmetric_replay_confirmed: bool,
+}
+
+/// [`connect_ws_h1_ack_prefix`] plus the v2 Symmetric Downlink Replay
+/// advertisement and the client's downstream-acked offset.
+///
+/// v2 only ever rides on top of v1, so both capability headers always travel
+/// together; `down_acked` is meaningful only on a resume request and is simply
+/// what the client claims it has already observed. Both confirmations come back
+/// because a v2 session's correctness depends on the pair: a server that
+/// confirms v2 owes the client a framed `"ORDR"` reply, and one that withholds
+/// it owes the same bytes as plain stream continuation.
+async fn connect_ws_h1_symmetric_replay(
+    listen_addr: SocketAddr,
+    path: &str,
+    resume: Option<SessionId>,
+    down_acked: u64,
+) -> Result<(
+    WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    V2HandshakeOutcome,
+)> {
+    let mut req = format!("ws://{listen_addr}{path}").into_client_request()?;
+    let headers = req.headers_mut();
+    headers.insert("x-outline-resume-capable", HeaderValue::from_static("1"));
+    headers.insert("x-outline-resume-ack-prefix", HeaderValue::from_static("1"));
+    headers.insert("x-outline-resume-symmetric-replay", HeaderValue::from_static("1"));
+    if let Some(id) = resume {
+        headers.insert("x-outline-resume", HeaderValue::from_str(&id.to_hex())?);
+        headers
+            .insert("x-outline-resume-down-acked", HeaderValue::from_str(&down_acked.to_string())?);
+    }
+    let (socket, response) = connect_async(req).await?;
+    let header_is_one = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            == Some("1")
+    };
+    let outcome = V2HandshakeOutcome {
+        issued_session_id: response
+            .headers()
+            .get("x-outline-session")
+            .and_then(|v| v.to_str().ok())
+            .and_then(SessionId::parse_hex),
+        ack_prefix_confirmed: header_is_one("x-outline-resume-ack-prefix"),
+        symmetric_replay_confirmed: header_is_one("x-outline-resume-symmetric-replay"),
+    };
+    Ok((socket, outcome))
+}
+
 /// Wire-level outcome of the HTTP/2 CONNECT WebSocket handshake.
 /// Returned by [`connect_ws_h2`] alongside the upgraded socket.
 struct H2HandshakeOutcome {
