@@ -110,6 +110,11 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
 
     let mut state = VlessRelayState::new(resume, throttle_monitor, upstream);
     let mut client_closed = false;
+    // A carrier that *died* rather than closed, held until after the park
+    // below. Returning on the spot would skip `try_park_vless_on_drop` — and a
+    // dirty death is exactly the case whose client comes back with a resume
+    // request. Mirrors the SS-WS and SS-UDP paths.
+    let mut carrier_error: Option<anyhow::Error> = None;
     // Carrier-padding decoder for the uplink, allocated only when this path
     // pads. Held across the loop because a padding frame may span WS/h2/h3 DATA
     // frame boundaries. Covers VLESS-TCP and VLESS-UDP uplink alike — the
@@ -127,9 +132,13 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
         tokio::select! {
             biased;
             result = T::recv(&mut reader) => {
-                let msg = match result? {
-                    Some(m) => m,
-                    None => break,
+                let msg = match result {
+                    Ok(Some(m)) => m,
+                    Ok(None) => break,
+                    Err(error) => {
+                        carrier_error = Some(error);
+                        break;
+                    },
                 };
                 last_inbound = std::time::Instant::now();
                 match T::classify(msg) {
@@ -273,7 +282,10 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     drop(outbound_ctrl_tx);
     drop(outbound_data_tx);
     let _ = writer_task.await;
-    Ok(())
+    match carrier_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// Attempts to move the live VLESS upstream into the orphan registry.

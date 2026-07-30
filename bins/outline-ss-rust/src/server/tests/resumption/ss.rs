@@ -169,6 +169,67 @@ async fn ss_resume_hit_skips_fresh_upstream() -> Result<()> {
     Ok(())
 }
 
+/// The scenario session resumption actually exists for: the carrier does not
+/// close, it *dies*.
+///
+/// Every other resume test here closes the WebSocket politely, which reaches
+/// the relay loop as a `Close` frame or a clean EOF. Production never does
+/// that — a collapsing H3/QUIC carrier, a reset TCP connection or an H2 stream
+/// error all surface as a receive **error**, and that is precisely the moment
+/// the client tries to migrate. So the park must survive a dirty death, not
+/// just a graceful one.
+///
+/// `SO_LINGER = 0` makes the client's close emit an RST instead of a FIN, which
+/// is the closest a HTTP/1 fixture gets to "the carrier just died" — the server
+/// sees `ECONNRESET` from its next read, exactly the shape an H3 collapse takes.
+#[tokio::test]
+async fn ss_resume_hit_after_dirty_carrier_death() -> Result<()> {
+    let (target_addr, target_accepts) = spawn_echo_target().await?;
+    let (server, user) = spawn_ss_resumption_server(|_| {}).await?;
+
+    // Session #1: capable, no resume → minted ID, fresh upstream.
+    let (mut socket, issued) = connect_ws_h1(server.listen_addr, "/tcp", None, true).await?;
+    let session_id = issued.ok_or_else(|| {
+        anyhow::anyhow!("server did not issue X-Outline-Session despite Resume-Capable")
+    })?;
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, b"ping1")?))
+        .await?;
+    let _reply = expect_binary_reply(&mut socket).await?;
+    assert_eq!(target_accepts.load(Ordering::SeqCst), 1);
+
+    // Kill the carrier without a Close frame and without a FIN.
+    match socket.get_ref() {
+        tokio_tungstenite::MaybeTlsStream::Plain(tcp) => {
+            // Through `socket2` rather than tokio's own setter, which is
+            // deprecated for blocking the thread on drop — harmless here, but
+            // `-D warnings` in CI does not take that on trust.
+            socket2::SockRef::from(tcp).set_linger(Some(Duration::ZERO))?;
+        },
+        _ => anyhow::bail!("fixture dials plain ws://, so the stream must be unencrypted"),
+    }
+    drop(socket);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Session #2: the migration redial. The upstream must have been parked
+    // despite the dirty death, so this re-attaches instead of dialling again.
+    let (mut socket2, _) =
+        connect_ws_h1(server.listen_addr, "/tcp", Some(session_id), true).await?;
+    socket2
+        .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, b"ping2")?))
+        .await?;
+    let _reply2 = expect_binary_reply(&mut socket2).await?;
+    assert_eq!(
+        target_accepts.load(Ordering::SeqCst),
+        1,
+        "a carrier that died dirty must still park its upstream — otherwise resume can only ever \
+         hit for sessions that never needed it"
+    );
+
+    socket2.close(None).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn ss_resume_with_unknown_id_falls_through_to_fresh() -> Result<()> {
     let (target_addr, target_accepts) = spawn_echo_target().await?;

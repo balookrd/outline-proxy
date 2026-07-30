@@ -424,6 +424,59 @@ async fn vless_mux_resume_hit_preserves_all_sub_conns() -> Result<()> {
     Ok(())
 }
 
+/// The VLESS twin of `ss_resume_hit_after_dirty_carrier_death`: a carrier that
+/// dies must still park, because a dying carrier is the only thing the client's
+/// resume request ever follows. See that test for why `SO_LINGER = 0` stands in
+/// for an H3 collapse.
+#[tokio::test]
+async fn vless_resume_hit_after_dirty_carrier_death() -> Result<()> {
+    let (target_addr, target_accepts) = spawn_echo_target().await?;
+    let std::net::IpAddr::V4(_) = target_addr.ip() else {
+        bail!("VLESS resume test requires an IPv4 target");
+    };
+    let (server, _user) = spawn_vless_resumption_server().await?;
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+
+    let (mut socket, issued) = connect_ws_h1(server.listen_addr, "/vless", None, true).await?;
+    let session_id =
+        issued.ok_or_else(|| anyhow::anyhow!("VLESS server didn't mint Session ID"))?;
+    socket
+        .send(WsMessage::Binary(vless_tcp_request(uuid, target_addr, b"ping")?))
+        .await?;
+    let response_header = expect_binary_reply(&mut socket).await?;
+    assert_eq!(response_header.as_ref(), &[VLESS_VERSION, 0x00]);
+    let echoed = expect_binary_reply(&mut socket).await?;
+    assert_eq!(echoed.as_ref(), b"ping");
+    assert_eq!(target_accepts.load(Ordering::SeqCst), 1);
+
+    // Kill the carrier: RST, no Close frame, no FIN.
+    match socket.get_ref() {
+        tokio_tungstenite::MaybeTlsStream::Plain(tcp) => {
+            socket2::SockRef::from(tcp).set_linger(Some(Duration::ZERO))?;
+        },
+        _ => bail!("fixture dials plain ws://, so the stream must be unencrypted"),
+    }
+    drop(socket);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let (mut socket2, _) =
+        connect_ws_h1(server.listen_addr, "/vless", Some(session_id), true).await?;
+    socket2
+        .send(WsMessage::Binary(vless_tcp_request(uuid, target_addr, b"pong")?))
+        .await?;
+    let response_header2 = expect_binary_reply(&mut socket2).await?;
+    assert_eq!(response_header2.as_ref(), &[VLESS_VERSION, 0x00]);
+    let echoed2 = expect_binary_reply(&mut socket2).await?;
+    assert_eq!(echoed2.as_ref(), b"pong");
+    assert_eq!(
+        target_accepts.load(Ordering::SeqCst),
+        1,
+        "a VLESS carrier that died dirty must still park its upstream"
+    );
+    socket2.close(None).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn vless_resume_hit_skips_fresh_upstream() -> Result<()> {
     let (target_addr, target_accepts) = spawn_echo_target().await?;
