@@ -59,7 +59,9 @@ use super::super::super::bootstrap::serve_listener;
 use super::super::super::cluster::ClusterCtx;
 use super::super::super::nat::NatTable;
 use super::super::super::replay::ReplayStore;
-use super::super::super::resumption::{OrphanRegistry, ResumptionConfig, SessionId};
+use super::super::super::resumption::{
+    OrphanRegistry, Parked, ParkedVlessMux, ResumptionConfig, SessionId,
+};
 use super::super::super::setup::{
     SsXhttpUserRoute, VlessUserRoute, build_vless_transport_route_map, build_xhttp_ss_route_map,
 };
@@ -79,7 +81,8 @@ use super::super::{
 };
 use super::ss::ss_handshake_frame;
 use super::vless::{
-    collect_mux_keep_payloads, vless_mux_new_tcp_frame, vless_mux_request, vless_tcp_request,
+    collect_mux_keep_payloads, collect_streamed_mux_keep_payloads, vless_mux_keep_frame,
+    vless_mux_new_tcp_frame, vless_mux_new_udp_frame, vless_mux_request, vless_tcp_request,
     vless_udp_request,
 };
 use super::{
@@ -3279,20 +3282,26 @@ async fn cluster_vless_tcp_on_a_udp_shaped_park_leaves_it_intact() -> Result<()>
     Ok(())
 }
 
-/// A VLESS **mux** command releases a mesh relay the edge had already opened,
-/// serves its sub-connections directly, and leaves the home's park intact.
+/// A VLESS **mux** command on a *byte-stream* park releases the mesh relay the
+/// edge had already opened, serves its sub-connections directly, and leaves the
+/// home's park intact.
 ///
 /// This is the edge-side half of the same invariant the test above pins from the
 /// home side, and the only place it can be exercised: the home holds a
 /// `Parked::Tcp` here, so phase 1 legitimately admits the relay and the edge
 /// really does take a mesh upstream before it can know what the client wants.
 /// Only when the first frame parses as `VlessCommand::Mux` does it learn that
-/// the upstream shape is wrong — and it must get out *before* the USER frame,
-/// which is what would make the home consume its park.
+/// the upstream shape is wrong — a mux bundle is not a byte-stream park — and it
+/// must get out *before* the USER frame, which is what would make the home
+/// consume its park.
 ///
-/// It also pins the scope decision that VLESS-mux sub-connections stay on the
-/// direct path: the sub-connection below reaches its target from the edge, on a
-/// socket the edge dialled itself.
+/// It also pins the scope rule for sub-connections: a mux session **this node
+/// establishes** dials its own sub-connections, so the one below reaches its
+/// target from the edge, on a socket the edge dialled itself. That rule is about
+/// where a *fresh* mux lives and is unchanged; a mux park that already exists on
+/// another node is a different question, and
+/// [`cluster_vless_mux_survives_edge_switch`] answers it — there the frame layer
+/// runs on the home and every sub-connection stays there.
 ///
 /// Finally it pins the *echo*, which is deliberately not truthful here and
 /// cannot be made so: the `101` goes out before the edge has read a single
@@ -3363,6 +3372,260 @@ async fn cluster_vless_mux_releases_the_relay_and_preserves_the_park() -> Result
         "a mux command must not cost the home the park it was holding",
     );
     Ok(())
+}
+
+/// A VLESS-**mux** session migrates across an edge switch: the whole bundle —
+/// one TCP and one UDP sub-connection — keeps its upstreams on the home while a
+/// carrier on a different node, with a different path and a different
+/// credential, drives it.
+///
+/// Two counters carry the guarantee, one per sub-connection kind, and both are
+/// the same probe: a fresh upstream would show up as a second accept on the TCP
+/// echo target and a second source port on the UDP one. Neither may move.
+///
+/// The three legs are the three claims:
+///
+/// 1. **home** — a mux with both sub-connection kinds, parked as one
+///    `Parked::VlessMux` under the id the home minted.
+/// 2. **edge** — the same id on `/vless-edge` under `EDGE_VLESS_UUID`, a
+///    credential the home has never heard of. The home acks `MeshShape::VlessMux`,
+///    the edge keeps the relay and forwards the client's mux frame stream
+///    verbatim; the home runs the frame layer over the bundle it parked. Both
+///    sub-connections answer on their original sockets, which is what proves the
+///    bundle re-attached whole rather than being re-dialled.
+/// 3. **home again** — the bundle is re-parked when the mesh carrier ends, so a
+///    mux session survives more than one switch, exactly as the byte-stream and
+///    VLESS-UDP ones do.
+///
+/// The relayed downlink is read with [`collect_streamed_mux_keep_payloads`]
+/// rather than the direct helper: the edge forwards mesh chunks, so several mux
+/// frames may share one WebSocket message.
+#[tokio::test]
+async fn cluster_vless_mux_survives_edge_switch() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-vless-mux-switch-psk";
+    let (tcp_addr, tcp_accepts) = spawn_echo_target().await?;
+    let (udp_addr, udp_sources) = spawn_echo_udp_target().await?;
+
+    let (home, _user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_vless_cluster_node(
+        PSK,
+        2,
+        peers,
+        Duration::from_secs(4),
+        "/vless-edge",
+        EDGE_VLESS_UUID,
+    )
+    .await?;
+
+    // Session #1 on the home: sub-conn 1 is TCP, sub-conn 2 is UDP.
+    let (mut sock_home, issued) = connect_ws_h1(home.listen_addr, "/vless", None, true).await?;
+    let session_id = issued.context("the home must mint a resume id")?;
+    let mut handshake = BytesMut::from(vless_mux_request(CLUSTER_VLESS_UUID)?.as_ref());
+    handshake.extend_from_slice(&vless_mux_new_tcp_frame(1, tcp_addr, b"tcp-home"));
+    handshake.extend_from_slice(&vless_mux_new_udp_frame(2, udp_addr, b"udp-home"));
+    sock_home.send(WsMessage::Binary(handshake.freeze())).await?;
+    let header = expect_binary_reply(&mut sock_home).await?;
+    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00]);
+    let echoes = collect_mux_keep_payloads(&mut sock_home, &[1, 2]).await?;
+    assert_eq!(echoes[&1], b"tcp-home");
+    assert_eq!(echoes[&2], b"udp-home");
+    assert_eq!(tcp_accepts.load(Ordering::SeqCst), 1, "the home dials one TCP sub-conn");
+    assert_eq!(udp_sources.lock().await.len(), 1, "the home binds one UDP sub-conn source");
+    sock_home.close(None).await?;
+    drop(sock_home);
+    wait_for_park(&home, session_id).await?;
+
+    // Session #2 via the edge, same id, different path and credential.
+    let (mut sock_edge, echoed_id) =
+        connect_ws_h1(edge.listen_addr, "/vless-edge", Some(session_id), true).await?;
+    assert_eq!(
+        echoed_id,
+        Some(session_id),
+        "a relayed session must echo the id the home parks under",
+    );
+    sock_edge
+        .send(WsMessage::Binary(vless_mux_request(EDGE_VLESS_UUID)?))
+        .await?;
+    let header = expect_binary_reply(&mut sock_edge).await?;
+    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00]);
+    sock_edge
+        .send(WsMessage::Binary(vless_mux_keep_frame(1, b"tcp-edge")))
+        .await?;
+    sock_edge
+        .send(WsMessage::Binary(vless_mux_keep_frame(2, b"udp-edge")))
+        .await?;
+    let echoes = collect_streamed_mux_keep_payloads(&mut sock_edge, &[1, 2]).await?;
+    assert_eq!(echoes[&1], b"tcp-edge", "the relayed TCP sub-conn reaches its parked upstream");
+    assert_eq!(echoes[&2], b"udp-edge", "the relayed UDP sub-conn reaches its parked upstream");
+    assert_eq!(
+        tcp_accepts.load(Ordering::SeqCst),
+        1,
+        "resume across the edge switch must reuse the parked TCP sub-conn, not re-dial it",
+    );
+    assert_eq!(
+        udp_sources.lock().await.len(),
+        1,
+        "resume across the edge switch must reuse the parked UDP sub-conn's source port",
+    );
+    sock_edge.close(None).await?;
+    drop(sock_edge);
+
+    // The home re-parks the whole bundle once the mesh carrier ends.
+    wait_for_park(&home, session_id).await?;
+    let (mut sock_back, _) =
+        connect_ws_h1(home.listen_addr, "/vless", Some(session_id), true).await?;
+    sock_back
+        .send(WsMessage::Binary(vless_mux_request(CLUSTER_VLESS_UUID)?))
+        .await?;
+    let header = expect_binary_reply(&mut sock_back).await?;
+    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00]);
+    sock_back
+        .send(WsMessage::Binary(vless_mux_keep_frame(1, b"tcp-back")))
+        .await?;
+    sock_back
+        .send(WsMessage::Binary(vless_mux_keep_frame(2, b"udp-back")))
+        .await?;
+    let echoes = collect_mux_keep_payloads(&mut sock_back, &[1, 2]).await?;
+    assert_eq!(echoes[&1], b"tcp-back");
+    assert_eq!(echoes[&2], b"udp-back");
+    assert_eq!(
+        tcp_accepts.load(Ordering::SeqCst),
+        1,
+        "the re-parked TCP sub-conn must be the same socket, not a third dial",
+    );
+    assert_eq!(
+        udp_sources.lock().await.len(),
+        1,
+        "the re-parked UDP sub-conn must be the same socket, not a third source",
+    );
+    sock_back.close(None).await?;
+    Ok(())
+}
+
+/// A mux park that cannot be re-attached whole is refused whole: the relay is
+/// reset and no part of the bundle is spliced.
+///
+/// A mux park is one session, not a bag of sockets — one registry entry, whose
+/// sub-connections the client addresses by id — so the home decides *once*,
+/// before it attaches anything, whether the bundle can be served.
+/// `vless_mux::attach_parked` is total below that decision (every parked
+/// sub-connection already carries both halves of its upstream, so none of them
+/// can fail to re-attach), which leaves exactly one state a bundle can be in
+/// that no splice can serve: holding no sub-connection at all.
+///
+/// The park has to be injected directly, because no code path produces one:
+/// `harvest_into_parked` can prune a bundle down to nothing, and both callers —
+/// the direct `try_park_vless_mux` and the home splice's own re-park — refuse to
+/// register the result. That is the point of pinning it here: the guard is the
+/// reason the invariant survives a future caller that forgets, and without it
+/// the client is handed a mux whose parked ids answer nothing.
+#[tokio::test]
+async fn a_mux_park_that_cannot_be_reattached_whole_is_refused_whole() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-vless-mux-whole-psk";
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+    let (home, _user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_vless_cluster_node(
+        PSK,
+        2,
+        peers,
+        Duration::from_secs(4),
+        "/vless-edge",
+        EDGE_VLESS_UUID,
+    )
+    .await?;
+
+    // A mux park with an empty bundle, owned by the label every node's VLESS
+    // route carries — so the home's owner check passes and the refusal below is
+    // the bundle's emptiness and nothing else.
+    let owner: Arc<str> = Arc::from("cluster-vless");
+    let session_id = home
+        .registry
+        .mint_session_id()
+        .context("the home registry must mint a resume id")?;
+    home.registry.park(
+        session_id,
+        Parked::VlessMux(ParkedVlessMux {
+            sub_conns: HashMap::new(),
+            buffer: BytesMut::new(),
+            user: VlessUser::new(CLUSTER_VLESS_UUID.into(), Arc::clone(&owner), None, None)?,
+            owner: Arc::clone(&owner),
+            user_counters: home_user_counters(&owner),
+        }),
+    );
+
+    // The edge's OPEN is admitted (the shape is a mux park and the command is a
+    // mux command), so the refusal happens in phase 2, after the USER frame — the
+    // one place it can, since the bundle's contents are only visible once the
+    // park is taken. The client is authenticated by then, so it gets the VLESS
+    // response header the edge had already queued and then a close, rather than a
+    // fresh local mux.
+    let (mut socket, _) =
+        connect_ws_h1(edge.listen_addr, "/vless-edge", Some(session_id), true).await?;
+    socket
+        .send(WsMessage::Binary(vless_mux_request(EDGE_VLESS_UUID)?))
+        .await?;
+    // A `New` frame is what discriminates a refused relay from a spliced one. A
+    // `Keep` on a missing id is silently dropped by any mux, refused or not, but
+    // a `New` reaches `open_tcp_sub` on the home the moment the splice is live —
+    // so the echo target's accept counter and the silence below both flip
+    // together if the bundle is ever admitted.
+    socket
+        .send(WsMessage::Binary(vless_mux_new_tcp_frame(9, echo_addr, b"never-arrives")))
+        .await?;
+    // Silence is the assertion: no mux frame may come back, because nothing was
+    // attached. Bounded rather than read-to-EOF because a relay refused in phase
+    // 2 fails the edge's *next* mesh operation, which on a client that has
+    // stopped sending is its reader task rather than the carrier.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+    let mut seen_header = false;
+    loop {
+        match tokio::time::timeout_at(deadline, socket.next()).await {
+            // Nothing more came: the relay spliced nothing.
+            Err(_) | Ok(None) => break,
+            Ok(Some(message)) => match message? {
+                WsMessage::Close(_) => break,
+                WsMessage::Binary(bytes) if !seen_header => {
+                    assert_eq!(
+                        bytes.as_ref(),
+                        &[VLESS_VERSION, 0x00],
+                        "the only thing a refused relay may have emitted is the response header \
+                         the edge queued before the refusal reached it",
+                    );
+                    seen_header = true;
+                },
+                WsMessage::Binary(bytes) => {
+                    bail!("a refused mux park must splice nothing, got {} bytes", bytes.len())
+                },
+                _ => {},
+            },
+        }
+    }
+    drop(socket);
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        0,
+        "a refused mux park must never reach the frame layer, so no sub-connection is opened",
+    );
+
+    // Nothing to put back: an empty bundle is worth no registry slot, which is
+    // the same rule `MuxState::is_parkable` applies on the direct path.
+    assert!(
+        !home.registry.has_park(session_id),
+        "an unusable mux park must not be left behind after it is refused",
+    );
+    Ok(())
+}
+
+/// Per-user counters for a park injected straight into a home's registry. The
+/// registry only stores them; a relayed splice never increments them (the edge
+/// counts), so a throwaway recorder's handle for the right label will do.
+fn home_user_counters(owner: &Arc<str>) -> Arc<crate::metrics::PerUserCounters> {
+    let config = sample_config((Ipv4Addr::LOCALHOST, 0).into());
+    Metrics::new(&config).user_counters(owner)
 }
 
 /// Throttle detection on a relayed SS-TCP session, end to end. With padding +

@@ -17,6 +17,9 @@ use super::{
     ResumptionTestServer, connect_ws_h1, expect_binary_reply, spawn_echo_target,
     spawn_echo_udp_target, spawn_test_server,
 };
+use outline_wire::vless::ATYP_IPV4;
+use outline_wire::vless_mux::{GLOBAL_ID_LEN, NETWORK_UDP, SESSION_STATUS_NEW};
+
 use crate::protocol::{
     TargetAddr,
     vless::{
@@ -150,10 +153,48 @@ pub(super) fn vless_mux_new_tcp_frame(
     buf.freeze()
 }
 
+/// Builds a mux New frame opening a **UDP** (xudp) sub-connection on
+/// `session_id`, with an initial datagram for `target`.
+///
+/// Hand-rolled rather than built with `encode_frame`, because a UDP New frame
+/// carries an 8-byte xudp global id after its target and the shared encoder
+/// never writes one: the server only ever *parses* that field (a client mints
+/// the id) and only ever *encodes* UDP on Keep frames. This is a client, so it
+/// mints one — a fixed value, since nothing on the server path reads it back.
+///
+/// `pub(super)` for the cluster e2e, which needs a mux park holding one
+/// sub-connection of each kind to prove the whole bundle migrates.
+pub(super) fn vless_mux_new_udp_frame(
+    session_id: u16,
+    target: SocketAddr,
+    payload: &[u8],
+) -> Bytes {
+    let SocketAddr::V4(v4) = target else {
+        panic!("the mux udp test helper builds IPv4 targets only");
+    };
+    let mut meta = BytesMut::new();
+    meta.put_u16(session_id);
+    meta.put_u8(SESSION_STATUS_NEW);
+    meta.put_u8(OPTION_DATA);
+    meta.put_u16(v4.port());
+    meta.put_u8((NETWORK_UDP << 4) | ATYP_IPV4);
+    meta.extend_from_slice(&v4.ip().octets());
+    meta.extend_from_slice(&[0u8; GLOBAL_ID_LEN]);
+
+    let mut frame = BytesMut::with_capacity(4 + meta.len() + payload.len());
+    frame.put_u16(meta.len() as u16);
+    frame.extend_from_slice(&meta);
+    frame.put_u16(payload.len() as u16);
+    frame.extend_from_slice(payload);
+    frame.freeze()
+}
+
 /// Builds a mux Keep frame carrying additional payload on an existing
 /// sub-connection. The target field is omitted because the
 /// sub-connection's destination was already pinned at New time.
-fn vless_mux_keep_frame(session_id: u16, payload: &[u8]) -> Bytes {
+///
+/// `pub(super)` for the cluster e2e; see [`vless_mux_request`].
+pub(super) fn vless_mux_keep_frame(session_id: u16, payload: &[u8]) -> Bytes {
     let mut buf = BytesMut::new();
     encode_frame(
         &mut buf,
@@ -204,6 +245,41 @@ where
         {
             payloads.insert(meta.session_id, payload.to_vec());
         }
+    }
+    Ok(payloads)
+}
+
+/// Like [`collect_mux_keep_payloads`], but tolerant of mux frames that share a
+/// WebSocket message or straddle two.
+///
+/// A **relayed** mux downlink is a byte stream on the mesh, and the edge
+/// forwards whatever chunk it read as one binary message — so several mux frames
+/// can share a message and one can be split across two. The direct path emits
+/// exactly one frame per message, which is why the helper above can assert that
+/// and this one cannot; buffering across messages is the only difference.
+pub(super) async fn collect_streamed_mux_keep_payloads<S>(
+    socket: &mut S,
+    expected: &[u16],
+) -> Result<std::collections::HashMap<u16, Vec<u8>>>
+where
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let mut payloads: std::collections::HashMap<u16, Vec<u8>> = std::collections::HashMap::new();
+    let mut buffer = BytesMut::new();
+    while !expected.iter().all(|id| payloads.contains_key(id)) {
+        let Some(ParsedFrame { meta, data, consumed }) = parse_frame(&buffer)? else {
+            buffer.extend_from_slice(&expect_binary_reply(socket).await?);
+            continue;
+        };
+        if meta.status == SessionStatus::Keep
+            && let Some(payload) = data
+            && expected.contains(&meta.session_id)
+            && !payloads.contains_key(&meta.session_id)
+        {
+            payloads.insert(meta.session_id, payload.to_vec());
+        }
+        let _ = buffer.split_to(consumed);
     }
     Ok(payloads)
 }
