@@ -122,6 +122,13 @@ struct WsTcpRelayState {
     /// reader half. Set in tandem with `upstream_to_client`.
     relay_cancel: Option<Arc<Notify>>,
     authenticated_user: Option<UserKey>,
+    /// Effective accounting label of [`Self::authenticated_user`]: the
+    /// per-source-IP alias when the peer matches a configured subnet, else the
+    /// base config id (`UserKey::effective_label`). Recorded at authentication
+    /// time because the park path has no `peer_addr` to recompute it from, and
+    /// parking under the base id while the resume path authenticates as the
+    /// alias would make every resume an owner mismatch for aliased users.
+    authenticated_user_id: Option<Arc<str>>,
     user_counters: Option<Arc<PerUserCounters>>,
     upstream_guard: Option<TcpUpstreamGuard>,
     /// Human-readable target host:port for the active upstream. Only used
@@ -213,6 +220,7 @@ impl WsTcpRelayState {
             upstream_to_client: None,
             relay_cancel: None,
             authenticated_user: None,
+            authenticated_user_id: None,
             user_counters: None,
             upstream_guard: None,
             upstream_target_display: None,
@@ -623,7 +631,16 @@ async fn try_park_on_drop(
         None => return false,
     };
     let target_display = state.upstream_target_display.take().unwrap_or_else(|| Arc::from("?"));
-    let owner = user.id_arc();
+    // Park under the *effective* label, the one the resume path authenticates
+    // as (`UserKey::effective_label` at the first authenticated frame). Using
+    // the base config id here would refuse every resume of a user with
+    // `[users.aliases]` as an owner mismatch. Same invariant VLESS keeps with
+    // its pre-substituted `label_arc()` and SS-UDP with
+    // `session.authenticated_user_id`. The fallback is unreachable — the label
+    // is recorded in the very frame that sets `upstream_writer` (checked at the
+    // top) — and kept only so this late in teardown no path can bail out with
+    // the harvested upstream already taken out of `state`.
+    let owner = state.authenticated_user_id.take().unwrap_or_else(|| user.id_arc());
     let parked = ParkedTcp {
         upstream_writer: writer,
         upstream_reader: reader,
@@ -893,6 +910,10 @@ where
         // same peer, so the alias is identical across the park boundary; do
         // not "simplify" this back to `user.id_arc()`.
         let user_id = user.effective_label(peer_addr.map(|a| a.ip()));
+        // Mirrored onto the relay state so `try_park_on_drop` parks under the
+        // very label this resume path matches against. The park side has no
+        // `peer_addr`, so it cannot recompute the alias itself.
+        state.authenticated_user_id = Some(Arc::clone(&user_id));
         let target_display: Arc<str> = Arc::from(target.to_string());
 
         // Cluster edge: the upstream lives on the home, which is still waiting
