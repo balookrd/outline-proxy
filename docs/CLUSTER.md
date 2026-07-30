@@ -160,12 +160,31 @@ cannot be subtracted back out. The byte-stream splice makes the same split. Drop
 the home itself decided on (oversized datagram, relay concurrency limit) are
 node-local facts counted nowhere else, and stay.
 
-**VLESS-UDP and VLESS-mux have no home splice yet.** Their park shapes are
-indistinguishable from VLESS-TCP in the relay setup — the edge must choose the
-framing before the client's first frame reveals the command — so the home refuses
-such a park in phase 1 (`relay_rejected_total{reason="park_shape"}`) *without
-consuming it*, and the edge serves that client a fresh local session. The park
-survives for a carrier the home can serve.
+**The home names the park's shape in its setup ack.** A VLESS carrier cannot
+name it in the OPEN: one path multiplexes TCP, UDP and mux, and the command
+rides the client's first frame — which the edge may only read after answering
+the upgrade, which it may only answer after the OPEN is acked. So the ack answers
+the question the OPEN left open. It stays `OPEN_ACK_ACCEPTED` for a Shadowsocks
+carrier, whose framing already *is* its shape, and carries the park's shape for a
+VLESS one. The edge then decides locally: a command that needs that shape
+attests the user and splices; anything else releases the relay before the USER
+frame that would make the home consume the park, and is served locally. Both of
+the home's probes stay non-consuming — phase 1 asks "any VLESS shape?" and
+reports what it found, phase 2 re-asks with the advertised shape immediately
+before `take_for_resume` — so a mismatch never destroys a park
+(`relay_rejected_total{reason="park_shape"}`). Alternatives were weighed and
+rejected: re-opening a second relay costs a mesh round trip in front of the
+first payload byte, and naming the shape in phase 2 arrives after the edge has
+already upgraded its client and echoed the home's id, leaving it with a session
+it can only fail. See `server/cluster/mesh/frame.rs`.
+
+**VLESS-mux has no home splice yet.** `MeshShape::VlessMux` already has its wire
+code and the home already advertises it, so an edge that reads a `Mux` command
+releases the relay and serves the session locally, leaving the park intact;
+teaching the home a mux splice needs no wire change. **VLESS-UDP does have one**:
+a single-target VLESS-UDP park is one connected socket, and the relay pumps
+length-framed datagrams to and from it, so such a session migrates across an
+edge switch on the same source port.
 
 The **carrier padding layer** belongs to the edge along with the crypto above it:
 the edge encodes and decodes padding for its own client and relays unpadded
@@ -215,10 +234,13 @@ CLOSE { reason: fin | abort | budget | capacity | no_session }
 **Setup is a two-phase, acknowledged exchange.** The edge cannot name the user in
 its OPEN: it must decide what to echo in the client's `101` before it can read
 the client's first encrypted frame. So phase 1 asks the narrower question — *is
-there a park under this resume id, of a shape this framing can splice?* — and the
-home answers with one `ACK` byte or a `no_session` reset. Phase 2, one round trip
-later, sends the `USER` frame with the identity the edge authenticated, and the
-home does the owner check it has always done before handing the park over.
+there a park under this resume id, of a shape this OPEN can splice?* — and the
+home answers with one `ACK` byte or a `no_session` reset. That byte carries the
+park's shape when the OPEN could not name one (see above), which is what a VLESS
+edge needs before its first frame arrives. Phase 2, one round trip later, sends
+the `USER` frame with the identity the edge authenticated, and the home re-asks
+the shape question and then does the owner check it has always done, both before
+handing the park over.
 
 The edge waits for the phase-1 answer *before* it upgrades the client carrier,
 which is what makes a refusal survivable: it leaves the edge free to serve the
@@ -295,11 +317,15 @@ the same `(user, target)` — a second edge relaying the same user, or a client
 warm-probe alongside real traffic — never share one upstream socket or
 last-writer-wins response slot; a resume adopts the parked scope, so an edge
 switch still reuses the single entry (one source port to the target).
-**VLESS-UDP is not framed this way:** it rides the VLESS-TCP carrier, so an edge
-never opens a datagram-framed relay for VLESS. What the edge cannot do is tell,
-before the client's first frame, whether the session behind a VLESS resume id is
-TCP, UDP or mux — so it opens a byte-stream relay and the home refuses the
-non-TCP shapes on `park_shape`, leaving the park intact.
+**VLESS-UDP is framed the same way, but decided later.** Its OPEN is a
+byte-stream one — the edge cannot tell, before the client's first frame, whether
+the session behind a VLESS resume id is TCP, UDP or mux — so the *shape* comes
+back in the home's ack, and it is the shape, not the OPEN's framing, that says
+how the body is delimited. A VLESS-UDP relay therefore length-frames its
+datagrams exactly as SS-UDP does: the client's own `u16`-prefixed frames are
+de-framed on the edge, one mesh datagram per packet, and sent whole into the one
+socket the park holds. A mux-shaped park is still refused on `park_shape`,
+leaving it intact.
 
 ### Health budget ("slow neighbour → tear down")
 
@@ -388,7 +414,8 @@ wherever the client happened to be when it opened the session.
 | home dies | shard points at a dead server; edge cannot reach it over mesh → resume-miss → fresh session | lost (= today) |
 | shard unknown (server decommissioned) | edge treats it as home-down → fresh session | lost |
 | home holds no park under the resume id (expired, or never minted there) | home refuses at setup (`no_session`); edge has not upgraded the client yet → fresh session on the edge | lost (ordinary — parks expire) |
-| the park is a shape this home cannot splice (VLESS-UDP / mux) | home refuses at setup (`park_shape`) **without consuming the park** → fresh session on the edge | lost on this carrier; the park survives for the next |
+| the park is a shape this home cannot splice (mux) | home refuses at setup (`park_shape`) **without consuming the park** → fresh session on the edge | lost on this carrier; the park survives for the next |
+| the park's shape is not the one the client's VLESS command needs | home names the shape in its ack; the edge releases the relay **before the USER frame**, so nothing is consumed → local session on the edge | lost on this carrier; the park survives for the next |
 | peer on a retired wire version | home refuses the OPEN outright, before any ack → fresh session on the edge | lost (continuity only; traffic flows) |
 
 ## Interaction with downstream-throttle detection

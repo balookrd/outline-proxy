@@ -210,9 +210,12 @@ SS-UDP и VLESS-UDP предъявляют групповой shard-несущи
     другому. Норма — ровный ноль. `reason="protocol_mismatch"` — тот же класс
     (одно имя у SS-пользователя на одном узле и у VLESS-пользователя на другом).
   - `outline_ss_mesh_relay_rejected_total{reason="park_shape"}` — ожидаемое, не
-    сбой: для парковок VLESS-UDP и VLESS-mux splice'а на home пока нет, поэтому
+    сбой: для парковки VLESS-mux splice'а на home пока нет, а SS-UDP-парковка под
+    VLESS-resume-id (и наоборот) — форма, которую релей запросить не может;
     релей отвергается **без потребления парковки**, а клиента обслуживают
-    локально.
+    локально. VLESS-команда, которой просто нужна не та форма, что держит
+    парковка, сюда вообще не попадает: home называет форму в ack, и edge
+    освобождает релей сам, ничего не потребив.
   - **Кластерный трафик** (сколько данных реально идёт через mesh, а не только
     сколько relay открыто): `outline_ss_mesh_bytes_total{role,direction,transport}`
     и `outline_ss_mesh_datagrams_total{role,direction}`. `role="edge"` — трафик,

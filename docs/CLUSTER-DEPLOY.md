@@ -210,8 +210,12 @@ See the "UDP cross-node migration" note in
     someone else. Expect a flat zero. `reason="protocol_mismatch"` is the same
     class (one name used for an SS user on one node and a VLESS user on another).
   - `outline_ss_mesh_relay_rejected_total{reason="park_shape"}` is expected, not a
-    fault: a VLESS-UDP or VLESS-mux park has no home splice yet, so the relay is
-    refused *without consuming the park* and that client is served locally.
+    fault: a VLESS-mux park has no home splice yet, and an SS-UDP park under a
+    VLESS resume id (or the reverse) is a shape no relay can ask for, so the
+    relay is refused *without consuming the park* and that client is served
+    locally. A VLESS command that simply needs a different shape than the park
+    holds does not appear here at all — the home names the shape in its ack and
+    the edge releases the relay itself, before anything is consumed.
   - **Cluster traffic** (how much data actually crosses the mesh, not just how
     many relays open): `outline_ss_mesh_bytes_total{role,direction,transport}`
     and `outline_ss_mesh_datagrams_total{role,direction}`. `role="edge"` is the
