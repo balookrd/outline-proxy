@@ -128,6 +128,11 @@ struct ClusterNode {
     /// This node's park registry, so a test can wait for a session to land
     /// rather than sleeping for it.
     registry: Arc<OrphanRegistry>,
+    /// This node's metrics handle. Each node builds its own recorder, so a
+    /// rendered scrape here names only what *this* node counted — which is what
+    /// lets a test assert a home's refusal reason without the edge's series
+    /// bleeding into it.
+    metrics: Arc<Metrics>,
     ws_task: JoinHandle<Result<()>>,
     mesh_task: JoinHandle<Result<()>>,
 }
@@ -377,6 +382,7 @@ async fn boot_ws_node(parts: ClusterParts) -> Result<(ClusterNode, UserKey)> {
         Some(Arc::clone(&cluster)),
     );
     let registry = Arc::clone(&services.orphan_registry);
+    let metrics = Arc::clone(&cluster.metrics);
     let ws_task =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
     let mesh_task = tokio::spawn(run_mesh_listener(cluster, services, ShutdownSignal::never()));
@@ -386,6 +392,7 @@ async fn boot_ws_node(parts: ClusterParts) -> Result<(ClusterNode, UserKey)> {
             listen_addr,
             mesh_addr,
             registry,
+            metrics,
             ws_task,
             mesh_task,
         },
@@ -3617,7 +3624,32 @@ async fn a_mux_park_that_cannot_be_reattached_whole_is_refused_whole() -> Result
         !home.registry.has_park(session_id),
         "an unusable mux park must not be left behind after it is refused",
     );
+
+    // The operator-visible half of the same guarantee. Silence on the wire tells
+    // a client nothing was spliced; only this counter tells whoever runs the
+    // cluster *why*, and it is the reason string — not just the count — that has
+    // to hold, since it is what the `HELP` text on
+    // `outline_ss_mesh_relay_rejected_total` documents and what an alert would
+    // match on. Read off the home: the refusal is the home's, and the edge's own
+    // recorder is a different one.
+    let rendered = home.metrics.render_prometheus();
+    assert_eq!(
+        mesh_relay_rejected(&rendered, "park_incomplete"),
+        1,
+        "an unservable mux bundle must be counted under its own reason:\n{rendered}",
+    );
     Ok(())
+}
+
+/// Reads `outline_ss_mesh_relay_rejected_total{reason="..."}` out of a rendered
+/// scrape, treating an absent series as `0` — Prometheus counters are only
+/// emitted once incremented.
+fn mesh_relay_rejected(rendered: &str, reason: &str) -> u64 {
+    let needle = format!("outline_ss_mesh_relay_rejected_total{{reason=\"{reason}\"}}");
+    rendered
+        .lines()
+        .find_map(|line| line.strip_prefix(&needle))
+        .map_or(0, |value| value.trim().parse().expect("a rendered counter value is an integer"))
 }
 
 /// Per-user counters for a park injected straight into a home's registry. The
