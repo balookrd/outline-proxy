@@ -13,11 +13,12 @@ use super::super::super::{
 };
 use super::frames::send_end;
 use super::state::{
-    MuxReaderHarvest, MuxRouteCtx, MuxServerCtx, MuxState, MuxSubConn, SubConnKind,
+    MuxClientMetrics, MuxReaderHarvest, MuxRouteCtx, MuxServerCtx, MuxState, MuxSubConn,
+    SubConnKind, client_metrics,
 };
 use crate::{
     fwmark::apply_fwmark_if_needed,
-    metrics::{AppProtocol, Metrics, PerUserCounters, Protocol, Transport},
+    metrics::{AppProtocol, PerUserCounters, Protocol, Transport},
     outbound::OutboundIpv6,
     protocol::{
         TargetAddr,
@@ -75,9 +76,8 @@ where
     };
 
     let tx_task = tx.clone();
-    let metrics = Arc::clone(&server.metrics);
+    let client = client_metrics(state.accounting, &server.metrics, &state.user_counters);
     let protocol = route.protocol;
-    let user_label = state.user.label_arc();
     let reader_socket = Arc::clone(&socket);
     let cancel = Arc::new(Notify::new());
     let cancel_for_task = Arc::clone(&cancel);
@@ -86,9 +86,8 @@ where
         reader_socket,
         tx_task,
         make_binary,
-        metrics,
+        client,
         protocol,
-        user_label,
         cancel_for_task,
     ));
 
@@ -107,28 +106,36 @@ where
     if let Some(payload) = initial
         && !payload.is_empty()
     {
-        send_udp_payload(&socket, &payload, default_target, &state.user_counters, route.protocol)
-            .await;
+        send_udp_payload(
+            &socket,
+            &payload,
+            default_target,
+            state.accounting.counted(&state.user_counters),
+            route.protocol,
+        )
+        .await;
     }
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// `client` is `None` on a relayed mux: the edge that terminates the client
+/// session has already counted these bytes and frames once (see
+/// [`MuxClientMetrics`]).
 pub(super) async fn run_udp_reader<Msg>(
     session_id: u16,
     socket: Arc<UdpSocket>,
     tx: mpsc::Sender<Msg>,
     make_binary: fn(Bytes) -> Msg,
-    metrics: Arc<Metrics>,
+    client: Option<MuxClientMetrics>,
     protocol: Protocol,
-    user: Arc<str>,
     cancel: Arc<Notify>,
 ) -> MuxReaderHarvest
 where
     Msg: Send + 'static,
 {
-    let user_counters = metrics.user_counters(&user);
-    let target_to_client = user_counters.udp_out(AppProtocol::Vless, protocol);
+    let target_to_client = client
+        .as_ref()
+        .map(|client| client.counters.udp_out(AppProtocol::Vless, protocol));
     loop {
         tokio::select! {
             biased;
@@ -160,7 +167,9 @@ where
                 if read == 0 {
                     continue;
                 }
-                target_to_client.increment(read as u64);
+                if let Some(counter) = target_to_client.as_ref() {
+                    counter.increment(read as u64);
+                }
                 let src = TargetAddr::from(from);
                 // Build the frame on demand so an idle sub-conn holds no
                 // encode buffer either.
@@ -181,13 +190,15 @@ where
                     continue;
                 }
                 let frame = frame_buf.split().freeze();
-                metrics.record_websocket_binary_frame(
-                    Transport::Tcp,
-                    protocol,
-                    AppProtocol::Vless,
-                    "down",
-                    frame.len(),
-                );
+                if let Some(client) = client.as_ref() {
+                    client.metrics.record_websocket_binary_frame(
+                        Transport::Tcp,
+                        protocol,
+                        AppProtocol::Vless,
+                        "down",
+                        frame.len(),
+                    );
+                }
                 if tx.send(make_binary(frame)).await.is_err() {
                     return MuxReaderHarvest::Closed;
                 }
@@ -201,16 +212,20 @@ where
     MuxReaderHarvest::Closed
 }
 
+/// `user_counters` is `None` on a relayed mux, where the edge already counted
+/// this payload (see [`super::state::MuxAccounting`]).
 pub(super) async fn send_udp_payload(
     socket: &UdpSocket,
     payload: &[u8],
     dst: SocketAddr,
-    user_counters: &PerUserCounters,
+    user_counters: Option<&PerUserCounters>,
     protocol: Protocol,
 ) {
-    user_counters
-        .udp_in(AppProtocol::Vless, protocol)
-        .increment(payload.len() as u64);
+    if let Some(counters) = user_counters {
+        counters
+            .udp_in(AppProtocol::Vless, protocol)
+            .increment(payload.len() as u64);
+    }
     if let Err(error) = socket.send_to(payload, dst).await {
         debug!(%dst, error = %error, "mux udp send_to failed");
     }

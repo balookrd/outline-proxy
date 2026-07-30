@@ -579,10 +579,12 @@ impl Metrics {
     /// the node's share of the cluster) needs review — `no_session` (nothing
     /// parked under the relayed resume id), `unknown_user` (the park belongs to
     /// someone else), `park_shape`, `protocol_mismatch`, `park_identity` (an
-    /// SS-UDP park holds no NAT key for the attested user), `framing_mismatch`
-    /// or `bad_setup` (the setup was unusable — an OPEN naming no park shape, or
-    /// an acked peer whose USER frame was malformed or never arrived). Low
-    /// cardinality: a fixed set of static labels.
+    /// SS-UDP park holds no NAT key for the attested user), `park_incomplete` (a
+    /// VLESS-mux park holds no sub-connection left to re-attach, so the bundle
+    /// is refused whole), `framing_mismatch` or `bad_setup` (the setup was
+    /// unusable — an OPEN naming no park shape, or an acked peer whose USER
+    /// frame was malformed or never arrived). Low cardinality: a fixed set of
+    /// static labels.
     pub fn record_mesh_relay_rejected(&self, reason: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_mesh_relay_rejected_total", "reason" => reason).increment(1);

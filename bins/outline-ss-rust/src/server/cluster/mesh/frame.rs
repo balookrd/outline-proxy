@@ -180,10 +180,8 @@ pub(in crate::server) enum MeshShape {
     Datagram,
     /// A single-target VLESS-UDP socket (`Parked::VlessUdpSingle`).
     VlessUdpSingle,
-    /// A VLESS-mux bundle (`Parked::VlessMux`). The home advertises it; no
-    /// splice carries it yet, so an edge that is told this releases the relay
-    /// and serves its client locally. Reserved here rather than left for later
-    /// so teaching the home a mux splice changes no wire.
+    /// A VLESS-mux bundle (`Parked::VlessMux`) — every TCP and UDP
+    /// sub-connection multiplexed inside one mux session, spliced as one.
     VlessMux,
 }
 
@@ -210,15 +208,20 @@ impl MeshShape {
         })
     }
 
-    /// How this shape's body is delimited. `None` for [`MeshShape::VlessMux`]:
-    /// no splice carries it, so no body ever flows under it.
+    /// How this shape's body is delimited.
+    ///
+    /// `Option` only because a future shape may again have no body; every shape
+    /// this build splices has one.
     pub(in crate::server) fn framing(self) -> Option<MeshFraming> {
         match self {
             MeshShape::Stream => Some(MeshFraming::Tcp),
             // One datagram per length-delimited frame, for the same reason on
             // both: a UDP packet is atomic and must not be coalesced or split.
             MeshShape::Datagram | MeshShape::VlessUdpSingle => Some(MeshFraming::Udp),
-            MeshShape::VlessMux => None,
+            // A mux body is the client's own frame stream, forwarded verbatim,
+            // and every mux frame is self-delimiting — including the datagram
+            // ones. See the module doc's "How a mux body crosses".
+            MeshShape::VlessMux => Some(MeshFraming::Tcp),
         }
     }
 

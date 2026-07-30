@@ -38,11 +38,71 @@ pub(in crate::server::transport) struct MuxRouteCtx {
     pub path: Arc<str>,
 }
 
+/// Which node counts a mux session's client-facing traffic.
+///
+/// Per-user bytes and client-facing frame counts belong to the node that
+/// terminates the client session, and are counted there exactly once. On a
+/// direct mux that node is this one, so every sub-connection counts its own
+/// payload. On a **relayed** mux the client session is terminated on a cluster
+/// edge, which already counts the whole mux frame stream as one VLESS
+/// byte-stream — counting again here would double every byte of a migrated
+/// session, which is the invariant the other v5 splices keep by simply never
+/// touching `user_counters` (see `transport::mesh_relay`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server::transport) enum MuxAccounting {
+    /// This node terminates the client session.
+    Local,
+    /// A cluster edge terminates it and has already counted this traffic.
+    OnTheEdge,
+}
+
+impl MuxAccounting {
+    /// The per-user counters to increment here, or `None` when the edge counted.
+    ///
+    /// Takes the counters as an argument rather than reading them off
+    /// [`MuxState`] so call sites keep a *field* borrow of the state: the hot
+    /// frame path holds a `&mut` into `sub_conns` while it counts, and a
+    /// whole-struct `&self` method would collide with it.
+    pub(super) fn counted(self, counters: &Arc<PerUserCounters>) -> Option<&PerUserCounters> {
+        match self {
+            MuxAccounting::Local => Some(counters),
+            MuxAccounting::OnTheEdge => None,
+        }
+    }
+}
+
+/// The client-facing metrics one sub-connection reader task feeds: the per-user
+/// byte counters and the frame counter for what it queues downstream.
+///
+/// `None` on a relayed mux, for the reason [`MuxAccounting`] gives.
+#[derive(Clone)]
+pub(super) struct MuxClientMetrics {
+    pub(super) metrics: Arc<Metrics>,
+    pub(super) counters: Arc<PerUserCounters>,
+}
+
+/// The reader-task metrics bundle for a sub-connection of a mux with this
+/// accounting, or `None` when the edge counts.
+pub(super) fn client_metrics(
+    accounting: MuxAccounting,
+    metrics: &Arc<Metrics>,
+    counters: &Arc<PerUserCounters>,
+) -> Option<MuxClientMetrics> {
+    accounting.counted(counters).map(|_| MuxClientMetrics {
+        metrics: Arc::clone(metrics),
+        counters: Arc::clone(counters),
+    })
+}
+
 pub(in crate::server::transport) struct MuxState {
     pub(super) sub_conns: HashMap<u16, MuxSubConn>,
     pub(super) buffer: BytesMut,
     pub(super) user: VlessUser,
+    /// Kept whatever [`Self::accounting`] says: a park has to hand the session's
+    /// counters back untouched so a later *direct* resume keeps counting where
+    /// it left off, exactly as the other relayed shapes do.
     pub(super) user_counters: Arc<PerUserCounters>,
+    pub(super) accounting: MuxAccounting,
 }
 
 /// Output of a sub-connection reader task. Distinguishes the natural
@@ -125,12 +185,17 @@ pub(super) enum SubConnKind {
 }
 
 impl MuxState {
-    pub fn new(user: VlessUser, user_counters: Arc<PerUserCounters>) -> Self {
+    pub fn new(
+        user: VlessUser,
+        user_counters: Arc<PerUserCounters>,
+        accounting: MuxAccounting,
+    ) -> Self {
         Self {
             sub_conns: HashMap::new(),
             buffer: BytesMut::new(),
             user,
             user_counters,
+            accounting,
         }
     }
 

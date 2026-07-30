@@ -16,10 +16,11 @@ use super::super::super::{
 };
 use super::frames::send_end;
 use super::state::{
-    MuxReaderHarvest, MuxRouteCtx, MuxServerCtx, MuxState, MuxSubConn, SubConnKind,
+    MuxClientMetrics, MuxReaderHarvest, MuxRouteCtx, MuxServerCtx, MuxState, MuxSubConn,
+    SubConnKind, client_metrics,
 };
 use crate::{
-    metrics::{AppProtocol, Metrics, Protocol, Transport},
+    metrics::{AppProtocol, Protocol, Transport},
     protocol::{
         TargetAddr,
         vless_mux::{OPTION_DATA, SessionStatus, encode_frame},
@@ -68,10 +69,11 @@ where
     if let Some(initial) = initial
         && !initial.is_empty()
     {
-        state
-            .user_counters
-            .tcp_in(AppProtocol::Vless, route.protocol)
-            .increment(initial.len() as u64);
+        if let Some(counters) = state.accounting.counted(&state.user_counters) {
+            counters
+                .tcp_in(AppProtocol::Vless, route.protocol)
+                .increment(initial.len() as u64);
+        }
         writer
             .write_all(&initial)
             .await
@@ -79,9 +81,8 @@ where
     }
 
     let tx_task = tx.clone();
-    let metrics = Arc::clone(&server.metrics);
+    let client = client_metrics(state.accounting, &server.metrics, &state.user_counters);
     let protocol = route.protocol;
-    let user_label = state.user.label_arc();
     let cancel = Arc::new(Notify::new());
     let cancel_for_task = Arc::clone(&cancel);
     let reader_task = tokio::spawn(run_tcp_reader(
@@ -89,9 +90,8 @@ where
         reader,
         tx_task,
         make_binary,
-        metrics,
+        client,
         protocol,
-        user_label,
         cancel_for_task,
     ));
 
@@ -106,22 +106,24 @@ where
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// `client` is `None` on a relayed mux: the edge that terminates the client
+/// session has already counted these bytes and frames once (see
+/// [`MuxClientMetrics`]).
 pub(super) async fn run_tcp_reader<Msg>(
     session_id: u16,
     mut reader: OwnedReadHalf,
     tx: mpsc::Sender<Msg>,
     make_binary: fn(Bytes) -> Msg,
-    metrics: Arc<Metrics>,
+    client: Option<MuxClientMetrics>,
     protocol: Protocol,
-    user: Arc<str>,
     cancel: Arc<Notify>,
 ) -> MuxReaderHarvest
 where
     Msg: Send + 'static,
 {
-    let user_counters = metrics.user_counters(&user);
-    let target_to_client = user_counters.tcp_out(AppProtocol::Vless, protocol);
+    let target_to_client = client
+        .as_ref()
+        .map(|client| client.counters.tcp_out(AppProtocol::Vless, protocol));
     loop {
         tokio::select! {
             biased;
@@ -167,7 +169,9 @@ where
                         },
                     }
                 }
-                target_to_client.increment(total as u64);
+                if let Some(counter) = target_to_client.as_ref() {
+                    counter.increment(total as u64);
+                }
                 // Build the frame on demand so an idle sub-conn holds no
                 // encode buffer either.
                 let mut frame_buf = BytesMut::with_capacity(total + 16);
@@ -188,13 +192,15 @@ where
                     break;
                 }
                 let frame = frame_buf.split().freeze();
-                metrics.record_websocket_binary_frame(
-                    Transport::Tcp,
-                    protocol,
-                    AppProtocol::Vless,
-                    "down",
-                    frame.len(),
-                );
+                if let Some(client) = client.as_ref() {
+                    client.metrics.record_websocket_binary_frame(
+                        Transport::Tcp,
+                        protocol,
+                        AppProtocol::Vless,
+                        "down",
+                        frame.len(),
+                    );
+                }
                 if tx.send(make_binary(frame)).await.is_err() {
                     return MuxReaderHarvest::Closed;
                 }

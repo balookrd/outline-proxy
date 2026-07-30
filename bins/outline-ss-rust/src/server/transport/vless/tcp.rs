@@ -221,7 +221,10 @@ where
             server,
             route,
             outbound,
-            Arc::from(target_display.as_str()),
+            MeshAttach {
+                target_display: Arc::from(target_display.as_str()),
+                kind: MeshAttachKind::Tcp,
+            },
         )
         .await?;
         return Ok(());
@@ -602,9 +605,58 @@ where
     Ok(())
 }
 
-/// Cluster edge: completes the v5 mesh hand-off for a VLESS-TCP session whose
-/// upstream lives on the home, and wires the mesh stream in where a TCP socket
-/// would be.
+/// What the edge is relaying over a byte-stream mesh upstream.
+///
+/// Both kinds relay plaintext bytes and neither is ever parked here, so they
+/// share [`attach_mesh_upstream`]; the enum names the two client-facing
+/// decisions that do differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MeshAttachKind {
+    /// A single-target VLESS-TCP session: the body is payload for one upstream
+    /// socket on the home.
+    Tcp,
+    /// A VLESS-mux session: the body is the client's own mux frame stream,
+    /// forwarded verbatim to the home, which runs the frame layer over the
+    /// bundle of sub-connections it parked.
+    Mux,
+}
+
+impl MeshAttachKind {
+    /// Whether the home's acked upstream offset is re-emitted to the client as
+    /// the Ack-Prefix v1 control frame.
+    ///
+    /// Only for `Tcp`. A mux session has no single uplink byte offset — its
+    /// upstreams are many sockets behind a frame layer, and the home reports
+    /// `0` — and a 14-byte control frame injected ahead of a mux frame stream
+    /// would be parsed as a malformed frame. The direct mux path emits none
+    /// either, on a fresh session or a resume, so a relayed mux looks exactly
+    /// like a local one from the client's side.
+    fn emits_ack_prefix(self) -> bool {
+        matches!(self, MeshAttachKind::Tcp)
+    }
+
+    /// Whether this attach counts an authenticated TCP session.
+    ///
+    /// Only for `Tcp`, again to match the direct path: a mux session records no
+    /// such sample there, so counting one here would make the series depend on
+    /// whether a mux happened to be relayed.
+    fn records_authenticated_session(self) -> bool {
+        matches!(self, MeshAttachKind::Tcp)
+    }
+}
+
+/// The two things [`attach_mesh_upstream`] needs beyond the session state: what
+/// to call the upstream in logs, and which kind of body it carries.
+pub(super) struct MeshAttach {
+    /// Human-readable upstream label, for logging only. A relayed session is
+    /// never parked on the edge, so this never becomes a park's target.
+    pub(super) target_display: Arc<str>,
+    pub(super) kind: MeshAttachKind,
+}
+
+/// Cluster edge: completes the v5 mesh hand-off for a VLESS session whose
+/// upstream lives on the home — a single-target TCP socket or a whole mux
+/// bundle — and wires the mesh stream in where a TCP socket would be.
 ///
 /// Runs the second phase of the two-phase OPEN. The home acked phase 1 ("a
 /// TCP-shaped park exists under this id") before the client carrier was
@@ -623,9 +675,16 @@ where
 /// straight into the Ack-Prefix v1 control frame the client already understands,
 /// exactly as the SS edge does: the offset belongs to the client, which keeps
 /// the replay buffer, so passing it on is what keeps the request body whole
-/// across a node switch.
+/// across a node switch — for the commands that have such an offset, see
+/// [`MeshAttachKind`].
+///
+/// Two commands ride this one function, because from the edge's side they are
+/// the same session: a byte stream in each direction, with the client's crypto
+/// terminated here and the upstream owned there. What differs is only what the
+/// bytes *are* — payload for `Tcp`, the client's own mux frame stream for `Mux`
+/// — which the edge never has to look at.
 #[allow(clippy::too_many_arguments)]
-async fn attach_mesh_upstream<Msg>(
+pub(super) async fn attach_mesh_upstream<Msg>(
     state: &mut VlessRelayState,
     setup: MeshUpstreamSetup,
     request: vless::VlessRequest,
@@ -633,11 +692,12 @@ async fn attach_mesh_upstream<Msg>(
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     outbound: VlessWsOutbound<'_, Msg>,
-    target_display: Arc<str>,
+    attach: MeshAttach,
 ) -> Result<(), VlessFrameError>
 where
     Msg: Send + 'static,
 {
+    let MeshAttach { target_display, kind } = attach;
     let user_id = user.label_arc();
     // A hand-off that fails here — the home refused the owner check, or the mesh
     // broke — is retryable, not a protocol fault: the client is authenticated,
@@ -668,7 +728,7 @@ where
     // `symmetric_replay_requested` unset on a relayed session, because the
     // home's replay suffix arrives as undelimited plaintext the edge cannot
     // frame. The client consumes those bytes as ordinary stream continuation.
-    if state.ack_prefix_requested {
+    if state.ack_prefix_requested && kind.emits_ack_prefix() {
         let payload = outline_wire::resume::build_v1_payload(upstream_acked);
         outbound
             .data_tx
@@ -722,11 +782,13 @@ where
         )
         .await
     }));
-    server.metrics.record_tcp_authenticated_session(
-        Arc::clone(&user_id),
-        route.protocol,
-        AppProtocol::Vless,
-    );
+    if kind.records_authenticated_session() {
+        server.metrics.record_tcp_authenticated_session(
+            Arc::clone(&user_id),
+            route.protocol,
+            AppProtocol::Vless,
+        );
+    }
     state.user_counters = Some(server.metrics.user_counters(&user_id));
     state.authenticated_user = Some(user);
     state.upstream = UpstreamSession::Tcp(TcpUpstream {
