@@ -13,9 +13,9 @@ mod tcp_sub;
 mod udp_sub;
 
 pub(in crate::server::transport) use frames::handle_client_bytes;
-pub(in crate::server::transport) use state::{MuxRouteCtx, MuxServerCtx, MuxState};
+pub(in crate::server::transport) use state::{MuxAccounting, MuxRouteCtx, MuxServerCtx, MuxState};
 
-use state::{MuxSubConn, SubConnKind};
+use state::{MuxSubConn, SubConnKind, client_metrics};
 
 /// Re-attaches a parked mux into a freshly-started client stream.
 ///
@@ -23,18 +23,31 @@ use state::{MuxSubConn, SubConnKind};
 /// outbound channel (cloned once per task) and restores the partial
 /// frame buffer that was preserved at park time. Returns the live
 /// [`MuxState`] ready to be installed in `UpstreamSession::Mux`.
+///
+/// **Total over the bundle**: every entry in `parked.sub_conns` becomes a live
+/// sub-connection, and none of them can fail — a `ParkedMuxSubKind` already
+/// carries both halves of its upstream, so nothing is reopened and nothing is
+/// dialled. That is what lets a caller decide *once*, before it consumes the
+/// park, whether the whole bundle can be served: there is no partial outcome
+/// below this call. See `transport::mesh_relay`'s `splice_plaintext_vless_mux`,
+/// which relies on it to refuse a bundle whole rather than half-splice it.
+///
+/// `accounting` says whether this node counts the session's client-facing
+/// traffic; a relayed mux passes [`MuxAccounting::OnTheEdge`], because the edge
+/// that terminates the client carrier already counts the whole frame stream.
 pub(in crate::server::transport) fn attach_parked<Msg>(
     parked: ParkedVlessMux,
     tx: mpsc::Sender<Msg>,
     make_binary: fn(Bytes) -> Msg,
-    metrics: Arc<Metrics>,
+    metrics: &Arc<Metrics>,
     protocol: Protocol,
+    accounting: MuxAccounting,
 ) -> MuxState
 where
     Msg: Send + 'static,
 {
-    let user_label = parked.user.label_arc();
-    let mut mux = MuxState::new(parked.user, Arc::clone(&parked.user_counters));
+    let client = client_metrics(accounting, metrics, &parked.user_counters);
+    let mut mux = MuxState::new(parked.user, Arc::clone(&parked.user_counters), accounting);
     mux.buffer = parked.buffer;
     for (id, parked_sub) in parked.sub_conns {
         let cancel = Arc::new(Notify::new());
@@ -46,9 +59,8 @@ where
                     reader,
                     tx.clone(),
                     make_binary,
-                    Arc::clone(&metrics),
+                    client.clone(),
                     protocol,
-                    Arc::clone(&user_label),
                     cancel_for_task,
                 ));
                 mux.sub_conns.insert(
@@ -67,9 +79,8 @@ where
                     reader_socket,
                     tx.clone(),
                     make_binary,
-                    Arc::clone(&metrics),
+                    client.clone(),
                     protocol,
-                    Arc::clone(&user_label),
                     cancel_for_task,
                 ));
                 mux.sub_conns.insert(

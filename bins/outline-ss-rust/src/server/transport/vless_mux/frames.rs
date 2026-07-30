@@ -139,10 +139,11 @@ async fn handle_keep(
 
     match &mut sub.kind {
         SubConnKind::Tcp(writer) => {
-            state
-                .user_counters
-                .tcp_in(crate::metrics::AppProtocol::Vless, route.protocol)
-                .increment(payload.len() as u64);
+            if let Some(counters) = state.accounting.counted(&state.user_counters) {
+                counters
+                    .tcp_in(crate::metrics::AppProtocol::Vless, route.protocol)
+                    .increment(payload.len() as u64);
+            }
             if let Err(error) = writer.write_all(&payload).await {
                 debug!(session_id = meta.session_id, error = %error, "mux tcp upstream write error");
                 finish_sub(state, meta.session_id).await;
@@ -163,7 +164,14 @@ async fn handle_keep(
                 },
                 None => *default_target,
             };
-            send_udp_payload(socket, &payload, dst, &state.user_counters, route.protocol).await;
+            send_udp_payload(
+                socket,
+                &payload,
+                dst,
+                state.accounting.counted(&state.user_counters),
+                route.protocol,
+            )
+            .await;
         },
     }
     Ok(())

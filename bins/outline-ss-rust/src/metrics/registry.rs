@@ -250,7 +250,7 @@ pub(super) fn register_descriptions() {
          unknown_user = a park exists but belongs to another user, so user names \
          disagree across the cluster (or it is a genuine security event); \
          park_shape = a park exists under that id but is not a shape this relay \
-         could splice — a VLESS-mux park, which no mesh splice carries yet, or a \
+         could splice — an SS-UDP park asked for under a VLESS resume id, or a \
          byte-stream park asked for with datagram framing and the other way \
          round — an ordinary outcome, and refused without consuming the park, on \
          either of the two probes that bracket the setup (distinct from \
@@ -260,8 +260,11 @@ pub(super) fn register_descriptions() {
          denote different people, or the same person on two protocols, across the \
          cluster; park_identity = an SS-UDP park holds no NAT key belonging to the \
          user the edge attested, so there is no identity to route its datagrams \
-         under; framing_mismatch = the park under that id is not the kind the \
-         acked shape needs, which only the reservation window can still produce; \
+         under; park_incomplete = a VLESS-mux park holds no sub-connection left \
+         to re-attach, so the bundle is refused whole rather than half-spliced; \
+         framing_mismatch = the park under that id is not the kind the \
+         acked shape needs, which only the reservation window can still produce — \
+         the park is put back untouched, so the client keeps its continuity; \
          bad_setup = the setup itself was unusable — an OPEN whose framing and \
          protocol name no park shape, or an acked peer whose second-phase USER \
          frame was malformed or never arrived. The edge \
