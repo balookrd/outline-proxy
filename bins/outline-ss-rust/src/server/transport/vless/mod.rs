@@ -63,8 +63,8 @@ use udp::try_park_vless_udp_single;
 /// session turns out to be is not known when the relay is opened. The home's ack
 /// names the shape of the park it holds, and only a command that needs *that*
 /// shape keeps the relay — a byte-stream park for `Tcp`, a single-target
-/// VLESS-UDP one for `Udp`. Everything else, `Mux` always included, releases the
-/// relay and is served locally ([`keep_mesh_upstream_for`]).
+/// VLESS-UDP one for `Udp`, a whole mux bundle for `Mux`. Any other pairing
+/// releases the relay and is served locally ([`keep_mesh_upstream_for`]).
 pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     socket: T,
     server: &VlessWsServerCtx,
@@ -239,11 +239,10 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
         }
     }
 
-    // Try parking the TCP upstream into the orphan registry. Returns
-    // `true` if the upstream and reader were moved to the registry; in
-    // that case the regular shutdown branch below is skipped. UDP and
-    // Mux paths are not parkable in the MVP and always fall through to
-    // the legacy teardown.
+    // Try parking the upstream into the orphan registry. Returns `true` if it
+    // was moved there; in that case the regular shutdown branch below is
+    // skipped. A relayed session never parks here — the upstream lives on the
+    // home — and falls through to the teardown that FINs the mesh half.
     let parked = try_park_vless_on_drop(&mut state, server, route).await;
 
     // Reader tasks inside `Tcp(_)`/`Udp(_)` are `AbortOnDrop`, so dropping
@@ -560,12 +559,11 @@ fn keep_mesh_upstream_for(state: &mut VlessRelayState, want: MeshShape, command:
 /// A cluster edge opens the relay before it can read the client's first frame,
 /// so it does not yet know which VLESS command is coming — and the home's ack
 /// therefore names the shape of the park it is holding. A command that needs
-/// some other shape cannot use this relay: a `Mux` command needs a whole bundle
-/// of sub-connections, which no home splices, and a `Tcp` command on a
-/// UDP-shaped park (or the reverse) is a client reusing one id across two
-/// session kinds, which VLESS lets it do. Those are dialled from this node,
-/// which is also why VLESS-mux sub-connections always open their own direct
-/// upstreams.
+/// some other shape cannot use this relay: a `Tcp` command on a UDP-shaped park,
+/// a `Mux` one on a byte-stream park, or any other pairing a client produces by
+/// reusing one id across two session kinds, which VLESS lets it do. Those are
+/// served from this node, which dials its own upstreams for them — including,
+/// for a fresh `Mux`, its own sub-connections.
 ///
 /// The timing is the point. This runs strictly **before** the USER frame, and
 /// the USER frame is what makes the home consume its park — so the home keeps
