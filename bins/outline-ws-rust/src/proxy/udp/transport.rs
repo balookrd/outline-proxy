@@ -6,8 +6,8 @@ use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
 use outline_transport::{
-    SsPathKind, TransportMode, UdpSessionTransport, UdpWsTransport, VlessUdpDowngradeNotifier,
-    VlessUdpSessionMux, global_resume_cache,
+    SsPathKind, TransportMode, UdpResumeStore, UdpSessionTransport, UdpWsTransport,
+    VlessUdpDowngradeNotifier, VlessUdpSessionMux,
 };
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
@@ -40,13 +40,16 @@ pub(super) struct ActiveUdpTransport {
 async fn acquire_udp_with_fallbacks(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
+    resume_store: &UdpResumeStore,
 ) -> Result<UdpSessionTransport> {
     let total_wires = 1 + candidate.uplink.fallbacks.len();
 
     // Fast path: no fallbacks — preserve the previous error-propagation
     // semantics (no extra context wrapping when only the primary exists).
     if total_wires == 1 {
-        return uplinks.acquire_udp_standby_or_connect(candidate, "socks_udp").await;
+        return uplinks
+            .acquire_udp_standby_or_connect_with_store(candidate, "socks_udp", resume_store)
+            .await;
     }
 
     let dial_order = uplinks.wire_dial_order(candidate.index, TransportKind::Udp, total_wires);
@@ -75,10 +78,12 @@ async fn acquire_udp_with_fallbacks(
         }
 
         let attempt = if wire_index == 0 {
-            uplinks.acquire_udp_standby_or_connect(candidate, "socks_udp").await
+            uplinks
+                .acquire_udp_standby_or_connect_with_store(candidate, "socks_udp", resume_store)
+                .await
         } else {
             let fallback = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
-            dial_udp_fallback(uplinks, candidate, fallback, wire_index).await
+            dial_udp_fallback(uplinks, candidate, fallback, wire_index, resume_store).await
         };
         match attempt {
             Ok(transport) => {
@@ -138,6 +143,7 @@ async fn dial_udp_fallback(
     parent: &UplinkCandidate,
     fallback: &FallbackTransport,
     wire_index: u8,
+    resume_store: &UdpResumeStore,
 ) -> Result<UdpSessionTransport> {
     let cache = uplinks.dns_cache();
     let source = "socks_udp_fb";
@@ -167,7 +173,7 @@ async fn dial_udp_fallback(
             // this session re-attaches the upstream session on the WS
             // fallback dial.
             let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "udp");
-            let resume_request = global_resume_cache().get(&resume_key);
+            let resume_request = resume_store.ss().get(&resume_key);
             metrics::record_resume_lookup(
                 "udp",
                 if uplinks.shared_resume() { "group" } else { "uplink" },
@@ -197,7 +203,7 @@ async fn dial_udp_fallback(
                     requested,
                 );
             }
-            global_resume_cache().store_if_issued(resume_key, issued);
+            resume_store.ss().store_if_issued(resume_key, issued);
             uplinks
                 .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())
                 .await;
@@ -257,6 +263,7 @@ async fn dial_udp_fallback(
             )
             .with_on_downgrade(Some(on_downgrade))
             .with_resume_scope(uplinks.resume_scope_owned(&parent.uplink.name))
+            .with_resume_store(resume_store.clone())
             .with_uplink_binding(binding());
             uplinks
                 .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())
@@ -270,6 +277,7 @@ pub(super) async fn select_udp_transport(
     uplinks: &UplinkManager,
     target: Option<&TargetAddr>,
     client: Option<&str>,
+    resume_store: &UdpResumeStore,
 ) -> Result<ActiveUdpTransport> {
     let mut last_error = None;
     let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Udp);
@@ -278,7 +286,7 @@ pub(super) async fn select_udp_transport(
         candidates.truncate(1);
     }
     for candidate in candidates {
-        match acquire_udp_with_fallbacks(uplinks, &candidate).await {
+        match acquire_udp_with_fallbacks(uplinks, &candidate, resume_store).await {
             Ok(transport) => {
                 uplinks
                     .confirm_selected_uplink_for(
@@ -324,6 +332,7 @@ pub(super) async fn select_udp_transport(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn failover_udp_transport(
     uplinks: &UplinkManager,
     active_transport: &ArcSwap<ActiveUdpTransport>,
@@ -331,6 +340,7 @@ pub(super) async fn failover_udp_transport(
     client: Option<&str>,
     failed_index: usize,
     error: anyhow::Error,
+    resume_store: &UdpResumeStore,
 ) -> Result<ActiveUdpTransport> {
     let failed_uplink_name = {
         let active = active_transport.load();
@@ -342,7 +352,7 @@ pub(super) async fn failover_udp_transport(
     uplinks
         .report_runtime_failure(failed_index, TransportKind::Udp, &error)
         .await;
-    let replacement = select_udp_transport(uplinks, target, client).await?;
+    let replacement = select_udp_transport(uplinks, target, client, resume_store).await?;
     if let Some(previous_transport) =
         replace_active_udp_transport_if_current(active_transport, failed_index, replacement.clone())
     {
@@ -370,6 +380,7 @@ pub(super) async fn reconcile_global_udp_transport(
     uplinks: &UplinkManager,
     active_transport: &ArcSwap<ActiveUdpTransport>,
     target: Option<&TargetAddr>,
+    resume_store: &UdpResumeStore,
 ) -> Result<()> {
     if !uplinks.strict_active_uplink_for(TransportKind::Udp) {
         return Ok(());
@@ -396,16 +407,39 @@ pub(super) async fn reconcile_global_udp_transport(
         return Ok(());
     }
 
-    let replaced_uplink_name = {
+    let (replaced_uplink_name, previous_transport) = {
         let active = active_transport.load();
         if active.index != selected {
             return Ok(());
         }
-        active.uplink_name.clone()
+        (active.uplink_name.clone(), Arc::clone(&active.transport))
     };
+
+    // Retire the old carrier BEFORE dialling the new one, when — and only when —
+    // this switch is one we mean to carry the session across.
+    //
+    // The server parks a datagram session only once its stream has closed
+    // (`docs/SESSION-RESUMPTION.md` § Park sequence). Dialling first, as this
+    // did, looked the association's id up against a still-live session, got
+    // `miss-unknown`, and was handed a fresh upstream on a fresh source port —
+    // so every strict repoint silently lost NAT continuity no matter how the
+    // resume was configured. The park-before-resume barrier covers the rest of
+    // the race once the close has started.
+    //
+    // On a drain the ordering is left alone: there is no resume to protect, and
+    // closing first would hand the association a window with no carrier at all
+    // if the replacement dial then failed.
+    let migrating = uplinks
+        .active_uplinks_snapshot()
+        .intent
+        .migrates_live_flows(uplinks.shared_resume());
+    if migrating {
+        close_udp_transport(Arc::clone(&previous_transport), "global_switch_retire").await;
+    }
+
     // Reconcile only runs in strict (active_passive) scopes — it early-returns
     // above otherwise — so the per-client key is never relevant here.
-    let replacement = select_udp_transport(uplinks, target, None).await?;
+    let replacement = select_udp_transport(uplinks, target, None, resume_store).await?;
     if let Some(previous_transport) =
         replace_active_udp_transport_if_current(active_transport, selected, replacement.clone())
     {
@@ -416,6 +450,8 @@ pub(super) async fn reconcile_global_udp_transport(
             &replacement.uplink_name,
         );
         metrics::record_uplink_selected("udp", uplinks.group_name(), &replacement.uplink_name);
+        // Already closed above on a migrating switch; `close` is idempotent, so
+        // this is a no-op there rather than a second teardown.
         close_udp_transport(previous_transport, "global_switch").await;
     }
     Ok(())

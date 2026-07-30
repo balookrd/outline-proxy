@@ -355,6 +355,11 @@ impl UplinkManager {
         soft: bool,
         rng: &mut R,
     ) -> ReselectOutcome {
+        // A reselect is operator-configured, not machine-driven: `soft` is the
+        // operator's choice (already clamped to the group's `shared_resume` by
+        // the caller), so a hard one means the same drain an explicit hard
+        // switch does.
+        let intent = crate::types::SwitchIntent::from_operator_soft(soft);
         let scope = self.inner.load_balancing.routing_scope;
         let gate = strict_gate_transport(scope, TransportKind::Tcp);
         let current = self.inner.active_uplinks.read().await.global;
@@ -366,7 +371,7 @@ impl UplinkManager {
         // Same commit shape as the carrier-degraded soft failover: slot +
         // sticky reseed, health/EWMA/penalty state left untouched (NOT the
         // clean-slate reset a manual operator switch performs).
-        self.set_active_uplink_index_for_transport(TransportKind::Tcp, target, reason, soft)
+        self.set_active_uplink_index_for_transport(TransportKind::Tcp, target, reason, intent)
             .await;
         let key = strict_route_key(TransportKind::Tcp, scope);
         self.store_sticky_route(&key, target).await;
@@ -400,6 +405,8 @@ impl UplinkManager {
         soft: bool,
         rng: &mut R,
     ) -> ReselectOutcome {
+        // See `reselect_global`: operator intent, already clamped.
+        let intent = crate::types::SwitchIntent::from_operator_soft(soft);
         let scope = self.inner.load_balancing.routing_scope;
         let (cur_tcp, cur_udp) = {
             let active = self.inner.active_uplinks.read().await;
@@ -420,7 +427,7 @@ impl UplinkManager {
         if let Some(target) = tcp_target {
             let from = cur_tcp.map(|i| self.inner.uplinks[i].name.clone());
             let to = self.inner.uplinks[target].name.clone();
-            self.set_active_uplink_index_for_transport(TransportKind::Tcp, target, reason, soft)
+            self.set_active_uplink_index_for_transport(TransportKind::Tcp, target, reason, intent)
                 .await;
             let key = strict_route_key(TransportKind::Tcp, scope);
             self.store_sticky_route(&key, target).await;
@@ -440,7 +447,7 @@ impl UplinkManager {
         if let Some(target) = udp_target {
             let from = cur_udp.map(|i| self.inner.uplinks[i].name.clone());
             let to = self.inner.uplinks[target].name.clone();
-            self.set_active_uplink_index_for_transport(TransportKind::Udp, target, reason, soft)
+            self.set_active_uplink_index_for_transport(TransportKind::Udp, target, reason, intent)
                 .await;
             let key = strict_route_key(TransportKind::Udp, scope);
             self.store_sticky_route(&key, target).await;

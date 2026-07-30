@@ -14,9 +14,11 @@
 //! this module contributes the WS dial path and its side-channel
 //! bookkeeping: per-target resume IDs and the H3-downgrade latch.
 //!
-//! Per-target resume IDs are held in the process-wide
-//! [`global_vless_udp_resume_cache`], keyed by `<resume-scope>#<target>`, not in
-//! a per-mux map. That durability is what lets a VLESS-UDP session survive an
+//! Per-target resume IDs are held in a [`UdpResumeStore`] — the process-wide
+//! VLESS-UDP cache by default, or a slot private to this mux's owner (see
+//! [`VlessUdpSessionMux::with_resume_store`]) — keyed by
+//! `<resume-scope>#<target>`, not in a per-mux map. That durability is what lets
+//! a VLESS-UDP session survive an
 //! edge switch: when the active UDP wire moves to another edge the manager
 //! builds a fresh mux, but the parked (shard-carrying) id is still cached, so
 //! the new edge relays the resumed carrier to the session's home shard. The
@@ -34,7 +36,7 @@ use url::Url;
 
 use crate::{
     DnsCache, TransportOperation, UplinkConnectionBinding, config::TransportMode,
-    resumption::global_vless_udp_resume_cache,
+    resumption::UdpResumeStore,
 };
 
 use super::udp::VlessUdpWsTransport;
@@ -90,7 +92,7 @@ struct WsVlessUdpDialer {
     source: &'static str,
     keepalive_interval: Option<Duration>,
     /// Resume scope this mux keys its durable per-target Session IDs by
-    /// (see [`global_vless_udp_resume_cache`]): the group name under
+    /// (see [`UdpResumeStore`]): the group name under
     /// `shared_resume`, else the uplink name. `None` disables VLESS-UDP resume
     /// entirely (no id is presented or stored) — used by test muxes that never
     /// set a scope. On a real dial the cached id for `<scope>#<target>` is
@@ -98,6 +100,11 @@ struct WsVlessUdpDialer {
     /// server (or its home shard, after a mesh relay) re-attaches the parked
     /// `Arc<UdpSocket>` instead of binding a fresh source port.
     resume_scope: Option<String>,
+    /// Which [`ResumeCache`](crate::ResumeCache) this mux's per-target ids live
+    /// in. A mux dialled per TUN flow must not read another flow's ids, so the
+    /// TUN path hands it a [`UdpResumeStore::Private`] slot; the process-wide
+    /// default is kept for callers that really do own one carrier per scope.
+    resume_store: UdpResumeStore,
     /// Optional hook fired the first time a per-target dial returns a
     /// stream that was silently downgraded from H3 to H2/H1 by the
     /// transport layer. Latched: subsequent downgraded dials are
@@ -139,7 +146,7 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
             .map(|scope| vless_udp_resume_key(scope, target));
         let resume_request = resume_key
             .as_deref()
-            .and_then(|key| global_vless_udp_resume_cache().get(key));
+            .and_then(|key| self.resume_store.vless().get(key));
         let connect = VlessUdpWsTransport::connect_with_resume(
             &self.dns_cache,
             &self.url,
@@ -165,7 +172,7 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
                 target: format!("vless udp session to {target}"),
             })?;
         if let Some(key) = resume_key {
-            global_vless_udp_resume_cache().store_if_issued(key, issued);
+            self.resume_store.vless().store_if_issued(key, issued);
         }
         // Mirror a transport-level WS-mode downgrade (clamp or inline
         // H3→H2/H1 fallback) into the uplink-manager via the latched
@@ -255,6 +262,7 @@ impl VlessUdpSessionMux {
             source,
             keepalive_interval,
             resume_scope: None,
+            resume_store: UdpResumeStore::default(),
             on_downgrade: None,
             downgrade_reported: AtomicBool::new(false),
             padding_override: None,
@@ -272,6 +280,20 @@ impl VlessUdpSessionMux {
     /// VLESS-UDP resume — the manager always sets it on a real acquire.
     pub fn with_resume_scope(mut self, scope: impl Into<String>) -> Self {
         self.core.dial.resume_scope = Some(scope.into());
+        self
+    }
+
+    /// Point this mux's per-target Session IDs at `store` instead of the
+    /// process-wide VLESS-UDP cache.
+    ///
+    /// Load-bearing wherever a mux is built **per flow** rather than per uplink:
+    /// the process-wide cache is keyed `<scope>#<target>`, so two TUN flows to
+    /// the same destination share one slot and the second would present the
+    /// first's parked id. On a hit the server hands it that flow's `UdpSocket`
+    /// — a different flow's session. A private store keys the same strings into
+    /// a slot only this mux's owner can see.
+    pub fn with_resume_store(mut self, store: UdpResumeStore) -> Self {
+        self.core.dial.resume_store = store;
         self
     }
 

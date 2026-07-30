@@ -215,7 +215,7 @@ impl UplinkManager {
                 transport,
                 uplink_index,
                 "successful selection",
-                false,
+                crate::types::SwitchIntent::Failover,
             )
             .await;
         }
@@ -707,8 +707,11 @@ impl UplinkManager {
                     // TCP-over-TCP) yields the leg to a clean, stable,
                     // equal-or-higher-weight sibling. Checked before both
                     // keep-paths — it is orthogonal to the weight-driven
-                    // `auto_failback` rules below. The switch is `soft`: the
-                    // active is alive, so sessions migrate instead of being cut.
+                    // `auto_failback` rules below. Published as `Failover`: the
+                    // active is alive, so sessions migrate instead of being cut
+                    // — but only on a cluster, which is the gate the previous
+                    // unconditional `soft = true` here was missing (off a
+                    // cluster it advertised a migration that could only miss).
                     if let Some(pos) = self.carrier_degraded_switch_target(
                         &candidates,
                         active_index,
@@ -734,7 +737,7 @@ impl UplinkManager {
                                 transport,
                                 target.index,
                                 reason,
-                                true,
+                                crate::types::SwitchIntent::Failover,
                             )
                             .await;
                             let key = strict_route_key(
@@ -888,8 +891,13 @@ impl UplinkManager {
                     .as_deref()
                     .unwrap_or("failover: active unhealthy or in cooldown"),
             };
-            self.set_active_uplink_index_for_transport(transport, selected, reason, false)
-                .await;
+            self.set_active_uplink_index_for_transport(
+                transport,
+                selected,
+                reason,
+                crate::types::SwitchIntent::Failover,
+            )
+            .await;
             let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
             self.store_sticky_route(&key, selected).await;
             return vec![UplinkCandidate {
@@ -1040,7 +1048,7 @@ impl UplinkManager {
                 TransportKind::Tcp,
                 index,
                 "manual switch",
-                applied_soft,
+                crate::types::SwitchIntent::from_operator_soft(applied_soft),
             )
             .await;
         } else if self.strict_per_uplink_active_uplink() {
@@ -1050,7 +1058,7 @@ impl UplinkManager {
                         t,
                         index,
                         "manual switch",
-                        applied_soft,
+                        crate::types::SwitchIntent::from_operator_soft(applied_soft),
                     )
                     .await;
                 },
@@ -1059,14 +1067,14 @@ impl UplinkManager {
                         TransportKind::Tcp,
                         index,
                         "manual switch",
-                        applied_soft,
+                        crate::types::SwitchIntent::from_operator_soft(applied_soft),
                     )
                     .await;
                     self.set_active_uplink_index_for_transport(
                         TransportKind::Udp,
                         index,
                         "manual switch",
-                        applied_soft,
+                        crate::types::SwitchIntent::from_operator_soft(applied_soft),
                     )
                     .await;
                 },
@@ -1115,7 +1123,7 @@ impl UplinkManager {
         transport: TransportKind,
         uplink_index: usize,
         reason: impl Into<String>,
-        soft: bool,
+        intent: crate::types::SwitchIntent,
     ) {
         let reason = reason.into();
         let uplink_name = self.inner.uplinks[uplink_index].name.as_str();
@@ -1199,7 +1207,7 @@ impl UplinkManager {
                 global: active.global,
                 tcp: active.tcp,
                 udp: active.udp,
-                soft,
+                intent,
             }
         };
         let _ = self.inner.active_uplinks_tx.send_if_modified(|current| {

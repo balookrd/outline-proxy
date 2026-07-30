@@ -1,6 +1,7 @@
 mod direct;
 mod engine;
 mod sniff;
+mod soft_switch;
 
 use super::parse_udp_packet;
 use super::resegment_udp_gso;

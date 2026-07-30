@@ -125,7 +125,7 @@ use tokio::net::TcpStream;
 // Re-export resumption surface so callers in outline-uplink (and any
 // future user) can reach `SessionId`, `global_resume_cache`, and friends
 // without taking a direct dependency on the inner module path.
-pub use resumption::{ResumeCache, SessionId, global_resume_cache};
+pub use resumption::{ResumeCache, SessionId, UdpResumeStore, global_resume_cache};
 
 pub mod carrier_padding;
 mod carrier_queue;
