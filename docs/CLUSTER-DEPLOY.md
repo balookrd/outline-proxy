@@ -212,10 +212,9 @@ See the "UDP cross-node migration" note in
     someone else. Expect a flat zero. `reason="protocol_mismatch"` is the same
     class (one name used for an SS user on one node and a VLESS user on another).
   - `outline_ss_mesh_relay_rejected_total{reason="park_shape"}` is expected, not a
-    fault: a VLESS-mux park has no home splice yet, and an SS-UDP park under a
-    VLESS resume id (or the reverse) is a shape no relay can ask for, so the
-    relay is refused *without consuming the park* and that client is served
-    locally. A VLESS command that simply needs a different shape than the park
+    fault: an SS-UDP park under a VLESS resume id (or the reverse) is a shape no
+    relay can ask for, so the relay is refused *without consuming the park* and
+    that client is served locally. A VLESS command that simply needs a different shape than the park
     holds does not appear here at all — the home names the shape in its ack and
     the edge releases the relay itself, before anything is consumed.
   - **Cluster traffic** (how much data actually crosses the mesh, not just how
@@ -260,9 +259,13 @@ See the "UDP cross-node migration" note in
 - **Throttle detection:** keep it **off** at first. It now runs on the edge,
   which does see the client last mile, but its floors are still heuristics (see
   `CLUSTER.md`).
-- **VLESS-UDP and VLESS-mux** have no home splice yet: those sessions fall back to
-  a fresh local one on a foreign shard (safe, just no cross-edge resume), and the
-  home leaves the park intact for a carrier it can serve.
+- **Every session kind now migrates**, VLESS-UDP and VLESS-mux included. A
+  command that needs a shape the home does not hold still falls back to a fresh
+  local session on that node (safe, just no cross-edge resume for that carrier),
+  and the home leaves the park intact for a carrier it can serve.
+  `reason="park_incomplete"` is the mux-specific refusal: a parked bundle with no
+  sub-connection left is refused whole rather than half-spliced. Expect a flat
+  zero.
 - **Rolling upgrades cost continuity, not traffic.** There is one mesh wire
   version, and a node on a build the cluster has moved past is refused outright
   at relay setup; that edge then serves its client a fresh local session. Upgrade

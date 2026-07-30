@@ -229,10 +229,10 @@ pub(in crate::server::transport) struct VlessRelayState {
     ///
     /// Only a command whose upstream shape matches the one the home acked
     /// ([`MeshUpstreamSetup::shape`]) may consume it: a `Tcp` command on a
-    /// byte-stream park, a `Udp` one on a single-target VLESS-UDP park. Anything
-    /// else — including every `Mux` command, which no home splices yet — is
-    /// [`MeshUpstreamSetup::refuse`]d by the dispatch and served locally, before
-    /// the USER frame, so the home's park survives untouched.
+    /// byte-stream park, a `Udp` one on a single-target VLESS-UDP park, a `Mux`
+    /// one on a mux bundle. Anything else is [`MeshUpstreamSetup::refuse`]d by
+    /// the dispatch and served locally, before the USER frame, so the home's
+    /// park survives untouched.
     pub(in crate::server::transport) mesh_upstream: Option<MeshUpstreamSetup>,
 }
 
