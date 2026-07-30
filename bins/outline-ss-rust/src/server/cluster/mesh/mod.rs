@@ -21,7 +21,7 @@ pub(in crate::server) use endpoint::{
     AcceptRelayError, MeshEndpoint, MeshStream, accept_relay, write_open_ack,
 };
 pub(in crate::server) use frame::{
-    CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshProtocol, OpenHeader,
+    CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshProtocol, MeshShape, OpenHeader,
     UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame,
 };
 // Setup-phase constant the *reading* peer needs. The edge reads the ack through

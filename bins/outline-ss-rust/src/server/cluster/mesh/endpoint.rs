@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result, bail};
 use quinn::{Connection, ConnectionError, Endpoint, RecvStream, SendStream, VarInt};
 
-use super::frame::{CloseReason, OPEN_ACK_ACCEPTED, OpenHeader};
+use super::frame::{CloseReason, MeshShape, OpenHeader, open_ack_byte, parse_open_ack};
 use super::tls::{
     MESH_SERVER_NAME, MeshIdentity, build_mesh_client_quic_config, build_mesh_server_quic_config,
 };
@@ -92,23 +92,32 @@ pub(in crate::server) async fn open_relay_stream(
 /// admitted relay stream. Sent once the home has found a park it can splice the
 /// relay onto, so an edge that has read it knows its client's session continues
 /// here rather than being dropped.
-pub(in crate::server) async fn write_open_ack(send: &mut SendStream) -> Result<()> {
-    send.write_all(&[OPEN_ACK_ACCEPTED])
+///
+/// `parked` is the shape of that park, and reaches the edge only when its OPEN
+/// committed to no shape of its own (`committed`); see
+/// [`super::frame::open_ack_byte`].
+pub(in crate::server) async fn write_open_ack(
+    send: &mut SendStream,
+    committed: Option<MeshShape>,
+    parked: MeshShape,
+) -> Result<()> {
+    send.write_all(&[open_ack_byte(committed, parked)])
         .await
         .context("writing the mesh OPEN ack")
 }
 
-/// Reads the home's setup acknowledgement on the edge. Errors when the home
-/// refused the stream (a reset carrying a [`super::frame::CloseReason`]), when it
-/// closed without answering, or when the byte is not one this build understands
-/// — in every case the caller degrades to a fresh local session.
-pub(in crate::server) async fn read_open_ack(recv: &mut RecvStream) -> Result<()> {
+/// Reads the home's setup acknowledgement on the edge, yielding the park shape
+/// the relay is agreed on. Errors when the home refused the stream (a reset
+/// carrying a [`super::frame::CloseReason`]), when it closed without answering,
+/// or when the byte is not one this build understands — in every case the caller
+/// degrades to a fresh local session.
+pub(in crate::server) async fn read_open_ack(
+    recv: &mut RecvStream,
+    committed: Option<MeshShape>,
+) -> Result<MeshShape> {
     let mut ack = [0u8; 1];
     recv.read_exact(&mut ack).await.context("reading the mesh OPEN ack")?;
-    if ack[0] != OPEN_ACK_ACCEPTED {
-        bail!("unexpected mesh OPEN ack byte {}", ack[0]);
-    }
-    Ok(())
+    parse_open_ack(ack[0], committed)
 }
 
 /// Why [`accept_relay`] yielded no relay stream. The home's accept loop must

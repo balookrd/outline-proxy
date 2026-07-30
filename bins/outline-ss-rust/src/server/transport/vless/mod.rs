@@ -7,6 +7,7 @@ use outline_wire::padding::PaddingDecoder;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::server::cluster::mesh::MeshShape;
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::{
     metrics::{AppProtocol, Transport},
@@ -55,10 +56,12 @@ use udp::try_park_vless_udp_single;
 /// dialling. A mesh session is never parked here (see [`try_park_vless_on_drop`]
 /// and the guards in [`try_park_vless_tcp`]).
 ///
-/// Only a `VlessCommand::Tcp` session can use a mesh upstream. VLESS multiplexes
-/// UDP and mux onto the same carrier, and their upstream shapes (a bound
-/// `UdpSocket`, a bundle of sub-connections) are not what the v5 splice carries —
-/// so those commands release the relay and are served locally.
+/// VLESS multiplexes TCP, UDP and mux onto one carrier, so which command a
+/// session turns out to be is not known when the relay is opened. The home's ack
+/// names the shape of the park it holds, and only a command that needs *that*
+/// shape keeps the relay — a byte-stream park for `Tcp`, a single-target
+/// VLESS-UDP one for `Udp`. Everything else, `Mux` always included, releases the
+/// relay and is served locally ([`keep_mesh_upstream_for`]).
 pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     socket: T,
     server: &VlessWsServerCtx,
@@ -255,7 +258,12 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
             UpstreamSession::Mux(mut mux) => {
                 mux.mux.shutdown().await;
             },
-            UpstreamSession::Udp(_) | UpstreamSession::None => {},
+            // A relayed UDP session ends its uplink half with a QUIC FIN, which
+            // is what tells the home the carrier ended cleanly and its socket is
+            // worth re-parking; a reset would read as a broken relay. A direct
+            // socket has nothing to end and this is a no-op for it.
+            UpstreamSession::Udp(mut udp) => udp.sink.shutdown().await,
+            UpstreamSession::None => {},
         }
     }
 
@@ -417,15 +425,27 @@ where
             return Ok(());
         },
         UpstreamSession::Udp(udp) => {
+            // A relayed datagram sink that fails is retryable, not a protocol
+            // fault, for the same reason the TCP arm above says so: the client
+            // is already authenticated, so it gets a "try again" close instead
+            // of the anti-fingerprinting sink meant for unauthenticated probes.
+            let is_mesh = udp.sink.is_mesh();
             forward_vless_udp_client_frames(
                 &mut udp.client_buffer,
                 &data,
-                udp.socket.as_ref(),
+                &mut udp.sink,
                 counters,
                 route.protocol,
                 &route.path,
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                if is_mesh {
+                    VlessFrameError::UpstreamConnectFailed(error)
+                } else {
+                    VlessFrameError::Fatal(error)
+                }
+            })?;
             return Ok(());
         },
         UpstreamSession::Mux(upstream) => {
@@ -497,17 +517,38 @@ where
 
     match request.command {
         VlessCommand::Tcp => {
+            keep_mesh_upstream_for(state, MeshShape::Stream, "tcp");
             establish_vless_tcp_upstream(state, request, user, server, route, outbound).await
         },
         VlessCommand::Udp => {
-            release_mesh_upstream(state, "udp");
+            keep_mesh_upstream_for(state, MeshShape::VlessUdpSingle, "udp");
             vless_udp::establish_vless_udp_upstream(state, request, user, server, route, outbound)
                 .await
         },
         VlessCommand::Mux => {
+            // No home splices a mux bundle yet, whatever shape it advertised, so
+            // this command never keeps a relay. The rest of the machinery is
+            // already in place for it: the home names `MeshShape::VlessMux` in
+            // its ack, and teaching it a splice would turn this line into
+            // another `keep_mesh_upstream_for` with no wire change at all.
             release_mesh_upstream(state, "mux");
             establish_vless_mux_upstream(state, request, user, server, route, outbound).await
         },
+    }
+}
+
+/// Keeps the mesh relay for a command whose upstream shape is the one the home
+/// acked, and releases it otherwise.
+///
+/// This is the whole of the edge's half of the shape hand-off. The home named
+/// the shape of the park it holds in its setup ack — the earliest moment either
+/// node can know it, since the OPEN precedes the client's first frame (see
+/// `cluster::mesh::frame`) — and the command just parsed names the shape this
+/// session needs. When they agree the relay goes on to attest the user; when
+/// they do not, the edge serves the session locally from here.
+fn keep_mesh_upstream_for(state: &mut VlessRelayState, want: MeshShape, command: &'static str) {
+    if state.mesh_upstream.as_ref().is_some_and(|setup| setup.shape() != want) {
+        release_mesh_upstream(state, command);
     }
 }
 
@@ -515,19 +556,22 @@ where
 /// serves the session locally instead.
 ///
 /// A cluster edge opens the relay before it can read the client's first frame,
-/// so it does not yet know which VLESS command is coming. Only `Tcp` matches the
-/// shape the v5 splice carries: `Udp` needs a bound `UdpSocket` and `Mux` a
-/// whole bundle of sub-connections, and the home's splice serves neither. Both
-/// are therefore dialled from this node, which is also why VLESS-mux
-/// sub-connections always open their own direct upstreams.
+/// so it does not yet know which VLESS command is coming — and the home's ack
+/// therefore names the shape of the park it is holding. A command that needs
+/// some other shape cannot use this relay: a `Mux` command needs a whole bundle
+/// of sub-connections, which no home splices, and a `Tcp` command on a
+/// UDP-shaped park (or the reverse) is a client reusing one id across two
+/// session kinds, which VLESS lets it do. Those are dialled from this node,
+/// which is also why VLESS-mux sub-connections always open their own direct
+/// upstreams.
 ///
 /// The timing is the point. This runs strictly **before** the USER frame, and
 /// the USER frame is what makes the home consume its park — so the home keeps
 /// whatever it was holding, and a later carrier can still resume it. That is the
-/// second of two independent barriers: the home's own phase-1 check
-/// (`OrphanRegistry::probe_park`, answering with a [`ParkProbe`]) already
-/// refuses a committed park of the wrong shape, and this closes the reservation
-/// window that check cannot see into.
+/// second of two independent barriers: the home's own probes
+/// (`OrphanRegistry::probe_park`, answering with a [`ParkProbe`]) refuse a
+/// committed park of the wrong shape before `take_for_resume` touches it, and
+/// this closes the reservation window those cannot see into.
 ///
 /// [`ParkProbe`]: crate::server::resumption::ParkProbe
 fn release_mesh_upstream(state: &mut VlessRelayState, command: &'static str) {

@@ -22,6 +22,6 @@ pub(super) use parked::{
     ParkedVlessUdpSingle, TcpProtocolContext,
 };
 pub(super) use registry::{
-    ClusterIdentity, OrphanRegistry, ParkProbe, ParkShape, ResumeMiss, ResumeOutcome,
+    ClusterIdentity, OrphanRegistry, ParkProbe, ParkQuery, ParkShape, ResumeMiss, ResumeOutcome,
 };
 pub(super) use session_id::SessionId;

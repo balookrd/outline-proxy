@@ -7,7 +7,8 @@
 //! decrypts anything and needs no request path (routing and padding are a local
 //! matter of the edge). Only [`MeshFraming`] says how the body is delimited, and
 //! [`MeshProtocol`] says which protocol's park may be spliced onto it; the user
-//! arrives in a second-phase [`UserFrame`].
+//! arrives in a second-phase [`UserFrame`], and the park's [`MeshShape`] — which
+//! a VLESS carrier cannot state in its OPEN — comes back in the home's ack.
 //!
 //! The body framing depends on [`MeshFraming`]: `Tcp` relays as a transparent
 //! byte stream (chunk boundaries are irrelevant; the QUIC stream *is* the
@@ -26,12 +27,76 @@
 //!
 //! ```text
 //! edge → home:  OPEN                            length-prefixed OpenHeader
-//! home → edge:  ack(1)                          OPEN_ACK_ACCEPTED
+//! home → edge:  ack(1)                          OPEN_ACK_ACCEPTED, or the
+//!                                               park's MeshShape when the OPEN
+//!                                               committed to none
 //! edge → home:  USER                            UserFrame
 //! home → edge:  UPSTREAM-ACK(8)                 iff OPEN set the ACK-PREFIX flag
 //! home → edge:  [downlink replay suffix]        iff OPEN set SYMMETRIC-REPLAY
-//! both ways:    body …                          plaintext, framed per MeshFraming
+//! both ways:    body …                          plaintext, framed per MeshShape
 //! ```
+//!
+//! # Who names the park shape, and when
+//!
+//! A relay must agree on the shape of the park it splices — a byte-stream
+//! upstream, an SS-UDP NAT identity, a single-target VLESS-UDP socket — because
+//! the shape is also the body framing, and because a home that consumed the
+//! wrong shape has destroyed a session nobody can get back.
+//!
+//! For a Shadowsocks carrier the edge knows the answer before it speaks: SS-TCP
+//! and SS-UDP arrive on different paths. The OPEN's [`MeshFraming`] says which,
+//! and the home checks it against the park before it consumes anything.
+//!
+//! A **VLESS** carrier cannot: one path multiplexes `Tcp`, `Udp` and `Mux`, and
+//! the command rides the client's *first frame* — which the edge may only read
+//! after it has answered the upgrade, which it may only answer after the OPEN
+//! has been acked. So every VLESS OPEN is byte-identical whatever the session
+//! turns out to be, and the shape has to be settled later. Three ways were
+//! weighed:
+//!
+//! * **Have the edge re-open** a second relay once it knows. Costs a mesh round
+//!   trip in front of the first payload byte and a second relay slot on both
+//!   nodes, for a question that is already answered on the home when the first
+//!   OPEN lands.
+//! * **Have the edge name the shape in phase 2**, alongside the [`UserFrame`].
+//!   Costs nothing on the wire, but arrives too late to be *useful*: by then the
+//!   edge has already upgraded its client and echoed the home's resume id, so a
+//!   home that answers "wrong shape" leaves it with a client it can only fail —
+//!   and a client that reconnects with the same id and fails again.
+//! * **Have the home name the shape in its ack** — what this build does. The
+//!   home knows the park's shape when it probes for it, one phase earlier than
+//!   the edge can possibly know its own, and the ack byte is already on the wire
+//!   at exactly that moment. So the ack answers the question the OPEN left open:
+//!   it stays [`OPEN_ACK_ACCEPTED`] when the OPEN committed to a shape, and
+//!   carries the park's [`MeshShape`] when it did not.
+//!
+//! The edge then decides everything locally. It reads the client's command, and
+//! either the shape the home advertised is the one that command needs — so it
+//! attests the user and splices — or it is not, so it releases the relay
+//! *before* the USER frame that would make the home consume its park, and serves
+//! the client locally (`transport::vless`'s `release_mesh_upstream`). No round
+//! trip, no failed session, and the park is still there for the carrier that can
+//! use it.
+//!
+//! Two things pay for that. The ack is *optimistic* in one narrow window: a park
+//! still landing (a reservation, see `OrphanRegistry::probe_park`) has no shape
+//! to report, and the home answers [`MeshShape::Stream`] — the shape it would
+//! have assumed before this field existed — so a VLESS-UDP resume arriving
+//! inside that window is served locally instead. And the advertisement is not
+//! *itself* the check: the home re-probes with the shape it advertised
+//! immediately before `take_for_resume`, so a mismatch is still refused before
+//! anything is consumed, whatever a peer does with the ack.
+//!
+//! A third shape needs no wire change: [`MeshShape::VlessMux`] already has its
+//! code, the home already advertises it, and this build's edge answers it by
+//! releasing the relay. Teaching the home a mux splice is a code change on both
+//! ends of an unchanged protocol.
+//!
+//! Version skew degrades the same way it always has, in both directions. A home
+//! that predates the field answers [`OPEN_ACK_ACCEPTED`], which reads as
+//! [`MeshShape::Stream`] — exactly what such a home splices. An edge that
+//! predates it refuses any ack byte that is not `1`, so a home advertising a
+//! non-stream park costs it the resume and nothing else.
 //!
 //! [`UpstreamAckFrame`] is the resume-continuity half of the protocol: it
 //! tells the resuming edge how far the home's upstream socket actually got, so
@@ -90,7 +155,116 @@ const OPEN_VERSION: u8 = 5;
 /// this home actually holds the park being resumed. A refusal is not a byte
 /// value but a stream reset carrying a [`CloseReason`], so an edge waiting for
 /// the ack learns of it immediately either way.
+///
+/// An OPEN that could not commit to a park shape — a VLESS carrier, whose
+/// command the edge has not read yet — gets the park's [`MeshShape`] here
+/// instead; see [`open_ack_byte`] and the module doc. The two never collide:
+/// this value *is* [`MeshShape::Stream`]'s code, which is also the only shape a
+/// peer predating the field could have meant.
 pub(in crate::server) const OPEN_ACK_ACCEPTED: u8 = 1;
+
+/// The shape of the park a relay stream splices onto, and with it the framing of
+/// its body.
+///
+/// Distinct from [`MeshFraming`] — which is what the *edge* can commit to in its
+/// OPEN — because a VLESS carrier commits to nothing there: one path carries
+/// three commands and the edge reads none of them before the OPEN. The shape is
+/// what the home actually holds, so the home is what names it (see the module
+/// doc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server) enum MeshShape {
+    /// A byte-stream upstream (`Parked::Tcp`), SS or VLESS alike.
+    Stream,
+    /// An SS-UDP session's NAT identity (`Parked::SsUdpStream`).
+    Datagram,
+    /// A single-target VLESS-UDP socket (`Parked::VlessUdpSingle`).
+    VlessUdpSingle,
+    /// A VLESS-mux bundle (`Parked::VlessMux`). The home advertises it; no
+    /// splice carries it yet, so an edge that is told this releases the relay
+    /// and serves its client locally. Reserved here rather than left for later
+    /// so teaching the home a mux splice changes no wire.
+    VlessMux,
+}
+
+impl MeshShape {
+    /// Wire code. `Stream` is deliberately [`OPEN_ACK_ACCEPTED`]: an ack byte
+    /// from a peer predating this field means a byte-stream park, which is the
+    /// only shape it could splice.
+    fn to_u8(self) -> u8 {
+        match self {
+            MeshShape::Stream => OPEN_ACK_ACCEPTED,
+            MeshShape::Datagram => 2,
+            MeshShape::VlessUdpSingle => 3,
+            MeshShape::VlessMux => 4,
+        }
+    }
+
+    fn from_u8(v: u8) -> Result<Self> {
+        Ok(match v {
+            OPEN_ACK_ACCEPTED => MeshShape::Stream,
+            2 => MeshShape::Datagram,
+            3 => MeshShape::VlessUdpSingle,
+            4 => MeshShape::VlessMux,
+            other => bail!("unknown mesh park shape {other}"),
+        })
+    }
+
+    /// How this shape's body is delimited. `None` for [`MeshShape::VlessMux`]:
+    /// no splice carries it, so no body ever flows under it.
+    pub(in crate::server) fn framing(self) -> Option<MeshFraming> {
+        match self {
+            MeshShape::Stream => Some(MeshFraming::Tcp),
+            // One datagram per length-delimited frame, for the same reason on
+            // both: a UDP packet is atomic and must not be coalesced or split.
+            MeshShape::Datagram | MeshShape::VlessUdpSingle => Some(MeshFraming::Udp),
+            MeshShape::VlessMux => None,
+        }
+    }
+
+    /// Stable label for structured logs and metrics. Low cardinality by
+    /// construction: one static string per variant.
+    pub(in crate::server) fn label(self) -> &'static str {
+        match self {
+            MeshShape::Stream => "stream",
+            MeshShape::Datagram => "datagram",
+            MeshShape::VlessUdpSingle => "vless_udp",
+            MeshShape::VlessMux => "vless_mux",
+        }
+    }
+}
+
+/// The ack byte a home sends for a park of shape `parked`, on a relay whose OPEN
+/// committed to `committed` ([`OpenHeader::committed_shape`]).
+///
+/// A committed OPEN gets the plain [`OPEN_ACK_ACCEPTED`] — the shape was never in
+/// question, and an edge predating the shape field must keep reading the byte it
+/// expects. An OPEN that committed to nothing gets the shape itself, which is
+/// the whole point of the field.
+pub(in crate::server) fn open_ack_byte(committed: Option<MeshShape>, parked: MeshShape) -> u8 {
+    match committed {
+        Some(_) => OPEN_ACK_ACCEPTED,
+        None => parked.to_u8(),
+    }
+}
+
+/// Reads the home's ack byte on the edge, yielding the shape the relay is now
+/// agreed on.
+///
+/// `committed` is what this edge's own OPEN committed to, so the two peers read
+/// the same byte the same way without it having to be self-describing. A
+/// committed OPEN accepts only [`OPEN_ACK_ACCEPTED`] and keeps its own shape; an
+/// uncommitted one takes the home's word for it.
+pub(in crate::server) fn parse_open_ack(byte: u8, committed: Option<MeshShape>) -> Result<MeshShape> {
+    match committed {
+        Some(shape) => {
+            if byte != OPEN_ACK_ACCEPTED {
+                bail!("unexpected mesh OPEN ack byte {byte}");
+            }
+            Ok(shape)
+        },
+        None => MeshShape::from_u8(byte),
+    }
+}
 
 /// Upper bound on the user name carried in a [`UserFrame`]. Guards the parser
 /// against an oversized allocation from a malformed peer; a single length byte
@@ -265,7 +439,15 @@ impl MeshFraming {
 /// [`UserFrame`] after the home's ack. See `docs/CLUSTER.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::server) struct OpenHeader {
-    /// How the relayed body is framed on this stream.
+    /// The framing the edge can commit to before the client has said anything.
+    ///
+    /// On a Shadowsocks carrier that is also the body's framing — SS-TCP and
+    /// SS-UDP arrive on different paths. On a VLESS carrier it is not: the edge
+    /// must send OPEN before the first frame reveals whether the session is TCP,
+    /// UDP or mux, so every VLESS OPEN says `Tcp` and the real shape comes back
+    /// in the home's ack ([`open_ack_byte`]). Read
+    /// [`OpenHeader::committed_shape`] rather than this field wherever the
+    /// *shape* is what matters.
     pub(in crate::server) framing: MeshFraming,
     /// Which proxy protocol the edge terminated. Not used to decode anything —
     /// the body is plaintext either way — only to keep a park from being
@@ -286,6 +468,23 @@ pub(in crate::server) struct OpenHeader {
 }
 
 impl OpenHeader {
+    /// The park shape this OPEN commits to, or `None` when it defers to the
+    /// home's ack.
+    ///
+    /// A Shadowsocks carrier commits: its framing names exactly one shape. A
+    /// VLESS carrier cannot — one path multiplexes three commands and the OPEN
+    /// precedes the first of them — so it defers, and the home answers with the
+    /// shape it actually holds. See the module doc.
+    pub(in crate::server) fn committed_shape(&self) -> Option<MeshShape> {
+        match self.protocol {
+            MeshProtocol::Ss => Some(match self.framing {
+                MeshFraming::Tcp => MeshShape::Stream,
+                MeshFraming::Udp => MeshShape::Datagram,
+            }),
+            MeshProtocol::Vless => None,
+        }
+    }
+
     /// Serializes the header. Layout (all integers big-endian):
     /// `version(1) | framing(1) | flags(1) | down_acked(8) | session_id(16) |
     ///  [peer_addr]`, where peer_addr (present iff the flag is set) is
