@@ -1919,6 +1919,30 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
     build_test_manager_with_urls(Some(tcp_ws_url), None).await
 }
 
+/// Two-uplink `active_passive` group with a global routing scope and
+/// `shared_resume` on — the exact shape an operator soft switch runs against on
+/// the fleet (`[[uplink_group]] mode = "active_passive"`, `routing_scope =
+/// "global"`, `shared_resume = true`). Both uplinks dial the same mock upstream
+/// because a mesh cluster shares one resume scope: a redial through the *new*
+/// active reaches the upstream the *old* one parked.
+pub(in crate::tcp) async fn build_test_cluster_manager(uplinks: &[(&str, Url)]) -> UplinkManager {
+    UplinkManager::new_for_test(
+        "test",
+        uplinks
+            .iter()
+            .map(|(name, url)| test_uplink_config(name, Some(url.clone()), None))
+            .collect(),
+        test_probe_config(),
+        LoadBalancingConfig {
+            mode: outline_uplink::LoadBalancingMode::ActivePassive,
+            routing_scope: outline_uplink::RoutingScope::Global,
+            shared_resume: true,
+            ..test_load_balancing_config()
+        },
+    )
+    .unwrap()
+}
+
 /// Build a single-uplink test manager, setting whichever of the TCP / UDP WS
 /// dial URLs the caller supplies. Shared with the UDP-engine sniffing tests.
 pub(crate) async fn build_test_manager_with_urls(
@@ -1927,94 +1951,111 @@ pub(crate) async fn build_test_manager_with_urls(
 ) -> UplinkManager {
     UplinkManager::new_for_test(
         "test",
-        vec![UplinkConfig {
-            name: "test".to_string(),
-            transport: UplinkTransport::Ss,
-            tcp_ws_url,
-            tcp_xhttp_url: None,
-            tcp_mode: TransportMode::WsH1,
-            udp_ws_url,
-            udp_xhttp_url: None,
-            udp_mode: TransportMode::WsH1,
-            vless_ws_url: None,
-            vless_xhttp_url: None,
-            vless_mode: TransportMode::WsH1,
-            ss_ws_url: None,
-            ss_xhttp_url: None,
-            ss_mode: None,
-            cipher: CipherKind::Chacha20IetfPoly1305,
-            password: "Secret0".to_string(),
-            weight: 1.0,
-            fwmark: None,
-            ipv6_first: false,
-            vless_id: None,
-            fingerprint_profile: None,
-            fallbacks: Vec::new(),
-            shuffle_wires: false,
-            carrier_downgrade: true,
-            padding: None,
-            shuffle_timer: None,
-        }],
-        ProbeConfig {
-            interval: Duration::from_secs(30),
-            timeout: Duration::from_secs(5),
-            max_concurrent: 2,
-            max_dials: 1,
-            min_failures: 1,
-            attempts: 1,
-            skip_when_active: true,
-            liveness_interval: std::time::Duration::from_secs(300),
-            endpoint_check: false,
-            endpoint_check_timeout: Duration::from_millis(2000),
-            ws: WsProbeConfig { enabled: false },
-            http: None,
-            dns: None,
-            tcp: None,
-            tls: None,
-        },
-        LoadBalancingConfig {
-            mode: outline_uplink::LoadBalancingMode::ActiveActive,
-            routing_scope: outline_uplink::RoutingScope::PerFlow,
-            shared_resume: false,
-            sticky_ttl: Duration::from_secs(300),
-            hysteresis: Duration::from_millis(50),
-            failure_cooldown: Duration::from_secs(10),
-            tcp_chunk0_failover_timeout: Duration::from_secs(10),
-            warm_standby_tcp: 0,
-            warm_standby_udp: 0,
-            rtt_ewma_alpha: 0.3,
-            failure_penalty: Duration::from_millis(500),
-            failure_penalty_max: Duration::from_secs(30),
-            failure_penalty_halflife: Duration::from_secs(60),
-            mode_downgrade_duration: Duration::from_secs(60),
-            carrier_degraded_failover: None,
-            runtime_failure_window: Duration::from_secs(60),
-            chunk0_failure_window: Duration::from_secs(300),
-            global_udp_strict_health: false,
-            udp_ws_keepalive_interval: None,
-            tcp_ws_keepalive_interval: None,
-            tcp_ws_standby_keepalive_interval: None,
-            tcp_active_keepalive_interval: None,
-            warm_probe_keepalive_interval: None,
-            auto_failback: false,
-            health_weighted_selection: false,
-            health_weight_floor: 0.05,
-            vless_udp_mux_limits: outline_uplink::VlessUdpMuxLimits::default(),
-            tcp_mid_session_retry_buffer_bytes: 256 * 1024,
-            tcp_mid_session_retry_budget: 1,
-            tcp_mid_session_retry_overflow_policy: outline_uplink::OverflowPolicy::Soft,
-            tcp_mid_session_retry_consume_timeout: Duration::from_secs(5),
-            tcp_symmetric_replay_enabled: true,
-            tcp_symmetric_replay_max_bytes: 1_048_576,
-            tun_suppress_icmp_reply_when_down: false,
-            tun_icmp_liveness_window: None,
-            bypass_when_down: false,
-            reselect_at: Vec::new(),
-            reselect_interval: None,
-        },
+        vec![test_uplink_config("test", tcp_ws_url, udp_ws_url)],
+        test_probe_config(),
+        test_load_balancing_config(),
     )
     .unwrap()
 }
+
+fn test_uplink_config(
+    name: &str,
+    tcp_ws_url: Option<Url>,
+    udp_ws_url: Option<Url>,
+) -> UplinkConfig {
+    UplinkConfig {
+        name: name.to_string(),
+        transport: UplinkTransport::Ss,
+        tcp_ws_url,
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url,
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "Secret0".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+        fingerprint_profile: None,
+        fallbacks: Vec::new(),
+        shuffle_wires: false,
+        carrier_downgrade: true,
+        padding: None,
+        shuffle_timer: None,
+    }
+}
+
+fn test_probe_config() -> ProbeConfig {
+    ProbeConfig {
+        interval: Duration::from_secs(30),
+        timeout: Duration::from_secs(5),
+        max_concurrent: 2,
+        max_dials: 1,
+        min_failures: 1,
+        attempts: 1,
+        skip_when_active: true,
+        liveness_interval: std::time::Duration::from_secs(300),
+        endpoint_check: false,
+        endpoint_check_timeout: Duration::from_millis(2000),
+        ws: WsProbeConfig { enabled: false },
+        http: None,
+        dns: None,
+        tcp: None,
+        tls: None,
+    }
+}
+
+fn test_load_balancing_config() -> LoadBalancingConfig {
+    LoadBalancingConfig {
+        mode: outline_uplink::LoadBalancingMode::ActiveActive,
+        routing_scope: outline_uplink::RoutingScope::PerFlow,
+        shared_resume: false,
+        sticky_ttl: Duration::from_secs(300),
+        hysteresis: Duration::from_millis(50),
+        failure_cooldown: Duration::from_secs(10),
+        tcp_chunk0_failover_timeout: Duration::from_secs(10),
+        warm_standby_tcp: 0,
+        warm_standby_udp: 0,
+        rtt_ewma_alpha: 0.3,
+        failure_penalty: Duration::from_millis(500),
+        failure_penalty_max: Duration::from_secs(30),
+        failure_penalty_halflife: Duration::from_secs(60),
+        mode_downgrade_duration: Duration::from_secs(60),
+        carrier_degraded_failover: None,
+        runtime_failure_window: Duration::from_secs(60),
+        chunk0_failure_window: Duration::from_secs(300),
+        global_udp_strict_health: false,
+        udp_ws_keepalive_interval: None,
+        tcp_ws_keepalive_interval: None,
+        tcp_ws_standby_keepalive_interval: None,
+        tcp_active_keepalive_interval: None,
+        warm_probe_keepalive_interval: None,
+        auto_failback: false,
+        health_weighted_selection: false,
+        health_weight_floor: 0.05,
+        vless_udp_mux_limits: outline_uplink::VlessUdpMuxLimits::default(),
+        tcp_mid_session_retry_buffer_bytes: 256 * 1024,
+        tcp_mid_session_retry_budget: 1,
+        tcp_mid_session_retry_overflow_policy: outline_uplink::OverflowPolicy::Soft,
+        tcp_mid_session_retry_consume_timeout: Duration::from_secs(5),
+        tcp_symmetric_replay_enabled: true,
+        tcp_symmetric_replay_max_bytes: 1_048_576,
+        tun_suppress_icmp_reply_when_down: false,
+        tun_icmp_liveness_window: None,
+        bypass_when_down: false,
+        reselect_at: Vec::new(),
+        reselect_interval: None,
+    }
+}
+
 struct TunCapture {
     path: PathBuf,
     offset: usize,
