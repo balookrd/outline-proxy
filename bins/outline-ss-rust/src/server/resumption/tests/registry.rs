@@ -233,6 +233,35 @@ async fn sweep_drops_expired_entries() {
     assert_eq!(registry.len(), 0);
 }
 
+/// A resume that arrives after its park's TTL must be distinguishable, in the
+/// metrics, from one whose id was never here. The two point at different
+/// problems — a late redial versus an id that never reached this registry — and
+/// an operator reading `reason="unknown"` cannot tell which they are looking at.
+#[tokio::test]
+async fn expired_park_misses_as_expired_not_unknown() {
+    let metrics = Metrics::new(&test_config());
+    let cfg = ResumptionConfig {
+        enabled: true,
+        orphan_ttl_tcp: Duration::from_millis(20),
+        ..ResumptionConfig::defaults_disabled()
+    };
+    let registry = OrphanRegistry::new(cfg, metrics.clone());
+    let id = registry.mint_session_id().unwrap();
+    registry.park(id, make_parked_tcp(&metrics, "u1").await);
+
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(matches!(
+        registry.take_for_resume(id, "u1").await,
+        ResumeOutcome::Miss(ResumeMiss::Expired)
+    ));
+    assert_eq!(ResumeMiss::Expired.metric_reason(), "expired");
+    assert_eq!(
+        ResumeMiss::Unknown.metric_reason(),
+        "unknown",
+        "an id that was never here must stay under its own label"
+    );
+}
+
 /// A resume that arrives while a park is still in flight (reserved but not yet
 /// committed) waits for the park to land and then hits, instead of missing and
 /// forcing a fresh session. This is the park-miss race fix.

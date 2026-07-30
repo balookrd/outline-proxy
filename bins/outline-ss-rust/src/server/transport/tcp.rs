@@ -360,6 +360,12 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     let mut plaintext_buffer = ScratchBuf::take();
     let mut state = WsTcpRelayState::new(resume, route.padding, throttle_monitor, upstream);
     let mut client_closed = false;
+    // A carrier that *died* rather than closed. Held instead of returned on the
+    // spot, because the teardown below is what parks the upstream — and a dirty
+    // death is the only reason the client will ever come back asking to resume
+    // it. Returning here would skip the park and leave the session's own resume
+    // request guaranteed to miss. Mirrors `loop_result` on the SS-UDP path.
+    let mut carrier_error: Option<anyhow::Error> = None;
 
     // Periodic WebSocket Ping sent from server to client.
     //
@@ -384,9 +390,13 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
         tokio::select! {
             biased;
             result = T::recv(&mut reader) => {
-                let msg = match result? {
-                    Some(m) => m,
-                    None => break,
+                let msg = match result {
+                    Ok(Some(m)) => m,
+                    Ok(None) => break,
+                    Err(error) => {
+                        carrier_error = Some(error);
+                        break;
+                    },
                 };
                 last_inbound = std::time::Instant::now();
                 match T::classify(msg) {
@@ -530,12 +540,18 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
 
     drop(outbound_ctrl_tx);
     drop(outbound_data_tx);
-    if client_closed || parked {
+    // A dead carrier takes the writer down with it, so its failure is a
+    // consequence of `carrier_error`, not news — reporting it would bury the
+    // cause under its own symptom.
+    if client_closed || parked || carrier_error.is_some() {
         let _ = writer_task.await;
     } else {
         writer_task.await.context("websocket writer task join failed")??;
     }
-    Ok(())
+    match carrier_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// Attempts to move the still-live upstream socket into the orphan
