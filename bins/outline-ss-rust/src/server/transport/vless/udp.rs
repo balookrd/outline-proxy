@@ -20,8 +20,22 @@ pub(super) async fn try_park_vless_udp_single(
     route: &VlessWsRouteCtx,
     session_id: SessionId,
 ) -> bool {
+    // A relayed (cluster-edge) session is never parked here: the socket lives on
+    // the home, which parks it under the id the client already holds. Parking on
+    // the edge would register a session whose upstream this node does not own,
+    // and would compete with the home's own park for the same id. Checked before
+    // the `mem::replace` below so the caller's ordinary teardown still finds the
+    // upstream and can end its half of the mesh stream. `run_vless_relay` cannot
+    // even reach here for such a session (`edge_upstream` leaves
+    // `issued_session_id` unset), so this is the second of two independent
+    // guards; `parkable_socket` is the third.
+    if let UpstreamSession::Udp(udp) = &state.upstream
+        && udp.sink.is_mesh()
+    {
+        return false;
+    }
     let UdpUpstream {
-        socket,
+        sink,
         reader_task,
         cancel,
         target_display,
@@ -33,6 +47,12 @@ pub(super) async fn try_park_vless_udp_single(
             state.upstream = other;
             return false;
         },
+    };
+    // Third guard against parking a relayed session: only a socket this node
+    // owns can be handed to the registry. Unreachable — the mesh guard above
+    // already returned — but it is the place that would be wrong.
+    let Some(socket) = sink.parkable_socket().cloned() else {
+        return false;
     };
     cancel.notify_one();
     match reader_task.into_inner().await {

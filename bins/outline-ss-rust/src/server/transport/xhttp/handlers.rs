@@ -905,7 +905,9 @@ pub(in crate::server::transport::xhttp) async fn xhttp_edge(
     };
     let stream = open_edge_relay(cluster, shard, &advert, framing, protocol, peer_addr)
         .await
-        .map(|pooled| edge_upstream(pooled, &advert, cluster, framing, metrics, orphan_registry));
+        .map(|(pooled, shape)| {
+            edge_upstream(pooled, shape, &advert, cluster, metrics, orphan_registry)
+        });
     XhttpEdge { stream }
 }
 

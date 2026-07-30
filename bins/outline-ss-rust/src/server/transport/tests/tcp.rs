@@ -437,11 +437,12 @@ impl EdgeHarness {
         )
         .await
         .expect("the home must answer the OPEN, not hang the upgrade")?;
+        let (pooled, shape) = pooled;
         Some(edge_upstream(
             pooled,
+            shape,
             &advert,
             &self.cluster,
-            MeshFraming::Tcp,
             &self.server.metrics,
             &self.registry,
         ))

@@ -38,20 +38,21 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    AcceptRelayError, CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshProtocol,
+    AcceptRelayError, CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshProtocol, MeshShape,
     MeshStream, OpenHeader, PooledRelay, UpstreamAckFrame, UserFrame, accept_relay, read_datagram,
     write_datagram, write_open_ack,
 };
 use crate::server::nat::{NatKey, ResponseSender, UdpResponseCoding, UdpResponseSender};
 use crate::server::resumption::downlink_ring::ReplayOutcome;
 use crate::server::resumption::{
-    OrphanRegistry, ParkProbe, ParkShape, Parked, ParkedSsUdpStream, ParkedTcp, ResumeMiss,
-    ResumeOutcome, SessionId, TcpProtocolContext,
+    OrphanRegistry, ParkProbe, ParkQuery, ParkShape, Parked, ParkedSsUdpStream, ParkedTcp,
+    ParkedVlessUdpSingle, ResumeMiss, ResumeOutcome, SessionId, TcpProtocolContext,
 };
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::state::Services;
 
 use super::super::constants::UDP_MAX_CONCURRENT_RELAY_TASKS;
+use super::super::scratch::UdpRecvBuf;
 use super::resume_headers::{EdgeResumeAdvert, ResumeContext, ResumeResponseEcho};
 use super::udp::{
     StreamNatKeys, UdpDatagramCtx, UdpServerCtx, detach_stream_nat_keys, next_ss_udp_stream_id,
@@ -110,6 +111,12 @@ fn open_ack_wait(relay_budget: Duration) -> Duration {
 /// `None` means serve the client locally: the home is unreachable, or it holds
 /// no park under this id — an ordinary outcome now that fresh sessions are never
 /// created over the mesh. The caller then becomes the home for a fresh session.
+///
+/// A [`MeshShape`] rides back with the relay: the shape of the park the home
+/// actually holds. An SS carrier already knew it (its OPEN named it), but a VLESS
+/// one could not — see `cluster::mesh::frame` — and this is where it finds out,
+/// early enough to decide between splicing and releasing the relay once the
+/// client's command arrives.
 pub(in crate::server) async fn open_edge_relay(
     cluster: &ClusterCtx,
     shard: ShardId,
@@ -117,7 +124,7 @@ pub(in crate::server) async fn open_edge_relay(
     framing: MeshFraming,
     protocol: MeshProtocol,
     peer_addr: SocketAddr,
-) -> Option<PooledRelay> {
+) -> Option<(PooledRelay, MeshShape)> {
     let header = OpenHeader {
         framing,
         protocol,
@@ -140,20 +147,24 @@ pub(in crate::server) async fn open_edge_relay(
             return None;
         },
     };
-    if let Err(error) = pooled.await_ack(open_ack_wait(cluster.relay_budget)).await {
-        cluster.metrics.record_mesh_relay_opened("refused");
-        // Not a warning: with edge-terminated crypto a refusal is the expected
-        // answer whenever the home holds no park — every fresh session, and
-        // every session whose park has expired. The edge simply serves it.
-        debug!(
-            ?error,
-            shard = shard.get(),
-            "home holds no session for this resume id; serving a fresh local session",
-        );
-        return None;
-    }
+    let shape = match pooled.await_ack(open_ack_wait(cluster.relay_budget)).await {
+        Ok(shape) => shape,
+        Err(error) => {
+            cluster.metrics.record_mesh_relay_opened("refused");
+            // Not a warning: with edge-terminated crypto a refusal is the
+            // expected answer whenever the home holds no park — every fresh
+            // session, and every session whose park has expired. The edge simply
+            // serves it.
+            debug!(
+                ?error,
+                shard = shard.get(),
+                "home holds no session for this resume id; serving a fresh local session",
+            );
+            return None;
+        },
+    };
     cluster.metrics.record_mesh_relay_opened("ok");
-    Some(pooled)
+    Some((pooled, shape))
 }
 
 /// Everything an edge needs to serve a client whose upstream it just took over
@@ -189,16 +200,17 @@ pub(in crate::server) struct EdgeUpstream {
 /// is missing, in order, and it consumes them as ordinary stream continuation.
 /// Continuity is preserved; only the explicit truncation signal is not.
 ///
-/// `framing` must be the one the OPEN carried. It picks the transport label the
-/// relay's `role="edge"` counters are published under, and it is what makes this
-/// one constructor serve the datagram (SS-UDP) edge as well as the byte-stream
-/// ones — the resume story is identical on both, which is the point.
+/// `shape` must be the one the home acked. It decides how the body is framed and
+/// which transport label the relay's `role="edge"` counters are published under,
+/// and it is what makes this one constructor serve the datagram edges (SS-UDP,
+/// VLESS-UDP) as well as the byte-stream ones — the resume story is identical on
+/// all of them, which is the point.
 pub(in crate::server) fn edge_upstream(
     pooled: PooledRelay,
+    shape: MeshShape,
     advert: &EdgeResumeAdvert,
     cluster: &ClusterCtx,
-    framing: MeshFraming,
-    metrics: &Metrics,
+    metrics: &Arc<Metrics>,
     registry: &OrphanRegistry,
 ) -> EdgeUpstream {
     // Same gate `ResumeContext::from_request_headers` applies: with resumption
@@ -209,7 +221,7 @@ pub(in crate::server) fn edge_upstream(
             pooled,
             advert.ack_prefix,
             cluster.relay_budget,
-            framing,
+            shape,
             metrics,
         )),
         resume: ResumeContext {
@@ -421,13 +433,44 @@ fn protocol_matches(relayed: MeshProtocol, parked: &TcpProtocolContext) -> bool 
     )
 }
 
-/// A park whose shape agrees with the framing of the relay asking for it — the
-/// two the v5 home splices today. Narrowing [`Parked`] to it right after phase 2
-/// keeps the framing/shape agreement in one `match` instead of one late check
-/// per splice.
+/// A park whose shape agrees with the one the relay was acked for — the three
+/// the v5 home splices today. Narrowing [`Parked`] to it right after phase 2
+/// keeps the shape agreement in one `match` instead of one late check per
+/// splice.
 enum SplicableParked {
     Tcp(ParkedTcp),
     SsUdp(ParkedSsUdpStream),
+    VlessUdp(ParkedVlessUdpSingle),
+}
+
+/// The wire spelling of a park shape, for the ack that tells an edge what this
+/// home is holding.
+fn mesh_shape(shape: ParkShape) -> MeshShape {
+    match shape {
+        ParkShape::Stream => MeshShape::Stream,
+        ParkShape::Datagram => MeshShape::Datagram,
+        ParkShape::VlessUdpSingle => MeshShape::VlessUdpSingle,
+        ParkShape::VlessMux => MeshShape::VlessMux,
+    }
+}
+
+/// The shape question this OPEN is asking, or `None` for a combination no edge
+/// produces.
+///
+/// A Shadowsocks OPEN names its splice exactly: SS-TCP and SS-UDP arrive on
+/// different paths, so the framing *is* the shape. A VLESS OPEN names nothing —
+/// one path multiplexes TCP, UDP and mux and the OPEN precedes the client's
+/// first frame — so it asks for any VLESS shape and is told which one this home
+/// holds. A VLESS OPEN with datagram framing is the combination that cannot
+/// arise: an edge picks the framing before it knows the command, so it always
+/// picks `Tcp`.
+fn park_query(header: &OpenHeader) -> Option<ParkQuery> {
+    match (header.framing, header.protocol) {
+        (MeshFraming::Tcp, MeshProtocol::Ss) => Some(ParkQuery::Exact(ParkShape::Stream)),
+        (MeshFraming::Udp, MeshProtocol::Ss) => Some(ParkQuery::Exact(ParkShape::Datagram)),
+        (MeshFraming::Tcp, MeshProtocol::Vless) => Some(ParkQuery::AnyVless),
+        (MeshFraming::Udp, MeshProtocol::Vless) => None,
+    }
 }
 
 /// Serves one relayed session: the two-phase resume hand-off.
@@ -454,16 +497,20 @@ async fn serve_relayed(
 ) -> Result<()> {
     let session_id = SessionId::from_bytes(header.session_id);
     let registry = &services.orphan_registry;
-    // The OPEN's framing is the only shape signal a relay carries, and it names
-    // exactly one of the two splices below.
-    let want = match header.framing {
-        MeshFraming::Tcp => ParkShape::Stream,
-        MeshFraming::Udp => ParkShape::Datagram,
+    let Some(query) = park_query(&header) else {
+        // A datagram-framed VLESS OPEN: no edge builds one, because the framing
+        // is chosen before the command is known. Refuse rather than guess which
+        // of the three VLESS shapes was meant.
+        cluster.metrics.record_mesh_relay_rejected("bad_setup");
+        cluster.metrics.record_mesh_relay_outcome("error", CLOSE_NONE);
+        warn!("refusing a relay whose OPEN framing and protocol cannot name a park shape");
+        refuse_relay(stream, CloseReason::Abort);
+        return Ok(());
     };
 
-    // Phase 1: does a park exist under this id, and is it the shape this
-    // framing's splice can serve? The user is not known yet, so the owner check
-    // is deliberately deferred; an in-flight park counts as present (see
+    // Phase 1: does a park exist under this id, and is it a shape a splice on
+    // this node can serve? The user is not known yet, so the owner check is
+    // deliberately deferred; an in-flight park counts as present (see
     // `OrphanRegistry::probe_park`).
     //
     // The shape half of the question is load-bearing, not defensive: phase 2
@@ -475,10 +522,20 @@ async fn serve_relayed(
     // fresh local session either way — and both are ordinary, so neither is a
     // warning. They are counted apart because they mean different things to an
     // operator: `no_session` is a park that expired or never existed, while
-    // `park_shape` is a VLESS-UDP or mux session asking for a splice this home
-    // does not have yet, which no amount of config will change.
-    match registry.probe_park(session_id, want) {
-        ParkProbe::Splicable => {},
+    // `park_shape` is a park that no splice reachable from this OPEN carries —
+    // an SS-UDP park under a VLESS resume id, or the reverse — which no amount
+    // of config will change.
+    let shape = match registry.probe_park(session_id, query) {
+        ParkProbe::Splicable(Some(shape)) => shape,
+        // A park still landing has no shape to report yet. Answer the one the
+        // OPEN committed to, and `Stream` when it committed to none — what the
+        // ack meant on every build before it could carry a shape at all. The
+        // cost is bounded to that window: a VLESS command that disagrees with
+        // the answer releases the relay without consuming anything.
+        ParkProbe::Splicable(None) => match query {
+            ParkQuery::Exact(shape) => shape,
+            ParkQuery::AnyVless => ParkShape::Stream,
+        },
         ParkProbe::Missing => {
             cluster.metrics.record_mesh_relay_rejected("no_session");
             cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
@@ -490,16 +547,21 @@ async fn serve_relayed(
             cluster.metrics.record_mesh_relay_rejected("park_shape");
             cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
             debug!(
-                "the parked session under a relayed resume id is not the shape this relay's \
-                 framing splices (VLESS-UDP or mux); refusing the relay without consuming it",
+                "the parked session under a relayed resume id is not a shape this relay's OPEN \
+                 could ever splice; refusing the relay without consuming it",
             );
             refuse_relay(stream, CloseReason::NoSession);
             return Ok(());
         },
-    }
+    };
     // Admitted so far. The ack releases the edge to upgrade its client carrier
-    // and echo continuity, and is the first downlink byte of the stream.
-    if let Err(error) = write_open_ack(&mut stream.send).await {
+    // and echo continuity, and is the first downlink byte of the stream. It also
+    // carries `shape` when the OPEN could not name one — the answer a VLESS edge
+    // needs before it can tell, from the command it is about to read, whether
+    // this park is one it can use at all.
+    if let Err(error) = write_open_ack(&mut stream.send, header.committed_shape(), mesh_shape(shape))
+        .await
+    {
         // The mesh stream broke during setup, before any park was consulted:
         // neither a hit nor a miss, but still one relay that entered this
         // handler — counted so the outcome series reconciles against the
@@ -537,6 +599,25 @@ async fn serve_relayed(
             return Ok(());
         },
     };
+    // The shape was *advertised* in phase 1, not proven: the park could have
+    // expired and been replaced between the two phases, and a peer is free to
+    // ignore what it was told. Re-ask before `take_for_resume`, which is the
+    // last moment a mismatch can be refused without destroying the park — the
+    // invariant the whole two-phase shape hand-off exists to keep.
+    if matches!(
+        registry.probe_park(session_id, ParkQuery::Exact(shape)),
+        ParkProbe::OtherShape | ParkProbe::Missing
+    ) {
+        cluster.metrics.record_mesh_relay_rejected("park_shape");
+        cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+        debug!(
+            shape = mesh_shape(shape).label(),
+            "the park under a relayed resume id no longer has the shape this relay was acked \
+             for; refusing the relay without consuming it",
+        );
+        refuse_relay(stream, CloseReason::NoSession);
+        return Ok(());
+    }
     let parked = match registry.take_for_resume(session_id, &user.user).await {
         ResumeOutcome::Hit(parked) => parked,
         ResumeOutcome::Miss(miss) => {
@@ -562,21 +643,26 @@ async fn serve_relayed(
             return Ok(());
         },
     };
-    let parked = match (header.framing, parked) {
-        (MeshFraming::Tcp, Parked::Tcp(parked)) => SplicableParked::Tcp(parked),
-        (MeshFraming::Udp, Parked::SsUdpStream(parked)) => SplicableParked::SsUdp(parked),
-        // The OPEN's framing disagrees with what is actually parked under the
-        // id. Phase 1 (`probe_park`) rejects a committed park of the wrong
+    let parked = match (shape, parked) {
+        (ParkShape::Stream, Parked::Tcp(parked)) => SplicableParked::Tcp(parked),
+        (ParkShape::Datagram, Parked::SsUdpStream(parked)) => SplicableParked::SsUdp(parked),
+        (ParkShape::VlessUdpSingle, Parked::VlessUdpSingle(parked)) => {
+            SplicableParked::VlessUdp(parked)
+        },
+        // The shape this relay was acked for disagrees with what is actually
+        // parked under the id. Both probes reject a committed park of the wrong
         // shape, so what is left here is the reservation window — a park that
         // was still landing when phase 1 looked and committed as some other
-        // shape by now — or a forged peer. Refuse rather than panic; the park is
-        // already consumed, so the client loses continuity but nothing else.
-        (framing, _) => {
+        // shape by now — a VLESS-mux park, which no splice carries yet, or a
+        // forged peer. Refuse rather than panic; the park is already consumed,
+        // so the client loses continuity but nothing else.
+        (shape, parked) => {
             cluster.metrics.record_mesh_relay_rejected("framing_mismatch");
             cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
             warn!(
-                ?framing,
-                "relayed framing does not match the parked session kind; aborting the relay"
+                acked_shape = mesh_shape(shape).label(),
+                parked_kind = parked.kind(),
+                "the relayed park shape does not match the parked session kind; aborting the relay"
             );
             refuse_relay(stream, CloseReason::Abort);
             return Ok(());
@@ -584,6 +670,28 @@ async fn serve_relayed(
     };
     let parked = match parked {
         SplicableParked::Tcp(parked) => parked,
+        SplicableParked::VlessUdp(parked) => {
+            // A VLESS-UDP park is VLESS by construction — nothing else mints one
+            // — so an SS relay claiming it is the same cross-protocol confusion
+            // the two arms below refuse. Unreachable through `park_query`, which
+            // never hands an SS OPEN this shape, but the splice is the place
+            // that would be wrong.
+            if header.protocol != MeshProtocol::Vless {
+                cluster.metrics.record_mesh_relay_rejected("protocol_mismatch");
+                cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+                warn!(
+                    relayed = header.protocol.label(),
+                    "refusing a relayed VLESS-UDP resume claimed under another proxy protocol",
+                );
+                refuse_relay(stream, CloseReason::Abort);
+                return Ok(());
+            }
+            let _relay_active = cluster.metrics.open_mesh_relay();
+            return splice_plaintext_vless_udp(
+                stream, parked, &header, session_id, cluster, registry,
+            )
+            .await;
+        },
         SplicableParked::SsUdp(parked) => {
             // An SS-UDP park is Shadowsocks by construction — there is no other
             // way to mint one — so a relay claiming VLESS over it is the same
@@ -1797,6 +1905,259 @@ async fn splice_plaintext_udp(
         // no responder attached, which is what an SS-UDP session without a
         // client has always done.
         debug!(user, ?intent, "not re-parking a relayed ss-udp session");
+    }
+
+    match end {
+        SpliceEnd::Graceful { .. } => Ok(()),
+        SpliceEnd::Faulted { error, .. } => Err(error),
+    }
+}
+
+/// Splices a relayed plaintext VLESS-UDP session onto the single connected
+/// `UdpSocket` it parked.
+///
+/// The simplest of the three splices, because a single-target VLESS-UDP session
+/// *is* one socket: no NAT table, no per-datagram target, no identity to derive.
+/// Every mesh datagram goes to the socket's connected peer and every datagram the
+/// socket receives comes back — which is also why the edge sends bare payloads
+/// and no target address, unlike the SS-UDP splice beside it.
+///
+/// Boundaries are the whole point, on both hops. The client frames each datagram
+/// with VLESS's own `u16` length prefix, the edge de-frames it and writes one
+/// mesh datagram per packet ([`write_datagram`]), and this splice does one
+/// `send` per datagram. A byte splice anywhere along that chain would let two
+/// datagrams coalesce into one `send` and arrive at the target as a single
+/// corrupt packet.
+///
+/// Per-user accounting is deliberately absent, as in the two splices above: it
+/// belongs to the node that terminates the client session, which is the edge.
+/// The park's `user_counters` ride through untouched so a later *direct* resume
+/// on this node keeps counting where it left off.
+///
+/// Continuity matches the SS-UDP splice: an `ack_prefix` OPEN gets its
+/// [`UpstreamAckFrame`] — present exactly when the flag is set, on every framing
+/// — reporting `0`, because a datagram session acknowledges no uplink byte
+/// offset. `symmetric_replay` has nothing to replay: UDP is lossy by contract and
+/// no ring is kept.
+///
+/// Bounded: one pooled receive buffer per datagram (returned before the next
+/// park), a read that caps each mesh datagram at the framing's own maximum, and
+/// `cluster.relay_budget` on every mesh write.
+async fn splice_plaintext_vless_udp(
+    stream: MeshStream,
+    parked: ParkedVlessUdpSingle,
+    header: &OpenHeader,
+    session_id: SessionId,
+    cluster: &ClusterCtx,
+    registry: &OrphanRegistry,
+) -> Result<()> {
+    let MeshStream { mut send, mut recv } = stream;
+    // Every field is kept: the splice needs only the socket, but a re-park has
+    // to hand the whole bundle back with the same field semantics the direct
+    // path parks with. `udp_client_buffer` is the *client*-side reassembly
+    // buffer, which on a relayed session lives on the edge — it travels through
+    // untouched so a later direct resume finds it where it left it.
+    let ParkedVlessUdpSingle {
+        socket,
+        target_display,
+        owner,
+        user,
+        user_counters,
+        udp_client_buffer,
+    } = parked;
+
+    // Uplink continuity, for symmetry with the other splices: the frame is
+    // present exactly when the OPEN asked for it, and zero is the truthful
+    // answer — a datagram session acknowledges no byte offset.
+    if header.ack_prefix {
+        let frame = UpstreamAckFrame { upstream_acked: 0 };
+        if let Err(error) = send.write_all(&frame.encode()).await {
+            cluster.metrics.record_mesh_relay_outcome("hit", CLOSE_NONE);
+            return Err(
+                anyhow::Error::new(error).context("sending the upstream-ack frame over the mesh")
+            );
+        }
+    }
+
+    let up_bytes = cluster.metrics.mesh_bytes_counter("home", "up", "udp");
+    let up_datagrams = cluster.metrics.mesh_datagrams_counter("home", "up");
+    let down_bytes = cluster.metrics.mesh_bytes_counter("home", "down", "udp");
+    let down_datagrams = cluster.metrics.mesh_datagrams_counter("home", "down");
+    let budget = cluster.relay_budget;
+    let stop_downlink = Notify::new();
+
+    let SpliceOutcome { end, stream_finished, observed_intent } = {
+        let recv = &mut recv;
+        let send = &mut send;
+        let stop = &stop_downlink;
+        let socket = socket.as_ref();
+
+        // Uplink: mesh → the parked socket, one datagram per frame. Serial
+        // rather than fanned out: the socket is connected, so there is no DNS
+        // and no bind to overlap, and `send` on a connected socket does not
+        // block long enough to want concurrency.
+        let uplink = async move {
+            let mut buf = Vec::new();
+            loop {
+                let len = match read_datagram(recv, &mut buf)
+                    .await
+                    .context("relayed uplink datagram read from the mesh")
+                {
+                    // The edge finished the stream: the client carrier is gone.
+                    // The socket is deliberately left open — the caller re-parks
+                    // it for the next carrier.
+                    Ok(None) => return Ok(()),
+                    Ok(Some(len)) => len,
+                    Err(error) => return Err(SpliceFault::mesh(error)),
+                };
+                up_bytes.increment(len as u64);
+                up_datagrams.increment(1);
+                match socket.send(&buf[..len]).await {
+                    Ok(sent) if sent == len => {},
+                    // A short send is a datagram the target will never see whole;
+                    // the socket itself is still usable, so the session goes on.
+                    Ok(sent) => {
+                        warn!(sent, expected = len, "relayed vless udp short send");
+                    },
+                    Err(error) => {
+                        return Err(SpliceFault::upstream(
+                            anyhow::Error::new(error)
+                                .context("relayed uplink send on the parked vless udp socket"),
+                        ));
+                    },
+                }
+            }
+        };
+
+        // Downlink: the parked socket → mesh, one datagram per frame. The ONLY
+        // writer to the mesh stream.
+        let downlink = async move {
+            loop {
+                tokio::select! {
+                    // Biased so a pending stop wins over one more datagram: the
+                    // uplink has ended, and a response written into a stream the
+                    // caller is about to close is worth nothing. Both branches
+                    // are cancel-safe — a dropped `Notified` hands its
+                    // notification back, and `readable` consumes nothing.
+                    biased;
+                    () = stop.notified() => return Ok(DownlinkEnd::Stopped),
+                    ready = socket.readable() => if let Err(error) = ready {
+                        return Err(SpliceFault::upstream(
+                            anyhow::Error::new(error)
+                                .context("awaiting the parked vless udp socket"),
+                        ));
+                    },
+                }
+                // Allocate from the pool only once a datagram is ready, so an
+                // idle relay holds no per-session receive buffer and the buffer
+                // is back in the pool before the next park.
+                let mut buffer = UdpRecvBuf::take();
+                let len = match socket.try_recv(&mut buffer) {
+                    Ok(len) => len,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) => {
+                        return Err(SpliceFault::upstream(
+                            anyhow::Error::new(error)
+                                .context("relayed downlink read from the parked vless udp socket"),
+                        ));
+                    },
+                };
+                match tokio::time::timeout(budget, write_datagram(send, &buffer[..len])).await {
+                    Ok(Ok(())) => {},
+                    Ok(Err(error)) => {
+                        // A `ClientDone` stop lands here as a write failure, the
+                        // same signal the other splices read: the client is
+                        // finished, so the uplink goes on draining to its FIN
+                        // while the downlink stands down.
+                        if let Some(quinn::WriteError::Stopped(code)) =
+                            error.downcast_ref::<quinn::WriteError>()
+                            && CloseIntent::from_code(code.into_inner()) == CloseIntent::ClientDone
+                        {
+                            return Ok(DownlinkEnd::ClientDone);
+                        }
+                        return Err(SpliceFault::mesh(
+                            error.context("relayed downlink datagram write to the mesh"),
+                        ));
+                    },
+                    Err(_elapsed) => {
+                        return Err(SpliceFault::stalled_mesh(anyhow::anyhow!(
+                            "relayed downlink stalled past the health budget"
+                        )));
+                    },
+                }
+                down_bytes.increment(len as u64);
+                down_datagrams.increment(1);
+            }
+        };
+
+        tokio::pin!(uplink, downlink);
+        let mut downlink_ended: Option<Result<DownlinkEnd, SpliceFault>> = None;
+        loop {
+            tokio::select! {
+                result = &mut uplink => {
+                    let downlink_end = match downlink_ended {
+                        Some(ended) => ended,
+                        None => {
+                            stop.notify_one();
+                            downlink.as_mut().await
+                        },
+                    };
+                    break splice_end(result, downlink_end);
+                },
+                result = &mut downlink, if downlink_ended.is_none() => match result {
+                    Ok(ended) => downlink_ended = Some(Ok(ended)),
+                    Err(fault) => break SpliceOutcome {
+                        end: fault.into_end(),
+                        stream_finished: false,
+                        observed_intent: CloseIntent::CarrierEnded,
+                    },
+                },
+            }
+        }
+    };
+
+    let intent = resolve_close_intent(&end, observed_intent, &send);
+    cluster
+        .metrics
+        .record_mesh_relay_outcome("hit", intent.metric_label());
+
+    match end.stream_close(stream_finished, intent) {
+        StreamClose::Reset(reason) => {
+            let _ = send.reset(VarInt::from_u32(reason.code()));
+        },
+        StreamClose::Finish => {
+            let _ = send.finish();
+        },
+    }
+
+    // Re-park unless the client said it was done or the socket itself failed —
+    // the same rule the byte-stream splice applies, and the reason a VLESS-UDP
+    // session survives more than one carrier switch. A socket that is gone is
+    // worth nothing to the next carrier; dropping it here closes it.
+    if end.reparks(intent) && registry.enabled() {
+        debug!(
+            user = %owner,
+            target = %target_display,
+            "re-parking a relayed vless udp socket after the mesh carrier ended",
+        );
+        registry.park(
+            session_id,
+            Parked::VlessUdpSingle(ParkedVlessUdpSingle {
+                socket,
+                target_display,
+                owner,
+                user,
+                user_counters,
+                udp_client_buffer,
+            }),
+        );
+    } else {
+        debug!(
+            user = %owner,
+            target = %target_display,
+            ?intent,
+            "closing a relayed vless udp socket instead of re-parking it",
+        );
     }
 
     match end {

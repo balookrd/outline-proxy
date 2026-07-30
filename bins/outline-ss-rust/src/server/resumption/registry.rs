@@ -76,26 +76,73 @@ pub(crate) enum ResumeOutcome {
 pub(crate) enum ParkProbe {
     /// No park and no park in flight.
     Missing,
-    /// A park of the shape the caller asked for — or a park still landing, whose
-    /// shape is not knowable yet and is optimistically admitted.
-    Splicable,
-    /// A park of some other shape: one no v5 splice carries today (VLESS-UDP or
-    /// VLESS-mux), or one whose shape disagrees with the OPEN's framing. The
-    /// caller must refuse *without* consuming it.
+    /// A park the query admits. `Some` names its shape; `None` is a park still
+    /// landing, whose shape is not knowable yet and which is optimistically
+    /// admitted.
+    Splicable(Option<ParkShape>),
+    /// A park of some other shape: one no v5 splice carries today (VLESS-mux),
+    /// or one the query does not admit. The caller must refuse *without*
+    /// consuming it.
     OtherShape,
 }
 
-/// The park shape a v5 relay can splice onto, as its OPEN framing names it.
+/// The shape of a parked session, in the terms a v5 relay splices it under.
 ///
-/// A one-to-one mapping from `MeshFraming`, kept in the resumption module so the
-/// registry can answer a shape question without depending on the mesh wire
-/// types.
+/// A one-to-one mapping onto the `Parked` variants, kept in the resumption
+/// module so the registry can answer a shape question without depending on the
+/// mesh wire types (`MeshShape` is the wire spelling of the same set).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ParkShape {
-    /// `MeshFraming::Tcp` — a byte-stream park ([`Parked::Tcp`]).
+    /// A byte-stream park ([`Parked::Tcp`]), SS or VLESS alike.
     Stream,
-    /// `MeshFraming::Udp` — an SS-UDP park ([`Parked::SsUdpStream`]).
+    /// An SS-UDP park ([`Parked::SsUdpStream`]).
     Datagram,
+    /// A single-target VLESS-UDP park ([`Parked::VlessUdpSingle`]).
+    VlessUdpSingle,
+    /// A VLESS-mux park ([`Parked::VlessMux`]). No splice carries it yet; it is
+    /// nameable so a relay can be *told* what it found instead of being told
+    /// only that it cannot have it.
+    VlessMux,
+}
+
+/// The shape question a relay asks of a resume id.
+///
+/// Two forms, because the OPEN behind the question comes in two forms. A
+/// Shadowsocks carrier knows exactly which splice it is: it asks
+/// [`ParkQuery::Exact`]. A VLESS carrier does not — one path multiplexes TCP,
+/// UDP and mux, and the OPEN precedes the client's first frame — so it asks
+/// [`ParkQuery::AnyVless`] and the home's ack tells it which shape it found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParkQuery {
+    Exact(ParkShape),
+    /// Any shape a VLESS session can park as. Deliberately excludes
+    /// [`ParkShape::Datagram`]: an SS-UDP park under a VLESS resume id is a
+    /// cross-protocol confusion, not a shape a VLESS command could ever want.
+    AnyVless,
+}
+
+impl ParkQuery {
+    fn admits(self, shape: ParkShape) -> bool {
+        match self {
+            ParkQuery::Exact(want) => want == shape,
+            ParkQuery::AnyVless => matches!(
+                shape,
+                ParkShape::Stream | ParkShape::VlessUdpSingle | ParkShape::VlessMux
+            ),
+        }
+    }
+}
+
+impl ParkShape {
+    /// The shape a park splices under.
+    fn of(parked: &Parked) -> Self {
+        match parked {
+            Parked::Tcp(_) => ParkShape::Stream,
+            Parked::SsUdpStream(_) => ParkShape::Datagram,
+            Parked::VlessUdpSingle(_) => ParkShape::VlessUdpSingle,
+            Parked::VlessMux(_) => ParkShape::VlessMux,
+        }
+    }
 }
 
 /// Internal envelope wrapping a payload with bookkeeping fields.
@@ -207,44 +254,49 @@ impl OrphanRegistry {
     /// discovers it holds the wrong shape, so a phase 1 that admitted any shape
     /// would destroy the park it then refuses.
     ///
-    /// `want` comes from the OPEN's framing, which is the *only* shape signal a
-    /// v5 relay carries. It separates the two splices that exist —
-    /// [`ParkShape::Stream`] for `Parked::Tcp`, [`ParkShape::Datagram`] for
-    /// `Parked::SsUdpStream` — and refuses everything else. VLESS is why the
-    /// remainder is not empty: it multiplexes TCP, UDP and mux onto one carrier
-    /// and parks three different shapes under a framing an edge picks before it
-    /// can read the client's command, so a VLESS-UDP or mux park is refused here
-    /// rather than admitted to a splice that cannot serve it.
+    /// `want` comes from the OPEN. A Shadowsocks carrier names one splice
+    /// exactly ([`ParkQuery::Exact`]) — SS-TCP and SS-UDP arrive on different
+    /// paths — and everything else is refused. A VLESS carrier cannot name one
+    /// at all ([`ParkQuery::AnyVless`]): it multiplexes TCP, UDP and mux onto one
+    /// path and the OPEN precedes the client's first frame, so the probe admits
+    /// every shape a VLESS session can park as and *reports which one it found*.
+    /// The relay hands that back to the edge in its ack, which is what lets the
+    /// edge decide — once the command finally arrives — between splicing and
+    /// releasing the relay untouched.
     ///
     /// One lookup answers both halves, so the refusal path takes no second lock
     /// and the two outcomes still reach the operator as distinct metric reasons.
-    /// That distinction matters: every VLESS-UDP or mux resume that lands on an
-    /// edge takes the [`ParkProbe::OtherShape`] path, and folding those into "no
-    /// such session" would bury an expected, config-independent condition in the
-    /// same series that an expired or never-minted park shows up in.
+    /// That distinction matters: an SS-UDP park under a VLESS resume id, or a
+    /// VLESS park under an SS-UDP one, takes the [`ParkProbe::OtherShape`] path,
+    /// and folding those into "no such session" would bury a structural
+    /// condition in the same series that an expired or never-minted park shows
+    /// up in.
     ///
-    /// An in-flight reservation counts as [`ParkProbe::Splicable`], as it did
-    /// when this probe was shape-agnostic: the park-miss race it exists to close
-    /// is unchanged by the narrowing, and a reservation cannot report a shape —
-    /// the payload does not exist yet. That leaves one window where a non-TCP
-    /// park is admitted here, and what happens next depends on the command the
-    /// edge then reads. A `Udp` or `Mux` command closes the window: the edge
-    /// resets the mesh stream strictly before the USER frame that would trigger
-    /// phase 2, so the park survives. A `Tcp` command does not — it is exactly
-    /// the shape a splice carries, so the edge legitimately sends the USER
-    /// frame, and phase 2 consumes the park before discovering it committed as
-    /// some other shape (`transport::mesh_relay`'s `framing_mismatch` arm).
-    /// Losing continuity in that narrow window is the accepted cost: widening
-    /// the reservation to carry a shape would trade it for a worse race — a
-    /// redial arriving during a park landing would miss instead of waiting.
-    pub(crate) fn probe_park(&self, id: SessionId, want: ParkShape) -> ParkProbe {
+    /// An in-flight reservation counts as `Splicable(None)`, as it did when this
+    /// probe was shape-agnostic: the park-miss race it exists to close is
+    /// unchanged, and a reservation cannot report a shape — the payload does not
+    /// exist yet. That leaves one window where a park of any shape is admitted
+    /// here, and what happens next depends on the command the edge then reads.
+    /// A command that disagrees with the shape the relay advertised closes the
+    /// window: the edge resets the mesh stream strictly before the USER frame
+    /// that would trigger phase 2, so the park survives. A command that agrees
+    /// does not — the edge legitimately sends the USER frame, and phase 2 may
+    /// consume a park that committed as some other shape
+    /// (`transport::mesh_relay`'s `framing_mismatch` arm). Losing continuity in
+    /// that narrow window is the accepted cost: widening the reservation to
+    /// carry a shape would trade it for a worse race — a redial arriving during
+    /// a park landing would miss instead of waiting.
+    pub(crate) fn probe_park(&self, id: SessionId, want: ParkQuery) -> ParkProbe {
         match self.by_id.get(&id) {
-            Some(entry) => match (&entry.parked, want) {
-                (Parked::Tcp(_), ParkShape::Stream)
-                | (Parked::SsUdpStream(_), ParkShape::Datagram) => ParkProbe::Splicable,
-                _ => ParkProbe::OtherShape,
+            Some(entry) => {
+                let shape = ParkShape::of(&entry.parked);
+                if want.admits(shape) {
+                    ParkProbe::Splicable(Some(shape))
+                } else {
+                    ParkProbe::OtherShape
+                }
             },
-            None if self.reservations.contains_key(&id) => ParkProbe::Splicable,
+            None if self.reservations.contains_key(&id) => ParkProbe::Splicable(None),
             None => ParkProbe::Missing,
         }
     }

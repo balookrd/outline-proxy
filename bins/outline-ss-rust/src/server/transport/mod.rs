@@ -108,12 +108,12 @@ async fn tcp_upgrade_for_path(
                     peer_addr,
                 )
                 .await
-                .map(|pooled| {
+                .map(|(pooled, shape)| {
                     mesh_relay::edge_upstream(
                         pooled,
+                        shape,
                         &advert,
                         cluster,
-                        MeshFraming::Tcp,
                         &server.metrics,
                         &server.orphan_registry,
                     )
@@ -208,12 +208,12 @@ pub(super) async fn vless_websocket_upgrade(
                     peer_addr,
                 )
                 .await
-                .map(|pooled| {
+                .map(|(pooled, shape)| {
                     mesh_relay::edge_upstream(
                         pooled,
+                        shape,
                         &advert,
                         cluster,
-                        MeshFraming::Tcp,
                         &server.metrics,
                         &server.orphan_registry,
                     )
@@ -367,12 +367,12 @@ async fn udp_upgrade_for_path(
                     peer_addr,
                 )
                 .await
-                .map(|pooled| {
+                .map(|(pooled, shape)| {
                     mesh_relay::edge_upstream(
                         pooled,
+                        shape,
                         &advert,
                         cluster,
-                        MeshFraming::Udp,
                         &server.metrics,
                         &server.orphan_registry,
                     )

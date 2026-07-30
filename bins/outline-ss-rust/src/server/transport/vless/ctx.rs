@@ -4,10 +4,7 @@ use std::sync::atomic::AtomicU64;
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
-use tokio::{
-    net::UdpSocket,
-    sync::{Notify, mpsc},
-};
+use tokio::sync::{Notify, mpsc};
 
 use crate::{
     metrics::{Metrics, PerUserCounters, Protocol, TcpUpstreamGuard},
@@ -22,7 +19,7 @@ use super::super::super::{
 };
 use super::super::resume_headers::ResumeContext;
 use super::super::upstream_source::{
-    HarvestedUpstream, MeshUpstreamSetup, UpstreamSource, UpstreamWriter,
+    HarvestedUpstream, MeshUpstreamSetup, UpstreamSource, UpstreamWriter, VlessUdpSink,
 };
 use super::super::vless_mux::{MuxRouteCtx, MuxServerCtx, MuxState};
 
@@ -138,7 +135,10 @@ pub(in crate::server::transport) struct TcpUpstream {
 /// Single-target VLESS-UDP upstream. UDP-only counterpart of
 /// [`TcpUpstream`].
 pub(in crate::server::transport) struct UdpUpstream {
-    pub(in crate::server::transport) socket: Arc<UdpSocket>,
+    /// Where client datagrams go: this node's own connected socket to the
+    /// target, or — on a cluster edge — the mesh stream to the home that owns
+    /// that socket.
+    pub(in crate::server::transport) sink: VlessUdpSink,
     /// See [`TcpUpstream::reader_task`]. Critical for UDP because
     /// `socket.recv` has no shutdown signal — without `AbortOnDrop`
     /// the reader would block forever and orphan its `Arc<UdpSocket>`
@@ -227,10 +227,12 @@ pub(in crate::server::transport) struct VlessRelayState {
     /// told *who* it is resuming. `None` on a direct carrier: this node connects
     /// out itself and owns the socket.
     ///
-    /// Only a `VlessCommand::Tcp` session can consume it. A `Udp` or `Mux`
-    /// command needs an upstream shape the v5 splice does not carry, so the
-    /// dispatch [`MeshUpstreamSetup::refuse`]s it and serves the session
-    /// locally — before the USER frame, so the home's park survives untouched.
+    /// Only a command whose upstream shape matches the one the home acked
+    /// ([`MeshUpstreamSetup::shape`]) may consume it: a `Tcp` command on a
+    /// byte-stream park, a `Udp` one on a single-target VLESS-UDP park. Anything
+    /// else — including every `Mux` command, which no home splices yet — is
+    /// [`MeshUpstreamSetup::refuse`]d by the dispatch and served locally, before
+    /// the USER frame, so the home's park survives untouched.
     pub(in crate::server::transport) mesh_upstream: Option<MeshUpstreamSetup>,
 }
 
