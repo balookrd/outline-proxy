@@ -560,13 +560,20 @@ impl Metrics {
 
     /// Counts an edge's attempt to open a mesh relay to a home shard. `outcome`
     /// is `ok` when the relay stream was established and acknowledged, `fail`
-    /// when the home was unreachable / at its relay cap, or `refused` when a
-    /// reachable home declined the relay because it holds no park behind the
-    /// relayed resume id. Either failure degrades to a fresh local
+    /// when the OPEN never reached a home at all (no peer configured for that
+    /// shard, the dial failed, or this edge is at its own outbound
+    /// relay-stream cap), or `refused` when the OPEN reached a home that
+    /// answered nothing usable. Either failure degrades to a fresh local
     /// session. The `fail` rate is the direct signal that a cluster peer is
-    /// unreachable (mesh port blocked, peer down, PSK mismatch); `refused`
-    /// instead means the peer is healthy but holds no such park — the ordinary
-    /// answer for an expired session, so only a rate near 100% is a symptom.
+    /// unreachable (mesh port blocked, peer down, PSK mismatch).
+    ///
+    /// `refused` is the ordinary answer for a home holding no park under the
+    /// relayed resume id — an expired session — so only a rate near 100% is a
+    /// symptom. It also covers a home at its inbound relayed-session cap and a
+    /// peer on a wire version this cluster has moved past: both reset the
+    /// stream before any ack, so version skew during a rolling upgrade lands
+    /// here rather than on `fail`. The home counts the same events apart on
+    /// [`Self::record_mesh_relay_rejected`].
     pub fn record_mesh_relay_opened(&self, outcome: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_mesh_relay_opened_total", "outcome" => outcome).increment(1);

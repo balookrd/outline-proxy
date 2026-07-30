@@ -51,7 +51,7 @@ identity inside it:
 
 ```
 SessionId = obfuscate_k( shard_id (4 bits) || nonce (124 bits) )
-            └─ keyed PRF/CTR under the shared cluster routing key,
+            └─ keyed PRF/CTR under a key derived from cluster_psk (HKDF),
                so the id still looks fully random on the wire
 ```
 
@@ -289,14 +289,23 @@ no user key. A node can serve `/tcp` where its peer serves `/a1b2`, with a
 different `password` / `method` / `vless_id` per user, and relays between them
 work.
 
-What *must* agree is the **user name**, the identifier `X-Outline-Session` parks
-are keyed to: the home checks the name the edge attests against the park's owner
-before handing the session over. If `beerloga` denotes different people on two
-nodes, a resume is refused
-(`relay_rejected_total{reason="unknown_user"}`) — and that is the desired
-outcome, not a bug to configure around. The same applies across proxy protocols:
-a park authenticated under SS is never handed to a VLESS carrier or the reverse
-(`reason="protocol_mismatch"`).
+What *must* agree is the **user name**. A park is keyed by *(session id, user)*,
+so the home checks the name the edge attests against the park's owner before
+handing the session over. If `beerloga` denotes different people on two nodes, a
+resume is refused (`relay_rejected_total{reason="unknown_user"}`) — and that is
+the desired outcome, not a bug to configure around. The same applies across proxy
+protocols: a park authenticated under SS is never handed to a VLESS carrier or
+the reverse (`reason="protocol_mismatch"`).
+
+That name is also the only part of a node's user config the mesh constrains, and
+it is constrained by the wire: it travels in a `USER` frame whose length is a
+single byte, capped at `MAX_USER_LEN` (64) in `server/cluster/mesh/frame.rs`. A
+name that is empty, or longer than that, could never authenticate a relayed
+session — the edge refuses to send it and the home's parser refuses to read it —
+so a server with `[cluster] enabled = true` refuses such a `[[users]]` id **at
+startup** rather than discovering it at the first relay, where the symptom would
+be a silently lost resume. A standalone server sends no `USER` frame and is not
+held to the bound; its names are its own business.
 
 This is what the earlier design got backwards. When the home did the decryption,
 the relayed *path* and the relayed *user's credentials* both had to be identical

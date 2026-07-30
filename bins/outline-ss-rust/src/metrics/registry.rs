@@ -236,10 +236,16 @@ pub(super) fn register_descriptions() {
     describe_counter!(
         "outline_ss_mesh_relay_opened_total",
         "Edge attempts to open a cluster mesh relay to a home shard, by outcome \
-         (ok = relay established; fail = home unreachable / at cap; refused = home \
-         reachable but holds no park under the relayed resume id — the ordinary \
-         answer for an expired or never-parked session. All non-ok outcomes \
-         degrade to a fresh session)."
+         (ok = the relay was established and the home acked it; fail = the edge \
+         never got its OPEN to a home — no peer configured for that shard, the \
+         dial failed, or this edge is at its own outbound relay-stream cap; \
+         refused = the OPEN reached a home that answered nothing usable. The \
+         ordinary case behind refused is a home holding no park under the relayed \
+         resume id (an expired or never-parked session); the same value also \
+         covers a home at its inbound relayed-session cap and a peer on a wire \
+         version this cluster has moved past, both of which reset the stream \
+         before any ack — so version skew during a rolling upgrade shows up here, \
+         not on fail. All non-ok outcomes degrade to a fresh local session)."
     );
     describe_counter!(
         "outline_ss_mesh_relay_rejected_total",

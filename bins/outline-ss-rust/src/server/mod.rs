@@ -49,6 +49,12 @@ mod transport;
 #[cfg(test)]
 mod tests;
 
+/// The mesh's own bound on a relayed user name, re-exported for
+/// `Config::validate`: a clustered server refuses at load a `[[users]]` name it
+/// could never attest over the mesh. Kept a re-export rather than a second
+/// constant so the config check and the wire parser can never disagree.
+pub(crate) use self::cluster::mesh::MAX_USER_LEN;
+
 #[cfg(test)]
 use self::{
     dns_cache::DnsCache,
