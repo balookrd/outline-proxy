@@ -175,7 +175,8 @@ fn build_cluster_parts(
     ws_ss_path: Option<&str>,
     downlink_buffer_bytes: usize,
     ss2022: bool,
-    vless_route: Option<(&str, &str)>,
+    // `(ws path, UUID, accounting label)` for this node's VLESS route.
+    vless_route: Option<(&str, &str, &str)>,
 ) -> Result<ClusterParts> {
     // The mesh QUIC endpoint needs the process-wide rustls provider installed.
     ensure_rustls_provider_installed();
@@ -249,15 +250,19 @@ fn build_cluster_parts(
     // the VLESS(-UDP) cluster e2e can encrypt once and any home authenticates
     // it. SS-only tests never hit `/vless`, so this is harmless to them.
     //
-    // `vless_route` overrides the *path and UUID* for one node, which is how a
-    // test proves the mesh carries VLESS payload rather than the VLESS
-    // handshake: each node authenticates its client against its own
-    // credentials. The user **label** stays the same on every node either way —
-    // it is the park's owner, and the home checks it against the name the edge
-    // attests, so it must denote the same person cluster-wide.
-    let (vless_path, vless_uuid) = vless_route.unwrap_or(("/vless", CLUSTER_VLESS_UUID));
+    // `vless_route` overrides the *path, UUID and accounting label* for one
+    // node. The first two are how a test proves the mesh carries VLESS payload
+    // rather than the VLESS handshake: each node authenticates its client
+    // against its own credentials. The label is the park's **owner**, and the
+    // home checks it against the name the edge attests, so it must denote the
+    // same person cluster-wide — every VLESS-only case leaves it at the default.
+    // A cross-protocol case overrides it to the SS user's own label, which is
+    // what one `[[users]]` entry carrying both `password` and `vless_id` looks
+    // like in production.
+    let (vless_path, vless_uuid, vless_label) =
+        vless_route.unwrap_or(("/vless", CLUSTER_VLESS_UUID, "cluster-vless"));
     let vless = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: VlessUser::new(vless_uuid.into(), Arc::from("cluster-vless"), None, None)?,
+        user: VlessUser::new(vless_uuid.into(), Arc::from(vless_label), None, None)?,
         ws_path: Arc::from(vless_path),
     }]));
     let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
@@ -365,7 +370,39 @@ async fn spawn_vless_cluster_node(
         None,
         0,
         false,
-        Some((vless_path, vless_uuid)),
+        Some((vless_path, vless_uuid, "cluster-vless")),
+    )?;
+    boot_ws_node(parts).await
+}
+
+/// Boots a WS cluster node serving **one account over both proxy protocols**:
+/// the SS user `"bob"` on `/tcp` and a VLESS route on `/vless` whose accounting
+/// label is also `"bob"`.
+///
+/// That is the fleet's own shape — a single `[[users]]` entry carries both
+/// `password` and `vless_id`, and both wires park under that entry's `id` — and
+/// it is the only way to reach the cross-protocol splice end to end: the home's
+/// owner check runs on the label, so SS and VLESS must agree on it or the relay
+/// is refused as `unknown_user` before the protocol question is ever asked.
+async fn spawn_dual_protocol_cluster_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+) -> Result<(ClusterNode, UserKey)> {
+    let parts = build_cluster_parts(
+        psk,
+        shard,
+        peers,
+        budget,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0,
+        false,
+        Some(("/vless", CLUSTER_VLESS_UUID, "bob")),
     )?;
     boot_ws_node(parts).await
 }
@@ -969,6 +1006,23 @@ async fn cluster_session_survives_edge_switch() -> Result<()> {
         1,
         "resume across the edge switch must reuse the parked upstream (no fresh connect)"
     );
+
+    // Traffic, not hand-offs. The home records `hit` the moment a splice ends,
+    // however it ended, so a relay whose park is handed over and whose splice
+    // then carries nothing reads on the outcome counters exactly like a working
+    // one — the shape a production regression took while every hand-off
+    // assertion above stayed green. Both directions, because a relay that only
+    // ever carries uplink is equally broken and equally invisible.
+    let rendered = home.metrics.render_prometheus();
+    assert!(
+        mesh_bytes(&rendered, "up") >= b"via-edge-a".len() as u64 + b"via-edge-b".len() as u64,
+        "both switches must have carried their request across the splice: {rendered}",
+    );
+    assert!(
+        mesh_bytes(&rendered, "down") >= b"via-edge-a".len() as u64 + b"via-edge-b".len() as u64,
+        "both switches must have carried the target's answer back: {rendered}",
+    );
+
     sock_b.close(None).await?;
     Ok(())
 }
@@ -3570,6 +3624,195 @@ async fn cluster_vless_relayed_session_emits_the_homes_acked_offset_first() -> R
     Ok(())
 }
 
+// ── Cross-protocol continuity across the mesh ─────────────────────────────────
+
+/// A byte-stream park minted over Shadowsocks, resumed through an edge that
+/// terminated **VLESS** — and payload crossing the home's splice in both
+/// directions.
+///
+/// The home half of this is pinned by
+/// `transport::tests::mesh_relay::v5_home_splices_an_ss_park_onto_a_vless_relay`
+/// against a scripted edge. Nothing pinned the two halves *together*: a relay
+/// whose home hands the park over and whose edge then carries no bytes reads, on
+/// every counter the home publishes, exactly like a working one — `hit` is
+/// recorded by the home the moment the splice ends, however it ended. So the
+/// discriminator here is deliberately not the hand-off but the traffic:
+/// `mesh_bytes_total{role="home"}` must move in **both** directions, and the
+/// echo target must answer through the socket the home already had open.
+///
+/// This is the `shuffle_wires` case reduced to two nodes: one `[[users]]` entry
+/// carrying both `password` and `vless_id`, two legs rerolling their active wire
+/// independently, so about half the time the edge that resumes terminates a
+/// different protocol than the one that parked.
+#[tokio::test]
+async fn cluster_ss_park_resumes_through_a_vless_edge() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-cross-ss-to-vless";
+    /// Written by the home's own SS session, so its upstream socket has taken
+    /// these bytes — and `upstream_bytes_acked` is non-zero — before it parks.
+    const VIA_HOME: &[u8] = b"seventeen-bytes!!";
+    const VIA_EDGE: &[u8] = b"after-the-reroll";
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+
+    let (home, ss_user) =
+        spawn_dual_protocol_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4)).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_dual_protocol_cluster_node(PSK, 2, peers, Duration::from_secs(4)).await?;
+
+    // Park over Shadowsocks: `ParkedProtocol::Ss`, owner "bob".
+    let session_id = park_session_on_home(&home, &ss_user, echo_addr, VIA_HOME).await?;
+
+    // Come back over VLESS with the same id and the same account.
+    let (mut socket, echoed, ack_prefix_confirmed) =
+        connect_ws_h1_ack_prefix(edge.listen_addr, "/vless", Some(session_id), true, true).await?;
+    assert_eq!(
+        echoed,
+        Some(session_id),
+        "a crossing is still a relayed resume: the edge echoes the id the home parks under",
+    );
+    assert!(
+        ack_prefix_confirmed,
+        "the edge re-emits the home's upstream offset, so it owes the client v1",
+    );
+
+    socket
+        .send(WsMessage::Binary(vless_tcp_request(CLUSTER_VLESS_UUID, echo_addr, VIA_EDGE)?))
+        .await?;
+
+    // Read the VLESS byte stream in order: response header, control frame, echo.
+    let want = 2 + FRAME_LEN_V1 + VIA_EDGE.len();
+    let mut stream: Vec<u8> = Vec::new();
+    while stream.len() < want {
+        let frame = expect_binary_reply(&mut socket).await?;
+        stream.extend_from_slice(&frame);
+    }
+    assert_eq!(&stream[..2], &[VLESS_VERSION, 0x00], "the VLESS response header leads");
+    match parse_v1(&stream[2..2 + FRAME_LEN_V1]) {
+        ParseResult::Valid { up_acked } => assert_eq!(
+            up_acked,
+            VIA_HOME.len() as u64,
+            "the offset belongs to the session, not to the protocol that minted it",
+        ),
+        other => bail!("expected an ack-prefix v1 frame right after the header, got {other:?}"),
+    }
+    assert_eq!(
+        &stream[2 + FRAME_LEN_V1..want],
+        VIA_EDGE,
+        "the payload must round-trip through the parked upstream after the crossing",
+    );
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the crossing must reuse the parked upstream, not dial a fresh one",
+    );
+
+    let rendered = home.metrics.render_prometheus();
+    // The assertion a home-only view cannot make: bytes, not hand-offs.
+    assert!(
+        mesh_bytes(&rendered, "up") >= VIA_EDGE.len() as u64,
+        "the uplink must carry the client's request across the splice: {rendered}",
+    );
+    assert!(
+        mesh_bytes(&rendered, "down") >= VIA_EDGE.len() as u64,
+        "the downlink must carry the target's answer back across the splice: {rendered}",
+    );
+    assert_eq!(
+        cross_protocol_resumes(&rendered, "ss", "vless"),
+        1,
+        "the crossing is counted on the node that owns the park: {rendered}",
+    );
+    assert_eq!(
+        mesh_relay_rejected(&rendered, "protocol_mismatch"),
+        0,
+        "a byte-stream park crosses freely: {rendered}",
+    );
+
+    socket.close(None).await?;
+    Ok(())
+}
+
+/// The mirror of [`cluster_ss_park_resumes_through_a_vless_edge`]: a park minted
+/// over **VLESS**, resumed through an edge that terminated Shadowsocks.
+///
+/// Worth its own case rather than a parameter, because the two directions run
+/// different code on both ends. On the home the OPEN asks a different question
+/// (`ParkQuery::Exact(Stream)` for an SS carrier against `AnyVless`), and on the
+/// edge the client's framing is a continuous AEAD stream rather than a
+/// length-prefixed VLESS one — so the control frame the client must find at the
+/// head of it is produced by a different emitter.
+#[tokio::test]
+async fn cluster_vless_park_resumes_through_an_ss_edge() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-cross-vless-to-ss";
+    const VIA_HOME: &[u8] = b"seventeen-bytes!!";
+    const VIA_EDGE: &[u8] = b"after-the-reroll";
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+
+    let (home, _) =
+        spawn_dual_protocol_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4)).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, edge_user) =
+        spawn_dual_protocol_cluster_node(PSK, 2, peers, Duration::from_secs(4)).await?;
+
+    // Park over VLESS: `ParkedProtocol::Vless`, owner "bob".
+    let session_id = park_vless_session_on_home(&home, echo_addr, VIA_HOME).await?;
+
+    let (mut socket, echoed, ack_prefix_confirmed) =
+        connect_ws_h1_ack_prefix(edge.listen_addr, "/tcp", Some(session_id), true, true).await?;
+    assert_eq!(
+        echoed,
+        Some(session_id),
+        "a crossing is still a relayed resume: the edge echoes the id the home parks under",
+    );
+    assert!(ack_prefix_confirmed, "the edge owes this client the home's upstream offset");
+
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(&edge_user, echo_addr, VIA_EDGE)?))
+        .await?;
+
+    let want = FRAME_LEN_V1 + VIA_EDGE.len();
+    let stream = read_ss_plaintext(&mut socket, &edge_user, want).await?;
+    match parse_v1(&stream[..FRAME_LEN_V1]) {
+        ParseResult::Valid { up_acked } => assert_eq!(
+            up_acked,
+            VIA_HOME.len() as u64,
+            "the offset belongs to the session, not to the protocol that minted it",
+        ),
+        other => bail!("expected an ack-prefix v1 frame at the head of the stream, got {other:?}"),
+    }
+    assert_eq!(
+        &stream[FRAME_LEN_V1..want],
+        VIA_EDGE,
+        "the payload must round-trip through the parked upstream after the crossing",
+    );
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the crossing must reuse the parked upstream, not dial a fresh one",
+    );
+
+    let rendered = home.metrics.render_prometheus();
+    assert!(
+        mesh_bytes(&rendered, "up") >= VIA_EDGE.len() as u64,
+        "the uplink must carry the client's request across the splice: {rendered}",
+    );
+    assert!(
+        mesh_bytes(&rendered, "down") >= VIA_EDGE.len() as u64,
+        "the downlink must carry the target's answer back across the splice: {rendered}",
+    );
+    assert_eq!(
+        cross_protocol_resumes(&rendered, "vless", "ss"),
+        1,
+        "the crossing is counted on the node that owns the park: {rendered}",
+    );
+    assert_eq!(
+        mesh_relay_rejected(&rendered, "protocol_mismatch"),
+        0,
+        "a byte-stream park crosses freely: {rendered}",
+    );
+
+    socket.close(None).await?;
+    Ok(())
+}
+
 /// A VLESS-UDP session presenting a foreign-shard resume id is served **locally**
 /// by the edge, and still works.
 ///
@@ -4303,6 +4546,20 @@ fn mesh_bytes(rendered: &str, direction: &str) -> u64 {
         rendered,
         "outline_ss_mesh_bytes_total",
         &[("role", "home"), ("direction", direction), ("transport", "tcp")],
+    )
+}
+
+/// `outline_ss_orphan_resume_cross_protocol_total{parked=…,resumed=…}` off a
+/// rendered scrape: resume hits where the park and the carrier that claimed it
+/// were authenticated under different proxy protocols.
+///
+/// Counted on the node that owns the park, so a relayed crossing lands on the
+/// **home** — which is also the only node that can know both labels.
+fn cross_protocol_resumes(rendered: &str, parked: &str, resumed: &str) -> u64 {
+    metric_sum(
+        rendered,
+        "outline_ss_orphan_resume_cross_protocol_total",
+        &[("parked", parked), ("resumed", resumed)],
     )
 }
 
