@@ -23,14 +23,15 @@ use bytes::Bytes;
 use metrics::Counter;
 use quinn::{RecvStream, SendStream, VarInt};
 use tokio::io::AsyncWriteExt;
+use tokio::net::UdpSocket;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::crypto::MAX_CHUNK_SIZE;
 use crate::metrics::Metrics;
 use crate::server::cluster::mesh::{
-    CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshStream, PooledRelay,
-    UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame,
+    CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshShape, MeshStream, PooledRelay,
+    UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame, write_datagram,
 };
 use crate::server::relay::UpstreamRead;
 
@@ -77,7 +78,14 @@ pub(in crate::server) struct MeshUpstreamSetup {
     /// Bounds every mesh operation: the setup exchange below, and each uplink
     /// write once the relay runs.
     budget: Duration,
-    counters: MeshRelayCounters,
+    /// The shape of the park the home acked — how this relay's body is framed,
+    /// and (on a VLESS carrier, where the OPEN could not say) which client
+    /// commands may use it at all.
+    shape: MeshShape,
+    /// Counters are resolved at attach, not here: a VLESS relay does not know
+    /// its transport label until the command decides it, and a `role="edge"`
+    /// series must name the transport actually on the wire.
+    metrics: Arc<Metrics>,
 }
 
 /// The `role="edge"` counter handles one relay feeds, resolved once at setup.
@@ -94,10 +102,13 @@ struct MeshRelayCounters {
 }
 
 impl MeshRelayCounters {
-    fn new(framing: MeshFraming, metrics: &Metrics) -> Self {
+    /// `framing` is the one the acked [`MeshShape`] resolves to; a shape with no
+    /// framing carries no body and never reaches a counter, so it labels as
+    /// `tcp` rather than inventing a series.
+    fn new(framing: Option<MeshFraming>, metrics: &Metrics) -> Self {
         let transport = match framing {
-            MeshFraming::Tcp => "tcp",
-            MeshFraming::Udp => "udp",
+            Some(MeshFraming::Tcp) | None => "tcp",
+            Some(MeshFraming::Udp) => "udp",
         };
         Self {
             up_bytes: metrics.mesh_bytes_counter("edge", "up", transport),
@@ -118,8 +129,9 @@ pub(in crate::server::transport) struct MeshUpstreamHalves {
     pub(in crate::server::transport) upstream_acked: u64,
 }
 
-/// The datagram-shaped halves of an attached mesh upstream: the SS-UDP edge's
-/// stand-in for a NAT socket.
+/// The datagram-shaped halves of an attached mesh upstream: a datagram edge's
+/// stand-in for the socket the home owns — a NAT entry for SS-UDP, a single
+/// connected socket for VLESS-UDP.
 ///
 /// Handed over raw rather than behind a `WsSocket`-shaped carrier adapter
 /// because the two directions are driven by different owners — the relay loop
@@ -144,14 +156,14 @@ pub(in crate::server::transport) struct MeshDatagramHalves {
 impl MeshUpstreamSetup {
     /// Wraps an opened relay. `ack_prefix` must be the flag the OPEN carried —
     /// it decides whether the home's prologue is on the wire at all, so reading
-    /// it wrong desynchronises the stream. `framing` must likewise be the OPEN's,
-    /// so the counters this relay feeds name the transport actually on the wire.
+    /// it wrong desynchronises the stream. `shape` must likewise be the one the
+    /// home acked, since it is what says how the body is framed.
     pub(in crate::server) fn new(
         pooled: PooledRelay,
         ack_prefix: bool,
         budget: Duration,
-        framing: MeshFraming,
-        metrics: &Metrics,
+        shape: MeshShape,
+        metrics: &Arc<Metrics>,
     ) -> Self {
         let (send, recv, permit) = pooled.into_parts();
         Self {
@@ -159,8 +171,18 @@ impl MeshUpstreamSetup {
             permit: Arc::new(permit),
             ack_prefix,
             budget,
-            counters: MeshRelayCounters::new(framing, metrics),
+            shape,
+            metrics: Arc::clone(metrics),
         }
+    }
+
+    /// The shape of the park the home is holding for this relay.
+    ///
+    /// The VLESS dispatch asks before it commits: only a command whose upstream
+    /// *is* this shape may attest a user, and anything else releases the relay
+    /// with the home's park untouched.
+    pub(in crate::server::transport) fn shape(&self) -> MeshShape {
+        self.shape
     }
 
     /// Abandons an opened relay without ever attesting a user, resetting both
@@ -168,9 +190,10 @@ impl MeshUpstreamSetup {
     /// USER-frame deadline with a relay slot held.
     ///
     /// The one caller is the VLESS edge: it opens the relay before it can read
-    /// the client's first frame, and only then learns whether the command is
-    /// TCP. A `Udp` or `Mux` command needs an upstream shape this splice does
-    /// not carry, so the edge serves it locally — and it must get out *before*
+    /// the client's first frame, and only then learns which command it is
+    /// serving. When that command's upstream shape is not the one the home acked
+    /// ([`Self::shape`]) — a `Mux` command, or a `Tcp` one on a UDP-shaped park —
+    /// the edge serves the session locally, and it must get out *before*
     /// [`Self::attach`], because the USER frame is what makes the home consume
     /// its park. Leaving the setup to drop would eventually say the same thing —
     /// the home's frame read fails either way — but not until the session ends,
@@ -235,8 +258,10 @@ impl MeshUpstreamSetup {
             permit,
             ack_prefix,
             budget,
-            counters,
+            shape,
+            metrics,
         } = self;
+        let counters = MeshRelayCounters::new(shape.framing(), &metrics);
         let upstream_acked = Self::exchange(&mut send, &mut recv, user, ack_prefix, budget).await?;
 
         Ok(MeshUpstreamHalves {
@@ -257,8 +282,8 @@ impl MeshUpstreamSetup {
         })
     }
 
-    /// Completes the v5 hand-off for a **datagram** relay (SS-UDP), yielding the
-    /// raw stream halves the edge frames packets onto.
+    /// Completes the v5 hand-off for a **datagram** relay — SS-UDP or VLESS-UDP —
+    /// yielding the raw stream halves the edge frames packets onto.
     ///
     /// Identical second phase to [`Self::attach`] — the same USER frame, and the
     /// same `ack_prefix`-gated prologue, which must be consumed whenever the flag
@@ -274,8 +299,10 @@ impl MeshUpstreamSetup {
             permit,
             ack_prefix,
             budget,
-            counters,
+            shape,
+            metrics,
         } = self;
+        let counters = MeshRelayCounters::new(shape.framing(), &metrics);
         let _acked = Self::exchange(&mut send, &mut recv, user, ack_prefix, budget).await?;
         Ok(MeshDatagramHalves {
             send,
@@ -386,6 +413,87 @@ impl UpstreamWriter {
         match self {
             UpstreamWriter::Tcp(writer) => Some(writer),
             UpstreamWriter::Mesh { .. } => None,
+        }
+    }
+}
+
+/// Where a single-target VLESS-UDP session's datagrams go: this node's own
+/// connected socket, or the mesh stream to the home that owns one.
+///
+/// The datagram twin of [`UpstreamWriter`], and separate from it for the same
+/// reason the two park shapes are separate — parking hands the concrete
+/// `Arc<UdpSocket>` to the registry, and only the direct variant has one. A
+/// boundary-preserving `send` per datagram is the whole contract: one client
+/// frame is one `send` here and one datagram at the target, and a byte-oriented
+/// writer anywhere in that chain would coalesce two packets into one.
+pub(in crate::server::transport) enum VlessUdpSink {
+    /// A real socket to the target, owned by this node and connected to it.
+    Socket(Arc<UdpSocket>),
+    /// A mesh stream to the home that owns that socket. Each datagram is
+    /// length-framed ([`write_datagram`]) so the boundary survives the hop.
+    Mesh {
+        send: SendStream,
+        /// Bounds one write to the mesh, exactly as on the byte-stream half: a
+        /// home that stops draining fills the QUIC send window, and a write past
+        /// the budget is a dead relay rather than a slow one.
+        budget: Duration,
+        bytes: Counter,
+        datagrams: Counter,
+        _permit: Arc<OwnedSemaphorePermit>,
+    },
+}
+
+impl VlessUdpSink {
+    /// Sends one datagram upstream, whole.
+    pub(in crate::server::transport) async fn send(&mut self, payload: &[u8]) -> Result<()> {
+        match self {
+            VlessUdpSink::Socket(socket) => {
+                let sent = socket
+                    .send(payload)
+                    .await
+                    .context("failed to send vless udp datagram upstream")?;
+                if sent != payload.len() {
+                    bail!("vless udp short send: {sent} of {} bytes", payload.len());
+                }
+                Ok(())
+            },
+            VlessUdpSink::Mesh { send, budget, bytes, datagrams, .. } => {
+                tokio::time::timeout(*budget, write_datagram(send, payload))
+                    .await
+                    .context("the mesh relay stalled past the health budget")?
+                    .context("relaying a vless udp datagram to the home")?;
+                bytes.increment(payload.len() as u64);
+                datagrams.increment(1);
+                Ok(())
+            },
+        }
+    }
+
+    /// Whether this session's upstream lives on another node. A relayed session
+    /// must never be parked here: the socket the park would hand on is not ours.
+    pub(in crate::server::transport) fn is_mesh(&self) -> bool {
+        matches!(self, VlessUdpSink::Mesh { .. })
+    }
+
+    /// The concrete socket, for parking. `None` for a mesh upstream.
+    pub(in crate::server::transport) fn parkable_socket(&self) -> Option<&Arc<UdpSocket>> {
+        match self {
+            VlessUdpSink::Socket(socket) => Some(socket),
+            VlessUdpSink::Mesh { .. } => None,
+        }
+    }
+
+    /// Ends this half at carrier teardown.
+    ///
+    /// A QUIC FIN on the mesh, and deliberately so: it tells the home the
+    /// carrier ended cleanly, which is what makes it re-park the socket instead
+    /// of reading a reset as a broken relay. A direct socket has nothing to end
+    /// — the caller drops it, and a connected UDP socket has no half-close.
+    pub(in crate::server::transport) async fn shutdown(&mut self) {
+        if let VlessUdpSink::Mesh { send, .. } = self {
+            // Fails only on a stream the home has already torn down, where there
+            // is nothing left to tell it.
+            let _ = send.finish();
         }
     }
 }

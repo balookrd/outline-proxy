@@ -17,17 +17,22 @@ use quinn::Connection;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use super::endpoint::{MeshEndpoint, MeshStream, open_relay_stream, read_open_ack};
-use super::frame::OpenHeader;
+use super::frame::{MeshShape, OpenHeader};
 
 /// A relay stream plus the pool permit that keeps it counted against the
 /// concurrency cap until it is dropped.
 pub(in crate::server) struct PooledRelay {
     pub(in crate::server) stream: MeshStream,
+    /// The park shape this relay's OPEN committed to, or `None` when it left the
+    /// shape to the home's ack (a VLESS carrier). Kept from the header so
+    /// [`Self::await_ack`] reads the ack byte the same way the home wrote it.
+    committed_shape: Option<MeshShape>,
     _permit: OwnedSemaphorePermit,
 }
 
 impl PooledRelay {
-    /// Waits for the home's setup acknowledgement, bounded by `timeout`.
+    /// Waits for the home's setup acknowledgement, bounded by `timeout`, and
+    /// yields the park shape the relay is agreed on.
     ///
     /// This is what turns a home-side refusal into a *fast, explicit* failure on
     /// the edge: the caller awaits it before upgrading the client carrier, so a
@@ -35,8 +40,13 @@ impl PooledRelay {
     /// `NoSession` reset while the edge can still fall back to a fresh local
     /// session. The timeout bounds a home that neither acks nor resets — it
     /// costs one mesh RTT on the happy path.
-    pub(in crate::server) async fn await_ack(&mut self, timeout: Duration) -> Result<()> {
-        tokio::time::timeout(timeout, read_open_ack(&mut self.stream.recv))
+    ///
+    /// The shape is the home's answer to what the OPEN could not say: a VLESS
+    /// edge learns here which of the three park shapes it is holding, and can
+    /// therefore decide, once the client's command arrives, whether to splice or
+    /// to release the relay untouched.
+    pub(in crate::server) async fn await_ack(&mut self, timeout: Duration) -> Result<MeshShape> {
+        tokio::time::timeout(timeout, read_open_ack(&mut self.stream.recv, self.committed_shape))
             .await
             .context("timed out awaiting the home's mesh OPEN ack")?
     }
@@ -92,7 +102,11 @@ impl MeshPeerPool {
     ) -> Result<PooledRelay> {
         let (conn, permit) = self.reserve(shard).await?;
         let stream = open_relay_stream(&conn, header).await?;
-        Ok(PooledRelay { stream, _permit: permit })
+        Ok(PooledRelay {
+            stream,
+            committed_shape: header.committed_shape(),
+            _permit: permit,
+        })
     }
 
     /// Takes a concurrency permit and a live connection to `shard`'s home, in
