@@ -56,17 +56,29 @@ three servers. There was then nothing left to diagnose or roll back with.
    cloud3 and cloud4 each pick their own active uplink independently, so moving
    one client off `senko` leaves the other three still on it.
 
-   For every one of the four, move the active uplink away from the target:
+   For every one of the four — **unconditionally, all four, every time** — pin
+   the active uplink to something other than the target:
 
    ```bash
    curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-     -d '{"group":"main"}' http://127.0.0.1:9191/control/reselect
+     -d '{"group":"main","uplink":"<not-the-target>"}' http://127.0.0.1:9191/control/activate
    ```
 
-   `reselect` picks a weighted-random *other* uplink, so re-check the result —
-   it can land back on the target from a different client. `POST
-   /control/activate` pins a specific one when you need determinism. Then
-   confirm the server is genuinely idle before restarting it:
+   **Do not substitute "check the metrics, then move whoever is on it."** That
+   shortcut has failed twice. An idle client — reliably cloud4, sometimes cloud3
+   — emits **no** `outline_ws_uplink_open_connections` line at all for the group.
+   A missing line does not mean "not on this node"; it means "no traffic right
+   now", while its active uplink may still point at the target, so it lands there
+   the moment traffic resumes — including mid-restart. Silence is not evidence.
+
+   Prefer `activate` over `reselect`: `reselect` picks a weighted-random *other*
+   uplink and can land back on the target from a different client. `soft: true`
+   is only meaningful with the cluster live (it migrates through cluster resume);
+   with the cluster off it degrades to "new flows go elsewhere, old ones finish"
+   and takes minutes to drain. A hard switch breaks sessions immediately, but
+   that is the same cost the restart would impose anyway.
+
+   Then confirm the server is genuinely idle before restarting it:
 
    ```bash
    curl -s http://127.0.0.1:9090/metrics | grep '^outline_ss_active_websocket_sessions'
