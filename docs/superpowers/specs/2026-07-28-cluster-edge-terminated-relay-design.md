@@ -206,7 +206,14 @@ black hole.
   existence probe `has_park(id) -> bool`, needed for the phase-1 ACK (which must
   answer "is there a park under this id?" before a user is known). It touches no
   state and does not consume the park.
-- `outline-ws-rust` (client) — **untouched.**
+- `outline-ws-rust` (client) — **untouched**, as designed. *Divergence, recorded
+  after the fact:* commit `386baa76` did change it. XHTTP packet-up has no
+  carrier-level close — the downlink GET and each uplink POST are independent
+  requests — so a client that finished left the server's read alive and the
+  session lingered to the idle sweep instead of parking. Without a park there is
+  nothing for a later `X-Outline-Resume` to find, on the carrier the fleet uses
+  most, so the client now signals the close explicitly. It is argued in full in
+  that commit and in both CHANGELOGs.
 
 ### UDP
 
@@ -279,4 +286,5 @@ of that signal is why a never-working relay went unnoticed.
 - Changing the shape of `DownlinkRing` / `OrphanRegistry`.
 - Cross-node migration of the park itself (the park stays on the home; the edge
   relays to it).
-- Any client-side (`outline-ws-rust`) change.
+- Any client-side (`outline-ws-rust`) change. (Held, with the one exception
+  recorded above: the XHTTP packet-up close signal, `386baa76`.)

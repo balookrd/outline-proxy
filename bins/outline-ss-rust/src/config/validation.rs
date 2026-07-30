@@ -394,29 +394,48 @@ impl Config {
     /// refuses to read it. Failing at load beats discovering it at the first
     /// relay, where the symptom is a silently lost resume.
     ///
-    /// Only a clustered server is held to this. A standalone one sends no
-    /// `UserFrame` at all, so its names are its own business and existing
-    /// single-node deployments keep loading unchanged.
+    /// Every name that can reach a `UserFrame` is checked, which is more than
+    /// the `[[users]]` ids: the attested name is the *effective accounting
+    /// label*, so a `[users.aliases]` key becomes the name on the wire whenever
+    /// the peer falls inside that alias's subnet (`UserKey::effective_label`,
+    /// `VlessUser::with_effective_label`). Checking only the base ids would let
+    /// exactly the failure this exists to prevent through, on the connections
+    /// that happen to match a subnet.
+    ///
+    /// Only a clustered server is held to this. `Config::cluster` is the
+    /// *resolved* section, which `resolve_cluster` leaves `None` unless
+    /// `[cluster] enabled = true`, so a node with the section present but
+    /// switched off is treated as standalone — it sends no `UserFrame` at all,
+    /// its names are its own business, and existing single-node deployments keep
+    /// loading unchanged.
     fn validate_cluster_user_names(&self) -> Result<()> {
         if self.cluster.is_none() {
             return Ok(());
         }
         for user in &self.users {
-            if user.id.is_empty() {
-                bail!(
-                    "[cluster] is enabled, so every [[users]] id must be a user name the mesh can \
-                     attest: an empty user name can never authenticate a relayed session"
-                );
+            Self::validate_cluster_user_name(&user.id, "[[users]] id")?;
+            for alias in user.aliases.iter().flat_map(|map| map.keys()) {
+                Self::validate_cluster_user_name(alias, "[users.aliases] name")?;
             }
-            if user.id.len() > MAX_USER_LEN {
-                bail!(
-                    "[cluster] is enabled, so every [[users]] id must fit the {MAX_USER_LEN}-byte \
-                     mesh user name bound; {:?} is {} bytes and can never authenticate a relayed \
-                     session",
-                    user.id,
-                    user.id.len(),
-                );
-            }
+        }
+        Ok(())
+    }
+
+    /// One name the mesh may have to attest. `what` names the config key it came
+    /// from so the operator knows which one to fix.
+    fn validate_cluster_user_name(name: &str, what: &str) -> Result<()> {
+        if name.is_empty() {
+            bail!(
+                "[cluster] is enabled, so every {what} must be a user name the mesh can attest: \
+                 an empty user name can never authenticate a relayed session"
+            );
+        }
+        if name.len() > MAX_USER_LEN {
+            bail!(
+                "[cluster] is enabled, so every {what} must fit the {MAX_USER_LEN}-byte mesh user \
+                 name bound; {name:?} is {} bytes and can never authenticate a relayed session",
+                name.len(),
+            );
         }
         Ok(())
     }

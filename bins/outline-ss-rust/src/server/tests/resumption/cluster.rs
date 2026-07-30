@@ -2007,6 +2007,147 @@ async fn cluster_xhttp_h3_edge_echo_withholds_symmetric_replay() -> Result<()> {
     Ok(())
 }
 
+/// The two tests above answer only for *session-creating* requests. An XHTTP
+/// session outlives the request that created it, and every later request on the
+/// same id answers with its own response echo — so the withholding has to hold
+/// there too, and that is the half the pins were missing.
+///
+/// An attaching request has no relay to ask: `xhttp_edge` short-circuits on an id
+/// that is already live, precisely so a second request does not open (and waste)
+/// a mesh stream. Deriving the echo from *that* request's headers instead is
+/// therefore the same v2 lie the create path was fixed for, re-entered through
+/// the attach path — and it is reachable end to end, because an `xhttp_h2` /
+/// `xhttp_h3` `stream-one` dial that fails *after* the server created the
+/// session falls back to a plain GET on the same `XhttpTarget`, hence the same
+/// session id.
+///
+/// Both attach shapes an axum XHTTP session really sees are pinned: a packet-up
+/// POST landing on a session a GET created, and a GET landing on a session a
+/// POST created. The session id in [`assert_relayed_edge_echo`] is what keeps
+/// each honest — it is the relayed id, which only a request reading back the
+/// creating request's decision can echo.
+#[tokio::test]
+async fn cluster_xhttp_attach_echo_withholds_symmetric_replay() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-xhttp-attach-echo-psk";
+    let (echo_addr, _accepts) = spawn_echo_target().await?;
+
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), Some("/ssx"), None)
+            .await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_xhttp_v2_node(PSK, 2, peers, Duration::from_secs(4), "/ssx").await?;
+    let client = http_client();
+
+    // 1. A GET creates the relayed session; a POST at seq = 0 then attaches to
+    // it. The GET response body is held open for the whole case so the session
+    // cannot be swept out from under the POST.
+    let parked = park_session_on_home(&home, &user, echo_addr, b"").await?;
+    let uri = format!("http://{}/ssx/attach-echo-get-first", edge.listen_addr);
+    let request = with_v2_resume_headers(Request::builder().method(Method::GET).uri(&uri), parked)
+        .body(Full::new(Bytes::new()))?;
+    let created = client.request(request).await?;
+    assert_eq!(created.status(), StatusCode::OK, "the creating GET must be served");
+    assert_relayed_edge_echo(created.headers(), parked, "creating packet-up GET")?;
+
+    let request = with_v2_resume_headers(
+        Request::builder()
+            .method(Method::POST)
+            .uri(&uri)
+            .header("x-xhttp-seq", "0"),
+        parked,
+    )
+    .body(Full::new(Bytes::new()))?;
+    let attached = client.request(request).await?;
+    assert_eq!(attached.status(), StatusCode::OK, "the attaching POST must be served");
+    assert_relayed_edge_echo(attached.headers(), parked, "attaching packet-up POST")?;
+    drop(created);
+
+    // 2. The other order: a POST at seq = 0 creates, a GET attaches.
+    let parked = park_session_on_home(&home, &user, echo_addr, b"").await?;
+    let uri = format!("http://{}/ssx/attach-echo-post-first", edge.listen_addr);
+    let request = with_v2_resume_headers(
+        Request::builder()
+            .method(Method::POST)
+            .uri(&uri)
+            .header("x-xhttp-seq", "0"),
+        parked,
+    )
+    .body(Full::new(Bytes::new()))?;
+    let created = client.request(request).await?;
+    assert_eq!(created.status(), StatusCode::OK, "the creating POST must be served");
+    assert_relayed_edge_echo(created.headers(), parked, "creating packet-up POST")?;
+
+    let request = with_v2_resume_headers(Request::builder().method(Method::GET).uri(&uri), parked)
+        .body(Full::new(Bytes::new()))?;
+    let attached = client.request(request).await?;
+    assert_eq!(attached.status(), StatusCode::OK, "the attaching GET must be served");
+    assert_relayed_edge_echo(attached.headers(), parked, "attaching packet-up GET")?;
+    drop(attached);
+
+    Ok(())
+}
+
+/// The xhttp/h3 twin of [`cluster_xhttp_attach_echo_withholds_symmetric_replay`].
+/// h3 carries its own copy of the response-echo code, so the attach path needs
+/// its own pin there too: a packet-up POST at `seq = 0` creates the relayed
+/// session and a packet-up GET attaches to it.
+#[tokio::test]
+async fn cluster_xhttp_h3_attach_echo_withholds_symmetric_replay() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-xhttp-h3-attach-echo-psk";
+    let (echo_addr, _accepts) = spawn_echo_target().await?;
+
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), Some("/ssx"), None)
+            .await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) =
+        spawn_xhttp_h3_v2_edge_node(PSK, 2, peers, Duration::from_secs(4), "/ssx").await?;
+
+    let mut endpoint = Endpoint::client((Ipv4Addr::LOCALHOST, 0).into())?;
+    endpoint.set_default_client_config(test_h3_client_config(edge.cert_der.clone())?);
+    let connection = endpoint.connect(edge.addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+    let uri = format!("https://localhost:{}/ssx/attach-echo-h3", edge.addr.port());
+
+    let parked = park_session_on_home(&home, &user, echo_addr, b"").await?;
+    let request = with_v2_resume_headers(
+        Request::builder()
+            .method(Method::POST)
+            .uri(&uri)
+            .version(Version::HTTP_3)
+            .header("x-xhttp-seq", "0"),
+        parked,
+    )
+    .body(())?;
+    let mut req_stream = send_request.send_request(request).await?;
+    req_stream.finish().await?;
+    let response = req_stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK, "the creating xhttp/h3 POST must be served");
+    assert_relayed_edge_echo(response.headers(), parked, "creating xhttp/h3 POST")?;
+    drop(req_stream);
+
+    let request = with_v2_resume_headers(
+        Request::builder()
+            .method(Method::GET)
+            .uri(&uri)
+            .version(Version::HTTP_3),
+        parked,
+    )
+    .body(())?;
+    let mut req_stream = send_request.send_request(request).await?;
+    req_stream.finish().await?;
+    let response = req_stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK, "the attaching xhttp/h3 GET must be served");
+    assert_relayed_edge_echo(response.headers(), parked, "attaching xhttp/h3 GET")?;
+    drop(req_stream);
+
+    driver_task.abort();
+    Ok(())
+}
+
 /// COLD-START reproduction: a clustered node must serve an SS-UDP datagram
 /// LOCALLY when the client presents NO resume id. After a client process restart
 /// the resume cache is empty, so the first UDP dial carries no

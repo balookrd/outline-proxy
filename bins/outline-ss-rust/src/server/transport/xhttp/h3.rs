@@ -140,10 +140,15 @@ async fn xhttp_h3_get(
         peer_addr,
     )
     .await;
-    let (session, created) = match ctx
-        .registry
-        .get_or_create(&session_id, edge.issued_id(&resume_for_create))
-    {
+    // The edge decision is recorded on the session, not kept in this request:
+    // every later request on the same id answers with it too (see
+    // `XhttpSession::relayed_echo`). `edge` still moves into `spawn_relay`
+    // below, and is dropped unused when this request did not create the session.
+    let (session, created) = match ctx.registry.get_or_create(
+        &session_id,
+        edge.issued_id(&resume_for_create),
+        edge.relayed_echo(),
+    ) {
         Some(pair) => pair,
         None => {
             ctx.services
@@ -154,13 +159,6 @@ async fn xhttp_h3_get(
             return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
         },
     };
-    // Snapshot before `edge` moves into `spawn_relay`: a relayed session answers
-    // with the mesh's own echo, which withholds the v2 confirmation this node
-    // cannot honour over the mesh. Only when this request created the session —
-    // otherwise `edge` is dropped unused and advertising a relay this response
-    // did not establish would tell the client a foreign id continues when it
-    // does not.
-    let relayed_echo = if created { edge.relayed_echo() } else { None };
 
     // Latch the datagram-framing negotiation before the relay spawns — it
     // reads the flag when it builds its duplex.
@@ -200,7 +198,8 @@ async fn xhttp_h3_get(
         .body(())
         .context("failed to build xhttp/h3 GET response")?;
     apply_response_masquerade(response.headers_mut());
-    relayed_echo
+    session
+        .relayed_echo
         .unwrap_or(ResumeResponseEcho {
             session_id: issued_for_response,
             ack_prefix: ack_prefix_for_response,
@@ -260,11 +259,13 @@ async fn xhttp_h3_post(
     } else {
         XhttpEdge::local()
     };
+    // The edge decision is recorded on the session; see `xhttp_h3_get`.
     let (session, created) = if seq == 0 {
-        match ctx
-            .registry
-            .get_or_create(&session_id, edge.issued_id(&resume_for_create))
-        {
+        match ctx.registry.get_or_create(
+            &session_id,
+            edge.issued_id(&resume_for_create),
+            edge.relayed_echo(),
+        ) {
             Some(pair) => pair,
             None => {
                 ctx.services
@@ -285,10 +286,6 @@ async fn xhttp_h3_post(
     if session.is_closed() {
         return finish_with_status(stream, StatusCode::GONE).await;
     }
-
-    // Snapshot before `edge` moves into `spawn_relay`, and only when this request
-    // created the session; see `xhttp_h3_get`.
-    let relayed_echo = if created { edge.relayed_echo() } else { None };
 
     let udp_records = negotiate_udp_records(&session, &ctx.route, &headers);
 
@@ -379,7 +376,8 @@ async fn xhttp_h3_post(
     if let Some((name, value)) = generate_padding_header() {
         resp_headers.insert(name, value);
     }
-    relayed_echo
+    session
+        .relayed_echo
         .unwrap_or(ResumeResponseEcho {
             session_id: session.issued_resume_id,
             ack_prefix: ack_prefix_for_response,
@@ -424,10 +422,12 @@ async fn xhttp_h3_stream_one(
         peer_addr,
     )
     .await;
-    let (session, created) = match ctx
-        .registry
-        .get_or_create(&session_id, edge.issued_id(&resume_for_create))
-    {
+    // The edge decision is recorded on the session; see `xhttp_h3_get`.
+    let (session, created) = match ctx.registry.get_or_create(
+        &session_id,
+        edge.issued_id(&resume_for_create),
+        edge.relayed_echo(),
+    ) {
         Some(pair) => pair,
         None => {
             ctx.services
@@ -441,9 +441,6 @@ async fn xhttp_h3_stream_one(
     if session.is_closed() {
         return finish_with_status(stream, StatusCode::GONE).await;
     }
-    // Snapshot before `edge` moves into `spawn_relay`, and only when this request
-    // created the session; see `xhttp_h3_get`.
-    let relayed_echo = if created { edge.relayed_echo() } else { None };
     let udp_records = negotiate_udp_records(&session, &ctx.route, &headers);
     if created
         && !spawn_relay(
@@ -476,7 +473,8 @@ async fn xhttp_h3_stream_one(
         .body(())
         .context("failed to build xhttp/h3 stream-one response")?;
     apply_response_masquerade(response.headers_mut());
-    relayed_echo
+    session
+        .relayed_echo
         .unwrap_or(ResumeResponseEcho {
             session_id: session.issued_resume_id,
             ack_prefix: ack_prefix_for_response,
