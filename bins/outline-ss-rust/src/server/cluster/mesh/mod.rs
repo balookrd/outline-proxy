@@ -24,10 +24,11 @@ pub(in crate::server) use frame::{
     CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshProtocol, MeshShape, OpenHeader,
     UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame,
 };
-// Setup-phase constant the *reading* peer needs. The edge reads the ack through
+// Setup-phase pieces the *reading* peer needs. The edge reads the ack through
 // `PooledRelay::await_ack`, so outside this module only the test standing in for
-// an edge names the byte itself.
+// an edge names the byte itself — or, for an OPEN that committed to no shape,
+// asks the parser which shape the byte names.
 #[cfg(test)]
-pub(in crate::server) use frame::OPEN_ACK_ACCEPTED;
+pub(in crate::server) use frame::{OPEN_ACK_ACCEPTED, parse_open_ack};
 pub(in crate::server) use peer_pool::{MeshPeerPool, PooledRelay};
 pub(in crate::server) use tls::MeshIdentity;

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
+use bytes::BytesMut;
 use quinn::{Connection, ReadError, ReadToEndError, RecvStream, SendStream, VarInt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -20,19 +21,21 @@ use super::{
 use crate::crypto::UserKey;
 use crate::metrics::{AppProtocol, Metrics, Protocol};
 use crate::protocol::TargetAddr;
+use crate::protocol::vless::VlessUser;
+use crate::protocol::vless_mux::{MAX_FRAME_DATA_SIZE, OPTION_DATA, SessionStatus, encode_frame};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CloseIntent, CloseReason, MeshEndpoint, MeshFraming, MeshIdentity, MeshPeerPool, MeshProtocol,
-    OPEN_ACK_ACCEPTED, OpenHeader, UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame,
-    read_datagram, write_datagram,
+    MeshShape, OPEN_ACK_ACCEPTED, OpenHeader, UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame,
+    parse_open_ack, read_datagram, write_datagram,
 };
 use crate::server::dns_cache::DnsCache;
 use crate::server::nat::{NatKey, NatTable, ServerSessionId};
 use crate::server::replay::ReplayStore;
 use crate::server::resumption::downlink_ring::DownlinkRing;
 use crate::server::resumption::{
-    OrphanRegistry, Parked, ParkedSsUdpStream, ParkedTcp, ResumeOutcome, ResumptionConfig,
-    SessionId, TcpProtocolContext,
+    OrphanRegistry, Parked, ParkedMuxSubConn, ParkedMuxSubKind, ParkedSsUdpStream, ParkedTcp,
+    ParkedVlessMux, ResumeOutcome, ResumptionConfig, SessionId, TcpProtocolContext,
 };
 use crate::server::state::{Services, UdpServices};
 use crate::server::tests::sample_config;
@@ -843,14 +846,29 @@ impl MeshHomeHarness {
     }
 
     /// Opens a v5 relay that must be admitted, returning the spliced session.
+    ///
+    /// The shape expected of the ack is the one this OPEN committed to — every
+    /// Shadowsocks header does, which is all of them here. A VLESS header commits
+    /// to none and is told the shape instead; those go through
+    /// [`Self::serve_v5_ok_as`].
     async fn serve_v5_ok(&self, header: OpenHeader, user: &str) -> V5Session {
+        let shape = header.committed_shape().unwrap_or(MeshShape::Stream);
+        self.serve_v5_ok_as(header, user, shape).await
+    }
+
+    /// Like [`Self::serve_v5_ok`], but asserting the home's ack names `shape` —
+    /// the only way to drive a VLESS relay, whose OPEN commits to no shape and
+    /// whose ack byte therefore carries the home's answer.
+    async fn serve_v5_ok_as(&self, header: OpenHeader, user: &str, shape: MeshShape) -> V5Session {
         let (mut send, mut recv) = open_relay(&self.edge_conn, &header.encode()).await;
         let mut ack = [0u8; 1];
         tokio::time::timeout(Duration::from_secs(5), recv.read_exact(&mut ack))
             .await
             .expect("the home must ack an admitted v5 relay")
             .expect("reading the v5 OPEN ack");
-        assert_eq!(ack[0], OPEN_ACK_ACCEPTED);
+        let acked = parse_open_ack(ack[0], header.committed_shape())
+            .expect("an ack byte must name a shape this build knows");
+        assert_eq!(acked, shape, "the home must ack the shape it holds");
         send.write_all(&UserFrame { user: user.to_string() }.encode())
             .await
             .expect("writing the USER frame");
@@ -2464,4 +2482,176 @@ async fn a_burst_of_datagrams_stays_framed_under_concurrent_relays() {
         got, want,
         "every datagram of a burst must cross the mesh whole and exactly once"
     );
+}
+
+// ── Relayed VLESS-mux ─────────────────────────────────────────────────────────
+
+/// The UUID a parked mux's `VlessUser` carries. Never authenticated against
+/// anything on the home — the edge terminated VLESS — so any well-formed UUID
+/// will do; it exists because the park keeps the identity it was minted under.
+const MUX_TEST_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
+
+/// The sub-connection id the parked mux below holds.
+const MUX_SUB_ID: u16 = 7;
+
+/// An OPEN header for a relayed **VLESS** session under `id`. TCP framing,
+/// because a VLESS edge picks the framing before it can read the client's
+/// command and therefore always picks that one; the shape comes back in the ack.
+fn v5_vless_header(id: SessionId) -> OpenHeader {
+    OpenHeader {
+        protocol: MeshProtocol::Vless,
+        ..v5_header(id)
+    }
+}
+
+/// Parks a VLESS-mux bundle under `id` holding one TCP sub-connection on
+/// [`MUX_SUB_ID`], and hands back the far end of that sub-connection's socket.
+///
+/// The socket's buffers are shrunk to [`TINY_SOCKET_BUFFER`] for the same reason
+/// [`park_test_session_with_tiny_buffers`] does it: a far end that is not reading
+/// then blocks the home's uplink part-way through a mux frame within a few tens
+/// of kilobytes, which is the state the test below has to reach.
+async fn park_test_mux_session(
+    registry: &OrphanRegistry,
+    id: SessionId,
+    owner: &str,
+) -> TestUpstream {
+    let listener = tokio::net::TcpListener::bind(loopback()).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (upstream, peer) = tokio::join!(
+        async { listener.accept().await.unwrap().0 },
+        tokio::net::TcpStream::connect(addr),
+    );
+    let peer = peer.unwrap();
+    for socket in [socket2::SockRef::from(&upstream), socket2::SockRef::from(&peer)] {
+        socket
+            .set_send_buffer_size(TINY_SOCKET_BUFFER)
+            .expect("shrinking the test socket send buffer");
+        socket
+            .set_recv_buffer_size(TINY_SOCKET_BUFFER)
+            .expect("shrinking the test socket recv buffer");
+    }
+    let (reader, writer) = upstream.into_split();
+    let owner: Arc<str> = Arc::from(owner);
+    let metrics = test_metrics();
+    registry.park(
+        id,
+        Parked::VlessMux(ParkedVlessMux {
+            sub_conns: HashMap::from([(
+                MUX_SUB_ID,
+                ParkedMuxSubConn {
+                    kind: ParkedMuxSubKind::Tcp { writer, reader },
+                },
+            )]),
+            buffer: BytesMut::new(),
+            user: VlessUser::new(MUX_TEST_UUID.to_string(), Arc::clone(&owner), None, None)
+                .expect("the test mux uuid parses"),
+            owner: Arc::clone(&owner),
+            user_counters: metrics.user_counters(&owner),
+        }),
+    );
+    TestUpstream { peer }
+}
+
+/// `total` bytes of client upload, framed the way a mux client frames it: `Keep`
+/// frames on [`MUX_SUB_ID`], each carrying a full [`MAX_FRAME_DATA_SIZE`]
+/// payload. Framed rather than raw because the home runs the frame layer over a
+/// relayed mux, and it is a cancellation *inside* one of these payloads that the
+/// test is about.
+fn mux_keep_stream(total: usize) -> Vec<u8> {
+    let payload = vec![0xC3u8; MAX_FRAME_DATA_SIZE];
+    let mut out = BytesMut::with_capacity(total + total / MAX_FRAME_DATA_SIZE * 8);
+    while out.len() < total {
+        encode_frame(
+            &mut out,
+            MUX_SUB_ID,
+            SessionStatus::Keep,
+            OPTION_DATA,
+            None,
+            None,
+            Some(&payload),
+        )
+        .expect("a full-size mux frame fits the length prefixes");
+    }
+    out.to_vec()
+}
+
+/// A mesh downlink fault must never hand a relayed mux bundle on as continuable.
+///
+/// The downlink-fault arm breaks out of the join loop with the uplink future
+/// still suspended, and `select!` drops it where it stands. On the byte-stream
+/// splice beside it that is safe, and only because of the byte accounting:
+/// `write_uplink_chunk` credits `upstream_bytes_acked` as the socket takes bytes,
+/// so the next carrier replays exactly the hole the cancellation left. A mux has
+/// none of it — `upstream_acked` is `0` by construction, no downlink ring, no
+/// client-facing Ack-Prefix frame — so the cancelled uplink can leave a partial
+/// application payload in a sub-connection's socket, its frame already consumed
+/// from `MuxState::buffer`, or lose a `New` frame outright, and nothing in the
+/// bundle records either. Re-parking it would tell the client a session
+/// continued that has a silent hole in one of its sub-connections.
+///
+/// So the state under test is the one the feature exists for: an edge failing
+/// abruptly while the client is uploading. Both halves are driven at once — the
+/// target floods a downlink the edge never reads, the edge floods an uplink whose
+/// far end never reads — so when `STOP_SENDING` fails the home's downlink write,
+/// the uplink is genuinely inside a sub-connection `write_all`.
+#[tokio::test]
+async fn a_mesh_downlink_fault_never_reparks_a_relayed_mux() {
+    let registry = ringless_registry();
+    let harness = MeshHomeHarness::with_registry(Arc::clone(&registry)).await;
+    let id = SessionId::from_bytes([46u8; 16]);
+    let upstream = park_test_mux_session(&registry, id, "beerloga").await;
+
+    let V5Session { mut send, mut recv, .. } = harness
+        .serve_v5_ok_as(v5_vless_header(id), "beerloga", MeshShape::VlessMux)
+        .await;
+    wait_for_active_relays(harness.metrics(), 1).await;
+
+    let (mut peer_reader, mut peer_writer) = upstream.split();
+    // The target keeps answering into a mesh stream the edge never reads, so the
+    // home's downlink pump has a write for `STOP_SENDING` to fail.
+    let target = tokio::spawn(async move {
+        let _ = peer_writer.write_all(&flood_payload(0x11)).await;
+        peer_writer
+    });
+    // ...and the client uploads throughout. The far end above never reads, so the
+    // sub-connection's socket fills and the home's uplink parks inside a frame.
+    let uplink = mux_keep_stream(4 * 1024 * 1024);
+    let edge = tokio::spawn(async move {
+        let _ = send.write_all(&uplink).await;
+        send
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // The mesh downlink fault: the same shape an edge that died mid-session
+    // produces, and the one that leaves the upstream itself untouched — which is
+    // exactly why the pre-fix code handed the bundle on.
+    recv.stop(VarInt::from_u32(CloseReason::Abort.code()))
+        .expect("stopping the edge downlink half");
+
+    wait_for_active_relays(harness.metrics(), 0).await;
+    assert!(
+        !registry.has_park(id),
+        "a mux whose uplink was cancelled at an unknown point must not be presented as continuable",
+    );
+
+    // And it was torn down rather than merely unparked: the sub-connection's
+    // socket ends. Either end counts — the home half-closes its write half, and
+    // dropping the read half with the flood still unread turns that into a reset
+    // on some kernels; what must not happen is the socket staying open.
+    let mut buf = vec![0u8; 4096];
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match peer_reader.read(&mut buf).await {
+                Ok(0) | Err(_) => return true,
+                Ok(_) => continue,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(ended, "a refused mux bundle must not leave its sub-connection socket open");
+
+    let _ = target.await;
+    let _ = edge.await;
 }

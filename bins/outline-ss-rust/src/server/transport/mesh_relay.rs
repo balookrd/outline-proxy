@@ -2292,6 +2292,11 @@ async fn splice_plaintext_vless_udp(
 /// either, matching the direct mux path, which has never emitted one.
 /// `symmetric_replay` likewise has nothing to replay: no mux path keeps a
 /// downlink ring.
+///
+/// Which is why a **downlink fault refuses the park** here, where the byte-stream
+/// splice keeps it: with nothing to replay from, a bundle whose uplink was
+/// cancelled mid-frame cannot be handed on as continuable. See the `deny_park` on
+/// the downlink-fault arm below.
 async fn splice_plaintext_vless_mux(
     stream: MeshStream,
     parked: ParkedVlessMux,
@@ -2466,6 +2471,10 @@ async fn splice_plaintext_vless_mux(
         loop {
             tokio::select! {
                 result = &mut uplink => {
+                    // The uplink is done, so the downlink stops at a frame
+                    // boundary and is awaited rather than dropped — and because
+                    // the uplink has already returned, a fault it reports here
+                    // cancels nothing and may still hand the bundle on.
                     let downlink_end = match downlink_ended {
                         Some(ended) => ended,
                         None => {
@@ -2477,8 +2486,38 @@ async fn splice_plaintext_vless_mux(
                 },
                 result = &mut downlink, if downlink_ended.is_none() => match result {
                     Ok(ended) => downlink_ended = Some(Ok(ended)),
+                    // The downlink failed, so the whole relay is over and the
+                    // uplink is dropped where it stands. `deny_park` is what
+                    // makes that safe here — and it is deliberately **not** the
+                    // trade `splice_plaintext_tcp` makes on the identical arm.
+                    //
+                    // That splice keeps its upstream across the very same
+                    // cancellation because `write_uplink_chunk` credits
+                    // `upstream_bytes_acked` byte by byte as the socket takes
+                    // them, so the next carrier replays exactly the hole the
+                    // cancellation left. A mux has none of that compensation:
+                    // `upstream_acked` is `0` by construction, there is no
+                    // downlink ring, and no client-facing Ack-Prefix frame is
+                    // ever emitted. The cancelled uplink can be suspended inside
+                    // a sub-connection's `write_all` — a partial application
+                    // payload already handed to a TCP socket, its frame already
+                    // removed from `MuxState::buffer` — or inside `open_tcp_sub`,
+                    // losing a `New` frame so that sub-connection id would answer
+                    // nothing for the rest of the session. Neither leaves a trace
+                    // in the bundle that would be handed on.
+                    //
+                    // So a bundle whose uplink was cancelled at an unknown point
+                    // is exactly as untrustworthy as the desynchronised frame
+                    // buffer `SpliceFault::upstream` already refuses to park, and
+                    // is refused the same way: the client re-establishes its mux
+                    // instead of resuming one with a silent hole in it. Stopping
+                    // the uplink cooperatively at a frame boundary — the shape
+                    // the downlink uses — was the alternative, and it would have
+                    // to wait on a sub-connection write that carries no budget
+                    // while draining a downlink channel whose pump is already
+                    // gone: a rare lost bundle traded for a relay that can hang.
                     Err(fault) => break SpliceOutcome {
-                        end: fault.into_end(),
+                        end: fault.into_end().deny_park(),
                         stream_finished: false,
                         observed_intent: CloseIntent::CarrierEnded,
                     },
