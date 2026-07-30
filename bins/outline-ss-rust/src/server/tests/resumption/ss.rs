@@ -107,6 +107,50 @@ async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, Us
     Ok((server, alice, bob))
 }
 
+/// Single-user SS fixture whose one user carries a `[users.aliases]` entry
+/// covering `127.0.0.0/8`, so the loopback test client always resolves to the
+/// alias rather than the base config id. Returns `(server, bob)`.
+///
+/// Every accounting label this session produces — metrics, NAT, logs — is the
+/// alias; the park/resume owner label has to be the same one, which is what
+/// the test below pins.
+async fn spawn_ss_aliased_user_server() -> Result<(ResumptionTestServer, UserKey)> {
+    use std::collections::BTreeMap;
+
+    use super::super::super::build_user_routes;
+    use super::super::sample_config_with_users;
+    use crate::config::OneOrManyCidr;
+
+    let dummy_listen: SocketAddr = (Ipv4Addr::LOCALHOST, 0).into();
+    let mut config = sample_config_with_users(
+        dummy_listen,
+        vec![UserEntry {
+            id: "bob".into(),
+            password: Some("secret-b".into()),
+            fwmark: None,
+            method: None,
+            ws_path_tcp: None,
+            ws_path_udp: None,
+            ws_path_ss: None,
+            vless_id: None,
+            ws_path_vless: None,
+            xhttp_path_vless: None,
+            xhttp_path_tcp: None,
+            xhttp_path_udp: None,
+            xhttp_path_ss: None,
+            enabled: None,
+            aliases: Some(BTreeMap::from([(
+                "bob-loopback".to_owned(),
+                OneOrManyCidr::One("127.0.0.0/8".to_owned()),
+            )])),
+        }],
+    );
+    config.session_resumption.enabled = true;
+    let user = build_user_routes(&config)?[0].user.clone();
+    let server = spawn_test_server(config, Vec::new()).await?;
+    Ok((server, user))
+}
+
 // ── SS-specific request encoding ─────────────────────────────────────────────
 
 /// Encrypts a single SS-AEAD chunk: target address followed by
@@ -224,6 +268,46 @@ async fn ss_resume_hit_after_dirty_carrier_death() -> Result<()> {
         1,
         "a carrier that died dirty must still park its upstream — otherwise resume can only ever \
          hit for sessions that never needed it"
+    );
+
+    socket2.close(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ss_resume_hit_for_aliased_user_skips_fresh_upstream() -> Result<()> {
+    let (target_addr, target_accepts) = spawn_echo_target().await?;
+    let (server, user) = spawn_ss_aliased_user_server().await?;
+
+    // Session #1: parks under whatever label the park path picks.
+    let (mut socket, issued) = connect_ws_h1(server.listen_addr, "/tcp", None, true).await?;
+    let session_id = issued.ok_or_else(|| {
+        anyhow::anyhow!("server did not issue X-Outline-Session despite Resume-Capable")
+    })?;
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, b"ping1")?))
+        .await?;
+    let _reply = expect_binary_reply(&mut socket).await?;
+    assert_eq!(target_accepts.load(Ordering::SeqCst), 1);
+
+    socket.close(None).await?;
+    drop(socket);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Session #2: same user, same loopback source IP — so the same alias. The
+    // resume side authenticates as the alias, so parking under the base config
+    // id would fail the owner check and force a fresh upstream.
+    let (mut socket2, _) =
+        connect_ws_h1(server.listen_addr, "/tcp", Some(session_id), true).await?;
+    socket2
+        .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, b"ping2")?))
+        .await?;
+    let _reply2 = expect_binary_reply(&mut socket2).await?;
+    assert_eq!(
+        target_accepts.load(Ordering::SeqCst),
+        1,
+        "an aliased user must resume its own parked upstream: park and resume have to agree \
+         on the effective label"
     );
 
     socket2.close(None).await?;
