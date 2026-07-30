@@ -345,7 +345,11 @@ async fn soft_bit_follows_shared_resume() {
         panic!("expected Switched");
     };
     assert!(soft);
-    assert!(mgr.active_uplinks_snapshot().soft, "published snapshot carries the soft bit");
+    assert_eq!(
+        mgr.active_uplinks_snapshot().intent,
+        crate::types::SwitchIntent::OperatorSoft,
+        "published snapshot carries the operator's soft intent",
+    );
 }
 
 #[tokio::test]
