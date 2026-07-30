@@ -50,6 +50,7 @@ use super::super::{
 use crate::metrics::{Metrics, Transport};
 
 mod cluster;
+mod cross_protocol;
 mod ss;
 mod vless;
 

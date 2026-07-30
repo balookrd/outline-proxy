@@ -16,7 +16,7 @@ use super::super::super::{
     abort::AbortOnDrop,
     connect::connect_tcp_target,
     relay::{GREEDY_DRAIN_TARGET, UpstreamRead},
-    resumption::{Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext},
+    resumption::{Parked, ParkedProtocol, ParkedTcp, ResumeOutcome, SessionId},
 };
 use super::super::carrier_padding;
 use super::super::upstream_source::{
@@ -146,11 +146,9 @@ pub(super) async fn try_park_vless_tcp(
         upstream_reader: reader,
         target_display,
         owner: Arc::clone(&owner),
-        // VLESS does not encrypt the relay payload, so the parked entry
-        // carries no inner crypto context. Resume-attach on the VLESS
-        // side just spawns a fresh raw-byte relay on the new client
-        // stream.
-        protocol_context: TcpProtocolContext::Vless,
+        // Diagnostic only: no resume path branches on it, and a carrier of
+        // either protocol may take this park (see [`ParkedProtocol`]).
+        protocol: ParkedProtocol::Vless,
         user_counters,
         upstream_guard,
         // Move the per-session Ack-Prefix counter into the parked
@@ -241,21 +239,21 @@ where
             .take_for_resume(resume_id, &user_id_for_resume)
             .await
     {
-        let TcpProtocolContext::Vless = parked.protocol_context else {
-            warn!(
-                user = user.label(),
-                path = %route.path,
-                parked_kind = parked.protocol_context.label(),
-                "rejecting resume: parked session belongs to a different proxy protocol"
-            );
-            return Err(VlessFrameError::Fatal(anyhow!(
-                "cross-protocol resume rejected: parked session is not VLESS"
-            )));
-        };
+        // A park minted under Shadowsocks is served here unchanged — see
+        // `super::super::tcp`'s twin of this comment and
+        // `docs/SESSION-RESUMPTION.md` § Cross-protocol resume. The response
+        // header emitted just below is what this carrier owes its own client;
+        // the park has no say in it.
+        if parked.protocol != ParkedProtocol::Vless {
+            server
+                .metrics
+                .record_orphan_resume_cross_protocol(parked.protocol.label(), "vless");
+        }
         debug!(
             user = user.label(),
             path = %route.path,
             target = %parked.target_display,
+            parked_protocol = parked.protocol.label(),
             "vless tcp upstream resumed from orphan registry"
         );
         // Send the standard VLESS response header so the client moves

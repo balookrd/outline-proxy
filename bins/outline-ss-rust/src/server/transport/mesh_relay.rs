@@ -46,7 +46,7 @@ use crate::server::nat::{NatKey, ResponseSender, UdpResponseCoding, UdpResponseS
 use crate::server::resumption::downlink_ring::ReplayOutcome;
 use crate::server::resumption::{
     OrphanRegistry, ParkProbe, ParkQuery, ParkShape, Parked, ParkedSsUdpStream, ParkedTcp,
-    ParkedVlessMux, ParkedVlessUdpSingle, ResumeMiss, ResumeOutcome, SessionId, TcpProtocolContext,
+    ParkedVlessMux, ParkedVlessUdpSingle, ResumeMiss, ResumeOutcome, SessionId,
 };
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::state::Services;
@@ -422,18 +422,6 @@ async fn read_user_frame(recv: &mut RecvStream) -> Result<UserFrame> {
     UserFrame::parse(&frame)
 }
 
-/// Whether a parked TCP session may be spliced onto a relay the edge opened for
-/// `relayed`. The mesh carries plaintext, so nothing about the body depends on
-/// this — only the invariant that a session stays inside the protocol it was
-/// authenticated under.
-fn protocol_matches(relayed: MeshProtocol, parked: &TcpProtocolContext) -> bool {
-    matches!(
-        (relayed, parked),
-        (MeshProtocol::Ss, TcpProtocolContext::Ss(_))
-            | (MeshProtocol::Vless, TcpProtocolContext::Vless)
-    )
-}
-
 /// A park whose shape agrees with the one the relay was acked for — every shape
 /// the v5 home splices. Narrowing [`Parked`] to it right after phase 2 keeps the
 /// shape agreement in one `match` instead of one late check per splice.
@@ -710,11 +698,13 @@ async fn serve_relayed(
         SplicableParked::Tcp(parked) => parked,
         SplicableParked::VlessMux(parked) => {
             // A VLESS-mux park is VLESS by construction — only the mux command
-            // mints one — so an SS relay claiming it is the same cross-protocol
-            // confusion the arms below refuse. Unreachable through `park_query`,
-            // which never hands an SS OPEN this shape, but the splice is the
-            // place that would be wrong. The bundle is untouched here, so it
-            // goes back whole.
+            // mints one — and unlike a byte-stream park it cannot cross to an SS
+            // carrier however sure we are of the account: the bundle is a map of
+            // sub-connections keyed by mux stream id plus a half-decoded mux
+            // frame, and SS-over-WS has no multiplex to express any of it.
+            // Unreachable through `park_query`, which never hands an SS OPEN
+            // this shape, but the splice is the place that would be wrong. The
+            // bundle is untouched here, so it goes back whole.
             if header.protocol != MeshProtocol::Vless {
                 cluster.metrics.record_mesh_relay_rejected("protocol_mismatch");
                 cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
@@ -736,10 +726,12 @@ async fn serve_relayed(
         },
         SplicableParked::VlessUdp(parked) => {
             // A VLESS-UDP park is VLESS by construction — nothing else mints one
-            // — so an SS relay claiming it is the same cross-protocol confusion
-            // the two arms below refuse. Unreachable through `park_query`, which
-            // never hands an SS OPEN this shape, but the splice is the place
-            // that would be wrong.
+            // — and it cannot cross either: one connected socket plus a
+            // half-decoded 2-byte-length-prefixed frame, against an SS-UDP
+            // carrier that is many-target and frames every datagram under its
+            // own header. Unreachable through `park_query`, which never hands an
+            // SS OPEN this shape, but the splice is the place that would be
+            // wrong.
             if header.protocol != MeshProtocol::Vless {
                 cluster.metrics.record_mesh_relay_rejected("protocol_mismatch");
                 cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
@@ -758,8 +750,11 @@ async fn serve_relayed(
         },
         SplicableParked::SsUdp(parked) => {
             // An SS-UDP park is Shadowsocks by construction — there is no other
-            // way to mint one — so a relay claiming VLESS over it is the same
-            // cross-protocol confusion the byte-stream arm refuses below.
+            // way to mint one — and, like the two arms above, it holds framing
+            // state a VLESS carrier cannot take over: a set of NAT keys whose
+            // responder slots are re-pointed under SS coding, against a
+            // single-target VLESS-UDP session. Only the byte-stream splice
+            // below crosses protocols.
             if header.protocol != MeshProtocol::Ss {
                 cluster.metrics.record_mesh_relay_rejected("protocol_mismatch");
                 cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
@@ -777,44 +772,25 @@ async fn serve_relayed(
             .await;
         },
     };
-    // Cross-protocol resume, refused exactly as the two direct paths refuse it
-    // (`transport::tcp` and `transport::vless::tcp`): an SS-authenticated carrier
-    // never reattaches to a park minted under VLESS, or the other way round. The
-    // owner check above already binds an id to one user identity, so reaching
-    // here means SS and VLESS users share an identifier across the cluster — a
-    // configuration error worth surfacing rather than silently splicing a
-    // session onto the wrong protocol's carrier.
+    // A byte-stream park crosses the proxy-protocol boundary freely, exactly as
+    // the two direct paths let it (`transport::tcp` and `transport::vless::tcp`):
+    // the mesh body is plaintext, the replay ring is filled ahead of encryption,
+    // and everything else in the bundle is a socket half or a counter. The owner
+    // check above is what binds the id to an account, and one account is reached
+    // over both protocols by construction — a single `[[users]]` entry carries
+    // both `password` and `vless_id`. A client rerolling its active wire between
+    // an SS and a VLESS one (`shuffle_wires`) lands here on every reroll, which
+    // is precisely when the session is worth keeping.
     //
-    // Checked here, after the park is taken, for the same reason the direct
-    // paths check it there: the protocol is a property of the *park*, and asking
-    // in phase 1 would only narrow the window, not close it (a reservation
-    // carries no protocol either). Unlike a UDP- or mux-shaped park — routine
-    // now that VLESS multiplexes three shapes onto one id — this is not
-    // something a healthy cluster produces, so it does not earn the phase-1
-    // lookup that `park_shape` does.
-    if !protocol_matches(header.protocol, &parked.protocol_context) {
-        cluster.metrics.record_mesh_relay_rejected("protocol_mismatch");
-        cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
-        warn!(
-            relayed = header.protocol.label(),
-            parked_kind = parked.protocol_context.label(),
-            "refusing a relayed resume across proxy protocols and putting the park back — check \
-             that user names denote the same person, and the same protocol, on every cluster node",
-        );
-        // Put the park back, exactly as the shape-mismatch arm above does. Unlike
-        // the two cross-protocol arms beside it — which guard splices `park_query`
-        // can never hand an SS OPEN — this one is *reachable*: an SS OPEN
-        // legitimately probes `ParkShape::Stream`, and a VLESS-authenticated
-        // `Parked::Tcp` is that shape too, so phase 1 admits it and only the
-        // protocol check here rejects it. The park is untouched at this point and
-        // is still worth everything to a carrier that asks under the right
-        // protocol, so discarding it would cost the client its continuity for a
-        // session nothing is wrong with.
-        if registry.enabled() {
-            registry.park(session_id, Parked::Tcp(parked));
-        }
-        refuse_relay(stream, CloseReason::Abort);
-        return Ok(());
+    // The datagram and mux arms above still refuse: those parks hold framing
+    // state the other protocol cannot express, not merely a label.
+    //
+    // Counted on the home, which owns the park — the same node whose
+    // `orphan_resume_hit_total` this crossing is a subset of.
+    if parked.protocol.label() != header.protocol.label() {
+        cluster
+            .metrics
+            .record_orphan_resume_cross_protocol(parked.protocol.label(), header.protocol.label());
     }
     // The `hit` itself is recorded by the splice on its way out, where the
     // close intent that labels it is finally known; `outline_ss_mesh_relay_active`
@@ -1341,15 +1317,15 @@ async fn splice_plaintext_tcp(
     // only the socket halves and the ring, but a re-park has to hand the whole
     // bundle back to the registry with the same field semantics the direct path
     // parks with. The user is already authenticated (by the edge, attested in
-    // the USER frame) and the owner check is done, so neither the identity nor
-    // the SS user key does any work *here* — `owner` still keys the park and
-    // `protocol_context` still guards a later cross-protocol resume.
+    // the USER frame) and the owner check is done, so the identity does no work
+    // *here* — `owner` still keys the park, and `protocol` rides along as the
+    // diagnostic label of whichever protocol first minted this session.
     let ParkedTcp {
         mut upstream_writer,
         mut upstream_reader,
         target_display,
         owner,
-        protocol_context,
+        protocol,
         // Per-user byte accounting stays with the node that terminates the
         // client session, i.e. the edge; the home counts this traffic on its
         // `role="home"` mesh counters below.
@@ -1544,7 +1520,7 @@ async fn splice_plaintext_tcp(
                 upstream_reader,
                 target_display,
                 owner,
-                protocol_context,
+                protocol,
                 user_counters,
                 upstream_guard,
                 upstream_bytes_acked,

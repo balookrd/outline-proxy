@@ -529,6 +529,23 @@ impl Metrics {
         });
     }
 
+    /// Counts a resume hit that crossed the proxy-protocol boundary: a park
+    /// minted under `parked` (`ss` / `vless`) handed to a carrier of `resumed`.
+    /// A subset of `record_orphan_resume_hit`, not a separate outcome — the
+    /// same session is counted on both. Fed by the two direct resume paths and
+    /// by the mesh splice, so one series answers "how much of this fleet's
+    /// continuity crosses protocols" wherever the park lives.
+    pub fn record_orphan_resume_cross_protocol(&self, parked: &'static str, resumed: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_orphan_resume_cross_protocol_total",
+                "parked"  => parked,
+                "resumed" => resumed,
+            )
+            .increment(1);
+        });
+    }
+
     /// Counts a failed resume attempt by reason (`unknown`, `disabled`).
     pub fn record_orphan_resume_miss(&self, reason: &'static str) {
         with_local_recorder(&self.recorder, || {
@@ -585,7 +602,10 @@ impl Metrics {
     /// rate means edges are being pushed back to local sessions and the cap (or
     /// the node's share of the cluster) needs review — `no_session` (nothing
     /// parked under the relayed resume id), `unknown_user` (the park belongs to
-    /// someone else), `park_shape`, `protocol_mismatch`, `park_identity` (an
+    /// someone else), `park_shape`, `protocol_mismatch` (a datagram or mux park
+    /// claimed under the other proxy protocol — those hold framing state the
+    /// other protocol cannot express, unlike a byte-stream park, which crosses
+    /// freely), `park_identity` (an
     /// SS-UDP park holds no NAT key for the attested user), `park_incomplete` (a
     /// VLESS-mux park holds no sub-connection left to re-attach, so the bundle
     /// is refused whole), `framing_mismatch` or `bad_setup` (the setup was

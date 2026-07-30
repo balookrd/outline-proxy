@@ -451,12 +451,14 @@ pub(in crate::server) enum MeshFraming {
 
 /// Which proxy protocol the edge terminated for a relayed stream.
 ///
-/// The home never speaks it — the mesh carries application plaintext — but the
-/// park it is about to splice does: [`crate::server::resumption::ParkedTcp`]
-/// keeps the protocol its session was authenticated under, and both direct
-/// resume paths refuse to reattach across that boundary. The home needs the same
-/// answer to apply the same rule, so the protocol travels in the OPEN (where the
-/// edge already knows it, unlike the user).
+/// The home never speaks it — the mesh carries application plaintext — and a
+/// byte-stream park is served to a carrier of either protocol, so this does not
+/// gate the splice. What it still decides is the *shape* question: paired with
+/// [`MeshFraming`] it names which park shapes an OPEN can be asking for
+/// (`mesh_relay::park_query`), because an SS carrier names one exactly while a
+/// VLESS one multiplexes three onto a single path. It also labels the crossing
+/// in logs and on `outline_ss_orphan_resume_cross_protocol_total`. The edge
+/// knows it before it reads a client byte, unlike the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::server) enum MeshProtocol {
     Ss,
@@ -464,9 +466,9 @@ pub(in crate::server) enum MeshProtocol {
 }
 
 impl MeshProtocol {
-    /// Stable label for structured logs. Matches
-    /// `resumption::TcpProtocolContext::label`, so an operator reads the same
-    /// two words on both sides of the refusal.
+    /// Stable label for structured logs and metrics. Matches
+    /// `resumption::ParkedProtocol::label`, so an operator reads the same two
+    /// words on both sides of a crossing.
     pub(in crate::server) fn label(self) -> &'static str {
         match self {
             MeshProtocol::Ss => "ss",
