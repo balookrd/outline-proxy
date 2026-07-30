@@ -215,6 +215,67 @@ smaller number for reasons that have nothing to do with health.
    deploy, 26 at 15:00 after). A 10-minute pre-deploy baseline read zero purely
    because the phenomenon is bursty. Do not attribute it to a deploy.
 
+## Executed 2026-07-30 — exit servers, and the cluster switched on
+
+The three exit servers were deployed after the client-side four, in a second
+pass, then `[cluster]` was enabled in a third. All from `73526e0d`, hash
+`48903b27ce34`.
+
+| Node | shard | Public IP | Result |
+|---|---|---|---|
+| senko | 1 | 91.132.161.142 | active, NRestarts 0, RSS 31 MB against 262/367 MB limits |
+| nuxt | 0 | 185.78.76.246 | active, NRestarts 0, RSS 27 MB |
+| aeza | 2 | 77.221.141.167 | active, NRestarts 0 |
+
+The `[cluster]` edit is simpler than the awk block guard prescribed below: in
+every one of these files `enabled = false` is the **only** such line (the other
+two `enabled` keys are `true`), so `sed 's/^enabled = false/enabled = true/'`
+over a `cp -p` backup, redirected into the existing file by `sudo sh -c`, is
+unambiguous and preserves `640 outline-ss-rust:outline-ss-rust`. Verify the diff
+is exactly one line before restarting. Check the count first — the shortcut is
+only safe while it holds.
+
+**UDP 9443 is listening on all three for the first time since 2026-07-28.**
+
+### Step 5 result: the mesh connects, but no relay has hit a park yet
+
+Honest state, because the difference matters.
+
+What is now proven to work, and never did before:
+
+- Peers reach each other. `tcpdump` on nuxt caught live mesh traffic with senko,
+  9443 ↔ 9443, in both directions.
+- Full OPEN → ack round-trips complete. nuxt as edge shows
+  `mesh_relay_opened_total{outcome="refused"} 5`, and senko and aeza as homes
+  show the matching `mesh_relay_rejected_total{reason="no_session"}` and
+  `mesh_relay_outcome_total{outcome="miss"}`. `refused` is *not* a transport
+  error — it is the home answering "I hold no park under this id", which is the
+  expected answer for a session that was never parked. Reaching that answer at
+  all means the QUIC handshake, the PSK-derived pin, the OPEN frame and the ack
+  path all work end to end. Previously this was `empty route` and nothing else.
+
+What is **not** achieved:
+
+- No `outcome="hit"` on any node, and `mesh_bytes_total` has never been emitted
+  — so `{direction="down"}` is still zero, and the success criterion below is
+  **not met**. The relay connects; it has not yet carried a byte.
+- Two forced soft switches of `.104` (nuxt→senko, senko→nuxt, both with
+  `soft: true` on a `shared_resume` group) produced one `opened{outcome="fail"}`
+  on senko and then, on the second switch, **no counter movement at all** —
+  meaning the second switch did not even attempt a relay.
+
+Reading of `opened{outcome="fail"}` (senko 1, nuxt 8, aeza 4): it is recorded
+when `pool.open_relay` returns `Err`, and logged only at `debug`, which the
+fleet's `RUST_LOG=outline_ss_rust=info` suppresses. Most of these fall in the
+window when the three nodes were being enabled one at a time and a peer's 9443
+was still closed — but not all of them, and the reason is not visible at the
+current log level.
+
+Next diagnostic step, not yet taken: a systemd drop-in setting
+`RUST_LOG=outline_ss_rust::server::transport::mesh_relay=debug,outline_ss_rust=info`
+on one node, then a forced switch, to see the failure reason and whether the
+OPEN carries the shard it should. It needs a restart, so drain first.
+
 ## Step 1 — build
 
 ```bash
