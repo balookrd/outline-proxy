@@ -26,7 +26,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use arc_swap::ArcSwap;
 use axum::http::{Method, Request, StatusCode, Version, header};
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use futures_util::{SinkExt, StreamExt};
 use h3::ext::Protocol as H3Protocol;
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
@@ -99,6 +99,12 @@ use crate::protocol::vless::{VERSION as VLESS_VERSION, VlessUser};
 /// user "bob").
 const CLUSTER_VLESS_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
+/// A *second* VLESS UUID, for the edge in the cross-node VLESS-UDP test. The
+/// edge authenticates its client against this one while the home's park was
+/// minted under [`CLUSTER_VLESS_UUID`] — which only works because the mesh
+/// carries VLESS payload, not the VLESS handshake.
+const EDGE_VLESS_UUID: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
 /// `downlink_buffer_bytes` for the nodes that must have v2 Symmetric Downlink
 /// Replay enabled in their own resumption config. Any non-zero value flips
 /// `OrphanRegistry::symmetric_replay_enabled`; the size itself is irrelevant to
@@ -160,6 +166,7 @@ fn build_cluster_parts(
     ws_ss_path: Option<&str>,
     downlink_buffer_bytes: usize,
     ss2022: bool,
+    vless_route: Option<(&str, &str)>,
 ) -> Result<ClusterParts> {
     // The mesh QUIC endpoint needs the process-wide rustls provider installed.
     ensure_rustls_provider_installed();
@@ -223,9 +230,17 @@ fn build_cluster_parts(
     // A fixed VLESS user on `/vless`, shared across nodes (like the SS user), so
     // the VLESS(-UDP) cluster e2e can encrypt once and any home authenticates
     // it. SS-only tests never hit `/vless`, so this is harmless to them.
+    //
+    // `vless_route` overrides the *path and UUID* for one node, which is how a
+    // test proves the mesh carries VLESS payload rather than the VLESS
+    // handshake: each node authenticates its client against its own
+    // credentials. The user **label** stays the same on every node either way —
+    // it is the park's owner, and the home checks it against the name the edge
+    // attests, so it must denote the same person cluster-wide.
+    let (vless_path, vless_uuid) = vless_route.unwrap_or(("/vless", CLUSTER_VLESS_UUID));
     let vless = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: VlessUser::new(CLUSTER_VLESS_UUID.into(), Arc::from("cluster-vless"), None, None)?,
-        ws_path: Arc::from("/vless"),
+        user: VlessUser::new(vless_uuid.into(), Arc::from("cluster-vless"), None, None)?,
+        ws_path: Arc::from(vless_path),
     }]));
     let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: tcp_routes,
@@ -297,6 +312,40 @@ async fn spawn_cluster_node(
         None,
         0,
         false,
+        None,
+    )?;
+    boot_ws_node(parts).await
+}
+
+/// Boots a WS cluster node whose VLESS route is its **own**: a different path
+/// and a different UUID from every other node's.
+///
+/// That is the shape a real cluster has — each node authenticates its clients
+/// against its own credentials — and the only way to prove the mesh carries
+/// VLESS *payload* rather than the VLESS handshake: a session parked on one
+/// node's UUID resumes through an edge that has never heard of it. The user
+/// label is deliberately *not* overridden: it is the park's owner, and the home
+/// checks the name the edge attests against it.
+async fn spawn_vless_cluster_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+    vless_path: &str,
+    vless_uuid: &str,
+) -> Result<(ClusterNode, UserKey)> {
+    let parts = build_cluster_parts(
+        psk,
+        shard,
+        peers,
+        budget,
+        None,
+        None,
+        None,
+        None,
+        0,
+        false,
+        Some((vless_path, vless_uuid)),
     )?;
     boot_ws_node(parts).await
 }
@@ -367,6 +416,7 @@ async fn spawn_xhttp_v2_node(
         None,
         V2_DOWNLINK_BUFFER_BYTES,
         false,
+        None,
     )?;
     boot_ws_node(parts).await
 }
@@ -395,6 +445,7 @@ async fn spawn_combined_ws_node(
         Some(ws_ss_path),
         0,
         false,
+        None,
     )?;
     boot_ws_node(parts).await
 }
@@ -414,7 +465,7 @@ async fn spawn_ss2022_node(
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
 ) -> Result<(ClusterNode, UserKey)> {
-    let parts = build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, true)?;
+    let parts = build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, true, None)?;
     boot_ws_node(parts).await
 }
 
@@ -440,6 +491,7 @@ async fn spawn_throttle_node(
         None,
         0,
         false,
+        None,
     )?;
     boot_ws_node(parts).await
 }
@@ -467,7 +519,7 @@ async fn spawn_h3_edge_node(
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
 ) -> Result<(H3EdgeNode, UserKey)> {
-    let parts = build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, false)?;
+    let parts = build_cluster_parts(psk, shard, peers, budget, None, None, None, None, 0, false, None)?;
     boot_h3_edge_node(parts).await
 }
 
@@ -493,6 +545,7 @@ async fn spawn_xhttp_h3_v2_edge_node(
         None,
         V2_DOWNLINK_BUFFER_BYTES,
         false,
+        None,
     )?;
     boot_h3_edge_node(parts).await
 }
@@ -581,6 +634,7 @@ async fn spawn_combined_xhttp_h3_node(
         None,
         0,
         false,
+        None,
     )?;
     let registry = Arc::clone(&services.orphan_registry);
     let ctx = H3ServeCtx {
@@ -2633,6 +2687,42 @@ where
     }
 }
 
+/// Reads `want` whole VLESS-UDP datagrams off the carrier, in order.
+///
+/// Unlike [`read_vless_udp_datagram`] this keeps its buffer across datagrams, so
+/// the *boundaries* are what it asserts: each returned entry is one
+/// length-prefixed frame as the client would de-frame it, whatever the WebSocket
+/// framing did with them. A pair that coalesced upstream comes back as one
+/// oversized entry rather than two, which is the failure this exists to catch.
+async fn read_vless_udp_datagrams<S>(socket: &mut S, want: usize) -> Result<Vec<Vec<u8>>>
+where
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let mut buf: Vec<u8> = Vec::new();
+    let mut out = Vec::with_capacity(want);
+    loop {
+        // Drop an optional leading VLESS response header once it is fully
+        // present, exactly as the single-datagram helper does.
+        if out.is_empty() && buf.len() >= 2 && buf[0] == VLESS_VERSION && buf[1] == 0x00 {
+            buf.drain(..2);
+        }
+        while out.len() < want && buf.len() >= 2 {
+            let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+            if buf.len() < 2 + len {
+                break;
+            }
+            out.push(buf[2..2 + len].to_vec());
+            buf.drain(..2 + len);
+        }
+        if out.len() == want {
+            return Ok(out);
+        }
+        let frame = expect_binary_reply(socket).await?;
+        buf.extend_from_slice(&frame);
+    }
+}
+
 /// Establishes a VLESS-TCP session **against the home**, lets it park, and
 /// returns the id the home minted for it.
 ///
@@ -2914,37 +3004,42 @@ async fn cluster_vless_udp_foreign_shard_is_served_locally() -> Result<()> {
     Ok(())
 }
 
-/// A VLESS-UDP park on the home **survives** an edge that cannot relay it.
+/// A VLESS-UDP session migrates across an edge switch: the same parked socket
+/// serves a carrier that arrives on a different node, with a different path and
+/// a different credential.
 ///
-/// **Assertion deliberately removed here:** the previous version of this test
-/// (`cluster_vless_udp_survives_edge_switch`) asserted that the target saw
-/// exactly one upstream source across an edge switch — the home resuming its
-/// parked `Arc<UdpSocket>` for a carrier that arrived on a different node. Under
-/// v5 the edge terminates VLESS and finds a UDP command, whose upstream shape the
-/// home's plaintext splice does not carry, so it serves the session locally on a
-/// fresh source port. Cross-node VLESS-UDP migration therefore does not happen
-/// while VLESS rides v5 and the home serves only `Parked::Tcp`; it returns when
-/// the home learns the non-TCP park shapes.
+/// The guarantee this asserts — one upstream source across the switch — is the
+/// one the v5 migration withdrew when the VLESS edge moved to plaintext relaying
+/// and the home spliced only `Parked::Tcp`. It is back because the home now
+/// names the shape of the park it holds in its setup ack, so an edge learns
+/// *before* it reads the client's command that this id is a single-target
+/// VLESS-UDP session, and the home has a splice for it.
 ///
-/// What must hold in the meantime is the property that keeps that regression
-/// *temporary* rather than destructive, and it is what this test now pins: the
-/// home's park is neither consumed nor damaged by the edge that could not use
-/// it. Two independent barriers are exercised at once — the home's phase-1
-/// `probe_park` answering `ParkProbe::OtherShape` for a UDP-shaped park, before
-/// anything is taken, and the edge releasing the relay the moment it reads a
-/// non-TCP command. A regression
-/// in either would show up as the third connect binding a *third* source port,
-/// because the park would have been destroyed by the second.
+/// Three properties ride on the single `sources` counter. The edge must relay
+/// rather than bind its own socket (else a second source appears); the home must
+/// re-park the socket when the mesh carrier ends (else the third connect binds
+/// one); and the resume must survive the credential switch, because the edge
+/// authenticates its client against its own UUID on its own path and the home
+/// only ever sees the user *name* the edge attests.
 #[tokio::test]
-async fn cluster_vless_udp_park_on_the_home_survives_an_unrelayable_edge() -> Result<()> {
+async fn cluster_vless_udp_survives_edge_switch() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-vless-udp-switch-psk";
     let (target_addr, sources) = spawn_echo_udp_target().await?;
 
-    // Home owns shard 1; the edge (shard 2) can relay to it.
+    // Home owns shard 1; the edge (shard 2) can relay to it, and serves VLESS on
+    // its own path under its own UUID.
     let (home, _user) =
         spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
-    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, None).await?;
+    let (edge, _) = spawn_vless_cluster_node(
+        PSK,
+        2,
+        peers,
+        Duration::from_secs(4),
+        "/vless-edge",
+        EDGE_VLESS_UUID,
+    )
+    .await?;
 
     // Session #1 on the home itself: one UDP source, parked as
     // `Parked::VlessUdpSingle` under the id the home minted.
@@ -2964,18 +3059,19 @@ async fn cluster_vless_udp_park_on_the_home_survives_an_unrelayable_edge() -> Re
     drop(sock_home);
     wait_for_park(&home, session_id).await?;
 
-    // Session #2 via the edge, same id. The home refuses in phase 1 because the
-    // park is not TCP-shaped, so the edge mints its own id and serves the
-    // session locally — on a second source port.
+    // Session #2 via the edge, same id, different path and credential. The home
+    // acks the relay with the park's shape, the edge reads `VlessCommand::Udp`,
+    // sees the shapes agree and relays the datagram home.
     let (mut sock_edge, echoed_id) =
-        connect_ws_h1(edge.listen_addr, "/vless", Some(session_id), true).await?;
-    assert!(
-        echoed_id.is_some() && echoed_id != Some(session_id),
-        "an edge that could not relay must echo its own id, not the presented one",
+        connect_ws_h1(edge.listen_addr, "/vless-edge", Some(session_id), true).await?;
+    assert_eq!(
+        echoed_id,
+        Some(session_id),
+        "a relayed session must echo the id the home parks under",
     );
     sock_edge
         .send(WsMessage::Binary(vless_udp_request(
-            CLUSTER_VLESS_UUID,
+            EDGE_VLESS_UUID,
             target_addr,
             b"vless-edge",
         )?))
@@ -2984,25 +3080,19 @@ async fn cluster_vless_udp_park_on_the_home_survives_an_unrelayable_edge() -> Re
     assert_eq!(
         echoed.as_slice(),
         b"vless-edge",
-        "the locally served session reaches the target"
+        "the relay must carry the VLESS-UDP datagram byte-exact",
     );
     assert_eq!(
         sources.lock().await.len(),
-        2,
-        "a locally served VLESS-UDP session binds its own source (the removed guarantee)",
+        1,
+        "resume across the edge switch must reuse the parked UDP socket (one upstream source)",
     );
     sock_edge.close(None).await?;
     drop(sock_edge);
 
-    // The home's park must still be there, untouched by the edge that could not
-    // use it.
-    assert!(
-        home.registry.has_park(session_id),
-        "the edge must not consume a park it cannot splice",
-    );
-
-    // And it must still be *usable*: resuming it directly on the home reattaches
-    // the same socket rather than binding a third one.
+    // The home re-parks the socket once the mesh carrier ends, so the session
+    // survives more than one switch.
+    wait_for_park(&home, session_id).await?;
     let (mut sock_back, _) =
         connect_ws_h1(home.listen_addr, "/vless", Some(session_id), true).await?;
     sock_back
@@ -3013,30 +3103,101 @@ async fn cluster_vless_udp_park_on_the_home_survives_an_unrelayable_edge() -> Re
         )?))
         .await?;
     let echoed = read_vless_udp_datagram(&mut sock_back).await?;
-    assert_eq!(echoed.as_slice(), b"vless-back", "the surviving park still carries datagrams");
+    assert_eq!(echoed.as_slice(), b"vless-back", "the re-parked socket still carries datagrams");
     assert_eq!(
         sources.lock().await.len(),
-        2,
-        "resuming the surviving park must reuse its socket, not bind a third source",
+        1,
+        "the re-parked socket must be the same one, not a third source",
     );
     sock_back.close(None).await?;
+    Ok(())
+}
+
+/// Datagram boundaries survive the relay, in both directions.
+///
+/// This is the property the whole datagram framing exists for, and the one a
+/// byte splice would silently destroy: two client datagrams sent back to back
+/// must arrive at the target as two packets, and their two echoes must arrive at
+/// the client as two frames. Coalescing shows up here as a single frame whose
+/// length is the sum — the target echoes what it received, so a merged pair
+/// cannot come back split.
+///
+/// The two payloads have different lengths on purpose: a merged pair would be
+/// read as one datagram of the combined length, which no assertion below can
+/// mistake for a pass.
+#[tokio::test]
+async fn cluster_vless_udp_relay_preserves_datagram_boundaries() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-vless-udp-boundary-psk";
+    let (target_addr, sources) = spawn_echo_udp_target().await?;
+
+    let (home, _user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, None).await?;
+
+    // Park a VLESS-UDP session on the home so the edge has something to relay.
+    let (mut sock_home, issued) = connect_ws_h1(home.listen_addr, "/vless", None, true).await?;
+    let session_id = issued.context("the home must mint a resume id")?;
+    sock_home
+        .send(WsMessage::Binary(vless_udp_request(CLUSTER_VLESS_UUID, target_addr, b"seed")?))
+        .await?;
+    assert_eq!(read_vless_udp_datagram(&mut sock_home).await?.as_slice(), b"seed");
+    sock_home.close(None).await?;
+    drop(sock_home);
+    wait_for_park(&home, session_id).await?;
+
+    // Resume through the edge, then send two datagrams inside one WebSocket
+    // frame — the tightest coalescing the client framing allows.
+    let (mut socket, echoed_id) =
+        connect_ws_h1(edge.listen_addr, "/vless", Some(session_id), true).await?;
+    assert_eq!(echoed_id, Some(session_id), "the relay must echo the home's parked id");
+    socket
+        .send(WsMessage::Binary(vless_udp_request(CLUSTER_VLESS_UUID, target_addr, b"first")?))
+        .await?;
+    assert_eq!(read_vless_udp_datagram(&mut socket).await?.as_slice(), b"first");
+
+    let mut both = BytesMut::new();
+    both.put_u16(b"second".len() as u16);
+    both.extend_from_slice(b"second");
+    both.put_u16(b"third-datagram".len() as u16);
+    both.extend_from_slice(b"third-datagram");
+    socket.send(WsMessage::Binary(both.freeze())).await?;
+
+    let echoed = read_vless_udp_datagrams(&mut socket, 2).await?;
+    assert_eq!(
+        echoed,
+        vec![b"second".to_vec(), b"third-datagram".to_vec()],
+        "two datagrams sent in one frame must arrive as two, byte-exact and in order",
+    );
+    assert_eq!(
+        sources.lock().await.len(),
+        1,
+        "every datagram rode the one parked socket",
+    );
+    socket.close(None).await?;
     Ok(())
 }
 
 /// A VLESS-**TCP** command presenting an id the home parked as **VLESS-UDP** must
 /// not cost the home that park.
 ///
-/// This is the case the home's phase-1 shape check exists for, and the only one
-/// where the edge's own release cannot help: the edge reads `VlessCommand::Tcp`,
-/// which is exactly the shape a mesh upstream carries, so it goes on to send the
-/// USER frame — and the USER frame is what makes the home call `take_for_resume`.
-/// A phase 1 that admitted any shape would hand the park over and *then* discover
-/// it is not `Parked::Tcp`, refusing with the park already consumed.
-///
 /// Cross-shape id reuse is a client that dialled TCP on a carrier whose previous
 /// incarnation was UDP or mux — VLESS multiplexes all three onto one path, so
-/// the id alone cannot say which. Asking the shape question in phase 1 turns
-/// that from a destroyed session into an ordinary local fallback.
+/// the id alone cannot say which. The home's ack tells the edge which shape it
+/// is holding, and a `Tcp` command on a UDP-shaped park therefore releases the
+/// relay *before* the USER frame that would make the home call
+/// `take_for_resume`. Two further non-consuming probes back that up on the home
+/// itself — the phase-1 one and the phase-2 one immediately before the take — so
+/// no path can destroy the park while refusing it.
+///
+/// The echoed id is the home's, deliberately, and that is the visible cost of
+/// deciding the shape this way: the `101` goes out while the relay is still
+/// admitted, before the edge has read a single client byte. It is bounded and
+/// non-destructive — the client comes back with the home's id, the home still
+/// holds the park, and this edge serves it locally again — where the
+/// alternatives are worse: withholding the id from every VLESS upgrade would
+/// give up continuity for the commands that *can* be relayed, and delaying the
+/// `101` until the first frame would break the upgrade handshake itself.
 #[tokio::test]
 async fn cluster_vless_tcp_on_a_udp_shaped_park_leaves_it_intact() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-vless-crossshape-psk";
@@ -3060,13 +3221,16 @@ async fn cluster_vless_tcp_on_a_udp_shaped_park_leaves_it_intact() -> Result<()>
     drop(sock_home);
     wait_for_park(&home, session_id).await?;
 
-    // Same id, TCP command, through the edge. The home refuses in phase 1
-    // *before* consuming anything, so this is served locally and works.
+    // Same id, TCP command, through the edge. The home acks with the park's
+    // shape, the edge sees a `Tcp` command needs a byte-stream upstream and
+    // releases the relay without ever attesting a user — so this is served
+    // locally and works, and nothing was consumed.
     let (mut socket, echoed_id) =
         connect_ws_h1(edge.listen_addr, "/vless", Some(session_id), true).await?;
-    assert!(
-        echoed_id.is_some() && echoed_id != Some(session_id),
-        "the home holds no TCP-shaped park, so the edge must mint and echo its own id",
+    assert_eq!(
+        echoed_id,
+        Some(session_id),
+        "an admitted relay echoes the home's id, even on the path that later releases it",
     );
     socket
         .send(WsMessage::Binary(vless_tcp_request(
