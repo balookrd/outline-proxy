@@ -100,3 +100,60 @@ fn each_flow_owns_its_session_id() {
     assert_eq!(first.replay().unwrap().total_sent(), 10);
     assert_eq!(second.replay().unwrap().total_sent(), 0);
 }
+
+/// Every clause of the eligibility gate names itself, and the six reasons are
+/// distinct series. Without this a blocked flow is invisible in production: it
+/// never dials, so no dial-side counter moves.
+#[test]
+fn each_blocked_clause_reports_its_own_reason() {
+    let now = Instant::now();
+
+    // Disabled outranks everything else: the operator's knob is the answer even
+    // for a flow that would also have failed a later clause.
+    let disarmed = FlowResume::disarmed();
+    assert_eq!(disarmed.migration_block(false, now), Some(MigrationBlocked::Disabled));
+    // ...and with the knob on, that same flow has no id.
+    assert_eq!(disarmed.migration_block(true, now), Some(MigrationBlocked::NoSessionId));
+
+    let mut abandoned = FlowResume::armed(Some(session_id(1)));
+    abandoned.abandon_migration();
+    assert_eq!(abandoned.migration_block(true, now), Some(MigrationBlocked::Abandoned));
+
+    let mut ringless = FlowResume::armed_with_capacity(Some(session_id(2)), 8);
+    ringless.record_uplink_chunk(&[0u8; 64]).unwrap_err();
+    assert_eq!(ringless.migration_block(true, now), Some(MigrationBlocked::NoReplayRing));
+
+    // A flow with budget left and a fresh clock is eligible.
+    let mut healthy = FlowResume::armed(Some(session_id(3)));
+    assert_eq!(healthy.migration_block(true, now), None);
+    assert!(healthy.can_attempt_migration(true, now));
+
+    // Spending the budget blocks it — and the deadline is measured from the
+    // FIRST attempt, so a flow that still has budget but ran out of time reports
+    // the deadline instead.
+    healthy.begin_migration(now);
+    healthy.commit_migration(Some(session_id(4)));
+    assert_eq!(healthy.migration_block(true, now), None);
+    assert_eq!(
+        healthy.migration_block(true, now + TUN_TCP_MIGRATION_DEADLINE),
+        Some(MigrationBlocked::DeadlinePassed)
+    );
+    for _ in 1..TUN_TCP_MIGRATION_MAX_ATTEMPTS {
+        healthy.begin_migration(now);
+        healthy.commit_migration(Some(session_id(5)));
+    }
+    assert_eq!(healthy.migration_block(true, now), Some(MigrationBlocked::BudgetSpent));
+
+    // The six reasons are six distinct metric series.
+    let events = [
+        MigrationBlocked::Disabled,
+        MigrationBlocked::Abandoned,
+        MigrationBlocked::NoSessionId,
+        MigrationBlocked::NoReplayRing,
+        MigrationBlocked::BudgetSpent,
+        MigrationBlocked::DeadlinePassed,
+    ]
+    .map(MigrationBlocked::event);
+    let unique: std::collections::BTreeSet<_> = events.iter().collect();
+    assert_eq!(unique.len(), events.len(), "blocked-reason labels must not collide");
+}

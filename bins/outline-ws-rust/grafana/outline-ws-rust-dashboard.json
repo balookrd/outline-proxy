@@ -3482,14 +3482,14 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace(sum by (instance, event) (rate(outline_ws_tun_tcp_events_total{job=~\"$job\",instance=~\"$instance\",event=~\"carrier_migrated|carrier_migration_miss|carrier_migration_dial_failed|carrier_migration_replay_failed|replay_ring_overflow\"}[$__rate_interval])), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace(sum by (instance, event) (rate(outline_ws_tun_tcp_events_total{job=~\"$job\",instance=~\"$instance\",event=~\"carrier_migrated|carrier_migration_miss|carrier_migration_dial_failed|carrier_migration_replay_failed|replay_ring_overflow|soft_switch_migrated|soft_switch_migration_failed|global_switch|carrier_migration_disabled|carrier_migration_abandoned|carrier_migration_no_session_id|carrier_migration_no_replay_ring|carrier_migration_budget_spent|carrier_migration_deadline_passed\"}[$__rate_interval])), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{event}}",
               "refId": "A"
             }
           ],
           "title": "TCP Carrier Migration",
           "type": "timeseries",
-          "description": "Transparent TUN TCP carrier migration on carrier death. carrier_migrated = a flow re-attached its parked upstream on a fresh carrier (app saw no reset). _miss = server did not confirm the resume (fell back to teardown). _dial_failed / _replay_failed = redial or byte-replay failed. replay_ring_overflow = a flow sent a chunk larger than its 64 KiB replay ring and is no longer resumable. Healthy: migrated rising, the failure series near zero."
+          "description": "Transparent TUN TCP carrier migration, on carrier death and on an operator soft switch. carrier_migrated / soft_switch_migrated = a flow re-attached its parked upstream on a fresh carrier (app saw no reset). _miss = server did not confirm the resume (fell back to teardown). _dial_failed / _replay_failed = redial or byte-replay failed. replay_ring_overflow = a flow sent a chunk larger than its 64 KiB replay ring and is no longer resumable. global_switch = a flow torn down with RST because strict active_passive repointed away from its uplink (expected on a hard switch; on a soft switch it means the migration was refused first). The carrier_migration_no_* / _disabled / _abandoned / _budget_spent / _deadline_passed series say why a flow was never eligible to dial at all. Healthy: migrated rising, the failure series near zero."
         },
         {
           "datasource": {

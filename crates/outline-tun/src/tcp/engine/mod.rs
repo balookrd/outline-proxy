@@ -367,20 +367,53 @@ pub(super) async fn key_group_and_uplink(flow: &Arc<Mutex<TcpFlowState>>) -> (Ar
 
 pub(super) use crate::wire::{ip_family_from_version, ip_to_target, target_socket_addr};
 
-/// Policy predicate: returns `true` when a flow bound to `flow_uplink_index`
-/// must be torn down because its group is in strict-active-uplink mode and
-/// has repointed to a different uplink. The `usize::MAX` sentinel marks a
-/// flow that hasn't been bound to an uplink yet (SynReceived mid-handshake)
-/// — such flows are never migrated.
-pub(super) async fn should_migrate_tcp_flow(
+/// What a strict-`active_passive` group's active-uplink pointer says about a
+/// flow bound to `flow_uplink_index`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ActiveUplinkVerdict {
+    /// Leave the flow alone: the group is not strict, the flow is still on the
+    /// active uplink, or it is not bound to one yet.
+    Stay,
+    /// The pointer moved off this flow's uplink on a *hard* switch — an operator
+    /// hard switch, a health failover, or a scheduled reselect. Tear the flow
+    /// down with RST, exactly as this group always has.
+    Abort,
+    /// The pointer moved off this flow's uplink on an operator **soft** switch.
+    /// Carry the flow over to `target` via cluster resume instead of resetting
+    /// it. Only ever produced on a `shared_resume` group: every
+    /// `set_active_uplink_*` path clamps the soft bit to `false` elsewhere,
+    /// because off a cluster there is no shared resume scope to migrate into.
+    SoftMigrate { target: usize },
+}
+
+/// Policy predicate: what to do with a flow bound to `flow_uplink_index` given
+/// the group's current active-uplink selection. The `usize::MAX` sentinel marks
+/// a flow that hasn't been bound to an uplink yet (SynReceived mid-handshake) —
+/// such flows are never disturbed.
+///
+/// Reads the published [`ActiveUplinksSnapshot`] rather than the manager's async
+/// `active_uplinks` lock: the snapshot is pushed inside every mutation of that
+/// lock, so the two never disagree, and it is the only view that carries the
+/// `soft` bit at all — without which a soft switch is indistinguishable from a
+/// hard one and every live flow gets RST. Being a plain `borrow()` also keeps
+/// the TUN ingress path (which consults this per packet) off an async lock.
+pub(super) fn active_uplink_verdict(
     manager: &UplinkManager,
     flow_uplink_index: usize,
-) -> bool {
-    if !manager.strict_active_uplink_for(TransportKind::Tcp) {
-        return false;
+) -> ActiveUplinkVerdict {
+    if flow_uplink_index == usize::MAX || !manager.strict_active_uplink_for(TransportKind::Tcp) {
+        return ActiveUplinkVerdict::Stay;
     }
-    manager
-        .active_uplink_index_for_transport(TransportKind::Tcp)
-        .await
-        .is_some_and(|active| flow_uplink_index != usize::MAX && flow_uplink_index != active)
+    let snapshot = manager.active_uplinks_snapshot();
+    let Some(active) = snapshot.tcp_for(manager.strict_global_active_uplink()) else {
+        return ActiveUplinkVerdict::Stay;
+    };
+    if active == flow_uplink_index {
+        return ActiveUplinkVerdict::Stay;
+    }
+    if snapshot.soft {
+        ActiveUplinkVerdict::SoftMigrate { target: active }
+    } else {
+        ActiveUplinkVerdict::Abort
+    }
 }

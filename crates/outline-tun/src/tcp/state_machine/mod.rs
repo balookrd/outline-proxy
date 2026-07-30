@@ -45,7 +45,7 @@ pub(super) use recv::{
 };
 #[allow(unused_imports)]
 pub(super) use resume::{
-    FlowResume, TUN_TCP_MIGRATION_DEADLINE, TUN_TCP_MIGRATION_MAX_ATTEMPTS,
+    FlowResume, MigrationBlocked, TUN_TCP_MIGRATION_DEADLINE, TUN_TCP_MIGRATION_MAX_ATTEMPTS,
     TUN_UPLINK_REPLAY_RING_BYTES,
 };
 #[allow(unused_imports)]
