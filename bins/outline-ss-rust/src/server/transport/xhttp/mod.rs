@@ -37,6 +37,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
+use super::resume_headers::ResumeResponseEcho;
 use crate::server::resumption::SessionId;
 
 mod duplex;
@@ -166,10 +167,18 @@ impl XhttpRegistry {
     /// already live: the caller rejects with HTTP 503 without inserting an
     /// entry or spawning a task. An already-live id (resume / repeat request)
     /// is served regardless of the cap — the cap gates creation only.
+    ///
+    /// `issued_resume_id` and `relayed_echo` are the edge decision this request
+    /// committed to; both are recorded on the session and read back by every
+    /// later request on the same id, which is what keeps an attaching request's
+    /// answer identical to the creating one's (see
+    /// [`XhttpSession::relayed_echo`]). Both are ignored when the id is already
+    /// live — that session's own creator settled them.
     pub(in crate::server) fn get_or_create(
         &self,
         session_id: &str,
         issued_resume_id: Option<SessionId>,
+        relayed_echo: Option<ResumeResponseEcho>,
     ) -> Option<(Arc<XhttpSession>, bool)> {
         let key: Arc<str> = Arc::from(session_id);
         // Fast path: an existing session is always served, never rejected by
@@ -191,7 +200,7 @@ impl XhttpRegistry {
             .entry(Arc::clone(&key))
             .or_insert_with(|| {
                 created = true;
-                Arc::new(XhttpSession::new(Arc::clone(&key), issued_resume_id))
+                Arc::new(XhttpSession::new(Arc::clone(&key), issued_resume_id, relayed_echo))
             })
             .value()
             .clone();
@@ -277,6 +286,21 @@ pub(in crate::server) struct XhttpSession {
     /// the server or the client did not opt in. Held by value
     /// because `SessionId` is `Copy`.
     pub(in crate::server) issued_resume_id: Option<SessionId>,
+    /// The response echo of the mesh relay this session was created over, or
+    /// `None` when it is served locally.
+    ///
+    /// Recorded once, by the request that created the session, because the echo
+    /// describes the *session* and not the request that happens to be answering.
+    /// A later request on the same id has no relay to ask — `xhttp_edge`
+    /// short-circuits on an id that is already live — so re-deriving the echo
+    /// from that request's own headers would answer with this node's local
+    /// resumption policy. That answer is wrong in one way that breaks the
+    /// client: it confirms v2 Symmetric Downlink Replay, which no relayed
+    /// session can honour (the home's replay suffix crosses the mesh as
+    /// undelimited plaintext, so there is no `ORDR` frame to hand on), and a
+    /// client that latches v2 parses the suffix as a frame header and drops the
+    /// session. Held by value — [`ResumeResponseEcho`] is `Copy`.
+    pub(in crate::server) relayed_echo: Option<ResumeResponseEcho>,
     /// Datagram record framing negotiated for this session (see
     /// [`outline_wire::udp_records`]). Latched by whichever request first
     /// arrives on an SS-UDP path carrying `X-Outline-Udp-Records: 1` — GET and
@@ -303,7 +327,11 @@ pub(in crate::server) struct DownlinkState {
 }
 
 impl XhttpSession {
-    fn new(id: Arc<str>, issued_resume_id: Option<SessionId>) -> Self {
+    fn new(
+        id: Arc<str>,
+        issued_resume_id: Option<SessionId>,
+        relayed_echo: Option<ResumeResponseEcho>,
+    ) -> Self {
         Self {
             id,
             uplink: Mutex::new(UplinkState {
@@ -326,6 +354,7 @@ impl XhttpSession {
             last_activity_nanos: AtomicI64::new(0),
             created_at: Instant::now(),
             issued_resume_id,
+            relayed_echo,
             udp_records: AtomicBool::new(false),
         }
     }

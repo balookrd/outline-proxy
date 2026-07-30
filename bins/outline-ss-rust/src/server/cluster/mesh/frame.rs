@@ -778,7 +778,10 @@ impl<'a> Reader<'a> {
                 self.pos = end;
                 Ok(slice)
             },
-            None => bail!("truncated mesh OPEN header"),
+            // Shared by every frame this module parses — the OPEN header, the
+            // USER frame and the upstream-ack frame — so the message names the
+            // reader, not whichever frame happened to be first.
+            None => bail!("truncated mesh frame"),
         }
     }
 

@@ -151,14 +151,36 @@ gets two entries, not a refusal.
 
 **Per-user accounting stays with the node that terminates the client session.**
 A relayed session is counted on the edge, which sees the client's real protocol;
-the home records the same traffic only on its `role="home"` mesh counters, and
-emits no `user`-labelled `outline_ss_udp_*` series for it at all. Counting on
-both nodes would double every relayed user's bytes and requests, and would do it
-on the home under `protocol="http3"` — the mesh's own protocol — where the
-duplicate is indistinguishable from genuine direct H3 traffic on that node and
-cannot be subtracted back out. The byte-stream splice makes the same split. Drops
-the home itself decided on (oversized datagram, relay concurrency limit) are
-node-local facts counted nowhere else, and stay.
+the home records the same traffic only on its `role="home"` mesh counters.
+Counting on both nodes would double every relayed user's bytes and requests, and
+would do it on the home under `protocol="http3"` — the mesh's own protocol —
+where the duplicate is indistinguishable from genuine direct H3 traffic on that
+node and cannot be subtracted back out.
+
+All four splices make that same split, by three different mechanisms:
+
+- **Byte stream** and **single-target VLESS-UDP**: the home never touches the
+  park's `user_counters` at all. They ride through the splice untouched, so a
+  later *direct* resume on the home keeps counting where it left off.
+- **SS-UDP**: the decision travels down into the NAT reader on the entry's
+  `UdpResponseCoding::Plaintext` attachment, which is what
+  `terminates_client_session()` answers `false` for. The home's own
+  `user`-labelled `outline_ss_udp_*` request and byte series are suppressed on
+  that answer — with the deliberate exception below.
+- **VLESS-mux**: the mux frame layer runs on the home, so its sub-connections
+  would otherwise each count their own payload. `MuxAccounting::OnTheEdge`
+  *silences* those counters instead — a different mechanism from "never touch
+  them", because here there is live per-sub-connection accounting code to switch
+  off, and the edge has already counted the whole mux frame stream once as a
+  VLESS byte stream.
+
+Drops the home itself decided on are the exception, and stay: an oversized
+datagram or a relay-concurrency refusal is a node-local fact that no other node
+records. The oversized-datagram counter
+(`outline_ss_udp_oversized_datagrams_dropped_total`) carries a `user` label, so
+that one `user`-labelled `outline_ss_udp_*` series *does* appear on the home for
+a relayed session — deliberately, because attributing the drop is the whole point
+of it.
 
 **The home names the park's shape in its setup ack.** A VLESS carrier cannot
 name it in the OPEN: one path multiplexes TCP, UDP and mux, and the command
@@ -302,10 +324,23 @@ it is constrained by the wire: it travels in a `USER` frame whose length is a
 single byte, capped at `MAX_USER_LEN` (64) in `server/cluster/mesh/frame.rs`. A
 name that is empty, or longer than that, could never authenticate a relayed
 session — the edge refuses to send it and the home's parser refuses to read it —
-so a server with `[cluster] enabled = true` refuses such a `[[users]]` id **at
-startup** rather than discovering it at the first relay, where the symptom would
-be a silently lost resume. A standalone server sends no `USER` frame and is not
-held to the bound; its names are its own business.
+so a server with `[cluster] enabled = true` refuses such a name **at startup**
+rather than discovering it at the first relay, where the symptom would be a
+silently lost resume. "Name" here means every string that can reach a `USER`
+frame, which is more than the `[[users]]` ids: the attested name is the
+*effective accounting label*, so a `[users.aliases]` key becomes the name on the
+wire whenever the client's source IP falls inside that alias's subnet. Both are
+checked. A standalone server — or one with `enabled = false`, which resolves to
+the same thing — sends no `USER` frame and is not held to the bound; its names
+are its own business.
+
+One wrinkle the mesh inherits rather than causes: an SS-TCP park is keyed on the
+*base* user id, while both the direct resume and the mesh attestation look it up
+by the effective label. A user with `[users.aliases]` connecting from a matching
+subnet therefore fails the owner check with nothing wrong in the config — on the
+direct path as well as the relayed one. That is a pre-existing defect in the park
+key, not a cluster configuration problem, which is why the relay's
+`unknown_user` log stops at what it observed instead of pointing at node config.
 
 This is what the earlier design got backwards. When the home did the decryption,
 the relayed *path* and the relayed *user's credentials* both had to be identical

@@ -527,6 +527,50 @@ fn config_accepts_user_names_within_the_mesh_bound() {
 }
 
 #[test]
+fn config_rejects_an_alias_name_that_cannot_cross_the_mesh() {
+    // The name in a `UserFrame` is the *effective accounting label*, which is the
+    // alias whenever the peer matches its subnet — so an alias that cannot fit
+    // the frame fails at the first relay from such a peer, and nowhere else.
+    // Same bound, same load-time refusal as the base id.
+    let mut cfg = config_with_cluster_and_user("beerloga");
+    let too_long = "a".repeat(crate::server::MAX_USER_LEN + 1);
+    cfg.users[0].aliases = Some(aliases(&[(too_long.as_str(), "10.0.0.0/8")]));
+    let error = cfg
+        .validate()
+        .expect_err("an alias that cannot fit a UserFrame must be refused")
+        .to_string();
+    assert!(error.contains("mesh user name bound"), "got: {error}");
+    assert!(error.contains("[users.aliases]"), "the error must name the key to fix: {error}");
+
+    // An empty alias is already refused a step earlier, by the alias validator
+    // that runs for every server — clustered or not. Pin that it stays refused;
+    // which of the two checks fires first does not matter to the operator.
+    let mut cfg = config_with_cluster_and_user("beerloga");
+    cfg.users[0].aliases = Some(aliases(&[("", "10.0.0.0/8")]));
+    let error = cfg
+        .validate()
+        .expect_err("an empty alias can never match a park owner")
+        .to_string();
+    assert!(error.contains("empty alias name"), "got: {error}");
+}
+
+#[test]
+fn config_accepts_alias_names_within_the_mesh_bound() {
+    let mut cfg = config_with_cluster_and_user("beerloga");
+    cfg.users[0].aliases = Some(aliases(&[("mobile", "10.0.0.0/8")]));
+    cfg.validate().expect("an ordinary alias loads");
+}
+
+#[test]
+fn the_alias_name_bound_applies_only_to_a_clustered_server() {
+    let mut cfg = base_config();
+    cfg.users[0].aliases =
+        Some(aliases(&[(&"a".repeat(crate::server::MAX_USER_LEN + 1), "10.0.0.0/8")]));
+    cfg.validate()
+        .expect("an unclustered server is unaffected by the mesh bound");
+}
+
+#[test]
 fn the_user_name_bound_applies_only_to_a_clustered_server() {
     // A standalone server never sends a UserFrame, so its names are its own
     // business — do not break existing single-node deployments.

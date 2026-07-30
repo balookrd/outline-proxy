@@ -253,8 +253,12 @@ pub(super) fn register_descriptions() {
          (capacity = already at its concurrent relayed-session cap; \
          no_session = no park exists \
          under the relayed resume id, or it expired between the two setup phases; \
-         unknown_user = a park exists but belongs to another user, so user names \
-         disagree across the cluster (or it is a genuine security event); \
+         unknown_user = a park exists but is owned by a different user name than \
+         the edge attested — user names may disagree across the cluster, it may \
+         be a genuine security event, or the user may have [users.aliases] and be \
+         connecting from a matching subnet (an SS-TCP park is keyed on the base \
+         id while the attestation uses the effective label, so that case \
+         mismatches with nothing wrong in the config); \
          park_shape = a park exists under that id but is not a shape this relay \
          could splice — an SS-UDP park asked for under a VLESS resume id, or a \
          byte-stream park asked for with datagram framing and the other way \
@@ -279,8 +283,13 @@ pub(super) fn register_descriptions() {
     describe_counter!(
         "outline_ss_mesh_relay_outcome_total",
         "Relayed sessions a home node resolved, by outcome (hit = the parked \
-         session was found and spliced onto the relay; miss = no park matched, so \
-         the edge serves its client a fresh local session; error = setup failed \
+         session was found and spliced onto the relay; miss = no park matched — \
+         nothing under that id, or one this relay refused without consuming, so \
+         it is still there — and the edge serves its client a fresh local \
+         session; unusable = a park matched and was consumed but could not be \
+         spliced at all (an SS-UDP park holding no NAT key of the attested user, \
+         a VLESS-mux bundle holding no sub-connection), so it is destroyed and \
+         the client's session is over; error = setup failed \
          before any park could be resolved) and by close (client_done = the edge \
          said its client is finished, so the upstream was half-closed instead of \
          re-parked; carrier_ended = the edge only switched carriers, so the \
@@ -292,9 +301,9 @@ pub(super) fn register_descriptions() {
          sum(outcome_total) + outline_ss_mesh_relay_active — the direct signal \
          that cluster relaying works, which \
          byte counters alone never gave, while the client_done/carrier_ended \
-         ratio shows whether edges emit the close intent at all. Scoped to v5: \
-         streams refused before the handler (see the capacity reason on \
-         outline_ss_mesh_relay_rejected_total) and legacy v4 relays record none."
+         ratio shows whether edges emit the close intent at all. Streams refused \
+         before the handler ever runs record none — see the capacity reason on \
+         outline_ss_mesh_relay_rejected_total."
     );
     describe_gauge!(
         "outline_ss_mesh_relay_active",
@@ -311,9 +320,10 @@ pub(super) fn register_descriptions() {
     );
     describe_counter!(
         "outline_ss_mesh_datagrams_total",
-        "SS-UDP datagrams moved over the cluster mesh, by role and direction. \
-         Pairs with the transport=\"udp\" slice of outline_ss_mesh_bytes_total to \
-         give the mean relayed datagram size."
+        "Datagrams moved over the cluster mesh, by role and direction — both the \
+         SS-UDP and the single-target VLESS-UDP relays feed it, one increment per \
+         datagram on each hop. Pairs with the transport=\"udp\" slice of \
+         outline_ss_mesh_bytes_total to give the mean relayed datagram size."
     );
     describe_counter!(
         "outline_ss_orphan_downlink_replay_bytes_total",

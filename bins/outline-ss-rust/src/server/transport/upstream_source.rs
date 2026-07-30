@@ -90,10 +90,11 @@ pub(in crate::server) struct MeshUpstreamSetup {
 
 /// The `role="edge"` counter handles one relay feeds, resolved once at setup.
 ///
-/// `up` is client→mesh (toward the home) and `down` is mesh→client, the same
-/// series the v4 splice fed — so a relay that never carries downlink is still
-/// visible as `down = 0`. The datagram pair is incremented only by the SS-UDP
-/// framing; a byte-stream relay leaves it untouched.
+/// `up` is client→mesh (toward the home) and `down` is mesh→client. Both handles
+/// are resolved up front, whichever direction the session turns out to carry, so
+/// a relay that never carries downlink is still visible as `down = 0`. The
+/// datagram pair is incremented by the datagram-framed relays — SS-UDP and
+/// single-target VLESS-UDP; a byte-stream relay leaves it untouched.
 struct MeshRelayCounters {
     up_bytes: Counter,
     down_bytes: Counter,

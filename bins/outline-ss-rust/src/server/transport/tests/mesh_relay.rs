@@ -1168,12 +1168,21 @@ async fn v5_home_refuses_a_park_of_the_wrong_kind() {
 /// Without the check the home splices the park onto the relay instead of
 /// refusing it, so the assertions below fail on both counts: no refusal reason
 /// is counted, and the relay is a live `hit`.
+///
+/// And refusing it must not destroy it. Unlike the two cross-protocol arms that
+/// guard the UDP and mux splices — which `park_query` can never route an SS OPEN
+/// to — this one is genuinely reachable: an SS OPEN legitimately probes
+/// `ParkShape::Stream`, and a VLESS-authenticated `Parked::Tcp` is that shape
+/// too, so phase 1 admits it and only this check rejects it. The park is
+/// untouched at that point and still worth everything to a carrier asking under
+/// the right protocol, so it goes back — as the shape-mismatch arm beside it
+/// already does.
 #[tokio::test]
 async fn v5_home_refuses_a_park_of_another_proxy_protocol() {
     let harness = MeshHomeHarness::new().await;
     let id = SessionId::from_bytes([41u8; 16]);
     // Parked by the SS path: `TcpProtocolContext::Ss`.
-    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
+    let _upstream = park_test_session(harness.registry(), id, "beerloga").await;
 
     // Same id, same user, but the edge terminated VLESS.
     let mut header = v5_header(id);
@@ -1184,9 +1193,12 @@ async fn v5_home_refuses_a_park_of_another_proxy_protocol() {
     // that question — so the refusal lands after the ack, like the owner check.
     assert!(outcome_seen.acked(), "the shape question is answered before the protocol one");
     assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
+    // The park is back under the same id, upstream halves and all, so a carrier
+    // that asks under the right protocol still gets its session. Nothing was
+    // spliced onto the relay either — that is the `hit == 0` below.
     assert!(
-        upstream.saw_eof().await,
-        "the refused park must not be left half-spliced onto the relay",
+        harness.registry().has_park(id),
+        "a park refused across proxy protocols must go back, not be destroyed",
     );
     let rendered = harness.metrics().render_prometheus();
     assert_eq!(rejected(&rendered, "protocol_mismatch"), 1, "{rendered}");

@@ -256,6 +256,7 @@ const MESH_RELAY_OUTCOMES: &[(&str, &str)] = &[
     ("hit", "client_done"),
     ("hit", "none"),
     ("miss", "none"),
+    ("unusable", "none"),
 ];
 
 /// The `# HELP` line the exporter renders for `metric`.

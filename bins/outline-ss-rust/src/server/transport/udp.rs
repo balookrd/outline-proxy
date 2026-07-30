@@ -1076,10 +1076,10 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     resume: ResumeContext,
     upstream: UpstreamSource,
 ) -> Result<()> {
-    // Cluster edge (v5): the session being served lives on another node, so this
+    // Cluster edge: the session being served lives on another node, so this
     // relay owns the client's crypto and nothing else — no NAT entry, no park.
-    // `Direct` is every other case, including a v4 relayed carrier on the *home*
-    // (which decrypts and owns its NAT exactly as a local session does).
+    // `Direct` is every other case, a local session included: it decrypts and
+    // owns its NAT itself.
     let mut mesh = match upstream {
         UpstreamSource::Direct => None,
         UpstreamSource::Mesh(setup) => Some(MeshUdpEdge::new(setup)),
@@ -1153,13 +1153,14 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     loop {
         // The read is pinned for the whole wait and only ever *polled* by the
         // inner select, never dropped by it. A carrier's `recv` is not required
-        // to be cancel-safe, and the mesh SS-UDP one is not: `MeshUdpCarrier`
-        // consumes a 4-byte length prefix and then the body, so dropping it
-        // part-way would leave the QUIC stream mid-datagram and mis-frame every
-        // read after it. (The direct carriers are cancel-safe — axum's and the
-        // vendored H3 split reader both keep their partial state in the reader,
-        // and the XHTTP duplex consumes nothing until a whole record is ready —
-        // but the loop is shared, so it must hold to the stricter contract.)
+        // to be cancel-safe, and this loop is shared across all of them, so it
+        // holds to the stricter contract. (Every carrier reaching it today
+        // happens to be cancel-safe — axum's and the vendored H3 split reader
+        // both keep their partial state in the reader, and the XHTTP duplex
+        // consumes nothing until a whole record is ready — but that is a
+        // property of the current set, not something the trait promises, and a
+        // reader that consumed a length prefix before its body would mis-frame
+        // every read after a dropped one.)
         // Draining `in_flight` concurrently is still required — a
         // `FuturesUnordered` advances only while polled, so an otherwise idle
         // session would stall its own DNS and sends until the next datagram
@@ -1211,8 +1212,8 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                 // the only awaited work is the mesh write, and doing it in the
                 // read loop is what keeps one client packet one mesh datagram
                 // (concurrent writers would interleave mid-frame). Backpressure
-                // rides the QUIC send window, exactly as the v4 splice's single
-                // uplink writer did.
+                // rides the QUIC send window, as it does for every other single
+                // writer on a mesh stream.
                 if let Some(edge) = mesh.as_mut() {
                     let started_at = std::time::Instant::now();
                     match authenticate_udp_datagram(&server, &route, &session, &data) {

@@ -313,10 +313,15 @@ async fn xhttp_get(
         peer_addr,
     )
     .await;
-    let (session, created) = match state
-        .registry
-        .get_or_create(&session_id, edge.issued_id(&resume_for_create))
-    {
+    // The edge decision is recorded on the session, not kept in this request:
+    // every later request on the same id answers with it too (see
+    // `XhttpSession::relayed_echo`). `edge` still moves into `spawn_relay`
+    // below, and is dropped unused when this request did not create the session.
+    let (session, created) = match state.registry.get_or_create(
+        &session_id,
+        edge.issued_id(&resume_for_create),
+        edge.relayed_echo(),
+    ) {
         Some(pair) => pair,
         None => {
             state
@@ -329,13 +334,6 @@ async fn xhttp_get(
             return short_status(StatusCode::SERVICE_UNAVAILABLE);
         },
     };
-    // Snapshot before `edge` moves into `spawn_relay`. A relayed session answers
-    // with the mesh's own echo, which withholds the v2 confirmation this node
-    // cannot honour over the mesh. Only when this request created the session:
-    // otherwise `edge` is dropped unused (it is handed to `spawn_relay` only on
-    // the create branch), and advertising a relay this response did not
-    // establish would tell the client a foreign id continues when it does not.
-    let relayed_echo = if created { edge.relayed_echo() } else { None };
 
     // Latch the datagram-framing negotiation before the relay is spawned — it
     // reads the flag when it builds its duplex.
@@ -369,7 +367,7 @@ async fn xhttp_get(
         "xhttp downlink attached"
     );
 
-    let echo = relayed_echo.unwrap_or(ResumeResponseEcho {
+    let echo = session.relayed_echo.unwrap_or(ResumeResponseEcho {
         session_id: session.issued_resume_id,
         ack_prefix: ack_prefix_for_response,
         symmetric_replay: symmetric_replay_for_response,
@@ -448,11 +446,13 @@ async fn xhttp_post(
     } else {
         XhttpEdge::local()
     };
+    // The edge decision is recorded on the session; see `xhttp_get`.
     let (session, created) = if seq == 0 {
-        match state
-            .registry
-            .get_or_create(&session_id, edge.issued_id(&resume_for_create))
-        {
+        match state.registry.get_or_create(
+            &session_id,
+            edge.issued_id(&resume_for_create),
+            edge.relayed_echo(),
+        ) {
             Some(pair) => pair,
             None => {
                 state
@@ -475,10 +475,6 @@ async fn xhttp_post(
     if session.is_closed() {
         return short_status(StatusCode::GONE);
     }
-
-    // Snapshot before `edge` moves into `spawn_relay`, and only when this request
-    // created the session; see `xhttp_get`.
-    let relayed_echo = if created { edge.relayed_echo() } else { None };
 
     let udp_records = negotiate_udp_records(&session, &route, &headers);
 
@@ -538,7 +534,8 @@ async fn xhttp_post(
     if let Some((name, value)) = generate_padding_header() {
         resp_headers.insert(name, value);
     }
-    relayed_echo
+    session
+        .relayed_echo
         .unwrap_or(ResumeResponseEcho {
             session_id: session.issued_resume_id,
             ack_prefix: ack_prefix_for_response,
@@ -599,10 +596,12 @@ async fn xhttp_stream_one(
         peer_addr,
     )
     .await;
-    let (session, created) = match state
-        .registry
-        .get_or_create(&session_id, edge.issued_id(&resume_for_create))
-    {
+    // The edge decision is recorded on the session; see `xhttp_get`.
+    let (session, created) = match state.registry.get_or_create(
+        &session_id,
+        edge.issued_id(&resume_for_create),
+        edge.relayed_echo(),
+    ) {
         Some(pair) => pair,
         None => {
             state
@@ -618,9 +617,6 @@ async fn xhttp_stream_one(
     if session.is_closed() {
         return short_status(StatusCode::GONE);
     }
-    // Snapshot before `edge` moves into `spawn_relay`, and only when this request
-    // created the session; see `xhttp_get`.
-    let relayed_echo = if created { edge.relayed_echo() } else { None };
     let udp_records = negotiate_udp_records(&session, &route, &headers);
     if created
         && !spawn_relay(
@@ -680,7 +676,7 @@ async fn xhttp_stream_one(
         session_for_uplink.close_uplink();
     });
 
-    let echo = relayed_echo.unwrap_or(ResumeResponseEcho {
+    let echo = session.relayed_echo.unwrap_or(ResumeResponseEcho {
         session_id: session.issued_resume_id,
         ack_prefix: ack_prefix_for_response,
         symmetric_replay: symmetric_replay_for_response,
@@ -837,8 +833,12 @@ impl XhttpEdge {
     /// The response echo a relayed session answers with, or `None` when this
     /// request is not relaying one and the caller's local echo stands.
     ///
-    /// Captured before `self` moves into [`spawn_relay`]; [`ResumeResponseEcho`]
-    /// is `Copy`.
+    /// Read before `self` moves into [`spawn_relay`] and handed to
+    /// [`XhttpRegistry::get_or_create`], which records it on the session so that
+    /// every later request on the same id answers with it too — an attaching
+    /// request has no relay of its own to ask. Ignored when the id is already
+    /// live: whatever created that session settled its echo.
+    /// [`ResumeResponseEcho`] is `Copy`.
     pub(in crate::server::transport) fn relayed_echo(&self) -> Option<ResumeResponseEcho> {
         self.stream.as_ref().map(|edge| edge.echo)
     }

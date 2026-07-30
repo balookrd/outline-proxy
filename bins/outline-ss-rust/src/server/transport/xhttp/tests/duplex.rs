@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 /// eviction the client observes as a spurious `ws closed`.
 #[tokio::test]
 async fn noop_keepalive_touches_session() {
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
 
     // Let real wall-clock advance so a cutoff can sit strictly between
     // session creation and the keepalive touch. `touch`/`is_idle_since`
@@ -48,7 +48,7 @@ async fn noop_keepalive_touches_session() {
 /// keepalive change must not blunt the close path.
 #[tokio::test]
 async fn close_still_closes_session() {
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
     let duplex = XhttpDuplex {
         session: Arc::clone(&session),
         udp_records: false,
@@ -73,7 +73,7 @@ async fn recv_recovers_datagram_boundaries_from_arbitrary_chunks() {
         encode_record_into(payload, &mut wire).expect("test payloads fit a record");
     }
 
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
     // Chunk 1 holds datagram one plus the head of datagram two; chunk 2 the
     // rest of two and the head of three; chunk 3 the tail.
     let cuts = [20usize, 30usize];
@@ -112,7 +112,7 @@ async fn recv_recovers_datagram_boundaries_from_arbitrary_chunks() {
 async fn send_frames_each_downlink_datagram() {
     use outline_wire::udp_records::encode_record_into;
 
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
     let duplex = XhttpDuplex::with_udp_records(Arc::clone(&session), true);
     let (_reader, mut writer) = duplex.split_io();
 
@@ -137,7 +137,7 @@ async fn send_frames_each_downlink_datagram() {
 /// SS-UDP path) keeps the historical wire byte-for-byte.
 #[tokio::test]
 async fn unnegotiated_session_keeps_the_plain_wire() {
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
     session
         .ingest_uplink_inorder(Bytes::from_static(b"raw chunk"))
         .unwrap();

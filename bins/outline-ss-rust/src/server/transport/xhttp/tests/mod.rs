@@ -13,14 +13,14 @@ fn session_cap_rejects_new_but_serves_existing() {
     let registry = XhttpRegistry::with_limits(limits(2, 0));
 
     // Two fresh ids fill the registry to the cap.
-    let (_a, created_a) = registry.get_or_create("id-aaaa", None).expect("first fits");
+    let (_a, created_a) = registry.get_or_create("id-aaaa", None, None).expect("first fits");
     assert!(created_a, "first id is newly created");
-    let (_b, created_b) = registry.get_or_create("id-bbbb", None).expect("second fits");
+    let (_b, created_b) = registry.get_or_create("id-bbbb", None, None).expect("second fits");
     assert!(created_b, "second id is newly created");
 
     // A third *new* id is rejected — and left uninserted.
     assert!(
-        registry.get_or_create("id-cccc", None).is_none(),
+        registry.get_or_create("id-cccc", None, None).is_none(),
         "new id past the cap is rejected"
     );
     assert!(
@@ -31,14 +31,14 @@ fn session_cap_rejects_new_but_serves_existing() {
     // An already-live id is still served while the registry is full: the cap
     // gates creation only, so a resume / repeat request never 503s.
     let (_a_again, created_again) = registry
-        .get_or_create("id-aaaa", None)
+        .get_or_create("id-aaaa", None, None)
         .expect("existing id is served when full");
     assert!(!created_again, "existing id reports created = false");
 
     // Freeing a slot lets a new id in again.
     registry.remove("id-aaaa");
     let (_c, created_c) = registry
-        .get_or_create("id-cccc", None)
+        .get_or_create("id-cccc", None, None)
         .expect("slot freed, new id fits");
     assert!(created_c, "new id created after a slot was freed");
 }
@@ -49,7 +49,7 @@ fn zero_session_cap_is_unbounded() {
     for i in 0..1_000 {
         let id = format!("id-{i:04}");
         assert!(
-            registry.get_or_create(&id, None).is_some(),
+            registry.get_or_create(&id, None, None).is_some(),
             "unbounded registry admits every fresh id"
         );
     }

@@ -1054,7 +1054,7 @@ async fn xhttp_get_drop_then_reconnect_resumes_downlink_ring() -> Result<()> {
     let session_id = "drop-resume-session";
     let url = format!("http://{listen_addr}/xh/{session_id}");
     let (session, created) = registry
-        .get_or_create(session_id, None)
+        .get_or_create(session_id, None, None)
         .expect("registry has capacity");
     assert!(created, "registry should mint a fresh session for a new id");
 
