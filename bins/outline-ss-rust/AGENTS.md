@@ -90,10 +90,20 @@ Prometheus metrics и локально пропатченные копии `h3` 
   Если меняешь user invariants, transport eligibility, duplicate checks или
   defaults, синхронно проверяй `src/config/validation.rs`,
   `src/server/control/manager.rs`, control handlers, dashboard и tests.
-- Control-plane мутации должны быть согласованы с persistent state. Не публикуй
-  новые route/auth snapshots в runtime до того, как понятна судьба сохранения на
-  диск, если API сообщает клиенту успех/ошибку как source of truth. Если нужна
-  другая семантика, зафиксируй ее явно и покрой тестом.
+- Control-plane мутации должны быть согласованы с persistent state. Порядок в
+  `control/manager.rs::commit` — валидация → запись на диск → публикация
+  snapshot'ов; не публикуй новые route/auth snapshots в runtime до того, как
+  запись на диск удалась, раз API сообщает клиенту успех/ошибку как source of
+  truth. Если нужна другая семантика, зафиксируй ее явно и покрой тестом.
+- **Конфиг на диске только патчится, никогда не пересобирается.**
+  `control/persist.rs` меняет ровно одну запись `[[users]]`, названную мутацией
+  (`UserMutation::Upsert` / `Remove`). Сериализовать весь список нельзя по двум
+  причинам: `toml_edit::ser` схлопывает `&[UserEntry]` в одну inline-строку
+  `users = [{…}]` выше всех секций (уничтожая вид файла и комментарии), и это
+  делает in-memory реестр главнее файла — любой пользователь, которого нет в
+  рантайме, удаляется как побочный эффект добавления одного. Это была реальная
+  потеря боевой конфигурации; тесты-сторожа — `control/tests/persist.rs` и
+  `create_keeps_users_the_runtime_does_not_hold` в `control/tests/manager.rs`.
 - Добавление нового transport/path/user field не считается завершенным, пока не
   обновлены все поверхности: config parsing, validation, runtime route maps, H3
   path registry, control API, dashboard UI, access-key generation, metrics и
