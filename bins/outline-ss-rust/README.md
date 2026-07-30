@@ -454,6 +454,10 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json
 curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/users/carol/block
 ```
 
+Mutations are persistent: each one is written back to the config file the server was started with (`--config` / `OUTLINE_SS_CONFIG`) before the change goes live on the data plane, so a `201`/`200` means it survives a restart. The file is *patched*, not regenerated — only the one `[[users]]` entry the request named is touched, and every other user, section, key order and comment stays byte-for-byte as it was. The write is atomic (temp file + rename, target mode and owner carried over), so a crash mid-write leaves the previous config intact; if the write fails, the mutation fails with it and nothing goes live.
+
+When the server was started without a config file (users given via `--user` / `OUTLINE_SS_USERS`), there is nothing to patch: mutations apply to the running process only and are lost on restart. That case logs a warning at startup.
+
 Limitations (v1):
 
 - Per-user `ws_path_tcp` / `ws_path_udp` / `ws_path_vless` values must already exist in the startup config — the Axum/H3 routers only register paths known at boot. Introducing a brand-new path still requires a restart.

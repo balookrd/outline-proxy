@@ -44,3 +44,70 @@ fn atomic_write_creates_target_when_missing() {
 
     assert_eq!(fs::read(&path).unwrap(), b"fresh".as_slice());
 }
+
+/// The service user reads `config.toml` back at startup, so a control-plane
+/// write must not hand the file to a different owner.
+#[cfg(unix)]
+#[test]
+fn atomic_write_preserves_owner() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = scratch("owner");
+    let path = dir.join("config.toml");
+    fs::write(&path, b"old").unwrap();
+    let before = fs::metadata(&path).unwrap();
+
+    atomic_write(&path, b"new").expect("atomic_write");
+
+    let after = fs::metadata(&path).unwrap();
+    assert_eq!(after.uid(), before.uid(), "owner uid changed");
+    assert_eq!(after.gid(), before.gid(), "owner gid changed");
+}
+
+/// The whole point of the temp-file dance: a write that cannot complete leaves
+/// the previous config intact rather than a truncated one, and leaves no temp
+/// file behind for the next run to trip over.
+#[cfg(unix)]
+#[test]
+fn failed_write_leaves_the_target_intact_and_no_temp_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("readonly");
+    let path = dir.join("config.toml");
+    fs::write(&path, b"original contents").unwrap();
+
+    // Deny writes to the directory so creating the temp file fails.
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let writable_anyway = fs::write(dir.join(".probe"), b"x").is_ok();
+    if writable_anyway {
+        // Running as root (or on a filesystem that ignores the mode): the
+        // failure this test needs cannot be provoked.
+        let _ = fs::remove_file(dir.join(".probe"));
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+
+    let err = atomic_write(&path, b"replacement").expect_err("write into a read-only dir");
+    assert!(format!("{err:#}").contains("temp file"), "unexpected error: {err:#}");
+
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        b"original contents".as_slice(),
+        "target was damaged by a failed write"
+    );
+    assert!(!dir.join(".config.toml.tmp").exists(), "temp file left behind");
+}
+
+/// A successful write cleans up after itself too.
+#[test]
+fn successful_write_leaves_no_temp_file() {
+    let dir = scratch("no-temp");
+    let path = dir.join("config.toml");
+    fs::write(&path, b"old").unwrap();
+
+    atomic_write(&path, b"new").expect("atomic_write");
+
+    assert!(!dir.join(".config.toml.tmp").exists(), "temp file left behind");
+    assert_eq!(fs::read(&path).unwrap(), b"new".as_slice());
+}
