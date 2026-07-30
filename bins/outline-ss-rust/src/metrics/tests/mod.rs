@@ -229,6 +229,194 @@ fn renders_mesh_relay_rejections() {
     );
 }
 
+/// Every `outcome` an edge records for a relay it tried to open
+/// (`mesh_relay::open_edge_relay`).
+const MESH_OPEN_OUTCOMES: &[&str] = &["fail", "ok", "refused"];
+
+/// Every `reason` a home records for a relay stream it refused
+/// (`mesh_relay::serve_relayed` and the accept loop above it).
+const MESH_REJECTION_REASONS: &[&str] = &[
+    "bad_setup",
+    "capacity",
+    "framing_mismatch",
+    "no_session",
+    "park_identity",
+    "park_incomplete",
+    "park_shape",
+    "protocol_mismatch",
+    "unknown_user",
+];
+
+/// Every `(outcome, close)` pair a home records for a relay stream that reached
+/// the handler. Not the full product: a `miss` and an `error` never spliced, so
+/// neither ever carries a close intent.
+const MESH_RELAY_OUTCOMES: &[(&str, &str)] = &[
+    ("error", "none"),
+    ("hit", "carrier_ended"),
+    ("hit", "client_done"),
+    ("hit", "none"),
+    ("miss", "none"),
+];
+
+/// The `# HELP` line the exporter renders for `metric`.
+fn help_line(rendered: &str, metric: &str) -> String {
+    let prefix = format!("# HELP {metric} ");
+    rendered
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| {
+            panic!("{metric} renders no HELP line — it is not described:\n{rendered}")
+        })
+        .to_owned()
+}
+
+/// The label values a HELP string documents, recognised by the `value = meaning`
+/// shape every mesh description uses. Lets a test assert the description and the
+/// emitters agree in *both* directions — an undescribed label value reaches an
+/// operator as a bare string, and a described one nothing emits (as `no_route`
+/// was after the home stopped resolving routes) sends them looking for a series
+/// that will never appear.
+fn documented_label_values(help: &str) -> std::collections::BTreeSet<String> {
+    help.match_indices(" = ")
+        .filter_map(|(idx, _)| help[..idx].split_whitespace().next_back())
+        .map(|token| token.trim_start_matches(['(', '"']).to_owned())
+        .filter(|token| {
+            !token.is_empty() && token.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+        })
+        .collect()
+}
+
+#[test]
+fn mesh_relay_open_outcomes_are_described_exactly() {
+    let metrics = Metrics::new(&test_config());
+    for outcome in MESH_OPEN_OUTCOMES {
+        metrics.record_mesh_relay_opened(outcome);
+    }
+
+    let rendered = metrics.render_prometheus();
+    let help = help_line(&rendered, "outline_ss_mesh_relay_opened_total");
+    for outcome in MESH_OPEN_OUTCOMES {
+        assert!(
+            rendered
+                .contains(&format!("outline_ss_mesh_relay_opened_total{{outcome=\"{outcome}\"}}")),
+            "outcome={outcome} must render:\n{rendered}",
+        );
+    }
+    assert_eq!(
+        documented_label_values(&help),
+        MESH_OPEN_OUTCOMES.iter().map(|v| (*v).to_owned()).collect(),
+        "the HELP text must describe exactly the outcomes the edge emits:\n{help}",
+    );
+}
+
+#[test]
+fn mesh_rejection_reasons_are_described_exactly() {
+    let metrics = Metrics::new(&test_config());
+    for reason in MESH_REJECTION_REASONS {
+        metrics.record_mesh_relay_rejected(reason);
+    }
+
+    let rendered = metrics.render_prometheus();
+    for reason in MESH_REJECTION_REASONS {
+        assert!(
+            rendered.contains(&format!(
+                "outline_ss_mesh_relay_rejected_total{{reason=\"{reason}\"}} 1"
+            )),
+            "reason={reason} must render:\n{rendered}",
+        );
+    }
+    // The route lookup this reason reported is gone with the home-side
+    // decryption, so nothing emits it and nothing may document it.
+    assert!(
+        !rendered.contains(r#"reason="no_route""#),
+        "no_route was retired with the home's route lookup:\n{rendered}",
+    );
+
+    let help = help_line(&rendered, "outline_ss_mesh_relay_rejected_total");
+    assert_eq!(
+        documented_label_values(&help),
+        MESH_REJECTION_REASONS.iter().map(|v| (*v).to_owned()).collect(),
+        "the HELP text must describe exactly the reasons the home emits:\n{help}",
+    );
+}
+
+#[test]
+fn mesh_relay_outcome_is_observable_and_described_exactly() {
+    // A never-working relay went unnoticed in production because success was
+    // only inferrable from byte counters. Make it a first-class signal.
+    let metrics = Metrics::new(&test_config());
+    for (outcome, close) in MESH_RELAY_OUTCOMES {
+        metrics.record_mesh_relay_outcome(outcome, close);
+    }
+
+    let rendered = metrics.render_prometheus();
+    for (outcome, close) in MESH_RELAY_OUTCOMES {
+        assert!(
+            rendered.contains(&format!(
+                "outline_ss_mesh_relay_outcome_total{{outcome=\"{outcome}\",close=\"{close}\"}} 1"
+            )),
+            "outcome={outcome} close={close} must render:\n{rendered}",
+        );
+    }
+
+    let help = help_line(&rendered, "outline_ss_mesh_relay_outcome_total");
+    let mut expected: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (outcome, close) in MESH_RELAY_OUTCOMES {
+        expected.insert((*outcome).to_owned());
+        expected.insert((*close).to_owned());
+    }
+    assert_eq!(
+        documented_label_values(&help),
+        expected,
+        "the HELP text must describe exactly the outcomes and closes the home emits:\n{help}",
+    );
+    // The reconciliation an operator is told to run: an outcome is recorded when
+    // the splice *ends*, so relays still running are only on the gauge.
+    assert!(
+        help.contains("sum(outcome_total) + outline_ss_mesh_relay_active"),
+        "the HELP must keep stating how the served total reconciles:\n{help}",
+    );
+}
+
+#[test]
+fn mesh_relay_label_cardinality_stays_bounded() {
+    // The label sets are closed by construction (`&'static str` at every call
+    // site). Pin the products anyway: a mesh label fed from a peer-supplied
+    // string would be an unbounded series, and the mesh is the one path where
+    // label values cross a node boundary.
+    let metrics = Metrics::new(&test_config());
+    for outcome in MESH_OPEN_OUTCOMES {
+        metrics.record_mesh_relay_opened(outcome);
+    }
+    for reason in MESH_REJECTION_REASONS {
+        metrics.record_mesh_relay_rejected(reason);
+    }
+    for (outcome, close) in MESH_RELAY_OUTCOMES {
+        metrics.record_mesh_relay_outcome(outcome, close);
+    }
+    for role in ["edge", "home"] {
+        for direction in ["up", "down"] {
+            for transport in ["tcp", "udp"] {
+                metrics.mesh_bytes_counter(role, direction, transport).increment(1);
+            }
+            metrics.mesh_datagrams_counter(role, direction).increment(1);
+        }
+    }
+
+    let rendered = metrics.render_prometheus();
+    let series = |metric: &str| {
+        rendered
+            .lines()
+            .filter(|line| line.starts_with(&format!("{metric}{{")))
+            .count()
+    };
+    assert_eq!(series("outline_ss_mesh_relay_opened_total"), MESH_OPEN_OUTCOMES.len());
+    assert_eq!(series("outline_ss_mesh_relay_rejected_total"), MESH_REJECTION_REASONS.len());
+    assert_eq!(series("outline_ss_mesh_relay_outcome_total"), MESH_RELAY_OUTCOMES.len());
+    assert_eq!(series("outline_ss_mesh_bytes_total"), 8);
+    assert_eq!(series("outline_ss_mesh_datagrams_total"), 4);
+}
+
 #[test]
 fn renders_mesh_traffic_metrics() {
     let metrics = Metrics::new(&test_config());
