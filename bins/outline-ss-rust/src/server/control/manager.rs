@@ -10,6 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use tokio::sync::Mutex;
+use tracing::warn;
 
 use crate::{
     config::{
@@ -31,13 +32,16 @@ use super::super::{
     },
 };
 
-use super::persist::persist_users;
+use super::persist::{UserMutation, persist_user_mutation};
 
 /// Owns the authoritative user list and publishes derived state via
 /// `ArcSwap`. Every mutation takes the single mutex, rebuilds the full route
-/// maps + auth slice, then publishes them atomically and re-serializes the
-/// config file. Readers on the data plane do a cheap `ArcSwap::load` and
-/// observe either the pre- or post-mutation state — never a mix.
+/// maps + auth slice, writes the one changed user to the config file, and only
+/// then publishes the snapshots atomically. Readers on the data plane do a
+/// cheap `ArcSwap::load` and observe either the pre- or post-mutation state —
+/// never a mix. The config file is *patched*, never re-authored from this list:
+/// see [`super::persist`] for why that distinction is the difference between
+/// adding a user and deleting everyone else.
 pub(in crate::server) struct UserManager {
     inner: Mutex<Inner>,
     routes: RoutesSnapshot,
@@ -162,6 +166,15 @@ impl UserManager {
         auth_users: AuthUsersSnapshot,
         allowed: AllowedRoutePaths,
     ) -> Self {
+        if config.config_path.is_none() {
+            // Users came from `--user`/env, not a file, so there is nothing to
+            // patch. Say so once at startup rather than letting every mutation
+            // report a success that a restart silently undoes.
+            warn!(
+                "control plane has no config file to write to; user changes apply to the \
+                 running process only and are lost on restart"
+            );
+        }
         Self {
             inner: Mutex::new(Inner { users: config.users.clone() }),
             routes,
@@ -250,8 +263,12 @@ impl UserManager {
         if guard.users.iter().any(|u| u.id == entry.id) {
             bail!("user id {:?} already exists", entry.id);
         }
-        guard.users.push(entry);
-        self.publish_and_persist(&guard.users).await?;
+        let mut candidate = guard.users.clone();
+        candidate.push(entry);
+        let created = candidate.last().expect("just pushed").clone();
+        self.commit(&candidate, UserMutation::Upsert(Box::new(created)))
+            .await?;
+        guard.users = candidate;
         Ok(UserView::from(guard.users.last().expect("just pushed")))
     }
 
@@ -266,32 +283,40 @@ impl UserManager {
         let mut updated = guard.users[index].clone();
         patch.apply_to(&mut updated);
         self.validate_new(&updated)?;
-        guard.users[index] = updated;
-        self.publish_and_persist(&guard.users).await?;
+        let mut candidate = guard.users.clone();
+        candidate[index] = updated.clone();
+        self.commit(&candidate, UserMutation::Upsert(Box::new(updated)))
+            .await?;
+        guard.users = candidate;
         Ok(UserView::from(&guard.users[index]))
     }
 
     pub(super) async fn delete(&self, id: &str) -> Result<()> {
         let mut guard = self.inner.lock().await;
-        let before = guard.users.len();
-        guard.users.retain(|u| u.id != id);
-        if guard.users.len() == before {
+        let mut candidate = guard.users.clone();
+        candidate.retain(|u| u.id != id);
+        if candidate.len() == guard.users.len() {
             bail!("user {id:?} not found");
         }
-        self.publish_and_persist(&guard.users).await
+        self.commit(&candidate, UserMutation::Remove(id.to_owned())).await?;
+        guard.users = candidate;
+        Ok(())
     }
 
     pub(super) async fn set_enabled(&self, id: &str, enabled: bool) -> Result<UserView> {
         let mut guard = self.inner.lock().await;
-        let user = guard
+        let index = guard
             .users
-            .iter_mut()
-            .find(|u| u.id == id)
+            .iter()
+            .position(|u| u.id == id)
             .ok_or_else(|| anyhow!("user {id:?} not found"))?;
-        user.enabled = Some(enabled);
-        let view = UserView::from(&*user);
-        self.publish_and_persist(&guard.users).await?;
-        Ok(view)
+        let mut candidate = guard.users.clone();
+        candidate[index].enabled = Some(enabled);
+        let updated = candidate[index].clone();
+        self.commit(&candidate, UserMutation::Upsert(Box::new(updated)))
+            .await?;
+        guard.users = candidate;
+        Ok(UserView::from(&guard.users[index]))
     }
 
     fn validate_new(&self, entry: &UserEntry) -> Result<()> {
@@ -457,21 +482,28 @@ impl UserManager {
         Ok(())
     }
 
-    async fn publish_and_persist(&self, users: &[UserEntry]) -> Result<()> {
+    /// Validate `users` as a whole, write the single change that produced it to
+    /// the config file, then publish the derived snapshots.
+    ///
+    /// The order is the contract: the API reports success or failure as the
+    /// source of truth, so a mutation that could not be saved must not be live
+    /// on the data plane. `mutation` names ONE user — the file keeps every
+    /// entry this change did not touch, even one the runtime does not hold.
+    async fn commit(&self, users: &[UserEntry], mutation: UserMutation) -> Result<()> {
         let (routes, auth_keys) = self.rebuild_snapshots(users)?;
-        self.routes.store(Arc::new(routes));
-        self.auth_users.store(Arc::new(UserKeySlice(auth_keys)));
 
         if let Some(path) = &self.config_path {
             let path = path.clone();
-            let users = users.to_vec();
             tokio::task::spawn_blocking(move || {
-                persist_users(&path, &users)
-                    .with_context(|| format!("failed to persist users to {}", path.display()))
+                persist_user_mutation(&path, &mutation)
+                    .with_context(|| format!("failed to persist user to {}", path.display()))
             })
             .await
             .context("persist task panicked")??;
         }
+
+        self.routes.store(Arc::new(routes));
+        self.auth_users.store(Arc::new(UserKeySlice(auth_keys)));
         Ok(())
     }
 
