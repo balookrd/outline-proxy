@@ -174,12 +174,9 @@ fn a_committed_open_keeps_the_plain_ack_byte() {
 /// point of the field, and the thing a third shape extends without a wire change.
 #[test]
 fn an_uncommitted_open_carries_the_parks_shape_in_the_ack() {
-    for shape in [
-        MeshShape::Stream,
-        MeshShape::Datagram,
-        MeshShape::VlessUdpSingle,
-        MeshShape::VlessMux,
-    ] {
+    for shape in
+        [MeshShape::Stream, MeshShape::Datagram, MeshShape::VlessUdpSingle, MeshShape::VlessMux]
+    {
         let byte = open_ack_byte(None, shape);
         assert_eq!(parse_open_ack(byte, None).unwrap(), shape, "{}", shape.label());
     }
@@ -187,7 +184,10 @@ fn an_uncommitted_open_carries_the_parks_shape_in_the_ack() {
     // else, so reading its plain accept as a byte-stream park is exactly right.
     assert_eq!(open_ack_byte(None, MeshShape::Stream), OPEN_ACK_ACCEPTED);
     assert!(parse_open_ack(0, None).is_err(), "zero is not a shape");
-    assert!(parse_open_ack(9, None).is_err(), "a shape from a newer peer is refused, not guessed");
+    assert!(
+        parse_open_ack(9, None).is_err(),
+        "a shape from a newer peer is refused, not guessed"
+    );
 }
 
 /// The shape is also the body framing, and the two datagram shapes must agree on

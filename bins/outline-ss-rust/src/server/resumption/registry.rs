@@ -125,10 +125,9 @@ impl ParkQuery {
     fn admits(self, shape: ParkShape) -> bool {
         match self {
             ParkQuery::Exact(want) => want == shape,
-            ParkQuery::AnyVless => matches!(
-                shape,
-                ParkShape::Stream | ParkShape::VlessUdpSingle | ParkShape::VlessMux
-            ),
+            ParkQuery::AnyVless => {
+                matches!(shape, ParkShape::Stream | ParkShape::VlessUdpSingle | ParkShape::VlessMux)
+            },
         }
     }
 }
