@@ -580,8 +580,9 @@ impl Metrics {
     /// parked under the relayed resume id), `unknown_user` (the park belongs to
     /// someone else), `park_shape`, `protocol_mismatch`, `park_identity` (an
     /// SS-UDP park holds no NAT key for the attested user), `framing_mismatch`
-    /// or `bad_setup` (the peer was acked but its USER frame was malformed or
-    /// never arrived). Low cardinality: a fixed set of static labels.
+    /// or `bad_setup` (the setup was unusable — an OPEN naming no park shape, or
+    /// an acked peer whose USER frame was malformed or never arrived). Low
+    /// cardinality: a fixed set of static labels.
     pub fn record_mesh_relay_rejected(&self, reason: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_mesh_relay_rejected_total", "reason" => reason).increment(1);
