@@ -315,9 +315,13 @@ What *must* agree is the **user name**. A park is keyed by *(session id, user)*,
 so the home checks the name the edge attests against the park's owner before
 handing the session over. If `beerloga` denotes different people on two nodes, a
 resume is refused (`relay_rejected_total{reason="unknown_user"}`) — and that is
-the desired outcome, not a bug to configure around. The same applies across proxy
-protocols: a park authenticated under SS is never handed to a VLESS carrier or
-the reverse (`reason="protocol_mismatch"`).
+the desired outcome, not a bug to configure around. Since the name is now the
+*only* identity signal on the byte-stream path — a park made under Shadowsocks is
+handed to a VLESS carrier of the same account, and the reverse — this agreement
+is load-bearing: `[[users]].id` and every `[users.aliases]` name must denote the
+same person on every node. See `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`
+§ Cross-protocol resume; crossings are counted on
+`orphan_resume_cross_protocol_total{parked,resumed}`.
 
 That name is also the only part of a node's user config the mesh constrains, and
 it is constrained by the wire: it travels in a `USER` frame whose length is a

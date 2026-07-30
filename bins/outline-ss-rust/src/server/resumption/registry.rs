@@ -126,8 +126,9 @@ pub(crate) enum ParkShape {
 pub(crate) enum ParkQuery {
     Exact(ParkShape),
     /// Any shape a VLESS session can park as. Deliberately excludes
-    /// [`ParkShape::Datagram`]: an SS-UDP park under a VLESS resume id is a
-    /// cross-protocol confusion, not a shape a VLESS command could ever want.
+    /// [`ParkShape::Datagram`]: an SS-UDP park holds NAT responder slots re-
+    /// pointed under SS coding, which a single-target VLESS-UDP session cannot
+    /// take over — a byte-stream park crosses protocols, this does not.
     AnyVless,
 }
 

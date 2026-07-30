@@ -34,8 +34,8 @@ use crate::server::nat::{NatKey, NatTable, ServerSessionId};
 use crate::server::replay::ReplayStore;
 use crate::server::resumption::downlink_ring::DownlinkRing;
 use crate::server::resumption::{
-    OrphanRegistry, Parked, ParkedMuxSubConn, ParkedMuxSubKind, ParkedSsUdpStream, ParkedTcp,
-    ParkedVlessMux, ResumeOutcome, ResumptionConfig, SessionId, TcpProtocolContext,
+    OrphanRegistry, Parked, ParkedMuxSubConn, ParkedMuxSubKind, ParkedProtocol, ParkedSsUdpStream,
+    ParkedTcp, ParkedVlessMux, ResumeOutcome, ResumptionConfig, SessionId,
 };
 use crate::server::state::{Services, UdpServices};
 use crate::server::tests::sample_config;
@@ -419,7 +419,7 @@ async fn park_parked_tcp(
             upstream_reader,
             target_display: Arc::from("example.com:443"),
             owner: Arc::clone(&user_id),
-            protocol_context: TcpProtocolContext::Ss(user),
+            protocol: ParkedProtocol::Ss,
             user_counters: metrics.user_counters(&user_id),
             upstream_guard: metrics.open_tcp_upstream_connection(
                 user_id,
@@ -1061,6 +1061,18 @@ fn rejected(rendered: &str, reason: &str) -> u64 {
     )
 }
 
+/// Crossings a relay splice handed over: a park minted under `parked` served to
+/// a carrier of `resumed`.
+fn cross_protocol(rendered: &str, parked: &str, resumed: &str) -> u64 {
+    counter_value(
+        rendered,
+        &format!(
+            "outline_ss_orphan_resume_cross_protocol_total{{parked=\"{parked}\",\
+             resumed=\"{resumed}\"}}"
+        ),
+    )
+}
+
 /// Total of `outline_ss_mesh_relay_outcome_total` for `outcome`, across every
 /// `close` label it was recorded under.
 fn outcome(rendered: &str, outcome: &str) -> u64 {
@@ -1155,54 +1167,69 @@ async fn v5_home_refuses_a_park_of_the_wrong_kind() {
     assert_eq!(outcome(&rendered, "miss"), 1, "{rendered}");
 }
 
-/// A relayed resume never crosses the proxy-protocol boundary, whatever the
-/// user says.
+/// A relayed byte-stream resume crosses the proxy-protocol boundary, because
+/// the account is the same on both sides of it.
 ///
-/// Both direct resume paths (`transport::tcp` and `transport::vless::tcp`)
-/// refuse to reattach an SS carrier to a VLESS-authenticated park and vice
-/// versa. The v5 splice must apply the same rule: it became reachable the moment
-/// VLESS-TCP edges started speaking v5, because from then on an SS edge and a
-/// VLESS edge can present the same id, and phase 2's owner check confines that
-/// to one user rather than ruling it out.
+/// This is the fleet's `shuffle_wires` case reduced to one relay: two uplinks of
+/// one group reroll their active wire independently over a set mixing SS and
+/// VLESS wires, so about half the time the edge that resumes terminates a
+/// different protocol than the one that parked — same user, same id.
 ///
-/// Without the check the home splices the park onto the relay instead of
-/// refusing it, so the assertions below fail on both counts: no refusal reason
-/// is counted, and the relay is a live `hit`.
-///
-/// And refusing it must not destroy it. Unlike the two cross-protocol arms that
-/// guard the UDP and mux splices — which `park_query` can never route an SS OPEN
-/// to — this one is genuinely reachable: an SS OPEN legitimately probes
-/// `ParkShape::Stream`, and a VLESS-authenticated `Parked::Tcp` is that shape
-/// too, so phase 1 admits it and only this check rejects it. The park is
-/// untouched at that point and still worth everything to a carrier asking under
-/// the right protocol, so it goes back — as the shape-mismatch arm beside it
-/// already does.
+/// The home has nothing to withhold. The mesh body is plaintext, the replay ring
+/// was filled ahead of encryption, and what is left in the bundle is a pair of
+/// socket halves and a byte counter. So the bytes must flow in both directions
+/// here, and the relay must count as a `hit` — not go back as a refusal.
 #[tokio::test]
-async fn v5_home_refuses_a_park_of_another_proxy_protocol() {
+async fn v5_home_splices_an_ss_park_onto_a_vless_relay() {
     let harness = MeshHomeHarness::new().await;
     let id = SessionId::from_bytes([41u8; 16]);
-    // Parked by the SS path: `TcpProtocolContext::Ss`.
-    let _upstream = park_test_session(harness.registry(), id, "beerloga").await;
+    // Parked by the SS path: `ParkedProtocol::Ss`.
+    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
 
     // Same id, same user, but the edge terminated VLESS.
     let mut header = v5_header(id);
     header.protocol = MeshProtocol::Vless;
-    let outcome_seen = harness.serve_v5(header).await;
+    let mut session = harness.serve_v5_ok(header, "beerloga").await;
 
-    // Phase 1 admits it — the park is TCP-shaped and the protocol is not part of
-    // that question — so the refusal lands after the ack, like the owner check.
-    assert!(outcome_seen.acked(), "the shape question is answered before the protocol one");
-    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
-    // The park is back under the same id, upstream halves and all, so a carrier
-    // that asks under the right protocol still gets its session. Nothing was
-    // spliced onto the relay either — that is the `hit == 0` below.
+    session.edge_write(b"GET / HTTP/1.1\r\n\r\n").await;
+    assert_eq!(upstream.read(18).await, b"GET / HTTP/1.1\r\n\r\n");
+    upstream.write(b"HTTP/1.1 200 OK\r\n\r\n").await;
+    assert_eq!(session.edge_read(19).await, b"HTTP/1.1 200 OK\r\n\r\n");
+
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(rejected(&rendered, "protocol_mismatch"), 0, "{rendered}");
+    // Counted on the same series the two direct paths feed, so a fleet's
+    // cross-protocol continuity reads as one number whether it stayed on one
+    // node or crossed the mesh.
+    assert_eq!(
+        cross_protocol(&rendered, "ss", "vless"),
+        1,
+        "a relayed crossing is still a crossing: {rendered}"
+    );
+}
+
+/// Negative control for the splice above: the identity check is now the only
+/// one left, so it has to hold on its own across the same boundary. A VLESS
+/// edge attesting a *different* user must be refused without the park being
+/// consumed — the id alone buys nothing.
+#[tokio::test]
+async fn v5_home_refuses_a_cross_protocol_relay_for_another_user() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([42u8; 16]);
+    let _upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    let mut header = v5_header(id);
+    header.protocol = MeshProtocol::Vless;
+    let outcome_seen = harness.serve_v5_with_user(header, "cloud").await;
+
+    assert!(outcome_seen.acked(), "phase 1 cannot know the user yet, so it acks");
+    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::NoSession));
     assert!(
         harness.registry().has_park(id),
-        "a park refused across proxy protocols must go back, not be destroyed",
+        "a park refused on identity must stay for its rightful owner",
     );
     let rendered = harness.metrics().render_prometheus();
-    assert_eq!(rejected(&rendered, "protocol_mismatch"), 1, "{rendered}");
-    assert_eq!(outcome(&rendered, "miss"), 1, "{rendered}");
+    assert_eq!(rejected(&rendered, "unknown_user"), 1, "{rendered}");
     assert_eq!(outcome(&rendered, "hit"), 0, "{rendered}");
 }
 
