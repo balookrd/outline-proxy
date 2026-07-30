@@ -190,7 +190,9 @@ impl UplinkManager {
             global: initial_global,
             tcp: initial_tcp,
             udp: initial_udp,
-            soft: false,
+            // Restored-from-state selection, not a switch: nothing is stranded
+            // by it, so the intent is only ever read after a real repoint.
+            intent: crate::types::SwitchIntent::default(),
         });
         let active_uplinks = RwLock::new(ActiveUplinks {
             global: initial_global,

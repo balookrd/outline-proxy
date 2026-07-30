@@ -1,6 +1,7 @@
 pub(crate) mod fallback;
 mod resume;
 mod standby_refill;
+mod switch_intent;
 
 use anyhow::anyhow;
 use futures_util::StreamExt;
@@ -1220,7 +1221,12 @@ async fn runtime_failover_does_not_promote_global_active_when_probe_enabled() {
     // (the operator/probe own that bit), so we set it directly to mirror the
     // post-dispatch state this test cares about.
     manager
-        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed", false)
+        .set_active_uplink_index_for_transport(
+            TransportKind::Tcp,
+            0,
+            "test seed",
+            crate::types::SwitchIntent::Failover,
+        )
         .await;
     manager
         .confirm_runtime_failover_uplink(TransportKind::Tcp, Some(&target), 1)
@@ -1353,7 +1359,12 @@ async fn sparse_runtime_failures_do_not_escalate_to_health_flip() {
     set_tcp_status(&manager, 0, true, 20).await;
     set_tcp_status(&manager, 1, true, 30).await;
     manager
-        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed", false)
+        .set_active_uplink_index_for_transport(
+            TransportKind::Tcp,
+            0,
+            "test seed",
+            crate::types::SwitchIntent::Failover,
+        )
         .await;
 
     // First failure starts a fresh streak.
@@ -1409,7 +1420,12 @@ async fn sparse_runtime_failures_still_escalate_when_window_is_zero() {
     set_tcp_status(&manager, 0, true, 20).await;
     set_tcp_status(&manager, 1, true, 30).await;
     manager
-        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed", false)
+        .set_active_uplink_index_for_transport(
+            TransportKind::Tcp,
+            0,
+            "test seed",
+            crate::types::SwitchIntent::Failover,
+        )
         .await;
 
     manager
@@ -1461,7 +1477,12 @@ async fn sparse_chunk0_timeouts_escalate_via_dedicated_window() {
     set_tcp_status(&manager, 0, true, 20).await;
     set_tcp_status(&manager, 1, true, 30).await;
     manager
-        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed", false)
+        .set_active_uplink_index_for_transport(
+            TransportKind::Tcp,
+            0,
+            "test seed",
+            crate::types::SwitchIntent::Failover,
+        )
         .await;
 
     let chunk0_err = || anyhow!("upstream did not respond within 10s (chunk 0)");
@@ -1518,7 +1539,12 @@ async fn sparse_chunk0_timeouts_do_not_escalate_when_window_is_zero() {
     set_tcp_status(&manager, 0, true, 20).await;
     set_tcp_status(&manager, 1, true, 30).await;
     manager
-        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed", false)
+        .set_active_uplink_index_for_transport(
+            TransportKind::Tcp,
+            0,
+            "test seed",
+            crate::types::SwitchIntent::Failover,
+        )
         .await;
 
     let chunk0_err = || anyhow!("upstream did not respond within 10s (chunk 0)");
@@ -2257,7 +2283,12 @@ async fn active_uplinks_watch_publishes_snapshot_on_set() {
     assert_eq!(initial.global, None);
 
     manager
-        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed", false)
+        .set_active_uplink_index_for_transport(
+            TransportKind::Tcp,
+            0,
+            "test seed",
+            crate::types::SwitchIntent::Failover,
+        )
         .await;
     rx.changed().await.expect("watch must fire after setting active");
     let after_seed = *rx.borrow_and_update();
@@ -2266,7 +2297,12 @@ async fn active_uplinks_watch_publishes_snapshot_on_set() {
     // Setting the same active again is a no-op for subscribers
     // (`send_if_modified` only wakes when the snapshot actually changed).
     manager
-        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "duplicate set", false)
+        .set_active_uplink_index_for_transport(
+            TransportKind::Tcp,
+            0,
+            "duplicate set",
+            crate::types::SwitchIntent::Failover,
+        )
         .await;
     let no_change = tokio::time::timeout(std::time::Duration::from_millis(50), rx.changed()).await;
     assert!(
@@ -2276,7 +2312,12 @@ async fn active_uplinks_watch_publishes_snapshot_on_set() {
 
     // A real switch wakes subscribers.
     manager
-        .set_active_uplink_index_for_transport(TransportKind::Tcp, 1, "switch", false)
+        .set_active_uplink_index_for_transport(
+            TransportKind::Tcp,
+            1,
+            "switch",
+            crate::types::SwitchIntent::Failover,
+        )
         .await;
     rx.changed().await.expect("watch must fire on switch");
     let after_switch = *rx.borrow_and_update();
@@ -2289,7 +2330,7 @@ async fn active_uplinks_snapshot_helpers_pick_correct_field() {
         global: Some(7),
         tcp: Some(3),
         udp: Some(9),
-        soft: false,
+        intent: crate::types::SwitchIntent::OperatorHard,
     };
     assert_eq!(snapshot.tcp_for(true), Some(7), "strict global must consult `global`");
     assert_eq!(snapshot.tcp_for(false), Some(3), "per-uplink mode must consult `tcp`");

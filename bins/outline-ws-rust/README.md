@@ -945,9 +945,28 @@ In strict `active_passive` a group has exactly one active uplink, and a flow lef
 The retire-then-redial order is not an optimisation: unlike a carrier death, the old carrier here is perfectly healthy, and a server only holds a parked upstream once that carrier has closed. A redial that arrived first would look the id up against a still-live session, get `miss-unknown`, and be handed a fresh upstream — a guaranteed miss. Closing it first puts the flow inside the server's park-before-resume barrier, which covers the remaining race. (Same reason the client sends `X-Xhttp-Fin` on the XHTTP carriers: they have no free close signal, and the idle sweep is far too late for a soft switch.)
 
 - `soft` is honoured only on a `shared_resume` group. Everywhere else `/control/activate` clamps it to a hard switch and reports the effective value back in the response.
-- Hard switches, health failovers and any other automatic repoint stay exactly as they were: RST, counted as `global_switch`.
-- The automatic **carrier-degraded failover** and the scheduled **reselect** publish a soft switch too, so they get the same treatment.
 - Observable on `outline_ws_rust_tun_tcp_events_total{event=…}`: `soft_switch_migrated` and `soft_switch_migration_failed` (the latter is followed by the ordinary `global_switch` teardown).
+
+#### Which repoints migrate, and which abandon
+
+What decides a stranded flow's fate is not *who* moved the pointer but **whether the switch means to abandon it**. The published snapshot carries a `SwitchIntent`:
+
+| Intent | Set by | Live flows on the old uplink |
+| --- | --- | --- |
+| `OperatorHard` | `/control/activate {"soft":false}`, a hard scheduled reselect, or any soft request clamped off a cluster | RST (`global_switch`) |
+| `OperatorSoft` | `/control/activate {"soft":true}` on a `shared_resume` group | migrate, falling back to RST |
+| `Failover` | probe failover, runtime-failure failover, auto-failback, carrier-degraded failover, initial selection | migrate on a `shared_resume` group, else RST |
+
+A hard switch abandons on purpose: under a mesh cluster a migrated session is relayed back to its **home**, which is the node being drained — migrating it would defeat the drain. A failover is the opposite: nobody decided the sessions should end, and the uplink it moved off is usually the unhealthy one, which is exactly when a resume is worth attempting — the parked upstream lives on the *server*, and the mesh reaches it from the new edge without the client's broken path to the old one. Off a cluster (`shared_resume = false`) nothing migrates: there is nothing parked to re-attach, so a dial could only add latency before the same teardown.
+
+#### TUN UDP flows
+
+The same verdict governs tunnelled **UDP** flows, with one deliberate difference: there is no byte-continuity to protect and therefore no confirmed-hit rule. A parked UDP session keeps no back-buffer of upstream-bound packets (UDP is loss-tolerant by design), so a resume miss costs a fresh exit source port — never a spliced byte stream, which is what makes the TCP path refuse anything short of proof.
+
+What a hit preserves is the **session**: the server re-points the flow's parked NAT entries (SS-UDP) or re-attaches its pinned socket (VLESS-UDP), so the exit keeps the same source port and the peer's NAT binding, path validation and per-address state all survive the switch. The flow's uplink task retires the old carrier — reader first, then the carrier, then the redial — for the same park-before-resume reason as TCP.
+
+- Observable on `outline_ws_rust_tun_udp_events_total{event=…}`: `soft_switch_migrated`, `soft_switch_migrated_no_resume_id` (the flow was carried over, but the server had issued it no Session ID, so the exit source port did change), `soft_switch_migration_failed` (the redial failed; the flow is torn down as a hard switch would have), `soft_switch_target_invalid`.
+- Each tunnelled UDP flow — and each SOCKS5 UDP association — holds its **own** resume slot. TUN dials one carrier per flow, so the process-wide `<resume-scope>#udp` slot they used to share meant a fresh flow presented the previously-closed flow's parked id; a hit on that is a hit on someone else's session, not a missed resume.
 
 ### TUN PMTUD safety gate
 

@@ -686,17 +686,32 @@ the group `X-Outline-Resume` id and replays the in-flight uplink tail
 (and, under v2, the downlink suffix) so the session continues without
 the client ever seeing a reset — the server re-attaches the parked
 upstream via the mesh relay. It falls back to the hard RST teardown
-above when the switch was a hard/health one, the group is not a
+above when the switch was an operator *drain*, the group is not a
 cluster, mid-session retry is disabled (no replay ring), the new active
-is not a WS-family uplink, or the resume redial fails. The gate is the
-published `soft` bit alone (`try_soft_switch_migrate` in
-`pinned_relay.rs` reads `snapshot.soft`), not which mechanism triggered
-the switch: automatic soft switches — the carrier-degraded automatic
-failover and scheduled or manual re-selection (see "Scheduled
-re-selection" below) — migrate live sessions exactly like an explicit
-operator soft switch does. Only a *hard* switch (an ordinary
-health/probe-driven failover, or any soft request clamped to hard
-off-cluster) tears sessions down. The dashboard offers a **⇄ Soft
+is not a WS-family uplink, or the resume redial fails.
+
+The gate is the published `SwitchIntent` (`try_soft_switch_migrate` in
+`pinned_relay.rs` reads `snapshot.intent`), not which mechanism
+triggered the switch. Three values:
+
+| Intent | Set by | Live sessions |
+| --- | --- | --- |
+| `OperatorHard` | `/control/activate {"soft":false}`, a hard scheduled reselect, any soft request clamped off a cluster | RST |
+| `OperatorSoft` | `/control/activate {"soft":true}` on a cluster group | migrate |
+| `Failover` | probe/runtime failover, auto-failback, carrier-degraded failover, initial selection | migrate on a cluster |
+
+Only an operator **drain** tears sessions down, and for a concrete
+reason: under a mesh a migrated session is relayed back to its *home*,
+which is the node being drained, so migrating it would defeat the
+drain. A health failover is not that decision — nobody chose to end
+those sessions, and the uplink the pointer left is usually the
+unhealthy one, which is exactly when a resume is worth attempting: the
+parked upstream lives on the *server*, and the mesh reaches it from the
+new edge without the client's broken path to the old one. (Before this
+was three-valued, every machine-driven repoint published `soft = false`
+and was indistinguishable from a drain — so a mass carrier death reset
+every session it stranded, beating each session's own carrier-death
+migration to the punch.) The dashboard offers a **⇄ Soft
 switch** button next to
 **▶ Activate** on cluster groups (shown only when `cluster_resume_enabled`);
 it posts `soft: true` to `/control/activate`, and the response's `soft`
@@ -708,16 +723,33 @@ group-shared too (it was previously pinned per-uplink to sidestep a then-broken
 relay leg). So a soft switch — and any UDP wire re-selection — keeps a live UDP
 flow on its original home instead of re-establishing it on the new edge:
 
-- **SS-UDP** funnels every destination through one group-scoped id
-  (`<group>#udp` in `global_resume_cache`). The new edge decodes the id's home
-  shard and relays the datagram carrier to the home, which re-attaches the
-  parked NAT entry — one upstream source port survives the switch.
+- **SS-UDP** funnels every destination through one id keyed `<group>#udp`. The
+  new edge decodes the id's home shard and relays the datagram carrier to the
+  home, which re-attaches the parked NAT entry — one upstream source port
+  survives the switch.
 - **VLESS-UDP** fans one uplink out to many single-destination sessions, so it
-  keeps a durable per-target id in its own cache (`global_vless_udp_resume_cache`,
-  keyed `<group>#<target>`). Each target migrates independently: the fresh mux
-  the manager builds for the new edge re-presents that target's shard-carrying
-  id, and the home resumes the parked per-target socket. VLESS-UDP rides the
-  VLESS-TCP mesh carrier on the home, so no dedicated UDP carrier kind exists.
+  keeps a durable per-target id keyed `<group>#<target>`. Each target migrates
+  independently: the fresh mux the manager builds for the new edge re-presents
+  that target's shard-carrying id, and the home resumes the parked per-target
+  socket. VLESS-UDP rides the VLESS-TCP mesh carrier on the home, so no
+  dedicated UDP carrier kind exists.
+
+Those keys name a **slot**, and who owns the slot matters as much as the key.
+Each carrier's owner holds its own (`UdpResumeStore::Private`): one per
+tunnelled TUN UDP flow, one per SOCKS5 UDP association. The process-wide caches
+they used to share are sound only where one carrier exists per scope — which
+SOCKS *nearly* satisfies and TUN does not, since it dials one carrier per flow.
+Sharing meant a fresh flow presented whatever the last closed flow had parked,
+and a hit on that is not a missed resume but a hit on **another session**: the
+server re-points that flow's NAT entries at this carrier, and the TUN reader
+re-sources every reply from its own remote, so one flow's peer traffic reached
+the client wearing another flow's address.
+
+The redial is preceded by closing the old carrier, on both ingresses. The server
+parks a datagram session only once its stream has closed, so a redial that went
+out first would look the id up against a still-live session, be told
+`miss-unknown`, and be handed a fresh upstream on a fresh source port — the
+whole point of the migration, lost to ordering alone.
 
 Off a cluster (`shared_resume = false`) UDP stays per-uplink and every wire
 resolves locally, exactly as before — sharing a UDP id across unrelated homes
@@ -1238,13 +1270,17 @@ client reads that ID off the carrier
 `outline_ws_resume_lookup_total{transport="tcp",result}` counts `hit` for
 a redial that carried an ID and `miss` for a dial that had none.
 
-**UDP** still uses the process-wide `global_resume_cache`, keyed
-`<resume-scope>#udp` (plus `global_vless_udp_resume_cache`, keyed
-`<resume-scope>#<target>`, for VLESS-UDP): a UDP session is one
-long-lived per-uplink (or per-target) entity, so a single slot really
-does name a single session. Configurations where UDP rides the TCP
-carrier (VLESS/WS, VLESS/XHTTP) keep no UDP slot — UDP follows TCP's
-lifetime.
+**UDP** keys its ids `<resume-scope>#udp` (plus
+`<resume-scope>#<target>` for VLESS-UDP), but the slot those keys name
+belongs to **one carrier's owner** — one tunnelled TUN UDP flow, one
+SOCKS5 UDP association (`UdpResumeStore::Private`). The process-wide
+caches those keys used to live in are last-write-wins, which is sound
+only where one carrier exists per scope. TUN dials one carrier per
+*flow*, so under a shared slot a fresh flow presented the id the
+previously-closed flow had parked, and a hit on that re-attaches
+**that** flow's upstream — a cross-session splice, not a missed resume.
+Configurations where UDP rides the TCP carrier (VLESS/WS, VLESS/XHTTP)
+keep no UDP slot — UDP follows TCP's lifetime.
 
 ## Browser fingerprint diversification
 

@@ -74,6 +74,16 @@ pub fn record_tun_tcp_event(group: &str, uplink: &str, event: &'static str) {
         .inc();
 }
 
+/// Flow-lifecycle event on the TUN **UDP** path. Companion to
+/// [`record_tun_tcp_event`]; see `crates/outline-tun/src/udp/lifecycle.rs` for
+/// the event vocabulary and why each one exists.
+pub fn record_tun_udp_event(group: &str, uplink: &str, event: &'static str) {
+    METRICS
+        .tun_udp_events_total
+        .with_label_values(&[group, uplink, event])
+        .inc();
+}
+
 pub fn record_tun_tcp_sniff(outcome: &'static str) {
     METRICS.tun_tcp_sniff_total.with_label_values(&[outcome]).inc();
 }
