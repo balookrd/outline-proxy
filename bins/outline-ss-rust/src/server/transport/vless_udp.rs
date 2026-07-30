@@ -17,7 +17,7 @@ use crate::{
     protocol::vless::{self, VlessUser},
 };
 
-use crate::server::cluster::mesh::read_datagram;
+use crate::server::cluster::mesh::{MeshShape, read_datagram};
 
 use super::carrier_padding;
 use super::upstream_source::{MeshDatagramHalves, MeshUpstreamSetup, VlessUdpSink};
@@ -383,6 +383,20 @@ async fn attach_mesh_udp_upstream<Msg>(
 where
     Msg: Send + 'static,
 {
+    // The relay is only usable for a `Udp` command if the home acked a
+    // single-target VLESS-UDP park; anything else must have been released by
+    // `vless::keep_mesh_upstream_for` before this call, and the caller's
+    // `state.mesh_upstream.take()` therefore hands over a matching setup or
+    // nothing. Asserted here, where the assumption is *used*, because the check
+    // that establishes it lives in another module and a future dispatch arm
+    // could reach this function without going through it. Debug-only: on release
+    // a mismatch still fails safely — the home re-probes the shape it advertised
+    // before it consumes the park, and refuses this relay without destroying it.
+    debug_assert_eq!(
+        setup.shape(),
+        MeshShape::VlessUdpSingle,
+        "a vless udp session may only attach to a relay acked for a vless udp park",
+    );
     let user_id = user.label_arc();
     // For logs only, and deliberately the target the *client* asked for: the
     // home's parked socket is already connected to the target it was minted for,
@@ -433,9 +447,13 @@ where
     let make_binary = outbound.make_binary;
     let make_close = outbound.make_close;
     let permit_for_task = Arc::clone(&permit);
-    // Registered as on the direct path, though nothing here ever parks: a
-    // relayed session's socket lives on the home. The reader is `AbortOnDrop`,
-    // which is what stops it when the carrier goes away.
+    // Present because `UdpUpstream` carries one, and deliberately never
+    // notified: the only notifier is `vless::udp::try_park_vless_udp_single`,
+    // which returns early on a mesh sink because a relayed session's socket
+    // lives on the home and this node must not park it. So the reader here has
+    // no cooperative stop — it is `AbortOnDrop`, and the carrier going away is
+    // what ends it. Safe only because nothing survives that abort: there is no
+    // local socket to harvest and no park to hand it to.
     let cancel = Arc::new(Notify::new());
     let reader_task = AbortOnDrop::new(tokio::spawn(async move {
         relay_mesh_udp_to_client(
@@ -641,6 +659,9 @@ where
                         return Err(error).context("failed to read from vless udp upstream");
                     },
                 };
+                // Dropped, not framed as an empty datagram — and the home's
+                // relayed splice drops it too, so the same session looks the same
+                // to the client whether it is served here or through the mesh.
                 if read == 0 {
                     continue;
                 }

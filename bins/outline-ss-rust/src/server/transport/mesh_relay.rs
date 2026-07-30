@@ -604,19 +604,35 @@ async fn serve_relayed(
     // ignore what it was told. Re-ask before `take_for_resume`, which is the
     // last moment a mismatch can be refused without destroying the park — the
     // invariant the whole two-phase shape hand-off exists to keep.
-    if matches!(
-        registry.probe_park(session_id, ParkQuery::Exact(shape)),
-        ParkProbe::OtherShape | ParkProbe::Missing
-    ) {
-        cluster.metrics.record_mesh_relay_rejected("park_shape");
-        cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
-        debug!(
-            shape = mesh_shape(shape).label(),
-            "the park under a relayed resume id no longer has the shape this relay was acked \
-             for; refusing the relay without consuming it",
-        );
-        refuse_relay(stream, CloseReason::NoSession);
-        return Ok(());
+    //
+    // The two ways it can fail are counted apart, exactly as in phase 1 and for
+    // the same reason: a park that expired in the window between the phases is
+    // an ordinary `no_session`, and only a park that is *there* under a
+    // different shape is a `park_shape`. Folding the two together would make an
+    // expiry read to an operator as a shape disagreement.
+    match registry.probe_park(session_id, ParkQuery::Exact(shape)) {
+        ParkProbe::Splicable(_) => {},
+        ParkProbe::Missing => {
+            cluster.metrics.record_mesh_relay_rejected("no_session");
+            cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+            debug!(
+                "the park under a relayed resume id is gone between the ack and the USER frame; \
+                 refusing the relay",
+            );
+            refuse_relay(stream, CloseReason::NoSession);
+            return Ok(());
+        },
+        ParkProbe::OtherShape => {
+            cluster.metrics.record_mesh_relay_rejected("park_shape");
+            cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+            debug!(
+                shape = mesh_shape(shape).label(),
+                "the park under a relayed resume id no longer has the shape this relay was acked \
+                 for; refusing the relay without consuming it",
+            );
+            refuse_relay(stream, CloseReason::NoSession);
+            return Ok(());
+        },
     }
     let parked = match registry.take_for_resume(session_id, &user.user).await {
         ResumeOutcome::Hit(parked) => parked,
@@ -2062,6 +2078,15 @@ async fn splice_plaintext_vless_udp(
                         ));
                     },
                 };
+                // A zero-length datagram is dropped rather than relayed, which is
+                // exactly what the direct VLESS-UDP reader does with it
+                // (`vless_udp::relay_vless_udp_upstream_to_client`). Forwarding it
+                // would hand a relayed client an empty VLESS frame that a direct
+                // client on the same session never sees — the two paths serve the
+                // same socket and must look the same from the client's side.
+                if len == 0 {
+                    continue;
+                }
                 match tokio::time::timeout(budget, write_datagram(send, &buffer[..len])).await {
                     Ok(Ok(())) => {},
                     Ok(Err(error)) => {
