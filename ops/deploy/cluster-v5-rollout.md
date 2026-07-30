@@ -344,11 +344,14 @@ misses — i.e. whether a token is ever issued and stored, or whether the switch
 path tears sessions down instead of orphaning them. That is a client-side
 investigation (`outline-ws-rust` resume registry), not a mesh one.
 
-**Declared state left on senko:**
-`/etc/systemd/system/outline-ss-rust.service.d/99-mesh-debug.conf` still sets
-`RUST_LOG=…mesh_relay=debug,…cluster=debug`. It is quiet (16 log lines/min, none
-mesh-related) so it was left in place rather than spending another production
-restart. Remove with `rm` + `daemon-reload` + restart when no longer wanted.
+The debug drop-in that produced this evidence
+(`/etc/systemd/system/outline-ss-rust.service.d/99-mesh-debug.conf` on senko) has
+since been **removed**: `.104` was moved off senko first, then `rm` +
+`daemon-reload` + restart. `RUST_LOG` is back to `outline_ss_rust=info,tower_http=info`
+and no drop-in of ours remains — note the neighbouring `20-memory.conf` is
+pre-existing and must be left alone, it carries this node's 250/350 MB cgroup
+limits. Use `rmdir --ignore-fail-on-non-empty` rather than `rm -r` on that
+directory for exactly that reason.
 
 ## Step 1 — build
 
