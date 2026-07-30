@@ -227,6 +227,41 @@ smaller number for reasons that have nothing to do with health.
    deploy, 26 at 15:00 after). A 10-minute pre-deploy baseline read zero purely
    because the phenomenon is bursty. Do not attribute it to a deploy.
 
+## 2026-07-30 — the relay works. Step 5's criterion is met.
+
+After four more fixes landed and the client binary was deployed, a forced soft
+switch on `.104` (nuxt → aeza) produced, on the client:
+
+| counter | value |
+|---|---|
+| `tun_tcp_events_total{event="soft_switch_migrated"}` | 70 |
+| `tun_tcp_events_total{event="carrier_migrated"}` | 70 |
+| `tun_udp_events_total{event="soft_switch_migrated"}` | 69 |
+| `soft_switch_migration_failed` / `global_switch` | 7 / 7 |
+
+and on the servers `orphan_resume_hit_total{kind="tcp"}` = 70 on nuxt, matching
+the client's 70 exactly. 91% of live flows carried over; the 7 that could not
+fell through to the RST a hard switch would have given, which is the documented
+fallback, not a failure.
+
+**`mesh_bytes_total` is non-zero, and the pairs reconcile.** This is the counter
+whose fleet-wide zero hid a dead relay for months:
+
+- senko as home, `down/udp`: 146,209,509 — and nuxt as edge, `down/udp`:
+  146,209,509. Identical.
+- nuxt as home `down/tcp` 5,586,711 and `down/udp` 31,839,197 against aeza as
+  edge 5,587,911 and 31,845,063 — the small excess is in flight.
+- `mesh_relay_outcome_total{outcome="hit"}` 30 on nuxt, 1 on senko;
+  `mesh_relay_active` 45.
+
+The relay had never carried a byte in production. It does now, and it did so
+without any further cluster change — the mesh had been correct since it was
+switched on, and was idle only because nothing upstream of it ever asked for a
+cross-shard resume.
+
+Nothing was rolled back and no node needed its automatic rollback. Fleet after:
+all seven `active`, `NRestarts=0`, settled WARN 0/min, zero unhealthy uplinks.
+
 ## Executed 2026-07-30 — exit servers, and the cluster switched on
 
 The three exit servers were deployed after the client-side four, in a second
