@@ -197,8 +197,10 @@ fn a_shapes_framing_follows_from_the_shape() {
     assert_eq!(MeshShape::Stream.framing(), Some(MeshFraming::Tcp));
     assert_eq!(MeshShape::Datagram.framing(), Some(MeshFraming::Udp));
     assert_eq!(MeshShape::VlessUdpSingle.framing(), Some(MeshFraming::Udp));
-    // No splice carries a mux bundle yet, so no body ever flows under it.
-    assert_eq!(MeshShape::VlessMux.framing(), None);
+    // A mux body is the client's own frame stream, forwarded verbatim: every mux
+    // frame is self-delimiting, including the datagram-carrying ones, so a
+    // second length prefix would only duplicate one already on the wire.
+    assert_eq!(MeshShape::VlessMux.framing(), Some(MeshFraming::Tcp));
 }
 
 /// Which OPENs commit to a shape and which defer is what both peers read the ack

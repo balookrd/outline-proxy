@@ -25,7 +25,7 @@ use super::resume_headers::ResumeContext;
 use super::sink;
 use super::throughput_monitor;
 use super::upstream_source::UpstreamSource;
-use super::vless_mux::{self, MuxRouteCtx, MuxServerCtx, MuxState};
+use super::vless_mux::{self, MuxAccounting, MuxRouteCtx, MuxServerCtx, MuxState};
 use super::vless_udp::{self, forward_vless_udp_client_frames};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
@@ -42,7 +42,10 @@ pub(in crate::server::transport) use ctx::{
 pub(in crate::server) use ctx::{VlessWsRouteCtx, VlessWsServerCtx};
 
 use ctx::MAX_VLESS_HEADER_BUFFER;
-use tcp::{establish_vless_tcp_upstream, shutdown_unparked_tcp, try_park_vless_tcp};
+use tcp::{
+    MeshAttach, MeshAttachKind, attach_mesh_upstream, establish_vless_tcp_upstream,
+    shutdown_unparked_tcp, try_park_vless_tcp,
+};
 use udp::try_park_vless_udp_single;
 
 /// Serves one VLESS-over-WS/XHTTP session: authenticate the client, take an
@@ -526,12 +529,7 @@ where
                 .await
         },
         VlessCommand::Mux => {
-            // No home splices a mux bundle yet, whatever shape it advertised, so
-            // this command never keeps a relay. The rest of the machinery is
-            // already in place for it: the home names `MeshShape::VlessMux` in
-            // its ack, and teaching it a splice would turn this line into
-            // another `keep_mesh_upstream_for` with no wire change at all.
-            release_mesh_upstream(state, "mux");
+            keep_mesh_upstream_for(state, MeshShape::VlessMux, "mux");
             establish_vless_mux_upstream(state, request, user, server, route, outbound).await
         },
     }
@@ -599,6 +597,30 @@ async fn establish_vless_mux_upstream<Msg>(
 where
     Msg: Send + 'static,
 {
+    // Cluster edge: the whole bundle lives on the home, which is still waiting
+    // to be told *who* this session belongs to. From here on this node is a pure
+    // carrier — it forwards the client's mux frame stream verbatim and never
+    // parses a mux frame, so the same byte-stream attach the TCP command uses
+    // serves a mux session unchanged. Neither the local registry nor an outbound
+    // dial is consulted: the home owns every sub-connection, and it opens new
+    // ones for `New` frames too.
+    if let Some(setup) = state.mesh_upstream.take() {
+        return attach_mesh_upstream(
+            state,
+            setup,
+            request,
+            user,
+            server,
+            route,
+            outbound,
+            MeshAttach {
+                target_display: Arc::from("vless-mux"),
+                kind: MeshAttachKind::Mux,
+            },
+        )
+        .await;
+    }
+
     // Resume attempt: if the client offered a Session ID and the
     // registry has a parked VLESS-mux entry for this user, re-attach
     // every sub-connection atomically. The mux's request frame
@@ -633,8 +655,10 @@ where
                     parked,
                     outbound.data_tx.clone(),
                     outbound.make_binary,
-                    Arc::clone(&server.metrics),
+                    &server.metrics,
                     route.protocol,
+                    // This node terminates the client session, so it counts.
+                    MuxAccounting::Local,
                 );
                 state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
                 state.authenticated_user = Some(user);
@@ -683,7 +707,7 @@ where
         .map_err(|error| anyhow!("failed to queue vless mux response header: {error}"))?;
 
     let user_counters = server.metrics.user_counters(&user.label_arc());
-    let mux = MuxState::new(user.clone(), Arc::clone(&user_counters));
+    let mux = MuxState::new(user.clone(), Arc::clone(&user_counters), MuxAccounting::Local);
     state.user_counters = Some(user_counters);
     state.authenticated_user = Some(user);
 
