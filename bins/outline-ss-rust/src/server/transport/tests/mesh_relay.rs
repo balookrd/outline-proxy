@@ -2283,10 +2283,13 @@ async fn a_relayed_udp_session_reports_a_zero_acked_offset() {
     assert_eq!(session.acked_uplink_offset(), 0);
 }
 
-/// An SS-UDP park is Shadowsocks by construction, so a relay claiming VLESS over
-/// one is the same cross-protocol confusion the byte-stream splice refuses.
+/// A datagram-framed VLESS OPEN is the one (framing, protocol) pair no edge
+/// produces: a VLESS edge picks the framing before it can read the command, so
+/// it always picks `Tcp` and the home's ack names the real shape. Such a header
+/// therefore asks a shape question that has no answer, and is refused outright —
+/// before the park it names is even looked up, let alone consumed.
 #[tokio::test]
-async fn a_udp_relay_claiming_vless_is_refused() {
+async fn a_udp_framed_vless_relay_is_refused_before_the_park_is_touched() {
     let harness = MeshHomeHarness::new().await;
     let id = SessionId::from_bytes([41u8; 16]);
     let target = spawn_udp_echo().await;
@@ -2298,7 +2301,8 @@ async fn a_udp_relay_claiming_vless_is_refused() {
 
     assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
     let rendered = harness.metrics().render_prometheus();
-    assert_eq!(rejected(&rendered, "protocol_mismatch"), 1, "{rendered}");
+    assert_eq!(rejected(&rendered, "bad_setup"), 1, "{rendered}");
+    assert!(harness.registry().has_park(id), "the park must survive a header it cannot serve");
 }
 
 /// A burst keeps every datagram whole. The uplink pump drains its in-flight
