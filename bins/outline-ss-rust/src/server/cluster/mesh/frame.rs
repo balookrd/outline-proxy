@@ -88,10 +88,60 @@
 //! immediately before `take_for_resume`, so a mismatch is still refused before
 //! anything is consumed, whatever a peer does with the ack.
 //!
-//! A third shape needs no wire change: [`MeshShape::VlessMux`] already has its
-//! code, the home already advertises it, and this build's edge answers it by
-//! releasing the relay. Teaching the home a mux splice is a code change on both
-//! ends of an unchanged protocol.
+//! # How a mux body crosses, and why it needs no framing of its own
+//!
+//! [`MeshShape::VlessMux`] took no wire change at all, which is the point of
+//! recording *why* here rather than in the splice that implements it.
+//!
+//! A mux session is a bundle: one `Parked::VlessMux` holding a TCP or UDP
+//! sub-connection per multiplexed id, each with its own upstream socket. Those
+//! sockets cannot move, so a relayed mux is served by the node that owns them —
+//! the home runs the mux frame layer, and the edge is a pure carrier. What
+//! crosses the mesh is therefore the client's **own mux frame stream**,
+//! verbatim: the edge terminates the client's carrier and the VLESS request
+//! header, but never parses a mux frame.
+//!
+//! That is what makes [`MeshFraming::Tcp`] correct here, and it is not the same
+//! argument as for a byte-stream park. It rests on the mux frames themselves:
+//! every one carries a `u16` meta length and, when it has a payload, a `u16`
+//! data length — so the stream is self-delimiting whatever the QUIC chunking
+//! does — and a UDP sub-connection's **datagram boundary is a frame boundary**,
+//! one `Keep` frame per packet with its own target. The atomicity the `Udp`
+//! framing exists to protect is already on the wire, one layer up. Contrast
+//! SS-UDP and single-target VLESS-UDP, where the edge *strips* the client's
+//! framing and the mesh must supply one.
+//!
+//! Three alternatives were weighed and rejected:
+//!
+//! * **Length-frame each mux frame as a mesh datagram.** Would force the edge to
+//!   parse mux frames purely to re-frame them — putting the mux parser on both
+//!   nodes, with two chances to disagree — and spend four bytes per frame
+//!   duplicating a length prefix already present.
+//! * **Demultiplex on the edge: one mesh sub-stream (or a sub-connection-id
+//!   field) per mux sub-connection.** This re-invents mux inside the mesh: an id
+//!   space, an admission decision and a teardown rule per sub-connection, plus a
+//!   wire addition — and buys nothing, because every socket it addresses is on
+//!   the same home anyway.
+//! * **Split the bundle: relay the sub-connections that fit an existing shape,
+//!   dial the rest locally.** Rejected outright. The bundle is one registry
+//!   entry, and half of it on each node is a session neither can ever park
+//!   again.
+//!
+//! The bundle is therefore admitted whole or refused whole, and the check runs
+//! before anything is consumed: `transport::mesh_relay`'s
+//! `splice_plaintext_vless_mux` tests the one precondition (the bundle still
+//! holds a sub-connection) ahead of `vless_mux::attach_parked`, which is total
+//! over what it is given — every parked sub-connection already carries both
+//! halves of its upstream, so none can fail to re-attach and no partial outcome
+//! exists below that point.
+//!
+//! One consequence is worth stating plainly, because it is a scope decision and
+//! not an accident: sub-connections opened *inside* a relayed mux are dialled
+//! from the **home**, since that is where the frame layer runs. The rule that a
+//! mux session a node establishes dials its own sub-connections is unchanged —
+//! it is about a fresh mux, and this is about a park that already exists
+//! elsewhere. Both say the same thing: sub-connections live wherever the mux
+//! bundle lives, and never straddle two nodes.
 //!
 //! Version skew degrades the same way it always has, in both directions. A home
 //! that predates the field answers [`OPEN_ACK_ACCEPTED`], which reads as

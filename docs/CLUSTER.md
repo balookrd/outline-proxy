@@ -178,13 +178,20 @@ first payload byte, and naming the shape in phase 2 arrives after the edge has
 already upgraded its client and echoed the home's id, leaving it with a session
 it can only fail. See `server/cluster/mesh/frame.rs`.
 
-**VLESS-mux has no home splice yet.** `MeshShape::VlessMux` already has its wire
-code and the home already advertises it, so an edge that reads a `Mux` command
-releases the relay and serves the session locally, leaving the park intact;
-teaching the home a mux splice needs no wire change. **VLESS-UDP does have one**:
-a single-target VLESS-UDP park is one connected socket, and the relay pumps
-length-framed datagrams to and from it, so such a session migrates across an
-edge switch on the same source port.
+**Every VLESS shape now has a home splice.** A single-target VLESS-UDP park is
+one connected socket, and the relay pumps length-framed datagrams to and from it,
+so such a session migrates across an edge switch on the same source port. A
+**VLESS-mux** park is a whole bundle — one sub-connection, with its own upstream,
+per multiplexed id — and it migrates the same way: the sockets stay on the home,
+which runs the mux frame layer, while the edge forwards the client's mux frame
+stream verbatim as a byte stream. That needed no wire field, because a mux frame
+carries its own length prefixes and a UDP sub-connection's datagram boundary *is*
+a frame boundary. Sub-connections opened inside a relayed mux are therefore
+dialled from the home; a mux a node establishes for itself still dials its own,
+so sub-connections never straddle two nodes. The bundle is admitted whole or
+refused whole (`relay_rejected_total{reason="park_incomplete"}`): it is one
+registry entry, and half of it on each node is a session neither could park
+again.
 
 The **carrier padding layer** belongs to the edge along with the crypto above it:
 the edge encodes and decodes padding for its own client and relays unpadded
@@ -297,10 +304,11 @@ stream cap). A stream arriving with no permit free is refused with
 and serves that client locally instead. A peer on an older build maps the code
 to `abort`, which is the right fallback.
 
-For VLESS mux, the whole multiplex parks atomically, so the relay would have to
-carry the entire multiplex over one mesh stream and never split sub-connections
-across streams — which is why the home refuses a mux-shaped park rather than
-half-serving it.
+For VLESS mux, the whole multiplex parks atomically, so the relay carries the
+entire multiplex over one mesh stream and never splits sub-connections across
+streams. The home decides once, before it consumes the park, whether the bundle
+can be served; re-attaching it cannot then partially fail, because every parked
+sub-connection already holds both halves of its upstream.
 
 For **SS-UDP** the body is not a byte stream. A datagram is atomic, so the relay
 length-frames each one as `u32 length | payload` on the mesh stream and de-frames
@@ -324,8 +332,9 @@ back in the home's ack, and it is the shape, not the OPEN's framing, that says
 how the body is delimited. A VLESS-UDP relay therefore length-frames its
 datagrams exactly as SS-UDP does: the client's own `u16`-prefixed frames are
 de-framed on the edge, one mesh datagram per packet, and sent whole into the one
-socket the park holds. A mux-shaped park is still refused on `park_shape`,
-leaving it intact.
+socket the park holds. A **mux**-shaped park takes the other branch of the same
+decision: the shape resolves to byte-stream framing, and the mux frames inside
+supply every boundary that matters.
 
 ### Health budget ("slow neighbour → tear down")
 
@@ -414,7 +423,8 @@ wherever the client happened to be when it opened the session.
 | home dies | shard points at a dead server; edge cannot reach it over mesh → resume-miss → fresh session | lost (= today) |
 | shard unknown (server decommissioned) | edge treats it as home-down → fresh session | lost |
 | home holds no park under the resume id (expired, or never minted there) | home refuses at setup (`no_session`); edge has not upgraded the client yet → fresh session on the edge | lost (ordinary — parks expire) |
-| the park is a shape this home cannot splice (mux) | home refuses at setup (`park_shape`) **without consuming the park** → fresh session on the edge | lost on this carrier; the park survives for the next |
+| the park is a shape no relay from this OPEN could ask for (an SS-UDP park under a VLESS resume id, or the reverse) | home refuses at setup (`park_shape`) **without consuming the park** → fresh session on the edge | lost on this carrier; the park survives for the next |
+| a mux park holds no sub-connection left to re-attach | home refuses the whole bundle (`park_incomplete`) rather than splicing part of it → the client reconnects | lost (the bundle was already empty) |
 | the park's shape is not the one the client's VLESS command needs | home names the shape in its ack; the edge releases the relay **before the USER frame**, so nothing is consumed → local session on the edge | lost on this carrier; the park survives for the next |
 | peer on a retired wire version | home refuses the OPEN outright, before any ack → fresh session on the edge | lost (continuity only; traffic flows) |
 
@@ -561,8 +571,11 @@ has an explicit limit:
    follow-up: let the client dial the home directly when it is reachable,
    bypassing the edge relay — but that is client-side routing on top of the
    mesh, a separate phase.
-3. **VLESS mux** parks atomically; the relay must carry the whole multiplex on
-   one mesh stream, never splitting it, or partial-resume breaks.
+3. **VLESS mux** parks atomically and the relay carries the whole multiplex on
+   one mesh stream, never splitting it. The residual risk is the frame layer
+   running on the home: a mux frame stream that desynchronises there costs the
+   bundle (it is not re-parked), where a byte-stream relay would simply drop the
+   carrier.
 4. **Downstream-throttle detection on relayed carriers runs entirely on the
    edge** (see the section above), so the home no longer conflates the
    interconnect with the client last mile. Residual: the edge cannot tell a real

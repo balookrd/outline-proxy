@@ -192,10 +192,10 @@ impl MeshUpstreamSetup {
     /// The one caller is the VLESS edge: it opens the relay before it can read
     /// the client's first frame, and only then learns which command it is
     /// serving. When that command's upstream shape is not the one the home acked
-    /// ([`Self::shape`]) — a `Mux` command, or a `Tcp` one on a UDP-shaped park —
-    /// the edge serves the session locally, and it must get out *before*
-    /// [`Self::attach`], because the USER frame is what makes the home consume
-    /// its park. Leaving the setup to drop would eventually say the same thing —
+    /// ([`Self::shape`]) — a `Tcp` command on a UDP-shaped park, a `Mux` one on
+    /// a byte-stream park — the edge serves the session locally, and it must get
+    /// out *before* [`Self::attach`], because the USER frame is what makes the
+    /// home consume its park. Leaving the setup to drop would eventually say the same thing —
     /// the home's frame read fails either way — but not until the session ends,
     /// and this setup owns a pool permit: a long-lived mux or UDP session would
     /// pin an edge relay slot for its whole life, and a home relay slot until the

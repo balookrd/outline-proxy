@@ -80,9 +80,8 @@ pub(crate) enum ParkProbe {
     /// landing, whose shape is not knowable yet and which is optimistically
     /// admitted.
     Splicable(Option<ParkShape>),
-    /// A park of some other shape: one no v5 splice carries today (VLESS-mux),
-    /// or one the query does not admit. The caller must refuse *without*
-    /// consuming it.
+    /// A park of some other shape: one the query does not admit. The caller
+    /// must refuse *without* consuming it.
     OtherShape,
 }
 
@@ -99,9 +98,8 @@ pub(crate) enum ParkShape {
     Datagram,
     /// A single-target VLESS-UDP park ([`Parked::VlessUdpSingle`]).
     VlessUdpSingle,
-    /// A VLESS-mux park ([`Parked::VlessMux`]). No splice carries it yet; it is
-    /// nameable so a relay can be *told* what it found instead of being told
-    /// only that it cannot have it.
+    /// A VLESS-mux park ([`Parked::VlessMux`]): the whole multiplex, spliced
+    /// as one bundle.
     VlessMux,
 }
 
