@@ -11,7 +11,7 @@ use crate::{
     metrics::{AppProtocol, Metrics, Protocol},
 };
 
-use super::super::parked::{Parked, ParkedTcp, TcpProtocolContext};
+use super::super::parked::{Parked, ParkedProtocol, ParkedTcp};
 use super::*;
 
 fn test_config() -> Config {
@@ -106,7 +106,7 @@ async fn make_parked_tcp(metrics: &Arc<Metrics>, owner: &str) -> Parked {
         upstream_reader: reader,
         target_display: Arc::from("example.com:443"),
         owner: Arc::clone(&user_id),
-        protocol_context: TcpProtocolContext::Ss(user),
+        protocol: ParkedProtocol::Ss,
         user_counters: metrics.user_counters(&user_id),
         upstream_guard: metrics.open_tcp_upstream_connection(
             user_id,

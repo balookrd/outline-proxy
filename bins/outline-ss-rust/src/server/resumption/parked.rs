@@ -24,7 +24,6 @@ use tokio::net::{
 use parking_lot::Mutex;
 
 use crate::{
-    crypto::UserKey,
     metrics::{PerUserCounters, TcpUpstreamGuard},
     protocol::vless::VlessUser,
     server::{nat::NatKey, resumption::downlink_ring::DownlinkRing},
@@ -56,35 +55,39 @@ impl Parked {
     }
 }
 
-/// Per-protocol context preserved alongside a parked TCP upstream.
+/// Which proxy protocol authenticated the session a byte-stream park came
+/// from. **Diagnostic only** — it never decides whether a resume is served.
 ///
-/// On resume the relay path needs different inner state depending on
-/// which proxy protocol authenticated the original session:
+/// A parked byte-stream carries no protocol-specific state to begin with: the
+/// upstream socket halves, the acked-byte counter and the v2 downlink ring are
+/// all plaintext-level, and the framing each carrier owes its client — a VLESS
+/// response header, a fresh SS response cipher — is minted from the *resuming*
+/// stream's own authenticated user, never from the park. So a session parked
+/// under one protocol reattaches to a carrier of the other unchanged, which is
+/// what a client whose uplink rerolls its active wire (`shuffle_wires` over a
+/// set mixing SS and VLESS wires) needs on every reroll.
 ///
-/// - SS-over-WebSocket needs the original [`UserKey`] so the new client
-///   stream can build a fresh `AeadStreamEncryptor` for the same user.
-/// - VLESS-over-WebSocket does not encrypt the relay payload at all —
-///   the proxy passes raw bytes between the WS frame layer and the
-///   upstream socket, so no inner crypto context is preserved.
-///
-/// Resume-attach paths must match on the variant they expect; a request
-/// to resume an SS session through a VLESS handler (or vice versa) is
-/// treated as a miss to avoid cross-protocol confusion attacks.
-pub(crate) enum TcpProtocolContext {
-    /// Shadowsocks-over-WebSocket session. Carries the per-user
-    /// `UserKey` needed to derive a fresh response cipher for the new
-    /// client stream.
-    Ss(UserKey),
-    /// VLESS-over-WebSocket session (single-target). No inner crypto
-    /// state is kept; the new client stream simply forwards raw bytes.
+/// This once carried the parking SS user's [`UserKey`], and the three resume
+/// paths refused any park whose variant disagreed with the resuming carrier.
+/// The premise was that agreement on the owner label but not the protocol meant
+/// two different people sharing an identifier. It is the opposite: one
+/// `[[users]]` entry holds both `password` and `vless_id`, and both legs park
+/// under that entry's `id`, so an owner match across protocols is one account
+/// reached two ways. See `docs/SESSION-RESUMPTION.md` § Cross-protocol resume
+/// for what the owner check guarantees on its own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParkedProtocol {
+    /// Shadowsocks-over-WebSocket / -XHTTP session.
+    Ss,
+    /// VLESS-over-WebSocket / -XHTTP session (single-target).
     Vless,
 }
 
-impl TcpProtocolContext {
+impl ParkedProtocol {
     /// Stable label for metrics and structured logs.
     pub(crate) fn label(&self) -> &'static str {
         match self {
-            Self::Ss(_) => "ss",
+            Self::Ss => "ss",
             Self::Vless => "vless",
         }
     }
@@ -101,9 +104,9 @@ pub(crate) struct ParkedTcp {
     /// Human-readable target host:port, kept for logging only.
     pub(crate) target_display: Arc<str>,
     pub(crate) owner: Arc<str>,
-    /// Per-protocol context preserved across the resume hand-off; see
-    /// [`TcpProtocolContext`].
-    pub(crate) protocol_context: TcpProtocolContext,
+    /// Which protocol authenticated the session that parked this upstream.
+    /// Carried for logs and metrics only — see [`ParkedProtocol`].
+    pub(crate) protocol: ParkedProtocol,
     pub(crate) user_counters: Arc<PerUserCounters>,
     pub(crate) upstream_guard: TcpUpstreamGuard,
     /// Cumulative bytes the relay successfully wrote to
