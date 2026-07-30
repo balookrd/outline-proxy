@@ -33,6 +33,15 @@ pub(super) struct GroupUdpContext {
     /// downlink failover task re-select on the same client key. `None` for
     /// other scopes / ingresses that cannot attribute a source.
     pub(super) client: Option<Arc<str>>,
+    /// Resume slot private to this association.
+    ///
+    /// The process-wide SS-UDP cache holds one id per resume scope, so every
+    /// concurrent UDP association in the group shared a slot: a reconnecting
+    /// association would present whichever id another one happened to park
+    /// last, and on a hit the server re-points *that* association's NAT entries
+    /// here. A private slot keeps each association's id to itself, and is what
+    /// lets a strict repoint re-attach this association's own upstream.
+    pub(super) resume_store: outline_transport::UdpResumeStore,
 }
 
 impl GroupUdpContext {
@@ -46,7 +55,8 @@ impl GroupUdpContext {
         target: Option<&TargetAddr>,
         payload: &[u8],
     ) -> Result<()> {
-        reconcile_global_udp_transport(&self.manager, &self.active, target).await?;
+        reconcile_global_udp_transport(&self.manager, &self.active, target, &self.resume_store)
+            .await?;
         let snapshot = self.active.load_full();
         let transport = Arc::clone(&snapshot.transport);
         let active_index = snapshot.index;
@@ -61,6 +71,7 @@ impl GroupUdpContext {
                 self.client.as_deref(),
                 active_index,
                 error,
+                &self.resume_store,
             )
             .await?;
             if let Err(error) = replacement.transport.send_packet(payload).await {
@@ -162,13 +173,15 @@ pub(super) async fn resolve_group_context(
         .group_by_name(group_name)
         .ok_or_else(|| anyhow!("uplink group \"{group_name}\" is not configured"))?
         .clone();
-    let initial = select_udp_transport(&manager, None, client).await?;
+    let resume_store = outline_transport::UdpResumeStore::private();
+    let initial = select_udp_transport(&manager, None, client, &resume_store).await?;
     let active = Arc::new(ArcSwap::from_pointee(initial));
     let ctx = GroupUdpContext {
         manager: manager.clone(),
         active: Arc::clone(&active),
         group_name: Arc::from(group_name),
         client: client.map(Arc::from),
+        resume_store,
     };
 
     // Insert the context and spawn the downlink task atomically: take the map
@@ -224,7 +237,7 @@ pub(super) async fn run_group_downlink(
     // Skip the initial snapshot — only future changes should wake the loop.
     let _ = active_uplinks_rx.borrow_and_update();
     loop {
-        reconcile_global_udp_transport(&ctx.manager, &ctx.active, None).await?;
+        reconcile_global_udp_transport(&ctx.manager, &ctx.active, None, &ctx.resume_store).await?;
         let snapshot = ctx.active.load_full();
         let index = snapshot.index;
         let name = snapshot.uplink_name.clone();
@@ -280,6 +293,7 @@ pub(super) async fn run_group_downlink(
                         ctx.client.as_deref(),
                         index,
                         error,
+                        &ctx.resume_store,
                     )
                     .await?;
                     let payload = replacement.transport.read_packet().await?;

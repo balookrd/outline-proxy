@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::accept_async;
 use url::Url;
 
-use outline_transport::{TransportMode, UdpSessionTransport, UdpWsTransport};
+use outline_transport::{TransportMode, UdpResumeStore, UdpSessionTransport, UdpWsTransport};
 use outline_uplink::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
     UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
@@ -223,7 +223,7 @@ async fn strict_reconcile_switches_udp_transport_to_the_new_active() {
         )),
     });
 
-    reconcile_global_udp_transport(&manager, &active, None)
+    reconcile_global_udp_transport(&manager, &active, None, &UdpResumeStore::private())
         .await
         .expect("reconcile against the current active must succeed");
     assert_eq!(active.load().index, 0, "no switch happened, so the transport must be untouched");
@@ -232,7 +232,7 @@ async fn strict_reconcile_switches_udp_transport_to_the_new_active() {
     // Operator switches the active uplink to up-b. The next datagram's reconcile
     // must migrate the session's transport onto it.
     manager.set_active_uplink_by_name("up-b", None, false).await.unwrap();
-    reconcile_global_udp_transport(&manager, &active, None)
+    reconcile_global_udp_transport(&manager, &active, None, &UdpResumeStore::private())
         .await
         .expect("reconcile must rebuild the transport on the new active uplink");
 
@@ -244,5 +244,132 @@ async fn strict_reconcile_switches_udp_transport_to_the_new_active() {
     assert_eq!(&*active.load().uplink_name, "up-b");
     assert_eq!(dials.load(Ordering::SeqCst), 1, "the switch must dial the new active once");
 
+    server.abort();
+}
+
+/// A WS upstream that records the *order* of connection opens and closes, which
+/// is the only thing that distinguishes a redial that can resume from one that
+/// cannot.
+async fn spawn_ordered_ws_server()
+-> (Url, StdArc<std::sync::Mutex<Vec<&'static str>>>, JoinHandle<()>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log: StdArc<std::sync::Mutex<Vec<&'static str>>> =
+        StdArc::new(std::sync::Mutex::new(Vec::new()));
+    let log_in_task = StdArc::clone(&log);
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { break };
+            let log = StdArc::clone(&log_in_task);
+            tokio::spawn(async move {
+                let Ok(ws) = accept_async(stream).await else { return };
+                log.lock().unwrap().push("open");
+                use futures_util::StreamExt as _;
+                let (_sink, mut read) = ws.split();
+                while read.next().await.transpose().ok().flatten().is_some() {}
+                log.lock().unwrap().push("close");
+            });
+        }
+    });
+    (Url::parse(&format!("ws://{addr}/udp")).unwrap(), log, task)
+}
+
+async fn await_log_len(log: &StdArc<std::sync::Mutex<Vec<&'static str>>>, len: usize) {
+    for _ in 0..600 {
+        if log.lock().unwrap().len() >= len {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {len} connection events, got {:?}", log.lock().unwrap());
+}
+
+/// A repoint the session is meant to survive must **retire the old carrier
+/// before dialling the new one**.
+///
+/// The server parks a datagram session only once its stream has closed, so a
+/// redial that goes out first looks the association's id up against a still-live
+/// session, is told `miss-unknown`, and is handed a fresh upstream on a fresh
+/// source port. Reconcile used to dial first and close afterwards, so *every*
+/// strict repoint silently lost NAT continuity no matter how resume was
+/// configured.
+#[tokio::test]
+async fn a_migrating_reconcile_retires_the_old_carrier_before_redialling() {
+    let (udp_url, log, server) = spawn_ordered_ws_server().await;
+    let manager = outline_uplink::UplinkManager::new_for_test(
+        "main",
+        vec![strict_uplink("up-a", &udp_url), strict_uplink("up-b", &udp_url)],
+        probe_disabled(),
+        LoadBalancingConfig {
+            shared_resume: true,
+            ..strict_global_lb()
+        },
+    )
+    .unwrap();
+    manager.set_active_uplink_by_name("up-a", None, false).await.unwrap();
+
+    let store = UdpResumeStore::private();
+    let initial = select_udp_transport(&manager, None, None, &store).await.unwrap();
+    let active = ArcSwap::from_pointee(initial);
+    await_log_len(&log, 1).await;
+
+    let (_index, applied_soft) =
+        manager.set_active_uplink_by_name("up-b", None, true).await.unwrap();
+    assert!(applied_soft, "a shared_resume group honours the soft bit");
+
+    reconcile_global_udp_transport(&manager, &active, None, &store)
+        .await
+        .expect("reconcile must move the association to the new active");
+    assert_eq!(active.load().index, 1);
+    await_log_len(&log, 3).await;
+
+    assert_eq!(
+        &log.lock().unwrap()[..3],
+        &["open", "close", "open"],
+        "the old carrier must close before the redial, or the server has nothing \
+         parked for the id the redial presents",
+    );
+    server.abort();
+}
+
+/// Negative control: on a **drain** the ordering is deliberately left alone.
+/// There is no resume to protect, and closing first would leave the association
+/// with no carrier at all if the replacement dial then failed.
+///
+/// Without this the rule above would also be satisfied by "always close first",
+/// which is a different (and worse) behaviour.
+#[tokio::test]
+async fn a_draining_reconcile_keeps_the_old_carrier_until_the_redial_lands() {
+    let (udp_url, log, server) = spawn_ordered_ws_server().await;
+    let manager = outline_uplink::UplinkManager::new_for_test(
+        "main",
+        vec![strict_uplink("up-a", &udp_url), strict_uplink("up-b", &udp_url)],
+        probe_disabled(),
+        LoadBalancingConfig {
+            shared_resume: true,
+            ..strict_global_lb()
+        },
+    )
+    .unwrap();
+    manager.set_active_uplink_by_name("up-a", None, false).await.unwrap();
+
+    let store = UdpResumeStore::private();
+    let initial = select_udp_transport(&manager, None, None, &store).await.unwrap();
+    let active = ArcSwap::from_pointee(initial);
+    await_log_len(&log, 1).await;
+
+    // Hard switch: an operator draining the node.
+    manager.set_active_uplink_by_name("up-b", None, false).await.unwrap();
+    reconcile_global_udp_transport(&manager, &active, None, &store)
+        .await
+        .expect("reconcile must move the association to the new active");
+    assert_eq!(active.load().index, 1);
+    await_log_len(&log, 3).await;
+
+    assert_eq!(
+        &log.lock().unwrap()[..3],
+        &["open", "open", "close"],
+        "a drain dials the replacement before letting the old carrier go",
+    );
     server.abort();
 }
