@@ -547,7 +547,11 @@ where
 /// session needs. When they agree the relay goes on to attest the user; when
 /// they do not, the edge serves the session locally from here.
 fn keep_mesh_upstream_for(state: &mut VlessRelayState, want: MeshShape, command: &'static str) {
-    if state.mesh_upstream.as_ref().is_some_and(|setup| setup.shape() != want) {
+    if state
+        .mesh_upstream
+        .as_ref()
+        .is_some_and(|setup| setup.shape() != want)
+    {
         release_mesh_upstream(state, command);
     }
 }

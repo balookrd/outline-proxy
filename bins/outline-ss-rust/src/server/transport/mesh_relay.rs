@@ -559,8 +559,8 @@ async fn serve_relayed(
     // carries `shape` when the OPEN could not name one — the answer a VLESS edge
     // needs before it can tell, from the command it is about to read, whether
     // this park is one it can use at all.
-    if let Err(error) = write_open_ack(&mut stream.send, header.committed_shape(), mesh_shape(shape))
-        .await
+    if let Err(error) =
+        write_open_ack(&mut stream.send, header.committed_shape(), mesh_shape(shape)).await
     {
         // The mesh stream broke during setup, before any park was consulted:
         // neither a hit nor a miss, but still one relay that entered this

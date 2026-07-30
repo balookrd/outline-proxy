@@ -255,7 +255,10 @@ pub(in crate::server) fn open_ack_byte(committed: Option<MeshShape>, parked: Mes
 /// the same byte the same way without it having to be self-describing. A
 /// committed OPEN accepts only [`OPEN_ACK_ACCEPTED`] and keeps its own shape; an
 /// uncommitted one takes the home's word for it.
-pub(in crate::server) fn parse_open_ack(byte: u8, committed: Option<MeshShape>) -> Result<MeshShape> {
+pub(in crate::server) fn parse_open_ack(
+    byte: u8,
+    committed: Option<MeshShape>,
+) -> Result<MeshShape> {
     match committed {
         Some(shape) => {
             if byte != OPEN_ACK_ACCEPTED {
