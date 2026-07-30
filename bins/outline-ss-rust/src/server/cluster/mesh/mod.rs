@@ -21,9 +21,12 @@ pub(in crate::server) use endpoint::{
     AcceptRelayError, MeshEndpoint, MeshStream, accept_relay, write_open_ack,
 };
 pub(in crate::server) use frame::{
-    CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshProtocol, MeshShape, OpenHeader,
+    CloseIntent, CloseReason, MeshFraming, MeshProtocol, MeshShape, OpenHeader,
     UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame,
 };
+// Wider than the rest: config validation refuses a clustered user name that
+// could never fit a `UserFrame`, and reads the bound from here.
+pub(crate) use frame::MAX_USER_LEN;
 // Setup-phase pieces the *reading* peer needs. The edge reads the ack through
 // `PooledRelay::await_ack`, so outside this module only the test standing in for
 // an edge names the byte itself — or, for an OPEN that committed to no shape,

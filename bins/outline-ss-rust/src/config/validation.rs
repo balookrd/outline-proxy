@@ -6,6 +6,7 @@ use std::{
 use anyhow::{Result, bail};
 
 use super::{AccessKeyConfig, Config};
+use crate::server::MAX_USER_LEN;
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
@@ -376,7 +377,47 @@ impl Config {
                 );
             }
         }
+        self.validate_cluster_user_names()?;
         self.tuning.validate()?;
+        Ok(())
+    }
+
+    /// The one thing a cluster still needs its nodes to agree on: user *names*.
+    ///
+    /// Paths and per-user credentials are per-node — the edge terminates the
+    /// client's crypto and the home resolves nothing about a relayed session
+    /// (see `docs/CLUSTER-DEPLOY.md` §3a). What crosses the mesh is the name the
+    /// edge attests in a `UserFrame`, which the home matches against the park's
+    /// owner in `take_for_resume(id, user)`. A name that is empty, or longer
+    /// than the frame's [`MAX_USER_LEN`] bound, could never authenticate a
+    /// relayed session: the edge refuses to send it and the home's parser
+    /// refuses to read it. Failing at load beats discovering it at the first
+    /// relay, where the symptom is a silently lost resume.
+    ///
+    /// Only a clustered server is held to this. A standalone one sends no
+    /// `UserFrame` at all, so its names are its own business and existing
+    /// single-node deployments keep loading unchanged.
+    fn validate_cluster_user_names(&self) -> Result<()> {
+        if self.cluster.is_none() {
+            return Ok(());
+        }
+        for user in &self.users {
+            if user.id.is_empty() {
+                bail!(
+                    "[cluster] is enabled, so every [[users]] id must be a user name the mesh can \
+                     attest: an empty user name can never authenticate a relayed session"
+                );
+            }
+            if user.id.len() > MAX_USER_LEN {
+                bail!(
+                    "[cluster] is enabled, so every [[users]] id must fit the {MAX_USER_LEN}-byte \
+                     mesh user name bound; {:?} is {} bytes and can never authenticate a relayed \
+                     session",
+                    user.id,
+                    user.id.len(),
+                );
+            }
+        }
         Ok(())
     }
 

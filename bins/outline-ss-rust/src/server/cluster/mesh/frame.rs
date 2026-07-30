@@ -326,7 +326,12 @@ pub(in crate::server) fn parse_open_ack(
 /// Upper bound on the user name carried in a [`UserFrame`]. Guards the parser
 /// against an oversized allocation from a malformed peer; a single length byte
 /// is enough because names are short identifiers.
-pub(in crate::server) const MAX_USER_LEN: usize = 64;
+///
+/// `pub(crate)` rather than `pub(in crate::server)` because config validation
+/// refuses a clustered `[[users]]` name that could never fit here (see
+/// `Config::validate`) — the bound belongs to the wire, and a copied literal
+/// there would drift the moment this one moved.
+pub(crate) const MAX_USER_LEN: usize = 64;
 
 /// Why a relayed stream was closed. Encoded as the QUIC stream reset error
 /// code; a graceful end uses `finish` and maps to [`CloseReason::Fin`].

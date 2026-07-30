@@ -476,6 +476,66 @@ fn user_alias_with_malformed_cidr_is_rejected() {
     assert!(error.contains("ip/cidr") || error.contains("alias"), "got: {error}");
 }
 
+/// A minimal enabled `[cluster]`, since only its presence gates the check
+/// below; shard, PSK and peers are irrelevant to a user name.
+fn cluster_config() -> crate::config::ClusterConfig {
+    crate::config::ClusterConfig {
+        shard: outline_wire::cluster::ShardId::new(0).expect("shard 0 is valid"),
+        psk: crate::config::ClusterPsk::from_bytes(vec![7; 32]),
+        mesh_listen: "127.0.0.1:9443".parse().unwrap(),
+        mesh_relay_budget: std::time::Duration::from_millis(4000),
+        peers: std::collections::HashMap::new(),
+    }
+}
+
+fn config_with_cluster_and_user(name: &str) -> Config {
+    let mut cfg = base_config();
+    cfg.users[0].id = name.to_owned();
+    cfg.cluster = Some(cluster_config());
+    cfg
+}
+
+#[test]
+fn config_rejects_a_user_name_that_cannot_cross_the_mesh() {
+    // Paths and credentials are per-node now, but user *names* must agree across
+    // nodes: `take_for_resume` is keyed by (session id, user), and the name
+    // travels in a `UserFrame` bounded at `MAX_USER_LEN`. A name that cannot fit
+    // could never authenticate a relayed session, so it fails at load instead of
+    // at the first relay.
+    let too_long = "u".repeat(crate::server::MAX_USER_LEN + 1);
+    let error = config_with_cluster_and_user(&too_long)
+        .validate()
+        .expect_err("a name that cannot fit a UserFrame must be refused")
+        .to_string();
+    assert!(error.contains("mesh user name bound"), "got: {error}");
+
+    let error = config_with_cluster_and_user("")
+        .validate()
+        .expect_err("an empty name can never match a park owner")
+        .to_string();
+    assert!(error.contains("empty user name"), "got: {error}");
+}
+
+#[test]
+fn config_accepts_user_names_within_the_mesh_bound() {
+    config_with_cluster_and_user("beerloga")
+        .validate()
+        .expect("an ordinary name loads");
+    config_with_cluster_and_user(&"u".repeat(crate::server::MAX_USER_LEN))
+        .validate()
+        .expect("a name exactly at the ceiling loads");
+}
+
+#[test]
+fn the_user_name_bound_applies_only_to_a_clustered_server() {
+    // A standalone server never sends a UserFrame, so its names are its own
+    // business — do not break existing single-node deployments.
+    let mut cfg = base_config();
+    cfg.users[0].id = "u".repeat(crate::server::MAX_USER_LEN + 1);
+    cfg.validate()
+        .expect("an unclustered server is unaffected by the mesh bound");
+}
+
 #[test]
 fn alias_colliding_with_a_user_id_is_rejected() {
     // An alias name must not equal any user id (here, the user's own id) — that

@@ -21,7 +21,7 @@ For the design, see [`CLUSTER.md`](CLUSTER.md).
 
 Every node is simultaneously an **edge** (accepts clients) and a **home** (owns
 its own sessions and accepts relays from other edges). Give each a unique
-`shard_id` in `0..16`:
+`shard_id` in `0..15`:
 
 | Node | shard_id | public ingress (WS/H3/XHTTP) | mesh address (node-to-node) |
 | --- | --- | --- | --- |
@@ -93,6 +93,13 @@ or the reverse (`reason="protocol_mismatch"`).
 > Moving the crypto to the edge removed both the requirement and the failure
 > mode; the `no_route` refusal that reported it is gone with the route lookup
 > itself. Config-comparison rituals across nodes are no longer needed.
+
+The one thing the server itself checks is that a name *could* cross the mesh at
+all. It travels in a `USER` frame whose length is a single byte, capped at 64
+bytes, so with `enabled = true` a `[[users]]` id that is empty or longer than 64
+bytes **aborts startup** with an explicit error instead of failing at the first
+relay. Nothing else about `[[users]]` is compared, and an unclustered server keeps
+accepting whatever it accepts today.
 
 After rollout, watch `outline_ss_mesh_relay_rejected_total{reason="unknown_user"}`
 instead: a non-zero rate means user names disagree across the cluster (or it is a
@@ -174,7 +181,9 @@ See the "UDP cross-node migration" note in
 ## 7. Verification
 
 - **Startup:** each node's log shows the mesh listener came up and no config
-  validation panic.
+  validation error. A node that refuses to start with a message about the mesh
+  user name bound has a `[[users]]` id that is empty or over 64 bytes (§3a) —
+  fix the name, not the cluster config.
 - **Mesh reachability:** from a test client, dial one node presenting a resume
   id that decodes to a *different* node's shard (this happens by itself when a
   client moves between edges); the session is served and the upstream is not
@@ -186,9 +195,27 @@ See the "UDP cross-node migration" note in
 - **Metrics:** on each node's `/metrics` (and the ss-rust Grafana dashboard's
   *Cluster Mesh* row):
   - `outline_ss_mesh_relay_opened_total{outcome="ok"}` rising ⇒ edges are
-    relaying cross-shard sessions to their homes; `{outcome="fail"}` rising ⇒ a
-    peer is unreachable (peer down, mesh UDP port blocked, or PSK mismatch) and
-    the edge is degrading to fresh local sessions.
+    relaying cross-shard sessions to their homes; `{outcome="fail"}` rising ⇒ the
+    OPEN never reached a home at all (peer down, mesh UDP port blocked, PSK
+    mismatch, or this edge at its own outbound relay-stream cap) and the edge is
+    degrading to fresh local sessions. `{outcome="refused"}` means the OPEN did
+    reach a home that answered nothing usable — normally "no park under that id",
+    but also a home at its relay cap and a peer on a wire version the cluster has
+    moved past, so expect a burst of it while a rolling upgrade is in flight.
+  - **`outline_ss_mesh_relay_outcome_total{outcome,close}` on the home is the
+    signal to check first** — it is the direct answer to "is cluster relaying
+    working", which byte counters alone never gave (a never-working relay once
+    went unnoticed in production for exactly that reason). `{outcome="hit"}`
+    non-zero means parked sessions are actually being found and spliced;
+    `hit`/`miss` is the useful ratio. An outcome is recorded when the splice
+    *ends*, not when it is admitted, so relays in flight are on
+    `outline_ss_mesh_relay_active` and the streams this home served reconcile as
+    `sum(outcome_total) + outline_ss_mesh_relay_active`. The `close` label says
+    how a hit ended: `client_done` (the edge's client was finished, so the
+    upstream was half-closed) versus `carrier_ended` (the edge only switched
+    carriers, so the session went back into the registry). A `close` stuck at
+    `carrier_ended` with no `client_done` at all means edges are not emitting the
+    close intent — parks then linger to their TTL instead of being released.
   - `outline_ss_mesh_relay_active` gauges how many relays a home node is serving
     right now (zero on an idle cluster is normal — mesh streams are opened on
     demand, not held). Also watch `outline_ss_orphan_resume_hit_total` on the
@@ -217,6 +244,15 @@ See the "UDP cross-node migration" note in
     that client is served locally. A VLESS command that simply needs a different shape than the park
     holds does not appear here at all — the home names the shape in its ack and
     the edge releases the relay itself, before anything is consumed.
+  - The remaining reasons should all sit at a flat zero, and each names a
+    different fault: `bad_setup` = the setup itself was unusable (an OPEN whose
+    framing and protocol name no park shape, or an acked peer whose `USER` frame
+    was malformed or never arrived) — a straggler build or a forged peer;
+    `framing_mismatch` = the park under that id turned out not to be the kind the
+    acked shape needs, which only the narrow reservation window can still produce
+    (the park is put back untouched, so the client keeps its continuity);
+    `park_identity` = an SS-UDP park holds no NAT key belonging to the user the
+    edge attested, so there is no identity to route its datagrams under.
   - **Cluster traffic** (how much data actually crosses the mesh, not just how
     many relays open): `outline_ss_mesh_bytes_total{role,direction,transport}`
     and `outline_ss_mesh_datagrams_total{role,direction}`. `role="edge"` is the
