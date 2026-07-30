@@ -79,6 +79,47 @@ pub(in crate::tcp) enum MigrationPhase {
     Abandoned,
 }
 
+/// Why a flow was not allowed to start a carrier migration.
+///
+/// Each variant maps to one clause of [`FlowResume::migration_block`] and to one
+/// `outline_ws_tun_tcp_events_total{event="…"}` series, so production can answer
+/// "which precondition is failing?" without a debugger. Mirrors the way the
+/// server splits `resume_miss` into `expired` vs `unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::tcp) enum MigrationBlocked {
+    /// The operator turned it off (`[tun.tcp] carrier_migration = false`).
+    Disabled,
+    /// This flow already gave up for good — see [`MigrationPhase::Abandoned`].
+    Abandoned,
+    /// The server never issued a Session ID (resumption disabled server-side, or
+    /// a direct flow), so there is nothing parked to re-attach and a dial could
+    /// only ever produce a *fresh* upstream spliced onto a live stream.
+    NoSessionId,
+    /// An oversized chunk already cost this flow its uplink replay (see
+    /// [`FlowResume::record_uplink_chunk`]): we could re-attach but not
+    /// reproduce the tail.
+    NoReplayRing,
+    /// [`TUN_TCP_MIGRATION_MAX_ATTEMPTS`] spent.
+    BudgetSpent,
+    /// Past [`TUN_TCP_MIGRATION_DEADLINE`], so the server's park has expired and
+    /// a dial could only miss.
+    DeadlinePassed,
+}
+
+impl MigrationBlocked {
+    /// Low-cardinality metric label for this reason.
+    pub(in crate::tcp) const fn event(self) -> &'static str {
+        match self {
+            Self::Disabled => "carrier_migration_disabled",
+            Self::Abandoned => "carrier_migration_abandoned",
+            Self::NoSessionId => "carrier_migration_no_session_id",
+            Self::NoReplayRing => "carrier_migration_no_replay_ring",
+            Self::BudgetSpent => "carrier_migration_budget_spent",
+            Self::DeadlinePassed => "carrier_migration_deadline_passed",
+        }
+    }
+}
+
 /// What a carrier migration needs to re-attach this flow's parked upstream on a
 /// new carrier without losing or duplicating a byte.
 ///
@@ -231,27 +272,49 @@ impl FlowResume {
 
     /// Whether this flow may still *start* a migration.
     ///
-    /// Every clause is a way the migration could not be proven byte-exact, and
-    /// so a way it must not be attempted at all:
-    ///
-    /// * `enabled` — the operator turned it off (`[tun.tcp] carrier_migration`).
-    /// * no Session ID — the server never issued one (resumption disabled, or a
-    ///   direct flow), so there is nothing parked to re-attach and a dial could
-    ///   only ever produce a *fresh* upstream spliced onto a live stream.
-    /// * no ring — an oversized chunk already cost this flow its uplink replay
-    ///   (see [`Self::record_uplink_chunk`]); we could re-attach but not
-    ///   reproduce the tail.
-    /// * abandoned / budget / deadline — see [`MigrationPhase::Abandoned`],
-    ///   [`TUN_TCP_MIGRATION_MAX_ATTEMPTS`], [`TUN_TCP_MIGRATION_DEADLINE`].
+    /// Thin wrapper over [`Self::migration_block`] for the callers that only
+    /// need the yes/no (the pump, which polls this in a wait loop and must not
+    /// emit a metric per poll).
     pub(in crate::tcp) fn can_attempt_migration(&self, enabled: bool, now: Instant) -> bool {
-        enabled
-            && self.phase != MigrationPhase::Abandoned
-            && self.session_id.is_some()
-            && self.replay.is_some()
-            && self.attempts < TUN_TCP_MIGRATION_MAX_ATTEMPTS
-            && self
-                .first_attempt_at
-                .is_none_or(|started| now.duration_since(started) < TUN_TCP_MIGRATION_DEADLINE)
+        self.migration_block(enabled, now).is_none()
+    }
+
+    /// Why this flow may not *start* a migration, or `None` when it may.
+    ///
+    /// Every clause is a way the migration could not be proven byte-exact, and
+    /// so a way it must not be attempted at all. The reason is returned rather
+    /// than folded into a bool because "no migration was attempted" is
+    /// otherwise indistinguishable in production from "the code never ran": the
+    /// dial-side counters (`carrier_migration_miss`,
+    /// `carrier_migration_dial_failed`) only exist once a dial happens, so a
+    /// flow blocked *here* left no trace at all. The caller counts it.
+    pub(in crate::tcp) fn migration_block(
+        &self,
+        enabled: bool,
+        now: Instant,
+    ) -> Option<MigrationBlocked> {
+        if !enabled {
+            return Some(MigrationBlocked::Disabled);
+        }
+        if self.phase == MigrationPhase::Abandoned {
+            return Some(MigrationBlocked::Abandoned);
+        }
+        if self.session_id.is_none() {
+            return Some(MigrationBlocked::NoSessionId);
+        }
+        if self.replay.is_none() {
+            return Some(MigrationBlocked::NoReplayRing);
+        }
+        if self.attempts >= TUN_TCP_MIGRATION_MAX_ATTEMPTS {
+            return Some(MigrationBlocked::BudgetSpent);
+        }
+        if self
+            .first_attempt_at
+            .is_some_and(|started| now.duration_since(started) >= TUN_TCP_MIGRATION_DEADLINE)
+        {
+            return Some(MigrationBlocked::DeadlinePassed);
+        }
+        None
     }
 
     /// Claims one attempt from the budget and marks the flow as migrating. Call

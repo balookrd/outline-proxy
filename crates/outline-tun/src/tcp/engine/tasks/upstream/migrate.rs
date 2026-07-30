@@ -69,7 +69,8 @@ use outline_uplink::{UplinkCandidate, UplinkManager};
 use super::super::super::super::TcpFlowKey;
 use super::super::super::super::maintenance::commit_flow_changes;
 use super::super::super::super::state_machine::{
-    TcpFlowState, TcpFlowStatus, UpstreamCarrier, UpstreamWriter, flush_server_output,
+    TcpFlowState, TcpFlowStatus, UpstreamCarrier, UpstreamWriter, clear_flow_metrics,
+    flush_server_output,
 };
 use super::super::super::TunTcpEngine;
 use super::super::super::connect::redial_tcp_uplink_for_migration;
@@ -85,11 +86,38 @@ pub(super) enum MigrationOutcome {
     NotMigrated,
 }
 
+/// Why a migration is being attempted — which also decides what state the old
+/// carrier is in when the redial goes out.
+pub(super) enum MigrationTrigger {
+    /// The flow's carrier died. Nothing to retire (it is already gone), and the
+    /// redial goes back to the flow's own uplink, where the parked upstream is.
+    CarrierDeath,
+    /// An operator soft switch repointed the group to `target`, and the flow
+    /// must end up there. Only reachable on a `shared_resume` group, where the
+    /// id the flow presents carries its home shard and the new edge relays to
+    /// the home holding the parked upstream — so the resume can hit even though
+    /// the dial goes somewhere else.
+    ///
+    /// `retire` is the flow's **live** reader half. The old carrier is healthy
+    /// here, and a healthy carrier means the server has parked nothing yet, so
+    /// it must be closed before the redial presents the id. See
+    /// [`TunTcpEngine::try_migrate_carrier_for`].
+    SoftSwitch { target: usize, retire: Box<TcpReader> },
+}
+
 /// Everything the migration needs, snapshotted under the flow lock so the slow
 /// part (dial + handshake) runs without holding it.
 struct MigrationPlan {
     manager: UplinkManager,
+    /// Uplink the redial goes to. Same as the flow's own on a carrier death (the
+    /// parked upstream is on *that* server); the group's new active on an
+    /// operator soft switch, where a `shared_resume` cluster makes the redial
+    /// reach the same home through the mesh.
     uplink_index: usize,
+    /// Set only when [`Self::uplink_index`] is not the uplink the flow is
+    /// currently bound to, i.e. on a soft switch. The commit re-labels the flow
+    /// onto it, so its metrics and any later migration follow it across.
+    rebind_to: Option<usize>,
     target: TargetAddr,
     /// **This flow's** id. Presenting another flow's id would re-attach us to
     /// that flow's upstream — the server takes the parked target as
@@ -113,9 +141,44 @@ impl TunTcpEngine {
         key: &TcpFlowKey,
         flow: &Arc<Mutex<TcpFlowState>>,
     ) -> MigrationOutcome {
-        let Some(plan) = self.plan_migration(flow).await else {
+        self.try_migrate_carrier_for(key, flow, MigrationTrigger::CarrierDeath)
+            .await
+    }
+
+    /// [`Self::try_migrate_carrier`] for either trigger — see
+    /// [`MigrationTrigger`], which is also what decides whether the old carrier
+    /// has to be retired before the redial.
+    pub(super) async fn try_migrate_carrier_for(
+        &self,
+        key: &TcpFlowKey,
+        flow: &Arc<Mutex<TcpFlowState>>,
+        trigger: MigrationTrigger,
+    ) -> MigrationOutcome {
+        let to = match &trigger {
+            MigrationTrigger::CarrierDeath => None,
+            MigrationTrigger::SoftSwitch { target, .. } => Some(*target),
+        };
+        let Some(plan) = self.plan_migration(flow, to).await else {
             return MigrationOutcome::NotMigrated;
         };
+
+        // A soft switch redials while the old carrier is still **healthy**, and
+        // the server only holds a parked upstream (or a park reservation) once
+        // that carrier has closed — `docs/SESSION-RESUMPTION.md` § Park
+        // sequence. Redialling first would look the id up against a session that
+        // is still live, get `miss-unknown`, and be handed a *fresh* upstream:
+        // the migration would refuse (correctly) and the flow would eat the RST
+        // a soft switch exists to avoid. So retire the carrier first and let the
+        // park-before-resume barrier cover the rest of the race. Safe to do
+        // before the dial has proven anything: the flow is already `InFlight`,
+        // so the pump parks on the verdict instead of resetting, and the failure
+        // path tears the flow down anyway. Mirrors the SOCKS soft switch, where
+        // the old transport is dropped with the session's relay tasks before
+        // `try_soft_switch_migrate` dials.
+        if let MigrationTrigger::SoftSwitch { retire, .. } = trigger {
+            let _ = plan.carrier.lock().await.writer.close().await;
+            drop(retire);
+        }
 
         let result = self.migrate_to_fresh_carrier(key, flow, &plan).await;
         let notify = {
@@ -155,27 +218,41 @@ impl TunTcpEngine {
     /// this flow must not migrate at all. Claiming under the flow lock is what
     /// keeps the budget honest and puts the flow into `InFlight` — the state the
     /// pump reads to know it must not feed the replay ring for now.
-    async fn plan_migration(&self, flow: &Arc<Mutex<TcpFlowState>>) -> Option<MigrationPlan> {
+    async fn plan_migration(
+        &self,
+        flow: &Arc<Mutex<TcpFlowState>>,
+        to: Option<usize>,
+    ) -> Option<MigrationPlan> {
         let now = Instant::now();
         let mut state = flow.lock().await;
-        if matches!(state.status, TcpFlowStatus::Closed)
-            || !state
-                .resume
-                .can_attempt_migration(self.inner.tcp.carrier_migration, now)
-        {
+        if matches!(state.status, TcpFlowStatus::Closed) {
+            return None;
+        }
+        // Count *why* a flow was not eligible. Without this the whole class is
+        // invisible: no dial happens, so none of the dial-side counters move,
+        // and "the migration was never attempted" reads exactly like "this build
+        // has no migration code". See `FlowResume::migration_block`.
+        if let Some(blocked) = state.resume.migration_block(self.inner.tcp.carrier_migration, now) {
+            metrics::record_tun_tcp_event(
+                &state.routing.group_name,
+                &state.routing.uplink_name,
+                blocked.event(),
+            );
             return None;
         }
         let (Some(session_id), Some(carrier)) =
             (state.resume.session_id, state.routing.upstream_carrier.clone())
         else {
-            // `can_attempt_migration` already proved the id is there; a flow with
-            // no carrier has nothing to replace.
+            // `migration_block` already proved the id is there; a flow with no
+            // carrier has nothing to replace.
             return None;
         };
+        let uplink_index = to.unwrap_or(state.routing.uplink_index);
         state.resume.begin_migration(now);
         Some(MigrationPlan {
             manager: state.routing.manager.clone(),
-            uplink_index: state.routing.uplink_index,
+            uplink_index,
+            rebind_to: (uplink_index != state.routing.uplink_index).then_some(uplink_index),
             target: state.routing.target.clone(),
             session_id,
             client_acked_offset: state.resume.client_acked_offset(),
@@ -399,6 +476,18 @@ impl TunTcpEngine {
                 )
             })?;
             state.resume.commit_migration(issued_session_id);
+            // A soft switch re-dialled a *different* uplink, so from here the
+            // flow belongs to that one: its gauges must move to the new series
+            // (unwound against the old name first, exactly as the initial
+            // connect does), and the strict-active check must stop seeing it as
+            // stranded — otherwise the very next client packet would RST the
+            // flow we just rescued.
+            if let Some(target) = plan.rebind_to {
+                clear_flow_metrics(&mut state);
+                state.routing.uplink_index = target;
+                state.routing.uplink_name = uplink_name_at(&plan.manager, target);
+                commit_flow_changes(&mut state, &self.inner.tcp);
+            }
             (replay, state.resume.carrier_epoch())
         };
 
@@ -501,6 +590,18 @@ fn migration_candidate(manager: &UplinkManager, uplink_index: usize) -> Result<U
         })?
         .clone();
     Ok(UplinkCandidate { index: uplink_index, uplink })
+}
+
+/// Name of `index` in the group, for the flow's `uplink` metric label. Falls
+/// back to the flow's existing label shape rather than panicking: the index came
+/// from the manager's own active-uplink snapshot a moment ago, so it is in
+/// range, but a routing label is never worth an abort.
+fn uplink_name_at(manager: &UplinkManager, index: usize) -> Arc<str> {
+    manager
+        .uplinks()
+        .get(index)
+        .map(|uplink| Arc::from(uplink.name.as_str()))
+        .unwrap_or_else(|| Arc::from("unknown"))
 }
 
 fn to_upstream_writer(writer: TcpWriter) -> UpstreamWriter {

@@ -14,9 +14,11 @@ use super::super::super::super::state_machine::{
     ServerFlush, TcpFlowState, TcpFlowStatus, assess_server_backlog_pressure, flush_server_output,
     server_fin_sent,
 };
-use super::super::super::{TunTcpEngine, key_group_and_uplink};
+use super::super::super::{
+    ActiveUplinkVerdict, TunTcpEngine, active_uplink_verdict, key_group_and_uplink,
+};
 use super::backlog::BacklogGate;
-use super::migrate::MigrationOutcome;
+use super::migrate::{MigrationOutcome, MigrationTrigger};
 
 impl TunTcpEngine {
     pub(in crate::tcp::engine) fn spawn_upstream_reader(
@@ -34,22 +36,61 @@ impl TunTcpEngine {
             // which re-resolves the handle onto the new series (old series stops
             // growing) via the `Arc::ptr_eq` check inside `FailoverCounter`.
             let mut down_bytes = metrics::FailoverCounter::new();
+            // Woken by every active-uplink change so an *idle* flow reacts to an
+            // operator switch too. Polling only at the top of the loop would
+            // leave a flow parked in `read_chunk` on the old uplink until the
+            // next downstream byte — which, on a soft switch, is precisely the
+            // long-lived quiet connection the migration exists to save.
+            let mut active_rx = { flow.lock().await.routing.manager.subscribe_active_uplinks() };
             loop {
-                let manager = { flow.lock().await.routing.manager.clone() };
-                if manager.strict_active_uplink_for(TransportKind::Tcp) {
-                    let active_uplink =
-                        manager.active_uplink_index_for_transport(TransportKind::Tcp).await;
-                    let should_abort = {
-                        let state = flow.lock().await;
-                        active_uplink.is_some_and(|active| {
-                            state.routing.uplink_index != usize::MAX
-                                && state.routing.uplink_index != active
-                        })
-                    };
-                    if should_abort {
+                let (manager, uplink_index) = {
+                    let state = flow.lock().await;
+                    (state.routing.manager.clone(), state.routing.uplink_index)
+                };
+                match active_uplink_verdict(&manager, uplink_index) {
+                    ActiveUplinkVerdict::Stay => {},
+                    ActiveUplinkVerdict::Abort => {
                         engine.abort_flow_with_rst(&key, "global_switch").await;
                         return;
-                    }
+                    },
+                    // Operator soft switch on a `shared_resume` cluster: carry
+                    // the flow over to the new active instead of resetting it.
+                    // The flow's own Session ID carries its home shard, so the
+                    // redial through the new edge reaches the home that parked
+                    // the upstream. Anything short of a confirmed hit falls
+                    // through to the RST a hard switch would have given — a
+                    // soft switch still converges, it just tries first.
+                    ActiveUplinkVerdict::SoftMigrate { target } => {
+                        let (group_name, uplink_name) = key_group_and_uplink(&flow).await;
+                        // The old reader goes *into* the migration: unlike a
+                        // carrier death, the carrier is still alive here and has
+                        // to be retired before the redial, or the server has
+                        // nothing parked to re-attach.
+                        let trigger = MigrationTrigger::SoftSwitch {
+                            target,
+                            retire: Box::new(upstream_reader),
+                        };
+                        match engine.try_migrate_carrier_for(&key, &flow, trigger).await {
+                            MigrationOutcome::Migrated(fresh_reader) => {
+                                metrics::record_tun_tcp_event(
+                                    &group_name,
+                                    &uplink_name,
+                                    "soft_switch_migrated",
+                                );
+                                upstream_reader = *fresh_reader;
+                                continue;
+                            },
+                            MigrationOutcome::NotMigrated => {
+                                metrics::record_tun_tcp_event(
+                                    &group_name,
+                                    &uplink_name,
+                                    "soft_switch_migration_failed",
+                                );
+                                engine.abort_flow_with_rst(&key, "global_switch").await;
+                                return;
+                            },
+                        }
+                    },
                 }
 
                 if matches!(
@@ -67,6 +108,9 @@ impl TunTcpEngine {
                         }
                         continue;
                     }
+                    // The group repointed. Go round and let the verdict above
+                    // decide: stay, migrate, or reset.
+                    _ = active_rx.changed() => continue,
                     result = upstream_reader.read_chunk() => result,
                 };
                 match read_result {
