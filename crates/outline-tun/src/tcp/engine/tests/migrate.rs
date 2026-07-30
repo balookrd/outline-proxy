@@ -43,7 +43,7 @@ use super::super::super::tests::{build_client_packet, test_tun_tcp_config};
 use super::super::super::wire::parse_tcp_packet_unverified;
 use super::super::super::{TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_PSH, TCP_FLAG_RST, TCP_FLAG_SYN};
 use super::super::TunTcpEngine;
-use super::{TunCapture, build_test_manager};
+use super::{TunCapture, build_test_cluster_manager, build_test_manager};
 
 const CLIENT_WINDOW: u16 = 65535;
 const CLIENT_IP: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 2);
@@ -102,6 +102,15 @@ struct MockState {
     policy: SyncMutex<ResumePolicy>,
     requests: SyncMutex<Vec<ObservedRequest>>,
     accepted: AtomicUsize,
+    /// Ordinals whose connection handler has returned — the mock's stand-in for
+    /// "this session's upstream is parked". A real server only holds a parked
+    /// upstream (or a park reservation) once the carrier that minted the id has
+    /// closed; until then the resume looks the id up against a still-live
+    /// session and gets `miss-unknown`
+    /// (`bins/outline-ss-rust/docs/SESSION-RESUMPTION.md` § Park sequence). A
+    /// mock that confirmed a hit regardless would let a client that redials
+    /// *before* retiring its old carrier pass here and miss on the fleet.
+    finished: SyncMutex<std::collections::HashSet<usize>>,
     /// Every plaintext chunk the mock decrypted, tagged with the 1-based ordinal
     /// of the connection it arrived on — so a test can say "connection 2 saw
     /// exactly these bytes, in this order".
@@ -133,6 +142,7 @@ impl ResumableUpstream {
             policy: SyncMutex::new(ResumePolicy::default()),
             requests: SyncMutex::new(Vec::new()),
             accepted: AtomicUsize::new(0),
+            finished: SyncMutex::new(std::collections::HashSet::new()),
             uplink_tx,
             live: Mutex::new(None),
         });
@@ -148,7 +158,11 @@ impl ResumableUpstream {
                 let ordinal = accept_state.accepted.fetch_add(1, Ordering::SeqCst) + 1;
                 let conn_state = Arc::clone(&accept_state);
                 tokio::spawn(async move {
-                    let _ = serve_connection(stream, ordinal, conn_state).await;
+                    let _ = serve_connection(stream, ordinal, Arc::clone(&conn_state)).await;
+                    // The carrier is gone: from here this session counts as
+                    // parked, and only from here may a resume presenting its id
+                    // hit. Marked on every return path, error included.
+                    conn_state.finished.lock().insert(ordinal);
                 });
             }
         });
@@ -254,6 +268,26 @@ impl ResumableUpstream {
     }
 }
 
+/// The mock mints `{ordinal:032x}`, so a presented id names the connection that
+/// issued it. `None` for anything this mock never minted.
+fn parked_ordinal(resume_id: &str) -> Option<usize> {
+    usize::from_str_radix(resume_id, 16)
+        .ok()
+        .filter(|ordinal| *ordinal > 0)
+}
+
+/// Bounded wait for `minted_by`'s carrier to be gone, i.e. for its upstream to
+/// be parked. Returns whether the resume may hit.
+async fn wait_until_parked(state: &MockState, minted_by: usize) -> bool {
+    for _ in 0..100 {
+        if state.finished.lock().contains(&minted_by) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
 async fn serve_connection(
     stream: TcpStream,
     ordinal: usize,
@@ -306,7 +340,15 @@ async fn serve_connection(
 
     let ws = accept_hdr_async(MaybeTlsStream::Plain(stream), handshake).await?;
     state.requests.lock().push(observed.lock().clone());
-    let is_resume = observed.lock().resume_id.is_some();
+    let resume_id = observed.lock().resume_id.clone();
+    // The park-before-resume barrier, modelled: a resume for a session whose
+    // carrier is still up waits — bounded — for the park to land, then re-checks.
+    // If the client never retired that carrier, this is a `miss-unknown` and the
+    // control frames below are never emitted, exactly as the real server behaves.
+    let is_resume = match resume_id.as_deref().and_then(parked_ordinal) {
+        Some(minted_by) => wait_until_parked(&state, minted_by).await,
+        None => false,
+    };
 
     let ws = TransportStream::new_http1(ws);
     let (sink, source) = ws.split();
@@ -959,6 +1001,134 @@ async fn the_pump_neither_resets_a_migrating_flow_nor_double_sends_its_batch() {
     assert!(
         !saw_fin_or_rst(&mut capture).await,
         "the pump must not reset a flow the reader is rescuing"
+    );
+}
+
+/// An operator *soft* switch (`POST /control/activate {"soft":true}` on a
+/// `shared_resume` cluster group) must carry live TUN TCP flows over to the new
+/// active uplink, not reset them.
+///
+/// Before this was fixed the strict-active-uplink teardown
+/// (`should_migrate_tcp_flow`) fired on the very next client packet and RST the
+/// flow — it never read the `soft` bit off the published snapshot, so a soft
+/// switch was byte-for-byte a hard one. Worse, the RST removed the flow before
+/// the reader could attempt a migration, so `plan_migration` short-circuited on
+/// `TcpFlowStatus::Closed` and the whole thing was invisible in metrics: on the
+/// fleet `global_switch` counted 256 torn-down flows against zero
+/// `carrier_migrated`.
+#[tokio::test]
+async fn an_operator_soft_switch_migrates_a_live_flow_instead_of_resetting_it() {
+    let upstream = ResumableUpstream::start().await;
+    let manager = build_test_cluster_manager(&[("a", upstream.url()), ("b", upstream.url())]).await;
+    // Pin the group to "a" so the flow is born there, exactly as an operator
+    // would have done before switching away.
+    manager.set_active_uplink_by_name("a", None, false).await.unwrap();
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager.clone()),
+        128,
+        Duration::from_secs(60),
+        false,
+        test_tun_tcp_config(),
+        Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let key = flow_key(41008);
+    let server_seq = open_flow(&engine, &mut capture, &key, 1000).await;
+    let (conn, _target) = upstream.recv().await;
+    assert_eq!(conn, 1);
+    wait_until_armed(&engine, &key).await;
+    client_sends(&engine, &key, 1001, server_seq, b"GET").await;
+    assert_eq!(upstream.recv_exactly(1, 3).await, b"GET".to_vec());
+    {
+        let flow = engine.inner.flows.get(&key).map(|e| Arc::clone(e.value())).unwrap();
+        assert_eq!(flow.lock().await.routing.uplink_index, 0, "the flow was born on \"a\"");
+    }
+
+    // The server forwarded all three bytes, so the redial replays nothing — the
+    // point of this test is the migration happening at all, not the tail.
+    upstream.set_policy(ResumePolicy { up_acked: 3, ..ResumePolicy::default() });
+
+    let (_index, applied_soft) = manager.set_active_uplink_by_name("b", None, true).await.unwrap();
+    assert!(applied_soft, "a shared_resume group must honour the soft bit");
+
+    // The client keeps using the connection. This packet is what used to kill
+    // the flow on the ingress path.
+    client_sends(&engine, &key, 1004, server_seq, b"MORE").await;
+
+    assert!(
+        wait_for_migration(&engine, &key).await,
+        "a soft switch must migrate the flow to the new active uplink, not reset it"
+    );
+    let flow = engine.inner.flows.get(&key).map(|e| Arc::clone(e.value())).unwrap();
+    {
+        let state = flow.lock().await;
+        assert_eq!(state.status, TcpFlowStatus::Established);
+        assert_eq!(state.routing.uplink_index, 1, "the flow now rides the new active uplink");
+        assert_eq!(&*state.routing.uplink_name, "b");
+    }
+
+    // The redial presented this flow's own id, and the flow still works.
+    let requests = upstream.requests();
+    assert_eq!(requests[0].resume_id, None, "the first dial resumes nothing");
+    assert_eq!(
+        requests[1].resume_id.as_deref(),
+        Some(format!("{:032x}", 1).as_str()),
+        "the soft-switch redial must present the id the server issued to THIS flow"
+    );
+    let (conn, _target) = upstream.recv().await;
+    assert_eq!(conn, 2);
+    assert_eq!(
+        upstream.recv_exactly(2, 4).await,
+        b"MORE".to_vec(),
+        "bytes written across the switch reach the upstream exactly once"
+    );
+    upstream.send_downstream(b"REPLY").await;
+    let (seq, payload) = next_data_packet(&mut capture).await;
+    assert_eq!(payload, b"REPLY".to_vec());
+    assert_eq!(seq, server_seq, "the downstream sequence continues where it left off");
+
+    assert!(
+        !saw_fin_or_rst(&mut capture).await,
+        "a soft switch must not send the application a FIN or a RST"
+    );
+}
+
+/// The complement: a *hard* switch (`soft = false`) still tears live flows down
+/// with RST. Strict `active_passive` means one active uplink at a time, and an
+/// operator who did not ask for a migration must get the old behaviour.
+#[tokio::test]
+async fn a_hard_switch_still_resets_live_flows() {
+    let upstream = ResumableUpstream::start().await;
+    let manager = build_test_cluster_manager(&[("a", upstream.url()), ("b", upstream.url())]).await;
+    manager.set_active_uplink_by_name("a", None, false).await.unwrap();
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager.clone()),
+        128,
+        Duration::from_secs(60),
+        false,
+        test_tun_tcp_config(),
+        Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let key = flow_key(41009);
+    let server_seq = open_flow(&engine, &mut capture, &key, 1000).await;
+    let _ = upstream.recv().await;
+    wait_until_armed(&engine, &key).await;
+
+    manager.set_active_uplink_by_name("b", None, false).await.unwrap();
+    client_sends(&engine, &key, 1001, server_seq, b"MORE").await;
+
+    assert!(
+        wait_for_fin(&mut capture).await,
+        "a hard switch resets the flow as it always did"
+    );
+    assert!(
+        engine.inner.flows.get(&key).is_none(),
+        "a hard switch removes the flow from the table"
     );
 }
 
