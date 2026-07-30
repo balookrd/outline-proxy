@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -784,9 +785,38 @@ impl MeshHomeHarness {
             .await
     }
 
+    /// Like [`Self::serve_v5_with_user`] but running `between` in the window the
+    /// phase-2 re-probe exists to cover: after the home's ack has been read and
+    /// strictly before the USER frame that makes it consume the park. The home
+    /// is blocked reading that frame, so whatever `between` does to the registry
+    /// is ordered before phase 2 without a sleep.
+    async fn serve_v5_between_the_phases(
+        &self,
+        header: OpenHeader,
+        user: &str,
+        between: impl Future<Output = ()>,
+    ) -> V5Outcome {
+        self.serve_v5_raw_user_between(
+            header,
+            &UserFrame { user: user.to_string() }.encode(),
+            between,
+        )
+        .await
+    }
+
     /// Like [`Self::serve_v5_with_user`] but writing `user_frame` verbatim, so a
     /// test can hand the home a second-phase frame it cannot parse.
     async fn serve_v5_raw_user(&self, header: OpenHeader, user_frame: &[u8]) -> V5Outcome {
+        self.serve_v5_raw_user_between(header, user_frame, std::future::ready(()))
+            .await
+    }
+
+    async fn serve_v5_raw_user_between(
+        &self,
+        header: OpenHeader,
+        user_frame: &[u8],
+        between: impl Future<Output = ()>,
+    ) -> V5Outcome {
         let (mut send, mut recv) = open_relay(&self.edge_conn, &header.encode()).await;
         let mut ack = [0u8; 1];
         let read = tokio::time::timeout(Duration::from_secs(5), recv.read_exact(&mut ack))
@@ -799,6 +829,7 @@ impl MeshHomeHarness {
             };
         }
         assert_eq!(ack[0], OPEN_ACK_ACCEPTED, "an ack byte must mark the relay accepted");
+        between.await;
         send.write_all(user_frame).await.expect("writing the USER frame");
         let ended = tokio::time::timeout(Duration::from_secs(5), recv.read_to_end(64))
             .await
@@ -2305,6 +2336,97 @@ async fn a_udp_framed_vless_relay_is_refused_before_the_park_is_touched() {
     assert!(
         harness.registry().has_park(id),
         "the park must survive a header it cannot serve"
+    );
+}
+
+/// The phase-2 re-probe, which is what makes the ack an *advertisement* rather
+/// than the check.
+///
+/// The shape the home names in its ack is true when it is written and nothing
+/// more: the park can expire and be replaced under the same id before the USER
+/// frame arrives, and a peer is free to ignore what it was told anyway. So the
+/// home re-asks with the shape it advertised immediately before
+/// `take_for_resume` — the last moment a mismatch can be refused *without*
+/// destroying the park, because the take consumes it and the splice's own shape
+/// check runs after that.
+///
+/// Here the byte-stream park phase 1 saw is replaced by an SS-UDP one in exactly
+/// that window. Without the re-probe the home consumes the park, discovers the
+/// mismatch in the post-take arm and resets with `Abort` — the park gone, the
+/// client's id now worthless. With it, the relay is refused as an ordinary
+/// `NoSession` and the park is still there.
+#[tokio::test]
+async fn a_park_swapped_between_the_two_phases_is_refused_without_being_consumed() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([45u8; 16]);
+    let _upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    // The swap: `park` overwrites the entry under the id, which is what a park
+    // expiring and the same client re-establishing a *differently shaped*
+    // session looks like from the registry's side. No NAT entry is needed — the
+    // relay must be refused long before anything routes a datagram.
+    let registry = Arc::clone(harness.registry());
+    let outcome_seen = harness
+        .serve_v5_between_the_phases(v5_header(id), "beerloga", async {
+            registry.park(
+                id,
+                Parked::SsUdpStream(ParkedSsUdpStream {
+                    nat_keys: Vec::new(),
+                    owner: Arc::from("beerloga"),
+                }),
+            );
+        })
+        .await;
+
+    assert_eq!(
+        outcome_seen.close_reason(),
+        Some(CloseReason::NoSession),
+        "a shape that changed under the ack must be refused, not spliced or aborted",
+    );
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(rejected(&rendered, "park_shape"), 1, "{rendered}");
+    assert_eq!(
+        rejected(&rendered, "framing_mismatch"),
+        0,
+        "reaching the post-take arm means the park was already consumed:\n{rendered}",
+    );
+    assert!(
+        harness.registry().has_park(id),
+        "the re-probe must refuse before `take_for_resume`, leaving the park resumable",
+    );
+}
+
+/// The same window, the other way it can fail: the park is *gone* rather than
+/// differently shaped. That is an expiry, and it is counted as one — `no_session`,
+/// the reason a park that never existed gets — because an operator reading
+/// `park_shape` would otherwise see a shape disagreement where there was only a
+/// TTL.
+#[tokio::test]
+async fn a_park_that_expires_between_the_two_phases_is_counted_as_a_missing_one() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([46u8; 16]);
+    let _upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    let registry = Arc::clone(harness.registry());
+    let outcome_seen = harness
+        .serve_v5_between_the_phases(v5_header(id), "beerloga", async {
+            // Whoever takes it first wins; here it is a concurrent direct resume
+            // on the home itself, which is also how a real park leaves the
+            // registry between the phases.
+            assert!(matches!(
+                registry.take_for_resume(id, "beerloga").await,
+                ResumeOutcome::Hit(_)
+            ));
+        })
+        .await;
+
+    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::NoSession));
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(rejected(&rendered, "no_session"), 1, "{rendered}");
+    assert_eq!(
+        rejected(&rendered, "park_shape"),
+        0,
+        "an expiry is not a shape disagreement:\n{rendered}",
     );
 }
 

@@ -3064,12 +3064,26 @@ async fn cluster_vless_udp_survives_edge_switch() -> Result<()> {
     // Session #2 via the edge, same id, different path and credential. The home
     // acks the relay with the park's shape, the edge reads `VlessCommand::Udp`,
     // sees the shapes agree and relays the datagram home.
-    let (mut sock_edge, echoed_id) =
-        connect_ws_h1(edge.listen_addr, "/vless-edge", Some(session_id), true).await?;
+    //
+    // Advertised as Ack-Prefix (v1) deliberately, because that flag is what puts
+    // the home's `UpstreamAckFrame` on the mesh stream ahead of the first
+    // datagram. Both ends of that frame are exercised only here: the home emits
+    // it in `splice_plaintext_vless_udp` and the edge consumes it in
+    // `attach_datagrams`. A disagreement would not error — it would shift the
+    // first datagram's length prefix by eight bytes — so the byte-exact echo
+    // below is the assertion that catches it. The client sees no v1 frame of its
+    // own: VLESS-UDP has no uplink byte offset, exactly as on the direct path.
+    let (mut sock_edge, echoed_id, ack_prefix_confirmed) =
+        connect_ws_h1_ack_prefix(edge.listen_addr, "/vless-edge", Some(session_id), true, true)
+            .await?;
     assert_eq!(
         echoed_id,
         Some(session_id),
         "a relayed session must echo the id the home parks under",
+    );
+    assert!(
+        ack_prefix_confirmed,
+        "the edge confirms v1 on the upgrade, before it can know the command",
     );
     sock_edge
         .send(WsMessage::Binary(vless_udp_request(

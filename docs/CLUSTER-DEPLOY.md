@@ -201,7 +201,9 @@ See the "UDP cross-node migration" note in
     is sized for.
   - `outline_ss_mesh_relay_rejected_total{reason="no_session"}` is the **ordinary**
     refusal: the home holds no park under the relayed resume id (it expired, or
-    this home never minted it). Its peers count the same event as
+    this home never minted it) — including a park that was there when the setup
+    was acked and gone by the time the USER frame arrived, which is an expiry and
+    is counted as one. Its peers count the same event as
     `outline_ss_mesh_relay_opened_total{outcome="refused"}`. A healthy cluster
     shows a steady low rate; only a ratio near 100% of opens means something is
     wrong upstream of it.
