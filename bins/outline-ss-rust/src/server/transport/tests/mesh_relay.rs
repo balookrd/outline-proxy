@@ -1986,11 +1986,33 @@ async fn a_client_done_close_still_drains_the_request_body() {
     recv.stop(VarInt::from_u32(CloseIntent::ClientDone.code()))
         .expect("stopping the home's downlink half");
 
+    // Read incrementally rather than with `read_exact` under one deadline. The
+    // assertion is that every byte arrives, not that it arrives inside a
+    // budget: this moves 4 MiB each way through loopback QUIC and a 16 KiB
+    // socket buffer, which takes well under a second here and can take orders
+    // of magnitude longer on a two-core runner sharing itself with the rest of
+    // the suite. A bare `read_exact` timeout could not tell that apart from a
+    // genuine stall — both surfaced as `Elapsed`. Reporting how far the
+    // transfer got does: a stall stops at a fixed count, a slow runner is
+    // simply still climbing when the (generous) deadline hits.
     let mut got = vec![0u8; body.len()];
-    tokio::time::timeout(Duration::from_secs(20), peer_reader.read_exact(&mut got))
-        .await
-        .expect("the target must receive the whole request body")
-        .expect("reading the relayed request body");
+    let mut filled = 0usize;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    while filled < got.len() {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let read = tokio::time::timeout(left, peer_reader.read(&mut got[filled..]))
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "the target must receive the whole request body: stalled at {filled} of {} \
+                     bytes",
+                    got.len()
+                )
+            })
+            .expect("reading the relayed request body");
+        assert_ne!(read, 0, "the upstream closed after only {filled} of {} bytes", got.len());
+        filled += read;
+    }
     assert_eq!(got, body, "every request-body byte must reach the target exactly once");
 
     // ...and once the relay is done the session is not parked: the client is
