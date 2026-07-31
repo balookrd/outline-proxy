@@ -1062,6 +1062,142 @@ where
     Ok(plaintext)
 }
 
+/// [`read_ss_plaintext`] against a **padded** carrier: strips the carrier-padding
+/// framing before the AEAD layer, which is exactly the order a padding-enabled
+/// client decodes in (`outline_transport`'s reader feeds its `PaddingDecoder`
+/// first and the Shadowsocks stream second).
+///
+/// The distinction matters because padding is config-synchronised with no
+/// on-wire capability bit: on a padded path *every* downlink WebSocket message
+/// is a padding frame, so a single unpadded message does not merely arrive
+/// unwrapped — it is consumed as padding framing and corrupts the AEAD stream
+/// behind it.
+async fn read_padded_ss_plaintext<S>(socket: &mut S, user: &UserKey, want: usize) -> Result<Vec<u8>>
+where
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let mut decoder = PaddingDecoder::new();
+    let mut decryptor = AeadStreamDecryptor::new(Arc::from(vec![user.clone()].into_boxed_slice()));
+    let mut plaintext = Vec::new();
+    let mut ciphertext = Vec::new();
+    while plaintext.len() < want {
+        let frame = expect_binary_reply(socket).await?;
+        ciphertext.clear();
+        decoder.push(&frame, &mut ciphertext);
+        // A pad-only frame carries no payload; keep reading.
+        if ciphertext.is_empty() {
+            continue;
+        }
+        decryptor.feed_ciphertext(&ciphertext);
+        decryptor.drain_plaintext(&mut plaintext)?;
+    }
+    Ok(plaintext)
+}
+
+/// A relayed SS resume on a **padded** carrier: the Ack-Prefix control frame has
+/// to be padded like every other downlink message, or the client cannot read it.
+///
+/// This is the fleet's own configuration — `padding = true` on every uplink — and
+/// the one the whole Ack-Prefix suite misses: the five other `ack_prefix` cases
+/// all dial unpadded carriers, where a frame that skips the padding writer is
+/// indistinguishable from one that does not.
+///
+/// The failure it pins is silent and total. Padding carries no capability bit, so
+/// a client on a padded path feeds *every* downlink message to its
+/// `PaddingDecoder`; an unpadded 14-byte control frame is therefore not read as a
+/// bare frame but eaten as framing, and the AEAD stream behind it desynchronises.
+/// The client reports `aes-256-gcm decryption failed`, treats it as a resume miss
+/// and resets the flow — so a soft switch migrates nothing at all while the home
+/// happily records a hit and hands over the park. Observed on the fleet as
+/// `orphan_resume_hit_total` climbing against `mesh_bytes_total{transport="tcp"}`
+/// flat at zero.
+///
+/// VLESS never had this: its resume path already routes the same frame through
+/// `carrier_padding::frame_downlink_message`, which is why a padded fleet's
+/// VLESS-carried migrations kept working while its SS-carried ones did not.
+#[tokio::test]
+async fn cluster_relayed_ss_ack_prefix_is_carrier_padded() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-ss-ack-prefix-padding";
+    const VIA_HOME: &[u8] = b"seventeen-bytes!!";
+    const VIA_EDGE: &[u8] = b"after-the-switch";
+    enable_combined_padding_globals();
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+
+    let (home, user) =
+        spawn_throttle_node(PSK, 1, HashMap::new(), Duration::from_secs(4), SS_TCP_PADDED_PATH)
+            .await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, edge_user) =
+        spawn_throttle_node(PSK, 2, peers, Duration::from_secs(4), SS_TCP_PADDED_PATH).await?;
+
+    // Park on the home. The uplink pads too, so the handshake rides inside one
+    // padding frame (an empty pad is a valid frame).
+    let (mut warmup, issued) =
+        connect_ws_h1(home.listen_addr, SS_TCP_PADDED_PATH, None, true).await?;
+    let session_id = issued.context("the home must mint a resume id")?;
+    let mut framed = Vec::new();
+    encode_frame_into(&mut framed, &ss_handshake_frame(&user, echo_addr, VIA_HOME)?, &[])
+        .expect("padding frame within u16 bounds");
+    warmup.send(WsMessage::Binary(framed.into())).await?;
+    let _ = expect_binary_reply(&mut warmup).await?;
+    warmup.close(None).await?;
+    drop(warmup);
+    wait_for_park(&home, session_id).await?;
+
+    // Resume through the edge, which relays to the home and owes this client the
+    // home's upstream offset as an Ack-Prefix frame.
+    let (mut socket, echoed, ack_prefix_confirmed) = connect_ws_h1_ack_prefix(
+        edge.listen_addr,
+        SS_TCP_PADDED_PATH,
+        Some(session_id),
+        true,
+        true,
+    )
+    .await?;
+    assert_eq!(echoed, Some(session_id), "the edge echoes the id the home parks under");
+    assert!(ack_prefix_confirmed, "the edge owes this client the home's upstream offset");
+
+    let mut framed = Vec::new();
+    encode_frame_into(&mut framed, &ss_handshake_frame(&edge_user, echo_addr, VIA_EDGE)?, &[])
+        .expect("padding frame within u16 bounds");
+    socket.send(WsMessage::Binary(framed.into())).await?;
+
+    let want = FRAME_LEN_V1 + VIA_EDGE.len();
+    let stream = tokio::time::timeout(
+        Duration::from_secs(10),
+        read_padded_ss_plaintext(&mut socket, &edge_user, want),
+    )
+    .await
+    .context(
+        "timed out decoding the padded downlink: an unpadded control frame desynchronises \
+                 the padding decoder, so nothing downstream of it ever parses",
+    )??;
+    match parse_v1(&stream[..FRAME_LEN_V1]) {
+        ParseResult::Valid { up_acked } => assert_eq!(
+            up_acked,
+            VIA_HOME.len() as u64,
+            "the offset belongs to the session the home parked",
+        ),
+        other => {
+            bail!("expected an ack-prefix v1 frame at the head of the padded stream, got {other:?}")
+        },
+    }
+    assert_eq!(
+        &stream[FRAME_LEN_V1..want],
+        VIA_EDGE,
+        "the payload must round-trip through the parked upstream behind the control frame",
+    );
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the resume must reuse the parked upstream, not dial a fresh one",
+    );
+
+    socket.close(None).await?;
+    Ok(())
+}
+
 /// **The proof of the goal.** A session established on one node and resumed
 /// through a node with a *different path and different credentials* keeps one
 /// upstream, and the move is proven to have gone through the mesh.
@@ -2593,6 +2729,11 @@ async fn cluster_udp_combined_ws_relays_to_home() -> Result<()> {
 /// the SS-UDP decryptor.
 const COMBINED_PADDED_PATH: &str = "/ssc-pad";
 
+/// The padded **SS-TCP** carrier path, for the same reason and with the same
+/// discipline as [`COMBINED_PADDED_PATH`]: padded here, so the byte-stream
+/// carriers every other test dials on `/tcp` stay on the plain wire.
+const SS_TCP_PADDED_PATH: &str = "/tcp-pad";
+
 /// Wires the process-global padding on both sides for [`COMBINED_PADDED_PATH`]:
 /// the server pads that path, and the client's per-dial scheme parameters are
 /// installed (the actual on/off is a per-dial override the caller wraps around
@@ -2612,7 +2753,7 @@ fn enable_combined_padding_globals() {
         cover: false,
         cover_jitter_min_ms: 0,
         cover_jitter_max_ms: 0,
-        paths: vec![COMBINED_PADDED_PATH.to_string()],
+        paths: vec![COMBINED_PADDED_PATH.to_string(), SS_TCP_PADDED_PATH.to_string()],
         throttle_detect_enabled: false,
         throttle_ratio_percent: 200,
         throttle_window_secs: 1,

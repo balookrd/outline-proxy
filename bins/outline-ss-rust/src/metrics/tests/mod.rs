@@ -532,8 +532,8 @@ fn orphan_downlink_v2_metrics_render() {
     metrics.record_orphan_downlink_replay_bytes("tcp", 0);
     metrics.record_orphan_downlink_replay_bytes("tcp", 1500);
     metrics.record_orphan_downlink_replay_bytes("tcp", 2500);
-    metrics.record_orphan_downlink_replay_truncated("tcp");
-    metrics.record_orphan_downlink_replay_truncated("tcp");
+    metrics.record_orphan_downlink_replay_truncated("tcp", "evicted");
+    metrics.record_orphan_downlink_replay_truncated("tcp", "evicted");
     metrics.set_orphan_downlink_buf_bytes(8192.0);
 
     let rendered = metrics.render_prometheus();
@@ -542,8 +542,11 @@ fn orphan_downlink_v2_metrics_render() {
         "replay bytes counter missing or wrong value:\n{rendered}",
     );
     assert!(
-        rendered.contains("outline_ss_orphan_downlink_replay_truncated_total{transport=\"tcp\"} 2"),
-        "truncated counter missing or wrong value:\n{rendered}",
+        rendered.contains(
+            "outline_ss_orphan_downlink_replay_truncated_total{transport=\"tcp\",reason=\"evicted\"} 2"
+        ),
+        "truncated counter missing or wrong value (it carries a `reason` label so \
+         \"the ring is absent\" and \"the ring is too small\" stay apart):\n{rendered}",
     );
     assert!(
         rendered.contains("outline_ss_orphan_downlink_buf_bytes 8192"),

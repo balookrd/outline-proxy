@@ -318,8 +318,8 @@ where
         if state.symmetric_replay_requested {
             use crate::server::resumption::downlink_ring::ReplayOutcome;
             use outline_wire::resume::downlink_replay;
-            let (flags, payload, ring_diag) = match parked.downlink_ring.as_ref() {
-                None => (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), None),
+            let (flags, payload, ring_diag, truncate_reason) = match parked.downlink_ring.as_ref() {
+                None => (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), None, "no_ring"),
                 Some(ring) => {
                     let guard = ring.lock();
                     let diag = (guard.oldest_offset(), guard.total_sent());
@@ -327,11 +327,14 @@ where
                     drop(guard);
                     match outcome {
                         ReplayOutcome::Available(bytes) => {
-                            (downlink_replay::FLAGS_NONE, bytes, Some(diag))
+                            (downlink_replay::FLAGS_NONE, bytes, Some(diag), "")
                         },
-                        ReplayOutcome::Truncated => {
-                            (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), Some(diag))
-                        },
+                        ReplayOutcome::Truncated => (
+                            downlink_replay::FLAG_REPLAY_TRUNCATED,
+                            Vec::new(),
+                            Some(diag),
+                            "evicted",
+                        ),
                         ReplayOutcome::OffsetAhead => {
                             warn!(
                                 user = user.label(),
@@ -340,7 +343,12 @@ where
                                 "v2 client claims more downstream bytes than server emitted; \
                                  treating as truncated"
                             );
-                            (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), Some(diag))
+                            (
+                                downlink_replay::FLAG_REPLAY_TRUNCATED,
+                                Vec::new(),
+                                Some(diag),
+                                "client_ahead",
+                            )
                         },
                     }
                 },
@@ -349,7 +357,9 @@ where
             let truncated = (flags & downlink_replay::FLAG_REPLAY_TRUNCATED) != 0;
             server.metrics.record_orphan_downlink_replay_bytes("tcp", payload_len);
             if truncated {
-                server.metrics.record_orphan_downlink_replay_truncated("tcp");
+                server
+                    .metrics
+                    .record_orphan_downlink_replay_truncated("tcp", truncate_reason);
             }
             let mut frame =
                 Vec::with_capacity(downlink_replay::FRAME_HEADER_LEN_V1 + payload.len());

@@ -267,6 +267,8 @@ On a resume hit (post-auth, post-orphan-take), before respawning the upstream→
 
 Only after the control frame has been written to the WS sink does the server hand off to the standard relay path that copies upstream bytes to the client.
 
+On a carrier path listed in `[padding] paths` the frame is carrier-padded like any other downlink message, on every path that emits it (the direct resume, the cluster edge, and the v2 `"ORDR"` frame alike). This is not cosmetic: carrier padding has no on-wire capability bit, so a client on a padded path decodes *every* downlink message as a padding frame. An unpadded control frame is therefore not read as a bare frame but consumed as framing, desynchronising the AEAD stream behind it — the session fails with a decryption error rather than degrading to a miss.
+
 The frame is **not** sent on:
 
 - Fresh sessions (no resume requested).

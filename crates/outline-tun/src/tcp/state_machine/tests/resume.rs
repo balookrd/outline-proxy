@@ -129,18 +129,17 @@ fn each_blocked_clause_reports_its_own_reason() {
     assert!(healthy.can_attempt_migration(true, now));
 
     // Spending the budget blocks it — and the deadline is measured from the
-    // FIRST attempt, so a flow that still has budget but ran out of time reports
-    // the deadline instead.
+    // first attempt *of the current series*, so a flow that still has budget but
+    // ran out of time reports the deadline instead. Both clauses are driven with
+    // attempts that never commit, because a commit ends the series (see
+    // [`a_committed_migration_starts_a_new_series`]).
     healthy.begin_migration(now);
-    healthy.commit_migration(Some(session_id(4)));
-    assert_eq!(healthy.migration_block(true, now), None);
     assert_eq!(
         healthy.migration_block(true, now + TUN_TCP_MIGRATION_DEADLINE),
         Some(MigrationBlocked::DeadlinePassed)
     );
     for _ in 1..TUN_TCP_MIGRATION_MAX_ATTEMPTS {
         healthy.begin_migration(now);
-        healthy.commit_migration(Some(session_id(5)));
     }
     assert_eq!(healthy.migration_block(true, now), Some(MigrationBlocked::BudgetSpent));
 
@@ -156,4 +155,55 @@ fn each_blocked_clause_reports_its_own_reason() {
     .map(MigrationBlocked::event);
     let unique: std::collections::BTreeSet<_> = events.iter().collect();
     assert_eq!(unique.len(), events.len(), "blocked-reason labels must not collide");
+}
+
+/// A migration that *succeeded* starts the budget and the deadline over.
+///
+/// Both limits exist to stop a flow re-dialling a carrier that keeps dying: two
+/// attempts, and only within the server's park TTL, after which another dial
+/// could only miss. That is a statement about one *incident* — a carrier died
+/// and the replacement may also be unlucky — not about the flow's whole life. A
+/// committed migration is the incident ending well: the flow is healthy again on
+/// a live carrier, and the next carrier death (or the next operator soft switch)
+/// is a new incident that has to be allowed to try.
+///
+/// Counting committed migrations against the same budget makes a long-lived flow
+/// migrate at most twice ever, and — because `first_attempt_at` never moved —
+/// blocks it outright twenty seconds after its *first* migration. On a fleet
+/// where an operator switches uplinks more than once, that is every flow: the
+/// first switch carries them, the second finds them all blocked as
+/// `carrier_migration_deadline_passed` without a single dial. Observed exactly
+/// that way — 109 blocked against 29 migrated on one leg.
+#[test]
+fn a_committed_migration_starts_a_new_series() {
+    let now = Instant::now();
+    let mut flow = FlowResume::armed(Some(session_id(1)));
+
+    flow.begin_migration(now);
+    flow.commit_migration(Some(session_id(2)));
+
+    // Well past the deadline of the series that just ended, and having spent
+    // what would have been the whole lifetime budget — still eligible, because
+    // the series ended in success.
+    let later = now + TUN_TCP_MIGRATION_DEADLINE * 3;
+    assert_eq!(
+        flow.migration_block(true, later),
+        None,
+        "a flow that migrated successfully must be able to migrate again",
+    );
+
+    // The guard still bites within a series that keeps failing: attempts that
+    // never commit exhaust the budget as before.
+    for _ in 0..TUN_TCP_MIGRATION_MAX_ATTEMPTS {
+        flow.begin_migration(later);
+    }
+    assert_eq!(
+        flow.migration_block(true, later),
+        Some(MigrationBlocked::BudgetSpent),
+        "an uncommitted series must still run out of attempts",
+    );
+
+    // ...and a fresh success clears it again.
+    flow.commit_migration(Some(session_id(3)));
+    assert_eq!(flow.migration_block(true, later), None);
 }

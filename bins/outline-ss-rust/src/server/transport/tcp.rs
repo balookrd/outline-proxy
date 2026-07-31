@@ -754,13 +754,21 @@ where
     // Ack-Prefix Protocol v1, sealed under this edge's own key. Ordering is the
     // same as the direct path's: ahead of any relayed byte, on the same FIFO
     // channel, so it lands before whatever the spawned relay task produces.
+    //
+    // Carrier-padded like every other downlink message on this path. The relay's
+    // own chunks get their framing from `ChannelSink`, which this send bypasses —
+    // and on a padded path bypassing it is not "sent unwrapped" but *corrupting*:
+    // padding carries no capability bit, so the client feeds every message to its
+    // padding decoder, eats these 14 bytes as framing and desynchronises the AEAD
+    // stream behind them. See `cluster_relayed_ss_ack_prefix_is_carrier_padded`.
     if state.ack_prefix_requested {
         let payload = build_v1_payload(upstream_acked);
         let mut out = bytes::BytesMut::new();
         encryptor
             .encrypt_chunk(&payload, &mut out)
             .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
-        let ciphertext = out.split().freeze();
+        let ciphertext =
+            carrier_padding::frame_downlink_message(route.padding, out.split().freeze());
         let make_binary = outbound.make_binary;
         outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
             FrameError::Fatal(anyhow!(
@@ -994,18 +1002,22 @@ where
             // ahead of any upstream relay bytes, so the client can
             // replay only the bytes the upstream `TcpStream` has not
             // yet acked. The frame goes through the same AEAD
-            // encryptor + WS sink as a normal data chunk; its FIFO
-            // ordering on `outbound.data_tx` guarantees it lands at
-            // the client before whatever the spawned relay task
-            // produces. See `docs/SESSION-RESUMPTION.md` § Ack-Prefix
-            // Protocol (v1).
+            // encryptor and the same carrier padding as a normal data
+            // chunk — the relay's chunks are padded by `ChannelSink`,
+            // which this send bypasses, and on a padded path an unpadded
+            // message desynchronises the client's padding decoder rather
+            // than merely arriving unwrapped. Its FIFO ordering on
+            // `outbound.data_tx` guarantees it lands at the client before
+            // whatever the spawned relay task produces. See
+            // `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
             if state.ack_prefix_requested {
                 let payload = build_v1_payload(parked.upstream_bytes_acked.load(Ordering::Relaxed));
                 let mut out = bytes::BytesMut::new();
                 encryptor
                     .encrypt_chunk(&payload, &mut out)
                     .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
-                let ciphertext = out.split().freeze();
+                let ciphertext =
+                    carrier_padding::frame_downlink_message(route.padding, out.split().freeze());
                 let make_binary = outbound.make_binary;
                 outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
                     FrameError::Fatal(anyhow!(
@@ -1032,13 +1044,16 @@ where
             if state.symmetric_replay_requested {
                 use crate::server::resumption::downlink_ring::ReplayOutcome;
                 use outline_wire::resume::downlink_replay;
-                let (flags, payload, ring_diag) = match parked.downlink_ring.as_ref() {
+                let (flags, payload, ring_diag, truncate_reason) = match parked
+                    .downlink_ring
+                    .as_ref()
+                {
                     None => {
                         // The session was parked from a path that did
                         // not run the v2 ring (e.g. operator enabled
                         // v2 mid-session or the prior carrier did not
                         // capture). Honest answer is TRUNCATED.
-                        (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), None)
+                        (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), None, "no_ring")
                     },
                     Some(ring) => {
                         let guard = ring.lock();
@@ -1047,11 +1062,14 @@ where
                         drop(guard);
                         match outcome {
                             ReplayOutcome::Available(bytes) => {
-                                (downlink_replay::FLAGS_NONE, bytes, Some(diag))
+                                (downlink_replay::FLAGS_NONE, bytes, Some(diag), "")
                             },
-                            ReplayOutcome::Truncated => {
-                                (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), Some(diag))
-                            },
+                            ReplayOutcome::Truncated => (
+                                downlink_replay::FLAG_REPLAY_TRUNCATED,
+                                Vec::new(),
+                                Some(diag),
+                                "evicted",
+                            ),
                             ReplayOutcome::OffsetAhead => {
                                 warn!(
                                     user = user.id(),
@@ -1060,7 +1078,12 @@ where
                                     "v2 client claims more downstream bytes than server emitted; \
                                      treating as truncated"
                                 );
-                                (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), Some(diag))
+                                (
+                                    downlink_replay::FLAG_REPLAY_TRUNCATED,
+                                    Vec::new(),
+                                    Some(diag),
+                                    "client_ahead",
+                                )
                             },
                         }
                     },
@@ -1069,7 +1092,9 @@ where
                 let truncated = (flags & downlink_replay::FLAG_REPLAY_TRUNCATED) != 0;
                 server.metrics.record_orphan_downlink_replay_bytes("tcp", payload_len);
                 if truncated {
-                    server.metrics.record_orphan_downlink_replay_truncated("tcp");
+                    server
+                        .metrics
+                        .record_orphan_downlink_replay_truncated("tcp", truncate_reason);
                 }
                 let mut frame =
                     Vec::with_capacity(downlink_replay::FRAME_HEADER_LEN_V1 + payload.len());
@@ -1079,7 +1104,11 @@ where
                 encryptor
                     .encrypt_chunk(&frame, &mut out)
                     .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
-                let ciphertext = out.split().freeze();
+                // Padded for the same reason as the v1 frame above: this send
+                // bypasses `ChannelSink`, and an unpadded message on a padded
+                // path corrupts the stream rather than arriving unwrapped.
+                let ciphertext =
+                    carrier_padding::frame_downlink_message(route.padding, out.split().freeze());
                 let make_binary = outbound.make_binary;
                 outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
                     FrameError::Fatal(anyhow!(
