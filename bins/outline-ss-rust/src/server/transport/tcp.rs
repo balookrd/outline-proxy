@@ -1132,21 +1132,28 @@ where
             // state so subsequent upstream→client bytes continue
             // accumulating into the same buffer; survives any
             // future park.
-            if state.symmetric_replay_requested {
-                state.downlink_ring = parked.downlink_ring.clone().or_else(|| {
-                    // Parked ring was absent (mid-deployment v2 enable).
-                    // Allocate a fresh empty one so subsequent captures
-                    // are retained for the next resume hit.
-                    let cap = server.orphan_registry.downlink_buffer_bytes();
-                    if cap > 0 {
-                        Some(Arc::new(parking_lot::Mutex::new(
-                            crate::server::resumption::downlink_ring::DownlinkRing::new(cap),
-                        )))
-                    } else {
-                        None
-                    }
-                });
-            }
+            //
+            // Taken back **unconditionally**, not only when this carrier
+            // negotiated v2: the ring belongs to the session, not to the carrier
+            // currently attached to it. Not every redial asks for replay — the
+            // wire-handover redial deliberately does not — and dropping the ring
+            // on such a hop loses it silently and for good, so the next carrier
+            // that *does* ask is answered `no_ring` for a session that had one
+            // all along.
+            state.downlink_ring = parked.downlink_ring.clone().or_else(|| {
+                // Parked ring was absent (mid-deployment v2 enable, or a session
+                // whose first carrier never asked). Allocate a fresh empty one
+                // when this carrier engages v2, so subsequent captures are
+                // retained for the next resume hit.
+                let cap = server.orphan_registry.downlink_buffer_bytes();
+                if state.symmetric_replay_requested && cap > 0 {
+                    Some(Arc::new(parking_lot::Mutex::new(
+                        crate::server::resumption::downlink_ring::DownlinkRing::new(cap),
+                    )))
+                } else {
+                    None
+                }
+            });
             let ring_for_task = state.downlink_ring.clone();
             let monitor_for_sink = state.throttle_monitor.clone();
             let monitor_for_relay = state.throttle_monitor.clone();

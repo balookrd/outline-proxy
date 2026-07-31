@@ -41,6 +41,31 @@ pub struct DialResumeOptions {
     pub client_acked_offset: u64,
 }
 
+impl DialResumeOptions {
+    /// What a dial that starts a **new session** advertises: no id to present,
+    /// and both replay capabilities.
+    ///
+    /// The capability bits do two jobs, and only one of them is about frames.
+    /// Server-side, the v2 advertisement is also what makes the session retain a
+    /// downlink replay ring — and a ring only asked for at migration time is
+    /// empty exactly when it is needed, so the migration is answered
+    /// `REPLAY_TRUNCATED` and the flow tears down instead of continuing.
+    ///
+    /// Advertising is safe precisely because no id is presented: the server
+    /// emits its control frames only after a resume hit, which an id-less dial
+    /// cannot produce. A dial that *does* present an id must decide for itself —
+    /// the wire-handover redial presents one and asks for nothing, because it
+    /// owns no offset to replay from.
+    pub fn new_session() -> Self {
+        Self {
+            resume_request: None,
+            ack_prefix_requested: true,
+            symmetric_replay_requested: true,
+            client_acked_offset: 0,
+        }
+    }
+}
+
 /// Complete input to the HTTP-family transport dial planner.
 #[derive(Clone, Copy)]
 pub struct TransportDialOptions<'a> {
