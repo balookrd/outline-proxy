@@ -163,8 +163,28 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, FreshTcpDial::default())
-            .await
+        // Advertises v1 + v2 even though this dial cannot hit anything: the
+        // capability bit does two jobs, and only one of them is about frames.
+        // Server-side it is also what makes the session **retain a downlink
+        // ring** (`transport::tcp`, fresh-dial ring allocation), and a ring that
+        // is only asked for at migration time is empty exactly when it is
+        // needed — the resume then answers `REPLAY_TRUNCATED` and the flow tears
+        // down instead of migrating. Asking here costs the ring's cap per
+        // session and nothing on the wire.
+        //
+        // Safe because expectation is gated on having presented an id, not on
+        // the echo (`resumption::parse_resume_response_echo`): the server emits
+        // control frames only after a resume hit, which a dial carrying no id
+        // cannot produce, so nothing here will go looking for a prefix that was
+        // never sent. Do **not** move this into `FreshTcpDial::default()` — the
+        // wire-handover redial above builds on that default *with* a
+        // `resume_request`, and it owns no ring to replay from.
+        let dial = FreshTcpDial {
+            ack_prefix_requested: true,
+            symmetric_replay_requested: true,
+            ..Default::default()
+        };
+        self.connect_tcp_ws_fresh_internal(candidate, source, dial).await
     }
 
     /// Redial variant for the wire-handover paths (chunk-0 recovery, retry

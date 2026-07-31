@@ -63,6 +63,7 @@ use tracing::debug;
 
 use outline_metrics as metrics;
 use outline_transport::downlink_replay::DownlinkReplayOutcome;
+use outline_transport::uplink_replay::ReplayError;
 use outline_transport::{SessionId, TcpReader, TcpWriter};
 use outline_uplink::{UplinkCandidate, UplinkManager};
 
@@ -127,6 +128,26 @@ struct MigrationPlan {
     carrier: Arc<Mutex<UpstreamCarrier>>,
     group_name: Arc<str>,
     uplink_name: Arc<str>,
+}
+
+/// Metric label for a failure to reproduce the uplink tail the server asked
+/// for.
+///
+/// Split by variant rather than folded into one `replay_failed` series, because
+/// the two say opposite things about where to look. `evicted` is *ours*: the
+/// server wants bytes older than the flow's [`TUN_UPLINK_REPLAY_RING_BYTES`]
+/// ring still holds, so the ring is too small for how far behind the upstream
+/// ran. `ahead` is the *server's*: it claims to have forwarded bytes this flow
+/// never sent, which is a desync in the acked-offset accounting (or a peer
+/// misbehaving) and cannot be fixed by sizing anything.
+///
+/// One shared label made a production run unreadable — 29 failures that could
+/// have been either, with no way to tell without re-deploying a debug build.
+const fn uplink_replay_failure_event(error: &ReplayError) -> &'static str {
+    match error {
+        ReplayError::OffsetEvicted { .. } => "carrier_migration_replay_evicted",
+        ReplayError::OffsetAhead { .. } => "carrier_migration_replay_ahead",
+    }
 }
 
 impl TunTcpEngine {
@@ -429,7 +450,7 @@ impl TunTcpEngine {
                 metrics::record_tun_tcp_event(
                     &plan.group_name,
                     &plan.uplink_name,
-                    "carrier_migration_replay_failed",
+                    "carrier_migration_downlink_truncated",
                 );
                 bail!(
                     "carrier migration: server signalled REPLAY_TRUNCATED (downstream gap is \
@@ -441,7 +462,7 @@ impl TunTcpEngine {
                 metrics::record_tun_tcp_event(
                     &plan.group_name,
                     &plan.uplink_name,
-                    "carrier_migration_replay_failed",
+                    "carrier_migration_downlink_frame_invalid",
                 );
                 return Err(error.context(
                     "carrier migration: server negotiated v2 downlink replay but did not emit a \
@@ -468,7 +489,7 @@ impl TunTcpEngine {
                 metrics::record_tun_tcp_event(
                     &plan.group_name,
                     &plan.uplink_name,
-                    "carrier_migration_replay_failed",
+                    uplink_replay_failure_event(&error),
                 );
                 anyhow!(
                     "carrier migration: the uplink tail the server is missing cannot be \
@@ -611,3 +632,7 @@ fn to_upstream_writer(writer: TcpWriter) -> UpstreamWriter {
         TcpWriter::Vless(w) => UpstreamWriter::TunneledVless(w),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/migrate.rs"]
+mod tests;
