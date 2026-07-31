@@ -87,7 +87,7 @@ use super::vless::{
 };
 use super::{
     connect_ws_h1, connect_ws_h1_ack_prefix, connect_ws_h1_symmetric_replay, expect_binary_reply,
-    spawn_delayed_echo_udp_target, spawn_echo_target, spawn_echo_udp_target,
+    read_ss_plaintext, spawn_delayed_echo_udp_target, spawn_echo_target, spawn_echo_udp_target,
 };
 use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn, PaddingConfig};
 use crate::crypto::{
@@ -1037,30 +1037,6 @@ const HOME_SS_PATH: &str = "/home-only-path/ss";
 const EDGE_SS_PATH: &str = "/edge-only-path/ss";
 const HOME_SS_SECRET: &str = "home-only-secret";
 const EDGE_SS_SECRET: &str = "edge-only-secret";
-
-/// Reads `want` bytes of SS plaintext off a WS carrier, decrypting the AEAD
-/// stream as it arrives.
-///
-/// The SS twin of [`read_vless_tcp_payload`], and it exists for the same reason:
-/// SS rides one continuous AEAD stream, so a resumed session's control frame and
-/// its replayed suffix may arrive in one WebSocket frame or several, and a real
-/// client decodes the stream rather than the framing. Returns as soon as `want`
-/// bytes are available, so a caller that also wants "and nothing more" asserts
-/// the length itself.
-async fn read_ss_plaintext<S>(socket: &mut S, user: &UserKey, want: usize) -> Result<Vec<u8>>
-where
-    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
-        + Unpin,
-{
-    let mut decryptor = AeadStreamDecryptor::new(Arc::from(vec![user.clone()].into_boxed_slice()));
-    let mut plaintext = Vec::new();
-    while plaintext.len() < want {
-        let frame = expect_binary_reply(socket).await?;
-        decryptor.feed_ciphertext(&frame);
-        decryptor.drain_plaintext(&mut plaintext)?;
-    }
-    Ok(plaintext)
-}
 
 /// [`read_ss_plaintext`] against a **padded** carrier: strips the carrier-padding
 /// framing before the AEAD layer, which is exactly the order a padding-enabled

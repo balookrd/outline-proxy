@@ -362,7 +362,10 @@ async fn connect_tcp_uplink_primary(
         // a pooled standby carrier was dialed fresh (no resume request), so
         // the ID the server minted for it now belongs to this session.
         let session_id = ws.issued_session_id();
-        match do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval, binding).await {
+        // A pooled carrier was dialed by the refill loop with no id of its own.
+        match do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval, binding, false)
+            .await
+        {
             Ok((writer, reader)) => {
                 return Ok(ConnectedTcpUplink {
                     writer,
@@ -405,8 +408,16 @@ pub(super) async fn connect_tcp_uplink_fresh(
     let binding = tcp_binding(uplinks, setup.name);
     // Capture before `do_tcp_ss_setup` takes ownership of the stream.
     let session_id = ws.issued_session_id();
-    let (writer, reader) =
-        do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval, binding).await?;
+    let (writer, reader) = do_tcp_ss_setup(
+        ws,
+        &setup,
+        target,
+        "socks_tcp",
+        keepalive_interval,
+        binding,
+        resume_request.is_some(),
+    )
+    .await?;
     Ok(ConnectedTcpUplink {
         writer,
         reader,
@@ -543,9 +554,16 @@ async fn redial_for_mid_session_retry_inner(
         // The server mints a new ID on the resume hit too — capture it before
         // the stream is consumed so the session can redial again later.
         let session_id = ws.issued_session_id();
-        let (writer, reader) =
-            do_tcp_ss_setup(ws, &setup, target, "socks_tcp_retry", keepalive_interval, binding)
-                .await?;
+        let (writer, reader) = do_tcp_ss_setup(
+            ws,
+            &setup,
+            target,
+            "socks_tcp_retry",
+            keepalive_interval,
+            binding,
+            resume_request.is_some(),
+        )
+        .await?;
         return Ok(ConnectedTcpUplink {
             writer,
             reader,
@@ -775,8 +793,16 @@ pub(super) async fn connect_tcp_fallback_fresh(
     // Capture before `do_tcp_ss_setup` takes ownership of the stream: this ID
     // belongs to the session that dialed this wire, and to nobody else.
     let session_id = ws.issued_session_id();
-    let (writer, reader) =
-        do_tcp_ss_setup(ws, &setup, target, source, keepalive_interval, binding).await?;
+    let (writer, reader) = do_tcp_ss_setup(
+        ws,
+        &setup,
+        target,
+        source,
+        keepalive_interval,
+        binding,
+        resume_request.is_some(),
+    )
+    .await?;
     // Feed the dial latency into the uplink's RTT EWMA — see SS branch
     // above for the rationale.
     uplinks
@@ -849,6 +875,19 @@ fn tcp_binding(uplinks: &UplinkManager, uplink_name: &str) -> UplinkConnectionBi
     UplinkConnectionBinding::new(uplinks.group_name(), "tcp", uplink_name)
 }
 
+/// Whether this carrier may be preceded by the v1 `"ORSM"` / v2 `"ORDR"` resume
+/// control frames.
+///
+/// Both conditions are load-bearing. The server echoes the capability bits to
+/// anyone who advertises them, but emits the frames only after a resume **hit** —
+/// which a dial carrying no Session ID cannot produce. Reading a frame that was
+/// never sent consumes the first 14 bytes of real payload as a control header
+/// and kills the session on the parse, so the echo alone must never arm the
+/// reader. Mirrors the gate `outline_tun::tcp::engine::connect` applies.
+fn expects_resume_control_frames(presented_resume_id: bool, advertised_by_server: bool) -> bool {
+    presented_resume_id && advertised_by_server
+}
+
 async fn do_tcp_ss_setup(
     ws_stream: outline_transport::TransportStream,
     setup: &WireSetup<'_>,
@@ -856,6 +895,10 @@ async fn do_tcp_ss_setup(
     source: &'static str,
     keepalive_interval: Option<std::time::Duration>,
     binding: UplinkConnectionBinding,
+    // Whether this dial presented a Session ID, i.e. whether a resume hit — and
+    // therefore a control frame — was possible at all. See
+    // [`expects_resume_control_frames`].
+    presented_resume_id: bool,
 ) -> Result<(TcpWriter, TcpReader)> {
     let shared_conn_info = ws_stream.shared_connection_info();
     let lifetime = UpstreamTransportGuard::new_with_uplink(source, "tcp", binding);
@@ -870,12 +913,20 @@ async fn do_tcp_ss_setup(
     // Capture the negotiated Ack-Prefix bit before any consume —
     // both VLESS's `vless_tcp_pair_from_ws` and SS-WS's `.split()`
     // take ownership of the underlying stream halves, after which
-    // the accessor on the enum is gone. The orchestrator's
-    // mid-session retry path (the only opt-in caller today) flips
-    // this bit on by re-dialling with `ack_prefix_requested = true`;
-    // the initial dial leaves it `false`.
-    let expect_ack_prefix = ws_stream.ack_prefix_advertised_by_server();
-    let expect_downlink_replay = ws_stream.symmetric_replay_advertised_by_server();
+    // the accessor on the enum is gone.
+    //
+    // A fresh dial advertises the capabilities too — that advertisement is what
+    // makes the server allocate this session's downlink replay ring — so the
+    // echo comes back on carriers that will never be sent a control frame. Only
+    // a dial that presented an id can be.
+    let expect_ack_prefix = expects_resume_control_frames(
+        presented_resume_id,
+        ws_stream.ack_prefix_advertised_by_server(),
+    );
+    let expect_downlink_replay = expects_resume_control_frames(
+        presented_resume_id,
+        ws_stream.symmetric_replay_advertised_by_server(),
+    );
 
     if setup.transport == UplinkTransport::Vless {
         let uuid = setup

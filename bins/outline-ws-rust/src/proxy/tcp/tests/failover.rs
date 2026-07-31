@@ -199,3 +199,33 @@ async fn mid_session_retry_dial_ignores_the_cap_the_carrier_death_installed() {
          fall back inline if the carrier really is dead."
     );
 }
+
+/// A dial that presented no Session ID must never expect the v1 / v2 resume
+/// control frames, however the server echoed the capabilities.
+///
+/// The server emits those frames only after a resume **hit**, which a dial
+/// carrying no id cannot produce — while it echoes the capability bits back to
+/// anyone who advertises them. Keying the expectation on the echo alone
+/// therefore makes the reader eat the first 14 bytes of real payload as an
+/// `"ORSM"` header and kill the session on the parse.
+///
+/// That is what stopped the SOCKS side from advertising v1 + v2 on its fresh
+/// dials — which is the only thing that makes the server allocate the session's
+/// downlink replay ring. The TUN path already gates on the id
+/// (`outline_tun::tcp::engine::connect`); this pins the same rule here.
+#[test]
+fn a_dial_presenting_no_id_never_expects_resume_control_frames() {
+    assert!(
+        !expects_resume_control_frames(false, true),
+        "no id presented means no resume hit is possible, so no control frame follows — \
+         expecting one consumes real payload as a control header",
+    );
+    assert!(
+        expects_resume_control_frames(true, true),
+        "a redial that presented its id and got the capability confirmed must read the frames",
+    );
+    assert!(
+        !expects_resume_control_frames(true, false),
+        "a server that did not confirm the capability sends nothing to read",
+    );
+}

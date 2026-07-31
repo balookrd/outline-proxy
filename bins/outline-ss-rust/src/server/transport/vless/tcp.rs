@@ -393,18 +393,20 @@ where
         // subsequent upstream→client bytes accumulate into the same
         // buffer; allocate a fresh empty one if the parked side was
         // None and v2 is engaged on this resume.
-        if state.symmetric_replay_requested {
-            state.downlink_ring = parked.downlink_ring.clone().or_else(|| {
-                let cap = server.orphan_registry.downlink_buffer_bytes();
-                if cap > 0 {
-                    Some(Arc::new(parking_lot::Mutex::new(
-                        crate::server::resumption::downlink_ring::DownlinkRing::new(cap),
-                    )))
-                } else {
-                    None
-                }
-            });
-        }
+        //
+        // Taken back unconditionally for the same reason the SS path does
+        // (`transport::tcp`): the ring is the session's, and a carrier that did
+        // not ask for replay must not destroy it on its way through.
+        state.downlink_ring = parked.downlink_ring.clone().or_else(|| {
+            let cap = server.orphan_registry.downlink_buffer_bytes();
+            if state.symmetric_replay_requested && cap > 0 {
+                Some(Arc::new(parking_lot::Mutex::new(
+                    crate::server::resumption::downlink_ring::DownlinkRing::new(cap),
+                )))
+            } else {
+                None
+            }
+        });
         let ring_for_task = state.downlink_ring.clone();
         let monitor_for_task = state.throttle_monitor.clone();
         let tx = outbound.data_tx.clone();
