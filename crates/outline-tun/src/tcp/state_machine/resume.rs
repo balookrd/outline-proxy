@@ -41,7 +41,9 @@ use outline_transport::uplink_replay::{ClientUpstreamRingBuffer, PushError, Repl
 /// oversized-chunk path below is a guardrail rather than an expected event.
 pub(in crate::tcp) const TUN_UPLINK_REPLAY_RING_BYTES: usize = 64 * 1024;
 
-/// How many carrier migrations one flow may attempt over its whole lifetime.
+/// How many carrier migrations one flow may attempt per *series* — a run of
+/// attempts with no success between them. A committed migration ends the series
+/// and gives the flow a fresh budget ([`FlowResume::commit_migration`]).
 ///
 /// A migration only pays off when the carrier died under a flow that is
 /// otherwise healthy; a flow whose carriers keep dying is being told something,
@@ -51,7 +53,8 @@ pub(in crate::tcp) const TUN_UPLINK_REPLAY_RING_BYTES: usize = 64 * 1024;
 /// tears down as it did before.
 pub(in crate::tcp) const TUN_TCP_MIGRATION_MAX_ATTEMPTS: u8 = 2;
 
-/// How long after the *first* migration attempt a flow may still start another.
+/// How long after the first migration attempt *of the current series* a flow may
+/// still start another.
 ///
 /// The server parks an orphaned upstream for 30 s
 /// (`bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`), so an attempt starting
@@ -333,10 +336,22 @@ impl FlowResume {
     /// MUST be called in the same flow-lock critical section that snapshots the
     /// replay tail — the epoch is what tells the pump whether the batch in its
     /// hand is inside that snapshot or after it.
+    ///
+    /// Ends the current migration *series*, so the attempt budget and the
+    /// deadline start over. Both bound one incident — a carrier died and the
+    /// replacement may also be unlucky — and a commit is that incident ending
+    /// well: the flow is healthy again on a live carrier, so the next carrier
+    /// death or operator soft switch has to be allowed its own attempts. Left
+    /// running, the counters made every long-lived flow ineligible twenty
+    /// seconds after its *first* migration, which is why a second soft switch
+    /// carried almost nothing and left no dial-side trace — only
+    /// `carrier_migration_deadline_passed`.
     pub(in crate::tcp) fn commit_migration(&mut self, session_id: Option<SessionId>) {
         self.session_id = session_id;
         self.carrier_epoch = self.carrier_epoch.wrapping_add(1);
         self.phase = MigrationPhase::Idle;
+        self.attempts = 0;
+        self.first_attempt_at = None;
     }
 
     /// Gives up on migrating this flow, for good. The caller then falls through

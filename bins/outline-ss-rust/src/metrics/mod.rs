@@ -706,11 +706,26 @@ impl Metrics {
     /// requested offset, the ring was absent (operator enabled v2
     /// mid-session), or the client claimed bytes the server never
     /// emitted (`OffsetAhead`).
-    pub fn record_orphan_downlink_replay_truncated(&self, transport: &'static str) {
+    /// Counts a v2 downlink replay the server could not honour, by `reason`:
+    /// `no_ring` (the park carries no ring at all — the session never had one,
+    /// or lost it on the way), `evicted` (the client's offset is older than the
+    /// ring's oldest retained byte) or `client_ahead` (the client claims bytes
+    /// the server never emitted).
+    ///
+    /// Split because "the ring is missing" and "the ring is too small" call for
+    /// opposite fixes and were indistinguishable on one series: a production run
+    /// that raised the ring 16x and moved nothing could not say whether the size
+    /// was irrelevant or the ring was absent all along.
+    pub fn record_orphan_downlink_replay_truncated(
+        &self,
+        transport: &'static str,
+        reason: &'static str,
+    ) {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_orphan_downlink_replay_truncated_total",
-                "transport" => transport
+                "transport" => transport,
+                "reason" => reason,
             )
             .increment(1);
         });
