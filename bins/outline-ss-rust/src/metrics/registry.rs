@@ -346,10 +346,14 @@ pub(super) fn register_descriptions() {
     );
     describe_counter!(
         "outline_ss_orphan_downlink_replay_truncated_total",
-        "Resume hits where the v2 downlink replay frame carried REPLAY_TRUNCATED \
-         — the requested offset preceded the ring's oldest retained byte, \
-         the parked ring was absent, or the client claimed bytes the server \
-         never emitted. By transport."
+        "Resume hits where the v2 downlink replay frame carried REPLAY_TRUNCATED, \
+         by transport and reason: no_ring = the park carries no ring at all \
+         (the session never retained one, or lost it on the way); evicted = the \
+         client's offset precedes the ring's oldest retained byte, so the ring \
+         is too small for how far that session fell behind; client_ahead = the \
+         client claims bytes the server never emitted. The three call for \
+         opposite fixes — allocate, resize, investigate — and were \
+         indistinguishable while they shared one series."
     );
     describe_gauge!(
         "outline_ss_orphan_downlink_buf_bytes",

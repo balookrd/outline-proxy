@@ -1301,7 +1301,15 @@ async fn splice_plaintext_tcp(
             // exists the condition is at least observable on the same counter
             // the direct path feeds.
             other => {
-                cluster.metrics.record_orphan_downlink_replay_truncated("tcp");
+                // `replay_from` only ever answers `Truncated` or `OffsetAhead`
+                // here — a park with no ring never produced a `replay` at all
+                // (the `match` above returns `None` for it), so this arm cannot
+                // see the `no_ring` case the direct paths report.
+                let reason = match other {
+                    ReplayOutcome::OffsetAhead => "client_ahead",
+                    _ => "evicted",
+                };
+                cluster.metrics.record_orphan_downlink_replay_truncated("tcp", reason);
                 debug!(
                     ?other,
                     target = %parked.target_display,
