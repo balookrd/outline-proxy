@@ -29,9 +29,10 @@ use url::Url;
 use outline_transport::{SessionId, global_resume_cache};
 use outline_wire::resume::{
     ACK_PREFIX_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER,
+    SYMMETRIC_REPLAY_HEADER,
 };
 
-use crate::types::{UplinkCandidate, UplinkManager};
+use crate::types::{TransportKind, UplinkCandidate, UplinkManager};
 
 use super::{lb, make_uplink, probe_disabled};
 
@@ -146,6 +147,97 @@ async fn fresh_tcp_dial_presents_no_resume_id() {
     );
 
     global_resume_cache().forget("fresh-dial-uplink#tcp");
+    let _ = shutdown_tx.send(());
+    task.abort();
+}
+
+/// Every dial that starts a **new session** must advertise v1 + v2, because on
+/// the server side that advertisement is what allocates the session's downlink
+/// replay ring — and a ring that is only asked for at migration time is empty
+/// exactly when it is needed.
+///
+/// The warm-standby refill is such a dial: its stream is handed to the next
+/// session that asks for a carrier, so a pooled connection dialed without the
+/// capabilities produces a session the server never gives a ring to. On the
+/// fleet that is most sessions — `warm_standby_acquire_total` runs ~74% `hit` —
+/// and every one of them answers its first migration `REPLAY_TRUNCATED`
+/// (`reason="no_ring"`) instead of replaying the suffix.
+///
+/// Presenting no resume id is what makes advertising safe here: the server emits
+/// its control frames only after a resume *hit*, which an id-less dial cannot
+/// produce.
+#[tokio::test]
+async fn tcp_standby_refill_advertises_the_replay_capabilities() {
+    let (url, mut headers_rx, shutdown_tx, task) =
+        spawn_resume_server(vec![SessionId::from_bytes([0x66; 16])]).await;
+
+    let uplink = make_uplink("standby-refill-uplink", url.as_str());
+    let mut config = lb();
+    config.warm_standby_tcp = 1;
+    config.warm_standby_udp = 0;
+    let manager =
+        UplinkManager::new_for_test("test", vec![uplink], probe_disabled(), config).unwrap();
+
+    manager.maintain_pool(0, TransportKind::Tcp).await;
+
+    let headers = next_headers(&mut headers_rx).await;
+    assert!(
+        headers.get(RESUME_REQUEST_HEADER).is_none(),
+        "a pooled carrier belongs to no session yet, so it must present no id, got {:?}",
+        headers.get(RESUME_REQUEST_HEADER),
+    );
+    assert_eq!(
+        headers.get(ACK_PREFIX_HEADER).and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "v2 is gated on v1 server-side, so the pool's dial must advertise both",
+    );
+    assert_eq!(
+        headers.get(SYMMETRIC_REPLAY_HEADER).and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "without this the server allocates no downlink ring and the session's first migration \
+         is answered REPLAY_TRUNCATED",
+    );
+
+    let _ = shutdown_tx.send(());
+    task.abort();
+}
+
+/// The same invariant for the SOCKS brand-new-session path, which reaches the
+/// dialer through the *redial* helper with `None` — the wire-handover shape
+/// minus the id. What decides whether a dial may advertise is whether it
+/// presents an id, not which helper it came through: no id means no hit means no
+/// control frames, and a new session that does not ask ends up with no ring.
+#[tokio::test]
+async fn a_dial_presenting_no_id_advertises_the_replay_capabilities() {
+    let (url, mut headers_rx, shutdown_tx, task) =
+        spawn_resume_server(vec![SessionId::from_bytes([0x77; 16])]).await;
+
+    let uplink = make_uplink("idless-dial-uplink", url.as_str());
+    let manager =
+        UplinkManager::new_for_test("test", vec![uplink.clone()], probe_disabled(), lb()).unwrap();
+    let candidate = UplinkCandidate { index: 0, uplink: uplink.into() };
+
+    manager
+        .connect_tcp_ws_redial(&candidate, "test", None)
+        .await
+        .expect("an id-less redial must succeed against the mock server");
+
+    let headers = next_headers(&mut headers_rx).await;
+    assert!(
+        headers.get(RESUME_REQUEST_HEADER).is_none(),
+        "the dial presented no id — that is the premise of this test",
+    );
+    assert_eq!(
+        headers.get(ACK_PREFIX_HEADER).and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "a dial with no id starts a new session, and a new session needs a ring",
+    );
+    assert_eq!(
+        headers.get(SYMMETRIC_REPLAY_HEADER).and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "a dial with no id starts a new session, and a new session needs a ring",
+    );
+
     let _ = shutdown_tx.send(());
     task.abort();
 }

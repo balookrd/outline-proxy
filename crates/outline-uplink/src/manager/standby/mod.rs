@@ -63,6 +63,30 @@ struct FreshTcpDial {
     bypass_mode_downgrade: bool,
 }
 
+/// The resume headers a [`FreshTcpDial`] goes out with.
+///
+/// One rule, applied in one place: a dial that presents **no** Session ID starts
+/// a new session, and a new session must advertise both replay capabilities or
+/// the server never allocates its downlink ring — see
+/// [`DialResumeOptions::new_session`]. Every helper below funnels through here,
+/// so the rule cannot hold on the TUN entry point and lapse on the SOCKS one,
+/// which is exactly how the fleet ended up with most of its sessions ringless.
+///
+/// A dial that *does* present an id keeps whatever the caller asked for: the
+/// wire-handover redial presents one and asks for nothing, because it owns no
+/// replay offset and must not be sent frames it cannot honour.
+fn resume_options(dial: &FreshTcpDial) -> DialResumeOptions {
+    match dial.resume_request {
+        None => DialResumeOptions::new_session(),
+        Some(_) => DialResumeOptions {
+            resume_request: dial.resume_request,
+            ack_prefix_requested: dial.ack_prefix_requested,
+            symmetric_replay_requested: dial.symmetric_replay_requested,
+            client_acked_offset: dial.client_acked_offset,
+        },
+    }
+}
+
 /// Composes the cache key used by the cross-transport resumption
 /// helpers in [`outline_transport::global_resume_cache`]. The form
 /// `<uplink_name>#<transport>` keeps TCP and UDP entries separate so
@@ -163,28 +187,11 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<TransportStream> {
-        // Advertises v1 + v2 even though this dial cannot hit anything: the
-        // capability bit does two jobs, and only one of them is about frames.
-        // Server-side it is also what makes the session **retain a downlink
-        // ring** (`transport::tcp`, fresh-dial ring allocation), and a ring that
-        // is only asked for at migration time is empty exactly when it is
-        // needed — the resume then answers `REPLAY_TRUNCATED` and the flow tears
-        // down instead of migrating. Asking here costs the ring's cap per
-        // session and nothing on the wire.
-        //
-        // Safe because expectation is gated on having presented an id, not on
-        // the echo (`resumption::parse_resume_response_echo`): the server emits
-        // control frames only after a resume hit, which a dial carrying no id
-        // cannot produce, so nothing here will go looking for a prefix that was
-        // never sent. Do **not** move this into `FreshTcpDial::default()` — the
-        // wire-handover redial above builds on that default *with* a
-        // `resume_request`, and it owns no ring to replay from.
-        let dial = FreshTcpDial {
-            ack_prefix_requested: true,
-            symmetric_replay_requested: true,
-            ..Default::default()
-        };
-        self.connect_tcp_ws_fresh_internal(candidate, source, dial).await
+        // The advertisement itself is applied by `connect_tcp_ws_fresh_internal`,
+        // which asks for both replay capabilities on every dial that presents no
+        // id — this one included. See [`DialResumeOptions::new_session`].
+        self.connect_tcp_ws_fresh_internal(candidate, source, FreshTcpDial::default())
+            .await
     }
 
     /// Redial variant for the wire-handover paths (chunk-0 recovery, retry
@@ -402,12 +409,7 @@ impl UplinkManager {
                         ipv6_first: candidate.uplink.ipv6_first,
                     })
                     .with_combined_ss_kind(candidate.uplink.combined_ss_kind(SsPathKind::Tcp))
-                    .with_resume(DialResumeOptions {
-                        resume_request: dial.resume_request,
-                        ack_prefix_requested: dial.ack_prefix_requested,
-                        symmetric_replay_requested: dial.symmetric_replay_requested,
-                        client_acked_offset: dial.client_acked_offset,
-                    }),
+                    .with_resume(resume_options(&dial)),
             ),
         )
         .await
