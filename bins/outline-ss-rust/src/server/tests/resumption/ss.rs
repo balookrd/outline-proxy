@@ -175,6 +175,123 @@ pub(super) fn ss_handshake_frame(
 
 // ── SS-TCP tests ─────────────────────────────────────────────────────────────
 
+/// A resume that does not negotiate v2 must not **destroy** the parked session's
+/// downlink ring: it is the session's, not the carrier's, and the next carrier
+/// may well want it.
+///
+/// Not every redial asks for replay. The wire-handover redial deliberately does
+/// not (it owns no offset to replay from and would read the server's control
+/// frames as payload), and a client can have v2 disabled for one dial and not
+/// the next. The ring, though, was allocated for the *session* and keeps filling
+/// from the upstream regardless of which carrier is currently attached — so a
+/// v1-only hop through it must leave it where it found it. Dropping it makes the
+/// loss silent and permanent: the flow keeps running, and the next migration
+/// that does ask for a replay is answered `REPLAY_TRUNCATED` with
+/// `reason="no_ring"` — a park that carries no ring at all, which is
+/// indistinguishable on the wire from a session that never had one.
+#[tokio::test]
+async fn ss_resume_without_v2_keeps_the_parked_downlink_ring() -> Result<()> {
+    use outline_wire::resume::{FRAME_LEN_V1, downlink_replay};
+
+    /// What the target echoes back on the first carrier — the bytes the ring has
+    /// to be holding when the third carrier asks for them.
+    const SENT: &[u8] = b"HELLO-WORLD!";
+    /// What the client admits to having observed, split so the replayed suffix
+    /// is neither empty nor the whole thing.
+    const ACKED: u64 = 5;
+    const UNACKED: &[u8] = b"-WORLD!";
+
+    let (target_addr, target_accepts) = spawn_echo_target().await?;
+    let (server, user) = spawn_ss_resumption_server(|config| {
+        config.session_resumption.downlink_buffer_bytes = 64 * 1024;
+    })
+    .await?;
+
+    // Carrier #1: negotiates v1+v2, so the session gets a ring, and drives
+    // enough traffic that the ring holds something worth replaying.
+    let (mut socket, first) =
+        super::connect_ws_h1_symmetric_replay(server.listen_addr, "/tcp", None, 0).await?;
+    let session_id = first
+        .issued_session_id
+        .ok_or_else(|| anyhow::anyhow!("a resume-capable dial must be issued a session id"))?;
+    assert!(
+        first.symmetric_replay_confirmed,
+        "without a v2 negotiation on the first carrier there is no ring at all: {first:?}",
+    );
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, SENT)?))
+        .await?;
+    let echoed = super::read_ss_plaintext(&mut socket, &user, SENT.len()).await?;
+    assert_eq!(echoed.as_slice(), SENT, "the first carrier must reach the target");
+    socket.close(None).await?;
+    drop(socket);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Carrier #2: the wire-handover shape — presents the id, advertises neither
+    // v1 nor v2. It resumes the same upstream and parks it again.
+    let (mut socket2, second_id, _) =
+        super::connect_ws_h1_ack_prefix(server.listen_addr, "/tcp", Some(session_id), true, false)
+            .await?;
+    let session_id = second_id
+        .ok_or_else(|| anyhow::anyhow!("the resume hit must mint the next carrier's id"))?;
+    socket2
+        .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, b"")?))
+        .await?;
+    socket2.close(None).await?;
+    drop(socket2);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Carrier #3: asks for the replay the session has owed it since carrier #1.
+    let (mut socket3, third) =
+        super::connect_ws_h1_symmetric_replay(server.listen_addr, "/tcp", Some(session_id), ACKED)
+            .await?;
+    assert!(third.symmetric_replay_confirmed, "the server has v2 enabled: {third:?}");
+    socket3
+        .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, b"")?))
+        .await?;
+
+    // The `no_ring` counter is asserted before the wire read: a park with no
+    // ring answers `REPLAY_TRUNCATED` + `replay_len = 0`, so reading the suffix
+    // first would report the failure as a bare timeout instead of naming it.
+    let headers_len = FRAME_LEN_V1 + downlink_replay::FRAME_HEADER_LEN_V1;
+    let want = headers_len + UNACKED.len();
+    // The counter is written where the frame is emitted, so give the resume path
+    // the same settling window the parks above get.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let rendered = server.metrics.render_prometheus();
+    assert_eq!(
+        sum_metric(&rendered, |line| {
+            line.starts_with("outline_ss_orphan_downlink_replay_truncated_total")
+                && line.contains(r#"reason="no_ring""#)
+        }),
+        0,
+        "the ring belongs to the session, so a v1-only hop must leave it intact; a `no_ring` \
+         answer here means the carrier that did not ask for v2 dropped it. /metrics:\n{rendered}",
+    );
+
+    let stream = super::read_ss_plaintext(&mut socket3, &user, want).await?;
+    match downlink_replay::parse_v1(&stream[FRAME_LEN_V1..headers_len]) {
+        downlink_replay::ParseResult::Valid { flags, replay_len } => {
+            assert_eq!(flags & downlink_replay::FLAG_REPLAY_TRUNCATED, 0, "nothing is truncated");
+            assert_eq!(replay_len, UNACKED.len() as u64, "replay must be the unacked suffix");
+        },
+        other => anyhow::bail!("expected a v2 ORDR frame after the v1 one, got {other:?}"),
+    }
+    assert_eq!(
+        &stream[headers_len..want],
+        UNACKED,
+        "replay must resume precisely at the acked offset: no gap, no duplicate",
+    );
+    assert_eq!(
+        target_accepts.load(Ordering::SeqCst),
+        1,
+        "all three carriers must have shared one upstream",
+    );
+
+    socket3.close(None).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn ss_resume_hit_skips_fresh_upstream() -> Result<()> {
     let (target_addr, target_accepts) = spawn_echo_target().await?;
