@@ -417,3 +417,31 @@ where
         other => bail!("expected encrypted binary reply, got {other:?}"),
     }
 }
+
+/// Reads `want` bytes of SS plaintext off a WS carrier, decrypting the AEAD
+/// stream as it arrives.
+///
+/// SS rides one continuous AEAD stream, so a resumed session's control frames
+/// and its replayed suffix may arrive in one WebSocket frame or several, and a
+/// real client decodes the stream rather than the framing. Returns as soon as
+/// `want` bytes are available, so a caller that also wants "and nothing more"
+/// asserts the length itself.
+async fn read_ss_plaintext<S>(
+    socket: &mut S,
+    user: &crate::crypto::UserKey,
+    want: usize,
+) -> Result<Vec<u8>>
+where
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let mut decryptor =
+        crate::crypto::AeadStreamDecryptor::new(Arc::from(vec![user.clone()].into_boxed_slice()));
+    let mut plaintext = Vec::new();
+    while plaintext.len() < want {
+        let frame = expect_binary_reply(socket).await?;
+        decryptor.feed_ciphertext(&frame);
+        decryptor.drain_plaintext(&mut plaintext)?;
+    }
+    Ok(plaintext)
+}
