@@ -28,6 +28,27 @@ impl<'a> StandbyCtx<'a> {
         }
     }
 
+    /// The resume negotiation this pool's dials carry.
+    ///
+    /// A pooled TCP carrier is handed to the next session that asks for one, so
+    /// it is a **new session's** first dial in every way that matters to the
+    /// server — including the one that decides whether the session gets a
+    /// downlink replay ring at all. Dialing it without the capabilities is why
+    /// most of the fleet's sessions had no ring: `warm_standby_acquire_total`
+    /// runs ~74% `hit`, and every one of those sessions answered its first
+    /// migration `REPLAY_TRUNCATED` with `reason="no_ring"`.
+    ///
+    /// The UDP pool keeps the plain shape: SS-UDP has no v1/v2 protocol to
+    /// negotiate — it neither emits the control frames nor keeps a ring — so
+    /// advertising there would claim a capability the datagram path does not
+    /// have.
+    fn pool_resume_options(&self) -> outline_transport::DialResumeOptions {
+        match self.transport {
+            TransportKind::Tcp => outline_transport::DialResumeOptions::new_session(),
+            TransportKind::Udp => outline_transport::DialResumeOptions::default(),
+        }
+    }
+
     /// Drains the pool, peeks each entry for liveness, and writes survivors
     /// back. Entries that slipped in as Http1 fallbacks under H2/H3 are
     /// evicted unconditionally (they each own a distinct TCP socket, so
@@ -169,6 +190,10 @@ impl<'a> StandbyCtx<'a> {
                         // VLESS-UDP (no pool) keeps working. Split-path uplinks are
                         // unaffected (`combined_ss_kind` is `None` regardless of leg).
                         .with_combined_ss_kind(self.uplink.combined_ss_kind(self.pool_ss_leg()))
+                        // A pooled TCP carrier becomes some session's first
+                        // carrier, so it dials as a new session would — the
+                        // advertisement is what gives that session a ring.
+                        .with_resume(self.pool_resume_options())
                         // A pooled SS-UDP stream is handed to a datagram
                         // session, so it must negotiate XHTTP record framing at
                         // dial time exactly like an on-demand
