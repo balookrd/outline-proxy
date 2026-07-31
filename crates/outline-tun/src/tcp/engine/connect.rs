@@ -202,7 +202,7 @@ async fn redial_tcp_uplink_for_migration_inner(
             .await?
     };
     let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
-    do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding).await
+    do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding, true).await
 }
 
 async fn connect_tcp_uplink(
@@ -256,7 +256,9 @@ async fn connect_tcp_uplink_inner(
     // retry with a fresh on-demand dial — without recording a runtime failure.
     if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
         let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
-        match do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding).await {
+        match do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding, false)
+            .await
+        {
             Ok(v) => return Ok(v),
             Err(e) => {
                 debug!(
@@ -270,7 +272,7 @@ async fn connect_tcp_uplink_inner(
 
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "tun_tcp").await?;
     let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
-    do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding).await
+    do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding, false).await
 }
 
 fn tun_tcp_binding(uplinks: &UplinkManager, uplink_name: &str) -> UplinkConnectionBinding {
@@ -283,6 +285,13 @@ async fn do_tcp_ss_setup(
     target: &TargetAddr,
     keepalive_interval: Option<std::time::Duration>,
     binding: UplinkConnectionBinding,
+    // Whether this dial presented a Session ID, i.e. whether a resume *hit* was
+    // even possible. The server echoes the capability whenever it understands
+    // it — including on a fresh dial, which now advertises so the downlink ring
+    // starts filling from byte 0 — but it emits the control frames only after a
+    // hit. Expecting a frame on a dial that could not hit would consume a prefix
+    // that was never sent and desynchronise the stream on its first byte.
+    resume_was_requested: bool,
 ) -> Result<(TcpWriter, TcpReader, Option<SessionId>)> {
     let shared_conn_info = ws_stream.shared_connection_info();
     let lifetime = UpstreamTransportGuard::new_with_uplink("tun_tcp", "tcp", binding);
@@ -311,8 +320,9 @@ async fn do_tcp_ss_setup(
     // migration redial (`redial_tcp_uplink_for_migration`) is the one that opts
     // in, and these two flags are how its reader knows to expect the frames.
     let issued_session_id = ws_stream.issued_session_id();
-    let expect_ack_prefix = ws_stream.ack_prefix_advertised_by_server();
-    let expect_downlink_replay = ws_stream.symmetric_replay_advertised_by_server();
+    let expect_ack_prefix = resume_was_requested && ws_stream.ack_prefix_advertised_by_server();
+    let expect_downlink_replay =
+        resume_was_requested && ws_stream.symmetric_replay_advertised_by_server();
 
     if uplink.transport == UplinkTransport::Vless {
         let uuid = uplink
