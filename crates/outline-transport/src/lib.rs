@@ -127,6 +127,7 @@ use tokio::net::TcpStream;
 // without taking a direct dependency on the inner module path.
 pub use resumption::{ResumeCache, SessionId, UdpResumeStore, global_resume_cache};
 
+mod carrier_loss;
 pub mod carrier_padding;
 mod carrier_queue;
 #[cfg(feature = "cert-check")]
@@ -227,6 +228,7 @@ pub use dns::resolve_host_with_preference;
 pub use dns_cache::{DEFAULT_DNS_CACHE_CAPACITY, DEFAULT_DNS_CACHE_TTL, DnsCache};
 
 // Entry points — connection constructors for TCP/UDP/HTTP-family transports.
+pub use carrier_loss::{CarrierLossProbe, CarrierLossSample};
 pub use dial_plan::{
     DialNetworkOptions, DialResumeOptions, TransportDialOptions, connect_transport,
 };
