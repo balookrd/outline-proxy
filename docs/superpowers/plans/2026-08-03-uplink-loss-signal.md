@@ -838,6 +838,29 @@ async fn the_same_carrier_registered_twice_is_counted_once() {
     assert_eq!(registry.len(), 1, "one carrier occupies one registry slot");
 }
 
+/// A dead entry must not squat on its identity. A registration that matches a
+/// dead entry replaces it, so the slot is free the moment a new carrier
+/// inherits a dead one's address.
+///
+/// The identity collision this guards against cannot be staged from this
+/// crate — identity is derived inside `outline-transport` from the socket's
+/// 4-tuple and cannot be forged from here without a test-only escape hatch in
+/// that crate, which is not worth adding. Registering a dead carrier's own
+/// clone reaches the same branch: it is the identity-matches-a-dead-entry
+/// path, which is the branch under test.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_registration_matching_a_dead_entry_replaces_it() {
+    let mut registry = CarrierLossRegistry::default();
+    let dead = crate::loss::tests_support::dead_probe().await;
+    let twin = dead.try_clone().expect("a second handle on the dead carrier");
+
+    registry.register(crate::types::TransportKind::Tcp, 0, dead);
+    registry.register(crate::types::TransportKind::Tcp, 0, twin);
+
+    assert_eq!(registry.len(), 1, "the corpse is replaced, never duplicated");
+}
+
 /// The registry is bounded: a busy uplink dials constantly, and every dial
 /// registers a distinct carrier. Oldest entries are dropped, newest kept.
 #[cfg(target_os = "linux")]
@@ -1033,18 +1056,29 @@ impl CarrierLossRegistry {
     /// File a probe under the wire that dialed it, evicting the oldest entry
     /// for that wire once the bound is reached.
     ///
-    /// A carrier already registered under this (transport, wire) is dropped on
-    /// the floor: one shared H2/H3 connection is handed to many sessions, and
-    /// counting its counters once per session would inflate the observed
-    /// volume the minimum-volume threshold is measured against.
+    /// A live carrier already registered under this (transport, wire) is
+    /// dropped on the floor: one shared H2/H3 connection is handed to many
+    /// sessions, and counting its counters once per session would inflate the
+    /// observed volume the minimum-volume threshold is measured against.
+    ///
+    /// A *dead* entry with the same identity is replaced instead. A TCP
+    /// identity is the connection's 4-tuple, and the kernel hands the same
+    /// ephemeral port out again once a socket is gone — so an identity match
+    /// against a dead entry means a new carrier inherited a dead one's
+    /// address, not a duplicate registration. Ignoring it would leave the live
+    /// carrier unobserved until the sampling tick happened to evict the
+    /// corpse.
     pub(crate) fn register(&mut self, transport: TransportKind, wire: u8, probe: CarrierLossProbe) {
         let identity = probe.identity();
-        if self
+        if let Some(pos) = self
             .entries
             .iter()
-            .any(|e| e.transport == transport && e.wire == wire && e.identity == identity)
+            .position(|e| e.transport == transport && e.wire == wire && e.identity == identity)
         {
-            return;
+            if self.entries[pos].probe.sample().is_some_and(|s| s.alive) {
+                return;
+            }
+            self.entries.remove(pos);
         }
         let count = self
             .entries
