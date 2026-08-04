@@ -355,10 +355,11 @@ impl SharedConnectionHealth for SharedH2Connection {
     }
 
     fn loss_probe(&self) -> Option<crate::CarrierLossProbe> {
-        // The shared connection outlives every stream on it, so handing out a
-        // second probe would duplicate one carrier's counters across sessions.
-        // Sampling is idempotent, so the manager de-duplicates by probe id at
-        // registration instead of cloning the fd here.
+        // The shared connection outlives every stream on it, so every session
+        // riding it gets its own clone here. `CarrierLossProbe::identity()`
+        // is what keeps that from double-counting the wire: two clones of
+        // this connection's probe report the same identity, so the registry
+        // that aggregates probes per wire can recognise and de-duplicate them.
         self.loss_probe.as_ref().and_then(|probe| probe.try_clone())
     }
 }
