@@ -546,11 +546,25 @@ impl UplinkManager {
     ///   `Global` scope — bootstrap-admitted via `fallback_bootstrap_allowed`;
     ///   see the caveat below), of equal-or-higher weight (operator priority
     ///   still stands), has `probe.min_failures` consecutive probe
-    ///   successes, and is itself at or below the threshold. A candidate
-    ///   with **no** loss verdict at all counts as clean: absence means "not
-    ///   measured", never "no loss" and never "measured lossy" — refusing to
-    ///   switch to an unmeasured candidate would strand the gateway on the
-    ///   lossy path for no reason.
+    ///   successes, and is itself at or below the threshold **on a fresh
+    ///   reading** ([`crate::manager::status::TransportSelectionView::loss_ratio_fresh`],
+    ///   the same [`crate::manager::status::PerTransportStatus::loss_is_fresh`]
+    ///   test [`Self::loss_elevated_since`]'s update above uses for the
+    ///   active). A candidate with **no** loss verdict at all counts as
+    ///   clean: absence means "not measured", never "no loss" and never
+    ///   "measured lossy" — refusing to switch to an unmeasured candidate
+    ///   would strand the gateway on the lossy path for no reason. A
+    ///   candidate that *does* have a verdict but it has gone stale — a
+    ///   warm-standby wire pinged too lightly, too rarely to ever clear
+    ///   `loss_sample_min_packets` and re-confirm the number, so it neither
+    ///   ages out to "unmeasured" nor keeps being re-measured — is **not**
+    ///   treated as clean even when the frozen ratio itself reads low: a
+    ///   reading nobody has reconfirmed is not proof the candidate is
+    ///   currently clean, only proof it *once* was. This is the mirror of
+    ///   what freshness already means for the active side: there, a stale
+    ///   ratio must not count as still-elevated evidence; here, it must not
+    ///   count as still-clean evidence. Both readings say "trust only
+    ///   confirmed information", just applied to opposite outcomes.
     ///
     /// The `consecutive_successes >= min_streak` clause is load-bearing, not
     /// cosmetic — it is what `carrier_degraded_switch_target` already
@@ -606,10 +620,17 @@ impl UplinkManager {
                 && c.healthy
                 && self.inner.uplinks[c.index].weight >= active_weight
                 && c.status.of(gate_transport).consecutive_successes >= min_streak
-                && c.status
-                    .of(gate_transport)
-                    .loss_ratio
-                    .is_none_or(|ratio| ratio <= ratio_threshold)
+                && {
+                    let transport = c.status.of(gate_transport);
+                    // `None` (never measured) counts as clean. `Some` only
+                    // counts as clean when it is a *fresh* reading at or
+                    // below the threshold — a stale ratio, however low the
+                    // frozen number, is not evidence the candidate is
+                    // currently clean; see this method's doc.
+                    transport
+                        .loss_ratio
+                        .is_none_or(|ratio| transport.loss_ratio_fresh && ratio <= ratio_threshold)
+                }
         })
     }
 
@@ -647,7 +668,7 @@ impl UplinkManager {
                 // fields (`last_any_wire_success`, `descent_window_*` gating
                 // beyond latency) the view does not carry.
                 let (healthy, score, status) = self.inner.with_status(index, |status| {
-                    let view = status.selection_view(&self.inner.load_balancing);
+                    let view = status.selection_view(&self.inner.load_balancing, now);
                     (
                         selection_health(
                             status,

@@ -65,7 +65,7 @@ fn selection_view_scores_identically_to_the_full_status() {
     let now = Instant::now();
     let config = lb();
     let status = loaded_status(now);
-    let view = status.selection_view(&config);
+    let view = status.selection_view(&config, now);
 
     for transport in [TransportKind::Tcp, TransportKind::Udp] {
         assert_eq!(
@@ -117,7 +117,7 @@ fn selection_view_scores_identically_to_the_full_status() {
 fn selection_view_carries_the_strict_mode_gate_fields() {
     let now = Instant::now();
     let status = loaded_status(now);
-    let view = status.selection_view(&lb());
+    let view = status.selection_view(&lb(), now);
 
     assert_eq!(view.tcp.healthy, status.tcp.healthy);
     assert_eq!(view.udp.healthy, status.udp.healthy);
@@ -132,7 +132,7 @@ fn selection_view_carries_the_strict_mode_gate_fields() {
 #[test]
 fn selection_view_base_latency_follows_the_active_wire() {
     let now = Instant::now();
-    let view = loaded_status(now).selection_view(&lb());
+    let view = loaded_status(now).selection_view(&lb(), now);
 
     assert_eq!(view.tcp.base_latency, Some(Duration::from_millis(90)));
     assert_eq!(view.udp.base_latency, Some(Duration::from_millis(50)));

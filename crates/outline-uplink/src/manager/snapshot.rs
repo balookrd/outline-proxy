@@ -298,7 +298,7 @@ impl UplinkManager {
             // `status` — otherwise the published score would not explain the
             // uplink selection actually picked once `loss_latency_penalty_k`
             // is non-zero.
-            let view = status.selection_view(&self.inner.load_balancing);
+            let view = status.selection_view(&self.inner.load_balancing, now);
             let tcp_effective_latency =
                 effective_latency(&view, TransportKind::Tcp, now, &self.inner.load_balancing);
             let udp_effective_latency =

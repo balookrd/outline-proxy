@@ -1019,6 +1019,24 @@ pub struct LoadBalancingConfig {
     pub reselect_interval: Option<Duration>,
 }
 
+impl LoadBalancingConfig {
+    /// How long a qualifying carrier-loss measurement may go unconfirmed
+    /// before it is treated as unmeasured rather than still-current
+    /// evidence: `3 × loss_sample_interval`, mirroring
+    /// [`crate::loss::MAX_IDLE_TICKS`] (the bound the carrier-loss registry
+    /// itself uses before evicting an idle probe). Shared by
+    /// `UplinkManager::sample_carrier_loss_once` (freshness for the
+    /// *active* uplink's own episode,
+    /// [`crate::manager::status::PerTransportStatus::update_loss_elevated_since`])
+    /// and [`crate::manager::status::PerTransportStatus::selection_view`]
+    /// (freshness for every *candidate's* ratio, consumed by
+    /// `UplinkManager::loss_failover_switch_target`) — one definition, so
+    /// the two sides of the freshness check can never drift apart.
+    pub(crate) fn loss_max_staleness(&self) -> Duration {
+        self.loss_sample_interval.saturating_mul(3)
+    }
+}
+
 /// Policy for the `tcp_mid_session_retry_overflow_policy` knob.
 /// See the field docs on [`LoadBalancingConfig`] for semantics.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Default)]
