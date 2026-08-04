@@ -97,12 +97,10 @@ impl UplinkManager {
         let min_packets = self.inner.load_balancing.loss_sample_min_packets;
         let alpha = self.inner.load_balancing.loss_ewma_alpha;
         let loss_failover_ratio = self.inner.load_balancing.loss_failover_ratio;
-        // How long a qualifying loss measurement may go unconfirmed before
-        // it is treated as unmeasured rather than still-current evidence —
-        // 3 sampling ticks, mirroring `MAX_IDLE_TICKS` (the bound the
-        // registry itself uses before evicting an idle carrier probe). See
-        // `PerTransportStatus::loss_last_qualifying_at`.
-        let max_staleness = self.inner.load_balancing.loss_sample_interval.saturating_mul(3);
+        // See `LoadBalancingConfig::loss_max_staleness` for what this bounds
+        // and why the active-episode and candidate-filter freshness checks
+        // share one definition of it.
+        let max_staleness = self.inner.load_balancing.loss_max_staleness();
         let now = Instant::now();
         for index in 0..self.inner.uplinks.len() {
             let Some(slot) = self.inner.carrier_loss.get(index) else {

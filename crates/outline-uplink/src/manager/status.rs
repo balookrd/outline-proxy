@@ -286,14 +286,17 @@ impl UplinkStatus {
 
     /// `Copy` projection of the fields the selection path reads *after* it has
     /// released the status lock — see [`SelectionView`]. `config` supplies the
-    /// carrier-loss latency-penalty knobs that fold into `base_latency`.
+    /// carrier-loss latency-penalty knobs that fold into `base_latency`, and
+    /// `now` is what [`TransportSelectionView::loss_ratio_fresh`] is
+    /// evaluated against.
     pub(crate) fn selection_view(
         &self,
         config: &crate::config::LoadBalancingConfig,
+        now: Instant,
     ) -> SelectionView {
         SelectionView {
-            tcp: self.tcp.selection_view(config),
-            udp: self.udp.selection_view(config),
+            tcp: self.tcp.selection_view(config, now),
+            udp: self.udp.selection_view(config, now),
         }
     }
 }
@@ -323,6 +326,17 @@ pub(crate) struct TransportSelectionView {
     /// re-locking its status. `None` means "not measured" — never "no
     /// loss" — see [`crate::loss::LossEwma::ratio`].
     pub(crate) loss_ratio: Option<f64>,
+    /// Whether [`Self::loss_ratio`] is still fresh —
+    /// [`PerTransportStatus::loss_is_fresh`], evaluated at the same instant
+    /// `loss_ratio` was read. Meaningless when `loss_ratio` is `None` (an
+    /// unmeasured candidate has nothing to be fresh or stale *about*, and
+    /// stays clean by the separate absence rule); when `loss_ratio` is
+    /// `Some`, `UplinkManager::loss_failover_switch_target` must not trust
+    /// that number as proof of a currently-clean candidate unless this is
+    /// `true` — a frozen reading from a warm-standby wire idling below the
+    /// sampling volume floor is not evidence either way, and treating its
+    /// stale ratio as clean is exactly the defect this field closes.
+    pub(crate) loss_ratio_fresh: bool,
 }
 
 /// Everything the scoring / gating layer reads off an [`UplinkStatus`], as a
@@ -425,10 +439,13 @@ impl StatusView for UplinkStatus {
 impl PerTransportStatus {
     /// `Copy` projection of this transport's selection-relevant fields.
     /// `config` resolves `base_latency` through [`Self::base_latency_with`]
-    /// so the projection carries the loss-inflated value, not the raw one.
+    /// so the projection carries the loss-inflated value, not the raw one;
+    /// `now`, paired with `config`'s [`crate::config::LoadBalancingConfig::loss_max_staleness`],
+    /// resolves `loss_ratio_fresh`.
     pub(crate) fn selection_view(
         &self,
         config: &crate::config::LoadBalancingConfig,
+        now: Instant,
     ) -> TransportSelectionView {
         TransportSelectionView {
             healthy: self.healthy,
@@ -440,6 +457,7 @@ impl PerTransportStatus {
             base_latency: self.base_latency_with(config),
             loss_elevated_since: self.loss_elevated_since,
             loss_ratio: self.active_wire_loss().ratio(),
+            loss_ratio_fresh: self.loss_is_fresh(config.loss_max_staleness(), now),
         }
     }
 
@@ -543,17 +561,40 @@ impl PerTransportStatus {
             self.loss_elevated_since = None;
             return;
         }
-        let active_wire = self.active_wire;
-        let fresh = self.loss_last_qualifying_at.is_some_and(|(wire, t)| {
-            wire == active_wire && now.saturating_duration_since(t) <= max_staleness
-        });
-        let elevated =
-            fresh && self.active_wire_loss().ratio().is_some_and(|ratio| ratio > threshold);
+        let elevated = self.loss_is_fresh(max_staleness, now)
+            && self.active_wire_loss().ratio().is_some_and(|ratio| ratio > threshold);
         self.loss_elevated_since = if elevated {
             self.loss_elevated_since.or(Some(now))
         } else {
             None
         };
+    }
+
+    /// Whether [`Self::loss_last_qualifying_at`] still vouches for
+    /// [`Self::active_wire_loss`]'s ratio: the stamp must name the wire
+    /// currently active (a wire flip must not let a stale measurement of a
+    /// *different* wire validate the new active wire's ratio) and be within
+    /// `max_staleness` of `now` (a qualifying window this old is no longer
+    /// trustworthy evidence of the *current* state — see
+    /// [`Self::loss_last_qualifying_at`]'s doc for the warm-standby scenario
+    /// this exists to catch).
+    ///
+    /// Shared by two callers that both need this same yes/no, for opposite
+    /// reasons: [`Self::update_loss_elevated_since`] uses it to decide
+    /// whether the *active* uplink's own ratio may still be trusted as
+    /// evidence of ongoing loss (a stale reading must not keep an episode
+    /// running, nor start a new one); `UplinkManager::loss_failover_switch_target`
+    /// (via [`Self::selection_view`]) uses it to decide whether a
+    /// *candidate's* ratio may be trusted as evidence the candidate is
+    /// currently clean (a stale reading — however low the frozen number —
+    /// must not wave a not-recently-confirmed candidate onto the leg; only
+    /// a genuinely unmeasured candidate, which carries no number to
+    /// mistrust, keeps the separate "absence is not evidence of loss" rule).
+    pub(crate) fn loss_is_fresh(&self, max_staleness: Duration, now: Instant) -> bool {
+        let active_wire = self.active_wire;
+        self.loss_last_qualifying_at.is_some_and(|(wire, t)| {
+            wire == active_wire && now.saturating_duration_since(t) <= max_staleness
+        })
     }
 
     /// The latency this transport is ranked by, paired with the loss slot
@@ -612,6 +653,25 @@ impl PerTransportStatus {
     /// on this type stays the config-free raw value (no loss applied) for
     /// callers that rank a single status against itself without a config in
     /// hand.
+    ///
+    /// Deliberately **not** gated on [`Self::loss_is_fresh`], unlike
+    /// [`Self::selection_view`]'s `loss_ratio_fresh` (consumed by
+    /// `UplinkManager::loss_failover_switch_target`) and
+    /// [`Self::update_loss_elevated_since`]. Both of those decide whether a
+    /// *stale* reading may be trusted as **good** news — evidence an active
+    /// or candidate uplink is not currently lossy — and staleness must not
+    /// vouch for that; the risk is a warm-standby wire's ratio going stale
+    /// and being silently read as "confirmed clean" the moment nobody has
+    /// re-measured it, which is exactly backwards from what a freshness gate
+    /// is for. Ranking has the opposite risk profile: gating this multiplier
+    /// on freshness would make a stale ratio "expire" back to `1.0` (no
+    /// penalty), which is trusting staleness as good news in the *other*
+    /// place it must not be trusted — a lossy uplink deselected minutes ago
+    /// would have its rank penalty silently vanish once its warm-standby
+    /// traffic falls quiet, before anything has re-confirmed it improved.
+    /// Leaving the multiplier on a frozen ratio keeps ranking conservative in
+    /// the same direction the candidate filter is conservative in: neither
+    /// treats "nobody has re-checked recently" as proof of recovery.
     pub(crate) fn base_latency_with(
         &self,
         config: &crate::config::LoadBalancingConfig,
