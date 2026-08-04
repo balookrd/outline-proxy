@@ -116,7 +116,7 @@ pub(super) async fn connect_xhttp_h3(
             anyhow::Error::new(TransportOperation::DnsResolveNoAddresses { host: host.clone() })
         })?;
 
-        let send_request = h3_handshake(server_addr, &host, fwmark).await?;
+        let (send_request, loss_probe) = h3_handshake(server_addr, &host, fwmark).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
         let authority = if port == 443 {
@@ -252,6 +252,7 @@ pub(super) async fn connect_xhttp_h3(
                 active_submode,
                 true,
                 udp_records,
+                loss_probe,
             ),
             issued_session_id,
             ack_prefix_echo,
@@ -281,7 +282,7 @@ async fn h3_handshake(
     server_addr: SocketAddr,
     host: &str,
     fwmark: Option<u32>,
-) -> Result<SendRequest<h3_quinn::OpenStreams, Bytes>> {
+) -> Result<(SendRequest<h3_quinn::OpenStreams, Bytes>, Option<crate::CarrierLossProbe>)> {
     let endpoint = dial_endpoint(crate::bind_addr_for(server_addr), fwmark)?;
 
     let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
@@ -301,6 +302,11 @@ async fn h3_handshake(
     let connection = connecting
         .await
         .with_context(|| format!("xhttp/h3 QUIC handshake failed for {server_addr}"))?;
+    // Captured before `connection` moves into `h3_quinn::Connection::new`
+    // below — cloning a `quinn::Connection` is cheap (it is `Arc`-backed), so
+    // this costs nothing on the hot dial path.
+    #[cfg(feature = "h3")]
+    let loss_probe = Some(crate::CarrierLossProbe::Quic(connection.clone()));
     let (mut driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection))
         .await
         .context("xhttp/h3 HTTP/3 handshake failed")?;
@@ -327,7 +333,7 @@ async fn h3_handshake(
         let close = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
         debug!(?close, "xhttp/h3 driver closed");
     });
-    Ok(send_request)
+    Ok((send_request, loss_probe))
 }
 
 /// Synchronously opens the long-lived h3 GET, awaits response

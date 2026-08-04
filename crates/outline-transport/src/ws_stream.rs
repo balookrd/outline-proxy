@@ -29,12 +29,8 @@ pub(crate) trait SharedConnectionHealth: Send + Sync {
     /// surrender them. Defaults to `None` so an implementation that predates
     /// loss measurement keeps compiling and simply contributes no signal.
     ///
-    /// Not yet called through this trait object: `TransportStream::loss_probe`
-    /// reaches `SharedH3Connection` directly rather than dispatching through
-    /// `dyn SharedConnectionHealth`, and H2/XHTTP hard-code `None` until they
-    /// grow their own probes. The default earns its keep once a caller does
-    /// dispatch generically over `Conn: SharedConnectionHealth`.
-    #[allow(dead_code)]
+    /// `SharedH2Connection` overrides this (see `h2/shared.rs`); reached via
+    /// `H2WsStream::loss_probe` from `TransportStream::loss_probe`'s `H2` arm.
     fn loss_probe(&self) -> Option<crate::CarrierLossProbe> {
         None
     }
@@ -274,7 +270,10 @@ impl TransportStream {
             TransportStream::H3 { inner, .. } => inner.loss_probe(),
             #[cfg(not(feature = "h3"))]
             TransportStream::H3 { .. } => None,
-            TransportStream::H2 { .. } | TransportStream::Xhttp { .. } => None,
+            TransportStream::H2 { inner, .. } => inner.loss_probe(),
+            TransportStream::Xhttp { inner, .. } => {
+                inner.loss_probe().and_then(|probe| probe.try_clone())
+            },
         }
     }
 

@@ -69,3 +69,21 @@ async fn http1_transport_stream_yields_a_tcp_probe() {
     let sample = probe.sample().expect("probe reads the live socket");
     assert!(sample.alive);
 }
+
+/// A probe captured at dial time survives being handed through the carrier
+/// constructor — the XHTTP stream keeps only channels, so if the field were
+/// dropped the signal would silently vanish for every xhttp uplink.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn xhttp_stream_keeps_the_probe_captured_at_dial_time() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let _server = listener.accept().await.unwrap();
+
+    let probe = crate::CarrierLossProbe::from_tcp_stream(&client).unwrap();
+    let stream = crate::xhttp::XhttpStream::for_loss_probe_test(Some(probe));
+
+    let sample = stream.loss_probe().expect("captured probe").sample().unwrap();
+    assert!(sample.alive);
+}

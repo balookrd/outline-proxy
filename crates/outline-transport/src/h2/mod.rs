@@ -51,6 +51,10 @@ impl H2WsStream {
     pub(super) fn shared_connection_info(&self) -> (u64, &'static str) {
         (self._shared_connection.conn_id(), self._shared_connection.mode())
     }
+
+    pub(super) fn loss_probe(&self) -> Option<crate::CarrierLossProbe> {
+        self._shared_connection.loss_probe()
+    }
 }
 
 impl Stream for H2WsStream {
