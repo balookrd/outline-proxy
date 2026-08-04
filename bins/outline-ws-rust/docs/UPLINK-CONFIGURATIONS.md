@@ -583,7 +583,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `rtt_ewma_alpha`                     | `0.3`              | (0,1] | smoothing factor for the per-uplink RTT EWMA used in selection scoring                            |
 | `loss_latency_penalty_k`             | `0.0`              | ≥0    | strength of carrier-loss latency inflation (`latency × (1 + k · loss)`); `0.0` measures without acting — selection is unchanged. See "Carrier loss in uplink selection" below |
 | `loss_latency_inflation_max`         | `4.0`              | [1,100] | ceiling on that multiplier — bounds how far one bad sampling window can push an uplink down the ranking |
-| `loss_sample_interval_secs`          | `10`               | s     | sampling grid for the carrier-loss counters, independent of `probe.interval`                      |
+| `loss_sample_interval_secs`          | `10`               | s     | sampling grid for the carrier-loss counters, independent of `probe.interval`; `0` disables sampling entirely (carriers still register probes, nothing ever differences them) |
 | `loss_sample_min_packets`            | `200`              | int   | minimum packets a wire must send within one sampling window for that window's loss ratio to count |
 | `loss_ewma_alpha`                    | `0.2`              | (0,1] | smoothing factor for the per-wire carrier-loss EWMA                                               |
 | `failure_penalty_ms`                 | `500`              | ms    | initial RTT penalty added on a fresh runtime failure                                              |
@@ -1048,7 +1048,11 @@ each default):
 - `loss_latency_penalty_k` (default `0.0`) — strength of the inflation.
 - `loss_latency_inflation_max` (default `4.0`, valid range `[1.0,
   100.0]`) — ceiling on the multiplier.
-- `loss_sample_interval_secs` (default `10`) — the sampling grid.
+- `loss_sample_interval_secs` (default `10`) — the sampling grid. `0` is a
+  documented off switch: `spawn_loss_sampler_loop` never spawns the
+  timer, so carriers still register probes but nothing ever
+  differences them into a verdict — a way to ship the probe wiring
+  without paying for the sampling loop, e.g. while staging the feature.
 - `loss_sample_min_packets` (default `200`) — minimum volume per window.
 - `loss_ewma_alpha` (default `0.2`) — smoothing for the per-wire EWMA.
 

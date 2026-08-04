@@ -277,7 +277,20 @@ impl CarrierLossRegistry {
     }
 }
 
-#[cfg(test)]
+// `target_os = "linux"` rather than the `#[cfg_attr(..., allow(dead_code))]`
+// pattern used elsewhere in this file: every helper here calls
+// `CarrierLossProbe::from_tcp_stream`, which is `Some` only on Linux (see
+// `carrier_loss.rs`) — on any other platform `live_pair`'s `.expect(...)`
+// would be reachable only via a `None` that can never actually occur
+// (`CarrierLossProbe` has no variants to construct there at all), which
+// `rustc` resolves by treating the read of `server: TcpStream` and
+// `probe: CarrierLossProbe` right before it as dead — an `unused_variables`
+// warning under `-D warnings` on a plain, non-workspace `cargo check
+// -p outline-uplink` on a non-Linux host, where feature unification does not
+// pull in `outline-transport`'s QUIC variant either. Gating the whole module
+// out on non-Linux removes the code these warnings would otherwise fire on,
+// rather than silencing them after the fact.
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) mod tests_support {
     use outline_transport::CarrierLossProbe;
 
@@ -297,9 +310,6 @@ pub(crate) mod tests_support {
     /// A probe whose carrier is already gone. The FIN exchange is
     /// asynchronous, so poll until the socket leaves ESTABLISHED rather than
     /// sleeping a guessed interval.
-    // Only called by the Linux-gated registry tests below; on a non-Linux
-    // dev host those tests compile out and this helper goes unused.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) async fn dead_probe() -> CarrierLossProbe {
         let (probe, client, server) = live_pair().await;
         drop(server);
@@ -317,10 +327,6 @@ pub(crate) mod tests_support {
     /// `tcpi_segs_out` has certainly advanced, for tests that assert on
     /// observed volume. Both sockets come back with it: the caller must keep
     /// them bound for as long as the probe is expected to read a live carrier.
-    // Only called by the Linux-gated sampler test in
-    // `manager::loss_sampler::tests`; on a non-Linux dev host that test
-    // compiles out and this helper goes unused, same as `dead_probe` above.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) async fn live_probe_with_traffic()
     -> (CarrierLossProbe, tokio::net::TcpStream, tokio::net::TcpStream) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

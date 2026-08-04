@@ -291,6 +291,19 @@ fn loss_signal_defaults_to_observation_only() {
     assert_eq!(lb.loss_sample_min_packets, 200);
 }
 
+/// `loss_sample_interval_secs = 0` is a documented off switch, not a typo to
+/// reject: `UplinkManager::spawn_loss_sampler_loop` checks `is_zero()` and
+/// never spawns the sampling timer, so probes still register and the
+/// registry still tracks them, but nothing differences the counters or
+/// publishes a verdict. See `UPLINK-CONFIGURATIONS.md`.
+#[test]
+fn loss_sample_interval_zero_is_accepted_as_the_off_switch() {
+    let lb = load_balancing(
+        &parse_config("[outline.load_balancing]\nloss_sample_interval_secs = 0").unwrap(),
+    );
+    assert_eq!(lb.loss_sample_interval, Duration::ZERO);
+}
+
 /// A negative coefficient would reward loss; reject it at load time rather
 /// than discovering it as an inverted ranking in production.
 #[test]

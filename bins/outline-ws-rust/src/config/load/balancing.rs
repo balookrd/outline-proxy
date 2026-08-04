@@ -73,6 +73,13 @@ pub(crate) fn load_balancing_config(
         rtt_ewma_alpha,
         loss_latency_penalty_k,
         loss_latency_inflation_max,
+        // Default: 10 s. `0` is the sampling loop's own off switch —
+        // `UplinkManager::spawn_loss_sampler_loop` checks `interval.is_zero()`
+        // and never spawns the loop at all, rather than spawning one that
+        // busy-loops on a zero sleep. Documented (not rejected) because it is
+        // a legitimate way to ship the carrier-loss probes (registration,
+        // metrics wiring) without paying for the sampling timer, e.g. while
+        // staging the feature.
         loss_sample_interval: Duration::from_secs(
             lb.and_then(|l| l.loss_sample_interval_secs).unwrap_or(10),
         ),
