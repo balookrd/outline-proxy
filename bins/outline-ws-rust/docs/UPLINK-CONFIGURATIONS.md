@@ -1187,24 +1187,41 @@ maintained and `loss_failover_ratio` / `loss_failover_secs` stay silently
 inert regardless of their own values. If you set either knob, keep
 `loss_sample_interval_secs` at its default (`10`) or another nonzero value.
 
+**Requires probing to be on, too.** The candidate stability bar below
+(`probe.min_failures` consecutive successes) is counted purely from probe
+outcomes. With probing disabled for a group (no `[probe.ws]` /
+`[probe.http]` / `[probe.dns]` / `[probe.tcp]` / `[probe.tls]` configured),
+`consecutive_successes` never leaves `0`, so no candidate can ever clear
+the streak bar and the loss-driven failover can never fire — whatever
+`loss_failover_ratio` / `loss_failover_secs` say. Inherited from
+`carrier_degraded_failover_secs`, which has the same requirement for the
+same reason.
+
 **How it decides.** On every carrier-loss sampling tick
 (`loss_sample_interval_secs`), the manager reassesses the strict active
 uplink's active-wire loss ratio against `loss_failover_ratio` and
 maintains a continuous "elevated since" timestamp for it: a tick whose
 ratio is strictly above the threshold starts (or extends) the episode; a
-tick at or below it clears the episode outright. A ratio is only trusted
-while it is *fresh* — the wire's last *qualifying* measurement (one that
-met `loss_sample_min_packets`) must be within roughly 3 sampling ticks.
-Without this, a wire that measured high loss once and then only carries
-light traffic under the volume floor (sparse keepalives, an overnight
-lull) would keep reading its last, no-longer-current ratio as ongoing
-evidence indefinitely — the episode would "age" on a measurement that
-stopped being observed, and the actual duration of loss the operator
-configured would stop meaning what it says. A stale or entirely absent
-ratio (e.g. `loss_sample_min_packets` has never been reached) clears the
-episode the same as a clean tick does. Once the episode has run
-**continuously** for at least `loss_failover_secs`, the active yields to a
-candidate that is:
+tick at or below it clears the episode. That ratio is the same
+`loss_ewma_alpha`-smoothed value the rest of this feature scores by, not
+the raw per-window ratio — so it does not instantly reflect a path that
+just went clean. With the default `loss_ewma_alpha = 0.2`, decaying a
+smoothed `0.9` back under a `0.05` threshold takes on the order of a
+dozen-plus consecutive *qualifying* clean windows, not one; until the
+smoothed ratio itself crosses back under the threshold, every tick still
+reads "elevated" and the episode keeps aging even though the path has
+already recovered. A tick is only reassessed on a *fresh* ratio — the
+wire's last *qualifying* measurement (one that met `loss_sample_min_packets`)
+must be within roughly 3 sampling ticks. Without this, a wire that measured
+high loss once and then only carries light traffic under the volume floor
+(sparse keepalives, an overnight lull) would keep reading its last,
+no-longer-current ratio as ongoing evidence indefinitely — the episode
+would "age" on a measurement that stopped being observed, and the actual
+duration of loss the operator configured would stop meaning what it says.
+A stale or entirely absent ratio (e.g. `loss_sample_min_packets` has never
+been reached) clears the episode the same as a smoothed-clean tick does.
+Once the episode has run **continuously** for at least `loss_failover_secs`,
+the active yields to a candidate that is:
 
 - probe-healthy, of equal-or-higher weight (operator priority still stands
   — this is a failover, not a failback), and has `probe.min_failures`

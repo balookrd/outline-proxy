@@ -68,7 +68,7 @@ fn update_loss_elevated_since_sets_above_and_not_at_the_threshold() {
     let now = Instant::now();
 
     status.record_wire_loss_window(0, 1_000, 500, 1, 1.0); // exactly 50%
-    status.loss_last_qualifying_at = Some(now);
+    status.loss_last_qualifying_at = Some((0, now));
     status.update_loss_elevated_since(0.5, now, MAX_STALENESS);
     assert_eq!(
         status.loss_elevated_since, None,
@@ -76,7 +76,7 @@ fn update_loss_elevated_since_sets_above_and_not_at_the_threshold() {
     );
 
     status.record_wire_loss_window(0, 1_000, 600, 1, 1.0); // alpha=1.0 overwrites to 60%
-    status.loss_last_qualifying_at = Some(now);
+    status.loss_last_qualifying_at = Some((0, now));
     status.update_loss_elevated_since(0.5, now, MAX_STALENESS);
     assert_eq!(
         status.loss_elevated_since,
@@ -92,7 +92,7 @@ fn update_loss_elevated_since_zero_threshold_never_elevates() {
     let mut status = PerTransportStatus::default();
     let now = Instant::now();
     status.record_wire_loss_window(0, 1_000, 999, 1, 1.0); // ~100% loss
-    status.loss_last_qualifying_at = Some(now);
+    status.loss_last_qualifying_at = Some((0, now));
     status.update_loss_elevated_since(0.0, now, MAX_STALENESS);
     assert_eq!(
         status.loss_elevated_since, None,
@@ -112,7 +112,7 @@ fn update_loss_elevated_since_treats_a_stale_verdict_as_unmeasured() {
     let long_ago = now - Duration::from_secs(120);
 
     status.record_wire_loss_window(0, 1_000, 900, 1, 1.0); // 90%, frozen
-    status.loss_last_qualifying_at = Some(long_ago);
+    status.loss_last_qualifying_at = Some((0, long_ago));
     status.update_loss_elevated_since(0.5, now, MAX_STALENESS);
     assert_eq!(
         status.loss_elevated_since, None,
@@ -131,12 +131,40 @@ fn update_loss_elevated_since_trusts_a_verdict_within_the_staleness_window() {
     let recently = now - Duration::from_secs(20);
 
     status.record_wire_loss_window(0, 1_000, 900, 1, 1.0);
-    status.loss_last_qualifying_at = Some(recently);
+    status.loss_last_qualifying_at = Some((0, recently));
     status.update_loss_elevated_since(0.5, now, MAX_STALENESS);
     assert_eq!(
         status.loss_elevated_since,
         Some(now),
         "a verdict confirmed within max_staleness must still count as current evidence"
+    );
+}
+
+/// Regression: the freshness stamp must be tied to the specific wire it
+/// came from, not just "some wire was fresh recently" — otherwise a fresh
+/// measurement on the wire the dial loop just moved *off* of could validate
+/// a completely different (and possibly still-lossy) wire's stale ratio for
+/// up to `max_staleness` after the flip.
+#[test]
+fn update_loss_elevated_since_does_not_trust_a_stamp_from_a_different_wire() {
+    let mut status = PerTransportStatus::default();
+    let now = Instant::now();
+
+    // Wire 0 was freshly (and cleanly) measured just now...
+    status.record_wire_loss_window(0, 1_000, 100, 1, 1.0); // wire 0: 10%, clean
+    status.loss_last_qualifying_at = Some((0, now));
+
+    // ...but the dial loop has since flipped the active wire to 1, whose
+    // ratio is 90% from a measurement no tick has ever confirmed (no stamp
+    // was ever recorded for wire 1).
+    status.record_wire_loss_window(1, 1_000, 900, 1, 1.0); // wire 1: 90%
+    status.active_wire = 1;
+
+    status.update_loss_elevated_since(0.5, now, MAX_STALENESS);
+    assert_eq!(
+        status.loss_elevated_since, None,
+        "a freshness stamp recorded for wire 0 must not vouch for wire 1's ratio after a flip, \
+         even though the stamp's timestamp is well within max_staleness"
     );
 }
 
@@ -268,6 +296,69 @@ fn interrupted_loss_episode_restarts_the_clock() {
         Some(t3),
         "loss above the threshold after an interruption must start a NEW episode anchored at \
          the current tick, not resume the stale one from tick 1"
+    );
+}
+
+/// Same property as `interrupted_loss_episode_restarts_the_clock`, but
+/// driven through the real sampler entry point (`sample_carrier_loss_once`)
+/// instead of `apply_loss_collection` directly. The unit test above covers
+/// the pure episode-maintenance logic in isolation; this one covers the
+/// seam around it that the pure test cannot reach: that
+/// `sample_carrier_loss_once` still reassesses the episode on a tick whose
+/// `LossCollection` is completely empty (the round-1 fix the first review
+/// specifically credited — reintroducing an early `continue` before the
+/// reassessment would leave this test red while the pure unit tests above
+/// stay green), and that `max_staleness` really is wired end to end as
+/// `3 × loss_sample_interval` (mistyping that multiplier, or the units,
+/// would also only show up here).
+#[tokio::test(start_paused = true)]
+async fn sample_carrier_loss_once_ages_out_a_stale_episode_across_empty_ticks() {
+    let mut config = crate::tests::lb(); // loss_sample_interval = 10s
+    config.loss_failover_ratio = 0.5;
+    let manager = crate::types::UplinkManager::new_for_test(
+        "test",
+        vec![crate::tests::make_uplink("primary", "wss://primary.example.com/tcp")],
+        crate::tests::probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    // Stage an already-elevated episode with a fresh qualifying stamp, but
+    // register no live carrier at all: every `sample_carrier_loss_once`
+    // call below therefore observes a completely empty `LossCollection`.
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 1_000, 900, 1, 1.0); // 90%, frozen from here on
+        status.tcp.loss_last_qualifying_at = Some((0, now));
+        status.tcp.loss_elevated_since = Some(now);
+    });
+
+    // Two ticks inside max_staleness (30s = 3 x 10s loss_sample_interval):
+    // the episode must survive — proving the empty-collection tick still
+    // reassesses it rather than skipping the reassessment outright.
+    tokio::time::advance(Duration::from_secs(10)).await;
+    manager.sample_carrier_loss_once().await;
+    assert_eq!(
+        manager.inner.read_status(0).tcp.loss_elevated_since,
+        Some(now),
+        "an episode reassessed on an empty-collection tick within max_staleness must survive"
+    );
+
+    tokio::time::advance(Duration::from_secs(10)).await;
+    manager.sample_carrier_loss_once().await;
+    assert_eq!(manager.inner.read_status(0).tcp.loss_elevated_since, Some(now));
+
+    // Third tick crosses 30s total since the last qualifying measurement —
+    // the episode must clear, even though nothing ever re-measured the wire
+    // (there is no live carrier registered at all).
+    tokio::time::advance(Duration::from_secs(15)).await;
+    manager.sample_carrier_loss_once().await;
+    assert_eq!(
+        manager.inner.read_status(0).tcp.loss_elevated_since,
+        None,
+        "an episode whose last qualifying measurement is older than 3 x loss_sample_interval \
+         must clear — pins max_staleness end to end through sample_carrier_loss_once, not just \
+         as an isolated Duration value"
     );
 }
 
