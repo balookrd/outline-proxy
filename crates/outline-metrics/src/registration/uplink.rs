@@ -103,6 +103,9 @@ pub(super) struct UplinkFields {
     pub(super) uplink_latency_seconds: GaugeVec,
     pub(super) uplink_rtt_ewma_seconds: GaugeVec,
     pub(super) uplink_active_wire_rtt_ewma_seconds: GaugeVec,
+    pub(super) uplink_carrier_loss_ratio: GaugeVec,
+    pub(super) uplink_carrier_loss_observed_packets: GaugeVec,
+    pub(super) uplink_latency_inflated_seconds: GaugeVec,
     pub(super) uplink_penalty_seconds: GaugeVec,
     pub(super) uplink_effective_latency_seconds: GaugeVec,
     pub(super) uplink_score_seconds: GaugeVec,
@@ -241,6 +244,32 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "outline_ws_uplink_active_wire_rtt_ewma_seconds",
         "EWMA RTT latency of the wire currently carrying traffic on this uplink \
          (primary's EWMA when active_wire == 0, the matching fallback's slot otherwise).",
+        ["group", "transport", "uplink"]
+    );
+    let uplink_carrier_loss_ratio = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_uplink_carrier_loss_ratio",
+        "Smoothed packet-loss ratio measured on the carrier of the wire currently \
+         carrying traffic (QUIC lost/sent, TCP retransmits/segments out). Absent \
+         when no sampling window has cleared the minimum-volume threshold.",
+        ["group", "transport", "uplink"]
+    );
+    let uplink_carrier_loss_observed_packets = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_uplink_carrier_loss_observed_packets",
+        "Packets observed behind outline_ws_uplink_carrier_loss_ratio — how much \
+         traffic the loss verdict is based on.",
+        ["group", "transport", "uplink"]
+    );
+    let uplink_latency_inflated_seconds = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_uplink_latency_inflated_seconds",
+        "Latency selection actually ranks by: the active wire's RTT EWMA after \
+         carrier-loss inflation. Equals outline_ws_uplink_active_wire_rtt_ewma_seconds \
+         while loss_latency_penalty_k is 0.",
         ["group", "transport", "uplink"]
     );
     let uplink_penalty_seconds = register_labeled!(
@@ -501,6 +530,9 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_latency_seconds,
         uplink_rtt_ewma_seconds,
         uplink_active_wire_rtt_ewma_seconds,
+        uplink_carrier_loss_ratio,
+        uplink_carrier_loss_observed_packets,
+        uplink_latency_inflated_seconds,
         uplink_penalty_seconds,
         uplink_effective_latency_seconds,
         uplink_score_seconds,

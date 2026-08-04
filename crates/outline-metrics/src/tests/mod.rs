@@ -56,6 +56,12 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         udp_rtt_ewma_ms: None,
         tcp_active_wire_rtt_ewma_ms: None,
         udp_active_wire_rtt_ewma_ms: None,
+        tcp_carrier_loss_ratio: None,
+        udp_carrier_loss_ratio: None,
+        tcp_carrier_loss_packets: None,
+        udp_carrier_loss_packets: None,
+        tcp_inflated_latency_ms: None,
+        udp_inflated_latency_ms: None,
         tcp_penalty_ms: None,
         udp_penalty_ms: None,
         tcp_effective_latency_ms: None,
@@ -1009,6 +1015,110 @@ fn tun_tcp_flow_gauges_emit_same_series_as_per_call_helpers() {
         rendered
             .contains("outline_ws_tun_tcp_inflight_bytes{group=\"fg_grp\",uplink=\"fg_up2\"} 128"),
         "post-failover uplink series missing:\n{rendered}"
+    );
+}
+
+// ── Carrier-loss ratio / observed volume / inflated latency ─────────────
+
+#[test]
+fn carrier_loss_is_rendered_per_uplink_and_transport() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut uplink = snapshot_uplink("primary");
+    uplink.tcp_carrier_loss_ratio = Some(0.02);
+    uplink.tcp_carrier_loss_packets = Some(10_000);
+    snapshot.uplinks.push(uplink);
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+
+    assert!(
+        rendered.contains(
+            "outline_ws_uplink_carrier_loss_ratio{group=\"main\",transport=\"tcp\",uplink=\"primary\"} 0.02"
+        ),
+        "loss ratio gauge missing or wrong in:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_uplink_carrier_loss_observed_packets{group=\"main\",transport=\"tcp\",uplink=\"primary\"} 10000"
+        ),
+        "observed-packets gauge missing or wrong in:\n{rendered}"
+    );
+}
+
+/// "No data" must not render as "no loss": an uplink with no qualifying window
+/// publishes no series at all, so a dashboard cannot mistake silence for a
+/// clean path.
+#[test]
+fn an_unmeasured_uplink_publishes_no_loss_series() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    snapshot.uplinks.push(snapshot_uplink("primary"));
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+    assert!(!rendered.contains("outline_ws_uplink_carrier_loss_ratio"));
+    assert!(!rendered.contains("outline_ws_uplink_carrier_loss_observed_packets"));
+}
+
+#[test]
+fn render_prometheus_clears_previous_carrier_loss_series() {
+    // First scrape reports a measured loss ratio for `nuxt`. Second scrape
+    // has no qualifying window (e.g. traffic went idle). The stale gauge
+    // must disappear, not linger at its last value — a lingering value
+    // would misreport a currently-unmeasured uplink as still lossy.
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut lossy = snapshot_uplink("nuxt");
+    lossy.udp_carrier_loss_ratio = Some(0.05);
+    lossy.udp_carrier_loss_packets = Some(5_000);
+    snapshot.uplinks.push(lossy);
+    render_prometheus(&[snapshot]).expect("render first metrics");
+
+    let mut clean = empty_snapshot();
+    clean.uplinks.push(snapshot_uplink("nuxt"));
+    let rendered = render_prometheus(&[clean]).expect("render second metrics");
+
+    assert!(
+        !rendered.contains("outline_ws_uplink_carrier_loss_ratio{"),
+        "loss ratio series should be cleared once the window no longer qualifies:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("outline_ws_uplink_carrier_loss_observed_packets{"),
+        "observed-packets series should be cleared once the window no longer qualifies:\n{rendered}"
+    );
+}
+
+#[test]
+fn inflated_latency_is_rendered_and_absent_without_a_wire_measurement() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut uplink = snapshot_uplink("primary");
+    uplink.tcp_inflated_latency_ms = Some(150);
+    snapshot.uplinks.push(uplink);
+    // A second uplink with no measurement at all — must not emit the gauge.
+    snapshot.uplinks.push(snapshot_uplink("senko"));
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+
+    assert!(
+        rendered.contains(
+            "outline_ws_uplink_latency_inflated_seconds{group=\"main\",transport=\"tcp\",uplink=\"primary\"} 0.15"
+        ),
+        "inflated latency gauge missing or wrong in:\n{rendered}"
+    );
+    assert!(
+        !rendered.lines().any(|l| {
+            l.starts_with("outline_ws_uplink_latency_inflated_seconds")
+                && l.contains("uplink=\"senko\"")
+        }),
+        "uplink without an inflated-latency measurement must not emit the gauge"
     );
 }
 

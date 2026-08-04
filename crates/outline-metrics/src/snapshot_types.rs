@@ -116,6 +116,28 @@ pub struct UplinkSnapshot {
     /// UDP counterpart to [`Self::tcp_active_wire_rtt_ewma_ms`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub udp_active_wire_rtt_ewma_ms: Option<u128>,
+    /// Smoothed carrier loss ratio on the wire currently carrying TCP traffic,
+    /// in `[0, 1]`. `None` until a sampling window clears the volume
+    /// threshold — absence means "not measured", never "no loss".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_carrier_loss_ratio: Option<f64>,
+    /// UDP counterpart to [`Self::tcp_carrier_loss_ratio`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_carrier_loss_ratio: Option<f64>,
+    /// Packets the TCP loss verdict is based on. Published so a dashboard can
+    /// tell a confident verdict from one drawn on a handful of packets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_carrier_loss_packets: Option<u64>,
+    /// UDP counterpart to [`Self::tcp_carrier_loss_packets`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_carrier_loss_packets: Option<u64>,
+    /// Latency selection actually ranks TCP by: [`Self::tcp_active_wire_rtt_ewma_ms`]
+    /// after carrier-loss inflation. Equals `tcp_active_wire_rtt_ewma_ms` while
+    /// `loss_latency_penalty_k` is 0. `None` whenever the underlying wire
+    /// latency itself is unmeasured.
+    pub tcp_inflated_latency_ms: Option<u128>,
+    /// UDP counterpart to [`Self::tcp_inflated_latency_ms`].
+    pub udp_inflated_latency_ms: Option<u128>,
     pub tcp_penalty_ms: Option<u128>,
     pub udp_penalty_ms: Option<u128>,
     pub tcp_effective_latency_ms: Option<u128>,
