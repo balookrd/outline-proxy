@@ -1390,11 +1390,20 @@ async fn a_sampling_tick_writes_the_wire_verdict_into_status() {
     )
     .unwrap();
 
-    let (probe, _client, _server) = crate::loss::tests_support::live_probe_with_traffic().await;
+    let (probe, mut client, mut server) = crate::loss::tests_support::live_probe_with_traffic().await;
     manager.register_carrier_loss_probe(0, 0, TransportKind::Tcp, Some(probe));
 
-    // First tick establishes the baseline, second produces the delta.
+    // Counters are cumulative, so the first tick can only record a baseline —
+    // a delta needs traffic *between* the two ticks. Without the write in the
+    // middle this test passes or fails on whether the pre-registration traffic
+    // happened to land after the baseline, which is a race, not a check.
     manager.sample_carrier_loss_once().await;
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        client.write_all(&[0u8; 16 * 1024]).await.unwrap();
+        let mut sink = vec![0u8; 16 * 1024];
+        server.read_exact(&mut sink).await.unwrap();
+    }
     manager.sample_carrier_loss_once().await;
 
     let status = manager.inner.read_status(0);
@@ -1408,8 +1417,12 @@ async fn a_sampling_tick_writes_the_wire_verdict_into_status() {
 The fixtures are the existing ones in `crates/outline-uplink/src/tests/mod.rs`:
 `lb()` (line 25), `make_uplink(name, url)` (line 129), `probe_disabled()`
 (line 88), and `UplinkManager::new_for_test(group, uplinks, probe, config)`.
-`_client` and `_server` must stay bound: dropping either closes the carrier and
-the second tick would evict the probe before it produced a window. The first test in this file
+`client` and `server` must stay bound: dropping either closes the carrier and
+the second tick would evict the probe before it produced a window.
+
+Wire the spawner into `apply_new_groups` in `registry.rs` as well, not only the
+two `spawn_shuffle_timer_loops` call sites — otherwise a `/control/apply`
+hot-swap leaves the new managers permanently unsampled. The first test in this file
 is synchronous and needs no fixtures.
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1613,10 +1626,22 @@ and after the dial succeeds:
     uplinks.register_carrier_loss_probe(parent.index, wire_index, TransportKind::Tcp, loss_probe);
 ```
 
-Do the same at `bins/outline-ws-rust/src/proxy/udp/transport.rs:208` and
-`:269` with `TransportKind::Udp` and that path's `wire_index`, and at
+The UDP paths need one step more, because no `TransportStream` is in scope
+there: `UdpWsTransport::connect_with_resume` consumes it internally. Extend
+`crates/outline-transport/src/udp_transport.rs` so `UdpWsTransport` captures
+`ws_stream.loss_probe()` in `from_websocket` — the last point it still owns the
+stream — and exposes it through an accessor, leaving the `connect` /
+`connect_with_resume` signatures untouched. Then register at
+`bins/outline-ws-rust/src/proxy/udp/transport.rs:208` and at
 `crates/outline-uplink/src/manager/standby/mod.rs:420` / `:615` with
 `wire = 0` (the pool dials the primary wire) and the matching transport.
+
+VLESS-UDP (`bins/outline-ws-rust/src/proxy/udp/transport.rs:269`) stays
+unwired: `VlessUdpSessionMux` dials lazily per target, so at registration time
+there is no carrier to attribute and any probe taken would describe a different
+target's path. Leave a comment at that site saying so — a silent omission reads
+as an oversight. It joins `xhttp_h1` on the list of carriers with no loss
+signal, and Task 9 surfaces both to operators.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
