@@ -557,7 +557,8 @@ pub(super) struct UplinkGroupSection {
     /// time: `1 + k · loss`. `0.0` (default) observes without acting — the
     /// loss ratio is measured and published, but selection is unchanged.
     pub(super) loss_latency_penalty_k: Option<f64>,
-    /// Ceiling on the carrier-loss latency multiplier. Default: `4.0`.
+    /// Ceiling on the carrier-loss latency multiplier. Default: `4.0`, valid
+    /// range `[1.0, 100.0]` (values outside it are rejected at load time).
     pub(super) loss_latency_inflation_max: Option<f64>,
     /// Sampling grid, in seconds, for carrier loss counters. Default: `10`.
     pub(super) loss_sample_interval_secs: Option<u64>,
@@ -814,7 +815,8 @@ pub(crate) struct LoadBalancingSection {
     /// time: `1 + k · loss`. `0.0` (default) observes without acting — the
     /// loss ratio is measured and published, but selection is unchanged.
     pub(super) loss_latency_penalty_k: Option<f64>,
-    /// Ceiling on the carrier-loss latency multiplier. Default: `4.0`.
+    /// Ceiling on the carrier-loss latency multiplier. Default: `4.0`, valid
+    /// range `[1.0, 100.0]` (values outside it are rejected at load time).
     pub(super) loss_latency_inflation_max: Option<f64>,
     /// Sampling grid, in seconds, for carrier loss counters. Default: `10`.
     pub(super) loss_sample_interval_secs: Option<u64>,

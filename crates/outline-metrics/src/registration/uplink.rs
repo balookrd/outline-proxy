@@ -267,9 +267,12 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         registry,
         GaugeVec,
         "outline_ws_uplink_latency_inflated_seconds",
-        "Latency selection actually ranks by: the active wire's RTT EWMA after \
-         carrier-loss inflation. Equals outline_ws_uplink_active_wire_rtt_ewma_seconds \
-         while loss_latency_penalty_k is 0.",
+        "Latency selection actually ranks by: the active wire's RTT EWMA, falling back \
+         to primary's EWMA and then the last probe sample, after carrier-loss \
+         inflation. At loss_latency_penalty_k = 0 this is that base latency \
+         uninflated — but it can still be present when \
+         outline_ws_uplink_active_wire_rtt_ewma_seconds is absent, e.g. right after a \
+         wire flip before the active wire has its own RTT sample.",
         ["group", "transport", "uplink"]
     );
     let uplink_penalty_seconds = register_labeled!(

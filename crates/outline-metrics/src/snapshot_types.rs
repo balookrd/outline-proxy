@@ -131,10 +131,16 @@ pub struct UplinkSnapshot {
     /// UDP counterpart to [`Self::tcp_carrier_loss_packets`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub udp_carrier_loss_packets: Option<u64>,
-    /// Latency selection actually ranks TCP by: [`Self::tcp_active_wire_rtt_ewma_ms`]
-    /// after carrier-loss inflation. Equals `tcp_active_wire_rtt_ewma_ms` while
-    /// `loss_latency_penalty_k` is 0. `None` whenever the underlying wire
-    /// latency itself is unmeasured.
+    /// Latency selection actually ranks TCP by: the active wire's RTT EWMA,
+    /// falling back to primary's EWMA and then the last probe sample, after
+    /// carrier-loss inflation. At `loss_latency_penalty_k = 0` this is that
+    /// base latency uninflated — but it is not always equal to
+    /// [`Self::tcp_active_wire_rtt_ewma_ms`]: right after a wire flip, before
+    /// the active wire has its own RTT sample, this field still falls back to
+    /// primary's EWMA / the last probe sample and publishes `Some`, while
+    /// `tcp_active_wire_rtt_ewma_ms` (active-wire EWMA only, no fallback)
+    /// publishes `None`. `None` only when no latency measurement exists at
+    /// all for this uplink.
     pub tcp_inflated_latency_ms: Option<u128>,
     /// UDP counterpart to [`Self::tcp_inflated_latency_ms`].
     pub udp_inflated_latency_ms: Option<u128>,

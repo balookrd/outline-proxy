@@ -511,9 +511,11 @@ impl PerTransportStatus {
         if multiplier <= 1.0 {
             return Some(base);
         }
-        // `try_from_secs_f64` rather than the panicking `from_secs_f64`:
-        // `loss_latency_inflation_max` is operator-supplied and unbounded by
-        // the config loader, so an absurd cap must degrade to a saturated
+        // `try_from_secs_f64` rather than the panicking `from_secs_f64`: the
+        // config loader bounds `loss_latency_inflation_max` to `[1, 100]`
+        // (`bins/outline-ws-rust/src/config/load/balancing.rs`), but this
+        // stays as defence in depth — any base latency large enough to
+        // overflow regardless of that bound must degrade to a saturated
         // (effectively "worst possible") latency instead of panicking in the
         // selection hot path.
         Some(Duration::try_from_secs_f64(base.as_secs_f64() * multiplier).unwrap_or(Duration::MAX))
