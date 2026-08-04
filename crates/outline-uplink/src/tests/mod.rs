@@ -44,6 +44,8 @@ pub(crate) fn lb() -> LoadBalancingConfig {
         failure_penalty_halflife: Duration::from_secs(60),
         mode_downgrade_duration: Duration::from_secs(60),
         carrier_degraded_failover: None,
+        loss_failover_ratio: 0.0,
+        loss_failover_duration: None,
         runtime_failure_window: Duration::from_secs(60),
         chunk0_failure_window: Duration::from_secs(300),
         global_udp_strict_health: false,
@@ -2464,4 +2466,197 @@ async fn per_client_without_identity_uses_shared_default_key() {
     assert_eq!(first[0].uplink.name, "primary");
     let second = manager.tcp_candidates_for(&target, None).await;
     assert_eq!(second[0].uplink.name, "primary");
+}
+
+// ── Loss-driven failover for a pinned active uplink ─────────────────────────
+//
+// Reproduces what `carrier_degraded_switch_target` already proved for a
+// silently-downgraded carrier, for the 2026-08-02 incident's actual signal
+// instead: a probe-healthy active uplink whose RTT stays unremarkable while
+// its data path drops packets. In `active_passive` + `routing_scope =
+// "global"` with `auto_failback = false` (the fleet's shape),
+// `strict_transport_candidates` returns the active the instant probe calls it
+// healthy — `score`, and therefore `loss_latency_penalty_k`, is never
+// consulted on that path. These tests exercise `tcp_candidates`, the entry
+// point every dispatch path calls, end to end.
+
+fn loss_failover_manager(ratio: f64, duration: Option<Duration>) -> (UplinkManager, TargetAddr) {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    config.loss_failover_ratio = ratio;
+    config.loss_failover_duration = duration;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe_enabled(),
+        config,
+    )
+    .unwrap();
+    (manager, TargetAddr::Domain("example.com".to_string(), 443))
+}
+
+/// Pins the active uplink so the loss check has something to move away from,
+/// without relying on the ordering-only comparison the ranking task pins.
+async fn pin_primary_active(manager: &UplinkManager, target: &TargetAddr) {
+    set_tcp_status(manager, 0, true, 30).await;
+    set_udp_status(manager, 0, true, 30).await;
+    set_tcp_status(manager, 1, true, 30).await;
+    set_udp_status(manager, 1, true, 30).await;
+    let first = manager.tcp_candidates(target).await;
+    assert_eq!(first[0].uplink.name, "primary", "sanity: primary is the pinned active");
+}
+
+/// A continuously-lossy active, past the configured duration, with a clean
+/// backup of equal weight → the leg must move.
+#[tokio::test]
+async fn loss_failover_moves_the_leg_once_the_episode_crosses_the_duration_threshold() {
+    let (manager, target) = loss_failover_manager(0.05, Some(Duration::from_secs(60)));
+    pin_primary_active(&manager, &target).await;
+
+    // Primary has been running 90% loss continuously for 120 s — well past
+    // the 60 s threshold. Backup has no loss verdict at all: unmeasured, so
+    // clean by the "absence is not evidence of loss" rule.
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(120));
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        second[0].uplink.name, "backup",
+        "a continuously lossy active past the threshold must yield to the clean backup"
+    );
+}
+
+/// The same staging, but the episode is shorter than `loss_failover_duration`
+/// — a brief spike must not move the leg.
+#[tokio::test]
+async fn loss_failover_does_not_move_before_the_duration_threshold_is_crossed() {
+    let (manager, target) = loss_failover_manager(0.05, Some(Duration::from_secs(60)));
+    pin_primary_active(&manager, &target).await;
+
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(10));
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        second[0].uplink.name, "primary",
+        "a loss episode shorter than the configured duration must not switch"
+    );
+}
+
+/// Both uplinks are lossy — the active stays, because a lossy uplink still
+/// carrying traffic beats none, and moving to an equally-lossy sibling would
+/// be churn, not recovery.
+#[tokio::test]
+async fn loss_failover_keeps_the_active_when_no_candidate_is_clean() {
+    let (manager, target) = loss_failover_manager(0.05, Some(Duration::from_secs(60)));
+    pin_primary_active(&manager, &target).await;
+
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(120));
+    });
+    // Backup is lossy too — not a refuge.
+    manager.inner.with_status_mut(1, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        second[0].uplink.name, "primary",
+        "with no clean candidate, the lossy active must stay rather than churn to another lossy path"
+    );
+}
+
+/// A clean candidate with lower weight must not win the leg on loss quality
+/// alone — operator priority still stands, mirroring
+/// `lower_weight_candidate_does_not_take_the_leg` for the carrier-degraded
+/// check.
+#[tokio::test]
+async fn loss_failover_does_not_move_to_a_lower_weight_candidate() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    config.loss_failover_ratio = 0.05;
+    config.loss_failover_duration = Some(Duration::from_secs(60));
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            UplinkConfig {
+                weight: 0.5,
+                ..make_uplink("backup", "wss://backup.example.com/tcp")
+            },
+        ],
+        probe_enabled(),
+        config,
+    )
+    .unwrap();
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    pin_primary_active(&manager, &target).await;
+
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(120));
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        second[0].uplink.name, "primary",
+        "a lower-weight clean candidate must not take the leg on loss quality alone"
+    );
+}
+
+/// `loss_failover_ratio = 0.0` is the default and must disable the check
+/// entirely, independently of `loss_failover_duration` — existing
+/// strict-mode behaviour (keep a healthy pinned active) is unchanged even
+/// with a long-running, heavily-lossy episode staged.
+#[tokio::test]
+async fn loss_failover_ratio_zero_disables_the_check_by_default() {
+    let (manager, target) = loss_failover_manager(0.0, Some(Duration::from_secs(60)));
+    pin_primary_active(&manager, &target).await;
+
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(120));
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        second[0].uplink.name, "primary",
+        "loss_failover_ratio = 0.0 must disable the check regardless of the episode staged"
+    );
+}
+
+/// `loss_failover_duration` unset (the default) must independently disable
+/// the check, even with a ratio configured and a fully-qualifying episode
+/// staged.
+#[tokio::test]
+async fn loss_failover_duration_unset_disables_the_check() {
+    let (manager, target) = loss_failover_manager(0.05, None);
+    pin_primary_active(&manager, &target).await;
+
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(120));
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        second[0].uplink.name, "primary",
+        "loss_failover_duration unset must disable the check regardless of loss_failover_ratio"
+    );
 }

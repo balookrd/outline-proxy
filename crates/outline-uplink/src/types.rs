@@ -106,7 +106,8 @@ pub enum SwitchIntent {
     /// switch would have given on anything short of success.
     OperatorSoft,
     /// Machine-driven repoint: probe failover, runtime-failure failover,
-    /// auto-failback, carrier-degraded failover, or the initial selection.
+    /// auto-failback, carrier-degraded failover, loss-driven failover, or the
+    /// initial selection.
     ///
     /// Not a decision about sessions at all — so on a cluster it is treated like
     /// [`Self::OperatorSoft`] (see [`Self::migrates_live_flows`]). The uplink it

@@ -111,6 +111,21 @@ pub(crate) struct PerTransportStatus {
     /// Per-fallback-wire loss slots, indexed by `wire_index - 1` exactly like
     /// [`Self::fallback_rtt_ewma`]. Lazily extended on first write.
     pub(crate) fallback_carrier_loss: Vec<crate::loss::LossEwma>,
+    /// Start of this transport's current continuous loss-elevated episode:
+    /// the active-wire loss ratio ([`Self::active_wire_loss`]) has been
+    /// above `LoadBalancingConfig::loss_failover_ratio` on every sampling
+    /// tick since this timestamp, with no clean tick in between. Maintained
+    /// by `UplinkManager::sample_carrier_loss_once` via
+    /// [`Self::update_loss_elevated_since`] — set on the first tick whose
+    /// ratio exceeds the threshold, cleared the instant a tick comes back at
+    /// or below it (or the ratio is unmeasured). Same continuous-episode
+    /// discipline as [`CarrierDescentState::window_started_at`]: a stream of
+    /// re-triggers reads as one episode, but an interrupted one restarts the
+    /// clock, so an uplink flapping around the threshold never accumulates
+    /// its way into a failover. Read by
+    /// `UplinkManager::loss_failover_switch_target` through the
+    /// [`TransportSelectionView`] projection below.
+    pub(crate) loss_elevated_since: Option<Instant>,
     /// Per-wire liveness penalty for weighted wire selection, decaying via the
     /// shared `0.5^(t/halflife)` curve (see [`crate::penalty::penalty_weight`]).
     /// Indexed by **wire index directly**: `[0]` is the primary wire, `[i]` is
@@ -268,6 +283,16 @@ pub(crate) struct TransportSelectionView {
     pub(crate) descent_window_until: Option<Instant>,
     pub(crate) descent_window_started_at: Option<Instant>,
     pub(crate) base_latency: Option<Duration>,
+    /// Copy of [`PerTransportStatus::loss_elevated_since`], for the
+    /// loss-driven strict-mode failover check
+    /// (`UplinkManager::loss_failover_switch_target`).
+    pub(crate) loss_elevated_since: Option<Instant>,
+    /// This transport's active-wire loss ratio
+    /// ([`PerTransportStatus::active_wire_loss`]), copied out so the
+    /// loss-driven failover check can read a *candidate's* own loss without
+    /// re-locking its status. `None` means "not measured" — never "no
+    /// loss" — see [`crate::loss::LossEwma::ratio`].
+    pub(crate) loss_ratio: Option<f64>,
 }
 
 /// Everything the scoring / gating layer reads off an [`UplinkStatus`], as a
@@ -383,6 +408,8 @@ impl PerTransportStatus {
             descent_window_until: self.descent.until(),
             descent_window_started_at: self.descent.window_started_at(),
             base_latency: self.base_latency_with(config),
+            loss_elevated_since: self.loss_elevated_since,
+            loss_ratio: self.active_wire_loss().ratio(),
         }
     }
 
@@ -443,6 +470,40 @@ impl PerTransportStatus {
         }
         let slot_idx = (self.active_wire - 1) as usize;
         self.fallback_carrier_loss.get(slot_idx).copied().unwrap_or_default()
+    }
+
+    /// Advance [`Self::loss_elevated_since`] by one sampling tick. Called
+    /// from `UplinkManager::sample_carrier_loss_once` on every tick, for
+    /// every uplink/transport, regardless of whether that tick produced a
+    /// fresh loss window — an uplink already over the threshold whose only
+    /// carrier just went idle must not silently freeze its episode instead
+    /// of continuing to age it, and a tick that measured nothing new must
+    /// still be able to *clear* a stale episode once the wire's carrier is
+    /// gone (its ratio resets to "not measured" via [`Self::reset_wire_loss`]
+    /// first).
+    ///
+    /// `threshold <= 0.0` is `LoadBalancingConfig::loss_failover_ratio`'s
+    /// documented off switch: the episode is always cleared, so the check
+    /// ships inert exactly like the sibling `carrier_degraded_failover`
+    /// knob when unset. Otherwise a ratio strictly above `threshold` starts
+    /// the episode on the first such tick and leaves an already-running
+    /// episode's anchor untouched — a re-trigger must not reset a genuinely
+    /// long episode back to "just started". A ratio at or below `threshold`,
+    /// or no ratio at all (not measured is never evidence of loss), clears
+    /// the episode: a single clean tick restarts the clock instead of
+    /// letting an uplink that merely flaps around the threshold accumulate
+    /// its way into a failover.
+    pub(crate) fn update_loss_elevated_since(&mut self, threshold: f64, now: Instant) {
+        if threshold <= 0.0 {
+            self.loss_elevated_since = None;
+            return;
+        }
+        let elevated = self.active_wire_loss().ratio().is_some_and(|ratio| ratio > threshold);
+        self.loss_elevated_since = if elevated {
+            self.loss_elevated_since.or(Some(now))
+        } else {
+            None
+        };
     }
 
     /// The latency this transport is ranked by, paired with the loss slot

@@ -738,6 +738,31 @@ pub struct LoadBalancingConfig {
     /// the leg — only a window that keeps being extended by ongoing failures
     /// crosses the threshold.
     pub carrier_degraded_failover: Option<Duration>,
+    /// Strict-mode loss-driven failover: loss ratio (in `[0, 1]`) above
+    /// which the active uplink's active-wire carrier counts as degraded for
+    /// this check. `0.0` (the default) disables the check entirely,
+    /// independently of [`Self::loss_failover_duration`] — this is the only
+    /// part of the carrier-loss feature (see [`Self::loss_latency_penalty_k`])
+    /// that moves production traffic without an operator asking, so both
+    /// knobs ship inert.
+    ///
+    /// Where [`Self::loss_latency_penalty_k`] only *ranks* a lossy uplink
+    /// lower, this is what makes a pinned strict active actually yield: in
+    /// `active_passive` with `auto_failback = false` (the common fleet
+    /// shape), `strict_transport_candidates` returns the active the moment
+    /// probe calls it healthy — `score` is never consulted there, so no
+    /// value of `k` alone can move a healthy-but-lossy pinned active. This
+    /// knob is the mechanism that does.
+    pub loss_failover_ratio: f64,
+    /// How long the active uplink's gate-transport loss ratio must stay
+    /// **continuously** above [`Self::loss_failover_ratio`] — see
+    /// `UplinkManager::sample_carrier_loss_once`, which maintains the
+    /// per-transport episode timestamp with the same continuous-episode
+    /// discipline [`Self::carrier_degraded_failover`]'s descent window uses
+    /// — before the strict active slot yields to a probe-healthy, clean,
+    /// equal-or-higher-weight sibling. `None` (the default) disables the
+    /// check independently of [`Self::loss_failover_ratio`].
+    pub loss_failover_duration: Option<Duration>,
     /// In `routing_scope = "global"`, controls whether UDP health gates the
     /// active uplink alongside TCP health. When `false` (default), UDP probe
     /// failures and UDP cooldown are informational only — used in score

@@ -37,12 +37,25 @@ impl UplinkManager {
     pub(crate) async fn sample_carrier_loss_once(&self) {
         let min_packets = self.inner.load_balancing.loss_sample_min_packets;
         let alpha = self.inner.load_balancing.loss_ewma_alpha;
+        let loss_failover_ratio = self.inner.load_balancing.loss_failover_ratio;
+        let now = tokio::time::Instant::now();
         for index in 0..self.inner.uplinks.len() {
             let Some(slot) = self.inner.carrier_loss.get(index) else {
                 continue;
             };
             let collection = slot.lock().collect_windows();
             if collection.windows.is_empty() && collection.emptied_wires.is_empty() {
+                // Nothing new this tick, but the loss-failover episode still
+                // needs reassessing against whatever verdict the wire
+                // already holds — an uplink already over the threshold whose
+                // carrier just went idle must not silently freeze mid-
+                // episode, and one that lost its carrier on a *previous*
+                // tick (verdict already reset to "not measured") must still
+                // have its episode cleared here rather than never again.
+                self.inner.with_status_mut(index, |status| {
+                    status.tcp.update_loss_elevated_since(loss_failover_ratio, now);
+                    status.udp.update_loss_elevated_since(loss_failover_ratio, now);
+                });
                 continue;
             }
             self.inner.with_status_mut(index, |status| {
@@ -66,6 +79,8 @@ impl UplinkManager {
                     };
                     per.reset_wire_loss(*wire);
                 }
+                status.tcp.update_loss_elevated_since(loss_failover_ratio, now);
+                status.udp.update_loss_elevated_since(loss_failover_ratio, now);
             });
             debug!(
                 uplink = %self.inner.uplinks[index].name,

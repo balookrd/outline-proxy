@@ -343,6 +343,8 @@ fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig 
     LoadBalancingConfig {
         mode: LoadBalancingMode::ActiveActive,
         carrier_degraded_failover: None,
+        loss_failover_ratio: 0.0,
+        loss_failover_duration: None,
         routing_scope: RoutingScope::PerFlow,
         shared_resume: false,
         sticky_ttl: std::time::Duration::from_secs(300),
