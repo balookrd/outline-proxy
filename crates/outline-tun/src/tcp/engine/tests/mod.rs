@@ -2079,6 +2079,8 @@ fn test_load_balancing_config() -> LoadBalancingConfig {
         failure_penalty_halflife: Duration::from_secs(60),
         mode_downgrade_duration: Duration::from_secs(60),
         carrier_degraded_failover: None,
+        loss_failover_ratio: 0.0,
+        loss_failover_duration: None,
         runtime_failure_window: Duration::from_secs(60),
         chunk0_failure_window: Duration::from_secs(300),
         global_udp_strict_health: false,

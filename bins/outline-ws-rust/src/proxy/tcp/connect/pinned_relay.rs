@@ -781,8 +781,9 @@ async fn try_soft_switch_migrate(
     }
     let snapshot = uplinks.active_uplinks_snapshot();
     // The gate is the published switch intent, not which mechanism set it: an
-    // operator soft switch, a carrier-degraded failover, a probe/runtime
-    // failover and a soft re-selection all migrate. Only a switch that means to
+    // operator soft switch, a carrier-degraded failover, a loss-driven
+    // failover, a probe/runtime failover and a soft re-selection all migrate.
+    // Only a switch that means to
     // abandon the session — an operator *hard* switch or hard reselect — tears
     // it down. `shared_resume` was already required above, so the intent's own
     // cluster gate is a no-op here.

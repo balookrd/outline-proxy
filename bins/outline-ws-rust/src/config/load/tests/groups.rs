@@ -175,6 +175,45 @@ fn shuffle_wires_off_in_uplink_group_preserves_operator_ordering() {
 }
 
 #[test]
+fn uplink_group_lb_fields_wire_loss_failover_knobs() {
+    // Regression for the two `load_balancing` schema surfaces silently
+    // drifting apart: `load_balancing_config_from_group` builds a
+    // `LoadBalancingSection` shim field-by-field from `UplinkGroupSection`,
+    // so a knob added to one struct but forgotten in the shim mapping
+    // reads as its default in every `[[uplink_group]]`-shaped config,
+    // with no error to say so. Pin that `loss_failover_ratio` /
+    // `loss_failover_secs` make it through this path, not just the
+    // legacy `[outline.load_balancing]` one `load/tests/balancing.rs`
+    // already covers.
+    let toml_str = r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+        loss_failover_ratio = 0.05
+        loss_failover_secs = 90
+
+        [[uplinks]]
+        name = "alpha"
+        group = "main"
+        transport = "ws"
+        tcp_ws_url = "wss://primary.example.com/secret/tcp"
+        tcp_mode = "h1"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+    "#;
+
+    let groups = run_load_groups(toml_str);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].load_balancing.loss_failover_ratio, 0.05);
+    assert_eq!(
+        groups[0].load_balancing.loss_failover_duration,
+        Some(std::time::Duration::from_secs(90)),
+    );
+}
+
+#[test]
 fn shuffle_wires_in_uplink_group_isolates_groups() {
     // Two uplinks in different groups must NOT be deduped against
     // each other — `shuffle_wire_chains_per_group` is keyed on the

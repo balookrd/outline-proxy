@@ -36,6 +36,15 @@ pub(crate) fn load_balancing_config(
     if !(loss_ewma_alpha.is_finite() && 0.0 < loss_ewma_alpha && loss_ewma_alpha <= 1.0) {
         bail!("load_balancing.loss_ewma_alpha must be in the range (0, 1]");
     }
+    // `0.0` is the documented off switch (see the field doc on
+    // `LoadBalancingConfig::loss_failover_ratio`) — a value outside `[0, 1]`
+    // is nonsense for a ratio and rejected here rather than silently
+    // clamped, matching the sibling `loss_latency_penalty_k` /
+    // `health_weight_floor` validations above.
+    let loss_failover_ratio = lb.and_then(|l| l.loss_failover_ratio).unwrap_or(0.0);
+    if !(loss_failover_ratio.is_finite() && (0.0..=1.0).contains(&loss_failover_ratio)) {
+        bail!("load_balancing.loss_failover_ratio must be in the range [0, 1]");
+    }
     let mode = lb.and_then(|l| l.mode).unwrap_or(LoadBalancingMode::ActiveActive);
     let routing_scope = lb.and_then(|l| l.routing_scope).unwrap_or(RoutingScope::PerFlow);
     let has_reselect_at = lb.and_then(|l| l.reselect_at.as_ref()).is_some_and(|v| !v.is_empty());
@@ -108,6 +117,16 @@ pub(crate) fn load_balancing_config(
                 Some(secs) => Some(Duration::from_secs(secs)),
                 None => Some(Duration::from_secs(downgrade_secs.saturating_mul(3))),
             }
+        },
+        loss_failover_ratio,
+        // Unset or explicit `0` disables the check, exactly like
+        // `carrier_degraded_failover_secs`'s `Some(0) => None` — no auto-
+        // derived default here: unlike the carrier-descent window there is
+        // no companion duration this could scale off, and inventing one
+        // would silently turn the ratio knob live.
+        loss_failover_duration: match lb.and_then(|l| l.loss_failover_secs) {
+            Some(0) | None => None,
+            Some(secs) => Some(Duration::from_secs(secs)),
         },
         runtime_failure_window: Duration::from_secs(
             lb.and_then(|l| l.runtime_failure_window_secs).unwrap_or(60),

@@ -525,6 +525,76 @@ impl UplinkManager {
         })
     }
 
+    /// Loss-driven strict-mode failover target: position (in `candidates`,
+    /// already sorted by `primary_order`) of the best candidate to take the
+    /// strict active slot away from a **probe-healthy but continuously
+    /// loss-degraded** active uplink.
+    ///
+    /// `Some` only when every one of these holds:
+    /// * the feature is on — `load_balancing.loss_failover_ratio > 0.0` AND
+    ///   `load_balancing.loss_failover_duration` is set; both knobs default
+    ///   to their off value and are checked independently, exactly like
+    ///   [`Self::carrier_degraded_switch_target`]'s threshold;
+    /// * the active uplink's gate transport has had its active-wire loss
+    ///   ratio continuously above `loss_failover_ratio` for at least
+    ///   `loss_failover_duration` — `PerTransportStatus::loss_elevated_since`,
+    ///   maintained every sampling tick by
+    ///   `UplinkManager::sample_carrier_loss_once`, is the continuous-episode
+    ///   anchor; an isolated flap that a later clean tick clears can never
+    ///   qualify;
+    /// * some other candidate is probe-healthy (which on this path also
+    ///   means "not in cooldown" — see `selection_health`), of
+    ///   equal-or-higher weight (operator priority still stands), and is
+    ///   itself at or below the threshold. A candidate with **no** loss
+    ///   verdict at all counts as clean: absence means "not measured", never
+    ///   "no loss" and never "measured lossy" — refusing to switch to an
+    ///   unmeasured candidate would strand the gateway on the lossy path for
+    ///   no reason.
+    ///
+    /// This is the mechanism that makes a lossy pinned active actually be
+    /// *left* — `loss_latency_penalty_k` only ranks it lower, and in
+    /// `active_passive` with `auto_failback = false` (the default, and the
+    /// fleet's shape) `score` is never consulted by
+    /// `strict_transport_candidates` at all: a healthy-per-probe active
+    /// keeps the leg regardless of how badly its data path is losing
+    /// packets. Without this, the 2026-08-02 incident — six and a half
+    /// hours pinned to a lossy leg with a steady, unremarkable RTT — repeats
+    /// no matter what coefficient the operator sets.
+    ///
+    /// A lossy uplink is never *removed* from candidacy by this check: with
+    /// no clean sibling this returns `None` and the active — still carrying
+    /// traffic — stays. Never switches to a candidate that is itself over
+    /// the threshold: moving from one lossy path to another is churn, not
+    /// recovery.
+    fn loss_failover_switch_target(
+        &self,
+        candidates: &[CandidateState],
+        active_index: usize,
+        gate_transport: TransportKind,
+        now: Instant,
+    ) -> Option<usize> {
+        let ratio_threshold = self.inner.load_balancing.loss_failover_ratio;
+        if ratio_threshold <= 0.0 {
+            return None;
+        }
+        let duration_threshold = self.inner.load_balancing.loss_failover_duration?;
+        let active = candidates.iter().find(|c| c.index == active_index)?;
+        let elevated_since = active.status.of(gate_transport).loss_elevated_since?;
+        if now.saturating_duration_since(elevated_since) < duration_threshold {
+            return None;
+        }
+        let active_weight = self.inner.uplinks[active_index].weight;
+        candidates.iter().position(|c| {
+            c.index != active_index
+                && c.healthy
+                && self.inner.uplinks[c.index].weight >= active_weight
+                && c.status
+                    .of(gate_transport)
+                    .loss_ratio
+                    .is_none_or(|ratio| ratio <= ratio_threshold)
+        })
+    }
+
     fn build_candidate_states(
         &self,
         transport: TransportKind,
@@ -745,6 +815,63 @@ impl UplinkManager {
                             to = %target.uplink.name,
                             transport = ?gate_transport,
                             "carrier-degraded failover: switching strict active uplink"
+                        );
+                        if commit_selection {
+                            self.set_active_uplink_index_for_transport(
+                                transport,
+                                target.index,
+                                reason,
+                                crate::types::SwitchIntent::Failover,
+                            )
+                            .await;
+                            let key = strict_route_key(
+                                transport,
+                                self.inner.load_balancing.routing_scope,
+                            );
+                            self.store_sticky_route(&key, target.index).await;
+                        }
+                        return vec![UplinkCandidate {
+                            index: target.index,
+                            uplink: target.uplink,
+                        }];
+                    }
+                    // Loss-driven failover: a probe-healthy active whose
+                    // actual data path has been continuously dropping packets
+                    // — the RTT-blind 2026-08-02 incident signature, where
+                    // probe health and EWMA both stayed clean — yields the
+                    // leg to a clean, equal-or-higher-weight sibling. Same
+                    // shape as the carrier-degraded check above (checked
+                    // right beside it, same `Failover` publication so
+                    // sessions migrate on a cluster instead of being cut);
+                    // both knobs (`loss_failover_ratio`,
+                    // `loss_failover_duration`) default off, so this is
+                    // inert until an operator sets a threshold from their
+                    // own fleet's measured loss.
+                    if let Some(pos) = self.loss_failover_switch_target(
+                        &candidates,
+                        active_index,
+                        gate_transport,
+                        now,
+                    ) {
+                        let target = candidates[pos].clone();
+                        let observed_ratio =
+                            candidate.status.of(gate_transport).loss_ratio.unwrap_or(0.0);
+                        let reason = format!(
+                            "loss-driven failover: active \"{}\" ran {:.1}% packet loss \
+                             (threshold {:.1}%) continuously beyond the configured duration; \
+                             switching to \"{}\" with clean loss",
+                            self.inner.uplinks[active_index].name,
+                            observed_ratio * 100.0,
+                            self.inner.load_balancing.loss_failover_ratio * 100.0,
+                            target.uplink.name,
+                        );
+                        tracing::info!(
+                            group = %self.inner.group_name,
+                            from = %self.inner.uplinks[active_index].name,
+                            to = %target.uplink.name,
+                            transport = ?gate_transport,
+                            loss_ratio = observed_ratio,
+                            "loss-driven failover: switching strict active uplink"
                         );
                         if commit_selection {
                             self.set_active_uplink_index_for_transport(
