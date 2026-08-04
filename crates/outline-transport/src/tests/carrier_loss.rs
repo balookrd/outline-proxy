@@ -87,3 +87,36 @@ async fn xhttp_stream_keeps_the_probe_captured_at_dial_time() {
     let sample = stream.loss_probe().expect("captured probe").sample().unwrap();
     assert!(sample.alive);
 }
+
+/// Two handles on one carrier must be recognisable as the same carrier —
+/// this is what stops a shared H2/H3 connection from being counted once per
+/// session that rides it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cloned_probe_keeps_the_carrier_identity() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let _server = listener.accept().await.unwrap();
+
+    let probe = CarrierLossProbe::from_tcp_stream(&client).unwrap();
+    let clone = probe.try_clone().unwrap();
+    assert_eq!(probe.identity(), clone.identity());
+}
+
+/// Distinct carriers must not collide, or the registry would drop a real
+/// second carrier as a duplicate and undercount the wire.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn distinct_carriers_have_distinct_identities() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let first = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let _first_server = listener.accept().await.unwrap();
+    let second = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let _second_server = listener.accept().await.unwrap();
+
+    let a = CarrierLossProbe::from_tcp_stream(&first).unwrap();
+    let b = CarrierLossProbe::from_tcp_stream(&second).unwrap();
+    assert_ne!(a.identity(), b.identity());
+}
