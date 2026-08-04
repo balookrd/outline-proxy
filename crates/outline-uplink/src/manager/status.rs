@@ -350,23 +350,12 @@ impl TransportStatusView for PerTransportStatus {
     }
 
     fn base_latency(&self) -> Option<Duration> {
-        // Prefer the active wire's measured RTT so cross-uplink scoring
-        // compares the latency of the wire that is **actually carrying
-        // traffic**. When the dial loop / probe walk has moved `active_wire`
-        // off primary, primary's `rtt_ewma` may belong to a completely
-        // different (now-broken) wire — using it would mis-rank this uplink
-        // against its peers.
-        //
-        // Fall back to primary's `rtt_ewma`, then to the latest probe
-        // `latency`, when the active wire has no per-wire sample yet (cold
-        // start right after a wire flip). The first per-wire probe writes
-        // the slot within one cycle, so this stale-primary window is bounded.
-        //
         // This is the trait's config-free contract: the raw latency, with no
         // carrier-loss penalty applied. Actual scoring goes through
         // [`PerTransportStatus::base_latency_with`], which needs the config
-        // to fold loss in and is unavailable here.
-        self.active_wire_rtt_ewma().or(self.rtt_ewma).or(self.latency)
+        // to fold loss in and is unavailable here. Both share one fallback
+        // chain — see [`PerTransportStatus::base_latency_and_wire_loss`].
+        self.base_latency_and_wire_loss().map(|(base, _loss)| base)
     }
 }
 
@@ -456,8 +445,41 @@ impl PerTransportStatus {
         self.fallback_carrier_loss.get(slot_idx).copied().unwrap_or_default()
     }
 
+    /// The latency this transport is ranked by, paired with the loss slot
+    /// **attributed to the same wire it came from** — the single fallback
+    /// chain shared by [`TransportStatusView::base_latency`] (raw value) and
+    /// [`Self::base_latency_with`] (loss-inflated value), so the two can
+    /// never drift apart.
+    ///
+    /// - The active wire's own RTT EWMA is preferred, so cross-uplink scoring
+    ///   compares the latency of the wire that is **actually carrying
+    ///   traffic**; paired with that same wire's own loss slot
+    ///   ([`Self::active_wire_loss`]).
+    /// - Falling back to primary's `rtt_ewma` (the active wire has no
+    ///   per-wire sample yet — cold start right after a wire flip, primary's
+    ///   `rtt_ewma` may otherwise belong to a completely different,
+    ///   now-broken wire) is paired with primary's own loss slot
+    ///   (`carrier_loss`, wire `0`), not the active wire's — mixing the two
+    ///   would score a latency sample against a loss verdict from an
+    ///   unrelated wire.
+    /// - Falling back further to the last probe `latency` sample carries no
+    ///   wire attribution at all, so it is paired with a default (no-loss)
+    ///   verdict: an unattributed base value cannot correctly carry an
+    ///   attributed loss penalty.
+    fn base_latency_and_wire_loss(&self) -> Option<(Duration, crate::loss::LossEwma)> {
+        if let Some(active) = self.active_wire_rtt_ewma() {
+            return Some((active, self.active_wire_loss()));
+        }
+        if let Some(primary) = self.rtt_ewma {
+            return Some((primary, self.carrier_loss));
+        }
+        Some((self.latency?, crate::loss::LossEwma::default()))
+    }
+
     /// Penalty-free latency this transport is ranked by, with carrier loss on
-    /// the active wire folded in.
+    /// the same wire the latency came from folded in — see
+    /// [`Self::base_latency_and_wire_loss`] for which wire's loss slot
+    /// applies to which fallback branch.
     ///
     /// Loss is applied as a multiplier on latency rather than as a separate
     /// term because that is what it physically is: every retransmit costs the
@@ -465,7 +487,11 @@ impl PerTransportStatus {
     /// the same RTT. Applying it here — the shared input of every routing
     /// scope — is also what makes it visible to Global scope under
     /// `auto_failback`, which discards `penalty` entirely and would otherwise
-    /// stay blind exactly where the field incident happened.
+    /// stay blind exactly where the field incident happened. This is only
+    /// true because the candidate-building call site scores from the
+    /// [`TransportSelectionView`] this method feeds (via [`Self::selection_view`]),
+    /// not from the raw, uninflated [`TransportStatusView::base_latency`] —
+    /// see `UplinkManager::build_candidate_states` in `manager/candidates.rs`.
     ///
     /// Loss never synthesises a latency: with no RTT sample the result stays
     /// `None`, because an uplink that has never been measured must not be
@@ -479,14 +505,18 @@ impl PerTransportStatus {
         &self,
         config: &crate::config::LoadBalancingConfig,
     ) -> Option<Duration> {
-        let base = TransportStatusView::base_latency(self)?;
-        let multiplier = self
-            .active_wire_loss()
-            .inflation(config.loss_latency_penalty_k, config.loss_latency_inflation_max);
+        let (base, loss) = self.base_latency_and_wire_loss()?;
+        let multiplier =
+            loss.inflation(config.loss_latency_penalty_k, config.loss_latency_inflation_max);
         if multiplier <= 1.0 {
             return Some(base);
         }
-        Some(Duration::from_secs_f64(base.as_secs_f64() * multiplier))
+        // `try_from_secs_f64` rather than the panicking `from_secs_f64`:
+        // `loss_latency_inflation_max` is operator-supplied and unbounded by
+        // the config loader, so an absurd cap must degrade to a saturated
+        // (effectively "worst possible") latency instead of panicking in the
+        // selection hot path.
+        Some(Duration::try_from_secs_f64(base.as_secs_f64() * multiplier).unwrap_or(Duration::MAX))
     }
 
     /// Fold one sampling window into the slot for `wire`.

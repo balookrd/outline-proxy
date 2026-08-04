@@ -545,7 +545,21 @@ impl UplinkManager {
                 // Health and score are resolved under the status lock (both are
                 // pure reads), and only the `Copy` scoring projection escapes it
                 // — no `UplinkStatus` clone per candidate.
+                //
+                // Score from the *view*, not the raw status: the view's
+                // `base_latency` is the loss-inflated one
+                // (`PerTransportStatus::base_latency_with`), while the raw
+                // status's `TransportStatusView::base_latency` impl is
+                // deliberately the uninflated value. Scoring from the raw
+                // status here would silently discard the carrier-loss
+                // penalty from every comparator that reads `CandidateState.score`
+                // (`primary_order`, `initial_strict_order`) — exactly the gap
+                // that let the 2026-08-02 incident's ordering survive.
+                // `selection_health` still takes the raw status: it reads
+                // fields (`last_any_wire_success`, `descent_window_*` gating
+                // beyond latency) the view does not carry.
                 let (healthy, score, status) = self.inner.with_status(index, |status| {
+                    let view = status.selection_view(&self.inner.load_balancing);
                     (
                         selection_health(
                             status,
@@ -556,14 +570,14 @@ impl UplinkManager {
                             &self.inner.load_balancing,
                         ),
                         selection_score(
-                            status,
+                            &view,
                             uplink.weight,
                             transport,
                             now,
                             &self.inner.load_balancing,
                             scope,
                         ),
-                        status.selection_view(&self.inner.load_balancing),
+                        view,
                     )
                 });
                 CandidateState {

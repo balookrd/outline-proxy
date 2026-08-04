@@ -199,6 +199,51 @@ async fn set_udp_status(manager: &UplinkManager, index: usize, healthy: bool, rt
     });
 }
 
+/// End-to-end regression for the 2026-08-02 field incident, at the layer
+/// that actually decides which uplink gets picked: with a carrier-loss
+/// coefficient configured, `tcp_candidates` — the entry point every dispatch
+/// path calls — must rank a lossy-but-fast uplink behind a clean-but-slower
+/// one.
+///
+/// Unit-testing `base_latency_with` in isolation (see `manager::status::tests`)
+/// is not sufficient to prove this: a real bug slipped through that coverage
+/// because `build_candidate_states` computed `CandidateState.score` — the
+/// sort key `primary_order` actually reads — from the *raw*, uninflated
+/// status, and only built the loss-inflated `SelectionView` as a side
+/// channel nothing scored from. This test pins the fix at the comparator,
+/// not just at the helper method.
+#[tokio::test]
+async fn candidate_ordering_ranks_a_lossy_fast_uplink_behind_a_clean_slower_one() {
+    let mut config = lb();
+    config.loss_latency_penalty_k = 20.0;
+    config.loss_latency_inflation_max = 4.0;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("lossy", "wss://lossy.example.com/tcp"),
+            make_uplink("clean", "wss://clean.example.com/tcp"),
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    set_tcp_status(&manager, 0, true, 210).await;
+    manager.inner.with_status_mut(0, |status| {
+        // 3% loss: multiplier = 1 + 20*0.03 = 1.6, inflating 210ms to 336ms —
+        // past the clean path's raw 300ms.
+        status.tcp.record_wire_loss_window(0, 10_000, 300, 200, 1.0);
+    });
+    set_tcp_status(&manager, 1, true, 300).await;
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let candidates = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        candidates[0].uplink.name, "clean",
+        "a 336ms loss-inflated path must rank behind a clean 300ms path"
+    );
+}
+
 #[tokio::test]
 async fn active_passive_keeps_current_healthy_uplink() {
     let mut config = lb();
