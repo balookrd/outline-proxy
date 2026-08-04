@@ -76,8 +76,12 @@ async fn connect_tls_h2(
     addr: SocketAddr,
     host: &str,
     fwmark: Option<u32>,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+) -> Result<(tokio_rustls::client::TlsStream<TcpStream>, Option<crate::CarrierLossProbe>)> {
     let tcp = connect_tcp_socket(addr, fwmark).await?;
+    // Captured before the TLS handshake consumes `tcp`: once wrapped in a
+    // `TlsStream` the raw socket is unreachable from the outside, and after
+    // this dial completes there is no other point that could recover it.
+    let loss_probe = crate::CarrierLossProbe::from_tcp_stream(&tcp);
     let connector = TlsConnector::from(h2_client_tls_config());
     let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
         ServerName::IpAddress(ip.into())
@@ -85,10 +89,11 @@ async fn connect_tls_h2(
         ServerName::try_from(host.to_string())
             .map_err(|_| anyhow!("invalid TLS server name: {host}"))?
     };
-    connector
+    let tls = connector
         .connect(server_name, tcp)
         .await
-        .context("TLS handshake for h2 websocket failed")
+        .context("TLS handshake for h2 websocket failed")?;
+    Ok((tls, loss_probe))
 }
 
 // ── H2Io ──────────────────────────────────────────────────────────────────────
@@ -211,6 +216,11 @@ struct SharedH2Connection {
     // (observed at close by the driver task) to correlate session_death bursts
     // with a single underlying connection's death.
     streams_opened: Arc<AtomicU64>,
+    /// Loss counters for the TCP socket underneath, captured at dial time
+    /// (before it is handed to the h2 handshake, which is the last point the
+    /// raw socket is reachable). `None` on a non-Linux build or when the fd
+    /// could not be duplicated — best-effort, never fails the dial.
+    loss_probe: Option<crate::CarrierLossProbe>,
     _driver_task: AbortOnDrop,
     // Declared last so it drops *after* `_driver_task`: the driver is aborted
     // first, then this guard writes the `conn_life` close line the aborted task
@@ -342,6 +352,14 @@ impl SharedConnectionHealth for SharedH2Connection {
 
     fn mode(&self) -> &'static str {
         "h2"
+    }
+
+    fn loss_probe(&self) -> Option<crate::CarrierLossProbe> {
+        // The shared connection outlives every stream on it, so handing out a
+        // second probe would duplicate one carrier's counters across sessions.
+        // Sampling is idempotent, so the manager de-duplicates by probe id at
+        // registration instead of cloning the fd here.
+        self.loss_probe.as_ref().and_then(|probe| probe.try_clone())
     }
 }
 
@@ -492,18 +510,17 @@ async fn connect_h2_connection(
     fwmark: Option<u32>,
     cache_key: Option<H2ConnectionKey>,
 ) -> Result<SharedH2Connection> {
-    let (send_request, conn) = timeout(FRESH_CONNECT_TIMEOUT, async {
-        let io = if use_tls {
-            H2Io::Tls {
-                inner: connect_tls_h2(server_addr, server_name, fwmark).await?,
-            }
+    let (send_request, conn, loss_probe) = timeout(FRESH_CONNECT_TIMEOUT, async {
+        let (io, loss_probe) = if use_tls {
+            let (tls, loss_probe) = connect_tls_h2(server_addr, server_name, fwmark).await?;
+            (H2Io::Tls { inner: tls }, loss_probe)
         } else {
-            H2Io::Plain {
-                inner: connect_tcp_socket(server_addr, fwmark).await?,
-            }
+            let tcp = connect_tcp_socket(server_addr, fwmark).await?;
+            let loss_probe = crate::CarrierLossProbe::from_tcp_stream(&tcp);
+            (H2Io::Plain { inner: tcp }, loss_probe)
         };
 
-        http2::Builder::new(TokioExecutor::new())
+        let (send_request, conn) = http2::Builder::new(TokioExecutor::new())
             .timer(TokioTimer::new())
             .initial_stream_window_size(Some(h2_stream_window_size()))
             .initial_connection_window_size(Some(h2_connection_window_size()))
@@ -516,7 +533,8 @@ async fn connect_h2_connection(
             .keep_alive_timeout(Duration::from_secs(10))
             .handshake::<_, Empty<Bytes>>(TokioIo::new(io))
             .await
-            .context("HTTP/2 handshake failed")
+            .context("HTTP/2 handshake failed")?;
+        Ok::<_, anyhow::Error>((send_request, conn, loss_probe))
     })
     .await
     .map_err(|_| {
@@ -563,6 +581,7 @@ async fn connect_h2_connection(
         send_request,
         closed,
         streams_opened,
+        loss_probe,
         _driver_task: driver_task,
         _conn_life: ConnLifeGuard::new(conn_life),
     })

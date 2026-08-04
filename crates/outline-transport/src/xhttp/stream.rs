@@ -60,6 +60,11 @@ pub(crate) struct XhttpStream {
     /// Datagrams recovered from the last chunk but not yet handed to the
     /// caller. Bounded by the chunk that produced them.
     pub(super) pending_in: VecDeque<Bytes>,
+    /// Loss counters for the carrier underneath, captured at dial time. The
+    /// stream owns only channels and a driver task, so the socket (h1/h2) or
+    /// the QUIC connection (h3) is unreachable from here afterwards — the
+    /// probe has to be taken while the dialer still holds it.
+    pub(super) loss_probe: Option<crate::CarrierLossProbe>,
     // The driver task owns the h2 SendRequest, the GET reader
     // sub-task and the POST fan-out sub-tasks. Dropping the stream
     // aborts the driver, which cancels every sub-task and frees the
@@ -103,11 +108,19 @@ impl XhttpStream {
         self.udp_records
     }
 
-    /// Constructor used by the h3 sibling module: it builds the
-    /// driver task and the channel pair on its own and hands the
-    /// finished triple here. Keeps the field-level details of
-    /// `XhttpStream` (closed flag, channel typing) private to this
-    /// module while giving carrier modules a single way in.
+    /// The carrier's loss probe, captured at dial time. `None` on a
+    /// non-Linux build, a carrier whose socket could not yield one, or the
+    /// h1 fallback carrier (which dials two plain TCP sockets and is not
+    /// yet wired up to this signal).
+    pub(crate) fn loss_probe(&self) -> Option<&crate::CarrierLossProbe> {
+        self.loss_probe.as_ref()
+    }
+
+    /// Constructor used by the h1/h2/h3 sibling modules: each builds the
+    /// driver task and the channel pair on its own and hands the finished
+    /// set here. Keeps the field-level details of `XhttpStream` (closed
+    /// flag, channel typing) private to this module while giving carrier
+    /// modules a single way in.
     pub(super) fn from_channels(
         incoming: InboundReceiver,
         outgoing: BudgetedSink<Message>,
@@ -115,6 +128,7 @@ impl XhttpStream {
         active_submode: XhttpSubmode,
         carrier_is_h3: bool,
         udp_records: bool,
+        loss_probe: Option<crate::CarrierLossProbe>,
     ) -> Self {
         Self {
             incoming,
@@ -125,7 +139,30 @@ impl XhttpStream {
             udp_records,
             recv_records: udp_records.then(UdpRecordDecoder::new),
             pending_in: VecDeque::new(),
+            loss_probe,
             _driver: driver,
+        }
+    }
+
+    /// Test-only: an otherwise inert stream carrying just the loss probe, so
+    /// the probe's survival through the struct can be asserted without
+    /// standing up an h2 connection. Gated to Linux alongside its only
+    /// caller (the `TCP_INFO`-backed probe tests) to avoid a dead-code
+    /// warning on other dev platforms.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn for_loss_probe_test(loss_probe: Option<crate::CarrierLossProbe>) -> Self {
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        Self {
+            incoming: rx,
+            outgoing: crate::carrier_queue::BudgetedSink::for_test(),
+            closed: false,
+            active_submode: super::XhttpSubmode::PacketUp,
+            carrier_is_h3: false,
+            udp_records: false,
+            recv_records: None,
+            pending_in: Default::default(),
+            loss_probe,
+            _driver: crate::guards::AbortOnDrop::noop(),
         }
     }
 }

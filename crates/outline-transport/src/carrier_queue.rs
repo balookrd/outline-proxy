@@ -227,6 +227,16 @@ impl<T: Send + 'static> BudgetedSink<T> {
     pub(crate) fn is_closed(&self) -> bool {
         self.tx.is_closed()
     }
+
+    /// Test-only: a sink with no live consumer, for tests that need to
+    /// construct a stream but never drive traffic through this half. Its
+    /// only caller today (`XhttpStream::for_loss_probe_test`) is exercised
+    /// from a Linux-gated test, so this is gated the same way to avoid a
+    /// dead-code warning on other dev platforms.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn for_test() -> Self {
+        sink_channel().0
+    }
 }
 
 /// Builds a byte-budgeted queue with a `Sink` producer half.

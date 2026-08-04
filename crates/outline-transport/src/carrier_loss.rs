@@ -58,6 +58,21 @@ impl CarrierLossProbe {
         None
     }
 
+    /// A second handle onto the same carrier. Used where one shared connection
+    /// backs many streams and each dial wants its own registration.
+    pub fn try_clone(&self) -> Option<Self> {
+        match self {
+            #[cfg(feature = "h3")]
+            Self::Quic(connection) => Some(Self::Quic(connection.clone())),
+            #[cfg(target_os = "linux")]
+            Self::Tcp(fd) => fd.try_clone().ok().map(Self::Tcp),
+            // See the matching wildcard arm in `sample` above: only reached on
+            // a build with neither variant, where `CarrierLossProbe` is empty.
+            #[cfg(not(any(feature = "h3", target_os = "linux")))]
+            _ => None,
+        }
+    }
+
     /// Read the carrier's current counters. `None` when the carrier cannot be
     /// queried at all (kernel too old to report `tcpi_segs_out`, `getsockopt`
     /// failure); the caller treats that as "no sample this tick".

@@ -37,6 +37,7 @@ fn test_stream(
         XhttpSubmode::PacketUp,
         false,
         udp_records,
+        None,
     );
     (in_tx, stream, out_rx)
 }
