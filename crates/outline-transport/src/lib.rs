@@ -228,7 +228,7 @@ pub use dns::resolve_host_with_preference;
 pub use dns_cache::{DEFAULT_DNS_CACHE_CAPACITY, DEFAULT_DNS_CACHE_TTL, DnsCache};
 
 // Entry points — connection constructors for TCP/UDP/HTTP-family transports.
-pub use carrier_loss::{CarrierLossProbe, CarrierLossSample};
+pub use carrier_loss::{CarrierLossCounters, CarrierLossProbe, CarrierLossSample};
 pub use dial_plan::{
     DialNetworkOptions, DialResumeOptions, TransportDialOptions, connect_transport,
 };
