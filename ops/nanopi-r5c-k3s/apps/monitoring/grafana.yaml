@@ -1,0 +1,67 @@
+# Grafana.
+#
+# Singleton on NFS: SQLite state (dashboards, datasources) follows the pod on a
+# node move. SQLite-over-NFS is safe with a single writer, which a one-replica
+# Grafana is. For extra safety, provision dashboards from git and treat the PVC
+# as recoverable rather than precious.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: grafana }
+  template:
+    metadata:
+      labels: { app: grafana }
+    spec:
+      securityContext:
+        fsGroup: 472            # grafana uid/gid — needs write on the NFS subdir
+        runAsUser: 472
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.4.0
+          ports:
+            - { containerPort: 3000, name: http }
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: grafana-admin, key: password }
+            - { name: GF_DATABASE_TYPE, value: sqlite3 }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/grafana }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { memory: 256Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 1Gi
+---
+# The grafana-admin Secret is NOT here — create it out of band before deploy
+# (see grafana-admin.secret.example.yaml). deploy.sh skips *.example.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  selector: { app: grafana }
+  ports:
+    - { port: 3000, targetPort: 3000 }

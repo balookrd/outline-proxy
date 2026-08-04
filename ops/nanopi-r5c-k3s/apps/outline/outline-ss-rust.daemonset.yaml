@@ -1,0 +1,45 @@
+# outline-ss-rust — server data plane.
+# Variant A: DaemonSet — same edge role on every node. Delete if pinning instead.
+# No PVC: stateless, config via ConfigMap, secrets via Secret (out of git).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: outline-ss-rust
+  namespace: outline
+spec:
+  selector:
+    matchLabels: { app: outline-ss-rust }
+  template:
+    metadata:
+      labels: { app: outline-ss-rust }
+    spec:
+      hostNetwork: true                 # physical uplink / low-overhead ingress
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: outline-ss-rust
+          image: <REGISTRY>/outline-ss-rust:<TAG>    # TODO: build arm64 image + push
+          args: ["--config", "/etc/outline/config.toml"]
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]          # SO_MARK / fwmark routing
+          volumeMounts:
+            - { name: config, mountPath: /etc/outline, readOnly: true }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { memory: 384Mi }        # small profile, see nanopi104 notes
+      volumes:
+        - name: config
+          projected:
+            sources:
+              - configMap: { name: outline-ss-config }
+              - secret:    { name: outline-ss-secrets }   # PSK/keys — create out of band
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: outline-ss-config
+  namespace: outline
+data:
+  config.toml: |
+    # TODO: server config (listeners, outbound, control). No secrets here —
+    # PSK/keys go into the outline-ss-secrets Secret and are projected together.

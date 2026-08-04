@@ -1,0 +1,55 @@
+# outline-ws-rust — client (SOCKS5/TUN ingress, uplink LB).
+# Variant B: pinned Deployment — bound to a specific node's uplink. Delete if
+# a DaemonSet fits instead. No PVC: stateless, config via ConfigMap/Secret.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outline-ws-rust
+  namespace: outline
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: outline-ws-rust }
+  template:
+    metadata:
+      labels: { app: outline-ws-rust }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/hostname: k3s-1   # TODO: pin to the node owning the uplink
+      containers:
+        - name: outline-ws-rust
+          image: <REGISTRY>/outline-ws-rust:<TAG>     # TODO: build arm64 image + push
+          args: ["--config", "/etc/outline/config.toml"]
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]          # TUN + fwmark
+          volumeMounts:
+            - { name: config, mountPath: /etc/outline, readOnly: true }
+            - { name: tun,    mountPath: /dev/net/tun }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { memory: 512Mi }
+      volumes:
+        - name: config
+          projected:
+            sources:
+              - configMap: { name: outline-ws-config }
+              - secret:    { name: outline-ws-secrets }   # UUID/tokens — create out of band
+        - name: tun
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: outline-ws-config
+  namespace: outline
+data:
+  config.toml: |
+    # TODO: client config (uplinks, routing, TUN). No secrets here — UUID/tokens
+    # go into the outline-ws-secrets Secret and are projected together.

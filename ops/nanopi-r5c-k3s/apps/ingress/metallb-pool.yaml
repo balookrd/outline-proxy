@@ -1,0 +1,25 @@
+# MetalLB address pool + L2 advertisement.
+# Apply after `helm install metallb` and the controller is Ready.
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: lan-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 198.18.1.200-198.18.1.210
+  autoAssign: true
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: lan-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - lan-pool
+  # Announce VIPs on the home-facing port only. Without this MetalLB may pick
+  # lan0 (the 10.10.10.0/24 interconnect) and the VIP would be invisible to LAN
+  # clients. wan0 carries 198.18.1.0/24, same L2 as the clients.
+  interfaces:
+    - wan0

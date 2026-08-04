@@ -1,0 +1,50 @@
+# Helm values for Traefik (traefik/traefik chart, v3).
+# Install:
+#   helm install traefik traefik/traefik -n traefik --create-namespace \
+#     -f traefik.values.yaml
+#
+# LAN-only, HTTP. TLS/websecure left off — add a websecure entrypoint +
+# cert-manager later if anything needs HTTPS.
+
+deployment:
+  # Single replica is fine for a home LAN; MetalLB moves the VIP on node loss,
+  # and Traefik reschedules. Bump to 2 if you want zero-blip ingress.
+  replicas: 1
+
+service:
+  type: LoadBalancer
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: 198.18.1.200
+
+ports:
+  web:
+    port: 8000
+    exposedPort: 80        # LAN clients hit :80 on 198.18.1.200
+    expose:
+      default: true
+  websecure:
+    expose:
+      default: false       # no TLS yet
+  traefik:
+    expose:
+      default: false       # dashboard/API stays internal (port-forward to view)
+
+providers:
+  kubernetesIngress:
+    enabled: true          # watch standard Ingress objects
+  kubernetesCRD:
+    enabled: true          # IngressRoute CRDs, if needed later
+
+# 4 GB nodes — keep Traefik lean.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 192Mi
+
+logs:
+  general:
+    level: INFO
+  access:
+    enabled: false         # turn on only when debugging routing

@@ -1,0 +1,66 @@
+# zigbee2mqtt.
+#
+# Coordinator is network (TCP), so the pod is NOT pinned to hardware and can
+# migrate between nodes — data lives on NFS and follows it. Still a singleton:
+# only one z2m may hold the coordinator session at a time, so replicas: 1 +
+# Recreate. Two replicas would fight over the coordinator and corrupt the mesh.
+#
+# database.db (the Zigbee network map) is the one file you must never lose —
+# nfs onDelete=retain guards accidental PVC deletion; back it up too.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zigbee2mqtt
+  namespace: home
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: zigbee2mqtt }
+  template:
+    metadata:
+      labels: { app: zigbee2mqtt }
+    spec:
+      containers:
+        - name: zigbee2mqtt
+          image: koenkk/zigbee2mqtt:2.1.1
+          ports:
+            - { containerPort: 8080, name: frontend }
+          env:
+            # TCP coordinator: adapter over the network, not a USB device.
+            - { name: ZIGBEE2MQTT_CONFIG_SERIAL_PORT,    value: "tcp://<COORDINATOR_IP>:6638" }  # TODO
+            - { name: ZIGBEE2MQTT_CONFIG_SERIAL_ADAPTER, value: "ember" }   # TODO: match your coordinator fw
+            - { name: ZIGBEE2MQTT_CONFIG_MQTT_SERVER,    value: "mqtt://mosquitto.home:1883" }
+            - { name: ZIGBEE2MQTT_CONFIG_FRONTEND_ENABLED, value: "true" }
+          volumeMounts:
+            - { name: data, mountPath: /app/data }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { memory: 256Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: zigbee2mqtt-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zigbee2mqtt-data
+  namespace: home
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zigbee2mqtt
+  namespace: home
+spec:
+  selector: { app: zigbee2mqtt }
+  ports:
+    - { port: 8080, targetPort: 8080 }

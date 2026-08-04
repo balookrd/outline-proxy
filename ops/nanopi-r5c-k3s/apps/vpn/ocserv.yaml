@@ -1,0 +1,81 @@
+# ocserv — OpenConnect (AnyConnect-compatible) VPN server.
+#
+# Network service like outline: NET_ADMIN, /dev/net/tun, hostNetwork, NAT.
+# Mostly stateless — certs via Secret, config via ConfigMap; only ocpasswd
+# (the user db) needs a small persistent volume since it changes when you
+# add users.
+#
+# ⚠️ Port conflict: ocserv listens on 443 tcp+udp by default. If outline or an
+# ingress already binds 443 on the same node under hostNetwork, move one of
+# them to another port or pin them to different nodes. See outline/README.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocserv
+  namespace: vpn
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: ocserv }
+  template:
+    metadata:
+      labels: { app: ocserv }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/hostname: k3s-3     # TODO: pin to the node with the public uplink
+      containers:
+        - name: ocserv
+          image: <REGISTRY>/ocserv:<TAG>   # TODO: no trusted official arm64 image — build one
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN]
+          volumeMounts:
+            - { name: config,   mountPath: /etc/ocserv/ocserv.conf, subPath: ocserv.conf }
+            - { name: certs,    mountPath: /etc/ocserv/certs, readOnly: true }
+            - { name: ocpasswd, mountPath: /etc/ocserv/ocpasswd-dir }
+            - { name: tun,      mountPath: /dev/net/tun }
+          resources:
+            requests: { cpu: 100m, memory: 64Mi }
+            limits:   { memory: 192Mi }
+      volumes:
+        - name: config
+          configMap: { name: ocserv-config }
+        - name: certs
+          secret: { secretName: ocserv-certs }        # server cert+key, CA — create out of band
+        - name: ocpasswd
+          persistentVolumeClaim: { claimName: ocserv-passwd }
+        - name: tun
+          hostPath: { path: /dev/net/tun, type: CharDevice }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ocserv-config
+  namespace: vpn
+data:
+  ocserv.conf: |
+    # TODO: ocserv config. Point cert/key/ca at /etc/ocserv/certs/*,
+    # auth "plain[passwd=/etc/ocserv/ocpasswd-dir/ocpasswd]".
+    # tcp-port = 443 / udp-port = 443  (mind the port-conflict note above)
+    # ipv4-network = 10.20.0.0/24  (avoid 10.42/10.43 — pods/services)
+---
+# ocpasswd lives here so added users survive a pod move. Tiny.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ocserv-passwd
+  namespace: vpn
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 100Mi
+---
+# The ocserv-certs Secret is NOT here — create it out of band before deploy
+# (see ocserv-certs.secret.example.yaml). deploy.sh skips *.example.yaml, and
+# this whole file is skipped anyway until the <REGISTRY>/<TAG> image is filled.
