@@ -686,6 +686,73 @@ k3s kubectl delete ds cni-probe                 # мосты остаются, �
 
 Главная метрика здоровья на таком железе — `etcd_disk_wal_fsync_duration_seconds`.
 
+### Сколько control plane ест на холостом ходу
+
+Замер на пустом кластере (2026-08-04, все три ноды): `k3s-server` — **0.42–0.50 ядра из
+четырёх**, RSS 500–570 МБ. В `top` это выглядит как `88% id` при 4 ядрах, то есть машина
+занята на 12–20%. Не пугаться цифры «50%» в `ps`: там среднее за всю жизнь процесса, а не
+доля машины.
+
+Это нормальный idle для HA: в одном процессе `k3s-server` живут apiserver,
+controller-manager, scheduler, **embedded etcd**, kubelet, kube-proxy и flannel, причём
+raft шлёт heartbeat каждые 500 мс, три apiserver'а держат watch'и друг к другу и идёт
+периодическая компакция. Цена кворума 2 из 3.
+
+Проверка, что это именно idle, а не бесконечная починка чего-нибудь:
+
+```bash
+k3s kubectl get events -A --sort-by=.lastTimestamp | tail -12
+curl -s localhost:2381/metrics | grep -E '^etcd_server_proposals_committed_total|^etcd_server_leader_changes_seen_total'
+sleep 60   # повторить и посмотреть темп
+```
+
+`proposals_committed` на пустом кластере растёт на единицы-десятки в секунду; сотни —
+признак того, что кто-то долбит apiserver. `leader_changes_seen_total` должен стоять на
+месте: растущий счётчик означает, что etcd переизбирает лидера, и вот это уже проблема
+(диск или сеть).
+
+### Флаги после установки: `/etc/rancher/k3s/config.yaml`
+
+Не всё требует переустановки. `--node-ip`, `--tls-san`, `--flannel-backend` и
+`--cluster-init` зашиты в сертификаты и bootstrap-данные (см.
+[«Снос и переустановка»](#снос-и-переустановка-k3s)), а вот `disable`, `kubelet-arg`,
+`etcd-arg` и прочее меняются файлом плюс рестартом.
+
+```bash
+install -d -m 0700 /etc/rancher/k3s
+cat > /etc/rancher/k3s/config.yaml <<'EOF'
+# Options that can be changed with a restart. Keep the full disable list here:
+# repeated flags in the file and on the command line do not reliably merge.
+disable:
+  - traefik
+  - servicelb
+  - metrics-server
+EOF
+systemctl restart k3s
+```
+
+**Список `disable` дублируется целиком**, вместе с `traefik` и `servicelb` из шага 12 —
+иначе есть риск, что файл перекроет флаги командной строки и отключённые компоненты
+вернутся.
+
+`metrics-server` выключен намеренно: он опрашивает kubelet всех нод каждые 15 секунд и
+на этом железе стоил ~6% ядра, а нужен только для `kubectl top` и HPA. Метрики в этом
+парке собирает VictoriaMetrics (шаг 13), которая скрейпит kubelet напрямую и в
+metrics-server не нуждается. Если `kubectl top` понадобится — убрать строку и
+перезапустить, k3s поставит его обратно.
+
+Раскатывать **по одной ноде**, дожидаясь `Ready` перед переходом к следующей: рестарт
+k3s уводит control plane этой ноды, и кворум 2 из 3 держится, только пока соседи живы.
+
+```bash
+systemctl restart k3s && sleep 60
+systemctl is-active k3s
+k3s kubectl get nodes                       # все три Ready
+k3s kubectl get deploy -n kube-system       # metrics-server исчез
+```
+
+k3s удаляет ресурсы отключённого компонента сам — руками `kubectl delete` не нужно.
+
 ## Снос и переустановка k3s
 
 Часть флагов `INSTALL_K3S_EXEC` меняется **только переустановкой с нуля**: `--node-ip`,
