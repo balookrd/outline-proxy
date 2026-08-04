@@ -25,6 +25,7 @@ fn dummy_xhttp_stream(carrier_is_h3: bool) -> XhttpStream {
         carrier_is_h3,
         false,
         None,
+        None,
     )
 }
 

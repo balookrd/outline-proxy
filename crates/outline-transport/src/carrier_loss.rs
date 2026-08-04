@@ -11,6 +11,8 @@
 
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+#[cfg(feature = "h3")]
+use std::sync::Weak;
 
 /// One reading of a carrier's cumulative loss counters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,28 +29,54 @@ pub struct CarrierLossSample {
     pub alive: bool,
 }
 
-/// A handle that can read [`CarrierLossSample`] from a live carrier.
+/// A carrier that can report its own loss counters. Implemented by the
+/// connection wrappers themselves (`SharedH3Connection`, the XHTTP-over-H3
+/// carrier), so a probe can read a carrier without keeping it alive: the
+/// probe holds a `Weak<dyn CarrierLossCounters>`, and when the transport
+/// drops its last strong reference the carrier closes normally — quinn's
+/// implicit close-on-drop, the endpoint's UDP socket teardown, all of it —
+/// and the probe starts reporting itself dead instead of pinning any of that
+/// open.
+pub trait CarrierLossCounters: Send + Sync {
+    /// Read this carrier's current counters. `None` means the carrier is
+    /// still alive but its counters could not be read right now (mirrors
+    /// `CarrierLossProbe::sample`'s "no sample this tick" contract). A
+    /// carrier that has actually gone away is not represented here at all —
+    /// that case is handled one layer up, by the `Weak`'s `upgrade()` failing
+    /// before this method is ever called.
+    fn loss_counters(&self) -> Option<CarrierLossSample>;
+}
+
+/// A handle that can read [`CarrierLossSample`] from a carrier.
 ///
-/// Both variants retain a handle to the carrier for as long as this probe is
-/// registered, which is exactly what lets a registration outlive the code
-/// that originally dialed the carrier — but it also means an abandoned probe
-/// (a retired wire, or a standby that stopped being dialed) keeps that
-/// carrier from tearing down on its own. The registry that holds these probes
-/// is responsible for evicting one once it goes stale — see
-/// `outline_uplink::loss::MAX_IDLE_TICKS` — which is what actually lets the
-/// carrier close.
+/// The TCP variant retains a handle (a duplicated fd) to the carrier for as
+/// long as this probe is registered, which is exactly what lets a
+/// registration outlive the code that originally dialed the carrier — but it
+/// also means an abandoned probe (a retired wire, or a standby that stopped
+/// being dialed) keeps that carrier from tearing down on its own. The
+/// registry that holds these probes is responsible for evicting one once it
+/// goes stale — see `outline_uplink::loss::MAX_IDLE_TICKS` — which is what
+/// actually lets a TCP carrier close.
+///
+/// The QUIC variant does not have this problem: it observes through a `Weak`
+/// (see [`CarrierLossCounters`]), so it never extends the carrier's life in
+/// the first place — staleness eviction still applies to it (belt and
+/// braces), but nothing here depends on it for QUIC to close on its own.
 #[derive(Debug)]
 pub enum CarrierLossProbe {
-    /// QUIC carrier (`ws_h3`, `xhttp_h3`). The clone is cheap — a
-    /// `quinn::Connection` is `Arc`-backed — but quinn only runs its implicit
-    /// close-on-drop once every clone's ref count reaches zero (quinn
-    /// 0.11.9), so a probe nobody evicts pins the connection open
-    /// indefinitely: the endpoint driver keeps running, its UDP socket stays
-    /// open, and the client's own 8–12 s QUIC keepalive against a 28–35 s
-    /// `max_idle_timeout` means the carrier actively PINGs and never reaches
-    /// that timeout on its own.
+    /// QUIC carrier (`ws_h3`, `xhttp_h3`). `counters` is a `Weak` handle onto
+    /// the connection wrapper that owns the real `quinn::Connection` (see
+    /// [`CarrierLossCounters`]) — upgrading it fails, rather than reading
+    /// stale data, once the transport has dropped its last strong reference.
+    /// `identity` is captured once at construction, independent of
+    /// `counters`, so it stays answerable even after the carrier is gone: the
+    /// registry needs to recognise (and evict) a probe whose `counters` no
+    /// longer upgrade.
     #[cfg(feature = "h3")]
-    Quic(quinn::Connection),
+    Quic {
+        counters: Weak<dyn CarrierLossCounters>,
+        identity: u64,
+    },
     /// TCP carrier (`ws`, `h2`, `xhttp` over TLS/TCP). Holds a **duplicate** of
     /// the carrier's descriptor: without the `dup`, once the carrier closes the
     /// fd number is recycled by an unrelated socket and this probe would report
@@ -88,11 +116,16 @@ impl CarrierLossProbe {
     }
 
     /// A second handle onto the same carrier. Used where one shared connection
-    /// backs many streams and each dial wants its own registration.
+    /// backs many streams and each dial wants its own registration. Cloning
+    /// the QUIC variant only clones the `Weak` (and the `Copy` identity), so
+    /// it never adds a strong reference to the carrier.
     pub fn try_clone(&self) -> Option<Self> {
         match self {
             #[cfg(feature = "h3")]
-            Self::Quic(connection) => Some(Self::Quic(connection.clone())),
+            Self::Quic { counters, identity } => Some(Self::Quic {
+                counters: counters.clone(),
+                identity: *identity,
+            }),
             #[cfg(target_os = "linux")]
             Self::Tcp { fd, identity } => {
                 fd.try_clone().ok().map(|fd| Self::Tcp { fd, identity: *identity })
@@ -114,12 +147,13 @@ impl CarrierLossProbe {
     /// or handed to it at construction time.
     pub fn identity(&self) -> u64 {
         match self {
-            // `stable_id()` is quinn's own per-connection handle: stable for
-            // the connection's life and unaffected by cloning the
-            // `Connection` (it is `Arc`-backed, so a clone points at the same
-            // inner state).
+            // Captured once at construction (quinn's `stable_id()` for the
+            // QUIC variant) and copied by `try_clone`, never re-derived
+            // through `counters` — the registry must still recognise this
+            // probe by identity after the carrier, and therefore the `Weak`,
+            // is dead.
             #[cfg(feature = "h3")]
-            Self::Quic(connection) => connection.stable_id() as u64,
+            Self::Quic { identity, .. } => *identity,
             #[cfg(target_os = "linux")]
             Self::Tcp { identity, .. } => *identity,
             // Neither variant exists on this build: see the wildcard arm in
@@ -130,19 +164,24 @@ impl CarrierLossProbe {
         }
     }
 
-    /// Read the carrier's current counters. `None` when the carrier cannot be
-    /// queried at all (kernel too old to report `tcpi_segs_out`, `getsockopt`
-    /// failure); the caller treats that as "no sample this tick".
+    /// Read the carrier's current counters. `None` when the carrier is alive
+    /// but cannot be queried right now (kernel too old to report
+    /// `tcpi_segs_out`, `getsockopt` failure); the caller treats that as "no
+    /// sample this tick". A carrier that is actually gone is a *different*
+    /// case: `Some(sample)` with `alive: false`, never `None` — the registry
+    /// only evicts on the former, so collapsing the two would leave a dead
+    /// QUIC probe sitting in the registry forever (exactly the bug this type
+    /// exists to avoid).
     pub fn sample(&self) -> Option<CarrierLossSample> {
         match self {
             #[cfg(feature = "h3")]
-            Self::Quic(connection) => {
-                let path = connection.stats().path;
-                Some(CarrierLossSample {
-                    sent: path.sent_packets,
-                    lost: path.lost_packets,
-                    alive: connection.close_reason().is_none(),
-                })
+            Self::Quic { counters, .. } => match counters.upgrade() {
+                Some(counters) => counters.loss_counters(),
+                // The transport dropped its last strong reference: the
+                // carrier is gone (or on its way out) and this probe must say
+                // so, not go silent — silence (`None`) would read to the
+                // registry as "no sample this tick" and never evict.
+                None => Some(CarrierLossSample { sent: 0, lost: 0, alive: false }),
             },
             #[cfg(target_os = "linux")]
             Self::Tcp { fd, .. } => sample_tcp_info(fd),

@@ -249,6 +249,10 @@ pub(super) async fn connect_xhttp_h2(
                 false,
                 udp_records,
                 loss_probe,
+                // No owned QUIC carrier — h2's loss probe duplicates a TCP fd
+                // instead (see `CarrierLossProbe::Tcp`), which needs no
+                // strong handle here.
+                None,
             ),
             issued_session_id,
             ack_prefix_echo,

@@ -1,7 +1,14 @@
-// Both tests below are Linux-only (`TCP_INFO` sampling is gated to Linux); on
-// other platforms this import would otherwise be unused.
-#[cfg(target_os = "linux")]
+// The TCP tests below are Linux-only (`TCP_INFO` sampling is gated to
+// Linux); the QUIC tests are gated to the `h3` feature instead. Import once,
+// under whichever cfg combination is active, so a build with both active
+// (an ordinary Linux `--features h3` run) does not import `CarrierLossProbe`
+// twice.
+#[cfg(any(target_os = "linux", feature = "h3"))]
 use crate::carrier_loss::CarrierLossProbe;
+#[cfg(feature = "h3")]
+use crate::carrier_loss::{CarrierLossCounters, CarrierLossSample};
+#[cfg(feature = "h3")]
+use std::sync::Arc;
 
 /// A freshly connected socket has already sent at least the SYN, so the
 /// sampler must report a non-zero send count and a live carrier.
@@ -119,4 +126,83 @@ async fn distinct_carriers_have_distinct_identities() {
     let a = CarrierLossProbe::from_tcp_stream(&first).unwrap();
     let b = CarrierLossProbe::from_tcp_stream(&second).unwrap();
     assert_ne!(a.identity(), b.identity());
+}
+
+// ── QUIC: `CarrierLossProbe::Quic` observes through a `Weak`, not a clone ──
+//
+// A minimal, real implementer of `CarrierLossCounters`: it reports a fixed
+// sample, but the `Arc`/`Weak` pair wrapped around it, and the drop that
+// invalidates the `Weak`, are exactly the mechanics `SharedH3Connection`
+// (`h3/shared.rs`) and the XHTTP-over-H3 carrier (`xhttp/h3.rs`) wire up in
+// production. These tests exercise `CarrierLossProbe`'s real `sample()` /
+// `identity()` through a real `Weak` that a real `Arc` drop invalidates —
+// nothing about the probe's own logic is stubbed out, only the specific
+// counters a production carrier would report.
+
+#[cfg(feature = "h3")]
+struct StubCarrier(CarrierLossSample);
+
+#[cfg(feature = "h3")]
+impl CarrierLossCounters for StubCarrier {
+    fn loss_counters(&self) -> Option<CarrierLossSample> {
+        Some(self.0)
+    }
+}
+
+#[cfg(feature = "h3")]
+fn quic_probe_over(carrier: &Arc<StubCarrier>, identity: u64) -> CarrierLossProbe {
+    // Unsize to `Arc<dyn CarrierLossCounters>` first: `Arc::downgrade` is
+    // generic in `T`, and handing it a concrete `&Arc<StubCarrier>` directly
+    // while the target type says `Weak<dyn CarrierLossCounters>` fails to
+    // unify. Downgrading an already-unsized `Arc` needs no such dance.
+    let dyn_carrier: Arc<dyn CarrierLossCounters> = carrier.clone();
+    let counters = Arc::downgrade(&dyn_carrier);
+    CarrierLossProbe::Quic { counters, identity }
+}
+
+/// A live carrier's probe reports exactly the counters the carrier itself
+/// reports — the `Weak` indirection must not perturb an ordinary reading.
+#[cfg(feature = "h3")]
+#[test]
+fn quic_probe_reports_live_counters_unchanged() {
+    let sample = CarrierLossSample { sent: 42, lost: 3, alive: true };
+    let carrier = Arc::new(StubCarrier(sample));
+    let probe = quic_probe_over(&carrier, 7);
+
+    assert_eq!(probe.sample(), Some(sample));
+}
+
+/// This is the regression that matters: the old `CarrierLossProbe::Quic`
+/// held a `quinn::Connection` clone directly, which kept the real connection
+/// alive, so `close_reason().is_none()` never turned false and the carrier
+/// never aged out of the registry. Here the probe holds only a `Weak`;
+/// dropping the carrier's last strong reference must make `sample()` report
+/// the carrier dead so the registry's dead-carrier eviction path actually
+/// fires on it.
+#[cfg(feature = "h3")]
+#[test]
+fn quic_probe_reports_dead_once_the_last_strong_reference_drops() {
+    let carrier = Arc::new(StubCarrier(CarrierLossSample { sent: 42, lost: 3, alive: true }));
+    let probe = quic_probe_over(&carrier, 7);
+
+    drop(carrier);
+
+    let sample = probe
+        .sample()
+        .expect("a dead carrier is still `Some` — see `CarrierLossProbe::sample`'s doc comment");
+    assert!(!sample.alive, "dropping the last strong reference must report the carrier dead");
+}
+
+/// The registry recognises (and evicts) probes by identity, including a probe
+/// whose carrier is already gone — so identity must stay answerable without
+/// going through the (by-then-dead) `Weak`.
+#[cfg(feature = "h3")]
+#[test]
+fn quic_probe_identity_survives_the_carrier_dying() {
+    let carrier = Arc::new(StubCarrier(CarrierLossSample { sent: 0, lost: 0, alive: true }));
+    let probe = quic_probe_over(&carrier, 99);
+
+    drop(carrier);
+
+    assert_eq!(probe.identity(), 99, "identity must stay readable after the carrier is gone");
 }

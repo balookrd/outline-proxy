@@ -38,6 +38,7 @@ fn test_stream(
         false,
         udp_records,
         None,
+        None,
     );
     (in_tx, stream, out_rx)
 }
