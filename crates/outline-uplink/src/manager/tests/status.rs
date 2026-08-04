@@ -65,7 +65,7 @@ fn selection_view_scores_identically_to_the_full_status() {
     let now = Instant::now();
     let config = lb();
     let status = loaded_status(now);
-    let view = status.selection_view();
+    let view = status.selection_view(&config);
 
     for transport in [TransportKind::Tcp, TransportKind::Udp] {
         assert_eq!(
@@ -117,7 +117,7 @@ fn selection_view_scores_identically_to_the_full_status() {
 fn selection_view_carries_the_strict_mode_gate_fields() {
     let now = Instant::now();
     let status = loaded_status(now);
-    let view = status.selection_view();
+    let view = status.selection_view(&lb());
 
     assert_eq!(view.tcp.healthy, status.tcp.healthy);
     assert_eq!(view.udp.healthy, status.udp.healthy);
@@ -132,8 +132,67 @@ fn selection_view_carries_the_strict_mode_gate_fields() {
 #[test]
 fn selection_view_base_latency_follows_the_active_wire() {
     let now = Instant::now();
-    let view = loaded_status(now).selection_view();
+    let view = loaded_status(now).selection_view(&lb());
 
     assert_eq!(view.tcp.base_latency, Some(Duration::from_millis(90)));
     assert_eq!(view.udp.base_latency, Some(Duration::from_millis(50)));
+}
+
+/// The field case: a 0.21 s path losing 3 % must rank behind a clean 0.30 s
+/// path once the operator has set a coefficient — this is the ordering that
+/// failed to happen on 2026-08-02.
+///
+/// (3 %, not the round 2 % the loss fixture might suggest at a glance: at
+/// k=20 a 2 % loss only inflates 210ms to 294ms, which still trails 300ms —
+/// the crossover needs the extra point of loss to actually flip the rank.)
+#[test]
+fn a_lossy_fast_path_ranks_behind_a_clean_slower_one() {
+    let mut config = crate::tests::lb();
+    config.loss_latency_penalty_k = 20.0;
+    config.loss_latency_inflation_max = 4.0;
+
+    let mut lossy = PerTransportStatus {
+        rtt_ewma: Some(Duration::from_millis(210)),
+        ..Default::default()
+    };
+    lossy.record_wire_loss_window(0, 10_000, 300, 200, 1.0);
+
+    let clean = PerTransportStatus {
+        rtt_ewma: Some(Duration::from_millis(300)),
+        ..Default::default()
+    };
+
+    assert!(
+        lossy.base_latency_with(&config) > clean.base_latency_with(&config),
+        "3% loss at k=20 inflates 210ms past a clean 300ms path"
+    );
+}
+
+/// With the shipped default the inflation is inert, so today's ranking is
+/// preserved exactly.
+#[test]
+fn the_default_coefficient_leaves_base_latency_untouched() {
+    let config = crate::tests::lb();
+    assert_eq!(config.loss_latency_penalty_k, 0.0);
+
+    let mut status = PerTransportStatus {
+        rtt_ewma: Some(Duration::from_millis(210)),
+        ..Default::default()
+    };
+    status.record_wire_loss_window(0, 10_000, 5_000, 200, 1.0);
+
+    assert_eq!(status.base_latency_with(&config), Some(Duration::from_millis(210)));
+}
+
+/// Loss without a latency sample must not invent one: an uplink that has never
+/// been measured stays unranked rather than being handed a fabricated score.
+#[test]
+fn loss_alone_does_not_synthesise_a_latency() {
+    let mut config = crate::tests::lb();
+    config.loss_latency_penalty_k = 20.0;
+
+    let mut status = PerTransportStatus::default();
+    status.record_wire_loss_window(0, 10_000, 500, 200, 1.0);
+
+    assert_eq!(status.base_latency_with(&config), None);
 }

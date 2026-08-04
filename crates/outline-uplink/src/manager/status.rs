@@ -240,11 +240,15 @@ impl UplinkStatus {
     }
 
     /// `Copy` projection of the fields the selection path reads *after* it has
-    /// released the status lock — see [`SelectionView`].
-    pub(crate) fn selection_view(&self) -> SelectionView {
+    /// released the status lock — see [`SelectionView`]. `config` supplies the
+    /// carrier-loss latency-penalty knobs that fold into `base_latency`.
+    pub(crate) fn selection_view(
+        &self,
+        config: &crate::config::LoadBalancingConfig,
+    ) -> SelectionView {
         SelectionView {
-            tcp: self.tcp.selection_view(),
-            udp: self.udp.selection_view(),
+            tcp: self.tcp.selection_view(config),
+            udp: self.udp.selection_view(config),
         }
     }
 }
@@ -357,6 +361,11 @@ impl TransportStatusView for PerTransportStatus {
         // `latency`, when the active wire has no per-wire sample yet (cold
         // start right after a wire flip). The first per-wire probe writes
         // the slot within one cycle, so this stale-primary window is bounded.
+        //
+        // This is the trait's config-free contract: the raw latency, with no
+        // carrier-loss penalty applied. Actual scoring goes through
+        // [`PerTransportStatus::base_latency_with`], which needs the config
+        // to fold loss in and is unavailable here.
         self.active_wire_rtt_ewma().or(self.rtt_ewma).or(self.latency)
     }
 }
@@ -371,7 +380,12 @@ impl StatusView for UplinkStatus {
 
 impl PerTransportStatus {
     /// `Copy` projection of this transport's selection-relevant fields.
-    pub(crate) fn selection_view(&self) -> TransportSelectionView {
+    /// `config` resolves `base_latency` through [`Self::base_latency_with`]
+    /// so the projection carries the loss-inflated value, not the raw one.
+    pub(crate) fn selection_view(
+        &self,
+        config: &crate::config::LoadBalancingConfig,
+    ) -> TransportSelectionView {
         TransportSelectionView {
             healthy: self.healthy,
             cooldown_until: self.cooldown_until,
@@ -379,7 +393,7 @@ impl PerTransportStatus {
             penalty: self.penalty,
             descent_window_until: self.descent.until(),
             descent_window_started_at: self.descent.window_started_at(),
-            base_latency: self.base_latency(),
+            base_latency: self.base_latency_with(config),
         }
     }
 
@@ -434,15 +448,45 @@ impl PerTransportStatus {
     /// Loss for the wire new sessions currently land on. Same active-wire rule
     /// as [`Self::active_wire_rtt_ewma`], so scoring never mixes one wire's
     /// latency with another's loss.
-    // Not yet read by scoring — `base_latency` starts consuming it in
-    // Task 7 ("Inflate the scoring latency") per the plan.
-    #[allow(dead_code)]
     pub(crate) fn active_wire_loss(&self) -> crate::loss::LossEwma {
         if self.active_wire == 0 {
             return self.carrier_loss;
         }
         let slot_idx = (self.active_wire - 1) as usize;
         self.fallback_carrier_loss.get(slot_idx).copied().unwrap_or_default()
+    }
+
+    /// Penalty-free latency this transport is ranked by, with carrier loss on
+    /// the active wire folded in.
+    ///
+    /// Loss is applied as a multiplier on latency rather than as a separate
+    /// term because that is what it physically is: every retransmit costs the
+    /// affected bytes another round trip, so a lossy path delivers later at
+    /// the same RTT. Applying it here — the shared input of every routing
+    /// scope — is also what makes it visible to Global scope under
+    /// `auto_failback`, which discards `penalty` entirely and would otherwise
+    /// stay blind exactly where the field incident happened.
+    ///
+    /// Loss never synthesises a latency: with no RTT sample the result stays
+    /// `None`, because an uplink that has never been measured must not be
+    /// ranked on a fabricated number.
+    ///
+    /// This is the scoring entry point; [`TransportStatusView::base_latency`]
+    /// on this type stays the config-free raw value (no loss applied) for
+    /// callers that rank a single status against itself without a config in
+    /// hand.
+    pub(crate) fn base_latency_with(
+        &self,
+        config: &crate::config::LoadBalancingConfig,
+    ) -> Option<Duration> {
+        let base = TransportStatusView::base_latency(self)?;
+        let multiplier = self
+            .active_wire_loss()
+            .inflation(config.loss_latency_penalty_k, config.loss_latency_inflation_max);
+        if multiplier <= 1.0 {
+            return Some(base);
+        }
+        Some(Duration::from_secs_f64(base.as_secs_f64() * multiplier))
     }
 
     /// Fold one sampling window into the slot for `wire`.
