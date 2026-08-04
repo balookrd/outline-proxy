@@ -71,6 +71,10 @@ pub(crate) struct UplinkManagerInner {
     /// mutation touch only the affected index in O(1) instead of cloning the
     /// entire Vec. Critical sections are short and never cross `.await`.
     pub(crate) statuses: Box<[SyncMutex<UplinkStatus>]>,
+    /// Live loss probes per uplink. Kept out of `statuses` because it owns
+    /// `OwnedFd`s, which are not `Clone`, while `UplinkStatus` is cloned for
+    /// every snapshot. Length matches `uplinks`/`statuses`, so indices line up.
+    pub(crate) carrier_loss: Vec<SyncMutex<crate::loss::CarrierLossRegistry>>,
     /// Per-uplink slot caching one open VLESS UDP transport for the DNS
     /// probe. The probe takes the transport out, send/recv through it,
     /// puts it back on success. Cleared when a UDP `mode_downgrade`

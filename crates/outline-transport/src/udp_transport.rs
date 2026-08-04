@@ -94,6 +94,15 @@ pub struct UdpWsTransport {
     /// Fires the throttle handler at most once per carrier. `read_packet` is
     /// `&self`, so this is interior-mutable.
     throttle_fired: std::sync::atomic::AtomicBool,
+    /// The carrier's loss probe, captured at dial time. `None` for the raw
+    /// socket and raw-QUIC datagram paths (no WS-family `TransportStream` to
+    /// capture from) and for a WS-family carrier whose family cannot
+    /// surrender one (see [`crate::CarrierLossProbe::from_tcp_stream`]).
+    /// Captured rather than read live off a stored `TransportStream` because
+    /// `from_websocket` consumes the stream while building the datagram
+    /// channel — unlike the TCP side, there is no live stream left to read
+    /// `.loss_probe()` from after construction.
+    loss_probe: Option<crate::CarrierLossProbe>,
     close_signal: watch::Sender<bool>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
@@ -127,6 +136,10 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
+        // Captured before `ws_stream` is moved into `from_ws_datagrams` below —
+        // this is the only point in this transport's lifetime where the raw
+        // `TransportStream` is still addressable.
+        let loss_probe = ws_stream.loss_probe();
         // On H3 the QUIC layer owns liveness, so the WS read-idle watchdog
         // and client keepalive Ping are both disabled (the latter is unsafe
         // on H3) — see `carrier_liveness`.
@@ -139,6 +152,7 @@ impl UdpWsTransport {
         // disabled, so raw QUIC stays plain — matching VLESS-UDP.
         let padding = carrier_padding::effective_carrier_padding();
         Self::from_channel(channel, cipher, password, source, padding)
+            .map(|transport| transport.with_loss_probe(loss_probe))
     }
 
     /// Build an SS UDP transport over an arbitrary [`DatagramChannel`]. The
@@ -175,6 +189,7 @@ impl UdpWsTransport {
             throttle: None,
             throttle_fired: std::sync::atomic::AtomicBool::new(false),
             padding,
+            loss_probe: None,
             close_signal,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         })
@@ -186,6 +201,27 @@ impl UdpWsTransport {
     pub fn with_throttle_handle(mut self, handle: crate::ThrottleSignalHandle) -> Self {
         self.throttle = Some(handle);
         self
+    }
+
+    /// Attach the loss probe captured from the `TransportStream` this
+    /// transport was built from. Builder form, called by [`Self::from_websocket`]
+    /// right after construction — the raw stream no longer exists by then, so
+    /// this is the only point the probe can be handed in. `None` is a normal
+    /// value here (raw socket / raw-QUIC callers of [`Self::from_channel`]
+    /// never call this at all, leaving the field at its `None` default).
+    fn with_loss_probe(mut self, probe: Option<crate::CarrierLossProbe>) -> Self {
+        self.loss_probe = probe;
+        self
+    }
+
+    /// A handle to this transport's carrier loss counters, when the carrier
+    /// family surrendered one at dial time. Mirrors
+    /// `TransportStream::loss_probe` on the TCP side; unlike TCP, the raw
+    /// `TransportStream` here is consumed while building the datagram channel,
+    /// so the probe is captured once at construction and cloned out on demand
+    /// rather than read live off a stored stream.
+    pub fn loss_probe(&self) -> Option<crate::CarrierLossProbe> {
+        self.loss_probe.as_ref().and_then(|probe| probe.try_clone())
     }
 
     /// Invokes the throttle handler for `signal`, once per carrier.
@@ -225,6 +261,8 @@ impl UdpWsTransport {
             recv_decoder: None,
             throttle: None,
             throttle_fired: std::sync::atomic::AtomicBool::new(false),
+            // Raw socket has no `TransportStream` to capture a probe from.
+            loss_probe: None,
             close_signal,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         })

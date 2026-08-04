@@ -13,29 +13,30 @@ use crate::types::TransportKind;
 /// constantly and every dial registers; without a bound the registry would
 /// grow with the dial rate. Newest win — they are the carriers actually
 /// carrying traffic.
-// Only `CarrierLossRegistry::register` reads this, and that method is
-// itself unwired from production until Task 6's sampling loop calls it.
-#[allow(dead_code)]
 pub(crate) const MAX_PROBES_PER_WIRE: usize = 8;
 
 /// Smoothed loss ratio for one wire, plus the volume it was derived from.
-// Not yet held by `UplinkStatus` (Task 5) — until then this type is
-// exercised only by its own tests.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LossEwma {
     ratio: Option<f64>,
     observed_packets: u64,
 }
 
-#[allow(dead_code)] // see the struct-level allow above
 impl LossEwma {
+    // Read by tests today; the metrics gauge
+    // (`outline_ws_uplink_carrier_loss_ratio`) is the production caller,
+    // added in the follow-up observability task.
+    #[allow(dead_code)]
     pub(crate) fn ratio(&self) -> Option<f64> {
         self.ratio
     }
 
     /// Cumulative packets this verdict is based on. Published so a dashboard
     /// can tell "no loss" apart from "no data".
+    // Read by tests today; the metrics counter
+    // (`outline_ws_uplink_carrier_loss_samples_total`) is the production
+    // caller, added in the follow-up observability task.
+    #[allow(dead_code)]
     pub(crate) fn observed_packets(&self) -> u64 {
         self.observed_packets
     }
@@ -62,6 +63,9 @@ impl LossEwma {
     /// Latency multiplier for scoring: `1 + k · loss`, clamped to `cap`.
     /// `k = 0` yields exactly `1.0`, which is what keeps the default build's
     /// selection identical to today's.
+    // The scoring path (`base_latency`) is the production caller, added in
+    // the follow-up task that inflates ranking latency by the loss ratio.
+    #[allow(dead_code)]
     pub(crate) fn inflation(&self, k: f64, cap: f64) -> f64 {
         if k <= 0.0 {
             return 1.0;
@@ -72,9 +76,6 @@ impl LossEwma {
 }
 
 /// One wire's traffic during a single sampling window.
-// Not yet consumed by a sampling loop (Task 6) — until then only
-// `CarrierLossRegistry::collect_windows` (also unwired) produces it.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LossWindow {
     pub(crate) transport: TransportKind,
@@ -83,9 +84,6 @@ pub(crate) struct LossWindow {
     pub(crate) lost: u64,
 }
 
-// Only constructed by `CarrierLossRegistry::register`, itself unwired from
-// production until Task 6.
-#[allow(dead_code)]
 struct ProbeEntry {
     transport: TransportKind,
     wire: u8,
@@ -103,16 +101,17 @@ struct ProbeEntry {
 }
 
 /// Live probes for one uplink, keyed by (transport, wire).
-// Not yet held by `UplinkManagerInner` (Task 6) — until then this type is
-// exercised only by its own tests.
-#[allow(dead_code)]
 #[derive(Default)]
 pub(crate) struct CarrierLossRegistry {
     entries: Vec<ProbeEntry>,
 }
 
-#[allow(dead_code)] // see the struct-level allow above
 impl CarrierLossRegistry {
+    /// Only called by the Linux-gated registry tests (the registry needs
+    /// `TCP_INFO`, Linux-only); on a non-Linux dev host those tests compile
+    /// out and this accessor goes unused, same as `dead_probe` in
+    /// `tests_support` below.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
@@ -247,9 +246,10 @@ pub(crate) mod tests_support {
     /// `tcpi_segs_out` has certainly advanced, for tests that assert on
     /// observed volume. Both sockets come back with it: the caller must keep
     /// them bound for as long as the probe is expected to read a live carrier.
-    // No test in this task calls it yet — reserved for Task 6's sampler
-    // tests (see the module comment on `tests_support` above).
-    #[allow(dead_code)]
+    // Only called by the Linux-gated sampler test in
+    // `manager::loss_sampler::tests`; on a non-Linux dev host that test
+    // compiles out and this helper goes unused, same as `dead_probe` above.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) async fn live_probe_with_traffic()
     -> (CarrierLossProbe, tokio::net::TcpStream, tokio::net::TcpStream) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

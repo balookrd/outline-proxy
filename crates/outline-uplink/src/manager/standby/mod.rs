@@ -414,6 +414,8 @@ impl UplinkManager {
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+        // The standby pool always dials the primary wire (`wire = 0`).
+        self.register_carrier_loss_probe(candidate.index, 0, TransportKind::Tcp, ws.loss_probe());
         // Feed the on-demand dial latency into the RTT EWMA so real
         // connection quality is reflected in routing scores, not just probe
         // ping/pong times.
@@ -612,6 +614,13 @@ impl UplinkManager {
                     target: format!("to {}", udp_ws_url),
                 })?;
         resume_store.ss().store_if_issued(udp_resume_key, udp_issued);
+        // The standby pool always dials the primary wire (`wire = 0`).
+        self.register_carrier_loss_probe(
+            candidate.index,
+            0,
+            TransportKind::Udp,
+            transport.loss_probe(),
+        );
         self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
             .await;
         // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`

@@ -104,6 +104,13 @@ pub(crate) struct PerTransportStatus {
     /// [`crate::manager::probe::wire`], so scoring of an uplink whose
     /// `active_wire` is non-zero uses that wire's measured RTT.
     pub(crate) fallback_rtt_ewma: Vec<Option<Duration>>,
+    /// Smoothed carrier loss for the primary wire. The live probes it is
+    /// derived from live in the manager's registry, not here: they own
+    /// duplicated descriptors, and `UplinkStatus` is cloned on every snapshot.
+    pub(crate) carrier_loss: crate::loss::LossEwma,
+    /// Per-fallback-wire loss slots, indexed by `wire_index - 1` exactly like
+    /// [`Self::fallback_rtt_ewma`]. Lazily extended on first write.
+    pub(crate) fallback_carrier_loss: Vec<crate::loss::LossEwma>,
     /// Per-wire liveness penalty for weighted wire selection, decaying via the
     /// shared `0.5^(t/halflife)` curve (see [`crate::penalty::penalty_weight`]).
     /// Indexed by **wire index directly**: `[0]` is the primary wire, `[i]` is
@@ -422,6 +429,40 @@ impl PerTransportStatus {
         let mut current = self.fallback_rtt_ewma[slot_idx];
         crate::penalty::update_rtt_ewma(&mut current, sample, alpha);
         self.fallback_rtt_ewma[slot_idx] = current;
+    }
+
+    /// Loss for the wire new sessions currently land on. Same active-wire rule
+    /// as [`Self::active_wire_rtt_ewma`], so scoring never mixes one wire's
+    /// latency with another's loss.
+    // Not yet read by scoring — `base_latency` starts consuming it in the
+    // follow-up task that inflates the ranking latency by the loss ratio.
+    #[allow(dead_code)]
+    pub(crate) fn active_wire_loss(&self) -> crate::loss::LossEwma {
+        if self.active_wire == 0 {
+            return self.carrier_loss;
+        }
+        let slot_idx = (self.active_wire - 1) as usize;
+        self.fallback_carrier_loss.get(slot_idx).copied().unwrap_or_default()
+    }
+
+    /// Fold one sampling window into the slot for `wire`.
+    pub(crate) fn record_wire_loss_window(
+        &mut self,
+        wire: u8,
+        sent: u64,
+        lost: u64,
+        min_packets: u64,
+        alpha: f64,
+    ) {
+        if wire == 0 {
+            self.carrier_loss.record_window(sent, lost, min_packets, alpha);
+            return;
+        }
+        let slot_idx = (wire - 1) as usize;
+        while self.fallback_carrier_loss.len() <= slot_idx {
+            self.fallback_carrier_loss.push(crate::loss::LossEwma::default());
+        }
+        self.fallback_carrier_loss[slot_idx].record_window(sent, lost, min_packets, alpha);
     }
 
     /// Mutable per-wire penalty slot for `wire` (`0` = primary, `i` = fallback

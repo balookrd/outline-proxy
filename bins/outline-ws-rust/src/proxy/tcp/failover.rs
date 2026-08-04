@@ -777,6 +777,8 @@ pub(super) async fn connect_tcp_fallback_fresh(
             url, parent.uplink.name, fallback.transport,
         )
     })?;
+    // Captured before `do_tcp_ss_setup` below takes ownership of `ws`.
+    let loss_probe = ws.loss_probe();
     // Mirror a transport-level downgrade observed by `connect_transport`
     // (host-clamp via `ws_mode_cache` or inline H3→H2/H1 fallback) into
     // *this fallback wire's* per-wire downgrade slot — never primary's.
@@ -803,6 +805,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
         resume_request.is_some(),
     )
     .await?;
+    uplinks.register_carrier_loss_probe(parent.index, wire_index, TransportKind::Tcp, loss_probe);
     // Feed the dial latency into the uplink's RTT EWMA — see SS branch
     // above for the rationale.
     uplinks
