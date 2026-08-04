@@ -19,10 +19,11 @@ use crate::types::{TransportKind, UplinkManager};
 /// Linux needs real sockets).
 ///
 /// Stamps [`crate::manager::status::PerTransportStatus::loss_last_qualifying_at`]
-/// whenever a window in `collection` targets the transport's *currently
-/// active* wire and actually met `min_packets` (i.e.
+/// with `(wire, now)` whenever a window in `collection` targets the
+/// transport's *currently active* wire and actually met `min_packets` (i.e.
 /// `record_wire_loss_window` returned `true`) — see that field's doc for why
-/// this is what `update_loss_elevated_since` gates freshness on. Called
+/// the wire identity travels with the timestamp, and for why this is what
+/// `update_loss_elevated_since` gates freshness on. Called
 /// unconditionally, once per uplink per tick, even when `collection` is
 /// completely empty: an uplink with no live carrier at all still needs its
 /// (possibly stale) episode reassessed every tick, or a warm-standby whose
@@ -46,7 +47,7 @@ fn apply_loss_collection(
         let qualified =
             per.record_wire_loss_window(window.wire, window.sent, window.lost, min_packets, alpha);
         if is_active_wire && qualified {
-            per.loss_last_qualifying_at = Some(now);
+            per.loss_last_qualifying_at = Some((window.wire, now));
         }
     }
     for (transport, wire) in &collection.emptied_wires {
