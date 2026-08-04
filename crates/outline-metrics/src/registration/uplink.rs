@@ -97,6 +97,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_runtime_failure_other_details_total: IntCounterVec,
     pub(super) uplink_payload_integrity_errors_total: IntCounterVec,
     pub(super) uplink_failovers_total: IntCounterVec,
+    pub(super) uplink_loss_failovers_total: IntCounterVec,
     pub(super) uplink_mid_session_retries_total: IntCounterVec,
     pub(super) uplink_health: GaugeVec,
     pub(super) uplink_health_effective: GaugeVec,
@@ -105,6 +106,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_active_wire_rtt_ewma_seconds: GaugeVec,
     pub(super) uplink_carrier_loss_ratio: GaugeVec,
     pub(super) uplink_carrier_loss_observed_packets: GaugeVec,
+    pub(super) uplink_loss_elevated_seconds: GaugeVec,
     pub(super) uplink_latency_inflated_seconds: GaugeVec,
     pub(super) uplink_penalty_seconds: GaugeVec,
     pub(super) uplink_effective_latency_seconds: GaugeVec,
@@ -191,6 +193,17 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "Runtime failovers from one uplink to another.",
         ["transport", "group", "from_uplink", "to_uplink"]
     );
+    let uplink_loss_failovers_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_uplink_loss_failovers_total",
+        "Strict-mode active-uplink switches caused by loss_failover_ratio / loss_failover_secs \
+         (a pinned active uplink that has been continuously carrying packet loss above the \
+         configured ratio, past the configured duration, yielded to a clean sibling). Distinct \
+         from outline_ws_uplink_failovers_total, which counts data-plane / runtime failovers, \
+         not this strict-mode active-slot switch.",
+        ["transport", "group", "from_uplink", "to_uplink"]
+    );
     let uplink_mid_session_retries_total = register_labeled!(
         registry,
         IntCounterVec,
@@ -261,6 +274,16 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "outline_ws_uplink_carrier_loss_observed_packets",
         "Packets observed behind outline_ws_uplink_carrier_loss_ratio — how much \
          traffic the loss verdict is based on.",
+        ["group", "transport", "uplink"]
+    );
+    let uplink_loss_elevated_seconds = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_uplink_loss_elevated_seconds",
+        "How long the active-wire loss ratio has been continuously above \
+         loss_failover_ratio (the loss-driven strict-mode failover episode). Absent while no \
+         episode is running. Compare against loss_failover_secs to see how close an uplink is \
+         to a loss-driven failover before it fires.",
         ["group", "transport", "uplink"]
     );
     let uplink_latency_inflated_seconds = register_labeled!(
@@ -527,6 +550,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_runtime_failure_other_details_total,
         uplink_payload_integrity_errors_total,
         uplink_failovers_total,
+        uplink_loss_failovers_total,
         uplink_mid_session_retries_total,
         uplink_health,
         uplink_health_effective,
@@ -535,6 +559,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_active_wire_rtt_ewma_seconds,
         uplink_carrier_loss_ratio,
         uplink_carrier_loss_observed_packets,
+        uplink_loss_elevated_seconds,
         uplink_latency_inflated_seconds,
         uplink_penalty_seconds,
         uplink_effective_latency_seconds,
