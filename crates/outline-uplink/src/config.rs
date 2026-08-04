@@ -697,6 +697,27 @@ pub struct LoadBalancingConfig {
     pub warm_standby_tcp: usize,
     pub warm_standby_udp: usize,
     pub rtt_ewma_alpha: f64,
+    /// Strength of the carrier-loss latency inflation: the wire's smoothed
+    /// loss ratio multiplies scoring latency by `1 + k · loss`. `0.0` (the
+    /// default) observes without acting — the loss ratio is measured and
+    /// published, but selection is unchanged. There is no principled value to
+    /// derive `k` from a priori; it is meant to be set once the field spread
+    /// between uplinks is visible in the metrics.
+    pub loss_latency_penalty_k: f64,
+    /// Ceiling on that multiplier. Bounds how far one bad measurement window
+    /// can push an uplink down the ranking: a lossy path must lose rank, not
+    /// drop out of ranking altogether — it may still be the only live one.
+    pub loss_latency_inflation_max: f64,
+    /// Sampling grid for carrier loss counters. Deliberately independent of
+    /// the probe cycle, which runs far coarser and skips cycles for uplinks
+    /// carrying traffic — differencing cumulative counters needs an even grid.
+    pub loss_sample_interval: Duration,
+    /// Minimum packets a wire must send within one window for that window to
+    /// count. Below this the ratio is rounding noise: one lost packet out of
+    /// ten is not "10% loss".
+    pub loss_sample_min_packets: u64,
+    /// Smoothing factor for the per-wire loss EWMA.
+    pub loss_ewma_alpha: f64,
     pub failure_penalty: Duration,
     pub failure_penalty_max: Duration,
     pub failure_penalty_halflife: Duration,

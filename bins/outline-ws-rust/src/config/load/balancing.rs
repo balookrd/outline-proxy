@@ -9,12 +9,24 @@ use outline_uplink::{
 use super::super::schema::LoadBalancingSection;
 use super::uplinks::parse_human_duration;
 
-pub(super) fn load_balancing_config(
+pub(crate) fn load_balancing_config(
     lb: Option<&LoadBalancingSection>,
 ) -> Result<LoadBalancingConfig> {
     let rtt_ewma_alpha = lb.and_then(|l| l.rtt_ewma_alpha).unwrap_or(0.3);
     if !(rtt_ewma_alpha.is_finite() && 0.0 < rtt_ewma_alpha && rtt_ewma_alpha <= 1.0) {
         bail!("load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
+    }
+    let loss_latency_penalty_k = lb.and_then(|l| l.loss_latency_penalty_k).unwrap_or(0.0);
+    if !(loss_latency_penalty_k.is_finite() && loss_latency_penalty_k >= 0.0) {
+        bail!("load_balancing.loss_latency_penalty_k must be a finite value >= 0");
+    }
+    let loss_latency_inflation_max = lb.and_then(|l| l.loss_latency_inflation_max).unwrap_or(4.0);
+    if !(loss_latency_inflation_max.is_finite() && loss_latency_inflation_max >= 1.0) {
+        bail!("load_balancing.loss_latency_inflation_max must be a finite value >= 1");
+    }
+    let loss_ewma_alpha = lb.and_then(|l| l.loss_ewma_alpha).unwrap_or(0.2);
+    if !(loss_ewma_alpha.is_finite() && 0.0 < loss_ewma_alpha && loss_ewma_alpha <= 1.0) {
+        bail!("load_balancing.loss_ewma_alpha must be in the range (0, 1]");
     }
     let mode = lb.and_then(|l| l.mode).unwrap_or(LoadBalancingMode::ActiveActive);
     let routing_scope = lb.and_then(|l| l.routing_scope).unwrap_or(RoutingScope::PerFlow);
@@ -51,6 +63,13 @@ pub(super) fn load_balancing_config(
         warm_standby_tcp: lb.and_then(|l| l.warm_standby_tcp).unwrap_or(0),
         warm_standby_udp: lb.and_then(|l| l.warm_standby_udp).unwrap_or(0),
         rtt_ewma_alpha,
+        loss_latency_penalty_k,
+        loss_latency_inflation_max,
+        loss_sample_interval: Duration::from_secs(
+            lb.and_then(|l| l.loss_sample_interval_secs).unwrap_or(10),
+        ),
+        loss_sample_min_packets: lb.and_then(|l| l.loss_sample_min_packets).unwrap_or(200),
+        loss_ewma_alpha,
         failure_penalty: Duration::from_millis(
             lb.and_then(|l| l.failure_penalty_ms).unwrap_or(500),
         ),
