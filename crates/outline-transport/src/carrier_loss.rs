@@ -166,21 +166,25 @@ impl CarrierLossProbe {
 
     /// Read the carrier's current counters. `None` when the carrier is alive
     /// but cannot be queried right now (kernel too old to report
-    /// `tcpi_segs_out`, `getsockopt` failure); the caller treats that as "no
-    /// sample this tick". A carrier that is actually gone is a *different*
-    /// case: `Some(sample)` with `alive: false`, never `None` — the registry
-    /// only evicts on the former, so collapsing the two would leave a dead
-    /// QUIC probe sitting in the registry forever (exactly the bug this type
-    /// exists to avoid).
+    /// `tcpi_segs_out`, `getsockopt` failure) — a transient gap that may well
+    /// clear on the next tick. A carrier that has actually gone away is a
+    /// *different* fact, not a queryable-but-empty one, so it is reported as
+    /// `Some(sample)` with `alive: false` — never as `None` — with `sent` and
+    /// `lost` left at `0` rather than guessed at: the registry differences
+    /// this reading against the last real one it saw
+    /// (`current.saturating_sub(previous)`), and `0` is the one value that
+    /// can never read as genuine traffic, so the final tick before eviction
+    /// never fabricates a delta out of a carrier nobody can query anymore.
     pub fn sample(&self) -> Option<CarrierLossSample> {
         match self {
             #[cfg(feature = "h3")]
             Self::Quic { counters, .. } => match counters.upgrade() {
                 Some(counters) => counters.loss_counters(),
                 // The transport dropped its last strong reference: the
-                // carrier is gone (or on its way out) and this probe must say
-                // so, not go silent — silence (`None`) would read to the
-                // registry as "no sample this tick" and never evict.
+                // carrier is definitively gone, which is a different fact
+                // from "could not read it this tick" — see the doc comment
+                // above for why that is reported as a dead sample rather
+                // than as `None`.
                 None => Some(CarrierLossSample { sent: 0, lost: 0, alive: false }),
             },
             #[cfg(target_os = "linux")]
