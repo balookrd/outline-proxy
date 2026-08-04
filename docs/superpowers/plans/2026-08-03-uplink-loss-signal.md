@@ -2144,17 +2144,39 @@ traffic on its own, and it ships inert like the rest.
   set on the first tick whose active-wire ratio exceeds `loss_failover_ratio`,
   cleared the moment a tick comes back at or below it. A continuous episode is
   what counts — an uplink that flaps around the threshold never accumulates
-  time, which is the same discipline `carrier_degraded_since` enforces.
+  time, which is the same discipline `carrier_degraded_since` enforces. The
+  ratio itself is trusted only when fresh: `loss_last_qualifying_at`
+  (`(wire, Instant)`, stamped whenever a sampling tick records a *qualifying*
+  window for whichever wire is currently active) must name the active wire and
+  be within `3 × loss_sample_interval` of `now`, or the tick clears the episode
+  the same as a clean reading — a wire idling on light-but-nonzero traffic
+  (a warm-standby carrier pinged too lightly to ever clear
+  `loss_sample_min_packets` again) must not let a frozen, no-longer-current
+  ratio keep an episode alive indefinitely. (Found and closed by review,
+  `28cfcb47`.)
 - `loss_failover_switch_target` picks, among candidates with weight equal to or
-  higher than the active's, one that is probe-healthy, not in cooldown, and
-  whose own loss is at or below the threshold (an uplink with *no* verdict
-  counts as clean — absence means not measured, and an unmeasured candidate is
-  not evidence of a bad one).
+  higher than the active's, one that is `c.healthy`, has reached
+  `probe.min_failures` consecutive probe successes
+  (`consecutive_successes >= min_streak`), and whose own loss is at or below
+  the threshold *on a fresh reading* — the same wire-tagged freshness test
+  above, applied per candidate. `c.healthy` alone is not proof of a *live*
+  candidate: in `Global` scope, `selection_health` also admits an uplink via
+  `fallback_bootstrap_allowed` when probe has never rendered a verdict for it
+  and it has never recorded a successful dial, so the streak gate is what
+  keeps a bootstrap-admitted dead standby from taking the leg, immediately
+  failing the next dispatch, and re-triggering every connection. (The streak
+  gate was found and closed by review, `28cfcb47`; candidate freshness by a
+  later review round.) There is no cooldown test on the candidate — the
+  streak and freshness gates are what stand in its place. An uplink with *no*
+  loss verdict counts as clean (absence means not measured); one with a
+  verdict that has gone stale does **not** count as clean just because the
+  frozen number reads low — a reading nobody has reconfirmed is not proof the
+  candidate is currently clean.
 - Switch is published as `SwitchIntent::Failover` with a reason naming both
   uplinks and the observed ratio, so the decision is legible in the log without
   cross-referencing metrics.
-- A candidate that is itself above the threshold is not a target: moving from
-  one lossy path to another is churn, not recovery.
+- A candidate that is itself above the threshold (on a fresh reading) is not a
+  target: moving from one lossy path to another is churn, not recovery.
 
 **Tests**
 
@@ -2162,6 +2184,16 @@ traffic on its own, and it ships inert like the rest.
 - The same uplink past the threshold moves to the clean sibling.
 - An episode interrupted by one clean tick restarts the clock rather than accumulating.
 - No candidate is clean → the active stays, because a lossy uplink still carrying traffic beats none.
+- A clean, healthy candidate that has not yet reached `probe.min_failures`
+  consecutive successes does not take the leg.
+- A `Global`-scope, bootstrap-admitted dead standby (healthy via
+  `fallback_bootstrap_allowed`, no proven dial, no loss verdict) does not take
+  the leg.
+- A candidate whose own loss ratio is fresh and at/below the threshold still
+  qualifies as a switch target.
+- A candidate whose own loss ratio is numerically clean but stale (its
+  freshness stamp older than `3 × loss_sample_interval`) does not qualify —
+  the frozen number is not trusted as proof of current cleanliness.
 - With `loss_failover_ratio = 0.0` (the default) the check never runs, and the existing strict-mode tests are unchanged.
 
 **Documentation**
