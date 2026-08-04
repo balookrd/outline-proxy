@@ -1964,6 +1964,26 @@ alongside the loss fields, with the same `Option<u128>` shape and
 existing `tcp_score_ms` assignment, reading `status.tcp.active_wire_loss()` /
 `status.udp.active_wire_loss()` and `base_latency_with(&self.inner.load_balancing)`.
 
+Two corrections carried from Task 7's review, both belonging here:
+
+- **The published score must be the score selection uses.** `snapshot.rs`
+  still calls `effective_latency` / `selection_score` on the raw
+  `&UplinkStatus`, so with a non-zero coefficient the reported
+  `tcp_score_ms` / `udp_score_ms` are uninflated while ranking uses the
+  inflated values. An operator comparing the dashboard against the chosen
+  uplink would see a score that does not explain the choice — which is the
+  exact failure this whole feature exists to end. Score from
+  `selection_view(&self.inner.load_balancing)`, as `build_candidate_states`
+  now does.
+- **Bound the cap at load time.** `loss_latency_inflation_max` is currently
+  only checked finite and `>= 1.0`, so an absurd value (`1e300`) makes the
+  inflated latency saturate to `Duration::MAX`, which is not rankable:
+  `weighted_latency_score` then panics inside `Duration::from_secs_f64` in
+  the selection hot path, for any weight. Reject a cap above a sane ceiling
+  (100 is far past any real path) in
+  `bins/outline-ws-rust/src/config/load/balancing.rs`, with a test, rather
+  than leaving a config typo able to panic dispatch.
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test -p outline-metrics carrier_loss && cargo test -p outline-uplink`
