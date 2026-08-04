@@ -293,12 +293,18 @@ impl UplinkManager {
             let standby_udp_ready = self.inner.standby_pools[index].udp.len_hint();
             let tcp_penalty = current_penalty(&status.tcp.penalty, now, &self.inner.load_balancing);
             let udp_penalty = current_penalty(&status.udp.penalty, now, &self.inner.load_balancing);
+            // Score off the same loss-inflated view selection itself scores
+            // from (see `build_candidate_states`), not the raw, uninflated
+            // `status` — otherwise the published score would not explain the
+            // uplink selection actually picked once `loss_latency_penalty_k`
+            // is non-zero.
+            let view = status.selection_view(&self.inner.load_balancing);
             let tcp_effective_latency =
-                effective_latency(status, TransportKind::Tcp, now, &self.inner.load_balancing);
+                effective_latency(&view, TransportKind::Tcp, now, &self.inner.load_balancing);
             let udp_effective_latency =
-                effective_latency(status, TransportKind::Udp, now, &self.inner.load_balancing);
+                effective_latency(&view, TransportKind::Udp, now, &self.inner.load_balancing);
             let tcp_score = selection_score(
-                status,
+                &view,
                 uplink.weight,
                 TransportKind::Tcp,
                 now,
@@ -306,13 +312,20 @@ impl UplinkManager {
                 self.inner.load_balancing.routing_scope,
             );
             let udp_score = selection_score(
-                status,
+                &view,
                 uplink.weight,
                 TransportKind::Udp,
                 now,
                 &self.inner.load_balancing,
                 self.inner.load_balancing.routing_scope,
             );
+            // Carrier loss for the wire new sessions currently land on.
+            // `observed_packets` is only meaningful once a window has
+            // qualified — gate it on `ratio` so an unmeasured uplink
+            // publishes neither, rather than a packets count with no ratio
+            // to explain it.
+            let tcp_loss = status.tcp.active_wire_loss();
+            let udp_loss = status.udp.active_wire_loss();
             // XHTTP submode visibility: configured shape comes from the
             // `?mode=` query on the dial URL; the per-host stream-one
             // block lives in the transport-crate cache. We expose both
@@ -379,6 +392,12 @@ impl UplinkManager {
                 udp_effective_latency_ms: duration_to_millis_option(udp_effective_latency),
                 tcp_score_ms: duration_to_millis_option(tcp_score),
                 udp_score_ms: duration_to_millis_option(udp_score),
+                tcp_carrier_loss_ratio: tcp_loss.ratio(),
+                udp_carrier_loss_ratio: udp_loss.ratio(),
+                tcp_carrier_loss_packets: tcp_loss.ratio().map(|_| tcp_loss.observed_packets()),
+                udp_carrier_loss_packets: udp_loss.ratio().map(|_| udp_loss.observed_packets()),
+                tcp_inflated_latency_ms: view.tcp.base_latency.map(|v| v.as_millis()),
+                udp_inflated_latency_ms: view.udp.base_latency.map(|v| v.as_millis()),
                 cooldown_tcp_ms: status
                     .tcp
                     .cooldown_until

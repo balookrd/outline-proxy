@@ -173,3 +173,27 @@ fn reselect_at_empty_list_is_disabled_not_an_error() {
     assert!(config.reselect_at.is_empty());
     assert_eq!(config.reselect_interval, None);
 }
+
+#[test]
+fn loss_latency_inflation_max_rejects_values_above_the_sanity_ceiling() {
+    // A typo like `1e300` would otherwise saturate the inflated latency to
+    // `Duration::MAX`, which panics `weighted_latency_score` in the
+    // selection hot path — reject it here instead, at load time.
+    let lb = section("loss_latency_inflation_max = 1e300");
+    let err = load_balancing_config(Some(&lb)).unwrap_err().to_string();
+    assert!(err.contains("loss_latency_inflation_max"), "{err}");
+}
+
+#[test]
+fn loss_latency_inflation_max_accepts_the_ceiling_boundary() {
+    let lb = section("loss_latency_inflation_max = 100.0");
+    let config = load_balancing_config(Some(&lb)).unwrap();
+    assert_eq!(config.loss_latency_inflation_max, 100.0);
+}
+
+#[test]
+fn loss_latency_inflation_max_rejects_just_above_the_ceiling() {
+    let lb = section("loss_latency_inflation_max = 100.0001");
+    let err = load_balancing_config(Some(&lb)).unwrap_err().to_string();
+    assert!(err.contains("loss_latency_inflation_max"), "{err}");
+}
