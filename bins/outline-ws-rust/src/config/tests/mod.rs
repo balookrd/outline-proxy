@@ -7,10 +7,37 @@ use clap::Parser;
 use tempfile::TempDir;
 
 use outline_routing::RouteTarget;
-use outline_uplink::{LoadBalancingMode, RoutingScope, UplinkTransport};
+use outline_uplink::{LoadBalancingConfig, LoadBalancingMode, RoutingScope, UplinkTransport};
 use socks5_proto::{Socks5AuthConfig, Socks5AuthUserConfig};
 
-use super::{ConfigFile, load_config, normalize_outline_section};
+use super::{ConfigFile, load_balancing_config, load_config, normalize_outline_section};
+
+/// Parse a config fragment into `ConfigFile` without going through the full
+/// loader — the loader also validates ingress / uplinks / routing, which
+/// most `[outline.load_balancing]`-only fragments in these tests do not
+/// provide. Mirrors the bare `toml::from_str::<ConfigFile>` calls used
+/// elsewhere in this module (e.g. `config_deserialises_fingerprint_profile_aliases`).
+fn parse_config(body: &str) -> anyhow::Result<ConfigFile> {
+    Ok(toml::from_str(body)?)
+}
+
+/// Materialise the `[outline.load_balancing]` section of a parsed config
+/// fragment into the fully-loaded `LoadBalancingConfig` (defaults applied,
+/// validated) — the same conversion `load_config` runs internally, minus
+/// the surrounding ingress / uplinks / routing validation. Returns the
+/// validation error instead of unwrapping, for tests that pin rejected
+/// values.
+fn load_balancing_result(cfg: &ConfigFile) -> anyhow::Result<LoadBalancingConfig> {
+    let outline = normalize_outline_section(cfg);
+    let lb = outline.as_ref().and_then(|o| o.load_balancing.as_ref());
+    load_balancing_config(lb)
+}
+
+/// Unwrapping convenience wrapper around [`load_balancing_result`] for
+/// tests that only care about the successfully-parsed knobs.
+fn load_balancing(cfg: &ConfigFile) -> LoadBalancingConfig {
+    load_balancing_result(cfg).unwrap()
+}
 
 #[test]
 fn config_deserializes() {
@@ -232,6 +259,47 @@ fn config_deserializes_multiple_uplinks() {
     assert_eq!(lb.failure_penalty_ms, Some(750));
     assert_eq!(lb.failure_penalty_max_ms, Some(20000));
     assert_eq!(lb.failure_penalty_halflife_secs, Some(45));
+}
+
+#[test]
+fn load_balancing_parses_loss_signal_knobs() {
+    let cfg = parse_config(
+        r#"
+        [outline.load_balancing]
+        loss_latency_penalty_k = 12.0
+        loss_latency_inflation_max = 6.0
+        loss_sample_interval_secs = 15
+        loss_sample_min_packets = 500
+        loss_ewma_alpha = 0.4
+        "#,
+    )
+    .unwrap();
+    let lb = load_balancing(&cfg);
+    assert_eq!(lb.loss_latency_penalty_k, 12.0);
+    assert_eq!(lb.loss_latency_inflation_max, 6.0);
+    assert_eq!(lb.loss_sample_interval, std::time::Duration::from_secs(15));
+    assert_eq!(lb.loss_sample_min_packets, 500);
+    assert_eq!(lb.loss_ewma_alpha, 0.4);
+}
+
+/// The shipped default observes without acting.
+#[test]
+fn loss_signal_defaults_to_observation_only() {
+    let lb = load_balancing(&parse_config("[outline]").unwrap());
+    assert_eq!(lb.loss_latency_penalty_k, 0.0);
+    assert_eq!(lb.loss_sample_interval, std::time::Duration::from_secs(10));
+    assert_eq!(lb.loss_sample_min_packets, 200);
+}
+
+/// A negative coefficient would reward loss; reject it at load time rather
+/// than discovering it as an inverted ranking in production.
+#[test]
+fn negative_loss_penalty_is_rejected() {
+    let err = load_balancing_result(
+        &parse_config("[outline.load_balancing]\nloss_latency_penalty_k = -1.0").unwrap(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("loss_latency_penalty_k"));
 }
 
 #[test]

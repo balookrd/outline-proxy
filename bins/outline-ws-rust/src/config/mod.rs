@@ -13,6 +13,8 @@ pub use types::{
 #[cfg(test)]
 pub(crate) use compat::normalize_outline_section;
 #[cfg(test)]
+pub(crate) use load::load_balancing_config;
+#[cfg(test)]
 pub(crate) use schema::ConfigFile;
 
 #[cfg(feature = "control")]
