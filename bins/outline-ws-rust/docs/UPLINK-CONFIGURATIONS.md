@@ -1043,6 +1043,18 @@ that is already carrying real traffic (`probe.skip_when_active`), but
 differencing cumulative kernel counters into a ratio needs an even
 sampling grid regardless of whether a probe happened to run.
 
+**This is a send-direction measurement.** QUIC's `lost_packets` and
+TCP's `tcpi_total_retrans` both count packets *this endpoint sent* that
+it had to declare lost or retransmit — never packets the peer failed to
+deliver to us. A path that is lossy predominantly **server→client**
+(downlink) — the 2026-08-02 incident was downlink video — registers on
+this signal only indirectly, through the delayed or dropped ACKs that
+inflate the client's own retransmission count, not as a direct downlink
+measurement. Keep this in mind when calibrating `loss_latency_penalty_k`
+or `loss_failover_ratio` against a downlink-shaped symptom: the number
+you are tuning against is "how much this endpoint had to resend", not
+"how much the other side lost".
+
 **The five knobs** live under `[outline.load_balancing]` (or the
 per-group equivalent — see the reference table above for the row with
 each default):
@@ -1055,6 +1067,12 @@ each default):
   timer, so carriers still register probes but nothing ever
   differences them into a verdict — a way to ship the probe wiring
   without paying for the sampling loop, e.g. while staging the feature.
+  Not entirely free, though: eviction of dead/idle probes happens only
+  inside the sampling tick, so with the timer off each (uplink,
+  transport, wire) can accumulate up to `MAX_PROBES_PER_WIRE` (8)
+  duplicated descriptors before the registry's own newest-wins bound
+  starts pushing the oldest out on the next dial. Bounded and
+  self-limiting, not a leak — just not a completely free no-op either.
 - `loss_sample_min_packets` (default `200`) — minimum volume per window.
 - `loss_ewma_alpha` (default `0.2`) — smoothing for the per-wire EWMA.
 
@@ -1067,16 +1085,38 @@ and published unconditionally, regardless of `loss_latency_penalty_k`;
 turning it into an actual failover signal is a deliberate second step
 once you know what loss levels your own fleet sees (below).
 
-**Reading the metrics.** Two gauges, both labelled `{group, transport,
+**A `/control/apply` hot-swap resets the loss signal.** The new manager's
+carrier-loss registry always starts empty — carriers already dialed
+under the previous manager stay registered there, not here. Those
+carriers contribute no loss signal until they are naturally redialed
+(session end, wire flip, standby refill); self-healing within one dial
+cycle, not a leak, but worth knowing if a ratio looks freshly reset right
+after an apply.
+
+**Reading the metrics.** Three gauges, all labelled `{group, transport,
 uplink}`:
 
 - `outline_ws_uplink_carrier_loss_ratio` — the smoothed loss ratio
   (EWMA, `loss_ewma_alpha`) for the wire currently carrying traffic.
-- `outline_ws_uplink_carrier_loss_observed_packets` — cumulative
-  packets that ratio is based on. Always read it next to the ratio: a
-  ratio computed from a few hundred packets right after the
-  minimum-volume gate opened is far noisier than one built on a day of
-  steady traffic.
+- `outline_ws_uplink_carrier_loss_observed_packets` — packets that ratio
+  is based on, cumulative **since the wire's last reset** (a fresh dial,
+  or the wire losing its last registered carrier — see reason 4 below),
+  not since process start. It tells you *how long this wire has been
+  measured*, not *how confident the current ratio is*: the ratio is a
+  fixed-memory EWMA over roughly the last ten qualifying windows
+  (`loss_ewma_alpha = 0.2`), so a wire with a million packets observed
+  over a week is scored on the same amount of recent history as one with
+  a thousand observed in the last hour. Use this counter to tell "not
+  enough traffic yet" apart from "measured" (reason 1 below), not to
+  judge how much to trust the ratio's current value.
+- `outline_ws_uplink_latency_inflated_seconds` — the latency selection
+  actually ranks by once carrier loss is folded in
+  (`base_latency × (1 + loss_latency_penalty_k × loss)`, clamped to
+  `loss_latency_inflation_max`), next to the existing
+  `outline_ws_uplink_rtt_ewma_seconds`. With the shipped default
+  (`loss_latency_penalty_k = 0.0`) this equals the plain RTT EWMA; once
+  `k` is set, comparing the two series is what shows the penalty
+  actually being applied.
 
 **An absent series means "not measured" — never "no loss".** There are
 four distinct reasons a wire may have no `carrier_loss_ratio` series
@@ -1238,11 +1278,19 @@ the active yields to a candidate that is:
   lossy-but-working primary, immediately fail the very next dispatch's
   health check, fail back to the lossy primary, and re-trigger on the
   following tick: a switch on every connection.
-- itself at or below `loss_failover_ratio`. A candidate with **no** loss
-  verdict of its own counts as clean: absence means "not measured", never
-  "no loss" and never "measured lossy" (see the four reasons a series can
-  be absent, above) — refusing to switch to an unmeasured candidate would
-  strand the gateway on the lossy path for no reason.
+- itself at or below `loss_failover_ratio`, **on a fresh reading** — the
+  same "last qualifying measurement within roughly 3 sampling ticks" test
+  described above for the active, applied to the candidate's own ratio. A
+  candidate with **no** loss verdict of its own counts as clean: absence
+  means "not measured", never "no loss" and never "measured lossy" (see
+  the four reasons a series can be absent, above) — refusing to switch to
+  an unmeasured candidate would strand the gateway on the lossy path for
+  no reason. A candidate that *does* have a verdict but it has gone
+  stale — a warm-standby wire pinged too lightly to ever clear
+  `loss_sample_min_packets` again — is **not** treated as clean just
+  because the frozen number happens to read low: a reading nobody has
+  reconfirmed is not proof the candidate is currently clean, only that it
+  once was.
 
 If no such candidate exists the active uplink **stays** — a lossy path
 still carrying traffic beats none, and switching between two lossy
@@ -1291,7 +1339,12 @@ above:
 - `outline_ws_uplink_loss_failovers_total{transport, group, from_uplink,
   to_uplink}` — counts each switch this check causes, distinct from
   `outline_ws_uplink_failovers_total` (data-plane / runtime failovers, not
-  this strict-mode active-slot switch).
+  this strict-mode active-slot switch). `transport` is the transport
+  whose loss episode actually gated the decision, not necessarily the
+  transport of the dispatch that triggered the reassessment — under
+  `routing_scope = "global"` the gate is always TCP, so a UDP dispatch
+  that surfaces a TCP-loss-driven switch is counted under
+  `transport="tcp"`, not `"udp"`.
 
 Example — `[outline.load_balancing]` for the inline shape, and the same
 fields lifted onto a group:
