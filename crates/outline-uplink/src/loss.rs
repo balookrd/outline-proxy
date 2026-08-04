@@ -63,9 +63,6 @@ impl LossEwma {
     /// Latency multiplier for scoring: `1 + k · loss`, clamped to `cap`.
     /// `k = 0` yields exactly `1.0`, which is what keeps the default build's
     /// selection identical to today's.
-    // The scoring path (`base_latency`) is the production caller, added by
-    // Task 7 ("Inflate the scoring latency") per the plan.
-    #[allow(dead_code)]
     pub(crate) fn inflation(&self, k: f64, cap: f64) -> f64 {
         if k <= 0.0 {
             return 1.0;

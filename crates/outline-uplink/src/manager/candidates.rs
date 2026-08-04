@@ -563,7 +563,7 @@ impl UplinkManager {
                             &self.inner.load_balancing,
                             scope,
                         ),
-                        status.selection_view(),
+                        status.selection_view(&self.inner.load_balancing),
                     )
                 });
                 CandidateState {
