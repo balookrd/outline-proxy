@@ -37,18 +37,23 @@ pub enum CarrierLossProbe {
     /// TCP carrier (`ws`, `h2`, `xhttp` over TLS/TCP). Holds a **duplicate** of
     /// the carrier's descriptor: without the `dup`, once the carrier closes the
     /// fd number is recycled by an unrelated socket and this probe would report
-    /// that stranger's statistics as the uplink's.
+    /// that stranger's statistics as the uplink's. `identity` is computed once
+    /// at capture time (see [`tcp_identity`]) and copied by `try_clone`, rather
+    /// than recomputed from the fd, so `identity()` stays infallible.
     #[cfg(target_os = "linux")]
-    Tcp(OwnedFd),
+    Tcp { fd: OwnedFd, identity: u64 },
 }
 
 impl CarrierLossProbe {
     /// Duplicate `stream`'s descriptor into a probe. `None` when the duplicate
-    /// cannot be made (fd limit) or on a platform without `TCP_INFO` — loss
-    /// measurement is best-effort and must never fail a dial.
+    /// cannot be made (fd limit), the socket's addresses cannot be read, or on
+    /// a platform without `TCP_INFO` — loss measurement is best-effort and must
+    /// never fail a dial.
     #[cfg(target_os = "linux")]
     pub fn from_tcp_stream(stream: &tokio::net::TcpStream) -> Option<Self> {
-        stream.as_fd().try_clone_to_owned().ok().map(Self::Tcp)
+        let identity = tcp_identity(stream)?;
+        let fd = stream.as_fd().try_clone_to_owned().ok()?;
+        Some(Self::Tcp { fd, identity })
     }
 
     /// Non-Linux builds (developer machines) have no `TCP_INFO`; the client
@@ -65,11 +70,39 @@ impl CarrierLossProbe {
             #[cfg(feature = "h3")]
             Self::Quic(connection) => Some(Self::Quic(connection.clone())),
             #[cfg(target_os = "linux")]
-            Self::Tcp(fd) => fd.try_clone().ok().map(Self::Tcp),
+            Self::Tcp { fd, identity } => {
+                fd.try_clone().ok().map(|fd| Self::Tcp { fd, identity: *identity })
+            },
             // See the matching wildcard arm in `sample` above: only reached on
             // a build with neither variant, where `CarrierLossProbe` is empty.
             #[cfg(not(any(feature = "h3", target_os = "linux")))]
             _ => None,
+        }
+    }
+
+    /// A number that identifies the underlying carrier, equal for any two
+    /// handles on the same connection (including a `try_clone` of each
+    /// other) and (with overwhelming probability) different across distinct
+    /// carriers. This is what lets a registry recognise a shared H2/H3
+    /// connection arriving a second time — via another session's probe — as
+    /// the same carrier rather than counting its traffic twice. Infallible
+    /// and syscall-free: it never queries the socket, only what was captured
+    /// or handed to it at construction time.
+    pub fn identity(&self) -> u64 {
+        match self {
+            // `stable_id()` is quinn's own per-connection handle: stable for
+            // the connection's life and unaffected by cloning the
+            // `Connection` (it is `Arc`-backed, so a clone points at the same
+            // inner state).
+            #[cfg(feature = "h3")]
+            Self::Quic(connection) => connection.stable_id() as u64,
+            #[cfg(target_os = "linux")]
+            Self::Tcp { identity, .. } => *identity,
+            // Neither variant exists on this build: see the wildcard arm in
+            // `sample` below for why this is unreachable rather than absent,
+            // and why it still needs an arm.
+            #[cfg(not(any(feature = "h3", target_os = "linux")))]
+            _ => unreachable!("CarrierLossProbe is uninhabited on this build"),
         }
     }
 
@@ -88,7 +121,7 @@ impl CarrierLossProbe {
                 })
             },
             #[cfg(target_os = "linux")]
-            Self::Tcp(fd) => sample_tcp_info(fd),
+            Self::Tcp { fd, .. } => sample_tcp_info(fd),
             // Neither variant exists on this build (non-Linux without the
             // `h3` feature, e.g. a plain `cargo check -p outline-transport`
             // on a developer macOS machine): `CarrierLossProbe` is an empty
@@ -100,6 +133,24 @@ impl CarrierLossProbe {
             _ => None,
         }
     }
+}
+
+/// Derive a stable identity for a TCP carrier from its 4-tuple (local and
+/// peer addresses), computed once while the live socket is still reachable
+/// at capture time. Deliberately not derived from the fd number: `try_clone`
+/// hands out a different fd for the same carrier, which is exactly the case
+/// this identity must recognise as equal. `None` when the socket cannot
+/// report its own addresses — best-effort, must never fail a dial.
+#[cfg(target_os = "linux")]
+fn tcp_identity(stream: &tokio::net::TcpStream) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+
+    let local = stream.local_addr().ok()?;
+    let peer = stream.peer_addr().ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    local.hash(&mut hasher);
+    peer.hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 /// Kernel `struct tcp_info`, truncated at the fields we read.
