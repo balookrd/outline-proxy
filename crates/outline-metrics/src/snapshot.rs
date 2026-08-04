@@ -36,6 +36,7 @@ impl Metrics {
         self.uplink_active_wire_rtt_ewma_seconds.reset();
         self.uplink_carrier_loss_ratio.reset();
         self.uplink_carrier_loss_observed_packets.reset();
+        self.uplink_loss_elevated_seconds.reset();
         self.uplink_latency_inflated_seconds.reset();
         self.uplink_penalty_seconds.reset();
         self.uplink_effective_latency_seconds.reset();
@@ -188,6 +189,20 @@ impl Metrics {
                 self.uplink_carrier_loss_observed_packets
                     .with_label_values(&[group, "udp", &uplink.name])
                     .set(packets as f64);
+            }
+            // Loss-driven failover episode: absent while no episode is
+            // running (ratio not currently elevated, feature off, or the
+            // last qualifying measurement went stale) — same "absence is
+            // not a zero" discipline as the ratio/packets gauges above.
+            if let Some(elevated_ms) = uplink.tcp_loss_elevated_ms {
+                self.uplink_loss_elevated_seconds
+                    .with_label_values(&[group, "tcp", &uplink.name])
+                    .set(elevated_ms as f64 / 1000.0);
+            }
+            if let Some(elevated_ms) = uplink.udp_loss_elevated_ms {
+                self.uplink_loss_elevated_seconds
+                    .with_label_values(&[group, "udp", &uplink.name])
+                    .set(elevated_ms as f64 / 1000.0);
             }
             // Latency selection actually ranks by (loss-inflated). Mirrors
             // the loss-inflated `tcp_score_ms` / `udp_score_ms` below — both

@@ -57,10 +57,19 @@ impl LossEwma {
     /// Fold one sampling window into the EWMA. A window carrying fewer than
     /// `min_packets` sends is discarded outright: on a near-idle carrier the
     /// ratio is dominated by rounding, and feeding it would let an idle uplink
-    /// look catastrophically lossy.
-    pub(crate) fn record_window(&mut self, sent: u64, lost: u64, min_packets: u64, alpha: f64) {
+    /// look catastrophically lossy. Returns whether the window qualified and
+    /// moved the ratio — callers that need to know whether *this* window was
+    /// fresh evidence (as opposed to a silently-discarded one leaving a
+    /// frozen ratio in place) use the return value.
+    pub(crate) fn record_window(
+        &mut self,
+        sent: u64,
+        lost: u64,
+        min_packets: u64,
+        alpha: f64,
+    ) -> bool {
         if sent < min_packets.max(1) {
-            return;
+            return false;
         }
         let ratio = (lost as f64 / sent as f64).clamp(0.0, 1.0);
         self.observed_packets = self.observed_packets.saturating_add(sent);
@@ -71,6 +80,7 @@ impl LossEwma {
             None => ratio,
             Some(current) => current + alpha * (ratio - current),
         });
+        true
     }
 
     /// Latency multiplier for scoring: `1 + k · loss`, clamped to `cap`.

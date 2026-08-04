@@ -396,6 +396,14 @@ impl UplinkManager {
                 udp_carrier_loss_ratio: udp_loss.ratio(),
                 tcp_carrier_loss_packets: tcp_loss.ratio().map(|_| tcp_loss.observed_packets()),
                 udp_carrier_loss_packets: udp_loss.ratio().map(|_| udp_loss.observed_packets()),
+                tcp_loss_elevated_ms: status
+                    .tcp
+                    .loss_elevated_since
+                    .map(|since| now.duration_since(since).as_millis()),
+                udp_loss_elevated_ms: status
+                    .udp
+                    .loss_elevated_since
+                    .map(|since| now.duration_since(since).as_millis()),
                 tcp_inflated_latency_ms: view.tcp.base_latency.map(|v| v.as_millis()),
                 udp_inflated_latency_ms: view.udp.base_latency.map(|v| v.as_millis()),
                 cooldown_tcp_ms: status

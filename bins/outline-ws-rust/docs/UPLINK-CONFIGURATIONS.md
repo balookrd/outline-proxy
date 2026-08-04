@@ -1180,19 +1180,47 @@ This is the one part of the whole carrier-loss feature that moves
 production traffic without an operator asking for it, so — like every
 other knob in this section — it ships inert.
 
+**Requires sampling to be on.** `loss_sample_interval_secs = 0` — the
+documented off switch for the loss-*sampling* timer itself (see above) —
+spawns no sampling loop at all, so the "elevated since" episode is never
+maintained and `loss_failover_ratio` / `loss_failover_secs` stay silently
+inert regardless of their own values. If you set either knob, keep
+`loss_sample_interval_secs` at its default (`10`) or another nonzero value.
+
 **How it decides.** On every carrier-loss sampling tick
 (`loss_sample_interval_secs`), the manager reassesses the strict active
 uplink's active-wire loss ratio against `loss_failover_ratio` and
 maintains a continuous "elevated since" timestamp for it: a tick whose
 ratio is strictly above the threshold starts (or extends) the episode; a
-tick at or below it — or with no ratio at all, e.g. `loss_sample_min_packets`
-has not been reached yet — clears the episode outright. Once that episode
-has run **continuously** for at least `loss_failover_secs`, the active
-yields to a candidate that is:
+tick at or below it clears the episode outright. A ratio is only trusted
+while it is *fresh* — the wire's last *qualifying* measurement (one that
+met `loss_sample_min_packets`) must be within roughly 3 sampling ticks.
+Without this, a wire that measured high loss once and then only carries
+light traffic under the volume floor (sparse keepalives, an overnight
+lull) would keep reading its last, no-longer-current ratio as ongoing
+evidence indefinitely — the episode would "age" on a measurement that
+stopped being observed, and the actual duration of loss the operator
+configured would stop meaning what it says. A stale or entirely absent
+ratio (e.g. `loss_sample_min_packets` has never been reached) clears the
+episode the same as a clean tick does. Once the episode has run
+**continuously** for at least `loss_failover_secs`, the active yields to a
+candidate that is:
 
-- probe-healthy and not in cooldown,
-- of equal-or-higher weight (operator priority still stands — this is a
-  failover, not a failback), and
+- probe-healthy, of equal-or-higher weight (operator priority still stands
+  — this is a failover, not a failback), and has `probe.min_failures`
+  consecutive probe successes — the same stability bar the carrier-degraded
+  check applies. This last clause matters more than it looks: in
+  `routing_scope = "global"`, a candidate can be "healthy" purely by
+  bootstrap admission (an uplink with `[[outline.uplinks.fallbacks]]`
+  configured that has never proven a single successful dial is still let
+  into candidacy, so the active-wire dial loop can attempt the fallback —
+  see "Sticky fallback + auto-failback (active-wire state machine)"
+  below). Without the streak requirement, a dead
+  standby in exactly that state — no probe verdict ever confirmed, no loss
+  verdict either (unmeasured reads as clean) — would take the leg from a
+  lossy-but-working primary, immediately fail the very next dispatch's
+  health check, fail back to the lossy primary, and re-trigger on the
+  following tick: a switch on every connection.
 - itself at or below `loss_failover_ratio`. A candidate with **no** loss
   verdict of its own counts as clean: absence means "not measured", never
   "no loss" and never "measured lossy" (see the four reasons a series can
@@ -1215,6 +1243,15 @@ crosses `loss_failover_secs`: the very first clean tick resets the
 episode to "not started", the same discipline
 `carrier_degraded_failover_secs` applies to a descending carrier window.
 
+**Does not compose with `auto_failback = true`.** This check runs before
+the weight-driven auto-failback block, so it can move the active to an
+equal-weight, higher-index sibling — and `auto_failback`'s own filter
+excludes neither a lossy nor a carrier-degraded candidate, so the very
+next dispatch can fail straight back to it. The same gap already exists
+for `carrier_degraded_failover_secs`; this knob only widens the exposure.
+The fleet runs `auto_failback = false` (the default), where this does not
+arise — the mismatch only matters if you turn both features on together.
+
 **Picking values.** Follow "Choosing `loss_latency_penalty_k`" above to
 find your fleet's actual loss spread first — `loss_failover_ratio` should
 sit at or above the level of loss you have already decided is
@@ -1224,6 +1261,20 @@ a single bad sampling window cannot fire it alone: a few multiples of
 `loss_sample_interval_secs` is a reasonable floor, mirroring the `3 ×
 mode_downgrade_secs` default `carrier_degraded_failover_secs` uses for the
 same reason.
+
+**Watching it before it fires.** Two more series, alongside the ones
+above:
+
+- `outline_ws_uplink_loss_elevated_seconds{group, transport, uplink}` —
+  how long the current episode has been running. Absent while no episode
+  is running (feature off, ratio not currently above threshold, or the
+  last qualifying measurement went stale). Compare against
+  `loss_failover_secs` to see how close an uplink is to switching before
+  it actually does.
+- `outline_ws_uplink_loss_failovers_total{transport, group, from_uplink,
+  to_uplink}` — counts each switch this check causes, distinct from
+  `outline_ws_uplink_failovers_total` (data-plane / runtime failovers, not
+  this strict-mode active-slot switch).
 
 Example — `[outline.load_balancing]` for the inline shape, and the same
 fields lifted onto a group:

@@ -12,8 +12,9 @@ use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 use url::Url;
 
 use crate::config::{
-    CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TargetAddr,
-    TransportMode, UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
+    CipherKind, FallbackTransport, LoadBalancingConfig, LoadBalancingMode, ProbeConfig,
+    RoutingScope, TargetAddr, TransportMode, UplinkConfig, UplinkTransport, VlessUdpMuxLimits,
+    WsProbeConfig,
 };
 use crate::manager::status::{PenaltyState, PerTransportStatus, UplinkStatus};
 use crate::probe::build_http_probe_request;
@@ -2510,12 +2511,53 @@ async fn pin_primary_active(manager: &UplinkManager, target: &TargetAddr) {
     assert_eq!(first[0].uplink.name, "primary", "sanity: primary is the pinned active");
 }
 
-/// A continuously-lossy active, past the configured duration, with a clean
-/// backup of equal weight → the leg must move.
+/// Stage a proven TCP probe-success streak on `index` — the bar
+/// `loss_failover_switch_target` (and, identically, `carrier_degraded_
+/// switch_target`) requires of a candidate before it may take the strict
+/// active slot: `probe.min_failures` (1 in `probe_enabled()`) consecutive
+/// successes.
+async fn stage_tcp_probe_streak(manager: &UplinkManager, index: usize, successes: u32) {
+    manager.inner.with_status_mut(index, |status| {
+        status.tcp.consecutive_successes = successes;
+    });
+}
+
+/// A minimal fallback wire, distinct enough from the primary's dial URL to
+/// be identifiable, but otherwise irrelevant — only its *presence*
+/// (`UplinkConfig::fallbacks` non-empty) matters for these tests: it is
+/// what makes `fallback_bootstrap_allowed` eligible to admit the parent
+/// uplink into Global-scope candidacy without any probe verdict at all.
+fn dead_fallback() -> FallbackTransport {
+    FallbackTransport {
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: Some(Url::parse("wss://dead-standby.example.com/fallback/tcp").unwrap()),
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        vless_id: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "Secret0".to_string(),
+        fwmark: None,
+        ipv6_first: false,
+        fingerprint_profile: None,
+    }
+}
+
+/// A continuously-lossy active, past the configured duration, with a clean,
+/// probe-stable backup of equal weight → the leg must move.
 #[tokio::test]
 async fn loss_failover_moves_the_leg_once_the_episode_crosses_the_duration_threshold() {
     let (manager, target) = loss_failover_manager(0.05, Some(Duration::from_secs(60)));
     pin_primary_active(&manager, &target).await;
+    stage_tcp_probe_streak(&manager, 1, 2).await;
 
     // Primary has been running 90% loss continuously for 120 s — well past
     // the 60 s threshold. Backup has no loss verdict at all: unmeasured, so
@@ -2529,7 +2571,91 @@ async fn loss_failover_moves_the_leg_once_the_episode_crosses_the_duration_thres
     let second = manager.tcp_candidates(&target).await;
     assert_eq!(
         second[0].uplink.name, "backup",
-        "a continuously lossy active past the threshold must yield to the clean backup"
+        "a continuously lossy active past the threshold must yield to the clean, stable backup"
+    );
+}
+
+/// A clean, equal-weight candidate that has not yet proven
+/// `probe.min_failures` consecutive probe successes is not stable enough to
+/// take the leg — mirrors `unstable_candidate_does_not_take_the_leg` for the
+/// carrier-degraded check. This is the general form of the exploit closed by
+/// the `consecutive_successes >= min_streak` gate: `c.healthy` alone is not
+/// proof of a *live* candidate (see the bootstrap-admitted regression below
+/// for the concrete case where it is satisfied by a dead standby).
+#[tokio::test]
+async fn loss_failover_does_not_move_to_an_unstable_candidate() {
+    let (manager, target) = loss_failover_manager(0.05, Some(Duration::from_secs(60)));
+    pin_primary_active(&manager, &target).await;
+    // Deliberately NOT staging a probe-success streak on backup: it is
+    // healthy and clean, but has proven nothing yet.
+
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(120));
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        second[0].uplink.name, "primary",
+        "a candidate without a proven probe-success streak must not take the leg"
+    );
+}
+
+/// Regression: in `Global` scope, `selection_health` also admits a
+/// candidate via `fallback_bootstrap_allowed` when probe has never rendered
+/// a verdict for it (or has marked it down) AND it has a fallback wire
+/// configured AND it has never recorded a single successful dial — probe
+/// failures set no cooldown, so nothing else excludes it. Before the
+/// `consecutive_successes >= min_streak` gate, a dead standby in exactly
+/// this state — no health ever confirmed, no loss verdict (unmeasured reads
+/// as clean) — would take the leg from a lossy-but-working primary, the very
+/// next dispatch's `should_keep` would reject it and fail back to the lossy
+/// primary, and the following tick would re-trigger: a switch every
+/// connection on a group that was previously just stuck on a
+/// working-but-lossy path.
+#[tokio::test]
+async fn loss_failover_does_not_move_to_a_bootstrap_admitted_dead_standby() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    config.loss_failover_ratio = 0.05;
+    config.loss_failover_duration = Some(Duration::from_secs(60));
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            UplinkConfig {
+                fallbacks: vec![dead_fallback()],
+                ..make_uplink("dead-standby", "wss://dead-standby.example.com/tcp")
+            },
+        ],
+        probe_enabled(),
+        config,
+    )
+    .unwrap();
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+
+    // Only primary is ever confirmed healthy, pinning the initial active.
+    // "dead-standby" gets NO probe verdict at all (healthy stays `None`)
+    // and NO successful dial is ever recorded — the exact bootstrap-
+    // admitted, never-proven state.
+    set_tcp_status(&manager, 0, true, 30).await;
+    set_udp_status(&manager, 0, true, 30).await;
+    let first = manager.tcp_candidates(&target).await;
+    assert_eq!(first[0].uplink.name, "primary", "sanity: primary is the pinned active");
+
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(120));
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        second[0].uplink.name, "primary",
+        "a bootstrap-admitted standby with zero proven probe successes must not take the leg, \
+         even though it is otherwise 'healthy' and has no loss verdict"
     );
 }
 
@@ -2539,6 +2665,10 @@ async fn loss_failover_moves_the_leg_once_the_episode_crosses_the_duration_thres
 async fn loss_failover_does_not_move_before_the_duration_threshold_is_crossed() {
     let (manager, target) = loss_failover_manager(0.05, Some(Duration::from_secs(60)));
     pin_primary_active(&manager, &target).await;
+    // Give backup a full probe-success streak so this test isolates the
+    // duration condition alone — the streak gate must not be the
+    // (accidental) reason the switch is refused here.
+    stage_tcp_probe_streak(&manager, 1, 2).await;
 
     let now = Instant::now();
     manager.inner.with_status_mut(0, |status| {
@@ -2560,6 +2690,9 @@ async fn loss_failover_does_not_move_before_the_duration_threshold_is_crossed() 
 async fn loss_failover_keeps_the_active_when_no_candidate_is_clean() {
     let (manager, target) = loss_failover_manager(0.05, Some(Duration::from_secs(60)));
     pin_primary_active(&manager, &target).await;
+    // Give backup a full probe-success streak so this test isolates "no
+    // clean candidate" as the sole reason for staying put.
+    stage_tcp_probe_streak(&manager, 1, 2).await;
 
     let now = Instant::now();
     manager.inner.with_status_mut(0, |status| {
@@ -2604,6 +2737,10 @@ async fn loss_failover_does_not_move_to_a_lower_weight_candidate() {
     .unwrap();
     let target = TargetAddr::Domain("example.com".to_string(), 443);
     pin_primary_active(&manager, &target).await;
+    // Give backup a full probe-success streak so this test isolates the
+    // weight condition alone — the streak gate must not be the (accidental)
+    // reason the switch is refused here.
+    stage_tcp_probe_streak(&manager, 1, 2).await;
 
     let now = Instant::now();
     manager.inner.with_status_mut(0, |status| {

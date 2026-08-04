@@ -542,14 +542,30 @@ impl UplinkManager {
     ///   `UplinkManager::sample_carrier_loss_once`, is the continuous-episode
     ///   anchor; an isolated flap that a later clean tick clears can never
     ///   qualify;
-    /// * some other candidate is probe-healthy (which on this path also
-    ///   means "not in cooldown" — see `selection_health`), of
-    ///   equal-or-higher weight (operator priority still stands), and is
-    ///   itself at or below the threshold. A candidate with **no** loss
-    ///   verdict at all counts as clean: absence means "not measured", never
-    ///   "no loss" and never "measured lossy" — refusing to switch to an
-    ///   unmeasured candidate would strand the gateway on the lossy path for
-    ///   no reason.
+    /// * some other candidate is `c.healthy` (probe-confirmed, or — in
+    ///   `Global` scope — bootstrap-admitted via `fallback_bootstrap_allowed`;
+    ///   see the caveat below), of equal-or-higher weight (operator priority
+    ///   still stands), has `probe.min_failures` consecutive probe
+    ///   successes, and is itself at or below the threshold. A candidate
+    ///   with **no** loss verdict at all counts as clean: absence means "not
+    ///   measured", never "no loss" and never "measured lossy" — refusing to
+    ///   switch to an unmeasured candidate would strand the gateway on the
+    ///   lossy path for no reason.
+    ///
+    /// The `consecutive_successes >= min_streak` clause is load-bearing, not
+    /// cosmetic — it is what `carrier_degraded_switch_target` already
+    /// requires at [`Self::carrier_degraded_switch_target`]. Without it,
+    /// `c.healthy` alone is not proof of a *live* candidate: in `Global`
+    /// scope, `selection_health` also admits an uplink via
+    /// `fallback_bootstrap_allowed` when probe has marked it unhealthy (or
+    /// never rendered a verdict) and it has never recorded a successful
+    /// dial — probe failures set no cooldown, so nothing else excludes it.
+    /// A dead standby in that state has no loss verdict either (unmeasured
+    /// reads as clean), so without the streak gate this check would hand it
+    /// the leg, the very next dispatch's `should_keep` would reject it and
+    /// fail back to the lossy primary, and the next tick would re-trigger —
+    /// a switch every connection on a group that was previously just stuck
+    /// on a working-but-lossy path.
     ///
     /// This is the mechanism that makes a lossy pinned active actually be
     /// *left* — `loss_latency_penalty_k` only ranks it lower, and in
@@ -584,10 +600,12 @@ impl UplinkManager {
             return None;
         }
         let active_weight = self.inner.uplinks[active_index].weight;
+        let min_streak = self.inner.probe.min_failures as u32;
         candidates.iter().position(|c| {
             c.index != active_index
                 && c.healthy
                 && self.inner.uplinks[c.index].weight >= active_weight
+                && c.status.of(gate_transport).consecutive_successes >= min_streak
                 && c.status
                     .of(gate_transport)
                     .loss_ratio
@@ -874,6 +892,15 @@ impl UplinkManager {
                             "loss-driven failover: switching strict active uplink"
                         );
                         if commit_selection {
+                            outline_metrics::record_loss_failover(
+                                match transport {
+                                    TransportKind::Tcp => "tcp",
+                                    TransportKind::Udp => "udp",
+                                },
+                                &self.inner.group_name,
+                                &self.inner.uplinks[active_index].name,
+                                &target.uplink.name,
+                            );
                             self.set_active_uplink_index_for_transport(
                                 transport,
                                 target.index,

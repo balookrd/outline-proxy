@@ -168,6 +168,13 @@ pub fn record_failover(
     _to_uplink: &str,
 ) {
 }
+pub fn record_loss_failover(
+    _transport: &'static str,
+    _group: &str,
+    _from_uplink: &str,
+    _to_uplink: &str,
+) {
+}
 pub fn record_socks_tcp_strict_abort(_group: &str, _uplink: &str, _reason: &'static str) {}
 pub fn record_mid_session_retry(
     _transport: &'static str,

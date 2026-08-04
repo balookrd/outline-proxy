@@ -322,6 +322,25 @@ pub fn record_failover(transport: &'static str, group: &str, from_uplink: &str, 
         .inc();
 }
 
+/// Counts a strict-mode active-uplink switch caused by
+/// `loss_failover_ratio` / `loss_failover_secs` — a pinned active that has
+/// been continuously carrying packet loss above the configured ratio, past
+/// the configured duration, yielding to a clean sibling. Distinct from
+/// [`record_failover`] (data-plane / runtime failovers): this is the
+/// strict-mode active-slot switch counted at
+/// `outline_ws_uplink_loss_failovers_total`.
+pub fn record_loss_failover(
+    transport: &'static str,
+    group: &str,
+    from_uplink: &str,
+    to_uplink: &str,
+) {
+    METRICS
+        .uplink_loss_failovers_total
+        .with_label_values(&[transport, group, from_uplink, to_uplink])
+        .inc();
+}
+
 /// Counts SOCKS5 TCP sessions that were forcibly aborted because the active
 /// uplink changed away from the one the session was pinned to (strict
 /// `active_passive` mode). The session is closed with TCP RST so the client
