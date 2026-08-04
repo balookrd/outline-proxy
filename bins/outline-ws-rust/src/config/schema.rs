@@ -582,6 +582,20 @@ pub(super) struct UplinkGroupSection {
     /// seconds while an equal-or-higher-weight, non-degraded, probe-stable
     /// candidate exists. `0` disables. Default: `3 * mode_downgrade_secs`.
     pub(super) carrier_degraded_failover_secs: Option<u64>,
+    /// Loss-driven strict-mode failover: loss ratio (in `[0, 1]`) above
+    /// which the active uplink's active-wire carrier counts as degraded for
+    /// this check. `0.0` (default) disables the check entirely — this is
+    /// the one part of the carrier-loss feature that moves traffic without
+    /// an operator setting it explicitly, so it ships inert like the rest.
+    /// See `docs/UPLINK-CONFIGURATIONS.md` "Carrier loss in uplink
+    /// selection".
+    pub(super) loss_failover_ratio: Option<f64>,
+    /// How long `loss_failover_ratio` must be exceeded **continuously**
+    /// (one tick back at or below it restarts the clock) before the strict
+    /// active uplink yields to a clean, equal-or-higher-weight sibling.
+    /// Unset (default) disables the check independently of
+    /// `loss_failover_ratio`.
+    pub(super) loss_failover_secs: Option<u64>,
     /// Window over which consecutive runtime (data-plane) failures are
     /// counted toward the health-flip escalation. A new failure arriving
     /// later than this window after the previous one resets the streak to
@@ -840,6 +854,20 @@ pub(crate) struct LoadBalancingSection {
     /// seconds while an equal-or-higher-weight, non-degraded, probe-stable
     /// candidate exists. `0` disables. Default: `3 * mode_downgrade_secs`.
     pub(super) carrier_degraded_failover_secs: Option<u64>,
+    /// Loss-driven strict-mode failover: loss ratio (in `[0, 1]`) above
+    /// which the active uplink's active-wire carrier counts as degraded for
+    /// this check. `0.0` (default) disables the check entirely — this is
+    /// the one part of the carrier-loss feature that moves traffic without
+    /// an operator setting it explicitly, so it ships inert like the rest.
+    /// See `docs/UPLINK-CONFIGURATIONS.md` "Carrier loss in uplink
+    /// selection".
+    pub(super) loss_failover_ratio: Option<f64>,
+    /// How long `loss_failover_ratio` must be exceeded **continuously**
+    /// (one tick back at or below it restarts the clock) before the strict
+    /// active uplink yields to a clean, equal-or-higher-weight sibling.
+    /// Unset (default) disables the check independently of
+    /// `loss_failover_ratio`.
+    pub(super) loss_failover_secs: Option<u64>,
     /// Window over which consecutive runtime (data-plane) failures are
     /// counted toward the health-flip escalation. A new failure arriving
     /// later than this window after the previous one resets the streak to

@@ -586,6 +586,8 @@ fields are optional; omitted fields fall back to the defaults below.
 | `loss_sample_interval_secs`          | `10`               | s     | sampling grid for the carrier-loss counters, independent of `probe.interval`; `0` disables sampling entirely (carriers still register probes, nothing ever differences them) |
 | `loss_sample_min_packets`            | `200`              | int   | minimum packets a wire must send within one sampling window for that window's loss ratio to count |
 | `loss_ewma_alpha`                    | `0.2`              | (0,1] | smoothing factor for the per-wire carrier-loss EWMA                                               |
+| `loss_failover_ratio`                | `0.0`              | [0,1] | loss ratio above which the strict active uplink counts as degraded for loss-driven failover; `0.0` disables the check entirely — this is the one part of the carrier-loss feature that moves traffic without an operator asking. See "Carrier loss in uplink selection" below |
+| `loss_failover_secs`                 | unset (disabled)   | s     | how long `loss_failover_ratio` must be exceeded **continuously** before the active uplink yields to a clean, equal-or-higher-weight sibling; one tick back at or below the ratio restarts the clock. Unset disables the check independently of `loss_failover_ratio`; `0` is equivalent to unset |
 | `failure_penalty_ms`                 | `500`              | ms    | initial RTT penalty added on a fresh runtime failure                                              |
 | `failure_penalty_max_ms`             | `30000`            | ms    | cap on the cumulative failure penalty                                                             |
 | `failure_penalty_halflife_secs`      | `60`               | s     | half-life of the failure-penalty exponential decay                                                |
@@ -703,7 +705,7 @@ triggered the switch. Three values:
 | --- | --- | --- |
 | `OperatorHard` | `/control/activate {"soft":false}`, a hard scheduled reselect, any soft request clamped off a cluster | RST |
 | `OperatorSoft` | `/control/activate {"soft":true}` on a cluster group | migrate |
-| `Failover` | probe/runtime failover, auto-failback, carrier-degraded failover, initial selection | migrate on a cluster |
+| `Failover` | probe/runtime failover, auto-failback, carrier-degraded failover, loss-driven failover, initial selection | migrate on a cluster |
 
 Only an operator **drain** tears sessions down, and for a concrete
 reason: under a mesh a migrated session is relayed back to its *home*,
@@ -1144,10 +1146,84 @@ The multiplier `(1 + k × loss)` is clamped to this ceiling (default
 `4.0`, validated at load time to `[1.0, 100.0]`) before it is applied,
 so a single catastrophic sampling window cannot send an uplink's
 scoring latency to an absurd value. A lossy uplink is **never removed
-from candidacy** by this feature — only ranked lower. It may be the
-only live path in the group, and an outright exclusion would pull it
-out of rotation entirely instead of letting it keep carrying traffic at
-reduced preference.
+from candidacy** by `loss_latency_penalty_k` — only ranked lower. It
+may be the only live path in the group, and an outright exclusion
+would pull it out of rotation entirely instead of letting it keep
+carrying traffic at reduced preference.
+
+**Ranking lower is not the same as being left — that is
+`loss_failover_ratio` / `loss_failover_secs`, below.** In `mode =
+"active_active"` a lower rank is enough: the balancer picks among
+candidates on every selection, so a lossy uplink simply loses more of
+those picks to its cleaner siblings. But the fleet's actual shape is
+`mode = "active_passive"` with `auto_failback = false`: one uplink is
+*pinned* active, and `strict_transport_candidates` keeps it the moment
+probe calls it healthy — `score`, and therefore
+`loss_latency_penalty_k` no matter how it is tuned, is never consulted
+on that path (`crates/outline-uplink/src/manager/candidates.rs`, the
+`strict_transport_candidates` function). This is exactly what happened
+on 2026-08-02: a healthy-per-probe, unremarkable-RTT, but lossy active
+uplink held the pinned slot for six and a half hours, and no value of
+`k` would have moved it.
+
+### Loss-driven failover for a pinned active uplink
+
+`loss_failover_ratio` (default `0.0`, disabled) and `loss_failover_secs`
+(default unset, disabled) are the mechanism that makes a pinned strict
+active actually yield on loss — the counterpart to
+`carrier_degraded_failover_secs` (which reacts to a silent carrier
+downgrade, e.g. `ws_h3 → ws_h2`) for the loss signal instead. Both knobs
+must be set for the check to run, and each disables it independently:
+`loss_failover_ratio = 0.0` (the default) turns the check off outright, and
+`loss_failover_secs` unset (or `0`) does the same regardless of the ratio.
+This is the one part of the whole carrier-loss feature that moves
+production traffic without an operator asking for it, so — like every
+other knob in this section — it ships inert.
+
+**How it decides.** On every carrier-loss sampling tick
+(`loss_sample_interval_secs`), the manager reassesses the strict active
+uplink's active-wire loss ratio against `loss_failover_ratio` and
+maintains a continuous "elevated since" timestamp for it: a tick whose
+ratio is strictly above the threshold starts (or extends) the episode; a
+tick at or below it — or with no ratio at all, e.g. `loss_sample_min_packets`
+has not been reached yet — clears the episode outright. Once that episode
+has run **continuously** for at least `loss_failover_secs`, the active
+yields to a candidate that is:
+
+- probe-healthy and not in cooldown,
+- of equal-or-higher weight (operator priority still stands — this is a
+  failover, not a failback), and
+- itself at or below `loss_failover_ratio`. A candidate with **no** loss
+  verdict of its own counts as clean: absence means "not measured", never
+  "no loss" and never "measured lossy" (see the four reasons a series can
+  be absent, above) — refusing to switch to an unmeasured candidate would
+  strand the gateway on the lossy path for no reason.
+
+If no such candidate exists the active uplink **stays** — a lossy path
+still carrying traffic beats none, and switching between two lossy
+uplinks would be churn, not recovery. The switch is published as
+`SwitchIntent::Failover` (see the `SwitchIntent` table above), so on a
+cluster group live sessions migrate to the new active instead of being
+reset, exactly like the carrier-degraded check. The log line and the
+manual-switch reason both name the two uplinks and the observed loss
+ratio, so the decision is legible on its own without cross-referencing
+metrics.
+
+**One continuous episode, not an accumulating one.** An uplink flapping
+around the threshold — one tick over, one tick under, repeat — never
+crosses `loss_failover_secs`: the very first clean tick resets the
+episode to "not started", the same discipline
+`carrier_degraded_failover_secs` applies to a descending carrier window.
+
+**Picking values.** Follow "Choosing `loss_latency_penalty_k`" above to
+find your fleet's actual loss spread first — `loss_failover_ratio` should
+sit at or above the level of loss you have already decided is
+unacceptable, not below it (a threshold set too low turns ordinary noise
+into a failover trigger). `loss_failover_secs` should be long enough that
+a single bad sampling window cannot fire it alone: a few multiples of
+`loss_sample_interval_secs` is a reasonable floor, mirroring the `3 ×
+mode_downgrade_secs` default `carrier_degraded_failover_secs` uses for the
+same reason.
 
 Example — `[outline.load_balancing]` for the inline shape, and the same
 fields lifted onto a group:
