@@ -2044,6 +2044,77 @@ git commit -m "docs(uplink): document carrier-loss measurement and its selection
 
 ---
 
+### Task 10: Loss-driven failover for a pinned active uplink
+
+Found by the final whole-branch review, and it is the gap between what this
+plan built and what the incident needs. In `active_passive` with
+`auto_failback = false` — the fleet's configuration — `strict_transport_candidates`
+returns the active uplink as soon as probe calls it healthy
+(`crates/outline-uplink/src/manager/candidates.rs:767-782`); `score` is never
+consulted. So every task before this one makes loss *visible* and makes it
+*rank*, but a healthy pinned active still never yields. Setting `k` alone would
+not have moved the gateway on 2026-08-02.
+
+The precedent to copy is already in the file: `carrier_degraded_switch_target`
+(`candidates.rs:504`), which yields the leg when the active has been
+continuously running below its configured carrier past a threshold and a clean,
+equal-or-higher-weight sibling exists. Loss is the same shape of signal.
+
+**Files:**
+- Modify: `crates/outline-uplink/src/config.rs` (two knobs)
+- Modify: `bins/outline-ws-rust/src/config/schema.rs` (both `load_balancing` sections) and `bins/outline-ws-rust/src/config/load/balancing.rs`
+- Modify: `crates/outline-uplink/src/manager/status.rs` (`loss_elevated_since` per transport)
+- Modify: `crates/outline-uplink/src/manager/loss_sampler.rs` (maintain that timestamp)
+- Modify: `crates/outline-uplink/src/manager/candidates.rs` (`loss_failover_switch_target`, called beside the carrier-degraded check)
+- Modify: `crates/outline-uplink/src/manager/tests/loss_sampler.rs`, `crates/outline-uplink/src/tests/mod.rs`
+- Modify: `bins/outline-ws-rust/docs/UPLINK-CONFIGURATIONS.md` and `.ru.md`
+
+**Config**
+
+| Key | Default | Meaning |
+|---|---|---|
+| `loss_failover_ratio` | `0.0` | Loss ratio above which the active uplink is considered degraded. `0.0` disables the check entirely. |
+| `loss_failover_secs` | unset | How long the ratio must stay continuously above that threshold before the leg moves. Unset disables the check, exactly as `carrier_degraded_failover` does. |
+
+Both off by default: this is the one piece of the feature that moves production
+traffic on its own, and it ships inert like the rest.
+
+**Semantics**
+
+- The sampler maintains `loss_elevated_since: Option<Instant>` per transport:
+  set on the first tick whose active-wire ratio exceeds `loss_failover_ratio`,
+  cleared the moment a tick comes back at or below it. A continuous episode is
+  what counts — an uplink that flaps around the threshold never accumulates
+  time, which is the same discipline `carrier_degraded_since` enforces.
+- `loss_failover_switch_target` picks, among candidates with weight equal to or
+  higher than the active's, one that is probe-healthy, not in cooldown, and
+  whose own loss is at or below the threshold (an uplink with *no* verdict
+  counts as clean — absence means not measured, and an unmeasured candidate is
+  not evidence of a bad one).
+- Switch is published as `SwitchIntent::Failover` with a reason naming both
+  uplinks and the observed ratio, so the decision is legible in the log without
+  cross-referencing metrics.
+- A candidate that is itself above the threshold is not a target: moving from
+  one lossy path to another is churn, not recovery.
+
+**Tests**
+
+- An active uplink over the threshold for less than `loss_failover_secs` does not move.
+- The same uplink past the threshold moves to the clean sibling.
+- An episode interrupted by one clean tick restarts the clock rather than accumulating.
+- No candidate is clean → the active stays, because a lossy uplink still carrying traffic beats none.
+- With `loss_failover_ratio = 0.0` (the default) the check never runs, and the existing strict-mode tests are unchanged.
+
+**Documentation**
+
+Both language sides gain the two knobs and one paragraph: what moves the leg,
+what does not, and that this is the only part of the feature that changes
+routing without an operator asking. Also correct the impression the Task 9 text
+leaves — that choosing `k` is what makes a lossy uplink be abandoned. It is
+what makes it *rank* lower; this is what makes it be left.
+
+---
+
 ## After the plan
 
 The feature ships measuring and not acting. To finish the job the owner
