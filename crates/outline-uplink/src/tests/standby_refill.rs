@@ -112,6 +112,42 @@ async fn combined_ss_udp_standby_refill_dials_udp_leg() {
     task.abort();
 }
 
+/// The warm-standby refill dial must register a loss probe like every sibling
+/// dial site (`connect_tcp_ws_fresh_internal`,
+/// `acquire_udp_standby_or_connect_with_store`, and the raw-QUIC/VLESS-UDP
+/// sites). This pool is the majority producer of user carriers, so skipping
+/// it here silently thins the dataset the whole carrier-loss feature exists
+/// to collect — and on an explicitly-`h1` pool, where each slot owns its own
+/// socket rather than sharing a carrier opened elsewhere, its carriers were
+/// never measured at all.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn refill_registers_a_carrier_loss_probe() {
+    let (url, _path_rx, shutdown_tx, task) = spawn_upgrade_path_probe().await;
+
+    let mut config = lb();
+    config.warm_standby_tcp = 1;
+    config.warm_standby_udp = 0;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_uplink("standby", url.as_str())],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    manager.maintain_pool(0, TransportKind::Tcp).await;
+
+    assert_eq!(
+        manager.inner.carrier_loss[0].lock().len(),
+        1,
+        "the pooled dial must register its carrier's loss probe",
+    );
+
+    let _ = shutdown_tx.send(());
+    task.abort();
+}
+
 /// Sibling check that the TCP pool still dials the TCP leg — guards against a
 /// fix that flips the discriminator the wrong way.
 #[tokio::test]
