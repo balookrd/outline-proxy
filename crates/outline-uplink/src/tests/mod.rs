@@ -90,7 +90,7 @@ fn weighted_score_prefers_higher_weight_for_same_latency() {
     );
 }
 
-fn probe_disabled() -> ProbeConfig {
+pub(crate) fn probe_disabled() -> ProbeConfig {
     ProbeConfig {
         interval: Duration::from_secs(30),
         timeout: Duration::from_secs(5),
@@ -131,7 +131,7 @@ fn http_probe_formats_ipv6_host_header() {
     assert!(request.contains("\r\nHost: [2001:db8::1]:8080\r\n"));
 }
 
-fn make_uplink(name: &str, url: &str) -> UplinkConfig {
+pub(crate) fn make_uplink(name: &str, url: &str) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
         transport: UplinkTransport::Ss,

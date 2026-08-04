@@ -4,6 +4,7 @@ mod carrier_descent;
 pub(crate) mod carrier_descent_state;
 mod cert_check;
 mod failures;
+mod loss_sampler;
 pub(crate) mod mode_downgrade;
 pub(crate) mod probe;
 mod reporting;
@@ -250,6 +251,9 @@ impl UplinkManager {
                     .map(|_| parking_lot::Mutex::new(UplinkStatus::default()))
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
+                carrier_loss: (0..count)
+                    .map(|_| parking_lot::Mutex::new(crate::loss::CarrierLossRegistry::default()))
+                    .collect(),
                 probe_warm_udp: (0..count)
                     .map(|_| self::probe::warm_udp::new_slot())
                     .collect::<Vec<_>>()

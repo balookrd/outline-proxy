@@ -208,6 +208,15 @@ impl UplinkRegistry {
         }
     }
 
+    /// Spawn one carrier-loss sampling loop per group. No-op for a group
+    /// whose `loss_sample_interval` is zero. See
+    /// [`UplinkManager::spawn_loss_sampler_loop`].
+    pub fn spawn_loss_sampler_loops(&self) {
+        for group in self.state.load().groups.iter() {
+            group.manager.spawn_loss_sampler_loop();
+        }
+    }
+
     /// Spawn one scheduled re-selection loop per group that has `reselect_at`
     /// or `reselect_interval` configured. No-op for other groups. See
     /// [`UplinkManager::spawn_reselect_timer_loops`].
@@ -402,6 +411,10 @@ impl UplinkRegistry {
             // rotation stops at the first hot-apply, since the loops belong to
             // the displaced managers and are shut down together with them.
             group.manager.spawn_shuffle_timer_loops();
+            // Same reasoning: the carrier-loss sampler belongs to the displaced
+            // manager too, so a hot-apply without this respawn would leave the
+            // new group's status permanently unsampled.
+            group.manager.spawn_loss_sampler_loop();
             // Ditto for scheduled re-selection: `reselect_at`/`reselect_interval`
             // loops belong to the displaced managers too, so they must be
             // respawned here or a hot-apply silently stops scheduled rotation.
