@@ -414,7 +414,10 @@ impl UplinkManager {
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
-        // The standby pool always dials the primary wire (`wire = 0`).
+        // Every dial through `connect_tcp_ws_fresh_internal` — fresh,
+        // redial, or migrate, standby-pool refill or on-demand — always
+        // targets the primary wire (`wire = 0`); fallback wires are dialed
+        // elsewhere (`crate::manager::probe::wire`).
         self.register_carrier_loss_probe(candidate.index, 0, TransportKind::Tcp, ws.loss_probe());
         // Feed the on-demand dial latency into the RTT EWMA so real
         // connection quality is reflected in routing scores, not just probe

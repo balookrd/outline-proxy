@@ -304,8 +304,9 @@ async fn h3_handshake(
         .with_context(|| format!("xhttp/h3 QUIC handshake failed for {server_addr}"))?;
     // Captured before `connection` moves into `h3_quinn::Connection::new`
     // below — cloning a `quinn::Connection` is cheap (it is `Arc`-backed), so
-    // this costs nothing on the hot dial path.
-    #[cfg(feature = "h3")]
+    // this costs nothing on the hot dial path. No `#[cfg(feature = "h3")]`
+    // needed here: this whole module (`xhttp/h3.rs`) is only compiled when
+    // `h3` is enabled — see `mod h3;` in `xhttp/mod.rs`.
     let loss_probe = Some(crate::CarrierLossProbe::Quic(connection.clone()));
     let (mut driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection))
         .await
