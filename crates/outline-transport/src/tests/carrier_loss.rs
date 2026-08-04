@@ -46,3 +46,26 @@ async fn tcp_probe_reports_a_dead_carrier_after_the_peer_closes() {
     }
     assert!(!alive, "a closed carrier must not report itself alive");
 }
+
+/// An HTTP/1 carrier hands out a probe on its underlying TCP socket, so a
+/// plain `ws://` uplink is measurable without any shared-connection plumbing.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn http1_transport_stream_yields_a_tcp_probe() {
+    use crate::ws_stream::TransportStream;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let _server = listener.accept().await.unwrap();
+
+    let ws =
+        WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None).await;
+    let stream = TransportStream::new_http1(ws);
+
+    let probe = stream.loss_probe().expect("http1 carrier exposes a probe");
+    let sample = probe.sample().expect("probe reads the live socket");
+    assert!(sample.alive);
+}

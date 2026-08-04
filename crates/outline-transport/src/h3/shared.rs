@@ -244,6 +244,13 @@ impl SharedH3Connection {
         self.active_streams.load(Ordering::Relaxed)
     }
 
+    /// Clone of the underlying QUIC connection for loss sampling. Cheap — a
+    /// `quinn::Connection` is `Arc`-backed — and read-only: the sampler never
+    /// opens streams or closes the connection.
+    pub(crate) fn loss_probe(&self) -> crate::CarrierLossProbe {
+        crate::CarrierLossProbe::Quic(self.connection.clone())
+    }
+
     pub(super) async fn open_websocket(
         self: &Arc<Self>,
         server_name: &str,
@@ -350,6 +357,10 @@ impl crate::SharedConnectionHealth for SharedH3Connection {
 
     fn mode(&self) -> &'static str {
         "h3"
+    }
+
+    fn loss_probe(&self) -> Option<crate::CarrierLossProbe> {
+        Some(SharedH3Connection::loss_probe(self))
     }
 }
 
