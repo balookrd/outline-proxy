@@ -168,11 +168,55 @@ fn a_lossy_fast_path_ranks_behind_a_clean_slower_one() {
     );
 }
 
+/// Cold-start window right after a wire flip: `active_wire` has moved to a
+/// fallback with no RTT sample of its own yet, so the base latency falls
+/// back to primary's EWMA. That base must be paired with **primary's own**
+/// loss slot, not the active (fallback) wire's — mixing them would score a
+/// primary latency sample against an unrelated wire's loss verdict. The two
+/// wires are given deliberately different loss so a wire mix-up is visible:
+/// primary is heavily lossy (40%, clamped to the cap) and the active
+/// fallback wire is nearly clean (1%) — a mix-up would produce a barely
+/// inflated result instead of a capped one.
+#[test]
+fn base_latency_with_pairs_a_primary_fallback_with_primarys_own_loss() {
+    let mut config = crate::tests::lb();
+    config.loss_latency_penalty_k = 20.0;
+    config.loss_latency_inflation_max = 4.0;
+
+    let mut status = PerTransportStatus {
+        rtt_ewma: Some(Duration::from_millis(100)),
+        active_wire: 1,
+        // The active wire's own RTT slot has no sample yet.
+        fallback_rtt_ewma: vec![None],
+        ..Default::default()
+    };
+    status.record_wire_loss_window(0, 10_000, 4_000, 200, 1.0); // primary: 40% loss
+    status.record_wire_loss_window(1, 10_000, 100, 200, 1.0); // active wire: 1% loss
+
+    // Sanity: `active_wire_loss()` really does report the *other* wire's
+    // (1%) verdict here — this test only means something if that verdict is
+    // NOT what gets applied.
+    assert_eq!(status.active_wire_loss().ratio(), Some(0.01));
+
+    // Primary's 40% loss at k=20 would inflate by 1+20*0.4=9.0, clamped to
+    // the 4.0 cap: 100ms * 4.0 = 400ms. The active wire's 1% loss would only
+    // inflate by 1+20*0.01=1.2 (120ms) — a mix-up would produce that instead.
+    assert_eq!(status.base_latency_with(&config), Some(Duration::from_millis(400)));
+}
+
 /// With the shipped default the inflation is inert, so today's ranking is
 /// preserved exactly.
 #[test]
 fn the_default_coefficient_leaves_base_latency_untouched() {
     let config = crate::tests::lb();
+    // `lb()` is a hand-written test fixture local to this crate, not the
+    // shipped default — the actual default lives in the config loader,
+    // `bins/outline-ws-rust/src/config/load/balancing.rs`
+    // (`loss_latency_penalty_k.unwrap_or(0.0)`), which this crate cannot
+    // import (it is a dependency of that binary, not the reverse). This
+    // assertion pins the fixture to the value the loader defaults to, so
+    // the test's premise ("with the shipped default...") stays honest if
+    // the two ever drift apart.
     assert_eq!(config.loss_latency_penalty_k, 0.0);
 
     let mut status = PerTransportStatus {
