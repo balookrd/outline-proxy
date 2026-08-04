@@ -62,3 +62,57 @@ async fn a_sampling_tick_writes_the_wire_verdict_into_status() {
         "a live carrier under traffic must produce observed volume"
     );
 }
+
+/// End to end: once a wire's only carrier disappears (dies, or goes idle
+/// long enough to be evicted as stale), the next sampling tick must reset
+/// that wire's verdict on the status, not just drop the dead registry entry.
+/// A lossy uplink that stops carrying traffic must read as "not measured"
+/// again — otherwise it keeps a stale penalty as a failover target forever.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn losing_the_last_carrier_resets_the_wire_verdict_on_status() {
+    let mut config = crate::tests::lb();
+    config.loss_sample_min_packets = 1;
+    let manager = crate::types::UplinkManager::new_for_test(
+        "test",
+        vec![crate::tests::make_uplink("primary", "wss://primary.example.com/tcp")],
+        crate::tests::probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    let (probe, mut client, mut server) =
+        crate::loss::tests_support::live_probe_with_traffic().await;
+    manager.register_carrier_loss_probe(0, 0, TransportKind::Tcp, Some(probe));
+
+    // Seed the baseline, then push a real window so the wire has a verdict
+    // to lose.
+    manager.sample_carrier_loss_once().await;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    client.write_all(&[0u8; 1024]).await.unwrap();
+    let mut sink = vec![0u8; 1024];
+    server.read_exact(&mut sink).await.unwrap();
+    manager.sample_carrier_loss_once().await;
+
+    assert!(
+        manager.inner.read_status(0).tcp.carrier_loss.ratio().is_some(),
+        "sanity: the wire has a measured verdict"
+    );
+
+    // Kill the carrier and keep sampling until the dead entry is evicted.
+    drop(client);
+    drop(server);
+    for _ in 0..50 {
+        manager.sample_carrier_loss_once().await;
+        if manager.inner.read_status(0).tcp.carrier_loss.ratio().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    assert_eq!(
+        manager.inner.read_status(0).tcp.carrier_loss.ratio(),
+        None,
+        "losing the last carrier must clear the verdict, not leave the last ratio standing"
+    );
+}

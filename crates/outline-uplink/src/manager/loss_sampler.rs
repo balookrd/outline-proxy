@@ -31,7 +31,9 @@ impl UplinkManager {
     }
 
     /// One sampling pass over every uplink: difference each live carrier's
-    /// counters and fold the per-wire totals into the status.
+    /// counters, fold the per-wire totals into the status, and reset any
+    /// wire that just lost its last registered carrier — see
+    /// [`crate::loss::CarrierLossRegistry::collect_windows`].
     pub(crate) async fn sample_carrier_loss_once(&self) {
         let min_packets = self.inner.load_balancing.loss_sample_min_packets;
         let alpha = self.inner.load_balancing.loss_ewma_alpha;
@@ -39,12 +41,12 @@ impl UplinkManager {
             let Some(slot) = self.inner.carrier_loss.get(index) else {
                 continue;
             };
-            let windows = slot.lock().collect_windows();
-            if windows.is_empty() {
+            let collection = slot.lock().collect_windows();
+            if collection.windows.is_empty() && collection.emptied_wires.is_empty() {
                 continue;
             }
             self.inner.with_status_mut(index, |status| {
-                for window in &windows {
+                for window in &collection.windows {
                     let per = match window.transport {
                         TransportKind::Tcp => &mut status.tcp,
                         TransportKind::Udp => &mut status.udp,
@@ -57,10 +59,18 @@ impl UplinkManager {
                         alpha,
                     );
                 }
+                for (transport, wire) in &collection.emptied_wires {
+                    let per = match transport {
+                        TransportKind::Tcp => &mut status.tcp,
+                        TransportKind::Udp => &mut status.udp,
+                    };
+                    per.reset_wire_loss(*wire);
+                }
             });
             debug!(
                 uplink = %self.inner.uplinks[index].name,
-                windows = windows.len(),
+                windows = collection.windows.len(),
+                emptied_wires = collection.emptied_wires.len(),
                 "carrier loss sampled"
             );
         }

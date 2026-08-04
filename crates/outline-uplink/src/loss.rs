@@ -15,6 +15,27 @@ use crate::types::TransportKind;
 /// carrying traffic.
 pub(crate) const MAX_PROBES_PER_WIRE: usize = 8;
 
+/// Consecutive sampling ticks with `Δsent == 0` before a probe is evicted as
+/// stale, even though its carrier still reports itself alive.
+///
+/// Without this, a retained QUIC probe pins its connection alive forever:
+/// `CarrierLossProbe::sample` reports `alive` from `close_reason().is_none()`,
+/// and in quinn 0.11.9 the implicit close on drop only fires once every
+/// handle's ref count reaches zero — the registry's own clone keeps it above
+/// zero. A carrier this registry no longer sees new traffic from (the wire
+/// was retired locally, or is a standby that stopped being dialed) never
+/// naturally reaches zero handles on its own, so `alive` would stay `true`
+/// and the entry would sit in the registry until pushed out by
+/// [`MAX_PROBES_PER_WIRE`] — which never happens on an uplink that has
+/// stopped dialing.
+///
+/// Three ticks: short enough that the zombie is evicted (releasing the
+/// `quinn::Connection` clone / duplicated TCP fd, letting the carrier close
+/// normally) well inside the client's own 28–35 s QUIC `max_idle_timeout`,
+/// long enough that an ordinary lull between requests on a carrier still in
+/// active use is never mistaken for abandonment.
+pub(crate) const MAX_IDLE_TICKS: u32 = 3;
+
 /// Smoothed loss ratio for one wire, plus the volume it was derived from.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LossEwma {
@@ -62,6 +83,17 @@ impl LossEwma {
         let loss = self.ratio.unwrap_or(0.0);
         (1.0 + k * loss).clamp(1.0, cap.max(1.0))
     }
+
+    /// Clear the verdict back to "not measured". Called when a wire loses
+    /// its last registered carrier: without this, a loss ratio measured
+    /// while the wire carried traffic would survive indefinitely — read by
+    /// selection as a permanent penalty on precisely the standby an
+    /// operator would want to fail over *to*. An absent verdict must mean
+    /// "not measured", never "measured and clean" or a stale reading from
+    /// traffic that no longer exists.
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// One wire's traffic during a single sampling window.
@@ -87,6 +119,23 @@ struct ProbeEntry {
     /// Previous reading, so the next tick can difference against it. `None`
     /// until the first successful sample.
     last: Option<(u64, u64)>,
+    /// Consecutive ticks (after the baseline reading) whose `Δsent` was `0`.
+    /// Reset to `0` the moment a tick sees real traffic; reaching
+    /// [`MAX_IDLE_TICKS`] evicts the entry — see that constant for why.
+    idle_ticks: u32,
+}
+
+/// Result of one sampling pass over a registry.
+pub(crate) struct LossCollection {
+    /// Aggregated per-(transport, wire) windows from carriers that produced
+    /// traffic this tick.
+    pub(crate) windows: Vec<LossWindow>,
+    /// Every (transport, wire) that held at least one registry entry before
+    /// this tick and holds none after it (evicted for death or for
+    /// staleness). The caller resets that wire's `LossEwma` — see
+    /// [`LossEwma::reset`] — so its verdict reads as "not measured" instead
+    /// of the last ratio a carrier that no longer exists left behind.
+    pub(crate) emptied_wires: Vec<(TransportKind, u8)>,
 }
 
 /// Live probes for one uplink, keyed by (transport, wire).
@@ -159,14 +208,22 @@ impl CarrierLossRegistry {
             identity,
             probe,
             last: None,
+            idle_ticks: 0,
         });
     }
 
     /// Sample every live probe, difference against the previous reading, and
-    /// return one aggregated window per (transport, wire). Dead or
-    /// unreadable carriers are evicted here — that eviction is what closes
-    /// their duplicated descriptors.
-    pub(crate) fn collect_windows(&mut self) -> Vec<LossWindow> {
+    /// return one aggregated window per (transport, wire). Dead, unreadable
+    /// or [stale](MAX_IDLE_TICKS) carriers are evicted here — that eviction
+    /// is what closes their duplicated descriptors (TCP) or releases the
+    /// `quinn::Connection` clone so quinn can close the carrier normally
+    /// (QUIC). A (transport, wire) that had at least one entry before this
+    /// call and has none after is reported in
+    /// [`LossCollection::emptied_wires`].
+    pub(crate) fn collect_windows(&mut self) -> LossCollection {
+        let wires_before: std::collections::HashSet<(TransportKind, u8)> =
+            self.entries.iter().map(|e| (e.transport, e.wire)).collect();
+
         let mut windows: Vec<LossWindow> = Vec::new();
         self.entries.retain_mut(|entry| {
             let Some(sample) = entry.probe.sample() else {
@@ -174,11 +231,16 @@ impl CarrierLossRegistry {
             };
             if let Some((prev_sent, prev_lost)) = entry.last {
                 // Counters are cumulative and monotonic within one connection;
-                // `saturating_sub` is belt-and-braces against a kernel that
-                // reports a narrower field after a wrap.
+                // `saturating_sub` is belt-and-braces against `tcpi_segs_out`
+                // wrapping (it is a kernel `u32`, so it wraps at ~4 billion
+                // segments). A wrap costs one dropped window — the delta
+                // reads as 0 and the tick is skipped — which is the correct
+                // behaviour: a negative or huge delta would corrupt the ratio
+                // far worse than losing one window's resolution does.
                 let sent = sample.sent.saturating_sub(prev_sent);
                 let lost = sample.lost.saturating_sub(prev_lost);
                 if sent > 0 {
+                    entry.idle_ticks = 0;
                     match windows
                         .iter_mut()
                         .find(|w| w.transport == entry.transport && w.wire == entry.wire)
@@ -194,12 +256,24 @@ impl CarrierLossRegistry {
                             lost,
                         }),
                     }
+                } else {
+                    // A window below `loss_sample_min_packets` is a different
+                    // thing from `Δsent == 0`: the former still means the
+                    // carrier is in use, just too lightly to trust a ratio
+                    // from; only the latter means nothing is using this
+                    // carrier at all, which is what staleness eviction tracks.
+                    entry.idle_ticks += 1;
                 }
             }
             entry.last = Some((sample.sent, sample.lost));
-            sample.alive
+            sample.alive && entry.idle_ticks < MAX_IDLE_TICKS
         });
-        windows
+
+        let emptied_wires = wires_before
+            .into_iter()
+            .filter(|wire| !self.entries.iter().any(|e| (e.transport, e.wire) == *wire))
+            .collect();
+        LossCollection { windows, emptied_wires }
     }
 }
 

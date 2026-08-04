@@ -240,3 +240,26 @@ fn loss_alone_does_not_synthesise_a_latency() {
 
     assert_eq!(status.base_latency_with(&config), None);
 }
+
+/// `reset_wire_loss` clears exactly the named wire's verdict — a lossy
+/// uplink that stops carrying traffic must read as "not measured" again
+/// (see [`crate::loss::LossEwma::reset`]), but resetting the primary must
+/// not disturb an unrelated fallback wire's own, still-current verdict.
+#[test]
+fn reset_wire_loss_clears_only_the_named_wire() {
+    let mut status = PerTransportStatus::default();
+    status.record_wire_loss_window(0, 1_000, 100, 200, 1.0);
+    status.record_wire_loss_window(1, 1_000, 100, 200, 1.0);
+
+    status.reset_wire_loss(0);
+
+    assert_eq!(status.carrier_loss.ratio(), None, "primary's verdict is cleared");
+    assert_eq!(
+        status.fallback_carrier_loss[0].ratio(),
+        Some(0.1),
+        "an unrelated fallback wire must be untouched"
+    );
+
+    status.reset_wire_loss(1);
+    assert_eq!(status.fallback_carrier_loss[0].ratio(), None, "the fallback resets too");
+}

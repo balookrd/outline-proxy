@@ -28,10 +28,25 @@ pub struct CarrierLossSample {
 }
 
 /// A handle that can read [`CarrierLossSample`] from a live carrier.
+///
+/// Both variants retain a handle to the carrier for as long as this probe is
+/// registered, which is exactly what lets a registration outlive the code
+/// that originally dialed the carrier — but it also means an abandoned probe
+/// (a retired wire, or a standby that stopped being dialed) keeps that
+/// carrier from tearing down on its own. The registry that holds these probes
+/// is responsible for evicting one once it goes stale — see
+/// `outline_uplink::loss::MAX_IDLE_TICKS` — which is what actually lets the
+/// carrier close.
 #[derive(Debug)]
 pub enum CarrierLossProbe {
     /// QUIC carrier (`ws_h3`, `xhttp_h3`). The clone is cheap — a
-    /// `quinn::Connection` is `Arc`-backed.
+    /// `quinn::Connection` is `Arc`-backed — but quinn only runs its implicit
+    /// close-on-drop once every clone's ref count reaches zero (quinn
+    /// 0.11.9), so a probe nobody evicts pins the connection open
+    /// indefinitely: the endpoint driver keeps running, its UDP socket stays
+    /// open, and the client's own 8–12 s QUIC keepalive against a 28–35 s
+    /// `max_idle_timeout` means the carrier actively PINGs and never reaches
+    /// that timeout on its own.
     #[cfg(feature = "h3")]
     Quic(quinn::Connection),
     /// TCP carrier (`ws`, `h2`, `xhttp` over TLS/TCP). Holds a **duplicate** of
@@ -40,6 +55,15 @@ pub enum CarrierLossProbe {
     /// that stranger's statistics as the uplink's. `identity` is computed once
     /// at capture time (see [`tcp_identity`]) and copied by `try_clone`, rather
     /// than recomputed from the fd, so `identity()` stays infallible.
+    ///
+    /// A milder version of the QUIC problem above applies here too: as long
+    /// as this duplicate is outstanding, the transport's own close of its fd
+    /// does not send a FIN (the duplicate keeps the underlying open file
+    /// description referenced), so the connection lingers half-closed until
+    /// eviction drops this handle. Unlike QUIC this self-heals even without
+    /// eviction — TCP carries no client-driven keepalive once the transport
+    /// layer above has abandoned it, so the peer's own read-idle watchdog
+    /// eventually closes its side and the OS reclaims the rest.
     #[cfg(target_os = "linux")]
     Tcp { fd: OwnedFd, identity: u64 },
 }

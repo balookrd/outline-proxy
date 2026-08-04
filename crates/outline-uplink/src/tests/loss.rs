@@ -4,7 +4,7 @@ use super::LossEwma;
 // unconditional import trips `unused_imports` under `-D warnings` on a
 // non-Linux dev host, where those tests compile out entirely.
 #[cfg(target_os = "linux")]
-use super::{CarrierLossRegistry, MAX_PROBES_PER_WIRE};
+use super::{CarrierLossRegistry, MAX_IDLE_TICKS, MAX_PROBES_PER_WIRE};
 
 /// A window that saw too little traffic proves nothing: one lost packet out of
 /// ten is not "10% loss", it is no measurement. The EWMA must not move.
@@ -55,17 +55,103 @@ fn zero_k_yields_an_identity_multiplier() {
     assert_eq!(ewma.inflation(0.0, 4.0), 1.0);
 }
 
+/// A wire that loses its last registered carrier must read as "not
+/// measured" again, not as whatever ratio traffic left behind before the
+/// carrier disappeared — otherwise a standby an operator would want to fail
+/// over *to* keeps a stale lossy verdict forever.
+#[test]
+fn reset_clears_the_ratio_and_observed_volume() {
+    let mut ewma = LossEwma::default();
+    ewma.record_window(1_000, 200, 200, 0.2);
+    assert!(ewma.ratio().is_some(), "sanity: the window seeded a verdict");
+
+    ewma.reset();
+
+    assert_eq!(ewma.ratio(), None, "an emptied wire is unmeasured, not clean");
+    assert_eq!(ewma.observed_packets(), 0);
+}
+
 /// A carrier that vanishes between ticks must not produce a delta at all —
-/// neither negative (counters reset with the connection) nor inflated.
+/// neither negative (counters reset with the connection) nor inflated. Its
+/// wire is also reported as emptied, so the caller can reset the wire's
+/// verdict.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_vanished_carrier_contributes_no_window() {
     let mut registry = CarrierLossRegistry::default();
     let probe = crate::loss::tests_support::dead_probe().await;
     registry.register(crate::types::TransportKind::Tcp, 0, probe);
-    let windows = registry.collect_windows();
-    assert!(windows.is_empty(), "a dead carrier yields no window");
+    let collection = registry.collect_windows();
+    assert!(collection.windows.is_empty(), "a dead carrier yields no window");
     assert_eq!(registry.len(), 0, "and is evicted from the registry");
+    assert_eq!(
+        collection.emptied_wires,
+        vec![(crate::types::TransportKind::Tcp, 0)],
+        "the wire that lost its last carrier must be reported"
+    );
+}
+
+/// A carrier that stays alive but produces no traffic is not what the loss
+/// signal exists to measure, and quinn only closes a retained QUIC
+/// connection when every handle to it is dropped — so a registry entry with
+/// `Δsent == 0` for several consecutive ticks must be evicted on its own,
+/// independent of `alive`. Eviction is what releases the probe (the
+/// `quinn::Connection` clone / duplicated fd) so the underlying carrier can
+/// actually close.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_stale_but_alive_carrier_is_evicted_after_the_idle_bound() {
+    let mut registry = CarrierLossRegistry::default();
+    let (probe, _client, _server) = crate::loss::tests_support::live_pair().await;
+    registry.register(crate::types::TransportKind::Tcp, 0, probe);
+
+    // The first tick only seeds the baseline reading — no delta exists yet,
+    // so it must not count as an idle tick.
+    let seed = registry.collect_windows();
+    assert!(seed.windows.is_empty());
+    assert_eq!(registry.len(), 1);
+
+    // Consecutive zero-delta ticks accumulate but must not evict before the
+    // bound is reached — nothing on this idle-but-genuinely-alive loopback
+    // pair ever sends a byte, so every one of these ticks sees `Δsent == 0`.
+    for tick in 0..(MAX_IDLE_TICKS - 1) {
+        let collection = registry.collect_windows();
+        assert!(collection.windows.is_empty());
+        assert_eq!(registry.len(), 1, "still within the idle bound at tick {tick}");
+        assert!(collection.emptied_wires.is_empty());
+    }
+
+    // The tick that reaches the bound evicts the entry and reports its wire
+    // as emptied in the same pass.
+    let collection = registry.collect_windows();
+    assert!(collection.windows.is_empty());
+    assert_eq!(registry.len(), 0, "evicted once idleness persists past the bound");
+    assert_eq!(collection.emptied_wires, vec![(crate::types::TransportKind::Tcp, 0)]);
+}
+
+/// Real traffic resets the idle counter, so a carrier that goes through an
+/// ordinary lull and then resumes sending must never be evicted.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn traffic_resets_the_idle_counter() {
+    use tokio::io::AsyncWriteExt;
+
+    let mut registry = CarrierLossRegistry::default();
+    let (probe, mut client, _server) = crate::loss::tests_support::live_pair().await;
+    registry.register(crate::types::TransportKind::Tcp, 0, probe);
+
+    registry.collect_windows(); // seed
+    for _ in 0..(MAX_IDLE_TICKS - 1) {
+        registry.collect_windows();
+    }
+    assert_eq!(registry.len(), 1, "sanity: one tick away from eviction");
+
+    client.write_all(&[0u8; 64]).await.unwrap();
+    // Give the kernel a moment to account the write in `tcpi_segs_out`.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let collection = registry.collect_windows();
+    assert_eq!(registry.len(), 1, "traffic must reset the idle streak, not just delay eviction");
+    assert!(collection.emptied_wires.is_empty());
 }
 
 /// One shared H2/H3 connection is handed to many sessions and every one of

@@ -1073,7 +1073,7 @@ uplink}`:
   steady traffic.
 
 **An absent series means "not measured" — never "no loss".** There are
-three distinct reasons a wire may have no `carrier_loss_ratio` series
+four distinct reasons a wire may have no `carrier_loss_ratio` series
 at a given moment, and none of them is "this path is clean":
 
 1. It has not sent `loss_sample_min_packets` (default `200`) packets
@@ -1092,10 +1092,19 @@ at a given moment, and none of them is "this path is clean":
    lazily, per destination, the first time it is needed — at the point
    where a loss probe would normally be registered, no carrier exists
    yet to register.
+4. The wire's carriers all went away (retired locally, or a standby that
+   stopped being dialed) and the registry noticed — either because the
+   carrier genuinely closed, or because it went idle long enough to be
+   evicted as stale even though it was still technically open. Either
+   way, once a wire has zero registered carriers its verdict is reset
+   to unmeasured. Without this, a ratio measured while the wire carried
+   real traffic would otherwise survive indefinitely — a stale penalty
+   on precisely the standby an operator would want to fail over *to*.
 
-Both absences are structural properties of those paths, not faults to
-chase. Do not read "no series" on an `xhttp_h1` or VLESS-UDP wire as "no
-loss" — there is simply no verdict published for it.
+These are structural or lifecycle properties of a wire, not faults to
+chase. Do not read "no series" on an `xhttp_h1` wire, a VLESS-UDP wire,
+or one that just lost its last carrier as "no loss" — there is simply no
+verdict published for it.
 
 **Choosing `loss_latency_penalty_k`.** There is no principled default —
 `0.0` is not "a small value", it is "off". Derive a value from your own
