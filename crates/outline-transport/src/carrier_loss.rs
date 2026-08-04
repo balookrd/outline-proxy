@@ -145,6 +145,21 @@ impl CarrierLossProbe {
     /// the same carrier rather than counting its traffic twice. Infallible
     /// and syscall-free: it never queries the socket, only what was captured
     /// or handed to it at construction time.
+    ///
+    /// The QUIC variant's `identity` is quinn's `stable_id()`, which is the
+    /// address of the connection's internal allocation — reusable once that
+    /// allocation is freed, exactly like the TCP variant's identity is
+    /// derived from a 4-tuple the kernel can hand to a later, unrelated
+    /// socket. Reuse is safe here only because it can happen no earlier than
+    /// the old carrier's last strong `Arc` has actually dropped: at that
+    /// point `counters` (a `Weak` onto it) can no longer upgrade, `sample`
+    /// reports the old entry dead, and the registry's identity-match
+    /// replacement path (see [`CarrierLossRegistry::register`]) swaps the
+    /// dead entry for the new one instead of mistaking the new carrier for
+    /// the old. A future change that had the QUIC variant hold a strong
+    /// reference instead of a `Weak` would break this silently — the old
+    /// carrier would never report dead, and a reused `stable_id()` would
+    /// then collide with a still-"live" stale entry.
     pub fn identity(&self) -> u64 {
         match self {
             // Captured once at construction (quinn's `stable_id()` for the

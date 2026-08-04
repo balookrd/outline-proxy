@@ -18,20 +18,28 @@ pub(crate) const MAX_PROBES_PER_WIRE: usize = 8;
 /// Consecutive sampling ticks with `Δsent == 0` before a probe is evicted as
 /// stale, even though its carrier still reports itself alive.
 ///
-/// Without this, a retained QUIC probe pins its connection alive forever:
-/// `CarrierLossProbe::sample` reports `alive` from `close_reason().is_none()`,
-/// and in quinn 0.11.9 the implicit close on drop only fires once every
-/// handle's ref count reaches zero — the registry's own clone keeps it above
-/// zero. A carrier this registry no longer sees new traffic from (the wire
-/// was retired locally, or is a standby that stopped being dialed) never
-/// naturally reaches zero handles on its own, so `alive` would stay `true`
-/// and the entry would sit in the registry until pushed out by
-/// [`MAX_PROBES_PER_WIRE`] — which never happens on an uplink that has
-/// stopped dialing.
+/// The two carrier families need this for different reasons — see
+/// `outline_transport::CarrierLossProbe`'s doc for the ownership split this
+/// mirrors:
 ///
-/// Three ticks: short enough that the zombie is evicted (releasing the
-/// `quinn::Connection` clone / duplicated TCP fd, letting the carrier close
-/// normally) well inside the client's own 28–35 s QUIC `max_idle_timeout`,
+/// - TCP holds a **duplicated** fd for as long as it is registered. As long
+///   as that duplicate is outstanding, the transport's own close of its fd
+///   does not send a FIN (the duplicate keeps the underlying open file
+///   description referenced), so a carrier this registry no longer sees new
+///   traffic from (the wire was retired locally, or is a standby that
+///   stopped being dialed) lingers half-closed instead of tearing down. This
+///   is what eviction actually fixes: dropping the duplicate lets the FIN
+///   go out.
+/// - QUIC observes through a `Weak` handle and never extends the carrier's
+///   life — closing happens on its own the moment the transport drops its
+///   last strong reference, with or without eviction. Eviction here is
+///   belt-and-braces (a dead `Weak` still occupies a registry slot until
+///   pushed out by [`MAX_PROBES_PER_WIRE`], or reclaimed by this), not load
+///   bearing for the carrier to close.
+///
+/// Three ticks: short enough that a TCP zombie's duplicated fd is released
+/// well inside the client's own 28–35 s QUIC `max_idle_timeout` (the two
+/// families share this constant even though only TCP strictly needs it),
 /// long enough that an ordinary lull between requests on a carrier still in
 /// active use is never mistaken for abandonment.
 pub(crate) const MAX_IDLE_TICKS: u32 = 3;
@@ -224,12 +232,13 @@ impl CarrierLossRegistry {
 
     /// Sample every live probe, difference against the previous reading, and
     /// return one aggregated window per (transport, wire). Dead, unreadable
-    /// or [stale](MAX_IDLE_TICKS) carriers are evicted here — that eviction
-    /// is what closes their duplicated descriptors (TCP) or releases the
-    /// `quinn::Connection` clone so quinn can close the carrier normally
-    /// (QUIC). A (transport, wire) that had at least one entry before this
-    /// call and has none after is reported in
-    /// [`LossCollection::emptied_wires`].
+    /// or [stale](MAX_IDLE_TICKS) carriers are evicted here — for TCP that
+    /// eviction is what closes their duplicated descriptors; for QUIC the
+    /// carrier already closes on its own once the transport drops the real
+    /// `quinn::Connection` (this registry never held more than a `Weak`), so
+    /// eviction here just reclaims the now-dead registry slot. A (transport,
+    /// wire) that had at least one entry before this call and has none after
+    /// is reported in [`LossCollection::emptied_wires`].
     pub(crate) fn collect_windows(&mut self) -> LossCollection {
         let wires_before: std::collections::HashSet<(TransportKind, u8)> =
             self.entries.iter().map(|e| (e.transport, e.wire)).collect();

@@ -685,10 +685,27 @@ impl PerTransportStatus {
         // `try_from_secs_f64` rather than the panicking `from_secs_f64`: the
         // config loader bounds `loss_latency_inflation_max` to `[1, 100]`
         // (`bins/outline-ws-rust/src/config/load/balancing.rs`), but this
-        // stays as defence in depth — any base latency large enough to
-        // overflow regardless of that bound must degrade to a saturated
-        // (effectively "worst possible") latency instead of panicking in the
-        // selection hot path.
+        // stays as defence in depth against this function's own
+        // multiplication overflowing regardless of that bound, saturating to
+        // `Duration::MAX` (effectively "worst possible") here rather than
+        // panicking.
+        //
+        // Saturating here does not, on its own, guarantee no caller ever
+        // panics on the result: `crate::selection::weighted_latency_score`
+        // divides this value by the uplink's `weight` (unbounded above —
+        // only `> 0.0` is enforced at load time, see
+        // `bins/outline-ws-rust/src/config/load/uplinks/mod.rs`) and calls
+        // the panicking `Duration::from_secs_f64` again, so a genuine
+        // `Duration::MAX` here divided by a `weight < 1.0` would overflow
+        // past `Duration::MAX` and panic there instead. What actually makes
+        // this unreachable is that the `[1, 100]` bound on
+        // `loss_latency_inflation_max` keeps `base * multiplier` from ever
+        // *reaching* `Duration::MAX` for any base latency a real RTT sample
+        // could produce — the saturating branch below is defence against an
+        // input that is not itself reachable, so there is nothing for
+        // `weighted_latency_score`'s division to overflow. It stays this
+        // function's job to keep its own output sane; it is not what
+        // protects the caller from an unrelated unbounded `weight`.
         Some(Duration::try_from_secs_f64(base.as_secs_f64() * multiplier).unwrap_or(Duration::MAX))
     }
 
