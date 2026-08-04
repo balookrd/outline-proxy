@@ -126,27 +126,36 @@ pub(crate) struct PerTransportStatus {
     /// `UplinkManager::loss_failover_switch_target` through the
     /// [`TransportSelectionView`] projection below.
     pub(crate) loss_elevated_since: Option<Instant>,
-    /// Timestamp of the most recent sampling tick that recorded a
+    /// `(wire, when)` of the most recent sampling tick that recorded a
     /// *qualifying* carrier-loss window (met `loss_sample_min_packets`) for
-    /// the wire currently active ([`Self::active_wire`]). Distinct from "the
-    /// ratio is still above the threshold": [`Self::active_wire_loss`]'s
-    /// ratio is a frozen EWMA that a sub-volume-threshold window leaves
-    /// completely untouched (see [`crate::loss::LossEwma::record_window`]),
-    /// and carrier eviction only fires after three consecutive ticks with
-    /// *zero* traffic — so a wire idling on light-but-nonzero traffic below
-    /// the volume floor (sparse keepalives, an overnight lull) can go a long
-    /// time without ever re-measuring. Without this stamp,
+    /// whichever wire was active at that moment. Distinct from "the ratio is
+    /// still above the threshold": [`Self::active_wire_loss`]'s ratio is a
+    /// frozen EWMA that a sub-volume-threshold window leaves completely
+    /// untouched (see [`crate::loss::LossEwma::record_window`]), and carrier
+    /// eviction only fires after three consecutive ticks with *zero* traffic
+    /// — so a wire idling on light-but-nonzero traffic below the volume
+    /// floor (sparse keepalives, an overnight lull) can go a long time
+    /// without ever re-measuring. Without this stamp,
     /// [`Self::update_loss_elevated_since`] would keep reading that stale,
     /// no-longer-current ratio as if it were fresh evidence indefinitely,
     /// letting a loss-driven failover fire hours after the measurement that
     /// justified it stopped being observed — and letting a warm-standby
     /// uplink's episode from a previous stint as active survive, unconfirmed,
-    /// until it becomes active again. Maintained by
-    /// `UplinkManager::sample_carrier_loss_once`; a verdict older than
-    /// `3 × loss_sample_interval` (mirroring
+    /// until it becomes active again.
+    ///
+    /// The wire is part of the stamp, not just the timestamp, because
+    /// [`Self::active_wire`] can change between ticks: without it, a fresh
+    /// measurement of the wire the dial loop just moved *off* of would
+    /// validate the *new* active wire's completely unrelated (and possibly
+    /// still-lossy) ratio for up to `max_staleness` after the flip.
+    /// [`Self::update_loss_elevated_since`] only trusts this stamp when its
+    /// wire still matches [`Self::active_wire`].
+    ///
+    /// Maintained by `UplinkManager::sample_carrier_loss_once`; a verdict
+    /// older than `3 × loss_sample_interval` (mirroring
     /// [`crate::loss::MAX_IDLE_TICKS`], the same bound the registry itself
     /// uses before evicting an idle carrier probe) is treated as unmeasured.
-    pub(crate) loss_last_qualifying_at: Option<Instant>,
+    pub(crate) loss_last_qualifying_at: Option<(u8, Instant)>,
     /// Per-wire liveness penalty for weighted wire selection, decaying via the
     /// shared `0.5^(t/halflife)` curve (see [`crate::penalty::penalty_weight`]).
     /// Indexed by **wire index directly**: `[0]` is the primary wire, `[i]` is
@@ -509,18 +518,21 @@ impl PerTransportStatus {
     /// knob when unset.
     ///
     /// Otherwise the ratio is trusted only when it is *fresh*:
-    /// [`Self::loss_last_qualifying_at`] must be within `max_staleness` of
-    /// `now` (see that field's doc for why a frozen EWMA cannot be trusted
-    /// indefinitely just because nothing has re-measured it). A fresh ratio
-    /// strictly above `threshold` starts the episode on the first such tick
-    /// and leaves an already-running episode's anchor untouched — a
-    /// re-trigger must not reset a genuinely long episode back to "just
-    /// started". A fresh ratio at or below `threshold`, a stale (or absent)
-    /// verdict, or no ratio at all (not measured is never evidence of loss)
-    /// all clear the episode: a single clean tick restarts the clock instead
-    /// of letting an uplink that merely flaps around the threshold
-    /// accumulate its way into a failover, and a verdict nobody has
-    /// reconfirmed in a while stops counting as "still happening".
+    /// [`Self::loss_last_qualifying_at`] must both name the wire currently
+    /// active ([`Self::active_wire`] — see that stamp's doc for why a wire
+    /// flip must not let one wire's freshness vouch for another's ratio) and
+    /// be within `max_staleness` of `now` (see the same doc for why a frozen
+    /// EWMA cannot be trusted indefinitely just because nothing has
+    /// re-measured it). A fresh ratio strictly above `threshold` starts the
+    /// episode on the first such tick and leaves an already-running
+    /// episode's anchor untouched — a re-trigger must not reset a genuinely
+    /// long episode back to "just started". A fresh ratio at or below
+    /// `threshold`, a stale (or wire-mismatched, or absent) verdict, or no
+    /// ratio at all (not measured is never evidence of loss) all clear the
+    /// episode: a single clean tick restarts the clock instead of letting an
+    /// uplink that merely flaps around the threshold accumulate its way
+    /// into a failover, and a verdict nobody has reconfirmed — for this
+    /// wire, recently — stops counting as "still happening".
     pub(crate) fn update_loss_elevated_since(
         &mut self,
         threshold: f64,
@@ -531,9 +543,10 @@ impl PerTransportStatus {
             self.loss_elevated_since = None;
             return;
         }
-        let fresh = self
-            .loss_last_qualifying_at
-            .is_some_and(|t| now.saturating_duration_since(t) <= max_staleness);
+        let active_wire = self.active_wire;
+        let fresh = self.loss_last_qualifying_at.is_some_and(|(wire, t)| {
+            wire == active_wire && now.saturating_duration_since(t) <= max_staleness
+        });
         let elevated =
             fresh && self.active_wire_loss().ratio().is_some_and(|ratio| ratio > threshold);
         self.loss_elevated_since = if elevated {
