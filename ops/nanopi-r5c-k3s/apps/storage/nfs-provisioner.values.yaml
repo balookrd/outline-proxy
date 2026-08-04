@@ -1,0 +1,39 @@
+# Helm values for nfs-subdir-external-provisioner.
+# Install:
+#   helm install nfs-client \
+#     nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
+#     -n kube-system -f nfs-provisioner.values.yaml
+#
+# The provisioner creates one subdirectory per PVC on the NAS export and
+# chowns it. The export must allow that — see the mount notes below.
+
+nfs:
+  server: 198.18.1.125
+  path: /nfs/k8s
+  # TODO: confirm the NAS actually serves NFSv4.1; drop to nfsvers=3 if not.
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+    - noatime
+
+storageClass:
+  name: nfs-client
+  defaultClass: false       # local-path stays default; nfs-client is explicit
+  # retain: a deleted PVC leaves its subdir on the NAS instead of wiping it.
+  # Critical for z2m/database.db — an accidental PVC delete must not lose the
+  # Zigbee network map. Recreate the PVC and re-link the subdir by hand.
+  onDelete: retain
+  archiveOnDelete: false
+
+# 4 GB nodes — keep the provisioner tiny.
+resources:
+  limits:
+    memory: 64Mi
+  requests:
+    cpu: 10m
+    memory: 32Mi
+
+# NAS export requirements (configure on the NAS, not here):
+#   - allow the k3s node IPs (or the interconnect subnet) read-write;
+#   - no_root_squash OR map to a uid the provisioner can chown as;
+#   - enough inodes/space for all PVCs (tiny here: z2m/grafana/mosquitto < 300 MB total).

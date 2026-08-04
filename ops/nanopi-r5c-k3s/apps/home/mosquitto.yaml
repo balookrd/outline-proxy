@@ -1,0 +1,88 @@
+# Mosquitto MQTT broker.
+#
+# Singleton on NFS so retained messages + persistence.db survive a node move.
+# Latency-insensitive and tiny, so NFS is fine.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mosquitto-config
+  namespace: home
+data:
+  mosquitto.conf: |
+    persistence true
+    persistence_location /mosquitto/data/
+    listener 1883
+    allow_anonymous true          # TODO: lock down if the broker is reachable beyond the cluster
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mosquitto
+  namespace: home
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: mosquitto }
+  template:
+    metadata:
+      labels: { app: mosquitto }
+    spec:
+      containers:
+        - name: mosquitto
+          image: eclipse-mosquitto:2.0.20
+          ports:
+            - { containerPort: 1883, name: mqtt }
+          volumeMounts:
+            - { name: data,   mountPath: /mosquitto/data }
+            - { name: config, mountPath: /mosquitto/config/mosquitto.conf, subPath: mosquitto.conf }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits:   { memory: 64Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mosquitto-data
+        - name: config
+          configMap:
+            name: mosquitto-config
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mosquitto-data
+  namespace: home
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 1Gi
+---
+# In-cluster access (z2m and other pods reach the broker by this ClusterIP).
+apiVersion: v1
+kind: Service
+metadata:
+  name: mosquitto
+  namespace: home
+spec:
+  selector: { app: mosquitto }
+  ports:
+    - { port: 1883, targetPort: 1883 }
+---
+# External MQTT access — ONLY if non-cluster clients (ESP devices, HA outside
+# k3s) connect. Deleting this Service does not affect in-cluster z2m->mosquitto.
+# L4, so it bypasses Traefik and takes its own MetalLB VIP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mosquitto-lan
+  namespace: home
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: 198.18.1.201
+spec:
+  type: LoadBalancer
+  selector: { app: mosquitto }
+  ports:
+    - { port: 1883, targetPort: 1883 }

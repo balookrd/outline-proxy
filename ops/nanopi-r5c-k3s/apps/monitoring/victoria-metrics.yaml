@@ -1,0 +1,114 @@
+# VictoriaMetrics single-node.
+#
+# Storage: local-path on NVMe, NOT NFS — this is the only IOPS-heavy workload,
+# and TSDB writes over 2.5GbE/NFS would bottleneck on the wire. Pinned to one
+# node; durability comes from the nightly vmbackup CronJob to the NAS, not from
+# disk replication. Losing this node = move VM here + restore last snapshot
+# (a gap of up to one night of metrics — acceptable for a home setup).
+#
+# TODO: pick the node and set retention/size to fit the NVMe partition.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: victoria-metrics
+  namespace: monitoring
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate            # singleton over a RWO volume
+  selector:
+    matchLabels: { app: victoria-metrics }
+  template:
+    metadata:
+      labels: { app: victoria-metrics }
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: k3s-1     # TODO: pin to the node holding the PVC
+      containers:
+        - name: victoria-metrics
+          image: victoriametrics/victoria-metrics:v1.103.0
+          args:
+            - --storageDataPath=/storage
+            - --retentionPeriod=90d          # TODO: tune vs NVMe size
+            - --httpListenAddr=:8428
+            - --memory.allowedPercent=60     # 4 GB node — keep VM bounded
+          ports:
+            - { containerPort: 8428, name: http }
+          volumeMounts:
+            - { name: data, mountPath: /storage }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { memory: 1Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: victoria-metrics-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: victoria-metrics-data
+  namespace: monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 40Gi           # TODO: fit within the 128 GB NVMe with headroom
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: victoria-metrics
+  namespace: monitoring
+spec:
+  selector: { app: victoria-metrics }
+  ports:
+    - { port: 8428, targetPort: 8428 }
+---
+# Nightly snapshot → NAS. vmbackup talks to VM's snapshot API and pushes an
+# incremental backup to an NFS-mounted path (or S3). Here: NFS PVC on the NAS.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vmbackup
+  namespace: monitoring
+spec:
+  schedule: "0 4 * * *"       # 04:00 daily
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          nodeSelector:
+            kubernetes.io/hostname: k3s-1   # same node as VM: shares the data dir
+          containers:
+            - name: vmbackup
+              image: victoriametrics/vmbackup:v1.103.0
+              args:
+                - --storageDataPath=/storage
+                - --snapshot.createURL=http://victoria-metrics.monitoring:8428/snapshot/create
+                - --dst=fs:///backup/victoria-metrics
+              volumeMounts:
+                - { name: data, mountPath: /storage }
+                - { name: backup, mountPath: /backup }
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: victoria-metrics-data
+            - name: backup
+              persistentVolumeClaim:
+                claimName: vmbackup-nas
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vmbackup-nas
+  namespace: monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: nfs-client      # backups live on the NAS, not the NVMe
+  resources:
+    requests:
+      storage: 50Gi

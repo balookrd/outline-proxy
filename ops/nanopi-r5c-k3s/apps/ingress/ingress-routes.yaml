@@ -1,0 +1,39 @@
+# HTTP ingress objects. All resolve to the Traefik VIP 198.18.1.200; Traefik
+# routes by Host header. Point *.k3s.local at 198.18.1.200 in DNS (see README).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: grafana.k3s.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zigbee2mqtt
+  namespace: home
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: z2m.k3s.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: zigbee2mqtt
+                port:
+                  number: 8080
