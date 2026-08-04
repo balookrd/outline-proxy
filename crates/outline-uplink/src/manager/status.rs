@@ -541,6 +541,27 @@ impl PerTransportStatus {
         self.fallback_carrier_loss[slot_idx].record_window(sent, lost, min_packets, alpha);
     }
 
+    /// Clear `wire`'s loss verdict back to "not measured". Called by the
+    /// sampling loop when a (transport, wire) loses its last registered
+    /// carrier ([`crate::loss::CarrierLossRegistry::collect_windows`]'s
+    /// `emptied_wires`), so a ratio measured while the wire carried traffic
+    /// does not survive as a stale penalty once nothing is left to measure —
+    /// see [`crate::loss::LossEwma::reset`].
+    ///
+    /// A no-op for a fallback slot that was never extended (`wire` past the
+    /// end of [`Self::fallback_carrier_loss`]): an unmeasured slot is already
+    /// the reset state, so there is nothing to clear.
+    pub(crate) fn reset_wire_loss(&mut self, wire: u8) {
+        if wire == 0 {
+            self.carrier_loss.reset();
+            return;
+        }
+        let slot_idx = (wire - 1) as usize;
+        if let Some(slot) = self.fallback_carrier_loss.get_mut(slot_idx) {
+            slot.reset();
+        }
+    }
+
     /// Mutable per-wire penalty slot for `wire` (`0` = primary, `i` = fallback
     /// `i-1`), lazily extending [`Self::wire_penalty`] so a wire that has never
     /// failed is materialised as a default (zero-penalty) slot.
