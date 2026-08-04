@@ -434,8 +434,8 @@ impl PerTransportStatus {
     /// Loss for the wire new sessions currently land on. Same active-wire rule
     /// as [`Self::active_wire_rtt_ewma`], so scoring never mixes one wire's
     /// latency with another's loss.
-    // Not yet read by scoring — `base_latency` starts consuming it in the
-    // follow-up task that inflates the ranking latency by the loss ratio.
+    // Not yet read by scoring — `base_latency` starts consuming it in
+    // Task 7 ("Inflate the scoring latency") per the plan.
     #[allow(dead_code)]
     pub(crate) fn active_wire_loss(&self) -> crate::loss::LossEwma {
         if self.active_wire == 0 {
