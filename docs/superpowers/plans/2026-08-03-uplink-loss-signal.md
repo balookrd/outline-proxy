@@ -646,6 +646,93 @@ git commit -m "feat(transport): expose carrier loss probes on h2 and xhttp strea
 
 ---
 
+### Task 3a: Carrier identity (fix, found in Task 3's review)
+
+A shared H2/H3 connection is handed to many sessions, and every session
+registers its own probe. Summed, one socket's traffic is then counted once per
+session. The ratio survives (numerator and denominator scale together) but the
+observed volume does not — a wire would clear `loss_sample_min_packets` on a
+fraction of the traffic that threshold names, which is exactly the silent
+distortion the threshold exists to prevent.
+
+Give a probe a stable identity so the registry can recognise the same carrier
+arriving twice, and correct the `SharedH2Connection::loss_probe` comment, which
+currently claims a de-duplication mechanism that did not exist.
+
+**Files:**
+- Modify: `crates/outline-transport/src/carrier_loss.rs` (`identity()`; the `Tcp` variant carries its identity)
+- Modify: `crates/outline-transport/src/tests/carrier_loss.rs`
+- Modify: `crates/outline-transport/src/h2/shared.rs` (the comment)
+
+**Interfaces:**
+- Produces: `CarrierLossProbe::identity(&self) -> u64` — equal for two handles on the same carrier (including one obtained via `try_clone`), different for distinct carriers.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+/// Two handles on one carrier must be recognisable as the same carrier —
+/// this is what stops a shared H2/H3 connection from being counted once per
+/// session that rides it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cloned_probe_keeps_the_carrier_identity() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let _server = listener.accept().await.unwrap();
+
+    let probe = CarrierLossProbe::from_tcp_stream(&client).unwrap();
+    let clone = probe.try_clone().unwrap();
+    assert_eq!(probe.identity(), clone.identity());
+}
+
+/// Distinct carriers must not collide, or the registry would drop a real
+/// second carrier as a duplicate and undercount the wire.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn distinct_carriers_have_distinct_identities() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let first = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let _first_server = listener.accept().await.unwrap();
+    let second = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let _second_server = listener.accept().await.unwrap();
+
+    let a = CarrierLossProbe::from_tcp_stream(&first).unwrap();
+    let b = CarrierLossProbe::from_tcp_stream(&second).unwrap();
+    assert_ne!(a.identity(), b.identity());
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `cargo test -p outline-transport carrier_identity`
+Expected: FAIL — `no method named 'identity'`.
+
+- [ ] **Step 3: Implement**
+
+For QUIC the identity is `connection.stable_id() as u64` — quinn's own
+per-connection handle, stable for the connection's life and unaffected by
+cloning the `Connection`.
+
+For TCP it is derived once at capture from the socket's local and peer
+addresses (the connection's 4-tuple), stored alongside the descriptor, and
+copied by `try_clone`. Deriving it from the *duplicated* descriptor rather
+than storing it would be equally correct, but storing it keeps `identity()`
+infallible and syscall-free. Do not use the raw fd number: `try_clone` gives
+a different number for the same carrier, which is precisely the case this
+must recognise.
+
+- [ ] **Step 4: Run the tests to verify they pass, then the CI gate**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m "fix(transport): give carrier loss probes a stable identity"
+```
+
+---
+
 ### Task 4: Loss accumulator and probe registry (`outline-uplink`)
 
 Two structures, split by what they may hold. `LossEwma` is pure numbers and
@@ -659,10 +746,10 @@ lives inside `UplinkStatus`, which is `Clone`. `CarrierLossRegistry` holds
 - Modify: `crates/outline-uplink/src/lib.rs` (`mod loss;`)
 
 **Interfaces:**
-- Consumes: `CarrierLossProbe`, `CarrierLossSample` (Task 1).
+- Consumes: `CarrierLossProbe`, `CarrierLossSample`, `CarrierLossProbe::identity() -> u64` (Task 1, extended by the Task 3a fix).
 - Produces:
   - `pub(crate) struct LossEwma` (`Clone, Copy, Debug, Default`) with `ratio(&self) -> Option<f64>`, `observed_packets(&self) -> u64`, `record_window(&mut self, sent: u64, lost: u64, min_packets: u64, alpha: f64)`, `inflation(&self, k: f64, cap: f64) -> f64`.
-  - `pub(crate) struct CarrierLossRegistry` with `register(&mut self, transport: TransportKind, wire: u8, probe: CarrierLossProbe)`, `collect_windows(&mut self) -> Vec<LossWindow>`.
+  - `pub(crate) struct CarrierLossRegistry` with `register(&mut self, transport: TransportKind, wire: u8, probe: CarrierLossProbe)` (a carrier already registered under the same transport and wire is ignored — see the de-duplication note below), `collect_windows(&mut self) -> Vec<LossWindow>`.
   - `pub(crate) struct LossWindow { pub transport: TransportKind, pub wire: u8, pub sent: u64, pub lost: u64 }`.
   - `pub(crate) const MAX_PROBES_PER_WIRE: usize = 8;`
 
@@ -735,8 +822,24 @@ async fn a_vanished_carrier_contributes_no_window() {
     assert_eq!(registry.len(), 0, "and is evicted from the registry");
 }
 
+/// One shared H2/H3 connection is handed to many sessions and every one of
+/// them registers. Counting it once per session would let a wire clear the
+/// minimum-volume threshold on a fraction of the traffic the threshold names.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_same_carrier_registered_twice_is_counted_once() {
+    let mut registry = CarrierLossRegistry::default();
+    let (probe, _client, _server) = crate::loss::tests_support::live_pair().await;
+    let twin = probe.try_clone().expect("a second handle on the same carrier");
+
+    registry.register(crate::types::TransportKind::Tcp, 0, probe);
+    registry.register(crate::types::TransportKind::Tcp, 0, twin);
+
+    assert_eq!(registry.len(), 1, "one carrier occupies one registry slot");
+}
+
 /// The registry is bounded: a busy uplink dials constantly, and every dial
-/// registers. Oldest entries are dropped, newest kept.
+/// registers a distinct carrier. Oldest entries are dropped, newest kept.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn the_registry_is_bounded_per_wire() {
@@ -903,6 +1006,13 @@ pub(crate) struct LossWindow {
 struct ProbeEntry {
     transport: TransportKind,
     wire: u8,
+    /// Identity of the carrier underneath, from `CarrierLossProbe::identity()`.
+    /// A shared H2/H3 connection backs many sessions and each of them
+    /// registers, so without this the same socket's traffic would be counted
+    /// once per session: the ratio would survive (numerator and denominator
+    /// scale together) but the observed volume would not, and
+    /// `loss_sample_min_packets` would be cleared N times too easily.
+    identity: u64,
     probe: CarrierLossProbe,
     /// Previous reading, so the next tick can difference against it. `None`
     /// until the first successful sample.
@@ -922,7 +1032,20 @@ impl CarrierLossRegistry {
 
     /// File a probe under the wire that dialed it, evicting the oldest entry
     /// for that wire once the bound is reached.
+    ///
+    /// A carrier already registered under this (transport, wire) is dropped on
+    /// the floor: one shared H2/H3 connection is handed to many sessions, and
+    /// counting its counters once per session would inflate the observed
+    /// volume the minimum-volume threshold is measured against.
     pub(crate) fn register(&mut self, transport: TransportKind, wire: u8, probe: CarrierLossProbe) {
+        let identity = probe.identity();
+        if self
+            .entries
+            .iter()
+            .any(|e| e.transport == transport && e.wire == wire && e.identity == identity)
+        {
+            return;
+        }
         let count = self
             .entries
             .iter()
@@ -939,6 +1062,7 @@ impl CarrierLossRegistry {
         self.entries.push(ProbeEntry {
             transport,
             wire,
+            identity,
             probe,
             last: None,
         });
