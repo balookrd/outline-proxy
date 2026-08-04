@@ -117,7 +117,7 @@ pub(super) async fn connect_xhttp_h2(
         let server_addr = *addrs.first().ok_or_else(|| {
             anyhow::Error::new(TransportOperation::DnsResolveNoAddresses { host: host.clone() })
         })?;
-        let send_request = h2_handshake(server_addr, &host, use_tls, fwmark).await?;
+        let (send_request, loss_probe) = h2_handshake(server_addr, &host, use_tls, fwmark).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
         let (in_tx, in_rx) = inbound_channel();
@@ -248,6 +248,7 @@ pub(super) async fn connect_xhttp_h2(
                 active_submode,
                 false,
                 udp_records,
+                loss_probe,
             ),
             issued_session_id,
             ack_prefix_echo,
@@ -472,9 +473,13 @@ async fn h2_handshake(
     host: &str,
     use_tls: bool,
     fwmark: Option<u32>,
-) -> Result<http2::SendRequest<RequestBody>> {
+) -> Result<(http2::SendRequest<RequestBody>, Option<crate::CarrierLossProbe>)> {
     let tcp = connect_tcp_socket(addr, fwmark).await?;
-    if use_tls {
+    // Captured before the socket is handed to TLS/h2, which is the last
+    // point the raw descriptor is reachable — see the shared `SharedH2Connection`
+    // dial for the same reasoning.
+    let loss_probe = crate::CarrierLossProbe::from_tcp_stream(&tcp);
+    let send_request = if use_tls {
         let connector = TlsConnector::from(h2_tls_config());
         let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
             ServerName::IpAddress(ip.into())
@@ -486,12 +491,13 @@ async fn h2_handshake(
             .connect(server_name, tcp)
             .await
             .context("TLS handshake for xhttp failed")?;
-        spawn_h2(TokioIo::new(BoxedIo::Tls(Box::new(tls)))).await
+        spawn_h2(TokioIo::new(BoxedIo::Tls(Box::new(tls)))).await?
     } else {
         // Plain h2 over TCP — used by tests and trusted-network
         // deployments. Production callers should run TLS.
-        spawn_h2(TokioIo::new(BoxedIo::Plain(tcp))).await
-    }
+        spawn_h2(TokioIo::new(BoxedIo::Plain(tcp))).await?
+    };
+    Ok((send_request, loss_probe))
 }
 
 async fn spawn_h2<T>(io: TokioIo<T>) -> Result<http2::SendRequest<RequestBody>>
