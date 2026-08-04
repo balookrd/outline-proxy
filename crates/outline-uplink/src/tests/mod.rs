@@ -2755,6 +2755,75 @@ async fn loss_failover_does_not_move_to_a_lower_weight_candidate() {
     );
 }
 
+/// A candidate whose own loss ratio is fresh (confirmed by a qualifying
+/// sampling tick on its currently-active wire, within `3 ×
+/// loss_sample_interval`) and at or below the threshold still qualifies as
+/// a switch target — the freshness gate closed by the final whole-branch
+/// review must not collapse into "only ever-unmeasured candidates ever
+/// qualify". See `PerTransportStatus::loss_ratio_fresh` /
+/// `PerTransportStatus::loss_is_fresh`.
+#[tokio::test]
+async fn loss_failover_moves_to_a_fresh_clean_candidate() {
+    let (manager, target) = loss_failover_manager(0.05, Some(Duration::from_secs(60)));
+    pin_primary_active(&manager, &target).await;
+    stage_tcp_probe_streak(&manager, 1, 2).await;
+
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(120));
+    });
+    // Backup: a freshly-confirmed 1% loss ratio, comfortably under the 5%
+    // threshold, stamped as qualifying on wire 0 (its active wire) right now.
+    manager.inner.with_status_mut(1, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 100, 1, 1.0);
+        status.tcp.loss_last_qualifying_at = Some((0, Instant::now()));
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        second[0].uplink.name, "backup",
+        "a candidate with a fresh, clean loss verdict must still qualify as a switch target"
+    );
+}
+
+/// The defect the final whole-branch review found: a candidate's ratio is
+/// read frozen, with no equivalent of `update_loss_elevated_since`'s
+/// wire-tagged staleness test for the active. Backup's loss ratio here is
+/// numerically clean (1%, under the 5% threshold) but was last confirmed an
+/// hour ago — far past `3 × loss_sample_interval` (30 s in this fixture) —
+/// the signature of a warm-standby carrier pinged too lightly to ever clear
+/// `loss_sample_min_packets` again. A stale reading, however low the frozen
+/// number, must not be trusted as proof the candidate is *currently* clean:
+/// admitting it on that number alone is the same mistake as the active side
+/// trusting a frozen ratio to still be "elevated" — just applied to the
+/// opposite verdict.
+#[tokio::test]
+async fn loss_failover_does_not_move_to_a_stale_looking_clean_candidate() {
+    let (manager, target) = loss_failover_manager(0.05, Some(Duration::from_secs(60)));
+    pin_primary_active(&manager, &target).await;
+    stage_tcp_probe_streak(&manager, 1, 2).await;
+
+    let now = Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 9_000, 1, 1.0);
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(120));
+    });
+    // Backup: a numerically clean 1% ratio, but confirmed an hour ago —
+    // stale by any sampling interval this fixture could plausibly configure.
+    manager.inner.with_status_mut(1, |status| {
+        status.tcp.record_wire_loss_window(0, 10_000, 100, 1, 1.0);
+        status.tcp.loss_last_qualifying_at = Some((0, now - Duration::from_secs(3600)));
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        second[0].uplink.name, "primary",
+        "a stale loss reading must not be trusted as proof the candidate is currently clean, \
+         even when the frozen number itself reads under the threshold"
+    );
+}
+
 /// `loss_failover_ratio = 0.0` is the default and must disable the check
 /// entirely, independently of `loss_failover_duration` — existing
 /// strict-mode behaviour (keep a healthy pinned active) is unchanged even
