@@ -741,12 +741,11 @@ async fn a_vanished_carrier_contributes_no_window() {
 #[tokio::test]
 async fn the_registry_is_bounded_per_wire() {
     let mut registry = CarrierLossRegistry::default();
+    let mut sockets = Vec::new();
     for _ in 0..(MAX_PROBES_PER_WIRE + 4) {
-        registry.register(
-            crate::types::TransportKind::Tcp,
-            0,
-            crate::loss::tests_support::live_probe().await,
-        );
+        let (probe, client, server) = crate::loss::tests_support::live_pair().await;
+        sockets.push((client, server));
+        registry.register(crate::types::TransportKind::Tcp, 0, probe);
     }
     assert_eq!(registry.len(), MAX_PROBES_PER_WIRE);
 }
@@ -774,14 +773,6 @@ pub(crate) mod tests_support {
         (probe, client, server)
     }
 
-    /// Convenience for tests that only need the probe and can let the sockets
-    /// live until the end of the test.
-    pub(crate) async fn live_probe() -> CarrierLossProbe {
-        let (probe, client, server) = live_pair().await;
-        std::mem::forget((client, server));
-        probe
-    }
-
     /// A probe whose carrier is already gone. The FIN exchange is
     /// asynchronous, so poll until the socket leaves ESTABLISHED rather than
     /// sleeping a guessed interval.
@@ -800,8 +791,10 @@ pub(crate) mod tests_support {
 
     /// A live probe plus enough traffic pushed through the pair that
     /// `tcpi_segs_out` has certainly advanced, for tests that assert on
-    /// observed volume.
-    pub(crate) async fn live_probe_with_traffic() -> (CarrierLossProbe, tokio::net::TcpStream) {
+    /// observed volume. Both sockets come back with it: the caller must keep
+    /// them bound for as long as the probe is expected to read a live carrier.
+    pub(crate) async fn live_probe_with_traffic()
+    -> (CarrierLossProbe, tokio::net::TcpStream, tokio::net::TcpStream) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (probe, mut client, mut server) = live_pair().await;
         for _ in 0..16 {
@@ -809,11 +802,15 @@ pub(crate) mod tests_support {
         }
         let mut sink = vec![0u8; 16 * 1024];
         server.read_exact(&mut sink).await.unwrap();
-        std::mem::forget(server);
-        (probe, client)
+        (probe, client, server)
     }
 }
 ```
+
+No helper may `std::mem::forget` a socket to keep a carrier alive — that
+leaks the descriptor for the rest of the test binary. Helpers hand the
+sockets back and the test binds them (`let _guards = ...`) for as long as the
+carrier must stay up.
 
 The two registry tests are `async` because the helpers are; mark them
 `#[tokio::test]` and `await` the helper calls.
@@ -1235,7 +1232,7 @@ async fn a_sampling_tick_writes_the_wire_verdict_into_status() {
     )
     .unwrap();
 
-    let (probe, _client) = crate::loss::tests_support::live_probe_with_traffic().await;
+    let (probe, _client, _server) = crate::loss::tests_support::live_probe_with_traffic().await;
     manager.register_carrier_loss_probe(0, 0, TransportKind::Tcp, Some(probe));
 
     // First tick establishes the baseline, second produces the delta.
@@ -1253,8 +1250,8 @@ async fn a_sampling_tick_writes_the_wire_verdict_into_status() {
 The fixtures are the existing ones in `crates/outline-uplink/src/tests/mod.rs`:
 `lb()` (line 25), `make_uplink(name, url)` (line 129), `probe_disabled()`
 (line 88), and `UplinkManager::new_for_test(group, uplinks, probe, config)`.
-`_client` must stay bound: dropping it closes the carrier and the second tick
-would evict the probe before it produced a window. The first test in this file
+`_client` and `_server` must stay bound: dropping either closes the carrier and
+the second tick would evict the probe before it produced a window. The first test in this file
 is synchronous and needs no fixtures.
 
 - [ ] **Step 2: Run the test to verify it fails**
