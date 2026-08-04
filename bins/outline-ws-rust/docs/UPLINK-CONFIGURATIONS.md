@@ -581,6 +581,11 @@ fields are optional; omitted fields fall back to the defaults below.
 | `warm_standby_udp`                   | `0`                | int   | same for UDP                                                                                      |
 | `warm_probe_keepalive_secs`          | `20`               | s     | keepalive cadence for cached warm-probe pipes (`0` disables)                                      |
 | `rtt_ewma_alpha`                     | `0.3`              | (0,1] | smoothing factor for the per-uplink RTT EWMA used in selection scoring                            |
+| `loss_latency_penalty_k`             | `0.0`              | ≥0    | strength of carrier-loss latency inflation (`latency × (1 + k · loss)`); `0.0` measures without acting — selection is unchanged. See "Carrier loss in uplink selection" below |
+| `loss_latency_inflation_max`         | `4.0`              | [1,100] | ceiling on that multiplier — bounds how far one bad sampling window can push an uplink down the ranking |
+| `loss_sample_interval_secs`          | `10`               | s     | sampling grid for the carrier-loss counters, independent of `probe.interval`                      |
+| `loss_sample_min_packets`            | `200`              | int   | minimum packets a wire must send within one sampling window for that window's loss ratio to count |
+| `loss_ewma_alpha`                    | `0.2`              | (0,1] | smoothing factor for the per-wire carrier-loss EWMA                                               |
 | `failure_penalty_ms`                 | `500`              | ms    | initial RTT penalty added on a fresh runtime failure                                              |
 | `failure_penalty_max_ms`             | `30000`            | ms    | cap on the cumulative failure penalty                                                             |
 | `failure_penalty_halflife_secs`      | `60`               | s     | half-life of the failure-penalty exponential decay                                                |
@@ -1008,6 +1013,128 @@ Symmetric Downlink Replay (v2):
   for the v1 buffer-overflow case to keep policy consistent.
 - Same eligibility gate as v1 — SS-WS / VLESS-WS / VLESS-XHTTP
   carriers.
+
+### Carrier loss in uplink selection
+
+**Why this exists.** Selection ranks uplinks by RTT — and RTT alone is
+blind to loss. On 2026-08-02 a gateway sat six and a half hours on an
+uplink whose path was dropping packets while its RTT stayed a steady
+0.21–0.32 s EWMA, the best score in the group, `health = 1` on every
+probe cycle, and a runtime-failure counter that never moved once.
+Nothing selection looked at saw the loss. This feature measures loss on
+the carrier socket itself and lets it multiply the latency selection
+ranks by — shipped **off** by default, because there is no principled
+coefficient to pick a priori; see "Choosing `loss_latency_penalty_k`"
+below.
+
+**What is measured, and where.** For the wire currently carrying
+traffic (primary, or the active fallback), the manager samples the
+carrier socket's OS-level loss counters on a fixed grid
+(`loss_sample_interval_secs`, default `10s`): QUIC `PathStats`
+(lost/sent packets) on an H3/QUIC carrier, `TCP_INFO`
+(retransmits/segments-out) on a TCP carrier. This is deliberately
+**not** the LAN leg to the local SOCKS5/TUN client, and **not** the
+probe connection — a probe dials its own short-lived socket and never
+carries user traffic. Sampling runs on its own timer, independent of
+`probe.interval`: probe cycles are routinely skipped for an uplink
+that is already carrying real traffic (`probe.skip_when_active`), but
+differencing cumulative kernel counters into a ratio needs an even
+sampling grid regardless of whether a probe happened to run.
+
+**The five knobs** live under `[outline.load_balancing]` (or the
+per-group equivalent — see the reference table above for the row with
+each default):
+
+- `loss_latency_penalty_k` (default `0.0`) — strength of the inflation.
+- `loss_latency_inflation_max` (default `4.0`, valid range `[1.0,
+  100.0]`) — ceiling on the multiplier.
+- `loss_sample_interval_secs` (default `10`) — the sampling grid.
+- `loss_sample_min_packets` (default `200`) — minimum volume per window.
+- `loss_ewma_alpha` (default `0.2`) — smoothing for the per-wire EWMA.
+
+**The shipped default measures without acting.** `loss_latency_penalty_k
+= 0.0` yields a multiplier of exactly `1.0`
+(`LossEwma::inflation`), so turning this feature on with its defaults
+changes nothing about which uplink gets selected — it only starts
+publishing `outline_ws_uplink_carrier_loss_ratio`. The ratio is sampled
+and published unconditionally, regardless of `loss_latency_penalty_k`;
+turning it into an actual failover signal is a deliberate second step
+once you know what loss levels your own fleet sees (below).
+
+**Reading the metrics.** Two gauges, both labelled `{group, transport,
+uplink}`:
+
+- `outline_ws_uplink_carrier_loss_ratio` — the smoothed loss ratio
+  (EWMA, `loss_ewma_alpha`) for the wire currently carrying traffic.
+- `outline_ws_uplink_carrier_loss_observed_packets` — cumulative
+  packets that ratio is based on. Always read it next to the ratio: a
+  ratio computed from a few hundred packets right after the
+  minimum-volume gate opened is far noisier than one built on a day of
+  steady traffic.
+
+**An absent series means "not measured" — never "no loss".** There are
+three distinct reasons a wire may have no `carrier_loss_ratio` series
+at a given moment, and none of them is "this path is clean":
+
+1. It has not sent `loss_sample_min_packets` (default `200`) packets
+   within a sampling window yet. This gate is deliberate: on a
+   near-idle carrier, one lost packet out of ten is not "10 % loss",
+   it is rounding noise, and feeding it into the EWMA would make a
+   quiet uplink look catastrophically lossy. Cross-check
+   `outline_ws_uplink_carrier_loss_observed_packets` to tell "not
+   enough traffic yet" apart from "measured and clean".
+2. The wire is `xhttp_h1`. That carrier dials **two independent plain
+   sockets** — a long-lived downlink GET and a serialised uplink-POST
+   socket — instead of one shared connection, so there is no single
+   carrier to attribute loss to. This carrier family never registers a
+   loss probe, by construction.
+3. The wire is VLESS-UDP. `VlessUdpSessionMux` dials a fresh carrier
+   lazily, per destination, the first time it is needed — at the point
+   where a loss probe would normally be registered, no carrier exists
+   yet to register.
+
+Both absences are structural properties of those paths, not faults to
+chase. Do not read "no series" on an `xhttp_h1` or VLESS-UDP wire as "no
+loss" — there is simply no verdict published for it.
+
+**Choosing `loss_latency_penalty_k`.** There is no principled default —
+`0.0` is not "a small value", it is "off". Derive a value from your own
+fleet's numbers instead of guessing:
+
+1. Collect `outline_ws_uplink_carrier_loss_ratio` across the group's
+   uplinks for a representative period — a week covers most diurnal and
+   day-of-week variation. Compare the spread between your best and
+   worst uplinks; the 2026-08-02 incident path ran 2–3 % loss on its bad
+   stretch while a healthy uplink in the same group measured near zero.
+2. `k` controls how much loss it takes before a lossy path's *inflated*
+   latency crosses a clean candidate's *plain* latency:
+   `inflated_latency = latency × (1 + k × loss)`, clamped to
+   `loss_latency_inflation_max`.
+3. Worked example — **check the arithmetic before trusting an estimate,
+   this is where a wrong guess is easy to make**: at `k = 20`, a path
+   with a `210 ms` RTT and `2 %` measured loss scores
+   `210 ms × (1 + 20 × 0.02) = 210 ms × 1.4 = 294 ms` — it still *beats*
+   a clean `300 ms` candidate; `2 %` loss alone does not move it at this
+   `k`. It takes `3 %` loss to cross over:
+   `210 ms × (1 + 20 × 0.03) = 210 ms × 1.6 = 336 ms`, which *does* lose
+   to the `300 ms` clean path. If `2 %` is already the loss level you
+   consider bad enough to want a failover, `k = 20` is too low for that
+   pair of uplinks — raise `k` until the crossover lands where your own
+   numbers say it should.
+4. Re-run this arithmetic against your own uplinks' actual RTTs and
+   observed loss ratios before committing a value in `config.toml` — the
+   spread that matters is the one in your metrics, not the one in this
+   example.
+
+**`loss_latency_inflation_max` bounds the damage of one bad window.**
+The multiplier `(1 + k × loss)` is clamped to this ceiling (default
+`4.0`, validated at load time to `[1.0, 100.0]`) before it is applied,
+so a single catastrophic sampling window cannot send an uplink's
+scoring latency to an absurd value. A lossy uplink is **never removed
+from candidacy** by this feature — only ranked lower. It may be the
+only live path in the group, and an outright exclusion would pull it
+out of rotation entirely instead of letting it keep carrying traffic at
+reduced preference.
 
 Example — `[outline.load_balancing]` for the inline shape, and the same
 fields lifted onto a group:
