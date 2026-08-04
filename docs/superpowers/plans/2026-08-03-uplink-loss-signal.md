@@ -2044,6 +2044,65 @@ git commit -m "docs(uplink): document carrier-loss measurement and its selection
 
 ---
 
+### Task 11: Observe a QUIC carrier without owning it
+
+The staleness eviction shipped for the final review's Critical finding closes
+the TCP case but not the QUIC one, and the implementer said so rather than
+claiming otherwise: `keep_alive_interval` is set to 8–12 s
+(`crates/outline-transport/src/quic/tls_config.rs:46`), every PING is a sent
+packet, so a QUIC carrier essentially never produces a `Δsent == 0` tick. The
+zombie connection therefore still never ages out.
+
+Counting PINGs out of the traffic figure would work but puts a protocol
+detail into the sample shape. The root cause is simpler: **the probe owns the
+thing it is supposed to be observing.** quinn implicit-closes only when the
+last `Connection` handle drops, so holding a clone is what keeps the carrier
+alive. A probe should not extend the life of what it measures.
+
+**Files:**
+- Modify: `crates/outline-transport/src/carrier_loss.rs` (a trait, and a weak handle in the `Quic` variant)
+- Modify: `crates/outline-transport/src/h3/shared.rs` (`SharedH3Connection` implements it)
+- Modify: `crates/outline-transport/src/xhttp/h3.rs` (its own QUIC carrier does too)
+- Modify: `crates/outline-transport/src/tests/carrier_loss.rs`
+
+**Shape**
+
+```rust
+/// A carrier that can report its own loss counters. Implemented by the
+/// connection wrappers themselves, so a probe can read a carrier without
+/// keeping it alive: the probe holds a `Weak`, and when the transport drops
+/// its last strong reference the carrier closes normally and the probe starts
+/// reporting itself dead.
+pub trait CarrierLossCounters: Send + Sync {
+    fn loss_counters(&self) -> Option<CarrierLossSample>;
+}
+```
+
+`CarrierLossProbe::Quic` holds `Weak<dyn CarrierLossCounters>` plus the
+identity captured at construction — identity must survive the carrier's death,
+since a probe whose `upgrade()` fails still has to be recognisable in the
+registry long enough to be evicted. `sample()` upgrades; a failed upgrade is
+`Some(sample_with_alive_false)` rather than `None`, so the registry evicts it
+on the next tick through the path it already has for a dead carrier.
+
+`SharedH3Connection` implements the trait over its existing `connection`
+field. The XHTTP H3 carrier wraps its `quinn::Connection` in an `Arc` held by
+the stream, and hands the probe a `Weak` to it, so the probe dies with the
+session rather than outliving it.
+
+**Tests**
+
+- Dropping the last strong reference makes `sample()` report `alive = false`
+  (this is the regression that matters: it is what the zombie case failed).
+- `identity()` still answers after the carrier is gone.
+- A live carrier still reports its counters unchanged.
+
+Once this lands, the staleness eviction from the previous fix stays as the
+belt to this braces — it still covers a TCP carrier whose peer has gone quiet
+without closing.
+
+---
+
 ### Task 10: Loss-driven failover for a pinned active uplink
 
 Found by the final whole-branch review, and it is the gap between what this
