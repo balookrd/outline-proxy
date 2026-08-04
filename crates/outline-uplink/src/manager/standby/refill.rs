@@ -237,6 +237,22 @@ impl<'a> StandbyCtx<'a> {
                         break;
                     }
 
+                    // The warm pool always dials the primary wire (`wire = 0`).
+                    // Registering here — not just on the sibling on-demand
+                    // dial sites — matters because this pool is the majority
+                    // producer of user carriers: without it, every carrier
+                    // that started life as a pooled entry (most of them) went
+                    // unmeasured, and on an explicitly-`h1` pool, where each
+                    // slot owns its own socket rather than sharing a carrier
+                    // opened elsewhere, its carriers were never measured at
+                    // all.
+                    self.manager.register_carrier_loss_probe(
+                        self.index,
+                        0,
+                        self.transport,
+                        ws.loss_probe(),
+                    );
+
                     // Re-check actual pool size before pushing — validate()
                     // or keepalive() may have pushed entries back while we
                     // were dialling, so the pool could already be at
