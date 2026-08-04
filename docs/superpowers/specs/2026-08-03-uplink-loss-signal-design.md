@@ -1,7 +1,10 @@
 # Carrier loss as an uplink-selection input (design)
 
 Date: 2026-08-03
-Status: approved by owner (chat)
+Status: design approved by owner (chat); revised after implementation to match
+what shipped — the ownership model, the metric names and the loss-driven
+failover all changed under review pressure, and the revisions are marked where
+they matter.
 
 ## Problem
 
