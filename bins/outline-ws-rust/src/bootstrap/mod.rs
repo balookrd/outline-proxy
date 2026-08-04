@@ -141,6 +141,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     registry.spawn_warm_probe_keepalive_loops();
     registry.spawn_sticky_prune_loops();
     registry.spawn_shuffle_timer_loops();
+    registry.spawn_loss_sampler_loops();
     registry.spawn_reselect_timer_loops();
     // Process-wide sweeper; it lives until `UplinkRegistry::shutdown`, so the
     // join handle is deliberately dropped (dropping it does not cancel it).
