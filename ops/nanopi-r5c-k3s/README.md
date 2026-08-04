@@ -574,7 +574,35 @@ k3s тут ещё не обслуживает внешние адреса.
 ```bash
 ip route | grep 10.42            # 10.42.1.0/24 via 10.10.10.52 dev lan0
 ip link show flannel.1           # must not exist
-ip link show cni0 | grep -o 'mtu [0-9]*'    # expect 1500
+ip link show cni0 | grep -o 'mtu [0-9]*'    # expect 1500 — ТОЛЬКО там, где есть поды
+```
+
+**`cni0` создаётся лениво** — мост появляется на ноде вместе с первым подом, у которого
+не `hostNetwork`. Сразу после установки все системные поды сидят на первой ноде, поэтому
+на нодах 2 и 3 моста нет, и это не диагноз. Здоровье flannel там смотрят по маршрутам:
+`ip route | grep 10.42` показывает подсети соседей через `10.10.10.5N dev lan0`
+независимо от наличия подов, плюс `/run/flannel/subnet.env` содержит свой
+`FLANNEL_SUBNET`. Проверить мост на всех нодах разом можно временным DaemonSet:
+
+```bash
+k3s kubectl apply -f - <<'EOF'
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cni-probe
+spec:
+  selector:
+    matchLabels: {app: cni-probe}
+  template:
+    metadata:
+      labels: {app: cni-probe}
+    spec:
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+EOF
+k3s kubectl get pods -o wide -l app=cni-probe   # по одному на ноду, мосты поднимутся
+k3s kubectl delete ds cni-probe                 # мосты остаются, это нормально
 ```
 
 Главная метрика здоровья на таком железе — `etcd_disk_wal_fsync_duration_seconds`.
