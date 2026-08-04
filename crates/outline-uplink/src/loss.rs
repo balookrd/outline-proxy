@@ -23,20 +23,12 @@ pub(crate) struct LossEwma {
 }
 
 impl LossEwma {
-    // Read by tests today; the metrics gauge
-    // (`outline_ws_uplink_carrier_loss_ratio`) is the production caller,
-    // added by Task 8 ("Metrics and control snapshot") per the plan.
-    #[allow(dead_code)]
     pub(crate) fn ratio(&self) -> Option<f64> {
         self.ratio
     }
 
     /// Cumulative packets this verdict is based on. Published so a dashboard
     /// can tell "no loss" apart from "no data".
-    // Read by tests today; the metrics gauge
-    // (`outline_ws_uplink_carrier_loss_observed_packets`) is the production
-    // caller, added by Task 8 ("Metrics and control snapshot") per the plan.
-    #[allow(dead_code)]
     pub(crate) fn observed_packets(&self) -> u64 {
         self.observed_packets
     }

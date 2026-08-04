@@ -21,8 +21,16 @@ pub(crate) fn load_balancing_config(
         bail!("load_balancing.loss_latency_penalty_k must be a finite value >= 0");
     }
     let loss_latency_inflation_max = lb.and_then(|l| l.loss_latency_inflation_max).unwrap_or(4.0);
-    if !(loss_latency_inflation_max.is_finite() && loss_latency_inflation_max >= 1.0) {
-        bail!("load_balancing.loss_latency_inflation_max must be a finite value >= 1");
+    // Upper-bounded, not just finite: an absurd cap (e.g. a typo like
+    // `1e300`) lets `base_latency_with` saturate a wire's inflated latency
+    // to `Duration::MAX`, which `weighted_latency_score` then feeds into the
+    // panicking `Duration::from_secs_f64` in the selection hot path — for
+    // any weight. 100x is far past any real-world path; reject anything
+    // beyond it at load time instead of letting it panic dispatch later.
+    if !(loss_latency_inflation_max.is_finite()
+        && (1.0..=100.0).contains(&loss_latency_inflation_max))
+    {
+        bail!("load_balancing.loss_latency_inflation_max must be a finite value in [1, 100]");
     }
     let loss_ewma_alpha = lb.and_then(|l| l.loss_ewma_alpha).unwrap_or(0.2);
     if !(loss_ewma_alpha.is_finite() && 0.0 < loss_ewma_alpha && loss_ewma_alpha <= 1.0) {
