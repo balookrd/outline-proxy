@@ -417,7 +417,10 @@ impl UplinkManager {
         // Every dial through `connect_tcp_ws_fresh_internal` — fresh,
         // redial, or migrate, standby-pool refill or on-demand — always
         // targets the primary wire (`wire = 0`); fallback wires are dialed
-        // elsewhere (`crate::manager::probe::wire`).
+        // by the proxy layer instead
+        // (`bins/outline-ws-rust/src/proxy/tcp/failover.rs`,
+        // `proxy/udp/transport.rs`), which is the only place that owns a
+        // dead-primary/`shuffle_wires` fallback chain to walk.
         self.register_carrier_loss_probe(candidate.index, 0, TransportKind::Tcp, ws.loss_probe());
         // Feed the on-demand dial latency into the RTT EWMA so real
         // connection quality is reflected in routing scores, not just probe

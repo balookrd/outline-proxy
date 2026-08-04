@@ -145,7 +145,18 @@ impl UplinkManager {
         // `UPLINK-CONFIGURATIONS.md`): carriers still register probes and the
         // registry still tracks them, but nothing ever differences the
         // counters or publishes a verdict. Not spawning the loop at all
-        // avoids a task that would otherwise busy-loop on a zero-length sleep.
+        // avoids a task that would otherwise busy-loop on a zero-length
+        // sleep.
+        //
+        // A consequence of never running this loop: eviction of dead/idle
+        // probes happens only inside `collect_windows`, which nothing calls
+        // with the loop off, so each (uplink, transport, wire) can accumulate
+        // up to `crate::loss::MAX_PROBES_PER_WIRE` duplicated descriptors
+        // (TCP fds, QUIC `Weak` slots) before the registry's own
+        // newest-wins bound in `CarrierLossRegistry::register` starts
+        // pushing the oldest out to make room for the next dial. Bounded and
+        // self-limiting — no unbounded growth — but worth knowing before
+        // treating this switch as a completely free no-op.
         if interval.is_zero() {
             return;
         }
