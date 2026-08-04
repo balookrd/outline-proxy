@@ -116,7 +116,8 @@ pub(super) async fn connect_xhttp_h3(
             anyhow::Error::new(TransportOperation::DnsResolveNoAddresses { host: host.clone() })
         })?;
 
-        let (send_request, loss_probe) = h3_handshake(server_addr, &host, fwmark).await?;
+        let (send_request, loss_probe, quic_carrier) =
+            h3_handshake(server_addr, &host, fwmark).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
         let authority = if port == 443 {
@@ -253,6 +254,7 @@ pub(super) async fn connect_xhttp_h3(
                 true,
                 udp_records,
                 loss_probe,
+                quic_carrier,
             ),
             issued_session_id,
             ack_prefix_echo,
@@ -282,7 +284,11 @@ async fn h3_handshake(
     server_addr: SocketAddr,
     host: &str,
     fwmark: Option<u32>,
-) -> Result<(SendRequest<h3_quinn::OpenStreams, Bytes>, Option<crate::CarrierLossProbe>)> {
+) -> Result<(
+    SendRequest<h3_quinn::OpenStreams, Bytes>,
+    Option<crate::CarrierLossProbe>,
+    Option<Arc<dyn crate::CarrierLossCounters>>,
+)> {
     let endpoint = dial_endpoint(crate::bind_addr_for(server_addr), fwmark)?;
 
     let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
@@ -307,7 +313,17 @@ async fn h3_handshake(
     // this costs nothing on the hot dial path. No `#[cfg(feature = "h3")]`
     // needed here: this whole module (`xhttp/h3.rs`) is only compiled when
     // `h3` is enabled — see `mod h3;` in `xhttp/mod.rs`.
-    let loss_probe = Some(crate::CarrierLossProbe::Quic(connection.clone()));
+    //
+    // The clone is wrapped in its own `Arc` (`XhttpQuicCarrier`) rather than
+    // handed straight to `CarrierLossProbe::Quic`: the probe only holds a
+    // `Weak` onto this `Arc`, and `connect_xhttp_h3` hands the `Arc` itself to
+    // `XhttpStream` (`_quic_carrier`) so it is this session, not the probe,
+    // that keeps the connection alive — see `crate::CarrierLossCounters`.
+    let quic_carrier: Arc<dyn crate::CarrierLossCounters> =
+        Arc::new(XhttpQuicCarrier(connection.clone()));
+    let counters: std::sync::Weak<dyn crate::CarrierLossCounters> = Arc::downgrade(&quic_carrier);
+    let identity = connection.stable_id() as u64;
+    let loss_probe = Some(crate::CarrierLossProbe::Quic { counters, identity });
     let (mut driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection))
         .await
         .context("xhttp/h3 HTTP/3 handshake failed")?;
@@ -334,7 +350,25 @@ async fn h3_handshake(
         let close = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
         debug!(?close, "xhttp/h3 driver closed");
     });
-    Ok((send_request, loss_probe))
+    Ok((send_request, loss_probe, Some(quic_carrier)))
+}
+
+/// Strong owner of the QUIC connection backing one XHTTP-over-H3 session.
+/// `XhttpStream` holds this `Arc` (`_quic_carrier`) for exactly its own
+/// lifetime; the loss probe handed out alongside it holds only a `Weak` onto
+/// the same `Arc`, so it observes the connection's counters without
+/// extending its life — see `crate::CarrierLossCounters`.
+struct XhttpQuicCarrier(quinn::Connection);
+
+impl crate::CarrierLossCounters for XhttpQuicCarrier {
+    fn loss_counters(&self) -> Option<crate::CarrierLossSample> {
+        let path = self.0.stats().path;
+        Some(crate::CarrierLossSample {
+            sent: path.sent_packets,
+            lost: path.lost_packets,
+            alive: self.0.close_reason().is_none(),
+        })
+    }
 }
 
 /// Synchronously opens the long-lived h3 GET, awaits response

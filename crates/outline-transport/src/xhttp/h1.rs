@@ -179,6 +179,8 @@ pub(super) async fn connect_xhttp_h1(
                 // last-resort fallback carrier is out of scope for loss
                 // measurement (see the h2/h3 siblings for the covered carriers).
                 None,
+                // No owned QUIC carrier either — h1 is TCP-only.
+                None,
             ),
             issued_session_id,
             ack_prefix_echo,
