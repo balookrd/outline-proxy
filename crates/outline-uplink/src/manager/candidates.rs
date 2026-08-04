@@ -913,8 +913,19 @@ impl UplinkManager {
                             "loss-driven failover: switching strict active uplink"
                         );
                         if commit_selection {
+                            // Labelled by `gate_transport`, not the dispatch
+                            // `transport` this call was made for: the switch
+                            // decision above was made entirely on
+                            // `gate_transport`'s loss episode. Under
+                            // `routing_scope = "global"`, `gate_transport` is
+                            // always TCP (`strict_gate_transport`) regardless
+                            // of whether a TCP or a UDP dispatch triggered
+                            // this pass — labelling by `transport` there
+                            // would double-count one logical TCP-loss-driven
+                            // switch as one "tcp" and one "udp" series
+                            // increment.
                             outline_metrics::record_loss_failover(
-                                match transport {
+                                match gate_transport {
                                     TransportKind::Tcp => "tcp",
                                     TransportKind::Udp => "udp",
                                 },

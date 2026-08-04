@@ -201,7 +201,11 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
          (a pinned active uplink that has been continuously carrying packet loss above the \
          configured ratio, past the configured duration, yielded to a clean sibling). Distinct \
          from outline_ws_uplink_failovers_total, which counts data-plane / runtime failovers, \
-         not this strict-mode active-slot switch.",
+         not this strict-mode active-slot switch. `transport` is the transport whose loss \
+         episode actually gated the decision, not necessarily the transport of the dispatch \
+         that triggered this reassessment — under routing_scope = \"global\" the gate is \
+         always TCP, so a UDP dispatch that surfaces a TCP-loss-driven switch is counted \
+         under transport=\"tcp\", not \"udp\".",
         ["transport", "group", "from_uplink", "to_uplink"]
     );
     let uplink_mid_session_retries_total = register_labeled!(

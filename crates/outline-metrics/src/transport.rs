@@ -329,6 +329,13 @@ pub fn record_failover(transport: &'static str, group: &str, from_uplink: &str, 
 /// [`record_failover`] (data-plane / runtime failovers): this is the
 /// strict-mode active-slot switch counted at
 /// `outline_ws_uplink_loss_failovers_total`.
+///
+/// `transport` must be the gate transport the decision was actually made
+/// on (`strict_gate_transport` in `outline-uplink`), not necessarily the
+/// dispatch transport of the call that triggered the reassessment — under
+/// `routing_scope = "global"` the gate is always TCP, so labelling by the
+/// dispatch transport would double-count one logical switch as both a
+/// "tcp" and a "udp" series increment.
 pub fn record_loss_failover(
     transport: &'static str,
     group: &str,

@@ -251,6 +251,16 @@ impl UplinkManager {
                     .map(|_| parking_lot::Mutex::new(UplinkStatus::default()))
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
+                // Always starts empty, including on a `/control/apply`
+                // hot-swap: carriers already dialed under the *previous*
+                // manager hold a probe registered in *that* manager's
+                // registry, not this fresh one, and nothing re-registers
+                // them here. Those carriers contribute no loss signal until
+                // they are naturally redialed (session end, wire flip,
+                // standby refill) and the new dial registers against this
+                // registry — self-healing within one dial cycle, not a
+                // leak, but worth knowing when a ratio looks freshly reset
+                // right after an apply.
                 carrier_loss: (0..count)
                     .map(|_| parking_lot::Mutex::new(crate::loss::CarrierLossRegistry::default()))
                     .collect(),
