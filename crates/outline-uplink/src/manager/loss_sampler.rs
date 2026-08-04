@@ -1,12 +1,68 @@
 //! Carrier-loss sampling: registration at dial time, and the timer that turns
 //! cumulative carrier counters into a per-wire verdict on the status.
 
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 use tracing::{debug, info};
 
 use outline_transport::CarrierLossProbe;
 
+use crate::loss::LossCollection;
+use crate::manager::status::UplinkStatus;
 use crate::types::{TransportKind, UplinkManager};
+
+/// Fold one sampling pass's `collection` into `status`: apply cumulative
+/// loss windows and wire-emptied resets exactly as before, then advance the
+/// loss-elevated episode for both transports. Pure and synchronous — no
+/// registry, no lock beyond what the caller already holds — so it is
+/// directly testable against a synthetic [`LossCollection`], without a live
+/// carrier registry (which on non-Linux needs no probes at all, and on
+/// Linux needs real sockets).
+///
+/// Stamps [`crate::manager::status::PerTransportStatus::loss_last_qualifying_at`]
+/// whenever a window in `collection` targets the transport's *currently
+/// active* wire and actually met `min_packets` (i.e.
+/// `record_wire_loss_window` returned `true`) — see that field's doc for why
+/// this is what `update_loss_elevated_since` gates freshness on. Called
+/// unconditionally, once per uplink per tick, even when `collection` is
+/// completely empty: an uplink with no live carrier at all still needs its
+/// (possibly stale) episode reassessed every tick, or a warm-standby whose
+/// carrier goes quiet would keep an old episode frozen indefinitely instead
+/// of it aging out past `max_staleness`.
+fn apply_loss_collection(
+    status: &mut UplinkStatus,
+    collection: &LossCollection,
+    min_packets: u64,
+    alpha: f64,
+    loss_failover_ratio: f64,
+    max_staleness: std::time::Duration,
+    now: Instant,
+) {
+    for window in &collection.windows {
+        let per = match window.transport {
+            TransportKind::Tcp => &mut status.tcp,
+            TransportKind::Udp => &mut status.udp,
+        };
+        let is_active_wire = window.wire == per.active_wire;
+        let qualified =
+            per.record_wire_loss_window(window.wire, window.sent, window.lost, min_packets, alpha);
+        if is_active_wire && qualified {
+            per.loss_last_qualifying_at = Some(now);
+        }
+    }
+    for (transport, wire) in &collection.emptied_wires {
+        let per = match transport {
+            TransportKind::Tcp => &mut status.tcp,
+            TransportKind::Udp => &mut status.udp,
+        };
+        per.reset_wire_loss(*wire);
+    }
+    status
+        .tcp
+        .update_loss_elevated_since(loss_failover_ratio, now, max_staleness);
+    status
+        .udp
+        .update_loss_elevated_since(loss_failover_ratio, now, max_staleness);
+}
 
 impl UplinkManager {
     /// File a freshly dialed carrier's loss probe under the uplink and wire
@@ -31,63 +87,51 @@ impl UplinkManager {
     }
 
     /// One sampling pass over every uplink: difference each live carrier's
-    /// counters, fold the per-wire totals into the status, and reset any
-    /// wire that just lost its last registered carrier — see
-    /// [`crate::loss::CarrierLossRegistry::collect_windows`].
+    /// counters, fold the per-wire totals into the status, reset any wire
+    /// that just lost its last registered carrier (see
+    /// [`crate::loss::CarrierLossRegistry::collect_windows`]), and advance
+    /// the loss-elevated episode used by the loss-driven strict-mode
+    /// failover — see [`apply_loss_collection`].
     pub(crate) async fn sample_carrier_loss_once(&self) {
         let min_packets = self.inner.load_balancing.loss_sample_min_packets;
         let alpha = self.inner.load_balancing.loss_ewma_alpha;
         let loss_failover_ratio = self.inner.load_balancing.loss_failover_ratio;
-        let now = tokio::time::Instant::now();
+        // How long a qualifying loss measurement may go unconfirmed before
+        // it is treated as unmeasured rather than still-current evidence —
+        // 3 sampling ticks, mirroring `MAX_IDLE_TICKS` (the bound the
+        // registry itself uses before evicting an idle carrier probe). See
+        // `PerTransportStatus::loss_last_qualifying_at`.
+        let max_staleness = self.inner.load_balancing.loss_sample_interval.saturating_mul(3);
+        let now = Instant::now();
         for index in 0..self.inner.uplinks.len() {
             let Some(slot) = self.inner.carrier_loss.get(index) else {
                 continue;
             };
             let collection = slot.lock().collect_windows();
-            if collection.windows.is_empty() && collection.emptied_wires.is_empty() {
-                // Nothing new this tick, but the loss-failover episode still
-                // needs reassessing against whatever verdict the wire
-                // already holds — an uplink already over the threshold whose
-                // carrier just went idle must not silently freeze mid-
-                // episode, and one that lost its carrier on a *previous*
-                // tick (verdict already reset to "not measured") must still
-                // have its episode cleared here rather than never again.
-                self.inner.with_status_mut(index, |status| {
-                    status.tcp.update_loss_elevated_since(loss_failover_ratio, now);
-                    status.udp.update_loss_elevated_since(loss_failover_ratio, now);
-                });
-                continue;
-            }
+            // Called on every tick, including a fully empty collection: an
+            // uplink whose loss-elevated episode is stale (no live carrier
+            // at all, or a warm-standby carrier that stopped producing
+            // qualifying windows) still needs that staleness reassessed
+            // every tick, or the episode would freeze instead of aging out.
             self.inner.with_status_mut(index, |status| {
-                for window in &collection.windows {
-                    let per = match window.transport {
-                        TransportKind::Tcp => &mut status.tcp,
-                        TransportKind::Udp => &mut status.udp,
-                    };
-                    per.record_wire_loss_window(
-                        window.wire,
-                        window.sent,
-                        window.lost,
-                        min_packets,
-                        alpha,
-                    );
-                }
-                for (transport, wire) in &collection.emptied_wires {
-                    let per = match transport {
-                        TransportKind::Tcp => &mut status.tcp,
-                        TransportKind::Udp => &mut status.udp,
-                    };
-                    per.reset_wire_loss(*wire);
-                }
-                status.tcp.update_loss_elevated_since(loss_failover_ratio, now);
-                status.udp.update_loss_elevated_since(loss_failover_ratio, now);
+                apply_loss_collection(
+                    status,
+                    &collection,
+                    min_packets,
+                    alpha,
+                    loss_failover_ratio,
+                    max_staleness,
+                    now,
+                );
             });
-            debug!(
-                uplink = %self.inner.uplinks[index].name,
-                windows = collection.windows.len(),
-                emptied_wires = collection.emptied_wires.len(),
-                "carrier loss sampled"
-            );
+            if !collection.windows.is_empty() || !collection.emptied_wires.is_empty() {
+                debug!(
+                    uplink = %self.inner.uplinks[index].name,
+                    windows = collection.windows.len(),
+                    emptied_wires = collection.emptied_wires.len(),
+                    "carrier loss sampled"
+                );
+            }
         }
     }
 

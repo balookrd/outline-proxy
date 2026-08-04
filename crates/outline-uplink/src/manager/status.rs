@@ -126,6 +126,27 @@ pub(crate) struct PerTransportStatus {
     /// `UplinkManager::loss_failover_switch_target` through the
     /// [`TransportSelectionView`] projection below.
     pub(crate) loss_elevated_since: Option<Instant>,
+    /// Timestamp of the most recent sampling tick that recorded a
+    /// *qualifying* carrier-loss window (met `loss_sample_min_packets`) for
+    /// the wire currently active ([`Self::active_wire`]). Distinct from "the
+    /// ratio is still above the threshold": [`Self::active_wire_loss`]'s
+    /// ratio is a frozen EWMA that a sub-volume-threshold window leaves
+    /// completely untouched (see [`crate::loss::LossEwma::record_window`]),
+    /// and carrier eviction only fires after three consecutive ticks with
+    /// *zero* traffic — so a wire idling on light-but-nonzero traffic below
+    /// the volume floor (sparse keepalives, an overnight lull) can go a long
+    /// time without ever re-measuring. Without this stamp,
+    /// [`Self::update_loss_elevated_since`] would keep reading that stale,
+    /// no-longer-current ratio as if it were fresh evidence indefinitely,
+    /// letting a loss-driven failover fire hours after the measurement that
+    /// justified it stopped being observed — and letting a warm-standby
+    /// uplink's episode from a previous stint as active survive, unconfirmed,
+    /// until it becomes active again. Maintained by
+    /// `UplinkManager::sample_carrier_loss_once`; a verdict older than
+    /// `3 × loss_sample_interval` (mirroring
+    /// [`crate::loss::MAX_IDLE_TICKS`], the same bound the registry itself
+    /// uses before evicting an idle carrier probe) is treated as unmeasured.
+    pub(crate) loss_last_qualifying_at: Option<Instant>,
     /// Per-wire liveness penalty for weighted wire selection, decaying via the
     /// shared `0.5^(t/halflife)` curve (see [`crate::penalty::penalty_weight`]).
     /// Indexed by **wire index directly**: `[0]` is the primary wire, `[i]` is
@@ -485,20 +506,36 @@ impl PerTransportStatus {
     /// `threshold <= 0.0` is `LoadBalancingConfig::loss_failover_ratio`'s
     /// documented off switch: the episode is always cleared, so the check
     /// ships inert exactly like the sibling `carrier_degraded_failover`
-    /// knob when unset. Otherwise a ratio strictly above `threshold` starts
-    /// the episode on the first such tick and leaves an already-running
-    /// episode's anchor untouched — a re-trigger must not reset a genuinely
-    /// long episode back to "just started". A ratio at or below `threshold`,
-    /// or no ratio at all (not measured is never evidence of loss), clears
-    /// the episode: a single clean tick restarts the clock instead of
-    /// letting an uplink that merely flaps around the threshold accumulate
-    /// its way into a failover.
-    pub(crate) fn update_loss_elevated_since(&mut self, threshold: f64, now: Instant) {
+    /// knob when unset.
+    ///
+    /// Otherwise the ratio is trusted only when it is *fresh*:
+    /// [`Self::loss_last_qualifying_at`] must be within `max_staleness` of
+    /// `now` (see that field's doc for why a frozen EWMA cannot be trusted
+    /// indefinitely just because nothing has re-measured it). A fresh ratio
+    /// strictly above `threshold` starts the episode on the first such tick
+    /// and leaves an already-running episode's anchor untouched — a
+    /// re-trigger must not reset a genuinely long episode back to "just
+    /// started". A fresh ratio at or below `threshold`, a stale (or absent)
+    /// verdict, or no ratio at all (not measured is never evidence of loss)
+    /// all clear the episode: a single clean tick restarts the clock instead
+    /// of letting an uplink that merely flaps around the threshold
+    /// accumulate its way into a failover, and a verdict nobody has
+    /// reconfirmed in a while stops counting as "still happening".
+    pub(crate) fn update_loss_elevated_since(
+        &mut self,
+        threshold: f64,
+        now: Instant,
+        max_staleness: Duration,
+    ) {
         if threshold <= 0.0 {
             self.loss_elevated_since = None;
             return;
         }
-        let elevated = self.active_wire_loss().ratio().is_some_and(|ratio| ratio > threshold);
+        let fresh = self
+            .loss_last_qualifying_at
+            .is_some_and(|t| now.saturating_duration_since(t) <= max_staleness);
+        let elevated =
+            fresh && self.active_wire_loss().ratio().is_some_and(|ratio| ratio > threshold);
         self.loss_elevated_since = if elevated {
             self.loss_elevated_since.or(Some(now))
         } else {
@@ -582,7 +619,12 @@ impl PerTransportStatus {
         Some(Duration::try_from_secs_f64(base.as_secs_f64() * multiplier).unwrap_or(Duration::MAX))
     }
 
-    /// Fold one sampling window into the slot for `wire`.
+    /// Fold one sampling window into the slot for `wire`. Returns whether
+    /// the window actually qualified (met `min_packets`) and moved the
+    /// ratio — see [`crate::loss::LossEwma::record_window`]. Callers that
+    /// need to know whether *this tick* produced fresh evidence for the
+    /// active wire (as opposed to a sub-threshold window the ratio silently
+    /// ignored) use the return value; see [`Self::loss_last_qualifying_at`].
     pub(crate) fn record_wire_loss_window(
         &mut self,
         wire: u8,
@@ -590,16 +632,15 @@ impl PerTransportStatus {
         lost: u64,
         min_packets: u64,
         alpha: f64,
-    ) {
+    ) -> bool {
         if wire == 0 {
-            self.carrier_loss.record_window(sent, lost, min_packets, alpha);
-            return;
+            return self.carrier_loss.record_window(sent, lost, min_packets, alpha);
         }
         let slot_idx = (wire - 1) as usize;
         while self.fallback_carrier_loss.len() <= slot_idx {
             self.fallback_carrier_loss.push(crate::loss::LossEwma::default());
         }
-        self.fallback_carrier_loss[slot_idx].record_window(sent, lost, min_packets, alpha);
+        self.fallback_carrier_loss[slot_idx].record_window(sent, lost, min_packets, alpha)
     }
 
     /// Clear `wire`'s loss verdict back to "not measured". Called by the

@@ -177,6 +177,34 @@ async fn snapshot_keeps_bypass_inactive_when_opted_out() {
     assert!(!snap.bypass_active_udp);
 }
 
+/// `tcp_loss_elevated_ms` / `udp_loss_elevated_ms` mirror
+/// `PerTransportStatus::loss_elevated_since` as an elapsed duration: absent
+/// while no episode is running, `Some` (and roughly the elapsed wall-clock
+/// gap) once one is — the field an operator reads to see how close an
+/// uplink is to a loss-driven failover before it fires.
+#[tokio::test]
+async fn snapshot_reports_loss_elevated_episode_duration() {
+    let manager = manager(false);
+
+    let snap = manager.snapshot().await;
+    assert_eq!(snap.uplinks[0].tcp_loss_elevated_ms, None, "no episode running yet");
+
+    let now = tokio::time::Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(30));
+    });
+
+    let snap = manager.snapshot().await;
+    let elevated_ms = snap.uplinks[0]
+        .tcp_loss_elevated_ms
+        .expect("episode running must publish an elapsed duration");
+    assert!(
+        elevated_ms >= 30_000,
+        "elapsed duration must be at least the staged 30s, got {elevated_ms}ms"
+    );
+    assert_eq!(snap.uplinks[0].udp_loss_elevated_ms, None, "UDP has no episode running");
+}
+
 #[tokio::test]
 async fn snapshot_combined_ss_surfaces_ss_mode_not_split_default() {
     // A combined-SS uplink keeps its dial URL + carrier mode in

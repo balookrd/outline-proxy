@@ -131,6 +131,21 @@ pub struct UplinkSnapshot {
     /// UDP counterpart to [`Self::tcp_carrier_loss_packets`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub udp_carrier_loss_packets: Option<u64>,
+    /// How long the TCP active-wire loss ratio has been continuously above
+    /// `loss_failover_ratio` (the loss-driven strict-mode failover episode;
+    /// see `docs/UPLINK-CONFIGURATIONS.md` "Loss-driven failover for a
+    /// pinned active uplink"), in milliseconds. `None` while no episode is
+    /// running — either the ratio is not currently above the threshold, the
+    /// feature is off (`loss_failover_ratio = 0.0`), or the last qualifying
+    /// measurement has gone stale. Lets an operator answer "is this uplink
+    /// about to fail over on loss" — by comparing against
+    /// `loss_failover_secs` — before it actually does, not only from the log
+    /// line after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_loss_elevated_ms: Option<u128>,
+    /// UDP counterpart to [`Self::tcp_loss_elevated_ms`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_loss_elevated_ms: Option<u128>,
     /// Latency selection actually ranks TCP by: the active wire's RTT EWMA,
     /// falling back to primary's EWMA and then the last probe sample, after
     /// carrier-loss inflation. At `loss_latency_penalty_k = 0` this is that
