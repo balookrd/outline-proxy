@@ -25,7 +25,7 @@ pub(crate) struct LossEwma {
 impl LossEwma {
     // Read by tests today; the metrics gauge
     // (`outline_ws_uplink_carrier_loss_ratio`) is the production caller,
-    // added in the follow-up observability task.
+    // added by Task 8 ("Metrics and control snapshot") per the plan.
     #[allow(dead_code)]
     pub(crate) fn ratio(&self) -> Option<f64> {
         self.ratio
@@ -33,9 +33,9 @@ impl LossEwma {
 
     /// Cumulative packets this verdict is based on. Published so a dashboard
     /// can tell "no loss" apart from "no data".
-    // Read by tests today; the metrics counter
-    // (`outline_ws_uplink_carrier_loss_samples_total`) is the production
-    // caller, added in the follow-up observability task.
+    // Read by tests today; the metrics gauge
+    // (`outline_ws_uplink_carrier_loss_observed_packets`) is the production
+    // caller, added by Task 8 ("Metrics and control snapshot") per the plan.
     #[allow(dead_code)]
     pub(crate) fn observed_packets(&self) -> u64 {
         self.observed_packets
@@ -63,8 +63,8 @@ impl LossEwma {
     /// Latency multiplier for scoring: `1 + k · loss`, clamped to `cap`.
     /// `k = 0` yields exactly `1.0`, which is what keeps the default build's
     /// selection identical to today's.
-    // The scoring path (`base_latency`) is the production caller, added in
-    // the follow-up task that inflates ranking latency by the loss ratio.
+    // The scoring path (`base_latency`) is the production caller, added by
+    // Task 7 ("Inflate the scoring latency") per the plan.
     #[allow(dead_code)]
     pub(crate) fn inflation(&self, k: f64, cap: f64) -> f64 {
         if k <= 0.0 {
@@ -108,9 +108,17 @@ pub(crate) struct CarrierLossRegistry {
 
 impl CarrierLossRegistry {
     /// Only called by the Linux-gated registry tests (the registry needs
-    /// `TCP_INFO`, Linux-only); on a non-Linux dev host those tests compile
-    /// out and this accessor goes unused, same as `dead_probe` in
-    /// `tests_support` below.
+    /// `TCP_INFO`, Linux-only). `#[cfg(test)]` rather than a bare
+    /// `pub(crate) fn` because it has no production caller at all — without
+    /// it, the plain (non-test) `lib` target has zero callers on *every*
+    /// platform, Linux included, and a platform-scoped `allow` alone cannot
+    /// fix that (a `cfg_attr` only conditions the lint, not whether the item
+    /// exists). With `#[cfg(test)]` the method compiles only into the test
+    /// build, where the Linux-gated callers below satisfy it on Linux; on a
+    /// non-Linux dev host those tests compile out and this accessor goes
+    /// unused in that build the same way `dead_probe` in `tests_support`
+    /// does, so it keeps the same platform-scoped `allow`.
+    #[cfg(test)]
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
