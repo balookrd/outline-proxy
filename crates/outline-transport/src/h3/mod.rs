@@ -53,6 +53,10 @@ impl H3WsStream {
     pub(crate) fn shared_connection_info(&self) -> (u64, &'static str) {
         (self._shared_connection.id, "h3")
     }
+
+    pub(crate) fn loss_probe(&self) -> Option<crate::CarrierLossProbe> {
+        Some(self._shared_connection.loss_probe())
+    }
 }
 
 impl Stream for H3WsStream {
