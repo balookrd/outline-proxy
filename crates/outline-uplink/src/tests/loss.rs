@@ -105,11 +105,8 @@ async fn a_stale_but_alive_carrier_is_evicted_after_the_idle_bound() {
     let (probe, _client, _server) = crate::loss::tests_support::live_pair().await;
     registry.register(crate::types::TransportKind::Tcp, 0, probe);
 
-    // The first tick only seeds the baseline reading — no delta exists yet,
-    // so it must not count as an idle tick.
-    let seed = registry.collect_windows();
-    assert!(seed.windows.is_empty());
-    assert_eq!(registry.len(), 1);
+    // No seeding tick: the baseline is taken at registration, so idleness is
+    // counted from the moment the carrier is filed rather than one tick later.
 
     // Consecutive zero-delta ticks accumulate but must not evict before the
     // bound is reached — nothing on this idle-but-genuinely-alive loopback
@@ -140,7 +137,8 @@ async fn traffic_resets_the_idle_counter() {
     let (probe, mut client, _server) = crate::loss::tests_support::live_pair().await;
     registry.register(crate::types::TransportKind::Tcp, 0, probe);
 
-    registry.collect_windows(); // seed
+    // The baseline comes from registration, so every tick here is a real
+    // zero-delta tick.
     for _ in 0..(MAX_IDLE_TICKS - 1) {
         registry.collect_windows();
     }
@@ -206,4 +204,38 @@ async fn the_registry_is_bounded_per_wire() {
         registry.register(crate::types::TransportKind::Tcp, 0, probe);
     }
     assert_eq!(registry.len(), MAX_PROBES_PER_WIRE);
+}
+
+/// A carrier must contribute its first window on the very next tick, not the
+/// one after. Field evidence for why: the busiest gateway registered 37 new
+/// carriers in two minutes and almost none survived to a second tick, so with
+/// the baseline taken on the first tick the registry observed roughly 5% of
+/// the traffic actually flowing. Taking the baseline at registration is what
+/// makes a short-lived carrier count at all.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_carrier_contributes_a_window_on_the_first_tick_after_registration() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut registry = CarrierLossRegistry::default();
+    let (probe, mut client, mut server) = crate::loss::tests_support::live_pair().await;
+    registry.register(crate::types::TransportKind::Tcp, 0, probe);
+
+    // Traffic strictly after registration: whatever the carrier sent before it
+    // was filed belongs to no window and must not be attributed to one.
+    for _ in 0..16 {
+        client.write_all(&[0u8; 1024]).await.unwrap();
+    }
+    let mut sink = vec![0u8; 16 * 1024];
+    server.read_exact(&mut sink).await.unwrap();
+
+    let collection = registry.collect_windows();
+    let window = collection
+        .windows
+        .iter()
+        .find(|w| w.transport == crate::types::TransportKind::Tcp && w.wire == 0);
+    assert!(
+        window.is_some_and(|w| w.sent > 0),
+        "the first tick after registration must already carry a delta, not just a baseline"
+    );
 }

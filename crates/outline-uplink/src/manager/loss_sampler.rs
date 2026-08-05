@@ -80,11 +80,26 @@ impl UplinkManager {
         transport: TransportKind,
         probe: Option<CarrierLossProbe>,
     ) {
-        let Some(probe) = probe else { return };
+        let uplink = self.inner.uplinks.get(index).map(|u| u.name.as_str()).unwrap_or("?");
+        let Some(probe) = probe else {
+            // Worth a line rather than a silent return: a carrier family that
+            // cannot surrender a probe (xhttp_h1, VLESS-UDP, a non-Linux
+            // build) is indistinguishable at the metrics layer from one that
+            // is measured and clean, and "no series" then has two very
+            // different causes with no way to tell them apart.
+            debug!(uplink, wire, ?transport, "carrier loss probe unavailable, not registered");
+            return;
+        };
         let Some(slot) = self.inner.carrier_loss.get(index) else {
             return;
         };
-        slot.lock().register(transport, wire, probe);
+        let identity = probe.identity();
+        let live = {
+            let mut registry = slot.lock();
+            registry.register(transport, wire, probe);
+            registry.len()
+        };
+        debug!(uplink, wire, ?transport, identity, live, "carrier loss probe filed");
     }
 
     /// One sampling pass over every uplink: difference each live carrier's
