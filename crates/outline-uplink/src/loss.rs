@@ -13,7 +13,14 @@ use crate::types::TransportKind;
 /// constantly and every dial registers; without a bound the registry would
 /// grow with the dial rate. Newest win — they are the carriers actually
 /// carrying traffic.
-pub(crate) const MAX_PROBES_PER_WIRE: usize = 8;
+///
+/// Sized from the field rather than guessed: the original 8 assumed a handful
+/// of long-lived shared carriers, but the busiest gateway files ~37 distinct
+/// carriers in two minutes, so eight slots were recycled continuously and a
+/// carrier was routinely evicted before it could be sampled twice. 64 covers
+/// that churn with room to spare while staying a hard bound — the cost of a
+/// slot is one weak handle or one duplicated descriptor.
+pub(crate) const MAX_PROBES_PER_WIRE: usize = 64;
 
 /// Consecutive sampling ticks with `Δsent == 0` before a probe is evicted as
 /// stale, even though its carrier still reports itself alive.
@@ -163,19 +170,11 @@ pub(crate) struct CarrierLossRegistry {
 }
 
 impl CarrierLossRegistry {
-    /// Only called by the Linux-gated registry tests (the registry needs
-    /// `TCP_INFO`, Linux-only). `#[cfg(test)]` rather than a bare
-    /// `pub(crate) fn` because it has no production caller at all — without
-    /// it, the plain (non-test) `lib` target has zero callers on *every*
-    /// platform, Linux included, and a platform-scoped `allow` alone cannot
-    /// fix that (a `cfg_attr` only conditions the lint, not whether the item
-    /// exists). With `#[cfg(test)]` the method compiles only into the test
-    /// build, where the Linux-gated callers below satisfy it on Linux; on a
-    /// non-Linux dev host those tests compile out and this accessor goes
-    /// unused in that build the same way `dead_probe` in `tests_support`
-    /// does, so it keeps the same platform-scoped `allow`.
-    #[cfg(test)]
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Live probes on this uplink, across all transports and wires. Read by
+    /// the registration path's diagnostic log: "no loss series" has several
+    /// possible causes — no probe was ever filed, the carrier family cannot
+    /// surrender one, or windows are landing below the volume floor — and
+    /// they are indistinguishable from the metrics alone.
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
@@ -220,12 +219,21 @@ impl CarrierLossRegistry {
         {
             self.entries.remove(pos);
         }
+        // Take the baseline now rather than on the first tick. A carrier that
+        // does not survive to a *second* tick would otherwise contribute
+        // nothing at all: the first tick would only record where its counters
+        // started. On a busy gateway that is most carriers — 37 registrations
+        // in two minutes there, against a registry that observed roughly 5% of
+        // the traffic actually flowing, which is what this fixes. Everything
+        // the carrier sent before it was filed belongs to no window and is
+        // correctly excluded by anchoring here.
+        let last = probe.sample().map(|s| (s.sent, s.lost));
         self.entries.push(ProbeEntry {
             transport,
             wire,
             identity,
             probe,
-            last: None,
+            last,
             idle_ticks: 0,
         });
     }
