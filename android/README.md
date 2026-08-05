@@ -9,8 +9,10 @@ unchanged; Android only adds a thin `VpnService` + UI layer on top.
 > Wi-Fi⇄cellular handover), now with **per-app split tunneling**: an app-picker
 > UI with three modes (all apps / only selected / all except selected). The
 > whole Rust stack (incl. quinn + h3) is verified to cross-compile under NDK
-> r29. The Gradle/Kotlin app is authored but **not yet built or run on a
-> device** (no Android SDK in this environment).
+> r29, the Gradle/Kotlin app builds (debug APK, minified release APK, green JVM
+> unit tests), and both builds have been **run on an emulator** — TUN up, Rust
+> core booted, handover followed. Nothing has run on **real hardware**, and no
+> traffic has crossed a live server yet.
 
 ## Layout
 
@@ -40,6 +42,19 @@ VpnService.establish() ──tun_fd──┐
    uplink sockets ── bypass the TUN (own package is ─────┘
                      addDisallowedApplication'd) → real network
 ```
+
+Those uplink sockets ride whatever network the tunnel is bound to with
+`setUnderlyingNetworks`, so `OutlineVpnService` watches the best **non-VPN**
+network offering `INTERNET` — `registerBestMatchingNetworkCallback` on API 31+,
+a ranked pick (validated first, then Ethernet > Wi-Fi > cellular) over the
+matching networks below that — and re-binds on Wi-Fi ⇄ cellular handovers. Two
+filters carry their weight: `NET_CAPABILITY_NOT_VPN`, because a default-network
+callback reports our own VPN network back to us and the tunnel would end up as
+its own underlying network; and the bookkeeping of which network is actually in
+use, so that a network coming up beside a better one cannot steal the binding
+and the loss of a network we are not riding is ignored. Watching networks needs
+`ACCESS_NETWORK_STATE`; without it the callback throws and only the handover
+tracking is lost, not the tunnel.
 
 The Rust core is built slim (`--no-default-features` + `h3`): SOCKS5 ingress,
 the WS/TLS uplink stack, and the QUIC/HTTP-3 carriers — without mimalloc,
@@ -81,18 +96,46 @@ Notes:
   can't be loaded on the build host); the script handles this.
 - cargo-ndk 4.x: API level is `--platform N` (not `-p N`, which is cargo's
   `--package`); cargo args go after `--`.
+- uniffi 0.31+ auto-detects a library source, so the bindgen takes the `.dylib`
+  as a positional argument; the old `--library <path>` flag is a no-op.
 
 ## Build & run the app
 
 1. `./build-rust.sh` (once, and after Rust changes).
 2. Open `android/` in Android Studio — it writes `local.properties` (SDK path)
-   and downloads the Gradle 8.10.2 distribution on first sync.
+   and downloads the Gradle 9.6.1 distribution on first sync. `compileSdk = 37`
+   is pulled in automatically if the platform is missing.
 3. Run on a device/emulator, add a server, Connect.
 
 CLI alternative (needs a JDK 17+ and an Android SDK, `local.properties` with
 `sdk.dir`): `./gradlew :app:assembleDebug`, `./gradlew :app:testDebugUnitTest`
 for the JVM unit tests. Without a system JDK, Android Studio's bundled one
 works: `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
+
+### Gradle toolchain
+
+AGP 9.3.1 / Gradle 9.6.1 / Kotlin 2.4.10 on stock AGP 9 defaults —
+`gradle.properties` carries no `android.*` compatibility flags, and the build
+draws no deprecation warnings from AGP or Gradle (the two `Expression is
+unused` ones come from the generated UniFFI bindings). Three consequences
+worth knowing:
+
+- **AGP compiles Kotlin itself** (built-in Kotlin). There is no
+  `org.jetbrains.kotlin.android` plugin — only the Compose compiler plugin is
+  applied on top, which AGP finds by plugin id and wires into its own compile
+  tasks. That plugin was also the sole caller of the legacy variant API
+  (`testVariants`/`unitTestVariants`), removed in AGP 10.
+- **The JVM target is set once.** Built-in Kotlin defaults `jvmTarget` to
+  `compileOptions.targetCompatibility` and fails the build if the two diverge,
+  so `compileOptions` alone pins both compilers to 17. A `kotlin { }` block
+  would be redundant, and a conflicting one is a build error.
+- **R8 minification is on, and it only survives because of keep rules.** JNA
+  and the UniFFI bindings are wired by reflection and by symbol name
+  (`Native.register`), so R8 cannot see how any of it is used;
+  `proguard-rules.pro` pins those names and silences JNA's desktop AWT paths
+  (`-dontwarn java.awt.**`), which android.jar has no classes for. Verify a
+  rule change by *running* the release build, not by building it: renaming
+  breaks at runtime, never at build time.
 
 ## External control (`outline://`)
 
@@ -161,10 +204,20 @@ silently dropped by the platform.
 - **Verified by build (Kotlin):** `:app:assembleDebug` produces a debug APK and
   `:app:testDebugUnitTest` passes — the latter covers the `outline://` parser,
   the access gate, and profile resolution on the JVM.
-- **Not verified:** nothing has been run on a device or emulator. The UniFFI
-  Kotlin bindings, Compose UI, VpnService lifecycle, `outline://` dispatch
-  end-to-end, and traffic flow all need a first real run. DNS handling in
-  tun2proxy is at defaults and is the likeliest first thing to tune.
+- **Verified on an emulator** (Pixel_10, API 37, arm64), debug build: the
+  service establishes the TUN, the Rust core boots (SOCKS5 listening on
+  127.0.0.1:1080, uplink registry up) and tun2proxy connects into it,
+  `outline://connect` / `disconnect` dispatch, and the underlying-network
+  tracking follows a Wi-Fi ⇄ cellular handover both ways — `dumpsys
+  connectivity` shows the VPN agent's `underlying{[N]}` swapping between the
+  cellular and Wi-Fi networks, never binding the VPN network itself.
+- **Verified on an emulator**, release build: with R8 minification on, the
+  `.so` loads and `start()` reaches Rust — the keep rules hold. Checked by
+  running the signed release APK, since a bad keep rule fails at runtime only.
+- **Not verified:** nothing has been run on real hardware, and no traffic has
+  been carried end-to-end through a live server — the emulator runs pointed at
+  a dead endpoint. Per-app split tunneling still needs a real run. DNS handling
+  in tun2proxy is at defaults and is the likeliest first thing to tune.
 
 ## Notes for porting
 
