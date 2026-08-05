@@ -147,6 +147,18 @@ fn manager(weighted: bool) -> UplinkManager {
     UplinkManager::new_for_test("main", vec![three_wire_uplink()], probe(), lb(weighted)).unwrap()
 }
 
+/// Primary + three fallbacks = four wires, for the head-pin tests below where
+/// three non-active wires need to appear, unordered, in the tail.
+fn four_wire_uplink() -> UplinkConfig {
+    let mut cfg = three_wire_uplink();
+    cfg.fallbacks.push(ss_fallback("fb3"));
+    cfg
+}
+
+fn manager_with_four_wires_and_health_weighting() -> UplinkManager {
+    UplinkManager::new_for_test("main", vec![four_wire_uplink()], probe(), lb(true)).unwrap()
+}
+
 #[tokio::test]
 async fn failure_penalises_only_the_attempted_wire() {
     let mgr = manager(true);
@@ -301,4 +313,79 @@ fn shared_resume_scopes_the_resume_key_to_the_group_for_both_transports() {
     // Session IDs in distinct cache slots.
     assert_eq!(shared.resume_cache_key_for("up", "tcp"), "cluster-a#tcp");
     assert_eq!(shared.resume_cache_key_for("edge-b", "udp"), "cluster-a#udp");
+}
+
+/// The warm-standby pool is prewarmed on the active wire (see `standby_ctx`),
+/// so under health weighting the active wire must still lead the dial order
+/// — otherwise the pool's prewarm is wasted on every session that draws a
+/// different head. The tail stays a liveness-weighted permutation of
+/// whatever remains.
+#[tokio::test]
+async fn the_active_wire_leads_the_health_weighted_order() {
+    let mgr = manager_with_four_wires_and_health_weighting();
+    mgr.test_set_active_wire(0, TransportKind::Tcp, 2);
+
+    // Weighted order is random in its tail, so assert the invariant over
+    // several draws rather than one: the head is pinned, the tail is a
+    // permutation of everything else.
+    for _ in 0..16 {
+        let order = mgr.wire_dial_order(0, TransportKind::Tcp, 4);
+        assert_eq!(
+            order[0], 2,
+            "the pool is warmed on the active wire, so it must be dialed first"
+        );
+        let mut rest = order[1..].to_vec();
+        rest.sort_unstable();
+        assert_eq!(rest, vec![0, 1, 3], "every other wire still appears exactly once");
+    }
+}
+
+/// A stale active wire (e.g. left over from a config reload that shrank the
+/// fallback chain) must not panic, drop a wire, or duplicate one — it just
+/// leaves the weighted order untouched, same defensive posture as the
+/// non-weighted branch's cap.
+#[tokio::test]
+async fn an_out_of_range_active_wire_does_not_break_the_order() {
+    let mgr = manager_with_four_wires_and_health_weighting();
+    mgr.test_set_active_wire(0, TransportKind::Tcp, 9);
+
+    let order = mgr.wire_dial_order(0, TransportKind::Tcp, 4);
+
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        vec![0, 1, 2, 3],
+        "a stale active wire must not drop or duplicate a wire"
+    );
+}
+
+/// The pin yields to a penalty: liveness weighting exists precisely so new
+/// sessions do not pile onto a wire that has been disconnecting, and pinning
+/// a *penalised* active wire to the head unconditionally would defeat that
+/// (see `weighted_order_demotes_flaky_wire_but_keeps_it_reachable`, which
+/// would break under an unconditional pin). This is the direct pin-side
+/// counterpart to that statistical test: with the active wire itself
+/// penalised, it must not lead every draw.
+#[tokio::test]
+async fn a_penalised_active_wire_does_not_always_lead() {
+    let mgr = manager_with_four_wires_and_health_weighting();
+    mgr.test_set_active_wire(0, TransportKind::Tcp, 0);
+    mgr.test_add_wire_penalty(0, TransportKind::Tcp, 0, 60);
+
+    let trials = 500;
+    let mut active_leads = 0u32;
+    for _ in 0..trials {
+        let order = mgr.wire_dial_order(0, TransportKind::Tcp, 4);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![0, 1, 2, 3], "the cascade still contains every wire");
+        if order[0] == 0 {
+            active_leads += 1;
+        }
+    }
+    assert!(
+        active_leads < trials,
+        "a penalised active wire must not be pinned to the head every draw: {active_leads}/{trials}"
+    );
 }
