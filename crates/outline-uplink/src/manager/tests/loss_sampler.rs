@@ -514,3 +514,53 @@ async fn taking_a_carrier_from_the_warm_pool_registers_its_loss_probe() {
         "a carrier taken from the pool must have its probe registered, or it is never measured"
     );
 }
+
+/// A `/control/apply` rebuilds every manager, and the probe registry lives on
+/// the manager — so without carrying it across, every carrier that survives
+/// the apply is never observed again. Registration only ever happens when a
+/// carrier is dialed or handed out of the pool, and a long-lived one (a video
+/// stream's UDP session) may not be dialed again for hours. Field evidence:
+/// after an apply the busiest node kept publishing a TCP verdict, whose
+/// carriers churn constantly, while its UDP plane went silent for good even
+/// though it was carrying 17.9 MiB/min.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn probe_registries_survive_a_manager_rebuild() {
+    let make = || {
+        crate::types::UplinkManager::new_for_test(
+            "test",
+            vec![
+                crate::tests::make_uplink("primary", "wss://primary.example.com/tcp"),
+                crate::tests::make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            crate::tests::probe_disabled(),
+            crate::tests::lb(),
+        )
+        .unwrap()
+    };
+
+    let old = make();
+    let (probe, _client, _server) = crate::loss::tests_support::live_pair().await;
+    old.register_carrier_loss_probe(1, 0, TransportKind::Udp, Some(probe));
+    assert_eq!(old.inner.carrier_loss[1].lock().len(), 1);
+
+    let carried = old.take_carrier_loss_registries();
+    assert_eq!(
+        old.inner.carrier_loss[1].lock().len(),
+        0,
+        "the displaced manager gives its registries up rather than keeping a second copy"
+    );
+
+    let new = make();
+    new.adopt_carrier_loss_registries(carried);
+    assert_eq!(
+        new.inner.carrier_loss[1].lock().len(),
+        1,
+        "a carrier that outlived the rebuild must still be observed by the new manager"
+    );
+    assert_eq!(
+        new.inner.carrier_loss[0].lock().len(),
+        0,
+        "and it must land on the uplink it belonged to, matched by name rather than by index"
+    );
+}
