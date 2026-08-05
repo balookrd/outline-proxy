@@ -800,6 +800,34 @@ impl UplinkManager {
             },
         });
     }
+
+    /// Wire-aware variant of [`Self::report_connection_latency`]: `wire == 0`
+    /// delegates verbatim (primary's own `rtt_ewma` slot); `wire >= 1` folds
+    /// the sample into that wire's per-fallback-wire RTT EWMA slot instead —
+    /// the same slot the fallback-wire probe writes
+    /// (`crate::manager::status::PerTransportStatus::fallback_rtt_ewma`, fed
+    /// by `crate::manager::probe::wire`) — so a fallback dial's real
+    /// connection latency feeds the same measurement the probe loop uses for
+    /// scoring, rather than mis-parking it under primary's.
+    pub async fn report_connection_latency_for_wire(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        wire: u8,
+        latency: Duration,
+    ) {
+        if wire == 0 {
+            return self.report_connection_latency(index, transport, latency).await;
+        }
+        let alpha = self.inner.load_balancing.rtt_ewma_alpha;
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            per.record_fallback_wire_latency(wire, Some(latency), alpha);
+        });
+    }
 }
 
 #[cfg(test)]
