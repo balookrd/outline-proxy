@@ -583,7 +583,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `rtt_ewma_alpha`                     | `0.3`              | (0,1] | smoothing factor for the per-uplink RTT EWMA used in selection scoring                            |
 | `loss_latency_penalty_k`             | `0.0`              | ≥0    | strength of carrier-loss latency inflation (`latency × (1 + k · loss)`); `0.0` measures without acting — selection is unchanged. See "Carrier loss in uplink selection" below |
 | `loss_latency_inflation_max`         | `4.0`              | [1,100] | ceiling on that multiplier — bounds how far one bad sampling window can push an uplink down the ranking |
-| `loss_sample_interval_secs`          | `10`               | s     | sampling grid for the carrier-loss counters, independent of `probe.interval`; `0` disables sampling entirely (carriers still register probes, nothing ever differences them) |
+| `loss_sample_interval_secs`          | `30`               | s     | sampling grid for the carrier-loss counters, independent of `probe.interval`; `0` disables sampling entirely (carriers still register probes, nothing ever differences them) |
 | `loss_sample_min_packets`            | `50`               | int   | minimum packets a wire must send within one sampling window for that window's loss ratio to count |
 | `loss_ewma_alpha`                    | `0.2`              | (0,1] | smoothing factor for the per-wire carrier-loss EWMA                                               |
 | `loss_failover_ratio`                | `0.0`              | [0,1] | loss ratio above which the strict active uplink counts as degraded for loss-driven failover; `0.0` disables the check entirely — this is the one part of the carrier-loss feature that moves traffic without an operator asking. See "Carrier loss in uplink selection" below |
@@ -1062,7 +1062,7 @@ each default):
 - `loss_latency_penalty_k` (default `0.0`) — strength of the inflation.
 - `loss_latency_inflation_max` (default `4.0`, valid range `[1.0,
   100.0]`) — ceiling on the multiplier.
-- `loss_sample_interval_secs` (default `10`) — the sampling grid. `0` is a
+- `loss_sample_interval_secs` (default `30`) — the sampling grid. `0` is a
   documented off switch: `spawn_loss_sampler_loop` never spawns the
   timer, so carriers still register probes but nothing ever
   differences them into a verdict — a way to ship the probe wiring
@@ -1225,7 +1225,7 @@ documented off switch for the loss-*sampling* timer itself (see above) —
 spawns no sampling loop at all, so the "elevated since" episode is never
 maintained and `loss_failover_ratio` / `loss_failover_secs` stay silently
 inert regardless of their own values. If you set either knob, keep
-`loss_sample_interval_secs` at its default (`10`) or another nonzero value.
+`loss_sample_interval_secs` at its default (`30`) or another nonzero value.
 
 **Requires probing to be on, too.** The candidate stability bar below
 (`probe.min_failures` consecutive successes) is counted purely from probe
