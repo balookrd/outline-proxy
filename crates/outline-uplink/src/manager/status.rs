@@ -233,6 +233,15 @@ pub(crate) struct PerTransportStatus {
     /// Timestamp of the most recent downstream-throttle signal on this
     /// transport, used to render a "recently throttled" badge on the dashboard.
     pub(crate) last_downstream_throttle_at: Option<Instant>,
+    /// Test-only: number of times [`super::UplinkManager::record_wire_outcome`]
+    /// has been invoked for each wire, regardless of success or failure.
+    /// Exists solely so `dial_over_wires` tests can observe the negative —
+    /// that a `WireAttempt::NotApplicable` wire never reaches
+    /// `record_wire_outcome` at all — which no other field in this struct
+    /// distinguishes from "reached it and happened to leave every field
+    /// unchanged". Never read outside tests.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub(crate) wire_outcome_calls: std::collections::HashMap<u8, u32>,
 }
 
 #[derive(Clone, Debug, Default)]

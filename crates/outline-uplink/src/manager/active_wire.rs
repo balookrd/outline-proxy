@@ -266,6 +266,10 @@ impl UplinkManager {
                 TransportKind::Tcp => &mut status.tcp,
                 TransportKind::Udp => &mut status.udp,
             };
+            #[cfg(any(test, feature = "test-helpers"))]
+            {
+                *st.wire_outcome_calls.entry(attempted_wire).or_insert(0) += 1;
+            }
             if success {
                 // A successful *dial* only proves the transport handshake
                 // completed — NOT that data is flowing. A degraded server can

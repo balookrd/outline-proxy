@@ -18,10 +18,12 @@ pub(crate) mod sticky;
 #[cfg(any(test, feature = "test-helpers"))]
 #[path = "tests/test_helpers.rs"]
 mod test_helpers;
+mod wire_dial;
 
 pub use reporting::deduplicate_attempted_uplink_names;
 pub(crate) use reporting::log_uplink_summary_named;
 pub use reselect::ReselectOutcome;
+pub use wire_dial::WireAttempt;
 
 use std::collections::HashMap;
 use std::sync::Arc;
