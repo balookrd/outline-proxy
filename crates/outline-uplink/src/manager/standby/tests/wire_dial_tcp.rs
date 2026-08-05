@@ -81,3 +81,54 @@ async fn a_fallback_wire_dial_attributes_itself_to_wire_two_not_primary() {
         .expect("mock server task must finish within the timeout")
         .unwrap();
 }
+
+/// [`crate::manager::UplinkManager::connect_tcp_ws_redial_on_wire`] is the
+/// wire-aware sibling of `connect_tcp_ws_redial`, used by same-uplink
+/// recovery paths that present a resume id on a specific wire before chunk 0
+/// has been acknowledged (`outline-ws-rust`'s chunk-0 RST / stale-standby
+/// retry). It must dial the wire it is given — not always primary — and its
+/// attribution must follow that wire, exactly like the fresh-dial sibling
+/// above.
+#[tokio::test]
+async fn a_wire_redial_dials_the_given_wire_not_primary() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        if let Ok(ws) = accept_async(stream).await {
+            let _ = shutdown_rx.await;
+            drop(ws);
+        }
+    });
+    let wire2_url = Url::parse(&format!("ws://{addr}/tcp")).unwrap();
+
+    let manager = super::sample_manager_with_live_wire_two(wire2_url).await;
+    let candidate = manager.tcp_candidates_for_test(0).await;
+
+    manager
+        .connect_tcp_ws_redial_on_wire(
+            &candidate,
+            2,
+            "test",
+            Some(outline_transport::SessionId::from_bytes([9u8; 16])),
+        )
+        .await
+        .expect("the redial must succeed against the live mock server");
+
+    let status = manager.read_status_for_test(0);
+    assert!(
+        status.tcp.fallback_rtt_ewma.get(1).copied().flatten().is_some(),
+        "wire 2's own RTT slot (fallback_rtt_ewma[1]) must get the connection-latency sample"
+    );
+    assert!(
+        status.tcp.rtt_ewma.is_none(),
+        "the sample must not land on primary's rtt_ewma slot"
+    );
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("mock server task must finish within the timeout")
+        .unwrap();
+}

@@ -1,16 +1,13 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use arc_swap::ArcSwap;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use outline_metrics as metrics;
-use outline_transport::{
-    SsPathKind, TransportMode, UdpResumeStore, UdpSessionTransport, UdpWsTransport,
-    VlessUdpDowngradeNotifier, VlessUdpSessionMux,
-};
+use outline_transport::{UdpResumeStore, UdpSessionTransport};
 use outline_uplink::{
-    FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
+    TransportKind, UplinkCandidate, UplinkManager, UplinkTransport, WireAttempt, WireSpec,
 };
 use socks5_proto::TargetAddr;
 
@@ -28,269 +25,72 @@ pub(super) struct ActiveUdpTransport {
 
 /// Acquire a UDP transport for `candidate`, falling back to each configured
 /// `[[outline.uplinks.fallbacks]]` entry on the same uplink when the primary
-/// dial fails. Mirrors the TCP fallback path: `report_runtime_failure` is
-/// only called by the outer loop and only when every wire on this uplink
-/// (primary + all fallbacks) has failed.
+/// dial fails, via the shared [`UplinkManager::dial_over_wires`] loop.
+/// `allow_fallbacks: true` unconditionally — SOCKS has walked its full wire
+/// chain for as long as the chain has existed, unlike the TUN ingress whose
+/// wire support is new enough to need `tun_wire_dial` gating.
 ///
-/// VLESS as a *fallback* is not yet supported on UDP — the QUIC-mux factory
-/// in `acquire_udp_standby_or_connect` is keyed on the parent's uplink
-/// index/state, and reusing that machinery for a fallback wire requires
-/// Phase-2 active-wire plumbing. A VLESS fallback entry surfaces a clear
-/// error here in this iteration; SS and WS UDP fallbacks work today.
+/// `report_runtime_failure` is only called by the outer loop and only when
+/// every wire on this uplink (primary + all fallbacks) has failed.
 async fn acquire_udp_with_fallbacks(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
     resume_store: &UdpResumeStore,
 ) -> Result<UdpSessionTransport> {
-    let total_wires = 1 + candidate.uplink.fallbacks.len();
-
-    // Fast path: no fallbacks — preserve the previous error-propagation
-    // semantics (no extra context wrapping when only the primary exists).
-    if total_wires == 1 {
-        return uplinks
-            .acquire_udp_standby_or_connect_with_store(candidate, "socks_udp", resume_store)
-            .await;
-    }
-
-    let dial_order = uplinks.wire_dial_order(candidate.index, TransportKind::Udp, total_wires);
-    let mut last_err: Option<anyhow::Error> = None;
-
-    for &wire_index in &dial_order {
-        let wire_label = if wire_index == 0 {
-            format!("primary ({})", candidate.uplink.transport)
-        } else {
-            let fb = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
-            format!("fallback[{}] ({})", wire_index - 1, fb.transport)
-        };
-
-        // Skip a fallback wire that has no UDP transport configured. Don't
-        // record an outcome — this wire never even ran a dial. The primary
-        // is always allowed to attempt (its UDP shape is governed by the
-        // primary supports_udp filter at the candidate level).
-        if wire_index != 0 && !candidate.uplink.fallbacks[(wire_index - 1) as usize].supports_udp()
-        {
-            debug!(
-                uplink = %candidate.uplink.name,
-                wire = %wire_label,
-                "skipping wire with no UDP path configured",
-            );
-            continue;
-        }
-
-        let attempt = if wire_index == 0 {
-            uplinks
-                .acquire_udp_standby_or_connect_with_store(candidate, "socks_udp", resume_store)
-                .await
-        } else {
-            let fallback = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
-            dial_udp_fallback(uplinks, candidate, fallback, wire_index, resume_store).await
-        };
-        match attempt {
-            Ok(transport) => {
-                uplinks.record_wire_outcome(
-                    candidate.index,
-                    TransportKind::Udp,
-                    wire_index,
-                    true,
-                    total_wires,
-                );
-                if wire_index != 0 {
-                    outline_metrics::record_uplink_selected(
-                        "udp",
-                        uplinks.group_name(),
-                        &candidate.uplink.name,
-                    );
+    let (transport, wire) = uplinks
+        .dial_over_wires(candidate, TransportKind::Udp, true, |wire| async move {
+            // Skip a fallback wire that has no UDP transport configured — not
+            // a failure, it never ran a dial. The primary is always allowed
+            // to attempt (its UDP shape is governed by the primary
+            // supports_udp filter at the candidate level).
+            if wire != 0 {
+                let spec = WireSpec::of(&candidate.uplink, wire).ok_or_else(|| {
+                    anyhow!("uplink {} has no wire {wire}", candidate.uplink.name)
+                })?;
+                if !spec.supports_udp() {
                     debug!(
                         uplink = %candidate.uplink.name,
-                        wire = %wire_label,
-                        "UDP fallback wire dial succeeded",
+                        wire,
+                        "skipping wire with no UDP path configured",
+                    );
+                    return Ok(WireAttempt::NotApplicable);
+                }
+                // Resume-lookup metric, SS-fallback wires only — mirrors what
+                // the hand-rolled fallback dial recorded before this loop
+                // existed. `acquire_udp_on_wire` performs the same lookup
+                // (and the store-back) internally as part of the dial; this
+                // is a side-effect-free peek purely for the counter.
+                if spec.transport == UplinkTransport::Ss {
+                    let resume_key = uplinks.resume_cache_key_for(&candidate.uplink.name, "udp");
+                    let hit = resume_store.ss().get(&resume_key).is_some();
+                    metrics::record_resume_lookup(
+                        "udp",
+                        if uplinks.shared_resume() { "group" } else { "uplink" },
+                        if hit { "hit" } else { "miss" },
                     );
                 }
-                return Ok(transport);
-            },
-            Err(error) => {
-                uplinks.record_wire_outcome(
-                    candidate.index,
-                    TransportKind::Udp,
-                    wire_index,
-                    false,
-                    total_wires,
-                );
-                warn!(
-                    uplink = %candidate.uplink.name,
-                    wire = %wire_label,
-                    error = %format!("{error:#}"),
-                    "UDP wire dial failed",
-                );
-                last_err = Some(
-                    error.context(format!("uplink {} {wire_label} failed", candidate.uplink.name,)),
-                );
-            },
-        }
-    }
-    Err(last_err
-        .unwrap_or_else(|| {
-            anyhow!("uplink {}: no UDP-capable wires available", candidate.uplink.name)
-        })
-        .context(format!(
-            "uplink {}: primary and all UDP-capable fallback(s) failed",
-            candidate.uplink.name,
-        )))
-}
-
-async fn dial_udp_fallback(
-    uplinks: &UplinkManager,
-    parent: &UplinkCandidate,
-    fallback: &FallbackTransport,
-    wire_index: u8,
-    resume_store: &UdpResumeStore,
-) -> Result<UdpSessionTransport> {
-    let cache = uplinks.dns_cache();
-    let source = "socks_udp_fb";
-    let dial_started = std::time::Instant::now();
-    // Per-uplink attribution stays on the parent uplink even when a fallback
-    // wire actually carries the traffic — fallbacks share their parent's
-    // identity for routing/metrics purposes.
-    let binding = || {
-        outline_transport::UplinkConnectionBinding::new(
-            uplinks.group_name(),
-            "udp",
-            parent.uplink.name.as_str(),
-        )
-    };
-
-    match fallback.transport {
-        UplinkTransport::Ss => {
-            let url = fallback.udp_dial_url().ok_or_else(|| {
-                anyhow!("uplink {} fallback missing UDP dial URL", parent.uplink.name)
-            })?;
-            // Per-wire mode-downgrade window: cap from this fallback's
-            // own slot, family-aware (same family/rank rules as primary).
-            let mode = uplinks.effective_udp_mode_for_wire(parent.index, wire_index).await;
-            let keepalive = uplinks.load_balancing().udp_ws_keepalive_interval;
-            // Resume-cache participation (same key as primary's UDP dial)
-            // so an X-Outline-Resume token issued by VLESS-UDP earlier in
-            // this session re-attaches the upstream session on the WS
-            // fallback dial.
-            let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "udp");
-            let resume_request = resume_store.ss().get(&resume_key);
-            metrics::record_resume_lookup(
-                "udp",
-                if uplinks.shared_resume() { "group" } else { "uplink" },
-                if resume_request.is_some() { "hit" } else { "miss" },
-            );
-            let (transport, issued, downgraded_from) = UdpWsTransport::connect_with_resume(
-                cache,
-                url,
-                mode,
-                fallback.cipher,
-                &fallback.password,
-                fallback.fwmark,
-                fallback.ipv6_first,
-                source,
-                keepalive,
-                resume_request,
-                fallback.combined_ss_kind(SsPathKind::Udp),
-            )
-            .await
-            .with_context(|| format!("fallback ws dial to {url} failed"))?;
-            // Mirror an inline downgrade into *this fallback wire's* slot.
-            if let Some(requested) = downgraded_from {
-                uplinks.note_silent_transport_fallback_for_wire(
-                    parent.index,
-                    TransportKind::Udp,
-                    wire_index,
-                    requested,
-                );
             }
-            resume_store.ss().store_if_issued(resume_key, issued);
-            uplinks.register_carrier_loss_probe(
-                parent.index,
-                wire_index,
-                TransportKind::Udp,
-                transport.loss_probe(),
-            );
+            let source = if wire == 0 { "socks_udp" } else { "socks_udp_fb" };
             uplinks
-                .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())
-                .await;
-            Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())))
-        },
-        UplinkTransport::Vless => {
-            // VLESS-as-fallback on UDP, riding through `VlessUdpSessionMux`
-            // (WS / XHTTP carrier families).
-            let url = fallback.udp_dial_url().ok_or_else(|| {
-                anyhow!(
-                    "uplink {} fallback (transport=vless) missing UDP dial URL",
-                    parent.uplink.name,
-                )
-            })?;
-            // Wire-aware mode: read this fallback's per-wire downgrade slot
-            // first; falls back to the configured `vless_mode` when no
-            // window is active.
-            let mode = uplinks.effective_udp_mode_for_wire(parent.index, wire_index).await;
-            let uuid =
-                fallback.vless_id.ok_or_else(|| {
-                    anyhow!(
-                        "uplink {} fallback (transport=vless) missing vless_id",
-                        parent.uplink.name,
-                    )
-                })?;
-            let limits = uplinks.load_balancing().vless_udp_mux_limits;
-            let keepalive = uplinks.load_balancing().udp_ws_keepalive_interval;
+                .acquire_udp_on_wire(candidate, wire, source, resume_store)
+                .await
+                .map(WireAttempt::Built)
+        })
+        .await?;
 
-            // Per-wire `on_downgrade` callback: any inline H3→H2/H1 step
-            // observed by the mux on this fallback wire writes into *this
-            // wire's* `fallback_mode_downgrades` slot via the wire-aware
-            // setter. Primary's mode is unaffected.
-            let downgrade_manager = uplinks.clone();
-            let downgrade_index = parent.index;
-            let on_downgrade: VlessUdpDowngradeNotifier =
-                Arc::new(move |requested: TransportMode| {
-                    downgrade_manager.note_silent_transport_fallback_for_wire(
-                        downgrade_index,
-                        TransportKind::Udp,
-                        wire_index,
-                        requested,
-                    );
-                });
-
-            // VLESS fallback: WS or XHTTP family, plain mux with wire-aware
-            // on_downgrade hook.
-            let mux = VlessUdpSessionMux::new_with_limits(
-                Arc::clone(uplinks.dns_cache_arc()),
-                url.clone(),
-                mode,
-                uuid,
-                fallback.fwmark,
-                fallback.ipv6_first,
-                source,
-                keepalive,
-                limits,
-            )
-            .with_on_downgrade(Some(on_downgrade))
-            .with_resume_scope(uplinks.resume_scope_owned(&parent.uplink.name))
-            .with_resume_store(resume_store.clone())
-            .with_uplink_binding(binding());
-            // No carrier-loss registration here, deliberately: `mux` has not
-            // dialed anything yet. VLESS-UDP opens one session per destination
-            // lazily on first packet (see `VlessUdpSessionMux`'s module doc),
-            // so at this point in time there is no single carrier to attribute
-            // counters to — the mux may end up holding any number of per-target
-            // carriers, each dialed later, on its own schedule. Registering a
-            // probe for "the" carrier here would have to arbitrarily pick one
-            // of those (possibly zero) per-target sessions and attribute its
-            // counters to the whole uplink — a misattribution, not a
-            // measurement. VLESS-UDP carries no loss signal as a result — a
-            // known, accepted gap (alongside `xhttp_h1`, which dials two
-            // independent plain sockets with no single carrier to attribute
-            // either), to be surfaced to operators
-            // by the documentation pass at the end of this plan.
-            uplinks
-                .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())
-                .await;
-            Ok(UdpSessionTransport::Vless(mux))
-        },
+    if wire != 0 {
+        outline_metrics::record_uplink_selected(
+            "udp",
+            uplinks.group_name(),
+            &candidate.uplink.name,
+        );
+        debug!(
+            uplink = %candidate.uplink.name,
+            wire,
+            "UDP fallback wire dial succeeded",
+        );
     }
+    Ok(transport)
 }
 
 pub(super) async fn select_udp_transport(
