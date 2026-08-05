@@ -584,7 +584,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `loss_latency_penalty_k`             | `0.0`              | ≥0    | strength of carrier-loss latency inflation (`latency × (1 + k · loss)`); `0.0` measures without acting — selection is unchanged. See "Carrier loss in uplink selection" below |
 | `loss_latency_inflation_max`         | `4.0`              | [1,100] | ceiling on that multiplier — bounds how far one bad sampling window can push an uplink down the ranking |
 | `loss_sample_interval_secs`          | `10`               | s     | sampling grid for the carrier-loss counters, independent of `probe.interval`; `0` disables sampling entirely (carriers still register probes, nothing ever differences them) |
-| `loss_sample_min_packets`            | `200`              | int   | minimum packets a wire must send within one sampling window for that window's loss ratio to count |
+| `loss_sample_min_packets`            | `50`               | int   | minimum packets a wire must send within one sampling window for that window's loss ratio to count |
 | `loss_ewma_alpha`                    | `0.2`              | (0,1] | smoothing factor for the per-wire carrier-loss EWMA                                               |
 | `loss_failover_ratio`                | `0.0`              | [0,1] | loss ratio above which the strict active uplink counts as degraded for loss-driven failover; `0.0` disables the check entirely — this is the one part of the carrier-loss feature that moves traffic without an operator asking. See "Carrier loss in uplink selection" below |
 | `loss_failover_secs`                 | unset (disabled)   | s     | how long `loss_failover_ratio` must be exceeded **continuously** before the active uplink yields to a clean, equal-or-higher-weight sibling; one tick back at or below the ratio restarts the clock. Unset disables the check independently of `loss_failover_ratio`; `0` is equivalent to unset |
@@ -1073,7 +1073,7 @@ each default):
   duplicated descriptors before the registry's own newest-wins bound
   starts pushing the oldest out on the next dial. Bounded and
   self-limiting, not a leak — just not a completely free no-op either.
-- `loss_sample_min_packets` (default `200`) — minimum volume per window.
+- `loss_sample_min_packets` (default `50`) — minimum volume per window, counted in packets this side **sent**.
 - `loss_ewma_alpha` (default `0.2`) — smoothing for the per-wire EWMA.
 
 **The shipped default measures without acting.** `loss_latency_penalty_k
@@ -1122,7 +1122,7 @@ uplink}`:
 four distinct reasons a wire may have no `carrier_loss_ratio` series
 at a given moment, and none of them is "this path is clean":
 
-1. It has not sent `loss_sample_min_packets` (default `200`) packets
+1. It has not sent `loss_sample_min_packets` (default `50`) packets
    within a sampling window yet. This gate is deliberate: on a
    near-idle carrier, one lost packet out of ten is not "10 % loss",
    it is rounding noise, and feeding it into the EWMA would make a

@@ -357,7 +357,7 @@ fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig 
         loss_latency_penalty_k: 0.0,
         loss_latency_inflation_max: 4.0,
         loss_sample_interval: std::time::Duration::from_secs(10),
-        loss_sample_min_packets: 200,
+        loss_sample_min_packets: 50,
         loss_ewma_alpha: 0.2,
         failure_penalty: std::time::Duration::from_millis(500),
         failure_penalty_max: std::time::Duration::from_secs(30),
