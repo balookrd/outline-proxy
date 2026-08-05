@@ -15,7 +15,7 @@
 - Tests live in `<dir>/tests/<basename>.rs` wired with `#[cfg(test)] #[path = "tests/<basename>.rs"] mod tests;` — never inline `#[cfg(test)] mod tests { … }`.
 - Code comments, commit messages and PR text in English; chat and reasoning in Russian.
 - Never add a `Co-Authored-By: Claude` trailer or a "Generated with Claude Code" footer to anything.
-- Never run `git commit` / `git push` without the owner asking; the commit steps below are prepared for the owner to trigger, and each task stops after showing the diff unless the owner says otherwise.
+- Commit each task when its gate is green, using the message given in that task's final step. **Never `git push`** — that needs a separate explicit command from the owner, every time.
 - Work directly on `main`. Do not create feature branches.
 - CI gate, run locally in this exact order before any commit:
   ```bash
@@ -353,14 +353,14 @@ Expected: PASS, 3 tests.
 Run the three CI commands from Global Constraints.
 Expected: all green.
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add crates/outline-uplink/src/wire_spec.rs crates/outline-uplink/src/tests/wire_spec.rs crates/outline-uplink/src/lib.rs crates/outline-uplink/src/config.rs crates/outline-uplink/src/tests/mod.rs
 git diff --cached
 ```
 
-Suggested commit message (the owner triggers the commit):
+Commit message:
 
 ```
 feat(uplink): project a single wire's dial shape into WireSpec
@@ -504,9 +504,9 @@ Expected: PASS, 2 tests.
 
 Run the three CI commands. `cargo test --workspace` is what proves no literal was missed.
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
-Suggested commit message:
+Commit message:
 
 ```
 feat(uplink): add the tun_wire_dial gate, default off
@@ -726,9 +726,9 @@ Expected: PASS.
 
 Expected: all green. Existing standby tests must still pass unchanged — this task adds a parameter whose default reproduces the old behaviour.
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
-Suggested commit message:
+Commit message:
 
 ```
 feat(uplink): dial a chosen wire on the TCP plane, attributing it correctly
@@ -914,9 +914,9 @@ Expected: PASS, 2 tests.
 
 Expected: all green.
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
-Suggested commit message:
+Commit message:
 
 ```
 feat(uplink): dial a chosen wire on the UDP plane, VLESS included
@@ -1174,9 +1174,9 @@ Expected: PASS, 3 tests. The fixture needs no gate setting — these tests pass 
 
 - [ ] **Step 5: Run the full gate**
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
-Suggested commit message:
+Commit message:
 
 ```
 feat(uplink): walk the wire chain in one shared loop
@@ -1297,9 +1297,9 @@ Expected: PASS.
 
 Expected: all green, and every pre-existing TUN test unchanged — with the gate off the loop yields `[0]`.
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
-Suggested commit message:
+Commit message:
 
 ```
 feat(tun): dial the uplink's wire chain on TCP flows
@@ -1384,9 +1384,9 @@ Expected: PASS.
 
 - [ ] **Step 5: Run the full gate**
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
-Suggested commit message:
+Commit message:
 
 ```
 feat(tun): dial the uplink's wire chain on UDP flows
@@ -1590,9 +1590,9 @@ Expected: PASS, 3 tests.
 
 - [ ] **Step 5: Run the full gate**
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
-Suggested commit message:
+Commit message:
 
 ```
 fix(uplink): prewarm the wire flows actually land on
@@ -1697,9 +1697,9 @@ Expected: PASS.
 
 - [ ] **Step 5: Run the full gate**
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
-Suggested commit message:
+Commit message:
 
 ```
 fix(tun): migrate a flow onto its own wire, not onto primary
@@ -1759,9 +1759,9 @@ Expected: PASS, including `socks_fallback_still_reports_the_wire_it_landed_on` a
 
 - [ ] **Step 5: Run the full gate**
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
-Suggested commit message:
+Commit message:
 
 ```
 refactor(proxy): dial fallback wires through the shared loop
@@ -1844,9 +1844,9 @@ Add an entry to `CHANGELOG.md` and the matching one to `CHANGELOG.ru.md`.
 
 - [ ] **Step 5: Run the full gate**
 
-- [ ] **Step 6: Show the diff and stop**
+- [ ] **Step 6: Commit**
 
-Suggested commit message:
+Commit message:
 
 ```
 docs(uplink): document which ingress walks the wire chain
