@@ -76,6 +76,17 @@ impl VlessUdpMuxSession for VlessUdpWsTransport {
 /// synthesising an error to extract the mode from.
 pub type VlessUdpDowngradeNotifier = Arc<dyn Fn(TransportMode) + Send + Sync>;
 
+/// Hook fired once per successful per-target dial, carrying that carrier's
+/// loss probe (`None` when the carrier family cannot surrender one).
+///
+/// VLESS-UDP is the one carrier family with no other way to be measured: it
+/// has no warm-standby pool and opens a session lazily per destination, so
+/// there is no single stream the uplink manager can register up front. Without
+/// this hook a VLESS-only fleet — which is what the fleet this was built for
+/// turned out to be — leaves its entire UDP plane unmeasured, and UDP is where
+/// video rides.
+pub type VlessUdpCarrierNotifier = Arc<dyn Fn(Option<crate::CarrierLossProbe>) + Send + Sync>;
+
 pub struct VlessUdpSessionMux {
     core: VlessUdpMuxCore<WsVlessUdpDialer>,
 }
@@ -112,6 +123,12 @@ struct WsVlessUdpDialer {
     /// uplink-manager once per target. Set via
     /// [`VlessUdpSessionMux::with_on_downgrade`].
     on_downgrade: Option<VlessUdpDowngradeNotifier>,
+    /// Fired on every successful per-target dial — see
+    /// [`VlessUdpSessionMux::with_on_carrier`]. Not latched, unlike
+    /// `on_downgrade`: every carrier needs filing, and the registry
+    /// de-duplicates by carrier identity when several targets end up
+    /// multiplexed on one connection.
+    on_carrier: Option<VlessUdpCarrierNotifier>,
     /// Latch for `on_downgrade`: ensures the notifier fires at most once
     /// per mux instance regardless of how many per-target sessions are
     /// dialed during the H3 outage.
@@ -167,7 +184,7 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
             Some(on) => crate::carrier_padding::with_uplink_padding_override(on, connect).await,
             None => connect.await,
         };
-        let (raw_transport, issued, downgraded_from) =
+        let (raw_transport, issued, downgraded_from, loss_probe) =
             dial_result.with_context(|| TransportOperation::Connect {
                 target: format!("vless udp session to {target}"),
             })?;
@@ -204,6 +221,12 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
                 // back to true via the same CAS.
                 self.downgrade_reported.store(false, Ordering::Release);
             },
+        }
+        // File this carrier's loss probe. Unconditional: a `None` probe is
+        // passed through so the manager's own diagnostics can tell "no probe
+        // was offered" apart from "no dial happened".
+        if let Some(hook) = self.on_carrier.as_ref() {
+            hook(loss_probe);
         }
         // Install the carrier control-signal handler before sharing the
         // transport (no-op unless padding is on and a handle was set).
@@ -264,6 +287,7 @@ impl VlessUdpSessionMux {
             resume_scope: None,
             resume_store: UdpResumeStore::default(),
             on_downgrade: None,
+            on_carrier: None,
             downgrade_reported: AtomicBool::new(false),
             padding_override: None,
             throttle: None,
@@ -305,6 +329,14 @@ impl VlessUdpSessionMux {
     /// also see the downgrade. Without this, `effective_udp_mode` keeps
     /// reporting H3 in the uplink-manager while every actual session dial
     /// is silently clamped to H2 — the "vless/ws/h3 stays put" symptom.
+    /// Set the per-dial carrier hook. The uplink manager uses it to register
+    /// each per-target carrier's loss probe, which is the only opportunity to
+    /// measure this transport at all — see [`VlessUdpCarrierNotifier`].
+    pub fn with_on_carrier(mut self, hook: Option<VlessUdpCarrierNotifier>) -> Self {
+        self.core.dial.on_carrier = hook;
+        self
+    }
+
     pub fn with_on_downgrade(mut self, hook: Option<VlessUdpDowngradeNotifier>) -> Self {
         self.core.dial.on_downgrade = hook;
         self

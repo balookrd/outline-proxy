@@ -531,6 +531,22 @@ impl UplinkManager {
                 Arc::new(move |requested: outline_transport::TransportMode| {
                     manager.note_silent_transport_fallback(index, TransportKind::Udp, requested);
                 });
+            // VLESS-UDP is dialed lazily per destination, so there is no
+            // single carrier to register when the mux is built — the mux has
+            // to hand each one over as it appears. Without this the whole UDP
+            // plane of a VLESS uplink is unmeasured, which on a VLESS-only
+            // fleet is where nearly all the traffic lives.
+            let probe_manager = self.clone();
+            let probe_index = candidate.index;
+            let on_carrier: outline_transport::VlessUdpCarrierNotifier =
+                Arc::new(move |probe: Option<outline_transport::CarrierLossProbe>| {
+                    probe_manager.register_carrier_loss_probe(
+                        probe_index,
+                        0,
+                        TransportKind::Udp,
+                        probe,
+                    );
+                });
             let mux = VlessUdpSessionMux::new_with_limits(
                 Arc::clone(&self.inner.dns_cache),
                 udp_ws_url.clone(),
@@ -543,6 +559,7 @@ impl UplinkManager {
                 self.inner.load_balancing.vless_udp_mux_limits,
             )
             .with_on_downgrade(Some(on_downgrade))
+            .with_on_carrier(Some(on_carrier))
             .with_padding_override(candidate.uplink.padding)
             .with_resume_scope(self.resume_scope(&candidate.uplink.name).to_string())
             .with_resume_store(resume_store.clone())
