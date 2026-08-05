@@ -179,6 +179,22 @@ impl CarrierLossRegistry {
         self.entries.len()
     }
 
+    /// Test helper: the set of wires currently holding a registered probe for
+    /// `transport`. Used by dial-attribution regression tests to assert that
+    /// a dial on wire N files its probe under wire N, not under some other
+    /// wire's slot — most importantly, not under primary's (`0`).
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub(crate) fn registered_wires_for_test(
+        &self,
+        transport: TransportKind,
+    ) -> std::collections::HashSet<u8> {
+        self.entries
+            .iter()
+            .filter(|e| e.transport == transport)
+            .map(|e| e.wire)
+            .collect()
+    }
+
     /// File a probe under the wire that dialed it, evicting the oldest entry
     /// for that wire once the bound is reached.
     ///

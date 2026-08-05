@@ -298,4 +298,35 @@ impl UplinkManager {
             per.consecutive_failures = 0;
         });
     }
+
+    /// Test helper: an [`UplinkCandidate`](crate::types::UplinkCandidate) for
+    /// uplink `index`, built directly off the manager's configured uplinks —
+    /// no probe / selection machinery involved. Used by dial-path tests that
+    /// only need a candidate handle to call a dial method on.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) async fn tcp_candidates_for_test(
+        &self,
+        index: usize,
+    ) -> crate::types::UplinkCandidate {
+        crate::types::UplinkCandidate {
+            index,
+            uplink: self.uplinks()[index].clone(),
+        }
+    }
+
+    /// Test helper: the set of wires currently holding a registered carrier
+    /// loss probe for `(index, transport)`. See
+    /// [`crate::loss::CarrierLossRegistry::registered_wires_for_test`].
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn registered_loss_probe_wires_for_test(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+    ) -> std::collections::HashSet<u8> {
+        self.inner.carrier_loss[index]
+            .lock()
+            .registered_wires_for_test(transport)
+    }
 }

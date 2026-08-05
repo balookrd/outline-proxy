@@ -4,6 +4,14 @@ mod refill;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+use tests::sample_manager_with_fallbacks;
+#[cfg(all(test, target_os = "linux"))]
+use tests::sample_manager_with_live_wire_two;
+
+#[cfg(test)]
+#[path = "tests/wire_dial_tcp.rs"]
+mod wire_dial_tcp_tests;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,6 +69,10 @@ struct FreshTcpDial {
     /// rest of its life. See
     /// [`UplinkManager::connect_tcp_ws_migrate_with_ack_prefix`].
     bypass_mode_downgrade: bool,
+    /// Which wire to dial: `0` is the uplink's primary carrier, `i` is
+    /// `fallbacks[i - 1]`. Every existing constructor leaves this at its
+    /// `Default` (`0`), which is what it has always done implicitly.
+    wire: u8,
 }
 
 /// The resume headers a [`FreshTcpDial`] goes out with.
@@ -201,6 +213,23 @@ impl UplinkManager {
         // id — this one included. See [`DialResumeOptions::new_session`].
         self.connect_tcp_ws_fresh_internal(candidate, source, FreshTcpDial::default())
             .await
+    }
+
+    /// Dial `wire` on `candidate` as a fresh session, bypassing the warm pool.
+    /// `wire = 0` is the primary carrier and is what every pre-existing caller
+    /// gets through [`Self::connect_tcp_ws_fresh`].
+    pub async fn connect_tcp_ws_fresh_on_wire(
+        &self,
+        candidate: &UplinkCandidate,
+        wire: u8,
+        source: &'static str,
+    ) -> Result<TransportStream> {
+        self.connect_tcp_ws_fresh_internal(
+            candidate,
+            source,
+            FreshTcpDial { wire, ..FreshTcpDial::default() },
+        )
+        .await
     }
 
     /// Redial variant for the wire-handover paths (chunk-0 recovery, retry
@@ -353,22 +382,25 @@ impl UplinkManager {
                 symmetric_replay_requested: true,
                 client_acked_offset,
                 bypass_mode_downgrade: true,
+                ..Default::default()
             },
         )
         .await
     }
 
-    /// The carrier a fresh dial asks for: the effective (capped) mode, or the
-    /// configured one when the caller bypasses the cap.
+    /// The carrier a fresh dial asks for: the effective (capped) mode for
+    /// `spec`'s wire, or that wire's configured one when the caller bypasses
+    /// the cap.
     async fn tcp_dial_mode_for(
         &self,
         candidate: &UplinkCandidate,
+        spec: &crate::WireSpec<'_>,
         bypass_mode_downgrade: bool,
     ) -> crate::config::TransportMode {
         if bypass_mode_downgrade {
-            candidate.uplink.tcp_dial_mode()
+            spec.dial_mode(crate::Plane::Tcp)
         } else {
-            self.effective_tcp_mode(candidate.index).await
+            self.effective_tcp_mode_for_wire(candidate.index, spec.wire).await
         }
     }
 
@@ -379,27 +411,26 @@ impl UplinkManager {
         dial: FreshTcpDial,
     ) -> Result<TransportStream> {
         let cache = self.inner.dns_cache.as_ref();
-        if !matches!(candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
-            bail!("uplink {} does not use websocket transport", candidate.uplink.name);
+        let spec = crate::WireSpec::of(&candidate.uplink, dial.wire)
+            .ok_or_else(|| anyhow!("uplink {} has no wire {}", candidate.uplink.name, dial.wire))?;
+        if !spec.is_ws_family() {
+            bail!("uplink {} wire {} does not use websocket transport", spec.name, spec.wire);
         }
-        metrics::record_warm_standby_acquire(
-            "tcp",
-            &self.inner.group_name,
-            &candidate.uplink.name,
-            "miss",
-        );
-        let mode = self.tcp_dial_mode_for(candidate, dial.bypass_mode_downgrade).await;
+        metrics::record_warm_standby_acquire("tcp", &self.inner.group_name, spec.name, "miss");
+        let mode = self
+            .tcp_dial_mode_for(candidate, &spec, dial.bypass_mode_downgrade)
+            .await;
         debug!(
-            uplink = %candidate.uplink.name,
+            uplink = %spec.name,
+            wire = spec.wire,
             mode = %mode,
             ack_prefix_requested = dial.ack_prefix_requested,
             bypass_mode_downgrade = dial.bypass_mode_downgrade,
             "no warm-standby TCP websocket available, dialing on-demand"
         );
-        let url = candidate
-            .uplink
-            .tcp_dial_url()
-            .ok_or_else(|| anyhow!("uplink {} missing tcp dial URL", candidate.uplink.name))?;
+        let url = spec.dial_url(crate::Plane::Tcp).ok_or_else(|| {
+            anyhow!("uplink {} wire {} missing tcp dial URL", spec.name, spec.wire)
+        })?;
         let started = Instant::now();
         // Session resumption is per-session, not per-uplink: `resume_request`
         // is whatever the *caller* owns (`None` on a fresh dial). The ID the
@@ -414,35 +445,48 @@ impl UplinkManager {
             connect_transport(
                 TransportDialOptions::new(cache, url, mode, source)
                     .with_network(DialNetworkOptions {
-                        fwmark: candidate.uplink.fwmark,
-                        ipv6_first: candidate.uplink.ipv6_first,
+                        fwmark: spec.fwmark,
+                        ipv6_first: spec.ipv6_first,
                     })
-                    .with_combined_ss_kind(candidate.uplink.combined_ss_kind(SsPathKind::Tcp))
+                    .with_combined_ss_kind(spec.combined_ss_kind(SsPathKind::Tcp))
                     .with_resume(resume_options(&dial)),
             ),
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
-        // Every dial through `connect_tcp_ws_fresh_internal` — fresh,
-        // redial, or migrate, standby-pool refill or on-demand — always
-        // targets the primary wire (`wire = 0`); fallback wires are dialed
-        // by the proxy layer instead
-        // (`bins/outline-ws-rust/src/proxy/tcp/failover.rs`,
-        // `proxy/udp/transport.rs`), which is the only place that owns a
-        // dead-primary/`shuffle_wires` fallback chain to walk.
-        self.register_carrier_loss_probe(candidate.index, 0, TransportKind::Tcp, ws.loss_probe());
+        // Attribution follows the wire that was actually dialed. Filing this
+        // under the primary wire — which is what this function did while it
+        // could only ever dial the primary — puts the loss verdict in a slot
+        // that nothing reads once `active_wire` moves, and lets one carrier's
+        // descent cap another's.
+        self.register_carrier_loss_probe(
+            candidate.index,
+            spec.wire,
+            TransportKind::Tcp,
+            ws.loss_probe(),
+        );
         // Feed the on-demand dial latency into the RTT EWMA so real
         // connection quality is reflected in routing scores, not just probe
         // ping/pong times.
-        self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
-            .await;
+        self.report_connection_latency_for_wire(
+            candidate.index,
+            TransportKind::Tcp,
+            spec.wire,
+            started.elapsed(),
+        )
+        .await;
         // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`
         // or inline H3→H2/H1 fallback inside `connect_transport`)
         // into the per-uplink `mode_downgrade_until` window. Without this,
         // `effective_tcp_mode` keeps reporting H3 while every actual dial
         // is silently clamped to H2 — the "ss/ws/h3 stays put" symptom.
         if let Some(requested) = ws.downgraded_from() {
-            self.note_silent_transport_fallback(candidate.index, TransportKind::Tcp, requested);
+            self.note_silent_transport_fallback_for_wire(
+                candidate.index,
+                TransportKind::Tcp,
+                spec.wire,
+                requested,
+            );
         }
         Ok(ws)
     }
