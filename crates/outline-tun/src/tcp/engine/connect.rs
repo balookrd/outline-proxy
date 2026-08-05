@@ -143,14 +143,6 @@ pub(super) async fn redial_tcp_uplink_for_migration(
     client_acked_offset: u64,
     symmetric_replay: bool,
 ) -> Result<(TcpWriter, TcpReader, Option<SessionId>)> {
-    if !matches!(candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
-        bail!(
-            "carrier migration needs a WS-family uplink (SS-WS or VLESS-WS); uplink {} uses \
-             transport {:?}",
-            candidate.uplink.name,
-            candidate.uplink.transport,
-        );
-    }
     // Padding scope wraps the dial *and* the transport build — see
     // `connect_tcp_uplink` for why the scope cannot stop at the dial.
     let (writer, reader, session_id) = outline_uplink::dial::with_uplink_padding_scope(
@@ -169,6 +161,22 @@ pub(super) async fn redial_tcp_uplink_for_migration(
     Ok((writer, reader, session_id))
 }
 
+/// Resolves and redials the flow's own active wire — not always the parent
+/// uplink's primary — mirroring the fresh-dial path's wire selection
+/// (`connect_tcp_uplink_inner`). Gated by `tun_wire_dial`: with the gate off
+/// this always dials wire 0, exactly as it did before wire support existed.
+/// `active_wire` is not provably 0 on a gate-off node even so (the
+/// fallback-wire prober, the shuffle timer's `rotate_active_wire`, and the
+/// SOCKS ingress can all move it independently of this ingress's own gate),
+/// which is why the read below is itself gated rather than trusted bare.
+///
+/// A wire change here can change proxy protocol (VLESS <-> SS mid-flow): the
+/// server permits cross-protocol session resume on the byte-stream path, so
+/// no client-side gate against *that* is needed. The check below is only the
+/// WS-family requirement migration itself depends on (Ack-Prefix / Symmetric
+/// Downlink Replay), which no XHTTP-only wire can serve — and it now tests
+/// the wire actually being dialed, not the parent uplink's transport, since
+/// a wire can differ in family from its own parent.
 async fn redial_tcp_uplink_for_migration_inner(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
@@ -178,6 +186,22 @@ async fn redial_tcp_uplink_for_migration_inner(
     symmetric_replay: bool,
 ) -> Result<(TcpWriter, TcpReader, Option<SessionId>)> {
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+    let wire = if uplinks.load_balancing().tun_wire_dial {
+        uplinks.active_wire(candidate.index, TransportKind::Tcp)
+    } else {
+        0
+    };
+    let spec = outline_uplink::WireSpec::of(&candidate.uplink, wire)
+        .ok_or_else(|| anyhow!("uplink {} has no wire {wire}", candidate.uplink.name))?;
+    if !spec.is_ws_family() {
+        bail!(
+            "carrier migration needs a WS-family wire (SS-WS or VLESS-WS); uplink {} wire {} \
+             uses transport {:?}",
+            spec.name,
+            wire,
+            spec.transport,
+        );
+    }
     // The migrate-* dials ask for the configured carrier rather than the
     // capped one: the carrier death we are recovering from has just capped
     // this uplink's mode (h3 -> h2), and a flow handed the capped carrier
@@ -185,8 +209,9 @@ async fn redial_tcp_uplink_for_migration_inner(
     // `connect_tcp_ws_migrate_with_ack_prefix`.
     let ws = if symmetric_replay {
         uplinks
-            .connect_tcp_ws_migrate_with_symmetric_replay(
+            .connect_tcp_ws_migrate_with_symmetric_replay_on_wire(
                 candidate,
+                wire,
                 "tun_tcp_migrate",
                 Some(resume_request),
                 client_acked_offset,
@@ -194,15 +219,15 @@ async fn redial_tcp_uplink_for_migration_inner(
             .await?
     } else {
         uplinks
-            .connect_tcp_ws_migrate_with_ack_prefix(
+            .connect_tcp_ws_migrate_with_ack_prefix_on_wire(
                 candidate,
+                wire,
                 "tun_tcp_migrate",
                 Some(resume_request),
             )
             .await?
     };
     let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
-    let spec = outline_uplink::WireSpec::from_uplink(&candidate.uplink);
     do_tcp_ss_setup(ws, &spec, target, keepalive_interval, binding, true).await
 }
 
