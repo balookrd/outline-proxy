@@ -7732,7 +7732,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Packets observed on the wire since its verdict was last reset. Read it next to the ratio: a ratio drawn on a few hundred packets is a hint, one drawn on millions is evidence. It answers 'how long has this wire been measured', not 'how confident is the current number' — the ratio itself is an EWMA over roughly the last ten windows.",
+      "description": "Packets observed on the wire behind its current verdict. Read it next to the ratio: a ratio drawn on a few hundred packets is a hint, one drawn on tens of thousands is evidence — an early reading of 2% on 300 packets is six packets and mostly noise. A drop back to zero is NOT lost data: it means the wire lost its last carrier and the verdict was reset, so the count starts again with the next one. The counter is cumulative since that reset, so it says how long the wire has been measured, not how confident the current ratio is — the ratio itself is an EWMA over roughly ten windows.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7746,8 +7746,8 @@
             "axisPlacement": "auto",
             "barAlignment": 0,
             "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
+            "drawStyle": "bars",
+            "fillOpacity": 40,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -7821,7 +7821,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "What selection actually ranks by. With loss_latency_penalty_k = 0 (the shipped default) the two lines coincide and loss changes no decision. Once a coefficient is set they separate by 1 + k x loss, and the gap is the penalty an uplink is carrying. The inflated line can be present while the active-wire line is absent: it falls back to primary's EWMA and then to the last probe sample.",
+      "description": "How much carrier loss is adding to the latency selection ranks by: the ranked value minus the measured one. A flat zero is the expected picture at loss_latency_penalty_k = 0 (the shipped default) — loss is being measured but changes no decision. Once a coefficient is set, this is the penalty each uplink carries, in milliseconds. Absolute RTTs live in the Latency row above; this panel deliberately shows only the difference, because at k = 0 the two curves coincide and plotting both says nothing.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7836,7 +7836,7 @@
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 0,
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -7897,17 +7897,12 @@
       },
       "targets": [
         {
-          "expr": "label_replace((outline_ws_uplink_active_wire_rtt_ewma_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{uplink}} {{transport}} measured",
+          "expr": "label_replace((outline_ws_uplink_latency_inflated_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} - on(instance, group, transport, uplink) outline_ws_uplink_active_wire_rtt_ewma_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} {{transport}} penalty",
           "refId": "A"
-        },
-        {
-          "expr": "label_replace((outline_ws_uplink_latency_inflated_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{uplink}} {{transport}} ranked",
-          "refId": "B"
         }
       ],
-      "title": "Ranked Latency: measured vs loss-inflated",
+      "title": "Loss Penalty on Ranked Latency (ranked - measured)",
       "type": "timeseries"
     },
     {
@@ -7965,7 +7960,8 @@
               }
             ]
           },
-          "unit": "s"
+          "unit": "s",
+          "noValue": "No episode: loss failover is off by default"
         },
         "overrides": []
       },
