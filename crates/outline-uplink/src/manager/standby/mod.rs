@@ -167,7 +167,16 @@ impl UplinkManager {
             return None;
         }
         let ctx = self.standby_ctx(candidate.index, TransportKind::Tcp).await;
-        ctx.try_take_alive(&candidate.uplink.name).await
+        let ws = ctx.try_take_alive(&candidate.uplink.name).await?;
+        // A pooled carrier never passes through the dial path, so this take is
+        // the only place its loss probe can be filed. Registering only on dial
+        // made measurement coverage follow the *dial* rate rather than the
+        // traffic: the busiest gateway showed 3382 reused TCP acquisitions
+        // against 11 fresh ones and carried no TCP loss verdict at all, while
+        // pushing 1.4 GiB. Registration de-duplicates by carrier identity, so
+        // re-filing a carrier that is already known is a no-op.
+        self.register_carrier_loss_probe(candidate.index, 0, TransportKind::Tcp, ws.loss_probe());
+        Some(ws)
     }
 
     /// Dials a fresh TCP WebSocket connection, bypassing the standby pool.
@@ -546,6 +555,14 @@ impl UplinkManager {
         // pooling) so we never hand a dead transport to the caller.
         let ctx = self.standby_ctx(candidate.index, TransportKind::Udp).await;
         if let Some(ws) = ctx.try_take_alive(&candidate.uplink.name).await {
+            // Same reason as the TCP take above: a carrier reused out of the
+            // pool is never dialled, so without this it is never measured.
+            self.register_carrier_loss_probe(
+                candidate.index,
+                0,
+                TransportKind::Udp,
+                ws.loss_probe(),
+            );
             // A pooled stream was dialled as a fresh session by the refill loop,
             // so the server minted it an id and it is riding on the stream. Move
             // it into this carrier's store or the flow would have no id of its

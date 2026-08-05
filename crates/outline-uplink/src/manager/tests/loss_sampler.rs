@@ -455,3 +455,58 @@ async fn losing_the_last_carrier_resets_the_wire_verdict_on_status() {
         "losing the last carrier must clear the verdict, not leave the last ratio standing"
     );
 }
+
+/// A carrier handed out from the warm pool never passes through the dial path,
+/// so the take is the only place its loss probe can be filed. Field evidence
+/// for why this matters: on the busiest gateway `transport_connects_total`
+/// showed 3382 `reused` TCP acquisitions against 11 `started` ones, and the
+/// TCP plane carried no verdict at all despite 1.4 GiB of traffic — measurement
+/// coverage was following the dial rate rather than the traffic.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn taking_a_carrier_from_the_warm_pool_registers_its_loss_probe() {
+    use outline_transport::TransportStream;
+    use tokio_tungstenite::tungstenite::protocol::Role;
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+    let manager = crate::types::UplinkManager::new_for_test(
+        "test",
+        vec![crate::tests::make_uplink("primary", "wss://primary.example.com/tcp")],
+        crate::tests::probe_disabled(),
+        crate::tests::lb(),
+    )
+    .unwrap();
+
+    // A real carrier over loopback: the take path peeks at the socket, so a
+    // fabricated stream would be discarded as stale before registration.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (_server, _) = listener.accept().await.unwrap();
+    let ws =
+        WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None).await;
+    manager.inner.standby_pools[0]
+        .tcp
+        .lock()
+        .await
+        .push_back(TransportStream::new_http1(ws));
+
+    assert_eq!(
+        manager.inner.carrier_loss[0].lock().len(),
+        0,
+        "nothing is registered before the take"
+    );
+
+    let candidate = crate::types::UplinkCandidate {
+        index: 0,
+        uplink: manager.inner.uplinks[0].clone(),
+    };
+    let taken = manager.try_take_tcp_standby(&candidate).await;
+
+    assert!(taken.is_some(), "the pooled carrier must be handed out");
+    assert_eq!(
+        manager.inner.carrier_loss[0].lock().len(),
+        1,
+        "a carrier taken from the pool must have its probe registered, or it is never measured"
+    );
+}
