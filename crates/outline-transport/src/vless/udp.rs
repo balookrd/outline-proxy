@@ -186,7 +186,8 @@ impl VlessUdpTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
-    ) -> Result<(Self, Option<SessionId>, Option<TransportMode>)> {
+    ) -> Result<(Self, Option<SessionId>, Option<TransportMode>, Option<crate::CarrierLossProbe>)>
+    {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
                 .with_network(DialNetworkOptions { fwmark, ipv6_first })
@@ -210,8 +211,15 @@ impl VlessUdpTransport {
         // sit on the WS Upgrade response, not on the inner VLESS handshake.
         let issued = ws_stream.issued_session_id();
         let downgraded_from = ws_stream.downgraded_from();
+        // Taken here for the same reason as `issued`: the VLESS framing layer
+        // takes ownership of the stream on the next line, and this is the last
+        // point the carrier underneath is reachable. VLESS-UDP has no
+        // warm-standby pool and dials lazily per target, so a probe missed
+        // here is a carrier that is never measured — which on a VLESS-only
+        // fleet means the entire UDP plane goes unmeasured.
+        let loss_probe = ws_stream.loss_probe();
         let transport = Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval)?;
-        Ok((transport, issued, downgraded_from))
+        Ok((transport, issued, downgraded_from, loss_probe))
     }
 
     /// Attribute this VLESS UDP session to a concrete uplink so its lifetime

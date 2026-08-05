@@ -236,8 +236,8 @@ pub use udp_transport::{
     OversizedUdpDatagram, UdpSessionTransport, UdpWsTransport, is_dropped_oversized_udp_error,
 };
 pub use vless::{
-    VlessTcpReader, VlessTcpWriter, VlessUdpDowngradeNotifier, VlessUdpMuxLimits,
-    VlessUdpSessionMux, VlessUdpWsTransport,
+    VlessTcpReader, VlessTcpWriter, VlessUdpCarrierNotifier, VlessUdpDowngradeNotifier,
+    VlessUdpMuxLimits, VlessUdpSessionMux, VlessUdpWsTransport,
 };
 // `TargetAddr` is the input type for VLESS / SS dialers — re-exporting it
 // spares callers from depending on the `socks5-proto` workspace crate directly.

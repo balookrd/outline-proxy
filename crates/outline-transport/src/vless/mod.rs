@@ -37,7 +37,7 @@ pub use header::{
 };
 pub use tcp::{VlessTcpReader, VlessTcpWriter, vless_tcp_pair_from_ws};
 pub use udp::{VlessUdpTransport, VlessUdpWsTransport};
-pub use udp_mux::{VlessUdpDowngradeNotifier, VlessUdpSessionMux};
+pub use udp_mux::{VlessUdpCarrierNotifier, VlessUdpDowngradeNotifier, VlessUdpSessionMux};
 pub use udp_mux_core::VlessUdpMuxLimits;
 pub use uuid::parse_uuid;
 
