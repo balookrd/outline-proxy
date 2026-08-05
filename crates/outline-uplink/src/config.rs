@@ -715,6 +715,14 @@ pub struct LoadBalancingConfig {
     /// Minimum packets a wire must send within one window for that window to
     /// count. Below this the ratio is rounding noise: one lost packet out of
     /// ten is not "10% loss".
+    ///
+    /// The floor counts packets this side **sent**, which is what makes the
+    /// default (50) far lower than a first guess suggests: a gateway whose
+    /// users are downloading transmits little beyond acknowledgements, so a
+    /// window that carries megabytes inbound can hold only tens of outbound
+    /// packets. The original 200 was set from throughput intuition and left
+    /// the busiest node in the fleet without a verdict for most of the day —
+    /// 50 is what its measured quiet-hour rate actually clears.
     pub loss_sample_min_packets: u64,
     /// Smoothing factor for the per-wire loss EWMA.
     pub loss_ewma_alpha: f64,
