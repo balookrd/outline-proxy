@@ -2091,6 +2091,7 @@ fn test_load_balancing_config() -> LoadBalancingConfig {
         warm_probe_keepalive_interval: None,
         auto_failback: false,
         health_weighted_selection: false,
+        tun_wire_dial: false,
         health_weight_floor: 0.05,
         vless_udp_mux_limits: outline_uplink::VlessUdpMuxLimits::default(),
         tcp_mid_session_retry_buffer_bytes: 256 * 1024,

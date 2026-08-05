@@ -200,6 +200,9 @@ pub(crate) fn load_balancing_config(
         // (see `LoadBalancingConfig::health_weighted_selection`). Set to
         // `false` to restore the legacy fixed cyclic order + binary cap.
         health_weighted_selection: lb.and_then(|l| l.health_weighted_selection).unwrap_or(true),
+        // Default: `false` — the TUN ingress keeps dialing the primary wire
+        // only, as it always has. See `LoadBalancingConfig::tun_wire_dial`.
+        tun_wire_dial: lb.and_then(|l| l.tun_wire_dial).unwrap_or(false),
         health_weight_floor: {
             let floor = lb.and_then(|l| l.health_weight_floor).unwrap_or(0.05);
             if !(floor.is_finite() && (0.0..=1.0).contains(&floor)) {

@@ -624,6 +624,8 @@ pub(super) struct UplinkGroupSection {
     /// a decaying penalty). Default: `true`. Set to `false` to restore the
     /// legacy fixed cyclic wire order + binary carrier downgrade cap.
     pub(super) health_weighted_selection: Option<bool>,
+    /// Let the TUN ingress walk the fallback-wire chain. Default: `false`.
+    pub(super) tun_wire_dial: Option<bool>,
     /// Floor on the per-candidate selection weight, in `[0, 1]`, when
     /// `health_weighted_selection` is on. Default: `0.05`.
     pub(super) health_weight_floor: Option<f64>,
@@ -896,6 +898,8 @@ pub(crate) struct LoadBalancingSection {
     /// a decaying penalty). Default: `true`. Set to `false` to restore the
     /// legacy fixed cyclic wire order + binary carrier downgrade cap.
     pub(super) health_weighted_selection: Option<bool>,
+    /// Let the TUN ingress walk the fallback-wire chain. Default: `false`.
+    pub(super) tun_wire_dial: Option<bool>,
     /// Floor on the per-candidate selection weight, in `[0, 1]`, when
     /// `health_weighted_selection` is on. Default: `0.05`.
     pub(super) health_weight_floor: Option<f64>,

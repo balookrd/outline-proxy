@@ -209,6 +209,7 @@ fn load_balancing_config_from_group(
         warm_probe_keepalive_secs: section.warm_probe_keepalive_secs,
         auto_failback: section.auto_failback,
         health_weighted_selection: section.health_weighted_selection,
+        tun_wire_dial: section.tun_wire_dial,
         health_weight_floor: section.health_weight_floor,
         vless_udp_max_sessions: section.vless_udp_max_sessions,
         vless_udp_session_idle_secs: section.vless_udp_session_idle_secs,

@@ -333,6 +333,7 @@ fn lb() -> LoadBalancingConfig {
         tcp_chunk0_failover_timeout: Duration::from_secs(10),
         auto_failback: false,
         health_weighted_selection: false,
+        tun_wire_dial: false,
         health_weight_floor: 0.05,
         warm_standby_tcp: 0,
         warm_standby_udp: 0,
