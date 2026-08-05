@@ -9,7 +9,7 @@ use url::Url;
 use outline_metrics as metrics;
 use outline_transport::TransportStream;
 
-use crate::config::{SsPathKind, TransportMode};
+use crate::config::{SsPathKind, TransportMode, UplinkTransport};
 use crate::manager::standby_pool::WirePool;
 use crate::types::{TransportKind, Uplink, UplinkManager};
 
@@ -30,6 +30,13 @@ pub(super) const STANDBY_WS_PEEK_TIMEOUT: Duration = Duration::from_millis(1);
 /// pool filled with TCP-leg streams silently drops every reused datagram.
 pub(super) struct StandbyCtx<'a> {
     pub(super) manager: &'a UplinkManager,
+    /// The **parent** uplink. Read only for things that are per-uplink by
+    /// definition — the display name that labels every metric and log line,
+    /// and the padding / fingerprint scopes `dial_in_uplink_scope` applies.
+    /// Everything a dial's shape depends on comes off the [`crate::WireSpec`]
+    /// this context was built from and is mirrored into the fields below:
+    /// reading `uplink` for any of those would target the primary carrier no
+    /// matter which wire the pool is actually prewarming.
     pub(super) uplink: &'a Uplink,
     pub(super) index: usize,
     pub(super) transport: TransportKind,
@@ -52,10 +59,26 @@ pub(super) struct StandbyCtx<'a> {
     pub(super) desired: usize,
     pub(super) url: Option<&'a Url>,
     pub(super) mode: TransportMode,
+    /// The transport family of `wire` — **not** of the parent uplink. A
+    /// fallback wire may differ in family from its parent (the fleet's shape
+    /// is a VLESS primary with SS fallbacks), and two dial decisions turn on
+    /// it: whether the pool may be filled at all, and whether the dial has to
+    /// negotiate XHTTP datagram record framing. Reading the parent's family
+    /// pooled an SS-UDP carrier that never negotiated record boundaries under
+    /// a VLESS parent, and every datagram reused off that carrier lost its
+    /// framing.
+    pub(super) wire_transport: UplinkTransport,
     /// The combined-SS path discriminator this pool's dials must carry, taken
     /// from the wire (`wire`) rather than the parent uplink: a pool filled
     /// with the other leg's streams silently drops every reused datagram.
     pub(super) combined_ss: Option<SsPathKind>,
+    /// This wire's routing mark. Per-wire because a fallback can be pinned to
+    /// a different egress from its parent — dialing the pool with the
+    /// parent's mark would send the carrier out of the wrong interface.
+    pub(super) fwmark: Option<u32>,
+    /// This wire's address-family preference, per-wire for the same reason as
+    /// [`Self::fwmark`].
+    pub(super) ipv6_first: bool,
 }
 
 impl UplinkManager {
@@ -98,7 +121,10 @@ impl UplinkManager {
                 desired: lb.warm_standby_tcp,
                 url: spec.dial_url(crate::Plane::Tcp),
                 mode: self.effective_tcp_mode_for_wire(index, spec.wire).await,
+                wire_transport: spec.transport,
                 combined_ss: spec.combined_ss_kind(SsPathKind::Tcp),
+                fwmark: spec.fwmark,
+                ipv6_first: spec.ipv6_first,
             },
             TransportKind::Udp => StandbyCtx {
                 manager: self,
@@ -113,7 +139,10 @@ impl UplinkManager {
                 desired: lb.warm_standby_udp,
                 url: spec.dial_url(crate::Plane::Udp),
                 mode: self.effective_udp_mode_for_wire(index, spec.wire).await,
+                wire_transport: spec.transport,
                 combined_ss: spec.combined_ss_kind(SsPathKind::Udp),
+                fwmark: spec.fwmark,
+                ipv6_first: spec.ipv6_first,
             },
         }
     }

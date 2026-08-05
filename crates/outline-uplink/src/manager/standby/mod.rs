@@ -9,7 +9,7 @@ use tests::{
     sample_manager_with_combined_ss_fallback, sample_manager_with_live_wire_two,
     sample_manager_with_three_fallbacks, sample_manager_with_three_fallbacks_and_standby_capacity,
     sample_manager_with_three_fallbacks_gate_off, sample_manager_with_vless_fallback,
-    udp_candidate_for_test,
+    sample_manager_with_vless_primary_and_ss_fallback, udp_candidate_for_test,
 };
 
 #[cfg(test)]
@@ -23,6 +23,10 @@ mod wire_dial_udp_tests;
 #[cfg(test)]
 #[path = "tests/pool_wire.rs"]
 mod pool_wire_tests;
+
+#[cfg(test)]
+#[path = "tests/refill_wire.rs"]
+mod refill_wire_tests;
 
 use std::sync::Arc;
 use std::time::Duration;
