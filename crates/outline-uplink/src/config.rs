@@ -711,6 +711,16 @@ pub struct LoadBalancingConfig {
     /// Sampling grid for carrier loss counters. Deliberately independent of
     /// the probe cycle, which runs far coarser and skips cycles for uplinks
     /// carrying traffic — differencing cumulative counters needs an even grid.
+    ///
+    /// 30 s rather than something tighter because the window has to collect
+    /// `loss_sample_min_packets` *sent* packets, and a plane can be nearly
+    /// idle while the node is busy: with video riding QUIC, the measured TCP
+    /// plane sent ~30 packets per 10 s — right at the floor, so its verdict
+    /// flickered in and out. Three times the window is three times the
+    /// evidence at no cost to freshness, since the ratio is an EWMA anyway.
+    /// A longer window used to be actively harmful, because a carrier had to
+    /// survive two ticks to count at all; anchoring the baseline at
+    /// registration removed that.
     pub loss_sample_interval: Duration,
     /// Minimum packets a wire must send within one window for that window to
     /// count. Below this the ratio is rounding noise: one lost packet out of
