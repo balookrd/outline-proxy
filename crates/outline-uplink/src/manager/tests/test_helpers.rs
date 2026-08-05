@@ -315,6 +315,29 @@ impl UplinkManager {
         }
     }
 
+    /// Test helper: number of times [`Self::record_wire_outcome`] has been
+    /// invoked for `(index, transport, wire)`, regardless of success or
+    /// failure. The narrowest seam that lets `dial_over_wires` tests confirm
+    /// a `WireAttempt::NotApplicable` wire really never reached
+    /// `record_wire_outcome` — no other field distinguishes "never called"
+    /// from "called and happened to leave everything unchanged".
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn wire_outcome_count_for_test(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+        wire: u8,
+    ) -> u32 {
+        self.inner
+            .read_status(index)
+            .of(transport)
+            .wire_outcome_calls
+            .get(&wire)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Test helper: the set of wires currently holding a registered carrier
     /// loss probe for `(index, transport)`. See
     /// [`crate::loss::CarrierLossRegistry::registered_wires_for_test`].
