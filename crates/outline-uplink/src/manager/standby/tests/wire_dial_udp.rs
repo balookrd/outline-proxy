@@ -16,16 +16,29 @@ use super::{
     sample_manager_with_live_wire_two, sample_manager_with_vless_fallback, udp_candidate_for_test,
 };
 
-/// A VLESS fallback wire must be dialable on UDP, and must be built from
-/// *its own* shape — not the parent's. `sample_manager_with_vless_fallback`
-/// deliberately gives the primary a different family (SS, closed port): if
-/// this were still reading `candidate.uplink.transport` /
-/// `candidate.uplink.udp_dial_url()` instead of `spec`'s, wire 1 would be
-/// routed through the SS dial path against the closed primary port and this
-/// call would return `Err` (or the wrong transport variant), not
-/// `Ok(UdpSessionTransport::Vless(_))`. Building the mux never dials eagerly
-/// (VLESS-UDP opens sessions lazily per destination), so a correct wire-1
-/// dial always succeeds without needing a reachable server.
+/// A VLESS fallback wire must be dialable on UDP, and the branch that
+/// decides *whether* to build a VLESS mux at all must key off wire 1's own
+/// shape, not the parent's. `sample_manager_with_vless_fallback` deliberately
+/// gives the primary a different family (SS, closed port): if the branch
+/// check were still reading `candidate.uplink.transport` instead of
+/// `spec.transport`, wire 1 would fall through to the SS dial path (and,
+/// since `spec.dial_url`/`spec.password`/`spec.cipher` there are still the
+/// wire's own, it would try to SS-dial the VLESS fallback's own URL, which
+/// fails DNS resolution) — `Err`, not `Ok(UdpSessionTransport::Vless(_))`.
+/// Reverting the `vless_id` read the same way (`candidate.uplink.vless_id`
+/// instead of `spec.vless_id`) fails identically, because the parent's
+/// `vless_id` is `None`. Both reverts were confirmed to fail this test.
+///
+/// This test does *not* pin `spec.dial_url(Plane::Udp)`, `spec.fwmark`,
+/// `spec.ipv6_first`, or the wire index fed into
+/// `effective_udp_mode_for_wire`: building a VLESS-UDP mux never dials
+/// eagerly (VLESS-UDP opens sessions lazily per destination), and
+/// `UdpSessionTransport::Vless` exposes no accessor to inspect what URL,
+/// fwmark, ipv6_first or mode a mux was actually built with. Reverting any
+/// of those four reads to the parent's value still returns
+/// `Ok(UdpSessionTransport::Vless(_))` here (confirmed) — the mux would just
+/// be silently wired to the wrong destination/knobs, discoverable only once
+/// something actually dials through it.
 #[tokio::test]
 async fn a_vless_fallback_wire_is_dialable_on_udp() {
     let manager = sample_manager_with_vless_fallback().await;
