@@ -313,7 +313,11 @@ fn interrupted_loss_episode_restarts_the_clock() {
 /// would also only show up here).
 #[tokio::test(start_paused = true)]
 async fn sample_carrier_loss_once_ages_out_a_stale_episode_across_empty_ticks() {
-    let mut config = crate::tests::lb(); // loss_sample_interval = 10s
+    let mut config = crate::tests::lb();
+    // Pin the interval here rather than inheriting it: the arithmetic below
+    // (and every duration in the comments) is written against a 10 s grid, so
+    // a change to the shipped default must not silently retune this test.
+    config.loss_sample_interval = Duration::from_secs(10);
     config.loss_failover_ratio = 0.5;
     let manager = crate::types::UplinkManager::new_for_test(
         "test",

@@ -80,7 +80,7 @@ fn lb(bypass_when_down: bool) -> LoadBalancingConfig {
         rtt_ewma_alpha: 0.3,
         loss_latency_penalty_k: 0.0,
         loss_latency_inflation_max: 4.0,
-        loss_sample_interval: Duration::from_secs(10),
+        loss_sample_interval: Duration::from_secs(30),
         loss_sample_min_packets: 50,
         loss_ewma_alpha: 0.2,
         failure_penalty: Duration::from_millis(500),

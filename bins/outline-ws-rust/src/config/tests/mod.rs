@@ -287,7 +287,7 @@ fn load_balancing_parses_loss_signal_knobs() {
 fn loss_signal_defaults_to_observation_only() {
     let lb = load_balancing(&parse_config("[outline]").unwrap());
     assert_eq!(lb.loss_latency_penalty_k, 0.0);
-    assert_eq!(lb.loss_sample_interval, std::time::Duration::from_secs(10));
+    assert_eq!(lb.loss_sample_interval, std::time::Duration::from_secs(30));
     assert_eq!(lb.loss_sample_min_packets, 50);
 }
 

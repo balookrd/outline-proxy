@@ -90,7 +90,7 @@ pub(crate) fn load_balancing_config(
         // metrics wiring) without paying for the sampling timer, e.g. while
         // staging the feature.
         loss_sample_interval: Duration::from_secs(
-            lb.and_then(|l| l.loss_sample_interval_secs).unwrap_or(10),
+            lb.and_then(|l| l.loss_sample_interval_secs).unwrap_or(30),
         ),
         loss_sample_min_packets: lb.and_then(|l| l.loss_sample_min_packets).unwrap_or(50),
         loss_ewma_alpha,
