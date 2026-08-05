@@ -5,8 +5,6 @@ mod refill;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-use tests::sample_manager_with_fallbacks;
-#[cfg(all(test, target_os = "linux"))]
 use tests::sample_manager_with_live_wire_two;
 
 #[cfg(test)]
