@@ -38,6 +38,59 @@ impl<'a> StandbyCtx<'a> {
         }
     }
 
+    /// Whether this pool's dials must negotiate XHTTP datagram record framing.
+    ///
+    /// A pooled SS-UDP stream is handed to a datagram session, so it has to
+    /// negotiate record boundaries at dial time exactly like an on-demand
+    /// `UdpWsTransport::connect` does — the negotiation rides the dial's
+    /// request headers and cannot be added afterwards. VLESS frames its own
+    /// records and opts out.
+    ///
+    /// Keyed on the **wire's** family, never the parent's. The two differ on
+    /// the fleet's own shape (VLESS primary, SS fallbacks): a VLESS parent
+    /// whose UDP active wire is an SS fallback would otherwise pool a carrier
+    /// with no record framing, `acquire_udp_on_wire` would take the SS branch,
+    /// the wire tags would match, and every datagram reused off that carrier
+    /// would lose its boundaries — the same silent-drop class as SS-UDP over
+    /// XHTTP without record negotiation.
+    pub(super) fn dial_datagram_records(&self) -> bool {
+        matches!(self.transport, TransportKind::Udp)
+            && matches!(self.wire_transport, UplinkTransport::Ss)
+    }
+
+    /// The socket-level knobs this pool's dials carry.
+    ///
+    /// Per-wire, not per-uplink: a fallback can be pinned to a different
+    /// egress (`fwmark`) or address family from its parent, and the pool is
+    /// prewarming that fallback. Reading the parent's here would open the
+    /// pooled carriers out of an interface no flow on this wire uses.
+    pub(super) fn dial_network_options(&self) -> DialNetworkOptions {
+        DialNetworkOptions {
+            fwmark: self.fwmark,
+            ipv6_first: self.ipv6_first,
+        }
+    }
+
+    /// Reports a transport-level downgrade observed on a refill dial into the
+    /// descent slot of the wire that was actually dialed.
+    ///
+    /// The wire-aware entry point, not the parent-level one: the pool follows
+    /// the active wire, so a fallback wire's silent `xhttp_h3 → xhttp_h2`
+    /// fallback reported against primary's slot caps a carrier that never
+    /// failed, for `mode_downgrade_duration`, while the fallback's own slot
+    /// stays empty — which also strands `wire_is_at_carrier_floor` below the
+    /// floor and never releases the rotation gate for that wire. Refill is the
+    /// dominant dial producer on this client, so the mis-attribution repeats
+    /// for as long as the pool sits on a fallback.
+    pub(super) fn note_dial_downgrade(&self, requested: crate::config::TransportMode) {
+        self.manager.note_silent_transport_fallback_for_wire(
+            self.index,
+            self.transport,
+            self.wire,
+            requested,
+        );
+    }
+
     /// Drains the pool, peeks each entry for liveness, and writes survivors
     /// back. Entries that slipped in as Http1 fallbacks under H2/H3 are
     /// evicted unconditionally (they each own a distinct TCP socket, so
@@ -215,7 +268,9 @@ impl<'a> StandbyCtx<'a> {
         if self.desired == 0 {
             return;
         }
-        if !matches!(self.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
+        // The wire's family, not the parent's: whether this pool can be filled
+        // at all is a property of the carrier being dialed.
+        if !matches!(self.wire_transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return;
         }
         let Some(url) = self.url else { return };
@@ -253,14 +308,19 @@ impl<'a> StandbyCtx<'a> {
                 break;
             }
 
+            // The parent, deliberately, and the last thing on this path that
+            // reads it: padding and the fingerprint strategy are configured
+            // per uplink rather than per wire (see `WireSpec`'s module docs),
+            // and every sibling dial site scopes them off the parent the same
+            // way. Everything the dial's *shape* depends on comes off the
+            // wire — see the option builders below.
             let ws = crate::dial::dial_in_uplink_scope(
                 self.uplink,
                 connect_transport(
                     TransportDialOptions::new(cache, url, self.mode, self.refill_source)
-                        .with_network(DialNetworkOptions {
-                            fwmark: self.uplink.fwmark,
-                            ipv6_first: self.uplink.ipv6_first,
-                        })
+                        // Resolved against THIS wire, not the parent — see
+                        // `dial_network_options`.
+                        .with_network(self.dial_network_options())
                         // The combined-SS discriminator (the hidden tcp/udp bit in the
                         // session-id / WS token) must match THIS pool's leg. A UDP
                         // standby stream dialed with the TCP token lands on the server's
@@ -277,17 +337,9 @@ impl<'a> StandbyCtx<'a> {
                         // carrier, so it dials as a new session would — the
                         // advertisement is what gives that session a ring.
                         .with_resume(self.pool_resume_options())
-                        // A pooled SS-UDP stream is handed to a datagram
-                        // session, so it must negotiate XHTTP record framing at
-                        // dial time exactly like an on-demand
-                        // `UdpWsTransport::connect` does — the negotiation
-                        // rides the dial's request headers and cannot be added
-                        // afterwards. VLESS pools frame their own records and
-                        // opt out.
-                        .with_datagram_records(
-                            matches!(self.transport, TransportKind::Udp)
-                                && matches!(self.uplink.transport, UplinkTransport::Ss),
-                        ),
+                        // Resolved against THIS wire's family — see
+                        // `dial_datagram_records`.
+                        .with_datagram_records(self.dial_datagram_records()),
                 ),
             )
             .await
@@ -296,17 +348,14 @@ impl<'a> StandbyCtx<'a> {
             match ws {
                 Ok(ws) => {
                     // Surface a transport-level downgrade observed during
-                    // refill into the per-uplink window so `effective_*_ws_mode`
-                    // converges to the actually-dialable mode before any user
-                    // session even arrives. Without this, the first cold
-                    // refill after restart would silently fill the pool with
-                    // H2 entries while the manager still thought it was on H3.
+                    // refill into this wire's descent window so
+                    // `effective_*_mode_for_wire` converges to the
+                    // actually-dialable mode before any user session even
+                    // arrives. Without this, the first cold refill after
+                    // restart would silently fill the pool with H2 entries
+                    // while the manager still thought it was on H3.
                     if let Some(requested) = ws.downgraded_from() {
-                        self.manager.note_silent_transport_fallback(
-                            self.index,
-                            self.transport,
-                            requested,
-                        );
+                        self.note_dial_downgrade(requested);
                     }
                     // H2/H3 connections are shared (one socket per server, N
                     // streams per socket), so pooling them is cheap. When

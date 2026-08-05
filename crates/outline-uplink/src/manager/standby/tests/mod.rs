@@ -504,3 +504,83 @@ pub(super) async fn sample_manager_with_combined_ss_fallback() -> UplinkManager 
     };
     UplinkManager::new_for_test("test", vec![uplink], probe_cfg(), lb_with_wire_dial()).unwrap()
 }
+
+/// An SS fallback wire carried over XHTTP/H3 on both planes — the shape the
+/// fleet actually ships behind a VLESS primary. `xhttp_h3` (rather than
+/// `ws_h1`) is what makes a descent observable at all: the cap ladder needs a
+/// configured rank with something below it in the same family.
+fn ss_xhttp_h3_fallback_wire_at(url: &Url) -> FallbackTransport {
+    FallbackTransport {
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: None,
+        tcp_xhttp_url: Some(url.clone()),
+        tcp_mode: TransportMode::XhttpH3,
+        udp_ws_url: None,
+        udp_xhttp_url: Some(url.clone()),
+        udp_mode: TransportMode::XhttpH3,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        vless_id: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "shared".to_string(),
+        // Deliberately different from the parent's (`None` / `false`): the
+        // refill's network options are per-wire, and identical values on both
+        // sides would make a regression to the parent's unobservable.
+        fwmark: Some(0x12),
+        ipv6_first: true,
+        fingerprint_profile: None,
+    }
+}
+
+/// The fleet's own uplink shape: a **VLESS** primary on `xhttp_h3` with an
+/// **SS** fallback on `xhttp_h3`, warm-standby enabled on both planes and
+/// `tun_wire_dial` on so the pool follows `active_wire`.
+///
+/// The family mismatch between wire 0 and wire 1 is the whole point. It is
+/// what makes "the refill read the parent instead of the wire" observable:
+/// the two wires agree on carrier rank (so a downgrade note is admitted
+/// against either slot, and picking the wrong one is a silent mis-park rather
+/// than a rejected trigger) but disagree on transport family (so a datagram
+/// dial keyed off the parent negotiates the wrong framing).
+pub(super) async fn sample_manager_with_vless_primary_and_ss_fallback() -> UplinkManager {
+    let closed_url = closed_port_url().await;
+    let uplink = UplinkConfig {
+        name: "vless-primary-ss-fallback".to_string(),
+        transport: UplinkTransport::Vless,
+        tcp_ws_url: None,
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::XhttpH3,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::XhttpH3,
+        vless_ws_url: None,
+        vless_xhttp_url: Some(closed_url.clone()),
+        vless_mode: TransportMode::XhttpH3,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: String::new(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: Some([9u8; 16]),
+        fingerprint_profile: None,
+        fallbacks: vec![ss_xhttp_h3_fallback_wire_at(&closed_url)],
+        shuffle_wires: false,
+        carrier_downgrade: true,
+        padding: None,
+        shuffle_timer: None,
+    };
+    let lb = LoadBalancingConfig {
+        tun_wire_dial: true,
+        warm_standby_tcp: 2,
+        warm_standby_udp: 1,
+        ..lb()
+    };
+    UplinkManager::new_for_test("test", vec![uplink], probe_cfg(), lb).unwrap()
+}

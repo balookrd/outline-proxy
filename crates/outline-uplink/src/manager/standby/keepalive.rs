@@ -27,7 +27,9 @@ impl<'a> StandbyCtx<'a> {
         if self.desired == 0 {
             return;
         }
-        if !matches!(self.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
+        // The wire's family, not the parent's — the pool holds carriers dialed
+        // on `self.wire`, which may differ in family from its parent uplink.
+        if !matches!(self.wire_transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return;
         }
 
