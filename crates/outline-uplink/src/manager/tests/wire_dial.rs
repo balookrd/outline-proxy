@@ -90,3 +90,27 @@ async fn a_not_applicable_wire_is_skipped_without_recording_an_outcome() {
         "a wire that never ran must not move its own state machine"
     );
 }
+
+#[tokio::test]
+async fn gate_off_records_no_outcome_even_on_failure() {
+    // `tun_wire_dial` off means a node is deployed inert: it must be able to
+    // fail its only attempt (wire 0) without touching the shared active-wire
+    // state machine, because the SOCKS ingress on the same `UplinkManager`
+    // reads that state when it builds its own dial order. If gate-off wrote
+    // outcomes, a flag documented as inert would change SOCKS's behaviour.
+    let manager = sample_manager_with_three_fallbacks().await;
+    let candidate = manager.tcp_candidates_for_test(0).await;
+
+    let result: Result<(u8, u8)> = manager
+        .dial_over_wires(&candidate, TransportKind::Tcp, false, |wire| async move {
+            Err(anyhow!("wire {wire} is down"))
+        })
+        .await;
+
+    result.expect_err("the only wire tried fails");
+    assert_eq!(
+        manager.wire_outcome_count_for_test(0, TransportKind::Tcp, 0),
+        0,
+        "gate-off must not record any outcome, even a failure on wire 0"
+    );
+}
