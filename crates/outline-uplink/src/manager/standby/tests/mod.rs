@@ -381,6 +381,26 @@ pub(super) async fn sample_manager_with_three_fallbacks_gate_off() -> UplinkMana
     sample_manager_with_three_fallbacks_and_lb(lb()).await
 }
 
+/// Same shape as [`sample_manager_with_three_fallbacks`], but with a
+/// non-zero warm-standby capacity (`desired`). The push-path tests
+/// (`StandbyCtx::try_pool_dialed_stream`) need `desired > 0`: with the
+/// default `lb()`'s `warm_standby_tcp = warm_standby_udp = 0`, the
+/// capacity check inside `try_pool_dialed_stream` (`guard.len() >=
+/// self.desired`, i.e. `0 >= 0`) returns `None` on its own, which would mask
+/// a reverted wire-marker check behind an unrelated "pool already full"
+/// short-circuit.
+pub(super) async fn sample_manager_with_three_fallbacks_and_standby_capacity(
+    capacity: usize,
+) -> UplinkManager {
+    let lb = LoadBalancingConfig {
+        tun_wire_dial: true,
+        warm_standby_tcp: capacity,
+        warm_standby_udp: capacity,
+        ..lb()
+    };
+    sample_manager_with_three_fallbacks_and_lb(lb).await
+}
+
 async fn sample_manager_with_three_fallbacks_and_lb(lb: LoadBalancingConfig) -> UplinkManager {
     let closed_url = closed_port_url().await;
     let uplink = UplinkConfig {
