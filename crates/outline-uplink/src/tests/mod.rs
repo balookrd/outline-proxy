@@ -165,6 +165,39 @@ pub(crate) fn make_uplink(name: &str, url: &str) -> UplinkConfig {
     }
 }
 
+/// A minimal VLESS uplink for wire-projection tests: one primary carrier, no
+/// fallbacks. Callers push their own fallbacks.
+pub(crate) fn sample_uplink_config() -> UplinkConfig {
+    UplinkConfig {
+        name: "nuxt".to_string(),
+        transport: UplinkTransport::Vless,
+        tcp_ws_url: None,
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: Some(Url::parse("https://example.test/x").unwrap()),
+        vless_mode: TransportMode::XhttpH3,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: Some([7u8; 16]),
+        fingerprint_profile: None,
+        fallbacks: Vec::new(),
+        shuffle_wires: false,
+        carrier_downgrade: true,
+        padding: None,
+        shuffle_timer: None,
+    }
+}
+
 async fn start_keepalive_observer() -> (
     Url,
     mpsc::UnboundedReceiver<Message>,
