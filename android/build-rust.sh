@@ -33,8 +33,10 @@ echo ">> Building host cdylib (for binding generation)"
 cargo build --lib $PROFILE_FLAG
 
 echo ">> Generating UniFFI Kotlin bindings"
+# uniffi 0.31+ auto-detects a library source, so the path is positional and the
+# old `--library` flag is a deprecated no-op.
 cargo run --bin uniffi-bindgen -- generate \
-    --library "target/$PROFILE_DIR/liboutline_android.dylib" \
+    "target/$PROFILE_DIR/liboutline_android.dylib" \
     --language kotlin \
     --out-dir ../app/src/main/java
 

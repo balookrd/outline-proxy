@@ -109,28 +109,28 @@ pub fn start(
         .map_err(|e| VpnError::Runtime { msg: format!("crypto provider: {e:#}") })?;
 
     let cfg_path = PathBuf::from(&work_dir).join("config.toml");
-    std::fs::write(&cfg_path, config_toml)
-        .map_err(|e| VpnError::Config { msg: format!("write {}: {e}", cfg_path.display()) })?;
+    std::fs::write(&cfg_path, config_toml).map_err(|e| VpnError::Config {
+        msg: format!("write {}: {e}", cfg_path.display()),
+    })?;
 
     // Build ws-rust's CLI args from the config path; every other field falls
     // back to its clap default / env. `try_parse_from` never panics across FFI.
     let cfg_arg = cfg_path.to_string_lossy().into_owned();
-    let client_args = outline_ws_rust::config::Args::try_parse_from([
-        "outline-ws-rust",
-        "--config",
-        &cfg_arg,
-    ])
-    .map_err(|e| VpnError::Config { msg: format!("args: {e}") })?;
+    let client_args =
+        outline_ws_rust::config::Args::try_parse_from(["outline-ws-rust", "--config", &cfg_arg])
+            .map_err(|e| VpnError::Config { msg: format!("args: {e}") })?;
 
     // tun2proxy configuration: forward the TUN fd into the local SOCKS5 proxy.
     let proxy = ArgProxy::try_from(socks_proxy_url.as_str())
         .map_err(|e| VpnError::Config { msg: format!("proxy url: {e}") })?;
-    let mut bridge_args = TunArgs::default();
-    bridge_args.proxy = proxy;
-    bridge_args.tun_fd = Some(tun_fd);
-    // Kotlin owns the ParcelFileDescriptor — do not close it from here.
-    bridge_args.close_fd_on_drop = Some(false);
-    bridge_args.mtu = TUN_MTU;
+    let bridge_args = TunArgs {
+        proxy,
+        tun_fd: Some(tun_fd),
+        // Kotlin owns the ParcelFileDescriptor — do not close it from here.
+        close_fd_on_drop: Some(false),
+        mtu: TUN_MTU,
+        ..TunArgs::default()
+    };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -156,7 +156,12 @@ pub fn start(
         }
     });
 
-    *guard = Some(Engine { runtime, client_task, bridge_task, shutdown });
+    *guard = Some(Engine {
+        runtime,
+        client_task,
+        bridge_task,
+        shutdown,
+    });
     Ok(())
 }
 
