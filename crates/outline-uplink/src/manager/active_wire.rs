@@ -51,15 +51,10 @@ impl UplinkManager {
             Some(p) => p,
             None => return,
         };
-        let mut guard = match transport {
-            TransportKind::Tcp => pool.tcp.lock().await,
-            TransportKind::Udp => pool.udp.lock().await,
-        };
-        if guard.is_empty() {
+        let drained = pool.wire_pool(transport).lock().await.clear();
+        if drained == 0 {
             return;
         }
-        let drained = guard.len();
-        guard.clear();
         debug!(
             uplink_index,
             transport = ?transport,

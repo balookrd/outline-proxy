@@ -388,14 +388,14 @@ impl UplinkManager {
         outline_transport::TransportStream::new_http1(ws)
     }
 
-    /// Test helper: push `count` connected-but-never-dialed streams into
-    /// `(index, transport)`'s warm-standby pool and stamp its wire marker to
-    /// `wire`. Lets pool-wire tests stage "the pool currently holds carriers
-    /// dialed on wire W" without driving a real refill through the network.
-    /// `count = 0` is a legitimate call: it stamps the marker on an
+    /// Test helper: make `(index, transport)`'s warm-standby pool prewarm
+    /// `wire` and seed it with `count` connected-but-never-dialed carriers on
+    /// that wire. Lets pool-wire tests stage "the pool currently holds
+    /// carriers dialed on wire W" without driving a real refill through the
+    /// network. `count = 0` is a legitimate call: it claims the wire on an
     /// otherwise-untouched (or already-drained) pool without seeding any
-    /// entries, mirroring the drain-then-restamp `try_take_alive` performs on
-    /// a wire mismatch.
+    /// carriers, mirroring the drain-and-claim `try_take_alive` performs on a
+    /// wire mismatch.
     #[doc(hidden)]
     #[allow(dead_code)]
     pub(crate) async fn fill_pool_for_test(
@@ -405,17 +405,62 @@ impl UplinkManager {
         wire: u8,
         count: usize,
     ) {
-        let pool = &self.inner.standby_pools[index];
-        let deque = match transport {
-            crate::types::TransportKind::Tcp => &pool.tcp,
-            crate::types::TransportKind::Udp => &pool.udp,
-        };
+        let mut streams = Vec::with_capacity(count);
         for _ in 0..count {
-            let ws = Self::dialed_stream_for_test().await;
-            deque.lock().await.push_back(ws);
+            streams.push(Self::dialed_stream_for_test().await);
         }
-        pool.wire_marker(transport)
-            .store(wire, std::sync::atomic::Ordering::Relaxed);
+        let pool = self.inner.standby_pools[index].wire_pool(transport);
+        let mut guard = pool.lock().await;
+        guard.claim_wire(wire);
+        for stream in streams {
+            guard.stage_carrier_for_test(wire, stream);
+        }
+    }
+
+    /// Test helper: seed `count` carriers tagged with `carrier_wire` into
+    /// `(index, transport)`'s pool **without** touching the wire the pool
+    /// says it prewarms.
+    ///
+    /// This stages the one state no production path can produce any more: a
+    /// carrier from one wire sitting in a pool that claims to serve another.
+    /// That is exactly what the old drain-then-restamp gap left behind — a
+    /// refill dial for the outgoing wire, parked on the pool lock, pushed
+    /// into the drained-but-not-yet-restamped pool — and it is the state the
+    /// take path has to refuse.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) async fn stage_foreign_carriers_for_test(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+        carrier_wire: u8,
+        count: usize,
+    ) {
+        let mut streams = Vec::with_capacity(count);
+        for _ in 0..count {
+            streams.push(Self::dialed_stream_for_test().await);
+        }
+        let pool = self.inner.standby_pools[index].wire_pool(transport);
+        let mut guard = pool.lock().await;
+        for stream in streams {
+            guard.stage_carrier_for_test(carrier_wire, stream);
+        }
+    }
+
+    /// Test helper: the wire `(index, transport)`'s warm-standby pool
+    /// currently prewarms.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) async fn pool_wire_for_test(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+    ) -> u8 {
+        self.inner.standby_pools[index]
+            .wire_pool(transport)
+            .lock()
+            .await
+            .wire()
     }
 
     /// Test helper: how many refill tasks have been spawned through
@@ -443,10 +488,6 @@ impl UplinkManager {
         index: usize,
         transport: crate::types::TransportKind,
     ) -> usize {
-        let pool = &self.inner.standby_pools[index];
-        match transport {
-            crate::types::TransportKind::Tcp => pool.tcp.len_hint(),
-            crate::types::TransportKind::Udp => pool.udp.len_hint(),
-        }
+        self.inner.standby_pools[index].wire_pool(transport).len_hint()
     }
 }

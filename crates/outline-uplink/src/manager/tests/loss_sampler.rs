@@ -489,11 +489,11 @@ async fn taking_a_carrier_from_the_warm_pool_registers_its_loss_probe() {
     let (_server, _) = listener.accept().await.unwrap();
     let ws =
         WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None).await;
-    manager.inner.standby_pools[0]
-        .tcp
-        .lock()
-        .await
-        .push_back(TransportStream::new_http1(ws));
+    manager.inner.standby_pools[0].tcp.lock().await.push_for_wire(
+        0,
+        usize::MAX,
+        TransportStream::new_http1(ws),
+    );
 
     assert_eq!(
         manager.inner.carrier_loss[0].lock().len(),

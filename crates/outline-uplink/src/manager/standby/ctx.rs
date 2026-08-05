@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -11,7 +10,7 @@ use outline_metrics as metrics;
 use outline_transport::TransportStream;
 
 use crate::config::{SsPathKind, TransportMode};
-use crate::manager::standby_pool::TrackedDeque;
+use crate::manager::standby_pool::WirePool;
 use crate::types::{TransportKind, Uplink, UplinkManager};
 
 pub(super) const STANDBY_WS_PEEK_TIMEOUT: Duration = Duration::from_millis(1);
@@ -40,14 +39,12 @@ pub(super) struct StandbyCtx<'a> {
     /// is off — `shuffle_timer` moves `active_wire` regardless of the gate —
     /// and every take would miss against a pool nothing ever fills correctly.
     pub(super) wire: u8,
-    /// The deque that holds pooled `TransportStream`s for this transport.
-    pub(super) pool: &'a TrackedDeque,
+    /// The pool that holds pre-dialed carriers for this transport. Its own
+    /// wire — which wire those carriers were dialed on — lives inside its
+    /// mutex, so rotating it and mutating its entries is one transaction.
+    pub(super) pool: &'a WirePool,
     /// Serialises concurrent refill attempts for this transport.
     pub(super) refill_lock: &'a Mutex<()>,
-    /// Records which wire `pool`'s carriers were actually dialed on. Compared
-    /// against `wire` in `try_take_alive` to detect a pool left stale by a
-    /// wire rotation.
-    pub(super) wire_marker: &'a AtomicU8,
     /// Prometheus label fragment (`"tcp"` / `"udp"`).
     pub(super) label: &'static str,
     /// Source tag passed to `connect_transport` during refill.
@@ -96,7 +93,6 @@ impl UplinkManager {
                 wire: spec.wire,
                 pool: &pool.tcp,
                 refill_lock: &pool.tcp_refill,
-                wire_marker: pool.wire_marker(TransportKind::Tcp),
                 label: "tcp",
                 refill_source: "standby_tcp",
                 desired: lb.warm_standby_tcp,
@@ -112,7 +108,6 @@ impl UplinkManager {
                 wire: spec.wire,
                 pool: &pool.udp,
                 refill_lock: &pool.udp_refill,
-                wire_marker: pool.wire_marker(TransportKind::Udp),
                 label: "udp",
                 refill_source: "standby_udp",
                 desired: lb.warm_standby_udp,
@@ -151,17 +146,19 @@ impl<'a> StandbyCtx<'a> {
         metrics::record_warm_standby_acquire(self.label, self.group(), &self.uplink.name, outcome);
     }
 
-    /// The marker recording which wire `self.pool`'s carriers were actually
-    /// dialed on.
-    pub(super) fn pool_wire_marker(&self) -> &AtomicU8 {
-        self.wire_marker
-    }
-
     /// Pops one pooled WS stream for `wanted` — the wire the caller is
     /// dialing — and returns it if it passes the liveness pre-flight
     /// (`is_connection_alive` + 1 ms peek). Stale entries are discarded with a
     /// `"stale"` metric; `None` means either the pool holds nothing usable for
     /// `wanted`, or `wanted` is not the wire this pool prewarms at all.
+    ///
+    /// The wire is checked twice, at two different granularities, and both
+    /// checks matter: once against the pool as a whole (has it rotated since
+    /// it was filled?) and once against each carrier as it comes off the front
+    /// (was *this* carrier dialed on the wanted wire?). The per-carrier check
+    /// is the one that cannot be outrun by a concurrent writer, because the
+    /// wire it compares travels with the carrier rather than describing the
+    /// pool at some earlier moment.
     ///
     /// A take that removed anything from the pool — the returned stream, the
     /// stale entries it walked past, or both — schedules exactly ONE background
@@ -184,12 +181,22 @@ impl<'a> StandbyCtx<'a> {
         if wanted != self.wire {
             return None;
         }
-        // The marker names the wire these carriers were dialed on. A mismatch
-        // means the active wire moved under a filled pool: drain it so the
-        // refill repopulates on the wire flows are landing on now.
-        let filled_on = self.pool_wire_marker().load(Ordering::Relaxed);
-        if filled_on != self.wire {
-            let drained = self.pool.drain_all().await;
+        // The pool's own wire names what its carriers were dialed on. A
+        // mismatch means the active wire moved under a filled pool: drain it
+        // so the refill repopulates on the wire flows are landing on now.
+        //
+        // Drain and restamp are ONE transaction, under one guard. Split in
+        // two — drain under the pool lock, restamp after releasing it — they
+        // leave the pool empty but still named for the old wire, and a refill
+        // dial for that old wire parked on the lock lands squarely in the
+        // gap: its push is accepted, and the restamp that follows declares
+        // the carrier to belong to the new wire.
+        let rotated = {
+            let mut guard = self.pool.lock().await;
+            let filled_on = guard.wire();
+            (filled_on != self.wire).then(|| (filled_on, guard.claim_wire(self.wire)))
+        };
+        if let Some((filled_on, drained)) = rotated {
             if drained > 0 {
                 debug!(
                     uplink = %self.uplink.name,
@@ -206,19 +213,36 @@ impl<'a> StandbyCtx<'a> {
                 // `WARM_STANDBY_MAINTENANCE_INTERVAL` sweep (15s) — precisely
                 // when a rotation, often a failover, is pushing fresh flows
                 // at it. Skipped when nothing was drained (the pool was
-                // already empty): the marker still gets restamped below, and
-                // an empty pool is exactly the case the caller's own fresh
-                // dial plus the maintenance sweep already own.
+                // already empty): the pool is still restamped above, and an
+                // empty pool is exactly the case the caller's own fresh dial
+                // plus the maintenance sweep already own.
                 self.manager.spawn_refill(self.index, self.transport);
             }
-            self.pool_wire_marker().store(self.wire, Ordering::Relaxed);
             self.record_acquire("wire_changed");
             return None;
         }
 
         let mut popped_any = false;
         let taken = loop {
-            let Some(mut ws) = self.pool.lock().await.pop_front() else {
+            // Ask for `self.wire` explicitly rather than popping blind: the
+            // pop is the last point at which a carrier's wire can still be
+            // checked before it is handed to a flow, and on UDP it is the
+            // only one — `UdpWsTransport::from_websocket` is built off this
+            // stream with the wanted wire's credentials, and a mismatch there
+            // silently drops every reused datagram with no recovery.
+            let popped = self.pool.lock().await.pop_front_for_wire(self.wire);
+            if popped.foreign_dropped > 0 {
+                popped_any = true;
+                debug!(
+                    uplink = %candidate_name,
+                    transport = ?self.transport,
+                    dropped = popped.foreign_dropped,
+                    wanted = self.wire,
+                    "discarded pooled carriers belonging to another wire",
+                );
+                self.record_acquire("wire_changed");
+            }
+            let Some(mut ws) = popped.stream else {
                 break None;
             };
             popped_any = true;
