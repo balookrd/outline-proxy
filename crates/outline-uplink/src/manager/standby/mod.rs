@@ -7,8 +7,9 @@ mod tests;
 #[cfg(test)]
 use tests::{
     sample_manager_with_combined_ss_fallback, sample_manager_with_live_wire_two,
-    sample_manager_with_three_fallbacks, sample_manager_with_three_fallbacks_gate_off,
-    sample_manager_with_vless_fallback, udp_candidate_for_test,
+    sample_manager_with_three_fallbacks, sample_manager_with_three_fallbacks_and_standby_capacity,
+    sample_manager_with_three_fallbacks_gate_off, sample_manager_with_vless_fallback,
+    udp_candidate_for_test,
 };
 
 #[cfg(test)]

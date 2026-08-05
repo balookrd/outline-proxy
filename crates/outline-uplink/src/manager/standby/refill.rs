@@ -138,6 +138,55 @@ impl<'a> StandbyCtx<'a> {
         maybe_shrink_vecdeque(&mut guard);
     }
 
+    /// Attempts to add a freshly dialed `ws` to the pool. Returns the pool's
+    /// new length on success; `None` means `ws` was dropped instead, either
+    /// because the pool already reached `desired` (a concurrent
+    /// validate()/keepalive()/refill() got there first) or because the
+    /// pool's wire marker no longer names the wire this stream was dialed
+    /// for.
+    ///
+    /// The marker is re-read here, under the pool lock, rather than only
+    /// once before the dial started. `refill` stamps (or inherits) the
+    /// marker up front and then dials — and the dial itself is the one thing
+    /// on this path with no upper bound on how long it takes. If `active_wire`
+    /// moves and a concurrent take drains-and-restamps this pool for the new
+    /// wire while THIS dial is still in flight, the marker the caller
+    /// resolved against is already stale by the time the stream comes back.
+    /// Pushing it anyway would let the fresher marker vouch for a carrier
+    /// dialed under the OLD wire's credentials: on UDP the take path builds
+    /// the datagram transport straight off a pool pop it trusts completely,
+    /// so a mismatched carrier there means every reused datagram silently
+    /// drops with no protocol-level recovery — TCP at least fails
+    /// `do_tcp_ss_setup` and falls back to a fresh dial. Checking once before
+    /// the dial cannot see this: the window only opens *during* the dial, so
+    /// the check has to live at the one point after it has had its chance to
+    /// open — the push.
+    ///
+    /// Dropping the stream on a mismatch (rather than, say, trying to
+    /// re-file it under the wire the marker now names) is deliberate: a
+    /// wasted dial is far cheaper than a mis-credentialed carrier, and the
+    /// refill loop that queued this dial will simply stop (see `refill`'s
+    /// `None` arm) rather than chase a wire that has already moved once.
+    pub(super) async fn try_pool_dialed_stream(&self, ws: TransportStream) -> Option<usize> {
+        let mut guard = self.pool.lock().await;
+        if self.pool_wire_marker().load(Ordering::Relaxed) != self.wire {
+            drop(guard);
+            debug!(
+                uplink = %self.uplink.name,
+                transport = ?self.transport,
+                dialed_for = self.wire,
+                "dropping a warm-standby dial: its pool rolled onto another wire while it was in flight",
+            );
+            return None;
+        }
+        if guard.len() >= self.desired {
+            // Connection is dropped here; pool already full.
+            return None;
+        }
+        guard.push_back(ws);
+        Some(guard.len())
+    }
+
     /// Dials connections until the pool reaches `desired`. Holds the refill
     /// lock for the whole loop so concurrent refill callers serialise their
     /// dials. Discards Http1 results that appeared as H2/H3 fallbacks to
@@ -247,50 +296,63 @@ impl<'a> StandbyCtx<'a> {
                         break;
                     }
 
-                    // The warm pool follows the active wire (`self.wire`), so
-                    // attribution must too — filing every pooled carrier under
-                    // the primary slot would put the loss verdict where
-                    // nothing reads it once the pool has rolled onto a
-                    // fallback. Registering here — not just on the sibling
-                    // on-demand dial sites — matters because this pool is the
-                    // majority producer of user carriers: without it, every
-                    // carrier that started life as a pooled entry (most of
-                    // them) went unmeasured, and on an explicitly-`h1` pool,
-                    // where each slot owns its own socket rather than sharing
-                    // a carrier opened elsewhere, its carriers were never
-                    // measured at all.
-                    self.manager.register_carrier_loss_probe(
-                        self.index,
-                        self.wire,
-                        self.transport,
-                        ws.loss_probe(),
-                    );
+                    // Read the probe before the stream is handed to
+                    // `try_pool_dialed_stream`, which either moves it into the
+                    // pool or drops it — `loss_probe()` borrows, it does not
+                    // consume, but there is no `ws` left to call it on once
+                    // that returns.
+                    let probe = ws.loss_probe();
 
-                    // Re-check actual pool size before pushing — validate()
-                    // or keepalive() may have pushed entries back while we
-                    // were dialling, so the pool could already be at
-                    // capacity.
-                    let mut guard = self.pool.lock().await;
-                    if guard.len() >= self.desired {
-                        drop(guard);
-                        // Connection is dropped here; pool already full.
-                        break;
+                    match self.try_pool_dialed_stream(ws).await {
+                        Some(len) => {
+                            // The warm pool follows the active wire
+                            // (`self.wire`), so attribution must too — filing
+                            // every pooled carrier under the primary slot
+                            // would put the loss verdict where nothing reads
+                            // it once the pool has rolled onto a fallback.
+                            // Registering here — not just on the sibling
+                            // on-demand dial sites — matters because this
+                            // pool is the majority producer of user carriers:
+                            // without it, every carrier that started life as
+                            // a pooled entry (most of them) went unmeasured,
+                            // and on an explicitly-`h1` pool, where each slot
+                            // owns its own socket rather than sharing a
+                            // carrier opened elsewhere, its carriers were
+                            // never measured at all. Filed only once the
+                            // stream is actually pooled: a carrier dropped by
+                            // `try_pool_dialed_stream`'s wire-mismatch check
+                            // was never handed to anyone, so a probe for it
+                            // would just be dead weight in the registry.
+                            self.manager.register_carrier_loss_probe(
+                                self.index,
+                                self.wire,
+                                self.transport,
+                                probe,
+                            );
+                            current_len = len;
+                            metrics::record_warm_standby_refill(
+                                self.label,
+                                self.group(),
+                                &self.uplink.name,
+                                true,
+                            );
+                            debug!(
+                                uplink = %self.uplink.name,
+                                transport = ?self.transport,
+                                desired = self.desired,
+                                "warm-standby websocket replenished"
+                            );
+                        },
+                        None => {
+                            // Either the pool already reached `desired` (a
+                            // concurrent validate()/keepalive()/refill() got
+                            // there first) or this pool's wire marker no
+                            // longer names the wire this dial was for (see
+                            // `try_pool_dialed_stream`) — either way there is
+                            // nothing left for this refill call to do.
+                            break;
+                        },
                     }
-                    guard.push_back(ws);
-                    current_len = guard.len();
-                    drop(guard);
-                    metrics::record_warm_standby_refill(
-                        self.label,
-                        self.group(),
-                        &self.uplink.name,
-                        true,
-                    );
-                    debug!(
-                        uplink = %self.uplink.name,
-                        transport = ?self.transport,
-                        desired = self.desired,
-                        "warm-standby websocket replenished"
-                    );
                 },
                 Err(error) => {
                     metrics::record_warm_standby_refill(

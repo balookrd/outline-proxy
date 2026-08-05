@@ -199,6 +199,17 @@ impl<'a> StandbyCtx<'a> {
                     drained,
                     "draining a warm pool filled on a wire that is no longer active",
                 );
+                // Mirrors the ordinary pop loop below: a take that removes
+                // anything from the pool schedules exactly one background
+                // refill. This drain removes everything at once, so without
+                // this call the pool would sit cold until the next
+                // `WARM_STANDBY_MAINTENANCE_INTERVAL` sweep (15s) — precisely
+                // when a rotation, often a failover, is pushing fresh flows
+                // at it. Skipped when nothing was drained (the pool was
+                // already empty): the marker still gets restamped below, and
+                // an empty pool is exactly the case the caller's own fresh
+                // dial plus the maintenance sweep already own.
+                self.manager.spawn_refill(self.index, self.transport);
             }
             self.pool_wire_marker().store(self.wire, Ordering::Relaxed);
             self.record_acquire("wire_changed");
