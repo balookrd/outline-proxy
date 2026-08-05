@@ -30,6 +30,7 @@ mod global_budget;
 mod migrate;
 mod resume;
 mod window_autotune;
+mod wire_fallback;
 
 use super::super::state_machine::TcpFlowStatus;
 use super::super::tests::{
