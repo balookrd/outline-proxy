@@ -79,7 +79,25 @@ impl UplinkManager {
                     );
                 },
                 Ok(WireAttempt::Built(value)) => {
-                    self.record_wire_outcome(candidate.index, transport, wire, true, total_wires);
+                    // Gate-off must record nothing: `tun_wire_dial` exists so
+                    // the binary can be deployed inert and enabled one node at
+                    // a time, and a gate-off node only ever tries wire 0. If
+                    // it fed that outcome into the shared active-wire state
+                    // machine anyway, its primary-wire failures could still
+                    // promote `active_wire` to a fallback this ingress never
+                    // tried — and the SOCKS ingress on the same
+                    // `UplinkManager` reads that same state when it builds its
+                    // own dial order. A flag documented as inert must not
+                    // change behaviour for a different ingress.
+                    if allow_fallbacks {
+                        self.record_wire_outcome(
+                            candidate.index,
+                            transport,
+                            wire,
+                            true,
+                            total_wires,
+                        );
+                    }
                     if wire != 0 {
                         debug!(
                             uplink = %candidate.uplink.name,
@@ -90,7 +108,16 @@ impl UplinkManager {
                     return Ok((value, wire));
                 },
                 Err(error) => {
-                    self.record_wire_outcome(candidate.index, transport, wire, false, total_wires);
+                    // See the success arm above: gate-off must not record.
+                    if allow_fallbacks {
+                        self.record_wire_outcome(
+                            candidate.index,
+                            transport,
+                            wire,
+                            false,
+                            total_wires,
+                        );
+                    }
                     debug!(
                         uplink = %candidate.uplink.name,
                         wire,
