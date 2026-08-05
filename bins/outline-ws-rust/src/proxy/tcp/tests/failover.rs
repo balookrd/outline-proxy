@@ -4,10 +4,12 @@ use std::time::Duration;
 
 use super::*;
 use outline_uplink::{
-    CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TransportMode,
-    UplinkConfig, VlessUdpMuxLimits, WsProbeConfig,
+    CipherKind, FallbackTransport, LoadBalancingConfig, LoadBalancingMode, ProbeConfig,
+    RoutingScope, TransportMode, UplinkConfig, VlessUdpMuxLimits, WsProbeConfig,
 };
-use tokio::net::UdpSocket;
+use tokio::net::{TcpListener, UdpSocket};
+use tokio::sync::oneshot;
+use tokio_tungstenite::accept_async;
 
 fn probe_disabled() -> ProbeConfig {
     ProbeConfig {
@@ -236,4 +238,130 @@ fn a_dial_presenting_no_id_never_expects_resume_control_frames() {
         !expects_resume_control_frames(true, false),
         "a server that did not confirm the capability sends nothing to read",
     );
+}
+
+/// An SS fallback wire tagged by its own `addr`. Mirrors the parent uplink in
+/// every other field, the same way `WireSetup::from_fallback` /
+/// `WireSpec::from_fallback` share the parent's identity while taking their
+/// transport shape from the fallback entry itself.
+fn ss_fallback_wire_at(addr: std::net::SocketAddr) -> FallbackTransport {
+    FallbackTransport {
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: Some(format!("ws://{addr}/tcp").parse().unwrap()),
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        vless_id: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        fwmark: None,
+        ipv6_first: false,
+        fingerprint_profile: None,
+    }
+}
+
+/// A TCP port that was bound then immediately dropped, so a dial against it
+/// fails fast (connection refused) instead of hanging on real network I/O —
+/// used to make the primary wire reliably dead.
+async fn dead_port_url() -> url::Url {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/tcp", listener.local_addr().unwrap())
+        .parse()
+        .unwrap();
+    drop(listener);
+    url
+}
+
+fn ss_uplink_with_dead_primary(
+    name: &str,
+    dead_url: url::Url,
+    fallback: FallbackTransport,
+) -> UplinkConfig {
+    UplinkConfig {
+        name: name.to_string(),
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: Some(dead_url),
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+        fingerprint_profile: None,
+        fallbacks: vec![fallback],
+        shuffle_wires: false,
+        carrier_downgrade: true,
+        padding: None,
+        shuffle_timer: None,
+    }
+}
+
+/// Characterisation test for the wire-fallback refactor (folding
+/// `connect_tcp_uplink_inner`/`connect_tcp_fallback_fresh` onto the shared
+/// `UplinkManager::dial_over_wires` loop). SOCKS has walked its full wire
+/// chain unconditionally for as long as the chain has existed — this pins
+/// that a primary that cannot be reached still lands the connection on the
+/// fallback wire, reported accurately via `wire_index` and `source`, and
+/// must stay green whether the loop is the hand-rolled one or the shared
+/// one underneath.
+///
+/// The primary points at a bound-then-dropped port (instant connection
+/// refused); the fallback is a live mock WebSocket server, real enough for
+/// `do_tcp_ss_setup`'s SS branch to complete — it only needs the WS upgrade
+/// to succeed and never waits on a server-side reply before returning.
+#[tokio::test]
+async fn socks_fallback_still_reports_the_wire_it_landed_on() {
+    let dead_url = dead_port_url().await;
+
+    let fallback_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fallback_addr = fallback_listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = fallback_listener.accept().await.unwrap();
+        if let Ok(ws) = accept_async(stream).await {
+            // Hold the accepted socket open long enough for the dial's SS
+            // handshake (writer construction + initial target chunk) to
+            // complete on the client side.
+            let _ = shutdown_rx.await;
+            drop(ws);
+        }
+    });
+
+    let uplink = ss_uplink_with_dead_primary("u1", dead_url, ss_fallback_wire_at(fallback_addr));
+    let uplinks =
+        UplinkManager::new_for_test("main", vec![uplink.clone()], probe_disabled(), lb()).unwrap();
+    let candidate = UplinkCandidate { index: 0, uplink: uplink.into() };
+    let target = TargetAddr::Domain("example.test".to_string(), 443);
+
+    let connected = connect_tcp_uplink(&uplinks, &candidate, &target)
+        .await
+        .expect("primary must fail fast and the fallback wire must connect");
+
+    assert_ne!(connected.wire_index, 0, "must have landed on the fallback wire, not primary");
+    assert_eq!(connected.source, TcpUplinkSource::FreshDial);
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("mock fallback server task must finish within the timeout")
+        .unwrap();
 }

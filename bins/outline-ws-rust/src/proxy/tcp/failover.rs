@@ -2,15 +2,14 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::StreamExt;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use outline_transport::{
-    DialNetworkOptions, DialResumeOptions, SessionId, SsPathKind, TcpReader, TcpShadowsocksReader,
-    TcpShadowsocksWriter, TcpWriter, TransportDialOptions, UplinkConnectionBinding,
-    UpstreamTransportGuard, connect_transport,
+    SessionId, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
+    UplinkConnectionBinding, UpstreamTransportGuard,
 };
 use outline_uplink::{
-    FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
+    TransportKind, UplinkCandidate, UplinkManager, UplinkTransport, WireAttempt, WireSpec,
 };
 use socks5_proto::TargetAddr;
 
@@ -173,89 +172,64 @@ async fn connect_tcp_uplink_inner(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
-    let total_wires = 1 + candidate.uplink.fallbacks.len();
-    let dial_order = uplinks.wire_dial_order(candidate.index, TransportKind::Tcp, total_wires);
-
-    // Fast path: no fallbacks — preserve the previous error-propagation
-    // semantics (no extra context wrapping when only the primary exists).
-    if total_wires == 1 {
-        return connect_tcp_uplink_primary(uplinks, candidate, target).await;
-    }
-
-    let mut last_err: Option<anyhow::Error> = None;
-    for &wire_index in &dial_order {
-        let attempt = if wire_index == 0 {
-            connect_tcp_uplink_primary(uplinks, candidate, target).await
-        } else {
-            let fallback = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
-            connect_tcp_fallback_fresh(
-                uplinks,
-                candidate,
-                fallback,
+    // `allow_fallbacks: true` unconditionally — SOCKS has walked its full wire
+    // chain for as long as the chain has existed, unlike the TUN ingress whose
+    // wire support is new enough to need `tun_wire_dial` gating.
+    let (connected, wire) = uplinks
+        .dial_over_wires(candidate, TransportKind::Tcp, true, |wire| async move {
+            if wire == 0 {
+                // The pool (and its own standby/fresh-dial fallback) only ever
+                // serves the primary wire.
+                return connect_tcp_uplink_primary(uplinks, candidate, target)
+                    .await
+                    .map(WireAttempt::Built);
+            }
+            let spec = WireSpec::of(&candidate.uplink, wire)
+                .ok_or_else(|| anyhow!("uplink {} has no wire {wire}", candidate.uplink.name))?;
+            // A fresh fallback dial never presents a Session ID — this is the
+            // initial dial loop, there is no prior session to resume.
+            record_tcp_resume_lookup(uplinks, None);
+            let ws = uplinks
+                .connect_tcp_ws_fresh_on_wire(candidate, wire, "socks_tcp_fb")
+                .await?;
+            let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+            let binding = tcp_binding(uplinks, spec.name);
+            // Capture before `do_tcp_ss_setup` takes ownership of the stream.
+            let session_id = ws.issued_session_id();
+            let (writer, reader) = do_tcp_ss_setup(
+                ws,
+                &spec,
                 target,
-                wire_index,
-                FallbackDialOptions::default(),
+                "socks_tcp_fb",
+                keepalive_interval,
+                binding,
+                false,
             )
-            .await
-        };
-        match attempt {
-            Ok(connected) => {
-                uplinks.record_wire_outcome(
-                    candidate.index,
-                    TransportKind::Tcp,
-                    wire_index,
-                    true,
-                    total_wires,
-                );
-                if wire_index != 0 {
-                    outline_metrics::record_uplink_selected(
-                        "tcp",
-                        uplinks.group_name(),
-                        &candidate.uplink.name,
-                    );
-                    debug!(
-                        uplink = %candidate.uplink.name,
-                        target = %target,
-                        wire_index,
-                        "TCP fallback wire dial succeeded",
-                    );
-                }
-                return Ok(connected);
-            },
-            Err(error) => {
-                uplinks.record_wire_outcome(
-                    candidate.index,
-                    TransportKind::Tcp,
-                    wire_index,
-                    false,
-                    total_wires,
-                );
-                let wire_label = if wire_index == 0 {
-                    format!("primary ({})", candidate.uplink.transport)
-                } else {
-                    let fb = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
-                    format!("fallback[{}] ({})", wire_index - 1, fb.transport)
-                };
-                warn!(
-                    uplink = %candidate.uplink.name,
-                    target = %target,
-                    wire = %wire_label,
-                    error = %format!("{error:#}"),
-                    "TCP wire dial failed",
-                );
-                last_err = Some(
-                    error.context(format!("uplink {} {wire_label} failed", candidate.uplink.name,)),
-                );
-            },
-        }
+            .await?;
+            Ok(WireAttempt::Built(ConnectedTcpUplink {
+                writer,
+                reader,
+                source: TcpUplinkSource::FreshDial,
+                wire_index: wire,
+                session_id,
+            }))
+        })
+        .await?;
+
+    if wire != 0 {
+        outline_metrics::record_uplink_selected(
+            "tcp",
+            uplinks.group_name(),
+            &candidate.uplink.name,
+        );
+        debug!(
+            uplink = %candidate.uplink.name,
+            target = %target,
+            wire_index = wire,
+            "TCP fallback wire dial succeeded",
+        );
     }
-    Err(last_err
-        .unwrap_or_else(|| anyhow!("uplink {}: no wires available", candidate.uplink.name))
-        .context(format!(
-            "uplink {}: primary and all {} fallback(s) failed",
-            candidate.uplink.name,
-            candidate.uplink.fallbacks.len(),
-        )))
+    Ok(connected)
 }
 
 /// Dial a specific wire on `candidate` — primary if `wire_index == 0`,
@@ -280,22 +254,29 @@ pub(super) async fn connect_tcp_specific_wire(
     // Padding scope wraps the dial + transport build (see `connect_tcp_uplink`).
     outline_uplink::dial::with_uplink_padding_scope(&candidate.uplink, async move {
         if wire_index == 0 {
-            connect_tcp_uplink_primary(uplinks, candidate, target).await
-        } else {
-            let idx = (wire_index - 1) as usize;
-            let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
-                anyhow!("uplink {} has no fallback at index {}", candidate.uplink.name, idx,)
-            })?;
-            connect_tcp_fallback_fresh(
-                uplinks,
-                candidate,
-                fallback,
-                target,
-                wire_index,
-                FallbackDialOptions::default(),
-            )
-            .await
+            return connect_tcp_uplink_primary(uplinks, candidate, target).await;
         }
+        let spec = WireSpec::of(&candidate.uplink, wire_index)
+            .ok_or_else(|| anyhow!("uplink {} has no wire {wire_index}", candidate.uplink.name))?;
+        // A fresh wire-handover dial never presents a Session ID — see this
+        // function's doc.
+        record_tcp_resume_lookup(uplinks, None);
+        let ws = uplinks
+            .connect_tcp_ws_fresh_on_wire(candidate, wire_index, "socks_tcp_fb")
+            .await?;
+        let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+        let binding = tcp_binding(uplinks, spec.name);
+        let session_id = ws.issued_session_id();
+        let (writer, reader) =
+            do_tcp_ss_setup(ws, &spec, target, "socks_tcp_fb", keepalive_interval, binding, false)
+                .await?;
+        Ok(ConnectedTcpUplink {
+            writer,
+            reader,
+            source: TcpUplinkSource::FreshDial,
+            wire_index,
+            session_id,
+        })
     })
     .await
 }
@@ -322,25 +303,34 @@ pub(super) async fn connect_tcp_specific_wire_fresh(
     // Padding scope wraps the dial + transport build (see `connect_tcp_uplink`).
     outline_uplink::dial::with_uplink_padding_scope(&candidate.uplink, async move {
         if wire_index == 0 {
-            connect_tcp_uplink_fresh(uplinks, candidate, target, resume_request).await
-        } else {
-            let idx = (wire_index - 1) as usize;
-            let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
-                anyhow!("uplink {} has no fallback at index {}", candidate.uplink.name, idx,)
-            })?;
-            connect_tcp_fallback_fresh(
-                uplinks,
-                candidate,
-                fallback,
-                target,
-                wire_index,
-                FallbackDialOptions {
-                    resume_request,
-                    ..FallbackDialOptions::default()
-                },
-            )
-            .await
+            return connect_tcp_uplink_fresh(uplinks, candidate, target, resume_request).await;
         }
+        let spec = WireSpec::of(&candidate.uplink, wire_index)
+            .ok_or_else(|| anyhow!("uplink {} has no wire {wire_index}", candidate.uplink.name))?;
+        record_tcp_resume_lookup(uplinks, resume_request);
+        let ws = uplinks
+            .connect_tcp_ws_redial_on_wire(candidate, wire_index, "socks_tcp_fb", resume_request)
+            .await?;
+        let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+        let binding = tcp_binding(uplinks, spec.name);
+        let session_id = ws.issued_session_id();
+        let (writer, reader) = do_tcp_ss_setup(
+            ws,
+            &spec,
+            target,
+            "socks_tcp_fb",
+            keepalive_interval,
+            binding,
+            resume_request.is_some(),
+        )
+        .await?;
+        Ok(ConnectedTcpUplink {
+            writer,
+            reader,
+            source: TcpUplinkSource::FreshDial,
+            wire_index,
+            session_id,
+        })
     })
     .await
 }
@@ -356,14 +346,14 @@ async fn connect_tcp_uplink_primary(
     // stale (fails before any server bytes arrive), discard it silently and
     // retry with a fresh on-demand dial — without recording a runtime failure.
     if let Some(ws) = uplinks.try_take_tcp_standby(candidate, 0).await {
-        let setup = WireSetup::from_uplink(&candidate.uplink);
-        let binding = tcp_binding(uplinks, setup.name);
+        let spec = WireSpec::from_uplink(&candidate.uplink);
+        let binding = tcp_binding(uplinks, spec.name);
         // Read the ID off the stream *before* `do_tcp_ss_setup` consumes it:
         // a pooled standby carrier was dialed fresh (no resume request), so
         // the ID the server minted for it now belongs to this session.
         let session_id = ws.issued_session_id();
         // A pooled carrier was dialed by the refill loop with no id of its own.
-        match do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval, binding, false)
+        match do_tcp_ss_setup(ws, &spec, target, "socks_tcp", keepalive_interval, binding, false)
             .await
         {
             Ok((writer, reader)) => {
@@ -404,13 +394,13 @@ pub(super) async fn connect_tcp_uplink_fresh(
     let ws = uplinks
         .connect_tcp_ws_redial(candidate, "socks_tcp", resume_request)
         .await?;
-    let setup = WireSetup::from_uplink(&candidate.uplink);
-    let binding = tcp_binding(uplinks, setup.name);
+    let spec = WireSpec::from_uplink(&candidate.uplink);
+    let binding = tcp_binding(uplinks, spec.name);
     // Capture before `do_tcp_ss_setup` takes ownership of the stream.
     let session_id = ws.issued_session_id();
     let (writer, reader) = do_tcp_ss_setup(
         ws,
-        &setup,
+        &spec,
         target,
         "socks_tcp",
         keepalive_interval,
@@ -549,14 +539,14 @@ async fn redial_for_mid_session_retry_inner(
                 )
                 .await?
         };
-        let setup = WireSetup::from_uplink(&candidate.uplink);
-        let binding = tcp_binding(uplinks, setup.name);
+        let spec = WireSpec::from_uplink(&candidate.uplink);
+        let binding = tcp_binding(uplinks, spec.name);
         // The server mints a new ID on the resume hit too — capture it before
         // the stream is consumed so the session can redial again later.
         let session_id = ws.issued_session_id();
         let (writer, reader) = do_tcp_ss_setup(
             ws,
-            &setup,
+            &spec,
             target,
             "socks_tcp_retry",
             keepalive_interval,
@@ -581,46 +571,63 @@ async fn redial_for_mid_session_retry_inner(
     // previous behaviour — and the resulting redial failure would
     // bubble up into `report_runtime_failure` on the parent uplink,
     // flapping the whole uplink off the candidate set.
-    let idx = (wire_index - 1) as usize;
-    let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
-        anyhow!(
-            "mid-session retry: uplink {} has no fallback at index {} (wire_index={})",
-            candidate.uplink.name,
-            idx,
-            wire_index,
-        )
+    let spec = WireSpec::of(&candidate.uplink, wire_index).ok_or_else(|| {
+        anyhow!("mid-session retry: uplink {} has no wire {wire_index}", candidate.uplink.name)
     })?;
-    if !matches!(fallback.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
+    if !spec.is_ws_family() {
         bail!(
-            "mid-session retry redial only supports WS-family wires; uplink {} fallback[{}] \
-             uses transport {:?}",
+            "mid-session retry redial only supports WS-family wires; uplink {} wire {} uses \
+             transport {:?}",
             candidate.uplink.name,
-            idx,
-            fallback.transport,
+            wire_index,
+            spec.transport,
         );
     }
-    connect_tcp_fallback_fresh(
-        uplinks,
-        candidate,
-        fallback,
+    record_tcp_resume_lookup(uplinks, resume_request);
+    // Same reasoning as the primary-wire branch above: a session rescued onto
+    // this wire keeps whatever carrier it lands on, so the retry asks for the
+    // wire's configured one via the migrate-* dials, bypassing the per-wire
+    // cap in `fallback_mode_downgrades[wire_index - 1]`.
+    let ws = if symmetric_replay_enabled {
+        uplinks
+            .connect_tcp_ws_migrate_with_symmetric_replay_on_wire(
+                candidate,
+                wire_index,
+                "socks_tcp_retry",
+                resume_request,
+                client_acked_offset,
+            )
+            .await?
+    } else {
+        uplinks
+            .connect_tcp_ws_migrate_with_ack_prefix_on_wire(
+                candidate,
+                wire_index,
+                "socks_tcp_retry",
+                resume_request,
+            )
+            .await?
+    };
+    let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+    let binding = tcp_binding(uplinks, spec.name);
+    let session_id = ws.issued_session_id();
+    let (writer, reader) = do_tcp_ss_setup(
+        ws,
+        &spec,
         target,
-        wire_index,
-        FallbackDialOptions {
-            ack_prefix_requested: true,
-            symmetric_replay_requested: symmetric_replay_enabled,
-            client_acked_offset,
-            source: "socks_tcp_retry",
-            resume_request,
-            // Same reasoning as the primary-wire branch above: a session
-            // rescued onto this wire keeps whatever carrier it lands on, so
-            // the retry asks for the wire's configured one. The per-wire cap
-            // this bypasses lives in `fallback_mode_downgrades[wire_index - 1]`
-            // and is written by any *other* dial of this wire that observed a
-            // fallback (`note_silent_transport_fallback_for_wire`).
-            bypass_mode_downgrade: true,
-        },
+        "socks_tcp_retry",
+        keepalive_interval,
+        binding,
+        resume_request.is_some(),
     )
-    .await
+    .await?;
+    Ok(ConnectedTcpUplink {
+        writer,
+        reader,
+        source: TcpUplinkSource::FreshDial,
+        wire_index,
+        session_id,
+    })
 }
 
 /// Records the resume-lookup outcome for a TCP dial: a `hit` is a redial that
@@ -636,237 +643,6 @@ fn record_tcp_resume_lookup(uplinks: &UplinkManager, resume_request: Option<Sess
         if uplinks.shared_resume() { "group" } else { "uplink" },
         if resume_request.is_some() { "hit" } else { "miss" },
     );
-}
-
-/// Per-wire dial options for [`connect_tcp_fallback_fresh`].
-///
-/// The initial dial loop (`connect_tcp_uplink`) and the chunk-0 wire-handover
-/// step ([`connect_tcp_specific_wire`]) leave all fields at their defaults —
-/// fresh-failover behaviour as it shipped originally. The mid-session retry
-/// path ([`redial_for_mid_session_retry`]) flips `ack_prefix_requested` (and
-/// optionally `symmetric_replay_requested` + `client_acked_offset`) so the
-/// fallback wire is dialed with the same Ack-Prefix / Symmetric Replay
-/// capabilities the primary-wire retry already had.
-///
-/// `source` controls the metrics/log label the dial path emits — defaults to
-/// `"socks_tcp_fb"` (fresh fallback dial), `"socks_tcp_retry"` is what the
-/// mid-session retry uses so the dashboard can attribute the dial to the
-/// retry orchestrator.
-///
-/// `resume_request` is the redialing session's own Session ID; it stays `None`
-/// on every fresh-dial path (a new session must not resume anything).
-///
-/// `bypass_mode_downgrade` asks for the wire's configured carrier instead of
-/// its per-wire mode-downgrade cap. Only the mid-session retry sets it: the
-/// carrier it dials is the one the rescued session keeps for life, whereas a
-/// fresh dial is free to honour the cap and skip a handshake that is likely
-/// doomed — the next connection gets its own chance a moment later.
-#[derive(Clone, Copy)]
-pub(super) struct FallbackDialOptions {
-    pub(super) ack_prefix_requested: bool,
-    pub(super) symmetric_replay_requested: bool,
-    pub(super) client_acked_offset: u64,
-    pub(super) source: &'static str,
-    pub(super) resume_request: Option<SessionId>,
-    pub(super) bypass_mode_downgrade: bool,
-}
-
-impl Default for FallbackDialOptions {
-    fn default() -> Self {
-        Self {
-            ack_prefix_requested: false,
-            symmetric_replay_requested: false,
-            client_acked_offset: 0,
-            source: "socks_tcp_fb",
-            resume_request: None,
-            bypass_mode_downgrade: false,
-        }
-    }
-}
-
-/// Dial one fallback transport on the parent uplink. Returns a fully-set-up
-/// `ConnectedTcpUplink` indistinguishable from the primary path.
-///
-/// Bypasses the standby pool, and bypasses the primary's mode-downgrade
-/// window — this wire honours its own per-wire cap instead, unless the caller
-/// sets `bypass_mode_downgrade`. Resume is
-/// caller-driven: a fresh fallback dial presents no Session ID
-/// (`FallbackDialOptions::default()`), a mid-session-retry fallback dial
-/// presents the redialing session's own ID. Per-wire RTT samples **are** fed
-/// back into the
-/// uplink's EWMA on success: when a sticky fallback is the active wire,
-/// the score-based selection between uplinks must reflect the active wire's
-/// real latency rather than a stale primary-probe measurement. Strict per-
-/// (uplink, wire) EWMA is a follow-up; this iteration shares one EWMA per
-/// (uplink, transport) and the wire that successfully dials feeds it.
-///
-/// The DNS cache and per-uplink fingerprint scope (which is identity-level,
-/// not transport-level) are preserved.
-pub(super) async fn connect_tcp_fallback_fresh(
-    uplinks: &UplinkManager,
-    parent: &UplinkCandidate,
-    fallback: &FallbackTransport,
-    target: &TargetAddr,
-    wire_index: u8,
-    options: FallbackDialOptions,
-) -> Result<ConnectedTcpUplink> {
-    let cache = uplinks.dns_cache();
-    let setup = WireSetup::from_fallback(&parent.uplink.name, fallback);
-    let source = options.source;
-    let dial_started = std::time::Instant::now();
-
-    // WS / VLESS dial — both ride the same WS-family primitives. Mode is
-    // taken from the fallback's configured value (no per-fallback downgrade
-    // tracking yet — Phase 2 follow-up).
-    //
-    // Resume participation: the ID travels with the *session*, not the wire,
-    // so a session redialing onto a fallback wire presents the ID it was
-    // issued on the wire that just died and the server re-attaches its parked
-    // upstream — handover-via-resume across wire switches, without ever
-    // presenting an ID minted for a different session.
-    let url = fallback.tcp_dial_url().ok_or_else(|| {
-        anyhow!(
-            "uplink {} fallback ({}) missing TCP dial URL",
-            parent.uplink.name,
-            fallback.transport,
-        )
-    })?;
-    // Honour any active per-wire mode-downgrade window for this fallback.
-    // The cap is family-aware (`WsH3` → `WsH2`, `XhttpH3` → `XhttpH2`,
-    // `XhttpH2` → `XhttpH1`) and lives in
-    // `PerTransportStatus::fallback_mode_downgrades[wire_index - 1]`.
-    // The mid-session retry opts out (`bypass_mode_downgrade`) because the
-    // carrier it picks is the one the rescued session rides for life; the
-    // dial still falls back `h3 → h2 → h1` inline if the configured carrier
-    // really is broken, and the resulting `downgraded_from` still extends the
-    // window below.
-    let mode = if options.bypass_mode_downgrade {
-        fallback.tcp_dial_mode()
-    } else {
-        uplinks.effective_tcp_mode_for_wire(parent.index, wire_index).await
-    };
-    let resume_request = options.resume_request;
-    record_tcp_resume_lookup(uplinks, resume_request);
-    let ws = connect_transport(
-        TransportDialOptions::new(cache, url, mode, source)
-            .with_network(DialNetworkOptions {
-                fwmark: fallback.fwmark,
-                ipv6_first: fallback.ipv6_first,
-            })
-            .with_combined_ss_kind(fallback.combined_ss_kind(SsPathKind::Tcp))
-            .with_resume(DialResumeOptions {
-                // `None` on initial-dial / chunk-0 wire-handover paths
-                // (`FallbackDialOptions::default()`); `Some` only when the
-                // mid-session retry redials a session that owns an ID.
-                resume_request,
-                // Initial-dial / chunk-0 wire-handover paths pass
-                // `FallbackDialOptions::default()` (all three off); the
-                // mid-session retry path flips these on so the fallback
-                // wire is dialed with the same Ack-Prefix / Symmetric
-                // Downlink Replay capability the primary-wire retry
-                // already had.
-                ack_prefix_requested: options.ack_prefix_requested,
-                symmetric_replay_requested: options.symmetric_replay_requested,
-                client_acked_offset: options.client_acked_offset,
-            }),
-    )
-    .await
-    .with_context(|| {
-        format!(
-            "fallback dial to {} (uplink {}, transport={}) failed",
-            url, parent.uplink.name, fallback.transport,
-        )
-    })?;
-    // Captured before `do_tcp_ss_setup` below takes ownership of `ws`.
-    let loss_probe = ws.loss_probe();
-    // Mirror a transport-level downgrade observed by `connect_transport`
-    // (host-clamp via `ws_mode_cache` or inline H3→H2/H1 fallback) into
-    // *this fallback wire's* per-wire downgrade slot — never primary's.
-    if let Some(requested) = ws.downgraded_from() {
-        uplinks.note_silent_transport_fallback_for_wire(
-            parent.index,
-            TransportKind::Tcp,
-            wire_index,
-            requested,
-        );
-    }
-    let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
-    let binding = tcp_binding(uplinks, setup.name);
-    // Capture before `do_tcp_ss_setup` takes ownership of the stream: this ID
-    // belongs to the session that dialed this wire, and to nobody else.
-    let session_id = ws.issued_session_id();
-    let (writer, reader) = do_tcp_ss_setup(
-        ws,
-        &setup,
-        target,
-        source,
-        keepalive_interval,
-        binding,
-        resume_request.is_some(),
-    )
-    .await?;
-    uplinks.register_carrier_loss_probe(parent.index, wire_index, TransportKind::Tcp, loss_probe);
-    // Feed the dial latency into the uplink's RTT EWMA — see SS branch
-    // above for the rationale.
-    uplinks
-        .report_connection_latency(parent.index, TransportKind::Tcp, dial_started.elapsed())
-        .await;
-    debug!(
-        uplink = %parent.uplink.name,
-        target = %target,
-        transport = %fallback.transport,
-        wire = "fallback",
-        "opened fallback TCP uplink",
-    );
-    Ok(ConnectedTcpUplink {
-        writer,
-        reader,
-        source: TcpUplinkSource::FreshDial,
-        wire_index,
-        session_id,
-    })
-}
-
-/// Lightweight projection of the wire-credential fields needed by the
-/// SS / VLESS setup helpers. Lets the helpers take both an
-/// [`UplinkConfig`] (primary path) and a [`FallbackTransport`] (fallback
-/// path) by reference without an `&UplinkConfig` synthesis.
-///
-/// `name` is the **parent uplink's** display name in both cases — the
-/// fallback shares identity with its parent for logging / metrics
-/// purposes. The wire family / cipher / password / vless_id come from
-/// whichever side is actually being dialed.
-pub(super) struct WireSetup<'a> {
-    pub(super) name: &'a str,
-    pub(super) transport: UplinkTransport,
-    pub(super) cipher: outline_uplink::CipherKind,
-    pub(super) password: &'a str,
-    pub(super) vless_id: Option<&'a [u8; 16]>,
-}
-
-impl<'a> WireSetup<'a> {
-    pub(super) fn from_uplink(uplink: &'a outline_uplink::UplinkConfig) -> Self {
-        Self {
-            name: &uplink.name,
-            transport: uplink.transport,
-            cipher: uplink.cipher,
-            password: &uplink.password,
-            vless_id: uplink.vless_id.as_ref(),
-        }
-    }
-
-    pub(super) fn from_fallback(
-        parent_name: &'a str,
-        fallback: &'a outline_uplink::FallbackTransport,
-    ) -> Self {
-        Self {
-            name: parent_name,
-            transport: fallback.transport,
-            cipher: fallback.cipher,
-            password: &fallback.password,
-            vless_id: fallback.vless_id.as_ref(),
-        }
-    }
 }
 
 /// Build the per-connection uplink-attribution tag used by
@@ -893,7 +669,7 @@ fn expects_resume_control_frames(presented_resume_id: bool, advertised_by_server
 
 async fn do_tcp_ss_setup(
     ws_stream: outline_transport::TransportStream,
-    setup: &WireSetup<'_>,
+    setup: &WireSpec<'_>,
     target: &TargetAddr,
     source: &'static str,
     keepalive_interval: Option<std::time::Duration>,
@@ -934,6 +710,7 @@ async fn do_tcp_ss_setup(
     if setup.transport == UplinkTransport::Vless {
         let uuid = setup
             .vless_id
+            .as_ref()
             .ok_or_else(|| anyhow!("uplink {} missing vless_id", setup.name))?;
         let (writer, reader) = outline_transport::vless::vless_tcp_pair_from_ws(
             ws_stream,
@@ -974,7 +751,7 @@ async fn do_tcp_ss_setup(
 
 async fn send_initial_ss_target(
     writer: &mut TcpWriter,
-    setup: &WireSetup<'_>,
+    setup: &WireSpec<'_>,
     target: &TargetAddr,
     transport: &'static str,
 ) -> Result<()> {

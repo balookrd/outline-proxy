@@ -267,10 +267,38 @@ impl UplinkManager {
         source: &'static str,
         resume_request: Option<SessionId>,
     ) -> Result<TransportStream> {
+        self.connect_tcp_ws_redial_on_wire(candidate, 0, source, resume_request)
+            .await
+    }
+
+    /// Wire-aware sibling of [`Self::connect_tcp_ws_redial`]: dials `wire`
+    /// rather than always the primary.
+    ///
+    /// Used by same-uplink recovery paths that present this session's own
+    /// Session ID before chunk 0 has been acknowledged — the warm-standby
+    /// stale-socket retry and the chunk-0 RST retry (`connect/retry.rs` in
+    /// `outline-ws-rust`). Neither owns a replay ring at that point in the
+    /// session, so — unlike [`Self::connect_tcp_ws_migrate_with_ack_prefix_on_wire`]
+    /// — no Ack-Prefix / Symmetric Replay capability is requested and the
+    /// wire's mode-downgrade cap is honoured rather than bypassed: this redial
+    /// is not rescuing a live flow off a carrier that just died, so there is
+    /// no reason to prefer the configured carrier over the (possibly capped)
+    /// effective one.
+    pub async fn connect_tcp_ws_redial_on_wire(
+        &self,
+        candidate: &UplinkCandidate,
+        wire: u8,
+        source: &'static str,
+        resume_request: Option<SessionId>,
+    ) -> Result<TransportStream> {
         self.connect_tcp_ws_fresh_internal(
             candidate,
             source,
-            FreshTcpDial { resume_request, ..Default::default() },
+            FreshTcpDial {
+                wire,
+                resume_request,
+                ..Default::default()
+            },
         )
         .await
     }
