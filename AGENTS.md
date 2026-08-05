@@ -38,6 +38,10 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
   `outline-routing`, `shadowsocks-crypto`, `socks5-proto`.
 - `vendor/h3`, `vendor/sockudo-ws` — пропатченные крейты, подключены через
   корневой `[patch.crates-io]`. ОДНА копия каждого на весь workspace.
+- `android/rust/` — пакет `outline-android` (UniFFI/JNI-обёртка над клиентом).
+  Отдельный workspace (`[workspace]` в его манифесте) — корневой
+  `cargo check --workspace` его НЕ видит, поэтому у него свои шаги в гейте
+  (см. ниже) и свой `target/`. Path-зависимости смотрят вверх, в монорепо.
 
 ## Команды
 
@@ -74,13 +78,22 @@ cargo fmt --check -p outline-ss-rust -p outline-ws-rust \
   -p shadowsocks-crypto -p socks5-proto
 cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps -- -D warnings
 cargo test --workspace --exclude sockudo-ws
+
+# android/rust — отдельный workspace, ни одна из команд выше его не задевает
+(cd android/rust && cargo fmt --check && cargo clippy --no-deps -- -D warnings)
 ```
 
-Оба шага lint-джоба обязательны, и именно в этом порядке: `fmt` падает первым и
-маскирует собой clippy — «CI красный по формату» регулярно прячет за собой ещё и
-warning'и, которые всплывут вторым заходом. Явный список пакетов у `fmt`,
-`--exclude sockudo-ws` и `--no-deps` — не косметика: без них гейт лезет в
+Все четыре шага lint-джоба обязательны, и именно в этом порядке: `fmt` падает
+первым и маскирует собой clippy — «CI красный по формату» регулярно прячет за
+собой ещё и warning'и, которые всплывут вторым заходом. Явный список пакетов у
+`fmt`, `--exclude sockudo-ws` и `--no-deps` — не косметика: без них гейт лезет в
 vendored-крейты, которые держим в upstream-стиле.
+
+`android/rust` гоняется из своего каталога, потому что это detached workspace:
+явный список пакетов до него не достаёт, `--workspace` — тоже. `--all-targets`
+там не нужен (тестов нет), а дефолтные таргеты — lib + cdylib + бинарь
+`uniffi-bindgen` — под хост компилируются; Android-таргет требуется только для
+линковки `.so` в приложение.
 
 Третий job (`feature matrix + monorepo invariants`) гоняет
 `cargo check -p <bin> --no-default-features` и скриптовые проверки инвариантов —

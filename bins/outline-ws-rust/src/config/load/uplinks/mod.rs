@@ -7,7 +7,10 @@ use rand::seq::SliceRandom;
 use outline_uplink::{FallbackTransport, UplinkConfig};
 
 use super::super::args::Args;
-use super::super::schema::{OutlineSection, UplinkSection};
+use super::super::schema::OutlineSection;
+// Only `validate_uplink_section` (control-plane CRUD) names this type.
+#[cfg(feature = "control")]
+use super::super::schema::UplinkSection;
 
 mod credentials;
 mod fallback_resolution;

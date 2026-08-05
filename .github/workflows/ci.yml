@@ -44,7 +44,13 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.1
+      # `android/rust` is a detached workspace with its own target dir, so it
+      # needs its own cache entry — the default (`.`) never sees it.
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            android/rust
 
       # `cargo fmt --all` would also reformat the vendored `sockudo-ws`
       # workspace member, which we keep in upstream style — so the check lists
@@ -69,6 +75,25 @@ jobs:
         run: >
           cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps --
           -D warnings
+
+      # `android/rust` (package `outline-android`) declares its own empty
+      # `[workspace]`, so it is invisible to both steps above: it is neither in
+      # the explicit fmt package list nor reachable from `--workspace`. Lint it
+      # from its own directory or it drifts unnoticed — which is exactly what
+      # happened before these two steps existed.
+      - name: rustfmt (detached android workspace)
+        working-directory: android/rust
+        run: cargo fmt --check
+
+      # No `--all-targets`: the crate has no tests/benches, and its default
+      # targets (lib + cdylib + the uniffi-bindgen helper bin) all compile for
+      # the host — only linking the cdylib into an app needs an Android target,
+      # and clippy stops at the check step. `--no-deps` keeps the gate off the
+      # monorepo path dependencies, which the workspace clippy above already
+      # covers.
+      - name: clippy — android (deny all default-level warnings)
+        working-directory: android/rust
+        run: cargo clippy --no-deps -- -D warnings
 
   test:
     name: test
