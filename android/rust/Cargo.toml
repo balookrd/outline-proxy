@@ -31,7 +31,7 @@ crate-type = ["cdylib", "lib"]
 # stack (quinn + aws-lc-rs QUIC) so xhttp_h3 / ws_h3 uplinks work.
 outline-ws-rust = { path = "../../bins/outline-ws-rust", default-features = false, features = ["h3"] }
 
-uniffi = { version = "0.28", features = ["tokio", "cli"] }
+uniffi = { version = "0.32", features = ["tokio", "cli"] }
 tokio = { version = "1.44", features = ["rt-multi-thread", "sync", "time"] }
 
 # TUN-fd → SOCKS5 bridge. Reads the VpnService TUN descriptor and forwards
