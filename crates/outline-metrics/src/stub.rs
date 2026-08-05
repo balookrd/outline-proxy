@@ -224,7 +224,7 @@ pub fn record_warm_standby_refill(
     _transport: &'static str,
     _group: &str,
     _uplink: &str,
-    _success: bool,
+    _result: &'static str,
 ) {
 }
 pub fn record_metrics_http_request(_path: &'static str, _status: u16) {}

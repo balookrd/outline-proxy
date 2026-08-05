@@ -4,6 +4,10 @@
 //! manager does not consider active, which is precisely the split this whole
 //! change removes.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::task::Poll;
+
 use crate::config::SsPathKind;
 use crate::types::{TransportKind, UplinkManager};
 
@@ -12,6 +16,17 @@ use super::{
     sample_manager_with_three_fallbacks_and_standby_capacity,
     sample_manager_with_three_fallbacks_gate_off,
 };
+
+/// Polls `fut` exactly once, with the enclosing task's waker, and reports
+/// whether it finished.
+///
+/// The pool sweeps (`validate` / `keepalive`) empty the pool and then park on
+/// their first liveness probe. Stopping them there — deterministically, with
+/// no spawn and no sleep — is what lets a test occupy the window in which the
+/// pool looks empty while the sweep still holds every carrier.
+async fn poll_once<F: Future>(mut fut: Pin<&mut F>) -> Poll<F::Output> {
+    std::future::poll_fn(move |cx| Poll::Ready(fut.as_mut().poll(cx))).await
+}
 
 #[tokio::test]
 async fn a_pool_filled_on_another_wire_is_drained_rather_than_handed_out() {
@@ -224,5 +239,215 @@ async fn a_udp_stream_dialed_before_a_rotation_is_not_pooled_once_the_marker_mov
         manager.pool_len_for_test(0, TransportKind::Udp),
         0,
         "the mismatched carrier must be dropped, not left where a wire-0 take could find it"
+    );
+}
+
+// ── Finding 1: the drain-and-restamp gap ─────────────────────────────────────
+//
+// The rotation branch of `try_take_alive` used to drain under the pool lock,
+// release it, and only then restamp the wire marker. A refill dial for the
+// OUTGOING wire, parked on that lock, was admitted in the gap: it saw the old
+// marker, matched, and pushed. The restamp that followed then declared its
+// carrier to belong to the incoming wire, and the next take for that wire
+// passed both guards and was handed it.
+//
+// The gap itself is a two-thread interleaving and cannot be produced on a
+// single-threaded executor — there is no await between the drain's lock
+// release and the restamp for another task to run in. What CAN be staged
+// deterministically is the state it left behind, which is what actually hurts:
+// a carrier from one wire sitting in a pool that says it serves another. The
+// fix makes that state harmless (each carrier carries its own wire, checked at
+// the pop) as well as unreachable (drain and restamp are one transaction).
+
+/// The exact residue of the gap: pool marked for wire 0, holding a carrier
+/// dialed on wire 2. On TCP a mis-wired carrier fails `do_tcp_ss_setup` and
+/// the session silently redials; the pool must not produce it in the first
+/// place.
+#[tokio::test]
+async fn a_carrier_from_another_wire_is_refused_however_the_pool_is_marked() {
+    let manager = sample_manager_with_three_fallbacks().await;
+    manager.test_set_active_wire(0, TransportKind::Tcp, 0);
+    manager.fill_pool_for_test(0, TransportKind::Tcp, 0, 0).await;
+    manager
+        .stage_foreign_carriers_for_test(0, TransportKind::Tcp, 2, 1)
+        .await;
+    assert_eq!(manager.pool_len_for_test(0, TransportKind::Tcp), 1);
+    assert_eq!(manager.pool_wire_for_test(0, TransportKind::Tcp).await, 0);
+
+    let candidate = manager.tcp_candidates_for_test(0).await;
+    let taken = manager.try_take_tcp_standby(&candidate, 0).await;
+
+    assert!(
+        taken.is_none(),
+        "a carrier dialed on wire 2 must never serve a wire-0 flow, whatever the \
+         pool as a whole claims to be prewarming"
+    );
+    assert_eq!(
+        manager.pool_len_for_test(0, TransportKind::Tcp),
+        0,
+        "and it must be dropped, not left for the next take to trip over"
+    );
+}
+
+/// UDP twin of the test above — the transport where the bug is fatal rather
+/// than merely wasteful. `acquire_udp_standby_or_connect` builds
+/// `UdpWsTransport::from_websocket` straight off the pop, with the *wanted*
+/// wire's cipher and password; a carrier from another wire means every reused
+/// datagram is silently dropped, with no protocol-level recovery.
+#[tokio::test]
+async fn a_udp_carrier_from_another_wire_is_refused_however_the_pool_is_marked() {
+    let manager = sample_manager_with_three_fallbacks().await;
+    manager.test_set_active_wire(0, TransportKind::Udp, 0);
+    manager.fill_pool_for_test(0, TransportKind::Udp, 0, 0).await;
+    manager
+        .stage_foreign_carriers_for_test(0, TransportKind::Udp, 2, 1)
+        .await;
+
+    let ctx = manager.standby_ctx_for_test(0, TransportKind::Udp).await;
+    let taken = ctx.try_take_alive("three-fallback-test", 0).await;
+
+    assert!(
+        taken.is_none(),
+        "a wire-2 carrier handed to a wire-0 UDP session drops every datagram it carries"
+    );
+    assert_eq!(manager.pool_len_for_test(0, TransportKind::Udp), 0);
+}
+
+/// A pool the gap left genuinely mixed: one foreign carrier ahead of a good
+/// one. The take must walk past the foreign carrier — dropping it — and still
+/// hand out the carrier that does belong to the wanted wire, rather than
+/// either serving the foreign one or going cold.
+#[tokio::test]
+async fn a_mixed_pool_drops_the_foreign_carrier_and_still_serves_the_good_one() {
+    let manager = sample_manager_with_three_fallbacks().await;
+    manager.test_set_active_wire(0, TransportKind::Tcp, 0);
+    manager.fill_pool_for_test(0, TransportKind::Tcp, 0, 0).await;
+    manager
+        .stage_foreign_carriers_for_test(0, TransportKind::Tcp, 2, 1)
+        .await;
+    manager
+        .stage_foreign_carriers_for_test(0, TransportKind::Tcp, 0, 1)
+        .await;
+    assert_eq!(manager.pool_len_for_test(0, TransportKind::Tcp), 2);
+
+    let candidate = manager.tcp_candidates_for_test(0).await;
+    let taken = manager.try_take_tcp_standby(&candidate, 0).await;
+
+    assert!(taken.is_some(), "the wire-0 carrier behind it is perfectly usable");
+    assert_eq!(
+        manager.pool_len_for_test(0, TransportKind::Tcp),
+        0,
+        "the wire-2 carrier must be dropped on the way past, not left behind"
+    );
+}
+
+// ── Finding 2: sweeps re-inserting into a rotated pool ───────────────────────
+//
+// `validate` and `keepalive` take every carrier out of the pool, probe them
+// outside the lock, and write the survivors back. Neither takes the refill
+// lock, and for the whole stretch in between the pool reads as *empty* — long
+// enough for a take to rotate it onto another wire, or for a refill to find it
+// cold and claim it. Writing the survivors back unconditionally then files
+// old-wire carriers under the new wire's identity, which is the same hand-out
+// Finding 1 produces by a different route.
+
+/// `validate` on the UDP pool: a wire-1 acquire rotates the pool while the
+/// sweep holds its wire-0 carriers, so the sweep must drop them rather than
+/// re-insert them. UDP is the pool `maintain_pool` also sweeps, and the one
+/// with no recovery downstream.
+#[tokio::test]
+async fn a_validate_sweep_drops_its_carriers_when_the_pool_rotates_under_it() {
+    let manager = sample_manager_with_three_fallbacks_and_standby_capacity(2).await;
+    manager.test_set_active_wire(0, TransportKind::Udp, 0);
+    manager.fill_pool_for_test(0, TransportKind::Udp, 0, 2).await;
+
+    let ctx = manager.standby_ctx_for_test(0, TransportKind::Udp).await;
+    let mut sweep = std::pin::pin!(ctx.validate());
+    assert!(
+        poll_once(sweep.as_mut()).await.is_pending(),
+        "the sweep parks on its first liveness probe"
+    );
+    assert_eq!(
+        manager.pool_len_for_test(0, TransportKind::Udp),
+        0,
+        "and by then it is holding every carrier outside the lock — the pool reads empty"
+    );
+
+    // A wire-1 acquire lands in that window: it finds the pool marked for
+    // wire 0, drains the zero entries it can see, and claims wire 1.
+    manager.fill_pool_for_test(0, TransportKind::Udp, 1, 0).await;
+
+    sweep.await;
+
+    assert_eq!(
+        manager.pool_wire_for_test(0, TransportKind::Udp).await,
+        1,
+        "the sweep must not undo the rotation"
+    );
+    assert_eq!(
+        manager.pool_len_for_test(0, TransportKind::Udp),
+        0,
+        "its wire-0 carriers belong to a wire nothing is dialing any more and must be \
+         dropped, not re-inserted into a pool that now serves wire 1"
+    );
+}
+
+/// `keepalive` on the TCP pool: same window, same re-insert, same outcome.
+/// It runs on its own timer (`tcp_ws_standby_keepalive_interval`), separate
+/// from the 15 s maintenance sweep, so fixing only `validate` would leave the
+/// TCP pool exposed on a shorter cycle than the one that was fixed.
+#[tokio::test]
+async fn a_keepalive_sweep_drops_its_carriers_when_the_pool_rotates_under_it() {
+    let manager = sample_manager_with_three_fallbacks_and_standby_capacity(2).await;
+    manager.test_set_active_wire(0, TransportKind::Tcp, 0);
+    manager.fill_pool_for_test(0, TransportKind::Tcp, 0, 2).await;
+
+    let ctx = manager.standby_ctx_for_test(0, TransportKind::Tcp).await;
+    let mut sweep = std::pin::pin!(ctx.keepalive());
+    assert!(poll_once(sweep.as_mut()).await.is_pending());
+    assert_eq!(manager.pool_len_for_test(0, TransportKind::Tcp), 0);
+
+    manager.fill_pool_for_test(0, TransportKind::Tcp, 1, 0).await;
+
+    sweep.await;
+
+    assert_eq!(manager.pool_wire_for_test(0, TransportKind::Tcp).await, 1);
+    assert_eq!(
+        manager.pool_len_for_test(0, TransportKind::Tcp),
+        0,
+        "keepalive must drop what it was holding once the pool has rotated, exactly \
+         as validate does"
+    );
+}
+
+/// The second route into the same state: while the sweep holds the carriers
+/// out, the pool *looks* cold, so a refill for another wire claims it and
+/// pushes its own carrier. Re-inserting on top would leave the pool genuinely
+/// mixed — wire-0 and wire-1 carriers under one marker — which is worse than
+/// the plain rotation case because the pool then has usable entries and no
+/// take will drain it wholesale.
+#[tokio::test]
+async fn a_sweep_must_not_mix_its_carriers_with_a_refill_that_claimed_the_cold_pool() {
+    let manager = sample_manager_with_three_fallbacks_and_standby_capacity(4).await;
+    manager.test_set_active_wire(0, TransportKind::Tcp, 0);
+    manager.fill_pool_for_test(0, TransportKind::Tcp, 0, 2).await;
+
+    let ctx = manager.standby_ctx_for_test(0, TransportKind::Tcp).await;
+    let mut sweep = std::pin::pin!(ctx.validate());
+    assert!(poll_once(sweep.as_mut()).await.is_pending());
+    assert_eq!(manager.pool_len_for_test(0, TransportKind::Tcp), 0);
+
+    // A refill resolved for wire 1 finds an empty pool, claims it, and pools
+    // its dial.
+    manager.fill_pool_for_test(0, TransportKind::Tcp, 1, 1).await;
+
+    sweep.await;
+
+    assert_eq!(manager.pool_wire_for_test(0, TransportKind::Tcp).await, 1);
+    assert_eq!(
+        manager.pool_len_for_test(0, TransportKind::Tcp),
+        1,
+        "only the refill's wire-1 carrier may survive: a pool holding both wires' \
+         carriers hands one of them to the wrong flow and no take drains it"
     );
 }

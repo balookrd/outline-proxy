@@ -1911,7 +1911,14 @@ async fn standby_tcp_keepalive_sends_ping_and_preserves_pool_entry() {
     )
     .await
     .unwrap();
-    manager.inner.standby_pools[0].tcp.lock().await.push_back(ws);
+    // `usize::MAX` capacity: this seeds a specific stream (connected to the
+    // keepalive observer) rather than staging generic pool depth, so the
+    // configured `desired` must not gate it.
+    manager.inner.standby_pools[0]
+        .tcp
+        .lock()
+        .await
+        .push_for_wire(0, usize::MAX, ws);
 
     manager.run_tcp_standby_keepalive(0).await;
 
@@ -1920,7 +1927,7 @@ async fn standby_tcp_keepalive_sends_ping_and_preserves_pool_entry() {
         .unwrap()
         .unwrap();
     assert!(matches!(message, Message::Ping(_)));
-    assert_eq!(manager.inner.standby_pools[0].tcp.lock().await.len(), 1);
+    assert_eq!(manager.inner.standby_pools[0].tcp.len_hint(), 1);
 
     let _ = shutdown_tx.send(());
     observer_task.await.unwrap();
