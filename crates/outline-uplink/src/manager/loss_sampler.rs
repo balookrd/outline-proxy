@@ -6,7 +6,7 @@ use tracing::{debug, info};
 
 use outline_transport::CarrierLossProbe;
 
-use crate::loss::LossCollection;
+use crate::loss::{CarrierLossRegistry, LossCollection};
 use crate::manager::status::UplinkStatus;
 use crate::types::{TransportKind, UplinkManager};
 
@@ -100,6 +100,49 @@ impl UplinkManager {
             registry.len()
         };
         debug!(uplink, wire, ?transport, identity, live, "carrier loss probe filed");
+    }
+
+    /// Hand this manager's live probe registries over, keyed by uplink name.
+    /// Leaves the manager with empty ones — the caller is taking ownership,
+    /// not copying.
+    ///
+    /// Exists because `/control/apply` rebuilds every manager while carriers
+    /// keep running, and a probe is only ever filed when a carrier is dialed
+    /// or handed out of the warm pool. Without carrying the registries across
+    /// the rebuild, any carrier that outlives an apply is never observed
+    /// again: short-lived ones are re-registered within minutes and hide the
+    /// problem, but a long-lived one — a video stream's UDP session — may not
+    /// be dialed again for hours. On the fleet's busiest node that showed up
+    /// as the UDP plane going permanently silent after an apply while still
+    /// carrying 17.9 MiB/min.
+    pub(crate) fn take_carrier_loss_registries(&self) -> Vec<(String, CarrierLossRegistry)> {
+        self.inner
+            .uplinks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, uplink)| {
+                let slot = self.inner.carrier_loss.get(index)?;
+                let taken = std::mem::take(&mut *slot.lock());
+                Some((uplink.name.clone(), taken))
+            })
+            .collect()
+    }
+
+    /// Adopt registries handed over by a displaced manager, matching by uplink
+    /// *name* rather than by index: a hot-apply may add, remove or reorder
+    /// uplinks, and an index-keyed hand-off would then attribute one uplink's
+    /// carriers to another. An uplink whose name is absent from `from` simply
+    /// starts empty, which is what happens for a newly added one.
+    pub(crate) fn adopt_carrier_loss_registries(&self, from: Vec<(String, CarrierLossRegistry)>) {
+        for (name, registry) in from {
+            let Some(index) = self.inner.uplinks.iter().position(|u| u.name == name) else {
+                continue;
+            };
+            let Some(slot) = self.inner.carrier_loss.get(index) else {
+                continue;
+            };
+            *slot.lock() = registry;
+        }
     }
 
     /// One sampling pass over every uplink: difference each live carrier's
