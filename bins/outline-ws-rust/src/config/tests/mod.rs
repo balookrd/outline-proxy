@@ -1718,3 +1718,64 @@ async fn load_config_rejects_unknown_key_in_nested_section() {
     let err = load_config(&path, &args).await.unwrap_err();
     assert!(format!("{err:#}").contains("unknown field `stickiness_ttl_secs`"), "{err:#}");
 }
+
+#[tokio::test]
+async fn load_config_tun_wire_dial_defaults_to_off() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://main.example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert!(
+        !config.groups[0].load_balancing.tun_wire_dial,
+        "the TUN wire chain ships inert: a deployed binary must be \
+         indistinguishable from the previous one until the flag is set"
+    );
+}
+
+#[tokio::test]
+async fn load_config_tun_wire_dial_can_be_enabled_per_group() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+        tun_wire_dial = true
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://main.example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert!(config.groups[0].load_balancing.tun_wire_dial);
+}

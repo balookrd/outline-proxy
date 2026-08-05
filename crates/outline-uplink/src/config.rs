@@ -867,6 +867,20 @@ pub struct LoadBalancingConfig {
     /// When `false`, the legacy behaviour is restored exactly: a fixed cyclic
     /// `wire_dial_order` and a binary per-host carrier-family downgrade cap.
     pub health_weighted_selection: bool,
+    /// Let the TUN ingress dial the uplink's fallback wires, instead of always
+    /// dialing the primary carrier.
+    ///
+    /// Default `false`, and deliberately so. The wire chain has only ever been
+    /// reachable from the SOCKS ingress, which the fleet does not use; turning
+    /// it on for TUN makes `shuffle_wires` genuinely rotate carriers, so
+    /// traffic starts flowing over wires that have never carried it. That is
+    /// the point of the feature, but it is not a change to make silently on
+    /// every node at once — the flag exists so the binary can be deployed
+    /// inert and enabled one node at a time.
+    ///
+    /// With this off, the TUN dial order degenerates to `[0]` and the warm
+    /// pool stays on the primary wire, which is exactly today's behaviour.
+    pub tun_wire_dial: bool,
     /// Floor on the per-candidate selection weight, in `[0, 1]`, used when
     /// `health_weighted_selection` is enabled. Guarantees that even a
     /// persistently-failing wire / carrier family keeps a non-zero probability
