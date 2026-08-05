@@ -19,6 +19,7 @@ pub mod ss_share_link;
 pub mod state;
 mod time;
 mod types;
+pub mod wire_spec;
 
 pub use config::{
     CipherKind, DnsProbeConfig, FallbackTransport, HttpProbeConfig, LoadBalancingConfig,
@@ -38,3 +39,4 @@ pub use types::{
     ActiveUplinksSnapshot, StickyRouteSnapshot, SwitchIntent, TransportKind, Uplink,
     UplinkCandidate, UplinkManager, UplinkManagerSnapshot, UplinkSnapshot,
 };
+pub use wire_spec::{Plane, WireSpec};
