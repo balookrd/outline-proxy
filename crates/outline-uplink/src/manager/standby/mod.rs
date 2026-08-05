@@ -39,7 +39,6 @@ use outline_transport::{
 
 use crate::config::{SsPathKind, UplinkTransport};
 use crate::manager::status::PerTransportStatus;
-use outline_transport::collections::maybe_shrink_vecdeque;
 
 /// Resolve `(deadline, cap)` from a per-transport status snapshot
 /// against the configured mode. Returns the cap when the window is
@@ -847,14 +846,11 @@ impl UplinkManager {
     }
 
     pub(crate) async fn clear_standby(&self, index: usize, transport: TransportKind) {
-        let pool = &self.inner.standby_pools[index];
-        let deque = match transport {
-            TransportKind::Tcp => &pool.tcp,
-            TransportKind::Udp => &pool.udp,
-        };
-        let mut guard = deque.lock().await;
-        guard.clear();
-        maybe_shrink_vecdeque(&mut guard);
+        self.inner.standby_pools[index]
+            .wire_pool(transport)
+            .lock()
+            .await
+            .clear();
     }
 
     pub fn spawn_warm_standby_loop(&self) {

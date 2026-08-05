@@ -1,5 +1,3 @@
-use std::sync::atomic::Ordering;
-
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use tokio::time::{Instant, timeout};
@@ -12,9 +10,9 @@ use outline_transport::{
 
 use crate::config::UplinkTransport;
 use crate::error_classify::StandbyProbeExpected;
+use crate::manager::standby_pool::{PooledCarrier, PushOutcome};
 use crate::probe::is_expected_standby_probe_failure;
 use crate::types::TransportKind;
-use outline_transport::collections::maybe_shrink_vecdeque;
 
 use super::ctx::{STANDBY_WS_PEEK_TIMEOUT, StandbyCtx};
 
@@ -52,18 +50,25 @@ impl<'a> StandbyCtx<'a> {
         }
 
         let mode_is_http1 = self.mode_is_http1();
-        let mut drained = std::collections::VecDeque::new();
-        {
+        // The carriers come out tagged with the wire each was dialed on, and
+        // go back in only if the pool still prewarms that wire — see
+        // `WirePoolGuard::restore`. The sweep holds them outside the lock for
+        // as long as the probes take, and the pool reads as *empty* for that
+        // whole stretch: long enough for a take to rotate it onto another
+        // wire, or for a refill to find it cold and claim it. Handing these
+        // back unconditionally would file old-wire carriers under the new
+        // wire's identity.
+        let mut drained = {
             let mut guard = self.pool.lock().await;
-            drained.extend(guard.drain(..));
-        }
+            guard.take_all()
+        };
 
         if drained.is_empty() {
             return;
         }
 
         let mut alive = std::collections::VecDeque::with_capacity(drained.len());
-        while let Some(mut ws) = drained.pop_front() {
+        while let Some(PooledCarrier { wire, stream: mut ws }) = drained.pop_front() {
             let started = Instant::now();
             // Evict Http1 connections that are present as H2/H3 fallbacks.
             // These each own their own TCP socket, so keeping them in the
@@ -112,7 +117,7 @@ impl<'a> StandbyCtx<'a> {
                 started.elapsed(),
             );
             match alive_result {
-                Ok(()) => alive.push_back(ws),
+                Ok(()) => alive.push_back(PooledCarrier { wire, stream: ws }),
                 Err(error) => {
                     if is_expected_standby_probe_failure(&error) {
                         debug!(
@@ -133,58 +138,73 @@ impl<'a> StandbyCtx<'a> {
             }
         }
 
-        let mut guard = self.pool.lock().await;
-        guard.extend(alive);
-        maybe_shrink_vecdeque(&mut guard);
-    }
-
-    /// Attempts to add a freshly dialed `ws` to the pool. Returns the pool's
-    /// new length on success; `None` means `ws` was dropped instead, either
-    /// because the pool already reached `desired` (a concurrent
-    /// validate()/keepalive()/refill() got there first) or because the
-    /// pool's wire marker no longer names the wire this stream was dialed
-    /// for.
-    ///
-    /// The marker is re-read here, under the pool lock, rather than only
-    /// once before the dial started. `refill` stamps (or inherits) the
-    /// marker up front and then dials — and the dial itself is the one thing
-    /// on this path with no upper bound on how long it takes. If `active_wire`
-    /// moves and a concurrent take drains-and-restamps this pool for the new
-    /// wire while THIS dial is still in flight, the marker the caller
-    /// resolved against is already stale by the time the stream comes back.
-    /// Pushing it anyway would let the fresher marker vouch for a carrier
-    /// dialed under the OLD wire's credentials: on UDP the take path builds
-    /// the datagram transport straight off a pool pop it trusts completely,
-    /// so a mismatched carrier there means every reused datagram silently
-    /// drops with no protocol-level recovery — TCP at least fails
-    /// `do_tcp_ss_setup` and falls back to a fresh dial. Checking once before
-    /// the dial cannot see this: the window only opens *during* the dial, so
-    /// the check has to live at the one point after it has had its chance to
-    /// open — the push.
-    ///
-    /// Dropping the stream on a mismatch (rather than, say, trying to
-    /// re-file it under the wire the marker now names) is deliberate: a
-    /// wasted dial is far cheaper than a mis-credentialed carrier, and the
-    /// refill loop that queued this dial will simply stop (see `refill`'s
-    /// `None` arm) rather than chase a wire that has already moved once.
-    pub(super) async fn try_pool_dialed_stream(&self, ws: TransportStream) -> Option<usize> {
-        let mut guard = self.pool.lock().await;
-        if self.pool_wire_marker().load(Ordering::Relaxed) != self.wire {
-            drop(guard);
+        let stranded = self.pool.lock().await.restore(alive);
+        if stranded > 0 {
             debug!(
                 uplink = %self.uplink.name,
                 transport = ?self.transport,
-                dialed_for = self.wire,
-                "dropping a warm-standby dial: its pool rolled onto another wire while it was in flight",
+                stranded,
+                "dropping swept warm-standby carriers: the pool rolled onto another wire \
+                 while they were out being probed",
             );
-            return None;
         }
-        if guard.len() >= self.desired {
-            // Connection is dropped here; pool already full.
-            return None;
+    }
+
+    /// Attempts to add a freshly dialed `ws` to the pool on behalf of
+    /// `self.wire`. Returns the pool's new length on success; `None` means
+    /// `ws` was dropped instead, either because the pool already reached
+    /// `desired` (a concurrent validate()/keepalive()/refill() got there
+    /// first) or because the pool no longer prewarms the wire this stream was
+    /// dialed for.
+    ///
+    /// Both checks happen inside [`WirePoolGuard::push_for_wire`], under the
+    /// one pool guard, rather than once before the dial started. `refill`
+    /// resolves its wire up front and then dials — and the dial is the one
+    /// thing on this path with no upper bound on how long it takes. If
+    /// `active_wire` moves and a concurrent take rotates this pool onto the
+    /// new wire while THIS dial is still in flight, the wire the caller
+    /// resolved against is already stale by the time the stream comes back.
+    /// Pushing it anyway would seat a carrier dialed under the OLD wire's
+    /// credentials in a pool that says it serves the new one: on UDP the take
+    /// path builds the datagram transport straight off a pool pop, so a
+    /// mismatched carrier there means every reused datagram silently drops
+    /// with no protocol-level recovery — TCP at least fails `do_tcp_ss_setup`
+    /// and falls back to a fresh dial. Checking once before the dial cannot
+    /// see this: the window only opens *during* the dial, so the check has to
+    /// live at the one point after it has had its chance to open — the push.
+    ///
+    /// Dropping the stream on a mismatch (rather than, say, re-filing it
+    /// under the wire the pool now serves) is deliberate: a wasted dial is
+    /// far cheaper than a mis-credentialed carrier, and the refill loop that
+    /// queued this dial will simply stop (see `refill`'s `None` arm) rather
+    /// than chase a wire that has already moved once.
+    pub(super) async fn try_pool_dialed_stream(&self, ws: TransportStream) -> Option<usize> {
+        let outcome = self.pool.lock().await.push_for_wire(self.wire, self.desired, ws);
+        match outcome {
+            PushOutcome::Pooled(len) => Some(len),
+            // Connection was dropped by the guard; pool already full.
+            PushOutcome::Full => None,
+            PushOutcome::WrongWire => {
+                // A rotation storm that keeps outrunning in-flight dials
+                // burns them one after another, so this needs a counter and
+                // not only a `debug!` line: on `/metrics` it lands in
+                // `warm_standby_refill_total{result="wire_changed"}`, next to
+                // the `success` / `error` outcomes of the same dials.
+                metrics::record_warm_standby_refill(
+                    self.label,
+                    self.group(),
+                    &self.uplink.name,
+                    "wire_changed",
+                );
+                debug!(
+                    uplink = %self.uplink.name,
+                    transport = ?self.transport,
+                    dialed_for = self.wire,
+                    "dropping a warm-standby dial: its pool rolled onto another wire while it was in flight",
+                );
+                None
+            },
         }
-        guard.push_back(ws);
-        Some(guard.len())
     }
 
     /// Dials connections until the pool reaches `desired`. Holds the refill
@@ -205,24 +225,28 @@ impl<'a> StandbyCtx<'a> {
 
         // Read current length once; track additions with a counter to avoid
         // re-locking on every iteration just to check the pool size.
-        let mut current_len = self.pool.lock().await.len();
+        //
+        // Claiming the wire for a pool that is genuinely empty closes the one
+        // window `try_take_alive`'s drain-on-mismatch cannot: a pool that has
+        // never been filled starts on wire `0` by default, so a refill that
+        // lands here with `self.wire != 0` (an active wire already moved
+        // before this pool's first fill — startup race, not steady state)
+        // must not leave a fresh, correctly-wired pool looking stale to the
+        // very next take. Guarded to the empty case only: a pool that still
+        // holds carriers from a wire this refill has not yet touched
+        // (`current_len >= desired`, so the loop below never dials) keeps its
+        // old wire — that mismatch is exactly what `try_take_alive` is
+        // supposed to catch and drain. Both the emptiness test and the claim
+        // happen under one guard, so nothing can push into "the empty pool"
+        // between them.
+        let mut current_len = {
+            let mut guard = self.pool.lock().await;
+            if guard.is_empty() {
+                guard.claim_wire(self.wire);
+            }
+            guard.len()
+        };
         let mode_is_http1 = self.mode_is_http1();
-
-        // Stamp the marker before dialing into a pool that is genuinely
-        // empty. This closes the one window `try_take_alive`'s drain-on-
-        // mismatch cannot: a pool that has never been filled starts with the
-        // marker at its `0` default, so a refill that lands here with
-        // `self.wire != 0` (an active wire already moved before this pool's
-        // first fill — startup race, not steady state) must not leave a
-        // fresh, correctly-wired pool looking stale to the very next take.
-        // Guarded to the empty case only: a pool that still holds entries
-        // from a wire this refill has not yet touched (`current_len >=
-        // desired`, so the loop below never dials) must keep its old marker
-        // — that mismatch is exactly what `try_take_alive` is supposed to
-        // catch and drain.
-        if current_len == 0 {
-            self.pool_wire_marker().store(self.wire, Ordering::Relaxed);
-        }
 
         loop {
             if current_len >= self.desired {
@@ -334,7 +358,7 @@ impl<'a> StandbyCtx<'a> {
                                 self.label,
                                 self.group(),
                                 &self.uplink.name,
-                                true,
+                                "success",
                             );
                             debug!(
                                 uplink = %self.uplink.name,
@@ -359,7 +383,7 @@ impl<'a> StandbyCtx<'a> {
                         self.label,
                         self.group(),
                         &self.uplink.name,
-                        false,
+                        "error",
                     );
                     warn!(
                         uplink = %self.uplink.name,

@@ -479,15 +479,18 @@ pub fn record_warm_standby_acquire(
         .inc();
 }
 
+/// `result` must stay low-cardinality: `"success"`, `"error"`, or
+/// `"wire_changed"` (the dial came back after its pool had rotated onto
+/// another wire, so the carrier was dropped rather than pooled).
 pub fn record_warm_standby_refill(
     transport: &'static str,
     group: &str,
     uplink: &str,
-    success: bool,
+    result: &'static str,
 ) {
     METRICS
         .warm_standby_refill_total
-        .with_label_values(&[transport, group, uplink, if success { "success" } else { "error" }])
+        .with_label_values(&[transport, group, uplink, result])
         .inc();
 }
 

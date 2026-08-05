@@ -9,8 +9,8 @@ use outline_metrics as metrics;
 
 use crate::config::UplinkTransport;
 use crate::error_classify::StandbyProbeExpected;
+use crate::manager::standby_pool::PooledCarrier;
 use crate::probe::is_expected_standby_probe_failure;
-use outline_transport::collections::maybe_shrink_vecdeque;
 
 use super::ctx::{STANDBY_WS_PEEK_TIMEOUT, StandbyCtx};
 
@@ -31,18 +31,21 @@ impl<'a> StandbyCtx<'a> {
             return;
         }
 
-        let mut drained = std::collections::VecDeque::new();
-        {
+        // Tagged out, wire-checked back in: same reasoning as `validate` —
+        // the pool reads as empty for as long as these pings take, which is
+        // long enough for a take to rotate it onto another wire or for a
+        // refill to find it cold and claim it.
+        let mut drained = {
             let mut guard = self.pool.lock().await;
-            drained.extend(guard.drain(..));
-        }
+            guard.take_all()
+        };
 
         if drained.is_empty() {
             return;
         }
 
         let mut alive = std::collections::VecDeque::with_capacity(drained.len());
-        while let Some(mut ws) = drained.pop_front() {
+        while let Some(PooledCarrier { wire, stream: mut ws }) = drained.pop_front() {
             let started = Instant::now();
             let keepalive_result: Result<()> = if !ws.is_connection_alive() {
                 Err(anyhow::Error::from(StandbyProbeExpected)
@@ -83,7 +86,7 @@ impl<'a> StandbyCtx<'a> {
                 started.elapsed(),
             );
             match keepalive_result {
-                Ok(()) => alive.push_back(ws),
+                Ok(()) => alive.push_back(PooledCarrier { wire, stream: ws }),
                 Err(error) => {
                     if is_expected_standby_probe_failure(&error) {
                         debug!(
@@ -104,8 +107,15 @@ impl<'a> StandbyCtx<'a> {
             }
         }
 
-        let mut guard = self.pool.lock().await;
-        guard.extend(alive);
-        maybe_shrink_vecdeque(&mut guard);
+        let stranded = self.pool.lock().await.restore(alive);
+        if stranded > 0 {
+            debug!(
+                uplink = %self.uplink.name,
+                transport = ?self.transport,
+                stranded,
+                "dropping keepalived warm-standby carriers: the pool rolled onto another \
+                 wire while they were out being pinged",
+            );
+        }
     }
 }
