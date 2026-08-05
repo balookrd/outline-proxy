@@ -7879,9 +7879,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
-        "w": 5,
-        "x": 14,
+        "h": 6,
+        "w": 7,
+        "x": 10,
         "y": 181
       },
       "id": 323,
@@ -7969,9 +7969,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
-        "w": 5,
-        "x": 19,
+        "h": 6,
+        "w": 7,
+        "x": 17,
         "y": 181
       },
       "id": 324,
@@ -8008,7 +8008,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Which uplink to trust right now, at a glance. Loss is what the carrier socket reports for the wire currently carrying traffic; the sample columns say how many packets that verdict rests on — a ratio built on tens of thousands is evidence, one built on a few hundred is a hint. An empty cell means the uplink was not measured (usually because it is idle), never that it is clean. Compare the loss columns across uplinks before choosing loss_latency_penalty_k: the spread between them is what a coefficient acts on.",
+      "description": "One row per uplink and plane. Loss is what the carrier socket reports for the wire currently carrying traffic; the sample column is how many packets that verdict rests on — tens of thousands is evidence, a few hundred is a hint. A row that is absent entirely means the uplink was not measured (usually idle), never that it is clean. Compare the loss column across uplinks before choosing loss_latency_penalty_k: the spread between them is what a coefficient acts on.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -8032,8 +8032,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byRegexp",
-              "options": ".* loss$"
+              "id": "byName",
+              "options": "Loss"
             },
             "properties": [
               {
@@ -8074,8 +8074,8 @@
           },
           {
             "matcher": {
-              "id": "byRegexp",
-              "options": ".* sample$"
+              "id": "byName",
+              "options": "Sample"
             },
             "properties": [
               {
@@ -8089,7 +8089,7 @@
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-background"
+                  "type": "color-text"
                 }
               },
               {
@@ -8102,49 +8102,11 @@
                       "value": 0
                     },
                     {
-                      "color": "transparent",
+                      "color": "text",
                       "value": 5000
                     }
                   ]
                 }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Active"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "● active",
-                        "color": "green",
-                        "index": 0
-                      },
-                      "0": {
-                        "text": "—",
-                        "color": "text",
-                        "index": 1
-                      }
-                    }
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              },
-              {
-                "id": "custom.width",
-                "value": 90
               }
             ]
           },
@@ -8156,15 +8118,27 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 110
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Plane"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
               }
             ]
           }
         ]
       },
       "gridPos": {
-        "h": 8,
-        "w": 14,
+        "h": 6,
+        "w": 10,
         "x": 0,
         "y": 181
       },
@@ -8183,55 +8157,31 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "TCP loss"
+            "displayName": "Loss"
           }
         ]
       },
       "targets": [
         {
-          "expr": "max by (uplink) (outline_ws_uplink_carrier_loss_ratio{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",transport=\"tcp\"})",
+          "expr": "max by (uplink, transport) (outline_ws_uplink_carrier_loss_ratio{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
           "refId": "A"
         },
         {
-          "expr": "max by (uplink) (outline_ws_uplink_carrier_loss_ratio{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",transport=\"udp\"})",
+          "expr": "max by (uplink, transport) (outline_ws_uplink_carrier_loss_observed_packets{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
           "refId": "B"
-        },
-        {
-          "expr": "max by (uplink) (outline_ws_uplink_carrier_loss_observed_packets{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",transport=\"tcp\"})",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "refId": "C"
-        },
-        {
-          "expr": "max by (uplink) (outline_ws_uplink_carrier_loss_observed_packets{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",transport=\"udp\"})",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "refId": "D"
-        },
-        {
-          "expr": "max by (uplink) (outline_ws_global_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "refId": "E"
         }
       ],
-      "title": "Uplink Comparison: who is losing packets, and on how much evidence",
+      "title": "Uplink Comparison: loss per plane, and the evidence behind it",
       "transformations": [
         {
-          "id": "joinByField",
-          "options": {
-            "byField": "uplink",
-            "mode": "outer"
-          }
+          "id": "merge",
+          "options": {}
         },
         {
           "id": "organize",
@@ -8240,14 +8190,17 @@
               "Time": true
             },
             "includeByName": {},
-            "indexByName": {},
+            "indexByName": {
+              "uplink": 0,
+              "transport": 1,
+              "Value #A": 2,
+              "Value #B": 3
+            },
             "renameByName": {
               "uplink": "Uplink",
-              "Value #A": "TCP loss",
-              "Value #B": "UDP loss",
-              "Value #C": "TCP sample",
-              "Value #D": "UDP sample",
-              "Value #E": "Active"
+              "transport": "Plane",
+              "Value #A": "Loss",
+              "Value #B": "Sample"
             }
           }
         }
