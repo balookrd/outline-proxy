@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::udp::AllUdpUplinksFailed;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
@@ -13,7 +13,7 @@ use outline_transport::{
     AbortOnDrop, UdpSessionTransport, WsClosed, is_dropped_oversized_udp_error,
     payload_integrity_cause,
 };
-use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
+use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager, WireAttempt};
 use socks5_proto::TargetAddr;
 
 use super::eviction::{evict_oldest_flow, record_flow_activity};
@@ -610,8 +610,13 @@ impl TunUdpEngine {
         // session continuity.
         let carried_an_id = resume_store.holds_any_id().unwrap_or(false);
 
+        // Redial the flow's own active wire, not always the primary: a
+        // soft-switch redial that ignored a repointed-away-from-primary wire
+        // would migrate the flow off the carrier its own uplink is actually
+        // serving traffic on.
+        let wire = manager.active_wire(candidate.index, TransportKind::Udp);
         let connected = manager
-            .acquire_udp_standby_or_connect_with_store(&candidate, "tun_udp", resume_store)
+            .acquire_udp_on_wire(&candidate, wire, "tun_udp", resume_store)
             .await;
         let fresh = match connected {
             Ok(fresh) => fresh,
@@ -1044,12 +1049,29 @@ async fn select_candidate_and_connect(
     } else {
         candidates
     };
+    let wires_enabled = manager.load_balancing().tun_wire_dial;
     for candidate in iter {
-        match manager
-            .acquire_udp_standby_or_connect_with_store(&candidate, "tun_udp", resume_store)
-            .await
-        {
-            Ok(transport) => {
+        let candidate_ref = &candidate;
+        let dialed = manager
+            .dial_over_wires(candidate_ref, TransportKind::Udp, wires_enabled, |wire| async move {
+                let spec =
+                    outline_uplink::WireSpec::of(&candidate_ref.uplink, wire).ok_or_else(|| {
+                        anyhow!("uplink {} has no wire {wire}", candidate_ref.uplink.name)
+                    })?;
+                // A wire with no UDP path is not a failure of that wire — it
+                // was never dialable on this plane. Skipping without an
+                // outcome keeps it out of the wire state machine entirely.
+                if !spec.supports_udp() {
+                    return Ok(WireAttempt::NotApplicable);
+                }
+                manager
+                    .acquire_udp_on_wire(candidate_ref, wire, "tun_udp", resume_store)
+                    .await
+                    .map(WireAttempt::Built)
+            })
+            .await;
+        match dialed {
+            Ok((transport, _wire)) => {
                 // Install the carrier control-signal handler so a server
                 // downstream-throttle notice on this UDP carrier penalises the
                 // uplink and migrates traffic away. No-op unless the client
