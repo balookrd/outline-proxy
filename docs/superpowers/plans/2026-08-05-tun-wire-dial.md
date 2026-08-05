@@ -1607,6 +1607,125 @@ leg's streams silently drops every reused datagram.
 
 ---
 
+### Task 8b: The active wire leads the health-weighted dial order
+
+**Files:**
+- Modify: `crates/outline-uplink/src/manager/active_wire.rs:158` (`wire_dial_order`, the `health_weighted_selection` branch)
+- Test: `crates/outline-uplink/src/manager/tests/active_wire.rs` (or the existing test module covering `wire_dial_order` — locate it first)
+
+**Interfaces:**
+- Consumes: `wire_weight`, `weighted_permutation_with_rng` (both existing).
+- Produces: no new API. `wire_dial_order` keeps its signature and its guarantee of returning a complete permutation.
+
+**Why this exists.** Task 8 put the warm pool on the active wire. But
+`wire_dial_order`'s health-weighted branch deliberately ignores `active_wire`
+and returns a weighted random permutation — and `health_weighted_selection`
+defaults to `true`. So the wire dialed first is frequently not the wire the
+pool is warming: the take misses, and every flow pays a fresh dial, which is
+exactly what Task 8 set out to remove. The same split is why the carrier-loss
+metric vanished from the fleet's dashboards for ~60% of wall-clock time —
+`active_wire` did not mean "the wire new sessions land on".
+
+This makes it mean that again, without giving up liveness weighting for the
+rest of the chain.
+
+- [ ] **Step 1: Write the failing test**
+
+```rust
+#[tokio::test]
+async fn the_active_wire_leads_the_health_weighted_order() {
+    let manager = manager_with_four_wires_and_health_weighting().await;
+    manager.set_active_wire_for_test(0, TransportKind::Tcp, 2);
+
+    // Weighted order is random in its tail, so assert the invariant over
+    // several draws rather than one: the head is pinned, the tail is a
+    // permutation of everything else.
+    for _ in 0..16 {
+        let order = manager.wire_dial_order(0, TransportKind::Tcp, 4);
+        assert_eq!(order[0], 2, "the pool is warmed on the active wire, so it must be dialed first");
+        let mut rest = order[1..].to_vec();
+        rest.sort_unstable();
+        assert_eq!(rest, vec![0, 1, 3], "every other wire still appears exactly once");
+    }
+}
+
+#[tokio::test]
+async fn an_out_of_range_active_wire_does_not_break_the_order() {
+    let manager = manager_with_four_wires_and_health_weighting().await;
+    manager.set_active_wire_for_test(0, TransportKind::Tcp, 9);
+
+    let order = manager.wire_dial_order(0, TransportKind::Tcp, 4);
+
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, vec![0, 1, 2, 3], "a stale active wire must not drop or duplicate a wire");
+}
+```
+
+Match the fixture helpers the existing `wire_dial_order` tests already use; the
+assertions are the requirement.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `cargo test -p outline-uplink active_wire_leads`
+Expected: FAIL — the active wire currently leads only by chance.
+
+- [ ] **Step 3: Write the implementation**
+
+In the `health_weighted_selection` branch of `wire_dial_order`, keep the
+weighted permutation for the chain, then lift the active wire to the front:
+
+```rust
+            let mut order: Vec<u8> = weighted_permutation_with_rng(&weights, &mut rng)
+                .into_iter()
+                .map(|i| i as u8)
+                .collect();
+            // The warm pool is prewarmed on the active wire (see
+            // `standby_ctx`), so dialing anything else first throws that
+            // prewarm away and pays a fresh dial per flow. Liveness weighting
+            // still orders the rest of the chain — this only pins the head,
+            // which is what makes `active_wire` mean "the wire new sessions
+            // land on" rather than a number nothing consults.
+            let active = self.active_wire(uplink_index, transport);
+            if let Some(pos) = order.iter().position(|&w| w == active) {
+                order[..=pos].rotate_right(1);
+            }
+            debug_assert_eq!(order.len(), total_wires);
+            return order;
+```
+
+`position` returning `None` — an active wire past the end of the chain, which
+the non-weighted branch defends against with its own cap — leaves the weighted
+order untouched rather than panicking.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `cargo test -p outline-uplink active_wire_leads`
+Expected: PASS.
+
+- [ ] **Step 5: Run the full gate**
+
+Note this changes the SOCKS ingress's dial order too, not only TUN's — it is
+not behind `tun_wire_dial`. That is deliberate: the pin is a correction to what
+`active_wire` means, and the SOCKS path reads the same field. Every
+pre-existing test must still pass; if one asserted the old free-permutation
+behaviour, report it rather than editing its expectation.
+
+- [ ] **Step 6: Commit**
+
+Commit message:
+
+```
+fix(uplink): dial the active wire first under health weighting
+
+The health-weighted branch of wire_dial_order ignored active_wire, so the
+wire dialed first was rarely the wire the warm pool had been prewarming —
+every flow paid a fresh dial while a usable pool sat beside it. Liveness
+weighting still orders the rest of the chain; only the head is pinned.
+```
+
+---
+
 ### Task 9: A live TCP flow migrates onto its own wire
 
 **Files:**
