@@ -9,8 +9,12 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import uniffi.outline_android.isRunning
@@ -33,6 +37,14 @@ class OutlineVpnService : VpnService() {
 
     private var tunInterface: ParcelFileDescriptor? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * The network currently bound as the tunnel's underlying one. Written from
+     * the ConnectivityManager callback thread, read from there and from
+     * [disconnect] on the main thread, hence `@Volatile`.
+     */
+    @Volatile
+    private var underlyingNetwork: Network? = null
 
     companion object {
         private const val TAG = "OutlineVpnService"
@@ -187,24 +199,104 @@ class OutlineVpnService : VpnService() {
     }
 
     /**
-     * Track the active underlying network so the (excluded) uplink sockets ride
-     * the real connection, and follow Wi-Fi ⇄ cellular handovers. When the
-     * underlying network changes, in-flight uplink connections break and the
-     * ws-rust failover layer re-dials over the new path.
+     * Track the network the (excluded) uplink sockets should ride, and follow
+     * Wi-Fi ⇄ cellular handovers. When the underlying network changes,
+     * in-flight uplink connections break and the ws-rust failover layer re-dials
+     * over the new path.
+     *
+     * Two traps this deliberately avoids:
+     *
+     *  - **Matching everything.** An empty [NetworkRequest] matches every
+     *    network the device sees, so a cellular network coming up next to a
+     *    perfectly good Wi-Fi would be bound as the underlying one. The request
+     *    below asks for `INTERNET` and, on API 31+, lets the platform hand us
+     *    the single *best* match instead of all of them.
+     *  - **Binding our own tunnel.** [ConnectivityManager.registerDefaultNetworkCallback]
+     *    reports the VPN network itself to the app that owns the VPN, which
+     *    makes the tunnel its own underlying network (`underlying{[N]}` pointing
+     *    at our own agent). `NET_CAPABILITY_NOT_VPN` keeps us on physical
+     *    networks.
      */
     private fun registerNetworkCallback() {
         val cm = getSystemService(ConnectivityManager::class.java) ?: return
-        val request = NetworkRequest.Builder().build()
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        // API 31+ delivers exactly one network — the best match — and swaps it
+        // on handover, so we follow it verbatim. Below that, every match is
+        // delivered, so we pick the best one ourselves on each change.
+        val bestMatching = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                setUnderlyingNetworks(arrayOf(network))
+                if (bestMatching) bind(network) else bind(pickBest(cm))
             }
+
+            /**
+             * A handover can deliver `onAvailable(new)` before `onLost(old)`, so
+             * an unconditional reset here would undo the binding just made and
+             * drop the tunnel back to the system default. Only the loss of the
+             * network actually in use matters.
+             */
             override fun onLost(network: Network) {
-                setUnderlyingNetworks(null)
+                if (bestMatching) {
+                    if (underlyingNetwork == network) bind(null)
+                } else {
+                    bind(pickBest(cm))
+                }
             }
         }
-        networkCallback = cb
-        cm.registerNetworkCallback(request, cb)
+        // Losing the handover watch is not worth losing the tunnel over: the
+        // uplinks still ride the system default, they just stop being re-bound.
+        runCatching {
+            if (bestMatching) {
+                cm.registerBestMatchingNetworkCallback(
+                    request,
+                    cb,
+                    Handler(Looper.getMainLooper()),
+                )
+            } else {
+                cm.registerNetworkCallback(request, cb)
+            }
+        }
+            .onSuccess { networkCallback = cb }
+            .onFailure { Log.w(TAG, "cannot watch the underlying network", it) }
+    }
+
+    /** Bind [network] as the tunnel's underlying network; `null` = system default. */
+    private fun bind(network: Network?) {
+        if (network == underlyingNetwork) return
+        underlyingNetwork = network
+        setUnderlyingNetworks(network?.let { arrayOf(it) })
+        Log.i(TAG, "underlying network -> ${network ?: "system default"}")
+    }
+
+    /**
+     * Pre-31 fallback: rank the currently connected non-VPN networks ourselves.
+     * Validated beats unvalidated, then Ethernet > Wi-Fi > cellular > anything
+     * else — the same order the platform's best-matching callback would apply.
+     */
+    @Suppress("DEPRECATION") // getAllNetworks(): only reached below API 31.
+    private fun pickBest(cm: ConnectivityManager): Network? =
+        cm.allNetworks
+            .mapNotNull { n -> cm.getNetworkCapabilities(n)?.let { n to it } }
+            .filter {
+                it.second.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    it.second.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            }
+            .maxWithOrNull(
+                compareBy(
+                    { it.second.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) },
+                    { transportRank(it.second) },
+                ),
+            )
+            ?.first
+
+    private fun transportRank(caps: NetworkCapabilities): Int = when {
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 3
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 2
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 1
+        else -> 0
     }
 
     private fun unregisterNetworkCallback() {
@@ -213,6 +305,7 @@ class OutlineVpnService : VpnService() {
             runCatching { cm?.unregisterNetworkCallback(cb) }
         }
         networkCallback = null
+        underlyingNetwork = null
     }
 
     private fun disconnect() {
