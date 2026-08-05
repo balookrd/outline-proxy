@@ -163,10 +163,9 @@ impl UplinkManager {
             // Weighted dial order: rank wires by liveness weight (healthier
             // wires statistically first) while still returning a *complete*
             // permutation, so the fallback cascade still reaches every wire in
-            // the same session. The sticky `active_wire` is deliberately not
-            // consulted here — a pinned-but-healthy wire keeps a high weight and
-            // lands first on its own, so the pin becomes soft rather than
-            // absolute.
+            // the same session. Liveness weighting orders the tail; the head
+            // is pinned to `active_wire` below, unless that wire is itself
+            // the one being weighted down.
             let floor = self.inner.load_balancing.health_weight_floor;
             let now = Instant::now();
             let weights: Vec<f64> = self.inner.with_status_mut(uplink_index, |status| {
@@ -179,10 +178,37 @@ impl UplinkManager {
                     .collect()
             });
             let mut rng = rand::rng();
-            let order: Vec<u8> = weighted_permutation_with_rng(&weights, &mut rng)
+            let mut order: Vec<u8> = weighted_permutation_with_rng(&weights, &mut rng)
                 .into_iter()
                 .map(|i| i as u8)
                 .collect();
+            // The warm pool is prewarmed on the active wire (see
+            // `standby_ctx`), so dialing anything else first throws that
+            // prewarm away and pays a fresh dial per flow. Liveness weighting
+            // still orders the rest of the chain — this only pins the head,
+            // which is what makes `active_wire` mean "the wire new sessions
+            // land on" rather than a number nothing consults.
+            //
+            // The pin yields when the active wire itself carries a liveness
+            // penalty: `wire_weight` (read from the same `weights` computed
+            // above, so no second pass over the penalty state) is `1.0`
+            // exactly only when the wire has no *currently effective*
+            // penalty — `penalty_weight`'s `1.0 / (1.0 + penalty / scale)`
+            // is strictly less than `1.0` for any positive penalty, and its
+            // ceiling is `1.0`. A penalised active wire is precisely the
+            // case liveness weighting exists to keep new sessions off of, so
+            // forcing it to the front unconditionally would defeat that —
+            // leave the weighted order's own placement stand instead.
+            let active = self.active_wire(uplink_index, transport);
+            let active_unpenalised = weights.get(active as usize).is_some_and(|&w| w >= 1.0);
+            if active_unpenalised && let Some(pos) = order.iter().position(|&w| w == active) {
+                order[..=pos].rotate_right(1);
+            }
+            // A `position` miss (active wire not found in `order`) covers a
+            // stale active wire past the end of the chain (e.g. a config
+            // reload that shrank the fallback count) — same defensive
+            // posture as the non-weighted branch's cap below: leave the
+            // weighted order untouched rather than panic or drop a wire.
             debug_assert_eq!(order.len(), total_wires);
             debug_assert!(order.iter().all(|&i| (i as usize) < total_wires));
             return order;
