@@ -1857,6 +1857,37 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
 
 ### Behaviour
 
+#### Which ingress walks the wire chain
+
+Everything below this point — the dial loop, the sticky-fallback state
+machine, `shuffle_wires`, the per-wire RTT/carrier-loss tracking — describes
+one mechanism (`dial_over_wires`) shared by both ingresses. That sharing is
+recent. Until `[load_balancing] tun_wire_dial` existed, this chain was
+reachable only from the SOCKS ingress: a TUN flow always dialed the uplink's
+primary carrier (wire 0), full stop. A broken primary therefore cost the
+*whole uplink* on TUN — the state machine below existed and kept moving
+`active_wire`, but nothing on the TUN plane ever read it before dialing, so a
+config with three fallbacks and `shuffle_wires = true` read as configured
+redundancy while every TUN dial kept going to wire 0.
+
+With `tun_wire_dial = true` the TUN ingress calls the same `dial_over_wires`
+loop the SOCKS ingress always has, on both the TCP and UDP planes: a fresh
+TUN dial walks the configured fallback chain, the warm-standby pool is
+prewarmed on the uplink's current active wire, and a live TCP flow whose
+carrier dies migrates onto that active wire instead of redialing wire 0.
+UDP migration of a live flow only carries state across wires of the *same*
+proxy protocol (SS↔SS, VLESS↔VLESS) — the server's SS-UDP datagram park and
+VLESS-UDP mux park are separate mechanisms with no handoff between them, so a
+wire-level protocol change mid-flow starts a fresh UDP session rather than
+resuming the old one.
+
+The flag is per group (`[[uplink_group]] tun_wire_dial = true`, or
+`[outline.load_balancing]` in the inline single-uplink shape) and defaults
+to `false` — roll it out one node at a time. Gate-off is byte-for-byte the
+pre-`tun_wire_dial` behaviour: every TUN dial asks for wire 0 and never
+touches the wire state machine, so a gate-off node cannot tell this feature
+shipped.
+
 #### Per-session dial loop
 
 - For each new session the dial loop iterates wires in
