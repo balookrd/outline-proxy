@@ -172,11 +172,15 @@ pub(super) async fn redial_tcp_uplink_for_migration(
 ///
 /// A wire change here can change proxy protocol (VLESS <-> SS mid-flow): the
 /// server permits cross-protocol session resume on the byte-stream path, so
-/// no client-side gate against *that* is needed. The check below is only the
-/// WS-family requirement migration itself depends on (Ack-Prefix / Symmetric
-/// Downlink Replay), which no XHTTP-only wire can serve — and it now tests
-/// the wire actually being dialed, not the parent uplink's transport, since
-/// a wire can differ in family from its own parent.
+/// no client-side gate against *that* is needed.
+///
+/// The `is_ws_family` check below establishes that this wire's proxy protocol
+/// is one the migration dial knows how to speak (SS or VLESS) — today that is
+/// every `UplinkTransport` variant, so it rejects nothing and is kept as the
+/// guard that will start rejecting when a non-WS-family protocol is added
+/// rather than letting one through silently. It is **not** what keeps an
+/// XHTTP carrier out: the carrier (`ws_h*` versus `xhttp_h*`) is a property of
+/// the wire's `TransportMode`, which this predicate does not read.
 async fn redial_tcp_uplink_for_migration_inner(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,

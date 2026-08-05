@@ -10,9 +10,26 @@
 //! within-uplink failover worth having at all.
 
 use anyhow::{Result, anyhow};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::types::{TransportKind, UplinkCandidate, UplinkManager};
+
+/// How a wire is named in an operator-facing log line: `primary (vless)` for
+/// wire 0, `fallback[i] (ss)` for `fallbacks[i]`. The family is part of the
+/// label because on this fleet the primary and its fallbacks differ in it, and
+/// "which carrier just failed" is unanswerable from the index alone.
+fn wire_label(candidate: &UplinkCandidate, wire: u8) -> String {
+    match wire
+        .checked_sub(1)
+        .and_then(|i| candidate.uplink.fallbacks.get(i as usize))
+    {
+        Some(fallback) => format!("fallback[{}] ({})", wire - 1, fallback.transport),
+        // Wire 0, or an index past the end of the chain — the latter cannot
+        // happen through `wire_dial_order`, and naming it after the primary is
+        // a better failure than panicking inside a log statement.
+        None => format!("primary ({})", candidate.uplink.transport),
+    }
+}
 
 /// What one wire attempt concluded.
 pub enum WireAttempt<T> {
@@ -104,10 +121,16 @@ impl UplinkManager {
                             total_wires,
                         );
                     }
+                    // The single success line for every ingress. Both SOCKS
+                    // callers used to log their own on top of this one, from
+                    // the per-ingress loops this one replaced; the plane is
+                    // carried here instead so nothing is lost by dropping
+                    // theirs.
                     if wire != 0 {
                         debug!(
                             uplink = %candidate.uplink.name,
-                            wire,
+                            transport = ?transport,
+                            wire = %wire_label(candidate, wire),
                             "fallback wire dial succeeded",
                         );
                     }
@@ -124,19 +147,30 @@ impl UplinkManager {
                             total_wires,
                         );
                     }
-                    // Skip the log on a single-wire attempt: "trying the next
-                    // one" would be false (there is no next wire) and on
-                    // gate-off this line runs for every failed TUN TCP dial,
-                    // which is exactly the inert path this flag promises not
-                    // to change. The pre-existing per-uplink failure logging
-                    // in `select_tcp_candidate_and_connect` already covers
-                    // this case.
-                    if multi_wire {
-                        debug!(
+                    // Operator-facing, at `warn!`: this gate rolls out node by
+                    // node with the journal at its default level as the only
+                    // triage surface, and a wire that fails every dial is
+                    // otherwise invisible there — the uplink still works, so
+                    // nothing else says a word. The label names the carrier
+                    // (`fallback[1] (ss)`), not just its index, because on
+                    // this fleet the wires differ in transport family.
+                    //
+                    // Gated on `allow_fallbacks`, not on `multi_wire`: with
+                    // the gate off the TUN ingress only ever tries wire 0, and
+                    // that path is the one `tun_wire_dial` promises to leave
+                    // byte-identical — its per-uplink failure logging in
+                    // `select_tcp_candidate_and_connect` already covers it.
+                    // The SOCKS ingress passes `true` unconditionally, which
+                    // is the level its own per-wire logging sat at before this
+                    // loop replaced it.
+                    if allow_fallbacks {
+                        warn!(
                             uplink = %candidate.uplink.name,
-                            wire,
+                            transport = ?transport,
+                            wire = %wire_label(candidate, wire),
+                            more_wires = multi_wire,
                             error = %format!("{error:#}"),
-                            "wire dial failed, trying the next one",
+                            "wire dial failed",
                         );
                     }
                     last_err = Some(error);

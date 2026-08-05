@@ -78,16 +78,13 @@ async fn acquire_udp_with_fallbacks(
         })
         .await?;
 
+    // The success log lives in `dial_over_wires` — one line for both ingresses
+    // rather than one there and one here. Only the metric is ours.
     if wire != 0 {
         outline_metrics::record_uplink_selected(
             "udp",
             uplinks.group_name(),
             &candidate.uplink.name,
-        );
-        debug!(
-            uplink = %candidate.uplink.name,
-            wire,
-            "UDP fallback wire dial succeeded",
         );
     }
     Ok(transport)

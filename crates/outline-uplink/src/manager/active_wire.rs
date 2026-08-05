@@ -34,18 +34,19 @@ use crate::types::{TransportKind, UplinkManager};
 impl UplinkManager {
     /// Drain the warm-standby deque for `(uplink_index, transport)`.
     ///
-    /// The pool today holds sockets dialed against the parent uplink's
-    /// **primary** wire; when active_wire advances away from primary
-    /// (0 → 1+), those sockets are now to the wire we just abandoned
-    /// because it has been failing. Holding them until the next probe
-    /// cycle's `validate` peek would either dispatch a stale socket to
-    /// a session that lands on primary again (rare but possible) or
-    /// keep an FD alive needlessly. Drain on transition is the cleanup.
+    /// The pool holds sockets dialed against whichever wire it was prewarming
+    /// (`StandbyCtx::wire`, which follows `active_wire` once `tun_wire_dial`
+    /// is on). When the active wire moves, those sockets belong to the wire
+    /// that was just abandoned for failing. Holding them until the next probe
+    /// cycle's `validate` peek would either dispatch a stale socket to a
+    /// session that lands back on the old wire or keep an FD alive
+    /// needlessly. Drain on transition is the cleanup.
     ///
-    /// Per-wire warm pools (separate slots for primary vs each
-    /// fallback) are a follow-up; until they land, this drain is a
-    /// no-op on the fallback side because no fallback sockets are ever
-    /// pooled in the first place.
+    /// It is not the only line of defence, and deliberately so: the pool
+    /// carries its wire structurally, so `try_take_alive` refuses (and drains)
+    /// a pool filled on a wire it no longer serves even if this call never
+    /// ran. This one just makes the FDs go away at the moment of the
+    /// transition rather than at the next take.
     pub async fn drain_standby_pool(&self, uplink_index: usize, transport: TransportKind) {
         let pool = match self.inner.standby_pools.get(uplink_index) {
             Some(p) => p,
