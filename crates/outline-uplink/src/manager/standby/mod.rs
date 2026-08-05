@@ -368,10 +368,28 @@ impl UplinkManager {
         source: &'static str,
         resume_request: Option<SessionId>,
     ) -> Result<TransportStream> {
+        self.connect_tcp_ws_migrate_with_ack_prefix_on_wire(candidate, 0, source, resume_request)
+            .await
+    }
+
+    /// Wire-aware sibling of [`Self::connect_tcp_ws_migrate_with_ack_prefix`]:
+    /// dials `wire` rather than always the primary. Used by a redial that
+    /// rescues a **live** flow, which must land on the wire that flow was
+    /// actually riding — not necessarily wire 0 — or the redial slams a
+    /// carrier the flow never used. See
+    /// `redial_tcp_uplink_for_migration_inner` in `outline-tun`.
+    pub async fn connect_tcp_ws_migrate_with_ack_prefix_on_wire(
+        &self,
+        candidate: &UplinkCandidate,
+        wire: u8,
+        source: &'static str,
+        resume_request: Option<SessionId>,
+    ) -> Result<TransportStream> {
         self.connect_tcp_ws_fresh_internal(
             candidate,
             source,
             FreshTcpDial {
+                wire,
                 resume_request,
                 ack_prefix_requested: true,
                 bypass_mode_downgrade: true,
@@ -392,16 +410,38 @@ impl UplinkManager {
         resume_request: Option<SessionId>,
         client_acked_offset: u64,
     ) -> Result<TransportStream> {
+        self.connect_tcp_ws_migrate_with_symmetric_replay_on_wire(
+            candidate,
+            0,
+            source,
+            resume_request,
+            client_acked_offset,
+        )
+        .await
+    }
+
+    /// Wire-aware sibling of
+    /// [`Self::connect_tcp_ws_migrate_with_symmetric_replay`]: dials `wire`
+    /// rather than always the primary. See
+    /// [`Self::connect_tcp_ws_migrate_with_ack_prefix_on_wire`].
+    pub async fn connect_tcp_ws_migrate_with_symmetric_replay_on_wire(
+        &self,
+        candidate: &UplinkCandidate,
+        wire: u8,
+        source: &'static str,
+        resume_request: Option<SessionId>,
+        client_acked_offset: u64,
+    ) -> Result<TransportStream> {
         self.connect_tcp_ws_fresh_internal(
             candidate,
             source,
             FreshTcpDial {
+                wire,
                 resume_request,
                 ack_prefix_requested: true,
                 symmetric_replay_requested: true,
                 client_acked_offset,
                 bypass_mode_downgrade: true,
-                ..Default::default()
             },
         )
         .await

@@ -1317,3 +1317,206 @@ async fn force_failover_to_second_uplink(manager: &outline_uplink::UplinkManager
         "the failover must have repointed the group to the second uplink",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 9: a migrating flow follows its own active wire, not the primary.
+//
+// One uplink, two wires (primary + one fallback), each backed by its own
+// `ResumableUpstream`. `active_wire` is primed to the fallback the way
+// production advances it — one recorded dial failure against a 2-wire
+// uplink, with `min_failures = 1` (`super::test_probe_config()`) — rather
+// than poked directly, so the fixture exercises the real state machine.
+// ---------------------------------------------------------------------------
+
+fn wire_fallback(url: Url) -> outline_uplink::FallbackTransport {
+    outline_uplink::FallbackTransport {
+        transport: outline_uplink::UplinkTransport::Ss,
+        tcp_ws_url: Some(url),
+        tcp_xhttp_url: None,
+        tcp_mode: outline_uplink::TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: outline_uplink::TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: outline_uplink::TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        vless_id: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "Secret0".to_string(),
+        fwmark: None,
+        ipv6_first: false,
+        fingerprint_profile: None,
+    }
+}
+
+fn uplink_with_wire_fallback(primary_url: Url, fallback_url: Url) -> outline_uplink::UplinkConfig {
+    outline_uplink::UplinkConfig {
+        name: "primary".to_string(),
+        transport: outline_uplink::UplinkTransport::Ss,
+        tcp_ws_url: Some(primary_url),
+        tcp_xhttp_url: None,
+        tcp_mode: outline_uplink::TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: outline_uplink::TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: outline_uplink::TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "Secret0".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+        fingerprint_profile: None,
+        fallbacks: vec![wire_fallback(fallback_url)],
+        shuffle_wires: false,
+        carrier_downgrade: true,
+        padding: None,
+        shuffle_timer: None,
+    }
+}
+
+async fn build_test_manager_with_wire(
+    primary_url: Url,
+    fallback_url: Url,
+    tun_wire_dial: bool,
+) -> outline_uplink::UplinkManager {
+    outline_uplink::UplinkManager::new_for_test(
+        "test",
+        vec![uplink_with_wire_fallback(primary_url, fallback_url)],
+        super::test_probe_config(),
+        outline_uplink::LoadBalancingConfig {
+            tun_wire_dial,
+            ..super::test_load_balancing_config()
+        },
+    )
+    .unwrap()
+}
+
+/// Bounded wait for `upstream` to have accepted at least `expected`
+/// connections.
+async fn wait_until_connections(upstream: &ResumableUpstream, expected: usize) {
+    for _ in 0..300 {
+        if upstream.connections() >= expected {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("upstream never reached {expected} connections (got {})", upstream.connections());
+}
+
+/// The money test for Task 9: a flow whose active wire has moved away from
+/// the primary must redial *that* wire when its carrier dies. Redialing the
+/// primary would slam a carrier this flow never used, and its failure would
+/// surface as a runtime failure on the parent uplink — the false flap the
+/// active-wire state machine exists to prevent.
+#[tokio::test]
+async fn a_migrating_flow_redials_its_own_active_wire_not_the_primary() {
+    let primary = ResumableUpstream::start().await;
+    let fallback = ResumableUpstream::start().await;
+    let manager = build_test_manager_with_wire(primary.url(), fallback.url(), true).await;
+
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager.clone()),
+        128,
+        Duration::from_secs(60),
+        false,
+        test_tun_tcp_config(),
+        Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    // The flow is born on the primary (wire 0, the default active wire) —
+    // priming the active wire happens *after*, mirroring how a probe or the
+    // shuffle timer would move it out from under an already-live flow.
+    let key = flow_key(41100);
+    let server_seq = open_flow(&engine, &mut capture, &key, 1000).await;
+    let (conn, _target) = primary.recv().await;
+    assert_eq!(conn, 1, "the flow must start on the primary wire");
+    wait_until_armed(&engine, &key).await;
+    client_sends(&engine, &key, 1001, server_seq, b"GET").await;
+    assert_eq!(primary.recv_exactly(1, 3).await, b"GET".to_vec());
+
+    manager.record_wire_outcome(0, outline_uplink::TransportKind::Tcp, 0, false, 2);
+    assert_eq!(
+        manager.active_wire(0, outline_uplink::TransportKind::Tcp),
+        1,
+        "fixture setup: the active wire must have moved to the fallback before the carrier dies"
+    );
+
+    primary.kill_carrier().await;
+
+    // The load-bearing assertion: the redial reaches the fallback wire's own
+    // upstream, never the primary's.
+    wait_until_connections(&fallback, 1).await;
+    assert_eq!(
+        fallback.connections(),
+        1,
+        "the redial must have followed the flow's active wire (1), not the primary"
+    );
+    assert_eq!(
+        primary.connections(),
+        1,
+        "redialing the primary would slam a carrier this flow never used, and its \
+         failure would surface as a runtime failure on the parent uplink"
+    );
+}
+
+/// Gate-off counterpart: with `tun_wire_dial` off the redial must stay pinned
+/// to wire 0 exactly as it always has, even though the active wire has
+/// genuinely moved. Proven positively, not just by absence: the redial must
+/// actually succeed, because wire 0's upstream is the only one that ever saw
+/// this flow's session — a redial that instead reached the primed fallback
+/// would land on an upstream with nothing parked and the flow would never
+/// migrate.
+#[tokio::test]
+async fn a_migrating_flow_gate_off_redials_wire_0_even_when_active_wire_moved() {
+    let primary = ResumableUpstream::start().await;
+    let fallback = ResumableUpstream::start().await;
+    let manager = build_test_manager_with_wire(primary.url(), fallback.url(), false).await;
+
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager.clone()),
+        128,
+        Duration::from_secs(60),
+        false,
+        test_tun_tcp_config(),
+        Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let key = flow_key(41101);
+    let server_seq = open_flow(&engine, &mut capture, &key, 1000).await;
+    let (conn, _target) = primary.recv().await;
+    assert_eq!(conn, 1);
+    wait_until_armed(&engine, &key).await;
+    client_sends(&engine, &key, 1001, server_seq, b"GET").await;
+    assert_eq!(primary.recv_exactly(1, 3).await, b"GET".to_vec());
+
+    manager.record_wire_outcome(0, outline_uplink::TransportKind::Tcp, 0, false, 2);
+    assert_eq!(
+        manager.active_wire(0, outline_uplink::TransportKind::Tcp),
+        1,
+        "fixture setup: the active wire must have moved to the fallback before the carrier dies"
+    );
+
+    primary.set_policy(ResumePolicy { up_acked: 3, ..ResumePolicy::default() });
+    primary.kill_carrier().await;
+
+    assert!(
+        wait_for_migration(&engine, &key).await,
+        "gate off must still redial wire 0, whose upstream is the only one that can \
+         confirm this flow's resume"
+    );
+    assert_eq!(primary.connections(), 2, "gate off must redial the primary wire");
+    assert_eq!(fallback.connections(), 0, "gate off must never touch the primed fallback wire");
+}
