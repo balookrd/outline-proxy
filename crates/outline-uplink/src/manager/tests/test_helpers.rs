@@ -353,17 +353,49 @@ impl UplinkManager {
             .registered_wires_for_test(transport)
     }
 
+    /// Test helper: a single connected-but-never-dialed stream, standalone
+    /// rather than seeded into a pool — for tests that hand a stream
+    /// straight to a push-path helper (e.g. `StandbyCtx::try_pool_dialed_stream`)
+    /// instead of staging pool state through `fill_pool_for_test`.
+    ///
+    /// A genuine loopback TCP socket wrapped as an `Http1` `TransportStream`
+    /// (mirrors the pattern in
+    /// `taking_a_carrier_from_the_warm_pool_registers_its_loss_probe`): the
+    /// take path peeks the socket for liveness before handing it out, so a
+    /// fabricated stream would be discarded as stale before a test ever
+    /// observes the behaviour under test. The accepted server-side socket is
+    /// kept open for the life of the process (leaked into a pending task)
+    /// rather than dropped at the end of this function — dropping it would
+    /// close the TCP connection, so the client side the caller actually gets
+    /// would observe closure and fail the same liveness peek.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) async fn dialed_stream_for_test() -> outline_transport::TransportStream {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        tokio::spawn(async move {
+            let _server = server;
+            std::future::pending::<()>().await
+        });
+        let ws =
+            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None)
+                .await;
+        outline_transport::TransportStream::new_http1(ws)
+    }
+
     /// Test helper: push `count` connected-but-never-dialed streams into
     /// `(index, transport)`'s warm-standby pool and stamp its wire marker to
     /// `wire`. Lets pool-wire tests stage "the pool currently holds carriers
     /// dialed on wire W" without driving a real refill through the network.
-    ///
-    /// Each entry is a genuine loopback TCP socket wrapped as an `Http1`
-    /// `TransportStream` (mirrors the pattern in
-    /// `taking_a_carrier_from_the_warm_pool_registers_its_loss_probe`): the
-    /// take path peeks the socket for liveness before handing it out, so a
-    /// fabricated stream would be discarded as stale before a test ever
-    /// observes the behaviour under test.
+    /// `count = 0` is a legitimate call: it stamps the marker on an
+    /// otherwise-untouched (or already-drained) pool without seeding any
+    /// entries, mirroring the drain-then-restamp `try_take_alive` performs on
+    /// a wire mismatch.
     #[doc(hidden)]
     #[allow(dead_code)]
     pub(crate) async fn fill_pool_for_test(
@@ -373,39 +405,33 @@ impl UplinkManager {
         wire: u8,
         count: usize,
     ) {
-        use tokio_tungstenite::tungstenite::protocol::Role;
-        use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-
         let pool = &self.inner.standby_pools[index];
         let deque = match transport {
             crate::types::TransportKind::Tcp => &pool.tcp,
             crate::types::TransportKind::Udp => &pool.udp,
         };
         for _ in 0..count {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            let client = tokio::net::TcpStream::connect(addr).await.unwrap();
-            let (server, _) = listener.accept().await.unwrap();
-            // Keep the accepted server-side socket open for the life of the
-            // test. Dropping it here (end of loop iteration) closes the TCP
-            // connection, so the client side the pool actually holds would
-            // observe closure and the take path's liveness peek would
-            // discard it as stale before any wire logic under test ever
-            // runs — masking the behaviour these tests exist to pin.
-            tokio::spawn(async move {
-                let _server = server;
-                std::future::pending::<()>().await
-            });
-            let ws =
-                WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None)
-                    .await;
-            deque
-                .lock()
-                .await
-                .push_back(outline_transport::TransportStream::new_http1(ws));
+            let ws = Self::dialed_stream_for_test().await;
+            deque.lock().await.push_back(ws);
         }
         pool.wire_marker(transport)
             .store(wire, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Test helper: how many refill tasks have been spawned through
+    /// `(index, transport)`'s [`RefillGate`](crate::manager::standby_pool::RefillGate)
+    /// for the life of the manager. Lets tests confirm a code path schedules
+    /// a background refill (`spawn_refill`) without needing the spawned task
+    /// to actually complete a dial — the gate's claim counter observes the
+    /// scheduling itself.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn refill_spawned_count_for_test(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+    ) -> u64 {
+        self.inner.standby_pools[index].refill_gate(transport).spawned()
     }
 
     /// Test helper: current length of `(index, transport)`'s warm-standby
