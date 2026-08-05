@@ -10,7 +10,7 @@ use outline_transport::{
     UplinkConnectionBinding, UpstreamTransportGuard,
 };
 use outline_uplink::UplinkTransport;
-use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
+use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager, WireAttempt};
 use socks5_proto::TargetAddr;
 
 /// A TUN TCP flow's freshly-established upstream: the uplink it landed on, the
@@ -202,7 +202,8 @@ async fn redial_tcp_uplink_for_migration_inner(
             .await?
     };
     let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
-    do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding, true).await
+    let spec = outline_uplink::WireSpec::from_uplink(&candidate.uplink);
+    do_tcp_ss_setup(ws, &spec, target, keepalive_interval, binding, true).await
 }
 
 async fn connect_tcp_uplink(
@@ -250,29 +251,52 @@ async fn connect_tcp_uplink_inner(
     target: &TargetAddr,
 ) -> Result<(TcpWriter, TcpReader, Option<SessionId>)> {
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+    // The TUN ingress's wire support is what ships gated; the helper itself
+    // stays neutral so the SOCKS path keeps the chain it has always had.
+    let wires_enabled = uplinks.load_balancing().tun_wire_dial;
 
-    // Variant A: try a standby pool connection first.  If it turns out to be
-    // stale (fails before any server bytes arrive), discard it silently and
-    // retry with a fresh on-demand dial — without recording a runtime failure.
-    if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
-        let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
-        match do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding, false)
-            .await
-        {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                debug!(
-                    uplink = %candidate.uplink.name,
-                    error = %format!("{e:#}"),
-                    "stale standby TCP pool connection, retrying with fresh dial"
-                );
-            },
-        }
-    }
+    let (built, _wire) = uplinks
+        .dial_over_wires(candidate, TransportKind::Tcp, wires_enabled, |wire| async move {
+            // Credentials come from the wire being dialed, not from the
+            // parent: an SS fallback behind a VLESS primary must be set up
+            // with its own family, cipher and password.
+            let spec = outline_uplink::WireSpec::of(&candidate.uplink, wire)
+                .ok_or_else(|| anyhow!("uplink {} has no wire {wire}", candidate.uplink.name))?;
 
-    let ws = uplinks.connect_tcp_ws_fresh(candidate, "tun_tcp").await?;
-    let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
-    do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding, false).await
+            // Variant A, primary wire only: a warm-standby connection. If it
+            // turns out to be stale (fails before any server bytes arrive)
+            // discard it silently and fall through to a fresh dial, without
+            // recording a runtime failure. The pool only holds primary-wire
+            // carriers until Task 8 teaches it to follow the active wire.
+            // `try_take_tcp_standby` still has its single-argument shape
+            // here; Task 8 gives it a wire and removes this guard.
+            if wire == 0
+                && let Some(ws) = uplinks.try_take_tcp_standby(candidate).await
+            {
+                let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
+                match do_tcp_ss_setup(ws, &spec, target, keepalive_interval, binding, false).await {
+                    Ok(v) => return Ok(WireAttempt::Built(v)),
+                    Err(e) => {
+                        debug!(
+                            uplink = %candidate.uplink.name,
+                            error = %format!("{e:#}"),
+                            "stale standby TCP pool connection, retrying with fresh dial"
+                        );
+                    },
+                }
+            }
+
+            let ws = uplinks
+                .connect_tcp_ws_fresh_on_wire(candidate, wire, "tun_tcp")
+                .await?;
+            let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
+            do_tcp_ss_setup(ws, &spec, target, keepalive_interval, binding, false)
+                .await
+                .map(WireAttempt::Built)
+        })
+        .await?;
+
+    Ok(built)
 }
 
 fn tun_tcp_binding(uplinks: &UplinkManager, uplink_name: &str) -> UplinkConnectionBinding {
@@ -281,7 +305,7 @@ fn tun_tcp_binding(uplinks: &UplinkManager, uplink_name: &str) -> UplinkConnecti
 
 async fn do_tcp_ss_setup(
     ws_stream: outline_transport::TransportStream,
-    uplink: &outline_uplink::UplinkConfig,
+    wire: &outline_uplink::WireSpec<'_>,
     target: &TargetAddr,
     keepalive_interval: Option<std::time::Duration>,
     binding: UplinkConnectionBinding,
@@ -299,7 +323,7 @@ async fn do_tcp_ss_setup(
         conn_id: shared_conn_info.map(|(id, _)| id),
         mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
         is_h3: ws_stream.is_h3(),
-        uplink: uplink.name.clone(),
+        uplink: wire.name.to_string(),
         target: target.to_string(),
     };
 
@@ -324,11 +348,11 @@ async fn do_tcp_ss_setup(
     let expect_downlink_replay =
         resume_was_requested && ws_stream.symmetric_replay_advertised_by_server();
 
-    if uplink.transport == UplinkTransport::Vless {
-        let uuid = uplink
+    if wire.transport == UplinkTransport::Vless {
+        let uuid = wire
             .vless_id
             .as_ref()
-            .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
+            .ok_or_else(|| anyhow!("uplink {} missing vless_id", wire.name))?;
         let (writer, reader) = outline_transport::vless::vless_tcp_pair_from_ws(
             ws_stream,
             uuid,
@@ -347,17 +371,16 @@ async fn do_tcp_ss_setup(
     }
 
     let (ws_sink, ws_stream) = ws_stream.split();
-    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
+    let master_key = wire.cipher.derive_master_key(wire.password)?;
     let (mut writer, ctrl_tx) =
-        TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
+        TcpShadowsocksWriter::connect(ws_sink, wire.cipher, &master_key, Arc::clone(&lifetime))
             .await?;
     let request_salt = writer.request_salt();
-    let reader =
-        TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
-            .with_request_salt(request_salt)
-            .with_diag(diag)
-            .with_expect_ack_prefix(expect_ack_prefix)
-            .with_expect_downlink_replay(expect_downlink_replay);
+    let reader = TcpShadowsocksReader::new(ws_stream, wire.cipher, &master_key, lifetime, ctrl_tx)
+        .with_request_salt(request_salt)
+        .with_diag(diag)
+        .with_expect_ack_prefix(expect_ack_prefix)
+        .with_expect_downlink_replay(expect_downlink_replay);
     // The target header goes out on a migration redial too. The server parses it
     // off every stream, then — on a resume hit — throws it away and keeps the
     // parked target (`transport/tcp.rs`: "the target sent in this handshake is
