@@ -167,7 +167,16 @@ impl UplinkManager {
             return None;
         }
         let ctx = self.standby_ctx(candidate.index, TransportKind::Tcp).await;
-        ctx.try_take_alive(&candidate.uplink.name).await
+        let ws = ctx.try_take_alive(&candidate.uplink.name).await?;
+        // A pooled carrier never passes through the dial path, so this take is
+        // the only place its loss probe can be filed. Registering only on dial
+        // made measurement coverage follow the *dial* rate rather than the
+        // traffic: the busiest gateway showed 3382 reused TCP acquisitions
+        // against 11 fresh ones and carried no TCP loss verdict at all, while
+        // pushing 1.4 GiB. Registration de-duplicates by carrier identity, so
+        // re-filing a carrier that is already known is a no-op.
+        self.register_carrier_loss_probe(candidate.index, 0, TransportKind::Tcp, ws.loss_probe());
+        Some(ws)
     }
 
     /// Dials a fresh TCP WebSocket connection, bypassing the standby pool.
@@ -414,6 +423,14 @@ impl UplinkManager {
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+        // Every dial through `connect_tcp_ws_fresh_internal` — fresh,
+        // redial, or migrate, standby-pool refill or on-demand — always
+        // targets the primary wire (`wire = 0`); fallback wires are dialed
+        // by the proxy layer instead
+        // (`bins/outline-ws-rust/src/proxy/tcp/failover.rs`,
+        // `proxy/udp/transport.rs`), which is the only place that owns a
+        // dead-primary/`shuffle_wires` fallback chain to walk.
+        self.register_carrier_loss_probe(candidate.index, 0, TransportKind::Tcp, ws.loss_probe());
         // Feed the on-demand dial latency into the RTT EWMA so real
         // connection quality is reflected in routing scores, not just probe
         // ping/pong times.
@@ -514,6 +531,22 @@ impl UplinkManager {
                 Arc::new(move |requested: outline_transport::TransportMode| {
                     manager.note_silent_transport_fallback(index, TransportKind::Udp, requested);
                 });
+            // VLESS-UDP is dialed lazily per destination, so there is no
+            // single carrier to register when the mux is built — the mux has
+            // to hand each one over as it appears. Without this the whole UDP
+            // plane of a VLESS uplink is unmeasured, which on a VLESS-only
+            // fleet is where nearly all the traffic lives.
+            let probe_manager = self.clone();
+            let probe_index = candidate.index;
+            let on_carrier: outline_transport::VlessUdpCarrierNotifier =
+                Arc::new(move |probe: Option<outline_transport::CarrierLossProbe>| {
+                    probe_manager.register_carrier_loss_probe(
+                        probe_index,
+                        0,
+                        TransportKind::Udp,
+                        probe,
+                    );
+                });
             let mux = VlessUdpSessionMux::new_with_limits(
                 Arc::clone(&self.inner.dns_cache),
                 udp_ws_url.clone(),
@@ -526,6 +559,7 @@ impl UplinkManager {
                 self.inner.load_balancing.vless_udp_mux_limits,
             )
             .with_on_downgrade(Some(on_downgrade))
+            .with_on_carrier(Some(on_carrier))
             .with_padding_override(candidate.uplink.padding)
             .with_resume_scope(self.resume_scope(&candidate.uplink.name).to_string())
             .with_resume_store(resume_store.clone())
@@ -538,6 +572,14 @@ impl UplinkManager {
         // pooling) so we never hand a dead transport to the caller.
         let ctx = self.standby_ctx(candidate.index, TransportKind::Udp).await;
         if let Some(ws) = ctx.try_take_alive(&candidate.uplink.name).await {
+            // Same reason as the TCP take above: a carrier reused out of the
+            // pool is never dialled, so without this it is never measured.
+            self.register_carrier_loss_probe(
+                candidate.index,
+                0,
+                TransportKind::Udp,
+                ws.loss_probe(),
+            );
             // A pooled stream was dialled as a fresh session by the refill loop,
             // so the server minted it an id and it is riding on the stream. Move
             // it into this carrier's store or the flow would have no id of its
@@ -612,6 +654,13 @@ impl UplinkManager {
                     target: format!("to {}", udp_ws_url),
                 })?;
         resume_store.ss().store_if_issued(udp_resume_key, udp_issued);
+        // The standby pool always dials the primary wire (`wire = 0`).
+        self.register_carrier_loss_probe(
+            candidate.index,
+            0,
+            TransportKind::Udp,
+            transport.loss_probe(),
+        );
         self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
             .await;
         // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`

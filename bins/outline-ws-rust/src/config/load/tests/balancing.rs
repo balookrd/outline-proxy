@@ -173,3 +173,84 @@ fn reselect_at_empty_list_is_disabled_not_an_error() {
     assert!(config.reselect_at.is_empty());
     assert_eq!(config.reselect_interval, None);
 }
+
+#[test]
+fn loss_latency_inflation_max_rejects_values_above_the_sanity_ceiling() {
+    // A typo like `1e300` would otherwise saturate the inflated latency to
+    // `Duration::MAX`, which panics `weighted_latency_score` in the
+    // selection hot path — reject it here instead, at load time.
+    let lb = section("loss_latency_inflation_max = 1e300");
+    let err = load_balancing_config(Some(&lb)).unwrap_err().to_string();
+    assert!(err.contains("loss_latency_inflation_max"), "{err}");
+}
+
+#[test]
+fn loss_latency_inflation_max_accepts_the_ceiling_boundary() {
+    let lb = section("loss_latency_inflation_max = 100.0");
+    let config = load_balancing_config(Some(&lb)).unwrap();
+    assert_eq!(config.loss_latency_inflation_max, 100.0);
+}
+
+#[test]
+fn loss_latency_inflation_max_rejects_just_above_the_ceiling() {
+    let lb = section("loss_latency_inflation_max = 100.0001");
+    let err = load_balancing_config(Some(&lb)).unwrap_err().to_string();
+    assert!(err.contains("loss_latency_inflation_max"), "{err}");
+}
+
+#[test]
+fn loss_failover_ratio_and_secs_default_off() {
+    // Both knobs must be inert unless the operator explicitly sets them —
+    // the one part of the carrier-loss feature that moves traffic on its
+    // own.
+    let config = load_balancing_config(None).unwrap();
+    assert_eq!(config.loss_failover_ratio, 0.0);
+    assert_eq!(config.loss_failover_duration, None);
+}
+
+#[test]
+fn loss_failover_secs_maps_to_a_duration() {
+    let lb = section(
+        r#"
+        loss_failover_ratio = 0.05
+        loss_failover_secs = 90
+    "#,
+    );
+    let config = load_balancing_config(Some(&lb)).unwrap();
+    assert_eq!(config.loss_failover_ratio, 0.05);
+    assert_eq!(config.loss_failover_duration, Some(Duration::from_secs(90)));
+}
+
+#[test]
+fn loss_failover_secs_zero_disables_like_unset() {
+    // Mirrors `carrier_degraded_failover_secs`'s `Some(0) => None`: an
+    // explicit `0` reads as "off", not "switch after a zero-length episode".
+    let lb = section(
+        r#"
+        loss_failover_ratio = 0.05
+        loss_failover_secs = 0
+    "#,
+    );
+    let config = load_balancing_config(Some(&lb)).unwrap();
+    assert_eq!(config.loss_failover_duration, None);
+}
+
+#[test]
+fn loss_failover_ratio_rejects_values_outside_zero_one() {
+    for bad in ["-0.1", "1.1"] {
+        let lb = section(&format!("loss_failover_ratio = {bad}"));
+        let err = load_balancing_config(Some(&lb)).unwrap_err().to_string();
+        assert!(err.contains("loss_failover_ratio"), "input {bad:?}: got {err}");
+    }
+}
+
+#[test]
+fn loss_failover_ratio_accepts_the_boundary_values() {
+    for value in ["0.0", "1.0"] {
+        let lb = section(&format!("loss_failover_ratio = {value}"));
+        assert!(
+            load_balancing_config(Some(&lb)).is_ok(),
+            "loss_failover_ratio = {value} must be accepted"
+        );
+    }
+}

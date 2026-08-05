@@ -99,11 +99,18 @@ fn lb(bypass_when_down: bool) -> LoadBalancingConfig {
         warm_standby_tcp: 0,
         warm_standby_udp: 0,
         rtt_ewma_alpha: 0.3,
+        loss_latency_penalty_k: 0.0,
+        loss_latency_inflation_max: 4.0,
+        loss_sample_interval: Duration::from_secs(30),
+        loss_sample_min_packets: 50,
+        loss_ewma_alpha: 0.2,
         failure_penalty: Duration::from_millis(500),
         failure_penalty_max: Duration::from_secs(30),
         failure_penalty_halflife: Duration::from_secs(60),
         mode_downgrade_duration: Duration::from_secs(60),
         carrier_degraded_failover: None,
+        loss_failover_ratio: 0.0,
+        loss_failover_duration: None,
         runtime_failure_window: Duration::from_secs(60),
         chunk0_failure_window: Duration::from_secs(300),
         global_udp_strict_health: false,
@@ -168,6 +175,34 @@ async fn snapshot_keeps_bypass_inactive_when_opted_out() {
     assert!(!snap.bypass_when_down);
     assert!(!snap.bypass_active_tcp);
     assert!(!snap.bypass_active_udp);
+}
+
+/// `tcp_loss_elevated_ms` / `udp_loss_elevated_ms` mirror
+/// `PerTransportStatus::loss_elevated_since` as an elapsed duration: absent
+/// while no episode is running, `Some` (and roughly the elapsed wall-clock
+/// gap) once one is — the field an operator reads to see how close an
+/// uplink is to a loss-driven failover before it fires.
+#[tokio::test]
+async fn snapshot_reports_loss_elevated_episode_duration() {
+    let manager = manager(false);
+
+    let snap = manager.snapshot().await;
+    assert_eq!(snap.uplinks[0].tcp_loss_elevated_ms, None, "no episode running yet");
+
+    let now = tokio::time::Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.loss_elevated_since = Some(now - Duration::from_secs(30));
+    });
+
+    let snap = manager.snapshot().await;
+    let elevated_ms = snap.uplinks[0]
+        .tcp_loss_elevated_ms
+        .expect("episode running must publish an elapsed duration");
+    assert!(
+        elevated_ms >= 30_000,
+        "elapsed duration must be at least the staged 30s, got {elevated_ms}ms"
+    );
+    assert_eq!(snap.uplinks[0].udp_loss_elevated_ms, None, "UDP has no episode running");
 }
 
 #[tokio::test]

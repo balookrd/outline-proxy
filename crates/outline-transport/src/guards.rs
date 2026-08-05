@@ -31,6 +31,16 @@ impl AbortOnDrop {
     pub fn new(handle: JoinHandle<()>) -> Self {
         Self(handle)
     }
+
+    /// Test-only: a handle over a task that does nothing, for tests that
+    /// need to fill an `AbortOnDrop` field without standing up a real driver.
+    /// Its only caller today (`XhttpStream::for_loss_probe_test`) is exercised
+    /// from a Linux-gated test, so this is gated the same way to avoid a
+    /// dead-code warning on other dev platforms.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn noop() -> Self {
+        Self::new(tokio::spawn(async {}))
+    }
 }
 
 pub(crate) struct TransportConnectGuard {

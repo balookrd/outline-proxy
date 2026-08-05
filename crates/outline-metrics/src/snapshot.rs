@@ -34,6 +34,10 @@ impl Metrics {
         self.uplink_latency_seconds.reset();
         self.uplink_rtt_ewma_seconds.reset();
         self.uplink_active_wire_rtt_ewma_seconds.reset();
+        self.uplink_carrier_loss_ratio.reset();
+        self.uplink_carrier_loss_observed_packets.reset();
+        self.uplink_loss_elevated_seconds.reset();
+        self.uplink_latency_inflated_seconds.reset();
         self.uplink_penalty_seconds.reset();
         self.uplink_effective_latency_seconds.reset();
         self.uplink_score_seconds.reset();
@@ -161,6 +165,56 @@ impl Metrics {
             }
             if let Some(latency_ms) = uplink.udp_active_wire_rtt_ewma_ms {
                 self.uplink_active_wire_rtt_ewma_seconds
+                    .with_label_values(&[group, "udp", &uplink.name])
+                    .set(latency_ms as f64 / 1000.0);
+            }
+            // Carrier loss: absence means "not measured", never "no loss" —
+            // no zero-fill here, unlike the always-published gauges above.
+            if let Some(ratio) = uplink.tcp_carrier_loss_ratio {
+                self.uplink_carrier_loss_ratio
+                    .with_label_values(&[group, "tcp", &uplink.name])
+                    .set(ratio);
+            }
+            if let Some(ratio) = uplink.udp_carrier_loss_ratio {
+                self.uplink_carrier_loss_ratio
+                    .with_label_values(&[group, "udp", &uplink.name])
+                    .set(ratio);
+            }
+            if let Some(packets) = uplink.tcp_carrier_loss_packets {
+                self.uplink_carrier_loss_observed_packets
+                    .with_label_values(&[group, "tcp", &uplink.name])
+                    .set(packets as f64);
+            }
+            if let Some(packets) = uplink.udp_carrier_loss_packets {
+                self.uplink_carrier_loss_observed_packets
+                    .with_label_values(&[group, "udp", &uplink.name])
+                    .set(packets as f64);
+            }
+            // Loss-driven failover episode: absent while no episode is
+            // running (ratio not currently elevated, feature off, or the
+            // last qualifying measurement went stale) — same "absence is
+            // not a zero" discipline as the ratio/packets gauges above.
+            if let Some(elevated_ms) = uplink.tcp_loss_elevated_ms {
+                self.uplink_loss_elevated_seconds
+                    .with_label_values(&[group, "tcp", &uplink.name])
+                    .set(elevated_ms as f64 / 1000.0);
+            }
+            if let Some(elevated_ms) = uplink.udp_loss_elevated_ms {
+                self.uplink_loss_elevated_seconds
+                    .with_label_values(&[group, "udp", &uplink.name])
+                    .set(elevated_ms as f64 / 1000.0);
+            }
+            // Latency selection actually ranks by (loss-inflated). Mirrors
+            // the loss-inflated `tcp_score_ms` / `udp_score_ms` below — both
+            // now read from `selection_view` so the dashboard explains the
+            // ranking rather than showing an uninflated number.
+            if let Some(latency_ms) = uplink.tcp_inflated_latency_ms {
+                self.uplink_latency_inflated_seconds
+                    .with_label_values(&[group, "tcp", &uplink.name])
+                    .set(latency_ms as f64 / 1000.0);
+            }
+            if let Some(latency_ms) = uplink.udp_inflated_latency_ms {
+                self.uplink_latency_inflated_seconds
                     .with_label_values(&[group, "udp", &uplink.name])
                     .set(latency_ms as f64 / 1000.0);
             }

@@ -6,6 +6,7 @@
 pub mod config;
 pub mod dial;
 mod error_classify;
+mod loss;
 
 mod manager;
 mod penalty;

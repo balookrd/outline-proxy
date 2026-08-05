@@ -27,6 +27,9 @@ mod uplinks;
 pub(crate) use uplinks::validate_uplink_section;
 
 #[cfg(test)]
+pub(crate) use balancing::load_balancing_config;
+
+#[cfg(test)]
 mod tests;
 
 const DIRECT_TARGET: &str = "direct";

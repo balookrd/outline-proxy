@@ -1,0 +1,32 @@
+# Grafana dashboard provisioning for the gateway node.
+#
+# Deployed to /opt/grafana/provisioning/dashboards/outline.yaml, which reaches
+# the container as /etc/grafana/provisioning/dashboards/outline.yaml through
+# the bind mount added to /opt/grafana/grafana.sh.
+#
+# Dashboards themselves go to /opt/grafana/data/dashboards/ on the host: that
+# directory is already inside the mounted data volume, so it appears as
+# /var/lib/grafana/dashboards in the container and needs no mount of its own.
+#
+# `allowUiUpdates: false` makes the provisioned dashboards read-only in the
+# UI. That is the point: before this, the JSON in the repository and the
+# dashboard on screen drifted apart with every hand-made edit. Change a
+# dashboard by editing the file in the repository and copying it here; the
+# provider re-reads it within `updateIntervalSeconds`, no restart needed.
+#
+# To experiment in the UI, use "Save as" — a copy is a normal, editable
+# dashboard, and the provisioned original stays authoritative.
+apiVersion: 1
+
+providers:
+  - name: outline
+    orgId: 1
+    type: file
+    # A deleted file removes the dashboard, so the directory is the single
+    # source of truth rather than an additive overlay.
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -9,12 +9,41 @@ use outline_uplink::{
 use super::super::schema::LoadBalancingSection;
 use super::uplinks::parse_human_duration;
 
-pub(super) fn load_balancing_config(
+pub(crate) fn load_balancing_config(
     lb: Option<&LoadBalancingSection>,
 ) -> Result<LoadBalancingConfig> {
     let rtt_ewma_alpha = lb.and_then(|l| l.rtt_ewma_alpha).unwrap_or(0.3);
     if !(rtt_ewma_alpha.is_finite() && 0.0 < rtt_ewma_alpha && rtt_ewma_alpha <= 1.0) {
         bail!("load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
+    }
+    let loss_latency_penalty_k = lb.and_then(|l| l.loss_latency_penalty_k).unwrap_or(0.0);
+    if !(loss_latency_penalty_k.is_finite() && loss_latency_penalty_k >= 0.0) {
+        bail!("load_balancing.loss_latency_penalty_k must be a finite value >= 0");
+    }
+    let loss_latency_inflation_max = lb.and_then(|l| l.loss_latency_inflation_max).unwrap_or(4.0);
+    // Upper-bounded, not just finite: an absurd cap (e.g. a typo like
+    // `1e300`) lets `base_latency_with` saturate a wire's inflated latency
+    // to `Duration::MAX`, which `weighted_latency_score` then feeds into the
+    // panicking `Duration::from_secs_f64` in the selection hot path — for
+    // any weight. 100x is far past any real-world path; reject anything
+    // beyond it at load time instead of letting it panic dispatch later.
+    if !(loss_latency_inflation_max.is_finite()
+        && (1.0..=100.0).contains(&loss_latency_inflation_max))
+    {
+        bail!("load_balancing.loss_latency_inflation_max must be a finite value in [1, 100]");
+    }
+    let loss_ewma_alpha = lb.and_then(|l| l.loss_ewma_alpha).unwrap_or(0.2);
+    if !(loss_ewma_alpha.is_finite() && 0.0 < loss_ewma_alpha && loss_ewma_alpha <= 1.0) {
+        bail!("load_balancing.loss_ewma_alpha must be in the range (0, 1]");
+    }
+    // `0.0` is the documented off switch (see the field doc on
+    // `LoadBalancingConfig::loss_failover_ratio`) — a value outside `[0, 1]`
+    // is nonsense for a ratio and rejected here rather than silently
+    // clamped, matching the sibling `loss_latency_penalty_k` /
+    // `health_weight_floor` validations above.
+    let loss_failover_ratio = lb.and_then(|l| l.loss_failover_ratio).unwrap_or(0.0);
+    if !(loss_failover_ratio.is_finite() && (0.0..=1.0).contains(&loss_failover_ratio)) {
+        bail!("load_balancing.loss_failover_ratio must be in the range [0, 1]");
     }
     let mode = lb.and_then(|l| l.mode).unwrap_or(LoadBalancingMode::ActiveActive);
     let routing_scope = lb.and_then(|l| l.routing_scope).unwrap_or(RoutingScope::PerFlow);
@@ -51,6 +80,20 @@ pub(super) fn load_balancing_config(
         warm_standby_tcp: lb.and_then(|l| l.warm_standby_tcp).unwrap_or(0),
         warm_standby_udp: lb.and_then(|l| l.warm_standby_udp).unwrap_or(0),
         rtt_ewma_alpha,
+        loss_latency_penalty_k,
+        loss_latency_inflation_max,
+        // Default: 10 s. `0` is the sampling loop's own off switch —
+        // `UplinkManager::spawn_loss_sampler_loop` checks `interval.is_zero()`
+        // and never spawns the loop at all, rather than spawning one that
+        // busy-loops on a zero sleep. Documented (not rejected) because it is
+        // a legitimate way to ship the carrier-loss probes (registration,
+        // metrics wiring) without paying for the sampling timer, e.g. while
+        // staging the feature.
+        loss_sample_interval: Duration::from_secs(
+            lb.and_then(|l| l.loss_sample_interval_secs).unwrap_or(30),
+        ),
+        loss_sample_min_packets: lb.and_then(|l| l.loss_sample_min_packets).unwrap_or(50),
+        loss_ewma_alpha,
         failure_penalty: Duration::from_millis(
             lb.and_then(|l| l.failure_penalty_ms).unwrap_or(500),
         ),
@@ -74,6 +117,16 @@ pub(super) fn load_balancing_config(
                 Some(secs) => Some(Duration::from_secs(secs)),
                 None => Some(Duration::from_secs(downgrade_secs.saturating_mul(3))),
             }
+        },
+        loss_failover_ratio,
+        // Unset or explicit `0` disables the check, exactly like
+        // `carrier_degraded_failover_secs`'s `Some(0) => None` — no auto-
+        // derived default here: unlike the carrier-descent window there is
+        // no companion duration this could scale off, and inventing one
+        // would silently turn the ratio knob live.
+        loss_failover_duration: match lb.and_then(|l| l.loss_failover_secs) {
+            Some(0) | None => None,
+            Some(secs) => Some(Duration::from_secs(secs)),
         },
         runtime_failure_window: Duration::from_secs(
             lb.and_then(|l| l.runtime_failure_window_secs).unwrap_or(60),

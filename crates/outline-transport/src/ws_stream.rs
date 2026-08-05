@@ -25,6 +25,15 @@ pub(crate) trait SharedConnectionHealth: Send + Sync {
     fn is_open(&self) -> bool;
     fn conn_id(&self) -> u64;
     fn mode(&self) -> &'static str;
+    /// Loss counters for the connection underneath, when the family can
+    /// surrender them. Defaults to `None` so an implementation that predates
+    /// loss measurement keeps compiling and simply contributes no signal.
+    ///
+    /// `SharedH2Connection` overrides this (see `h2/shared.rs`); reached via
+    /// `H2WsStream::loss_probe` from `TransportStream::loss_probe`'s `H2` arm.
+    fn loss_probe(&self) -> Option<crate::CarrierLossProbe> {
+        None
+    }
 }
 
 pub(super) type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -236,6 +245,35 @@ impl TransportStream {
             downgraded_from: None,
             ack_prefix_advertised_by_server: false,
             symmetric_replay_advertised_by_server: false,
+        }
+    }
+
+    /// A handle to this carrier's loss counters, when the carrier family can
+    /// surrender one. Read once at dial time and held by the uplink manager;
+    /// the stream itself neither samples nor stores anything.
+    ///
+    /// `None` means "no signal from this carrier", never "no loss": a
+    /// non-Linux build, or a carrier family whose socket is not reachable from
+    /// here, both land on `None`.
+    pub fn loss_probe(&self) -> Option<crate::CarrierLossProbe> {
+        match self {
+            TransportStream::Http1 { inner, .. } => match inner.get_ref() {
+                tokio_tungstenite::MaybeTlsStream::Plain(tcp) => {
+                    crate::CarrierLossProbe::from_tcp_stream(tcp)
+                },
+                tokio_tungstenite::MaybeTlsStream::Rustls(tls) => {
+                    crate::CarrierLossProbe::from_tcp_stream(tls.get_ref().0)
+                },
+                _ => None,
+            },
+            #[cfg(feature = "h3")]
+            TransportStream::H3 { inner, .. } => inner.loss_probe(),
+            #[cfg(not(feature = "h3"))]
+            TransportStream::H3 { .. } => None,
+            TransportStream::H2 { inner, .. } => inner.loss_probe(),
+            TransportStream::Xhttp { inner, .. } => {
+                inner.loss_probe().and_then(|probe| probe.try_clone())
+            },
         }
     }
 

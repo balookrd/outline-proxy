@@ -42,6 +42,8 @@ async fn full_outbound_queue_pends_instead_of_erroring() {
         XhttpSubmode::PacketUp,
         false,
         false,
+        None,
+        None,
     );
 
     // Fill the byte budget with writer-sized frames.
@@ -96,6 +98,8 @@ async fn small_frames_are_not_throttled_by_the_byte_budget() {
         XhttpSubmode::PacketUp,
         false,
         false,
+        None,
+        None,
     );
 
     // Datagram-sized frames keep the full slot window — the byte bound must not
@@ -129,6 +133,8 @@ async fn closed_receiver_surfaces_as_sink_error() {
         XhttpSubmode::PacketUp,
         false,
         false,
+        None,
+        None,
     );
 
     let err = stream

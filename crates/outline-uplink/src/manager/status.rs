@@ -104,6 +104,58 @@ pub(crate) struct PerTransportStatus {
     /// [`crate::manager::probe::wire`], so scoring of an uplink whose
     /// `active_wire` is non-zero uses that wire's measured RTT.
     pub(crate) fallback_rtt_ewma: Vec<Option<Duration>>,
+    /// Smoothed carrier loss for the primary wire. The live probes it is
+    /// derived from live in the manager's registry, not here: they own
+    /// duplicated descriptors, and `UplinkStatus` is cloned on every snapshot.
+    pub(crate) carrier_loss: crate::loss::LossEwma,
+    /// Per-fallback-wire loss slots, indexed by `wire_index - 1` exactly like
+    /// [`Self::fallback_rtt_ewma`]. Lazily extended on first write.
+    pub(crate) fallback_carrier_loss: Vec<crate::loss::LossEwma>,
+    /// Start of this transport's current continuous loss-elevated episode:
+    /// the active-wire loss ratio ([`Self::active_wire_loss`]) has been
+    /// above `LoadBalancingConfig::loss_failover_ratio` on every sampling
+    /// tick since this timestamp, with no clean tick in between. Maintained
+    /// by `UplinkManager::sample_carrier_loss_once` via
+    /// [`Self::update_loss_elevated_since`] — set on the first tick whose
+    /// ratio exceeds the threshold, cleared the instant a tick comes back at
+    /// or below it (or the ratio is unmeasured). Same continuous-episode
+    /// discipline as [`CarrierDescentState::window_started_at`]: a stream of
+    /// re-triggers reads as one episode, but an interrupted one restarts the
+    /// clock, so an uplink flapping around the threshold never accumulates
+    /// its way into a failover. Read by
+    /// `UplinkManager::loss_failover_switch_target` through the
+    /// [`TransportSelectionView`] projection below.
+    pub(crate) loss_elevated_since: Option<Instant>,
+    /// `(wire, when)` of the most recent sampling tick that recorded a
+    /// *qualifying* carrier-loss window (met `loss_sample_min_packets`) for
+    /// whichever wire was active at that moment. Distinct from "the ratio is
+    /// still above the threshold": [`Self::active_wire_loss`]'s ratio is a
+    /// frozen EWMA that a sub-volume-threshold window leaves completely
+    /// untouched (see [`crate::loss::LossEwma::record_window`]), and carrier
+    /// eviction only fires after three consecutive ticks with *zero* traffic
+    /// — so a wire idling on light-but-nonzero traffic below the volume
+    /// floor (sparse keepalives, an overnight lull) can go a long time
+    /// without ever re-measuring. Without this stamp,
+    /// [`Self::update_loss_elevated_since`] would keep reading that stale,
+    /// no-longer-current ratio as if it were fresh evidence indefinitely,
+    /// letting a loss-driven failover fire hours after the measurement that
+    /// justified it stopped being observed — and letting a warm-standby
+    /// uplink's episode from a previous stint as active survive, unconfirmed,
+    /// until it becomes active again.
+    ///
+    /// The wire is part of the stamp, not just the timestamp, because
+    /// [`Self::active_wire`] can change between ticks: without it, a fresh
+    /// measurement of the wire the dial loop just moved *off* of would
+    /// validate the *new* active wire's completely unrelated (and possibly
+    /// still-lossy) ratio for up to `max_staleness` after the flip.
+    /// [`Self::update_loss_elevated_since`] only trusts this stamp when its
+    /// wire still matches [`Self::active_wire`].
+    ///
+    /// Maintained by `UplinkManager::sample_carrier_loss_once`; a verdict
+    /// older than `3 × loss_sample_interval` (mirroring
+    /// [`crate::loss::MAX_IDLE_TICKS`], the same bound the registry itself
+    /// uses before evicting an idle carrier probe) is treated as unmeasured.
+    pub(crate) loss_last_qualifying_at: Option<(u8, Instant)>,
     /// Per-wire liveness penalty for weighted wire selection, decaying via the
     /// shared `0.5^(t/halflife)` curve (see [`crate::penalty::penalty_weight`]).
     /// Indexed by **wire index directly**: `[0]` is the primary wire, `[i]` is
@@ -233,11 +285,18 @@ impl UplinkStatus {
     }
 
     /// `Copy` projection of the fields the selection path reads *after* it has
-    /// released the status lock — see [`SelectionView`].
-    pub(crate) fn selection_view(&self) -> SelectionView {
+    /// released the status lock — see [`SelectionView`]. `config` supplies the
+    /// carrier-loss latency-penalty knobs that fold into `base_latency`, and
+    /// `now` is what [`TransportSelectionView::loss_ratio_fresh`] is
+    /// evaluated against.
+    pub(crate) fn selection_view(
+        &self,
+        config: &crate::config::LoadBalancingConfig,
+        now: Instant,
+    ) -> SelectionView {
         SelectionView {
-            tcp: self.tcp.selection_view(),
-            udp: self.udp.selection_view(),
+            tcp: self.tcp.selection_view(config, now),
+            udp: self.udp.selection_view(config, now),
         }
     }
 }
@@ -257,6 +316,27 @@ pub(crate) struct TransportSelectionView {
     pub(crate) descent_window_until: Option<Instant>,
     pub(crate) descent_window_started_at: Option<Instant>,
     pub(crate) base_latency: Option<Duration>,
+    /// Copy of [`PerTransportStatus::loss_elevated_since`], for the
+    /// loss-driven strict-mode failover check
+    /// (`UplinkManager::loss_failover_switch_target`).
+    pub(crate) loss_elevated_since: Option<Instant>,
+    /// This transport's active-wire loss ratio
+    /// ([`PerTransportStatus::active_wire_loss`]), copied out so the
+    /// loss-driven failover check can read a *candidate's* own loss without
+    /// re-locking its status. `None` means "not measured" — never "no
+    /// loss" — see [`crate::loss::LossEwma::ratio`].
+    pub(crate) loss_ratio: Option<f64>,
+    /// Whether [`Self::loss_ratio`] is still fresh —
+    /// [`PerTransportStatus::loss_is_fresh`], evaluated at the same instant
+    /// `loss_ratio` was read. Meaningless when `loss_ratio` is `None` (an
+    /// unmeasured candidate has nothing to be fresh or stale *about*, and
+    /// stays clean by the separate absence rule); when `loss_ratio` is
+    /// `Some`, `UplinkManager::loss_failover_switch_target` must not trust
+    /// that number as proof of a currently-clean candidate unless this is
+    /// `true` — a frozen reading from a warm-standby wire idling below the
+    /// sampling volume floor is not evidence either way, and treating its
+    /// stale ratio as clean is exactly the defect this field closes.
+    pub(crate) loss_ratio_fresh: bool,
 }
 
 /// Everything the scoring / gating layer reads off an [`UplinkStatus`], as a
@@ -339,18 +419,12 @@ impl TransportStatusView for PerTransportStatus {
     }
 
     fn base_latency(&self) -> Option<Duration> {
-        // Prefer the active wire's measured RTT so cross-uplink scoring
-        // compares the latency of the wire that is **actually carrying
-        // traffic**. When the dial loop / probe walk has moved `active_wire`
-        // off primary, primary's `rtt_ewma` may belong to a completely
-        // different (now-broken) wire — using it would mis-rank this uplink
-        // against its peers.
-        //
-        // Fall back to primary's `rtt_ewma`, then to the latest probe
-        // `latency`, when the active wire has no per-wire sample yet (cold
-        // start right after a wire flip). The first per-wire probe writes
-        // the slot within one cycle, so this stale-primary window is bounded.
-        self.active_wire_rtt_ewma().or(self.rtt_ewma).or(self.latency)
+        // This is the trait's config-free contract: the raw latency, with no
+        // carrier-loss penalty applied. Actual scoring goes through
+        // [`PerTransportStatus::base_latency_with`], which needs the config
+        // to fold loss in and is unavailable here. Both share one fallback
+        // chain — see [`PerTransportStatus::base_latency_and_wire_loss`].
+        self.base_latency_and_wire_loss().map(|(base, _loss)| base)
     }
 }
 
@@ -364,7 +438,15 @@ impl StatusView for UplinkStatus {
 
 impl PerTransportStatus {
     /// `Copy` projection of this transport's selection-relevant fields.
-    pub(crate) fn selection_view(&self) -> TransportSelectionView {
+    /// `config` resolves `base_latency` through [`Self::base_latency_with`]
+    /// so the projection carries the loss-inflated value, not the raw one;
+    /// `now`, paired with `config`'s [`crate::config::LoadBalancingConfig::loss_max_staleness`],
+    /// resolves `loss_ratio_fresh`.
+    pub(crate) fn selection_view(
+        &self,
+        config: &crate::config::LoadBalancingConfig,
+        now: Instant,
+    ) -> TransportSelectionView {
         TransportSelectionView {
             healthy: self.healthy,
             cooldown_until: self.cooldown_until,
@@ -372,7 +454,10 @@ impl PerTransportStatus {
             penalty: self.penalty,
             descent_window_until: self.descent.until(),
             descent_window_started_at: self.descent.window_started_at(),
-            base_latency: self.base_latency(),
+            base_latency: self.base_latency_with(config),
+            loss_elevated_since: self.loss_elevated_since,
+            loss_ratio: self.active_wire_loss().ratio(),
+            loss_ratio_fresh: self.loss_is_fresh(config.loss_max_staleness(), now),
         }
     }
 
@@ -422,6 +507,251 @@ impl PerTransportStatus {
         let mut current = self.fallback_rtt_ewma[slot_idx];
         crate::penalty::update_rtt_ewma(&mut current, sample, alpha);
         self.fallback_rtt_ewma[slot_idx] = current;
+    }
+
+    /// Loss for the wire new sessions currently land on. Same active-wire rule
+    /// as [`Self::active_wire_rtt_ewma`], so scoring never mixes one wire's
+    /// latency with another's loss.
+    pub(crate) fn active_wire_loss(&self) -> crate::loss::LossEwma {
+        if self.active_wire == 0 {
+            return self.carrier_loss;
+        }
+        let slot_idx = (self.active_wire - 1) as usize;
+        self.fallback_carrier_loss.get(slot_idx).copied().unwrap_or_default()
+    }
+
+    /// Advance [`Self::loss_elevated_since`] by one sampling tick. Called
+    /// from `UplinkManager::sample_carrier_loss_once` on every tick, for
+    /// every uplink/transport, regardless of whether that tick produced a
+    /// fresh loss window — an uplink already over the threshold whose only
+    /// carrier just went idle must not silently freeze its episode instead
+    /// of continuing to age it, and a tick that measured nothing new must
+    /// still be able to *clear* a stale episode once the wire's carrier is
+    /// gone (its ratio resets to "not measured" via [`Self::reset_wire_loss`]
+    /// first).
+    ///
+    /// `threshold <= 0.0` is `LoadBalancingConfig::loss_failover_ratio`'s
+    /// documented off switch: the episode is always cleared, so the check
+    /// ships inert exactly like the sibling `carrier_degraded_failover`
+    /// knob when unset.
+    ///
+    /// Otherwise the ratio is trusted only when it is *fresh*:
+    /// [`Self::loss_last_qualifying_at`] must both name the wire currently
+    /// active ([`Self::active_wire`] — see that stamp's doc for why a wire
+    /// flip must not let one wire's freshness vouch for another's ratio) and
+    /// be within `max_staleness` of `now` (see the same doc for why a frozen
+    /// EWMA cannot be trusted indefinitely just because nothing has
+    /// re-measured it). A fresh ratio strictly above `threshold` starts the
+    /// episode on the first such tick and leaves an already-running
+    /// episode's anchor untouched — a re-trigger must not reset a genuinely
+    /// long episode back to "just started". A fresh ratio at or below
+    /// `threshold`, a stale (or wire-mismatched, or absent) verdict, or no
+    /// ratio at all (not measured is never evidence of loss) all clear the
+    /// episode: a single clean tick restarts the clock instead of letting an
+    /// uplink that merely flaps around the threshold accumulate its way
+    /// into a failover, and a verdict nobody has reconfirmed — for this
+    /// wire, recently — stops counting as "still happening".
+    pub(crate) fn update_loss_elevated_since(
+        &mut self,
+        threshold: f64,
+        now: Instant,
+        max_staleness: Duration,
+    ) {
+        if threshold <= 0.0 {
+            self.loss_elevated_since = None;
+            return;
+        }
+        let elevated = self.loss_is_fresh(max_staleness, now)
+            && self.active_wire_loss().ratio().is_some_and(|ratio| ratio > threshold);
+        self.loss_elevated_since = if elevated {
+            self.loss_elevated_since.or(Some(now))
+        } else {
+            None
+        };
+    }
+
+    /// Whether [`Self::loss_last_qualifying_at`] still vouches for
+    /// [`Self::active_wire_loss`]'s ratio: the stamp must name the wire
+    /// currently active (a wire flip must not let a stale measurement of a
+    /// *different* wire validate the new active wire's ratio) and be within
+    /// `max_staleness` of `now` (a qualifying window this old is no longer
+    /// trustworthy evidence of the *current* state — see
+    /// [`Self::loss_last_qualifying_at`]'s doc for the warm-standby scenario
+    /// this exists to catch).
+    ///
+    /// Shared by two callers that both need this same yes/no, for opposite
+    /// reasons: [`Self::update_loss_elevated_since`] uses it to decide
+    /// whether the *active* uplink's own ratio may still be trusted as
+    /// evidence of ongoing loss (a stale reading must not keep an episode
+    /// running, nor start a new one); `UplinkManager::loss_failover_switch_target`
+    /// (via [`Self::selection_view`]) uses it to decide whether a
+    /// *candidate's* ratio may be trusted as evidence the candidate is
+    /// currently clean (a stale reading — however low the frozen number —
+    /// must not wave a not-recently-confirmed candidate onto the leg; only
+    /// a genuinely unmeasured candidate, which carries no number to
+    /// mistrust, keeps the separate "absence is not evidence of loss" rule).
+    pub(crate) fn loss_is_fresh(&self, max_staleness: Duration, now: Instant) -> bool {
+        let active_wire = self.active_wire;
+        self.loss_last_qualifying_at.is_some_and(|(wire, t)| {
+            wire == active_wire && now.saturating_duration_since(t) <= max_staleness
+        })
+    }
+
+    /// The latency this transport is ranked by, paired with the loss slot
+    /// **attributed to the same wire it came from** — the single fallback
+    /// chain shared by [`TransportStatusView::base_latency`] (raw value) and
+    /// [`Self::base_latency_with`] (loss-inflated value), so the two can
+    /// never drift apart.
+    ///
+    /// - The active wire's own RTT EWMA is preferred, so cross-uplink scoring
+    ///   compares the latency of the wire that is **actually carrying
+    ///   traffic**; paired with that same wire's own loss slot
+    ///   ([`Self::active_wire_loss`]).
+    /// - Falling back to primary's `rtt_ewma` (the active wire has no
+    ///   per-wire sample yet — cold start right after a wire flip, primary's
+    ///   `rtt_ewma` may otherwise belong to a completely different,
+    ///   now-broken wire) is paired with primary's own loss slot
+    ///   (`carrier_loss`, wire `0`), not the active wire's — mixing the two
+    ///   would score a latency sample against a loss verdict from an
+    ///   unrelated wire.
+    /// - Falling back further to the last probe `latency` sample carries no
+    ///   wire attribution at all, so it is paired with a default (no-loss)
+    ///   verdict: an unattributed base value cannot correctly carry an
+    ///   attributed loss penalty.
+    fn base_latency_and_wire_loss(&self) -> Option<(Duration, crate::loss::LossEwma)> {
+        if let Some(active) = self.active_wire_rtt_ewma() {
+            return Some((active, self.active_wire_loss()));
+        }
+        if let Some(primary) = self.rtt_ewma {
+            return Some((primary, self.carrier_loss));
+        }
+        Some((self.latency?, crate::loss::LossEwma::default()))
+    }
+
+    /// Penalty-free latency this transport is ranked by, with carrier loss on
+    /// the same wire the latency came from folded in — see
+    /// [`Self::base_latency_and_wire_loss`] for which wire's loss slot
+    /// applies to which fallback branch.
+    ///
+    /// Loss is applied as a multiplier on latency rather than as a separate
+    /// term because that is what it physically is: every retransmit costs the
+    /// affected bytes another round trip, so a lossy path delivers later at
+    /// the same RTT. Applying it here — the shared input of every routing
+    /// scope — is also what makes it visible to Global scope under
+    /// `auto_failback`, which discards `penalty` entirely and would otherwise
+    /// stay blind exactly where the field incident happened. This is only
+    /// true because the candidate-building call site scores from the
+    /// [`TransportSelectionView`] this method feeds (via [`Self::selection_view`]),
+    /// not from the raw, uninflated [`TransportStatusView::base_latency`] —
+    /// see `UplinkManager::build_candidate_states` in `manager/candidates.rs`.
+    ///
+    /// Loss never synthesises a latency: with no RTT sample the result stays
+    /// `None`, because an uplink that has never been measured must not be
+    /// ranked on a fabricated number.
+    ///
+    /// This is the scoring entry point; [`TransportStatusView::base_latency`]
+    /// on this type stays the config-free raw value (no loss applied) for
+    /// callers that rank a single status against itself without a config in
+    /// hand.
+    ///
+    /// Deliberately **not** gated on [`Self::loss_is_fresh`], unlike
+    /// [`Self::selection_view`]'s `loss_ratio_fresh` (consumed by
+    /// `UplinkManager::loss_failover_switch_target`) and
+    /// [`Self::update_loss_elevated_since`]. Both of those decide whether a
+    /// *stale* reading may be trusted as **good** news — evidence an active
+    /// or candidate uplink is not currently lossy — and staleness must not
+    /// vouch for that; the risk is a warm-standby wire's ratio going stale
+    /// and being silently read as "confirmed clean" the moment nobody has
+    /// re-measured it, which is exactly backwards from what a freshness gate
+    /// is for. Ranking has the opposite risk profile: gating this multiplier
+    /// on freshness would make a stale ratio "expire" back to `1.0` (no
+    /// penalty), which is trusting staleness as good news in the *other*
+    /// place it must not be trusted — a lossy uplink deselected minutes ago
+    /// would have its rank penalty silently vanish once its warm-standby
+    /// traffic falls quiet, before anything has re-confirmed it improved.
+    /// Leaving the multiplier on a frozen ratio keeps ranking conservative in
+    /// the same direction the candidate filter is conservative in: neither
+    /// treats "nobody has re-checked recently" as proof of recovery.
+    pub(crate) fn base_latency_with(
+        &self,
+        config: &crate::config::LoadBalancingConfig,
+    ) -> Option<Duration> {
+        let (base, loss) = self.base_latency_and_wire_loss()?;
+        let multiplier =
+            loss.inflation(config.loss_latency_penalty_k, config.loss_latency_inflation_max);
+        if multiplier <= 1.0 {
+            return Some(base);
+        }
+        // `try_from_secs_f64` rather than the panicking `from_secs_f64`: the
+        // config loader bounds `loss_latency_inflation_max` to `[1, 100]`
+        // (`bins/outline-ws-rust/src/config/load/balancing.rs`), but this
+        // stays as defence in depth against this function's own
+        // multiplication overflowing regardless of that bound, saturating to
+        // `Duration::MAX` (effectively "worst possible") here rather than
+        // panicking.
+        //
+        // Saturating here does not, on its own, guarantee no caller ever
+        // panics on the result: `crate::selection::weighted_latency_score`
+        // divides this value by the uplink's `weight` (unbounded above —
+        // only `> 0.0` is enforced at load time, see
+        // `bins/outline-ws-rust/src/config/load/uplinks/mod.rs`) and calls
+        // the panicking `Duration::from_secs_f64` again, so a genuine
+        // `Duration::MAX` here divided by a `weight < 1.0` would overflow
+        // past `Duration::MAX` and panic there instead. What actually makes
+        // this unreachable is that the `[1, 100]` bound on
+        // `loss_latency_inflation_max` keeps `base * multiplier` from ever
+        // *reaching* `Duration::MAX` for any base latency a real RTT sample
+        // could produce — the saturating branch below is defence against an
+        // input that is not itself reachable, so there is nothing for
+        // `weighted_latency_score`'s division to overflow. It stays this
+        // function's job to keep its own output sane; it is not what
+        // protects the caller from an unrelated unbounded `weight`.
+        Some(Duration::try_from_secs_f64(base.as_secs_f64() * multiplier).unwrap_or(Duration::MAX))
+    }
+
+    /// Fold one sampling window into the slot for `wire`. Returns whether
+    /// the window actually qualified (met `min_packets`) and moved the
+    /// ratio — see [`crate::loss::LossEwma::record_window`]. Callers that
+    /// need to know whether *this tick* produced fresh evidence for the
+    /// active wire (as opposed to a sub-threshold window the ratio silently
+    /// ignored) use the return value; see [`Self::loss_last_qualifying_at`].
+    pub(crate) fn record_wire_loss_window(
+        &mut self,
+        wire: u8,
+        sent: u64,
+        lost: u64,
+        min_packets: u64,
+        alpha: f64,
+    ) -> bool {
+        if wire == 0 {
+            return self.carrier_loss.record_window(sent, lost, min_packets, alpha);
+        }
+        let slot_idx = (wire - 1) as usize;
+        while self.fallback_carrier_loss.len() <= slot_idx {
+            self.fallback_carrier_loss.push(crate::loss::LossEwma::default());
+        }
+        self.fallback_carrier_loss[slot_idx].record_window(sent, lost, min_packets, alpha)
+    }
+
+    /// Clear `wire`'s loss verdict back to "not measured". Called by the
+    /// sampling loop when a (transport, wire) loses its last registered
+    /// carrier ([`crate::loss::CarrierLossRegistry::collect_windows`]'s
+    /// `emptied_wires`), so a ratio measured while the wire carried traffic
+    /// does not survive as a stale penalty once nothing is left to measure —
+    /// see [`crate::loss::LossEwma::reset`].
+    ///
+    /// A no-op for a fallback slot that was never extended (`wire` past the
+    /// end of [`Self::fallback_carrier_loss`]): an unmeasured slot is already
+    /// the reset state, so there is nothing to clear.
+    pub(crate) fn reset_wire_loss(&mut self, wire: u8) {
+        if wire == 0 {
+            self.carrier_loss.reset();
+            return;
+        }
+        let slot_idx = (wire - 1) as usize;
+        if let Some(slot) = self.fallback_carrier_loss.get_mut(slot_idx) {
+            slot.reset();
+        }
     }
 
     /// Mutable per-wire penalty slot for `wire` (`0` = primary, `i` = fallback
