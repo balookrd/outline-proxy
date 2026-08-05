@@ -216,17 +216,13 @@ async fn connect_tcp_uplink_inner(
         })
         .await?;
 
+    // The success log lives in `dial_over_wires` — one line for both ingresses
+    // rather than one there and one here. Only the metric is ours.
     if wire != 0 {
         outline_metrics::record_uplink_selected(
             "tcp",
             uplinks.group_name(),
             &candidate.uplink.name,
-        );
-        debug!(
-            uplink = %candidate.uplink.name,
-            target = %target,
-            wire_index = wire,
-            "TCP fallback wire dial succeeded",
         );
     }
     Ok(connected)
