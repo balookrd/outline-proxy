@@ -13,8 +13,8 @@ use std::time::Duration;
 use url::Url;
 
 use crate::config::{
-    CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TransportMode,
-    UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
+    CipherKind, FallbackTransport, LoadBalancingConfig, LoadBalancingMode, ProbeConfig,
+    RoutingScope, TransportMode, UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
 };
 use crate::manager::mode_downgrade::ModeDowngradeTrigger;
 use crate::types::{TransportKind, UplinkCandidate, UplinkManager};
@@ -143,14 +143,15 @@ fn h3_connection_collapse() -> anyhow::Error {
 async fn without_a_cap_both_dial_kinds_ask_for_the_configured_carrier() {
     let manager = manager();
     let candidate = candidate();
+    let spec = crate::WireSpec::of(&candidate.uplink, 0).unwrap();
 
     assert_eq!(
-        manager.tcp_dial_mode_for(&candidate, false).await,
+        manager.tcp_dial_mode_for(&candidate, &spec, false).await,
         TransportMode::WsH3,
         "an ordinary dial asks for the configured carrier when nothing is capped",
     );
     assert_eq!(
-        manager.tcp_dial_mode_for(&candidate, true).await,
+        manager.tcp_dial_mode_for(&candidate, &spec, true).await,
         TransportMode::WsH3,
         "so does a migration dial — the bypass is a no-op without a cap",
     );
@@ -160,6 +161,7 @@ async fn without_a_cap_both_dial_kinds_ask_for_the_configured_carrier() {
 async fn migration_dial_ignores_the_cap_the_carrier_death_just_installed() {
     let manager = manager();
     let candidate = candidate();
+    let spec = crate::WireSpec::of(&candidate.uplink, 0).unwrap();
 
     // The carrier death that triggers a migration is reported as a runtime
     // failure first, which caps this uplink h3 -> h2 for the next 60s.
@@ -171,14 +173,107 @@ async fn migration_dial_ignores_the_cap_the_carrier_death_just_installed() {
     );
 
     assert_eq!(
-        manager.tcp_dial_mode_for(&candidate, false).await,
+        manager.tcp_dial_mode_for(&candidate, &spec, false).await,
         TransportMode::WsH2,
         "an ordinary dial must still honour the cap — that is what it is for",
     );
     assert_eq!(
-        manager.tcp_dial_mode_for(&candidate, true).await,
+        manager.tcp_dial_mode_for(&candidate, &spec, true).await,
         TransportMode::WsH3,
         "the migration dial must ask for h3 anyway: honouring the cap here pins \
          the rescued flow to TCP-over-TCP for the rest of its life",
     );
+}
+
+/// An SS fallback wire whose carrier is `url` — same shape regardless of
+/// whether `url` is a real listener or a closed port, since the caller
+/// decides what happens when it is actually dialed.
+fn fallback_wire_at(url: &Url) -> FallbackTransport {
+    FallbackTransport {
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: Some(url.clone()),
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: Some(url.clone()),
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        vless_id: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "shared".to_string(),
+        fwmark: None,
+        ipv6_first: false,
+        fingerprint_profile: None,
+    }
+}
+
+/// An SS uplink whose primary is `closed_url` and whose two fallback wires
+/// are `wire1_url` (wire 1) and `wire2_url` (wire 2).
+fn uplink_with_two_fallbacks(closed_url: &Url, wire1_url: &Url, wire2_url: &Url) -> UplinkConfig {
+    UplinkConfig {
+        name: "fallback-wire-test".to_string(),
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: Some(closed_url.clone()),
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: Some(closed_url.clone()),
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "shared".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+        fingerprint_profile: None,
+        fallbacks: vec![fallback_wire_at(wire1_url), fallback_wire_at(wire2_url)],
+        shuffle_wires: false,
+        carrier_downgrade: true,
+        padding: None,
+        shuffle_timer: None,
+    }
+}
+
+/// A TCP port that was bound then immediately dropped, so a dial against it
+/// fails fast (connection refused) instead of hanging on real network I/O.
+async fn closed_port_url() -> Url {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let url = Url::parse(&format!("ws://{}/tcp", listener.local_addr().unwrap())).unwrap();
+    drop(listener);
+    url
+}
+
+/// An SS uplink with two fallback wires (wire 1, wire 2). Every wire's
+/// carrier URL points at a closed port, so a dial against any of them fails
+/// fast — the fallback-wire attribution test only cares what gets registered
+/// on the way to that failure, not whether the dial itself succeeds.
+pub(super) async fn sample_manager_with_fallbacks() -> UplinkManager {
+    let closed_url = closed_port_url().await;
+    let uplink = uplink_with_two_fallbacks(&closed_url, &closed_url, &closed_url);
+    UplinkManager::new_for_test("test", vec![uplink], probe_cfg(), lb()).unwrap()
+}
+
+/// Same shape as [`sample_manager_with_fallbacks`], but wire 2 points at
+/// `wire2_url` instead of a closed port — used by the Linux-only companion
+/// test that needs the dial to actually succeed so a loss probe is really
+/// filed. Gated to `target_os = "linux"` like that test: carrier loss probes
+/// are Linux-only (`outline_transport::carrier_loss`), so on any other
+/// platform a successful dial still registers nothing, and this helper would
+/// be dead code.
+#[cfg(target_os = "linux")]
+pub(super) async fn sample_manager_with_live_wire_two(wire2_url: Url) -> UplinkManager {
+    let closed_url = closed_port_url().await;
+    let uplink = uplink_with_two_fallbacks(&closed_url, &closed_url, &wire2_url);
+    UplinkManager::new_for_test("test", vec![uplink], probe_cfg(), lb()).unwrap()
 }
