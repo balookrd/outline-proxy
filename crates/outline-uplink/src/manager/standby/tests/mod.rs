@@ -254,24 +254,12 @@ async fn closed_port_url() -> Url {
     url
 }
 
-/// An SS uplink with two fallback wires (wire 1, wire 2). Every wire's
-/// carrier URL points at a closed port, so a dial against any of them fails
-/// fast — the fallback-wire attribution test only cares what gets registered
-/// on the way to that failure, not whether the dial itself succeeds.
-pub(super) async fn sample_manager_with_fallbacks() -> UplinkManager {
-    let closed_url = closed_port_url().await;
-    let uplink = uplink_with_two_fallbacks(&closed_url, &closed_url, &closed_url);
-    UplinkManager::new_for_test("test", vec![uplink], probe_cfg(), lb()).unwrap()
-}
-
-/// Same shape as [`sample_manager_with_fallbacks`], but wire 2 points at
-/// `wire2_url` instead of a closed port — used by the Linux-only companion
-/// test that needs the dial to actually succeed so a loss probe is really
-/// filed. Gated to `target_os = "linux"` like that test: carrier loss probes
-/// are Linux-only (`outline_transport::carrier_loss`), so on any other
-/// platform a successful dial still registers nothing, and this helper would
-/// be dead code.
-#[cfg(target_os = "linux")]
+/// An SS uplink with two fallback wires (wire 1, wire 2): the primary and
+/// wire 1 point at closed ports (so a dial can never wander onto them), wire
+/// 2 points at `wire2_url` — used by the fallback-wire attribution test,
+/// which needs the wire-2 dial to actually succeed against a live mock
+/// server so the post-dial bookkeeping (RTT EWMA, loss probe) really runs
+/// rather than bailing out at `connect_transport`'s `?`.
 pub(super) async fn sample_manager_with_live_wire_two(wire2_url: Url) -> UplinkManager {
     let closed_url = closed_port_url().await;
     let uplink = uplink_with_two_fallbacks(&closed_url, &closed_url, &wire2_url);
