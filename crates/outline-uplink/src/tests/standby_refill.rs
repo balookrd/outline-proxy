@@ -246,7 +246,7 @@ async fn stale_pool_entries_schedule_a_single_refill() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let candidate = UplinkCandidate { index: 0, uplink: uplink.into() };
-    let taken = manager.try_take_tcp_standby(&candidate).await;
+    let taken = manager.try_take_tcp_standby(&candidate, 0).await;
     assert!(
         taken.is_some(),
         "the take must walk past the {STALE} stale entries and hand out the live one",

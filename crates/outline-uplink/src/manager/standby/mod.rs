@@ -6,7 +6,9 @@ mod refill;
 mod tests;
 #[cfg(test)]
 use tests::{
-    sample_manager_with_live_wire_two, sample_manager_with_vless_fallback, udp_candidate_for_test,
+    sample_manager_with_combined_ss_fallback, sample_manager_with_live_wire_two,
+    sample_manager_with_three_fallbacks, sample_manager_with_three_fallbacks_gate_off,
+    sample_manager_with_vless_fallback, udp_candidate_for_test,
 };
 
 #[cfg(test)]
@@ -16,6 +18,10 @@ mod wire_dial_tcp_tests;
 #[cfg(test)]
 #[path = "tests/wire_dial_udp.rs"]
 mod wire_dial_udp_tests;
+
+#[cfg(test)]
+#[path = "tests/pool_wire.rs"]
+mod pool_wire_tests;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -162,10 +168,11 @@ impl UplinkManager {
             .with_status(index, |status| capped_or_configured(&status.udp, configured))
     }
 
-    /// Pops one connection from the TCP standby pool without falling back to
-    /// a fresh dial.  Returns `None` if the pool is empty, or if the popped
-    /// entry fails a quick liveness peek (pre-flight check to avoid handing
-    /// a stale socket to a fresh SOCKS session).
+    /// Pops one connection from the TCP standby pool for `wire` without
+    /// falling back to a fresh dial. Returns `None` if the pool is not
+    /// currently prewarming `wire`, if it is empty, or if the popped entry
+    /// fails a quick liveness peek (pre-flight check to avoid handing a stale
+    /// socket to a fresh SOCKS session).
     ///
     /// The background validation loop runs every 15 s; that is not tight
     /// enough when the upstream closes idle WebSocket connections within a
@@ -178,20 +185,28 @@ impl UplinkManager {
     pub async fn try_take_tcp_standby(
         &self,
         candidate: &UplinkCandidate,
+        wire: u8,
     ) -> Option<TransportStream> {
         if !matches!(candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return None;
         }
         let ctx = self.standby_ctx(candidate.index, TransportKind::Tcp).await;
-        let ws = ctx.try_take_alive(&candidate.uplink.name).await?;
+        let ws = ctx.try_take_alive(&candidate.uplink.name, wire).await?;
         // A pooled carrier never passes through the dial path, so this take is
         // the only place its loss probe can be filed. Registering only on dial
         // made measurement coverage follow the *dial* rate rather than the
         // traffic: the busiest gateway showed 3382 reused TCP acquisitions
         // against 11 fresh ones and carried no TCP loss verdict at all, while
         // pushing 1.4 GiB. Registration de-duplicates by carrier identity, so
-        // re-filing a carrier that is already known is a no-op.
-        self.register_carrier_loss_probe(candidate.index, 0, TransportKind::Tcp, ws.loss_probe());
+        // re-filing a carrier that is already known is a no-op. Filed under
+        // `ctx.wire` (the wire this pool is actually on), which at this point
+        // is guaranteed to equal `wire`.
+        self.register_carrier_loss_probe(
+            candidate.index,
+            ctx.wire,
+            TransportKind::Tcp,
+            ws.loss_probe(),
+        );
         Some(ws)
     }
 
@@ -500,7 +515,7 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<TransportStream> {
-        if let Some(ws) = self.try_take_tcp_standby(candidate).await {
+        if let Some(ws) = self.try_take_tcp_standby(candidate, 0).await {
             return Ok(ws);
         }
         self.connect_tcp_ws_fresh(candidate, source).await
@@ -653,46 +668,47 @@ impl UplinkManager {
         // loops past zombie entries (e.g. underlying H2/H3 torn down after
         // pooling) so we never hand a dead transport to the caller.
         //
-        // The pool is filled on the primary wire until Task 8 moves it onto
-        // the active wire; a fallback-wire acquire must never be handed a
-        // primary-wire stream, so this take is gated to `wire == 0`.
-        if spec.wire == 0 {
-            let ctx = self.standby_ctx(candidate.index, TransportKind::Udp).await;
-            if let Some(ws) = ctx.try_take_alive(&candidate.uplink.name).await {
-                // Same reason as the TCP take above: a carrier reused out of the
-                // pool is never dialled, so without this it is never measured.
-                self.register_carrier_loss_probe(
-                    candidate.index,
-                    spec.wire,
-                    TransportKind::Udp,
-                    ws.loss_probe(),
-                );
-                // A pooled stream was dialled as a fresh session by the refill loop,
-                // so the server minted it an id and it is riding on the stream. Move
-                // it into this carrier's store or the flow would have no id of its
-                // own and could never migrate — the reused-standby path was the one
-                // place a TUN UDP flow silently lost its resume identity.
-                let pooled_resume_key =
-                    resume_cache_key(self.resume_scope(&candidate.uplink.name), "udp");
-                resume_store
-                    .ss()
-                    .store_if_issued(pooled_resume_key, ws.issued_session_id());
-                // `from_websocket` reads the carrier padding at build time, which on
-                // the hot path runs after the dial returns — outside any dial scope.
-                // Wrap the build in the per-uplink padding scope so a padded uplink's
-                // reused standby stream frames its datagrams (mirrors VLESS-UDP).
-                let transport = crate::dial::with_uplink_padding_scope(&candidate.uplink, async {
-                    UdpWsTransport::from_websocket(
-                        ws,
-                        spec.cipher,
-                        spec.password,
-                        source,
-                        self.inner.load_balancing.udp_ws_keepalive_interval,
-                    )
-                })
-                .await?;
-                return Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())));
-            }
+        // The pool follows the active wire (Task 8): `try_take_alive` answers
+        // `None` on its own for any wire it is not currently prewarming, so a
+        // fallback-wire acquire can never be handed a stream dialed for
+        // another wire — no `wire == 0` gate needed here any more.
+        let ctx = self.standby_ctx(candidate.index, TransportKind::Udp).await;
+        if let Some(ws) = ctx.try_take_alive(&candidate.uplink.name, spec.wire).await {
+            // Same reason as the TCP take above: a carrier reused out of the
+            // pool is never dialled, so without this it is never measured.
+            // Filed under `ctx.wire`, which is guaranteed to equal `spec.wire`
+            // here — the take only returns `Some` when they match.
+            self.register_carrier_loss_probe(
+                candidate.index,
+                ctx.wire,
+                TransportKind::Udp,
+                ws.loss_probe(),
+            );
+            // A pooled stream was dialled as a fresh session by the refill loop,
+            // so the server minted it an id and it is riding on the stream. Move
+            // it into this carrier's store or the flow would have no id of its
+            // own and could never migrate — the reused-standby path was the one
+            // place a TUN UDP flow silently lost its resume identity.
+            let pooled_resume_key =
+                resume_cache_key(self.resume_scope(&candidate.uplink.name), "udp");
+            resume_store
+                .ss()
+                .store_if_issued(pooled_resume_key, ws.issued_session_id());
+            // `from_websocket` reads the carrier padding at build time, which on
+            // the hot path runs after the dial returns — outside any dial scope.
+            // Wrap the build in the per-uplink padding scope so a padded uplink's
+            // reused standby stream frames its datagrams (mirrors VLESS-UDP).
+            let transport = crate::dial::with_uplink_padding_scope(&candidate.uplink, async {
+                UdpWsTransport::from_websocket(
+                    ws,
+                    spec.cipher,
+                    spec.password,
+                    source,
+                    self.inner.load_balancing.udp_ws_keepalive_interval,
+                )
+            })
+            .await?;
+            return Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())));
         }
 
         metrics::record_warm_standby_acquire("udp", &self.inner.group_name, spec.name, "miss");
