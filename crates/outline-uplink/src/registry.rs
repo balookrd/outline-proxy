@@ -396,11 +396,32 @@ impl UplinkRegistry {
 
         let new_state = build_state(groups, Some(restored), dns_cache, state_store)?;
 
+        // Carry the live carrier-loss probe registries across the rebuild.
+        // Taken only after `build_state` succeeded, so a failed apply leaves
+        // the running managers observing exactly what they were.
+        //
+        // A probe is filed when a carrier is dialed or handed out of the warm
+        // pool, and nowhere else — so a carrier that outlives this rebuild
+        // would otherwise never be observed again. Short-lived carriers churn
+        // fast enough to hide that; a long-lived one (a video stream's UDP
+        // session) does not, and its plane goes permanently silent while still
+        // carrying traffic.
+        let mut carried: std::collections::HashMap<String, Vec<_>> =
+            std::collections::HashMap::new();
+        for group in self.state.load().groups.iter() {
+            carried.insert(group.name.clone(), group.manager.take_carrier_loss_registries());
+        }
+
         // Spawn background loops for the new managers first. If this were
         // reordered after the swap, a small window would exist where no
         // probes run for anyone — readers loading during that window would
         // see the new managers but with empty health state.
         for group in &new_state.groups {
+            // Before the sampler starts, so its first tick already sees the
+            // carriers that survived the rebuild.
+            if let Some(registries) = carried.remove(&group.name) {
+                group.manager.adopt_carrier_loss_registries(registries);
+            }
             group.manager.spawn_probe_loop();
             group.manager.spawn_warm_standby_loop();
             group.manager.spawn_cert_check_loop();
