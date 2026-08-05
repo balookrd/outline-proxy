@@ -614,7 +614,25 @@ impl TunUdpEngine {
         // soft-switch redial that ignored a repointed-away-from-primary wire
         // would migrate the flow off the carrier its own uplink is actually
         // serving traffic on.
-        let wire = manager.active_wire(candidate.index, TransportKind::Udp);
+        //
+        // But only when the gate is on. `tun_wire_dial` exists so this binary
+        // can be deployed to the fleet inert — gate off must behave exactly
+        // like today's wire-0-only redial, byte for byte, so operators can
+        // flip the flag on one node at a time. `active_wire` is NOT
+        // provably 0 on a gate-off node: the fallback-wire prober
+        // (`manager/probe/wire.rs`), `rotate_active_wire`'s shuffle timer,
+        // and the SOCKS ingress's UDP dial loop (which always allows
+        // fallbacks, gate or no gate) can all advance it independently of
+        // this ingress's own gate. Reading it unconditionally would let a
+        // gate-off TUN redial land on a different carrier than the one it
+        // would have dialed before this feature existed. Do not "simplify"
+        // this back to an unconditional read — that is precisely the bug
+        // this comment exists to prevent.
+        let wire = if manager.load_balancing().tun_wire_dial {
+            manager.active_wire(candidate.index, TransportKind::Udp)
+        } else {
+            0
+        };
         let connected = manager
             .acquire_udp_on_wire(&candidate, wire, "tun_udp", resume_store)
             .await;
@@ -1061,7 +1079,22 @@ async fn select_candidate_and_connect(
                 // A wire with no UDP path is not a failure of that wire — it
                 // was never dialable on this plane. Skipping without an
                 // outcome keeps it out of the wire state machine entirely.
-                if !spec.supports_udp() {
+                //
+                // Gated on `wires_enabled`, not on `wire == 0`: with the gate
+                // off, `dial_over_wires` only ever asks for wire 0, and that
+                // call must reach `acquire_udp_on_wire` exactly as it did
+                // before this loop existed — including its "no udp dial URL
+                // configured" failure and the `warm_standby_acquire` counter
+                // tick that comes with it. Skipping it here instead would
+                // swap that failure for `dial_over_wires`'s own "no wires
+                // configured" text, changing a production metric label and
+                // dropping a counter on a gate-off node — the very inertness
+                // this flag promises not to break. With the gate on, the
+                // skip must still apply to a UDP-less *primary* (not just
+                // fallback wires): that is what lets a TCP-only-primary,
+                // UDP-fallback uplink (`supports_udp_any()`) reach its UDP
+                // wire at all.
+                if wires_enabled && !spec.supports_udp() {
                     return Ok(WireAttempt::NotApplicable);
                 }
                 manager
