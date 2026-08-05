@@ -355,7 +355,7 @@ async fn connect_tcp_uplink_primary(
     // Variant A: try a standby pool connection first.  If it turns out to be
     // stale (fails before any server bytes arrive), discard it silently and
     // retry with a fresh on-demand dial — without recording a runtime failure.
-    if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
+    if let Some(ws) = uplinks.try_take_tcp_standby(candidate, 0).await {
         let setup = WireSetup::from_uplink(&candidate.uplink);
         let binding = tcp_binding(uplinks, setup.name);
         // Read the ID off the stream *before* `do_tcp_ss_setup` consumes it:

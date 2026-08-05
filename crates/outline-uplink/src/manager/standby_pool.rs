@@ -6,11 +6,12 @@
 
 use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use tokio::sync::Mutex;
 
 use outline_transport::TransportStream;
+use outline_transport::collections::maybe_shrink_vecdeque;
 
 use crate::types::TransportKind;
 
@@ -44,6 +45,18 @@ impl TrackedDeque {
 
     pub(crate) fn len_hint(&self) -> usize {
         self.len.load(Ordering::Relaxed)
+    }
+
+    /// Pops every pooled entry, dropping each stream, and returns how many
+    /// were removed. Used when the active wire moves under a filled pool: the
+    /// pool belongs to a wire flows no longer land on, and its entries must
+    /// not survive to be handed to a flow landing on the new one.
+    pub(crate) async fn drain_all(&self) -> usize {
+        let mut guard = self.lock().await;
+        let drained = guard.len();
+        guard.clear();
+        maybe_shrink_vecdeque(&mut guard);
+        drained
     }
 }
 
@@ -130,6 +143,14 @@ pub(crate) struct StandbyPool {
     pub(crate) udp_refill: Mutex<()>,
     tcp_refill_gate: RefillGate,
     udp_refill_gate: RefillGate,
+    /// Which wire the carriers currently sitting in `tcp` / `udp` were dialed
+    /// on. `shuffle_wires` and wire failover both move the active wire
+    /// underneath a filled pool, and a carrier from the old wire must never
+    /// be handed to a flow the manager considers to be landing on the new
+    /// one — see `StandbyCtx::try_take_alive` (reader/writer on mismatch) and
+    /// `StandbyCtx::refill` (writer on a genuinely cold pool).
+    tcp_wire: AtomicU8,
+    udp_wire: AtomicU8,
 }
 
 impl StandbyPool {
@@ -141,6 +162,8 @@ impl StandbyPool {
             udp_refill: Mutex::new(()),
             tcp_refill_gate: RefillGate::new(),
             udp_refill_gate: RefillGate::new(),
+            tcp_wire: AtomicU8::new(0),
+            udp_wire: AtomicU8::new(0),
         }
     }
 
@@ -148,6 +171,15 @@ impl StandbyPool {
         match transport {
             TransportKind::Tcp => &self.tcp_refill_gate,
             TransportKind::Udp => &self.udp_refill_gate,
+        }
+    }
+
+    /// The marker recording which wire `transport`'s pool is currently
+    /// filled on.
+    pub(crate) fn wire_marker(&self, transport: TransportKind) -> &AtomicU8 {
+        match transport {
+            TransportKind::Tcp => &self.tcp_wire,
+            TransportKind::Udp => &self.udp_wire,
         }
     }
 }

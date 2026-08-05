@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use tokio::time::{Instant, timeout};
@@ -8,7 +10,7 @@ use outline_transport::{
     DialNetworkOptions, TransportDialOptions, TransportStream, connect_transport,
 };
 
-use crate::config::{SsPathKind, UplinkTransport};
+use crate::config::UplinkTransport;
 use crate::error_classify::StandbyProbeExpected;
 use crate::probe::is_expected_standby_probe_failure;
 use crate::types::TransportKind;
@@ -17,17 +19,6 @@ use outline_transport::collections::maybe_shrink_vecdeque;
 use super::ctx::{STANDBY_WS_PEEK_TIMEOUT, StandbyCtx};
 
 impl<'a> StandbyCtx<'a> {
-    /// The combined-SS path discriminator (`SsPathKind`) this pool's dials must
-    /// carry: the UDP pool dials the UDP leg, the TCP pool the TCP leg. Keeping
-    /// them apart is load-bearing on a combined-SS uplink — see the call site in
-    /// [`Self::refill`].
-    fn pool_ss_leg(&self) -> SsPathKind {
-        match self.transport {
-            TransportKind::Tcp => SsPathKind::Tcp,
-            TransportKind::Udp => SsPathKind::Udp,
-        }
-    }
-
     /// The resume negotiation this pool's dials carry.
     ///
     /// A pooled TCP carrier is handed to the next session that asks for one, so
@@ -168,6 +159,22 @@ impl<'a> StandbyCtx<'a> {
         let mut current_len = self.pool.lock().await.len();
         let mode_is_http1 = self.mode_is_http1();
 
+        // Stamp the marker before dialing into a pool that is genuinely
+        // empty. This closes the one window `try_take_alive`'s drain-on-
+        // mismatch cannot: a pool that has never been filled starts with the
+        // marker at its `0` default, so a refill that lands here with
+        // `self.wire != 0` (an active wire already moved before this pool's
+        // first fill — startup race, not steady state) must not leave a
+        // fresh, correctly-wired pool looking stale to the very next take.
+        // Guarded to the empty case only: a pool that still holds entries
+        // from a wire this refill has not yet touched (`current_len >=
+        // desired`, so the loop below never dials) must keep its old marker
+        // — that mismatch is exactly what `try_take_alive` is supposed to
+        // catch and drain.
+        if current_len == 0 {
+            self.pool_wire_marker().store(self.wire, Ordering::Relaxed);
+        }
+
         loop {
             if current_len >= self.desired {
                 break;
@@ -189,7 +196,10 @@ impl<'a> StandbyCtx<'a> {
                         // the echo never returns — combined-SS UDP looks dead while
                         // VLESS-UDP (no pool) keeps working. Split-path uplinks are
                         // unaffected (`combined_ss_kind` is `None` regardless of leg).
-                        .with_combined_ss_kind(self.uplink.combined_ss_kind(self.pool_ss_leg()))
+                        // Taken from the ctx (resolved against `self.wire`, not the
+                        // parent) — a pool filled on a fallback wire must carry that
+                        // wire's own combined-SS shape, not the primary's.
+                        .with_combined_ss_kind(self.combined_ss)
                         // A pooled TCP carrier becomes some session's first
                         // carrier, so it dials as a new session would — the
                         // advertisement is what gives that session a ring.
@@ -237,18 +247,21 @@ impl<'a> StandbyCtx<'a> {
                         break;
                     }
 
-                    // The warm pool always dials the primary wire (`wire = 0`).
-                    // Registering here — not just on the sibling on-demand
-                    // dial sites — matters because this pool is the majority
-                    // producer of user carriers: without it, every carrier
-                    // that started life as a pooled entry (most of them) went
-                    // unmeasured, and on an explicitly-`h1` pool, where each
-                    // slot owns its own socket rather than sharing a carrier
-                    // opened elsewhere, its carriers were never measured at
-                    // all.
+                    // The warm pool follows the active wire (`self.wire`), so
+                    // attribution must too — filing every pooled carrier under
+                    // the primary slot would put the loss verdict where
+                    // nothing reads it once the pool has rolled onto a
+                    // fallback. Registering here — not just on the sibling
+                    // on-demand dial sites — matters because this pool is the
+                    // majority producer of user carriers: without it, every
+                    // carrier that started life as a pooled entry (most of
+                    // them) went unmeasured, and on an explicitly-`h1` pool,
+                    // where each slot owns its own socket rather than sharing
+                    // a carrier opened elsewhere, its carriers were never
+                    // measured at all.
                     self.manager.register_carrier_loss_probe(
                         self.index,
-                        0,
+                        self.wire,
                         self.transport,
                         ws.loss_probe(),
                     );

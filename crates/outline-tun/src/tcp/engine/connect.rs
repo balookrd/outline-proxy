@@ -263,16 +263,13 @@ async fn connect_tcp_uplink_inner(
             let spec = outline_uplink::WireSpec::of(&candidate.uplink, wire)
                 .ok_or_else(|| anyhow!("uplink {} has no wire {wire}", candidate.uplink.name))?;
 
-            // Variant A, primary wire only: a warm-standby connection. If it
-            // turns out to be stale (fails before any server bytes arrive)
-            // discard it silently and fall through to a fresh dial, without
-            // recording a runtime failure. The pool only holds primary-wire
-            // carriers until Task 8 teaches it to follow the active wire.
-            // `try_take_tcp_standby` still has its single-argument shape
-            // here; Task 8 gives it a wire and removes this guard.
-            if wire == 0
-                && let Some(ws) = uplinks.try_take_tcp_standby(candidate).await
-            {
+            // Variant A: a warm-standby connection. The pool follows the
+            // active wire, so `try_take_tcp_standby` answers `None` on its
+            // own for any wire it is not currently prewarming — no guard
+            // needed here. If the popped entry turns out to be stale (fails
+            // before any server bytes arrive) discard it silently and fall
+            // through to a fresh dial, without recording a runtime failure.
+            if let Some(ws) = uplinks.try_take_tcp_standby(candidate, wire).await {
                 let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
                 match do_tcp_ss_setup(ws, &spec, target, keepalive_interval, binding, false).await {
                     Ok(v) => return Ok(WireAttempt::Built(v)),
