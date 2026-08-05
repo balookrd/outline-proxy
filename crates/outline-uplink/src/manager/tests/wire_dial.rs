@@ -4,15 +4,18 @@
 //! error without any intermediate parent-level runtime failure — otherwise
 //! one broken carrier flaps the whole uplink out of the candidate set.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
+use tracing::field::{Field, Visit};
+use tracing::subscriber::Interest;
+use tracing::{Event, Level, Metadata, Subscriber, span};
 
 use crate::manager::wire_dial::WireAttempt;
 use crate::types::TransportKind;
 
-use super::sample_manager_with_three_fallbacks;
+use super::{sample_manager_with_no_fallbacks, sample_manager_with_three_fallbacks};
 
 #[tokio::test]
 async fn a_build_failure_advances_the_chain_just_like_a_dial_failure() {
@@ -138,4 +141,179 @@ async fn gate_off_records_no_outcome_even_on_failure() {
         0,
         "gate-off must not record any outcome, even a failure on wire 0"
     );
+}
+
+/// Every `WARN`-level event's message, captured while the current thread
+/// holds a [`capture_warnings`] guard.
+#[derive(Clone, Default)]
+struct RecordedWarnings(Arc<Mutex<Vec<String>>>);
+
+impl RecordedWarnings {
+    fn count(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+}
+
+struct MessageVisitor(String);
+
+impl Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{value:?}");
+        }
+    }
+}
+
+std::thread_local! {
+    /// Which test on *this* thread wants `WARN`-level events routed to it, if
+    /// any. Per-thread, not a single shared slot: the standard test harness
+    /// runs multiple `#[tokio::test]`s concurrently on separate OS threads
+    /// (a `#[tokio::test]` body runs entirely on the one thread that polls
+    /// it, since the default runtime flavor is `current_thread`), and each
+    /// test's capture must only ever see events from its own dial attempt.
+    static CAPTURING: std::cell::RefCell<Option<RecordedWarnings>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A single, process-wide `Subscriber`, installed once via
+/// `set_global_default`, that routes `WARN`-level events to whichever
+/// thread's [`CAPTURING`] slot is currently set.
+///
+/// The crate has no existing seam for asserting on log output, so this is
+/// built directly on `tracing`'s core `Subscriber` trait. It is deliberately
+/// process-global rather than the more obvious per-test
+/// `tracing::subscriber::set_default`: `tracing-core` caches each callsite's
+/// `Interest` (always/sometimes/never) globally, and the very first time a
+/// callsite fires, it resolves that cache by asking the *firing* thread's
+/// *own* ambient dispatcher — not the dispatcher of whichever thread
+/// installed a subscriber. This file's other multi-wire tests
+/// (`a_build_failure_advances_the_chain_just_like_a_dial_failure`,
+/// `exhausting_every_wire_yields_one_error`) also hit this crate's `warn!`
+/// callsite once the predicate below fires for them, and they run with no
+/// subscriber of their own. Under `cargo test`'s default parallelism, one of
+/// those could be the first caller to touch the callsite while running
+/// concurrently with a per-test scoped dispatcher on a different thread —
+/// resolving interest against its own no-op ambient dispatcher and caching
+/// the callsite as permanently uninteresting, silently dropping the event on
+/// *every* thread afterwards, including the one actually capturing. (This
+/// was observed directly: a per-test `tracing::subscriber::set_default`
+/// version of this fixture passed reliably alone but flaked under `cargo
+/// test`'s full parallel run.) A single global subscriber sidesteps this
+/// because `tracing-core` only ever sees one dispatcher registered in the
+/// whole process, so its fast path resolves to it unconditionally, on any
+/// thread, in any order.
+struct GlobalCapturingSubscriber;
+
+impl Subscriber for GlobalCapturingSubscriber {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        metadata.level() <= &Level::WARN
+    }
+
+    // Belt-and-suspenders alongside being the only-ever-registered
+    // dispatcher (see the struct docs): forces every event at every callsite
+    // to re-check `enabled()` dynamically rather than trusting a cached
+    // always/never verdict.
+    fn register_callsite(&self, _metadata: &'static Metadata<'static>) -> Interest {
+        Interest::sometimes()
+    }
+
+    fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
+        span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+
+    fn event(&self, event: &Event<'_>) {
+        if event.metadata().level() != &Level::WARN {
+            return;
+        }
+        CAPTURING.with(|slot| {
+            if let Some(recorder) = slot.borrow().as_ref() {
+                let mut visitor = MessageVisitor(String::new());
+                event.record(&mut visitor);
+                recorder.0.lock().unwrap().push(visitor.0);
+            }
+        });
+    }
+
+    fn enter(&self, _span: &span::Id) {}
+
+    fn exit(&self, _span: &span::Id) {}
+}
+
+static INSTALL_GLOBAL_CAPTURE: std::sync::Once = std::sync::Once::new();
+
+/// Start capturing this thread's `WARN`-level events. Returns the recorder
+/// together with a guard that stops capturing on drop; hold the guard for the
+/// duration of the call under test.
+///
+/// Installs [`GlobalCapturingSubscriber`] as the process's global default on
+/// first use — safe under concurrent callers since `Once` makes the install
+/// idempotent and blocks until whichever caller wins has finished, and
+/// nothing else in this crate's test binary calls `set_global_default` (a
+/// second call would return `Err` and leave that other subscriber in place,
+/// silently defeating capture — see the struct docs for why this shape
+/// exists at all).
+fn capture_warnings() -> (RecordedWarnings, impl Drop) {
+    INSTALL_GLOBAL_CAPTURE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(GlobalCapturingSubscriber);
+    });
+    let recorder = RecordedWarnings::default();
+    CAPTURING.with(|slot| *slot.borrow_mut() = Some(recorder.clone()));
+
+    struct ClearOnDrop;
+    impl Drop for ClearOnDrop {
+        fn drop(&mut self) {
+            CAPTURING.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    (recorder, ClearOnDrop)
+}
+
+#[tokio::test]
+async fn single_wire_uplink_stays_silent_on_dial_failure_even_with_fallbacks_allowed() {
+    // Pins the fix to the finding in final-review-fixes.md: the predicate
+    // must be `allow_fallbacks && multi_wire`, not `allow_fallbacks` alone.
+    // The deleted per-ingress SOCKS loops (`e464d917`) had an explicit
+    // `total_wires == 1` short-circuit that logged nothing at all — a
+    // single-wire uplink emitting a `warn!` on every failed dial would be a
+    // brand-new noise source with no prior existence to dedupe against.
+    let manager = sample_manager_with_no_fallbacks().await;
+    let candidate = manager.tcp_candidates_for_test(0).await;
+    let (recorded, _guard) = capture_warnings();
+
+    let result: Result<(u8, u8)> = manager
+        .dial_over_wires(&candidate, TransportKind::Tcp, true, |wire| async move {
+            Err(anyhow!("wire {wire} is down"))
+        })
+        .await;
+
+    result.expect_err("the only wire fails");
+    assert_eq!(
+        recorded.count(),
+        0,
+        "a single-wire uplink must not gain a warning the old SOCKS short-circuit never emitted"
+    );
+}
+
+#[tokio::test]
+async fn multi_wire_uplink_warns_once_per_failed_wire_with_fallbacks_allowed() {
+    // The other half of the same pin: a genuine multi-wire chain must keep
+    // the operator-facing `warn!` this loop restored, one line per failed
+    // wire, so a wire that fails every dial is not invisible in the journal.
+    let manager = sample_manager_with_three_fallbacks().await;
+    let candidate = manager.tcp_candidates_for_test(0).await;
+    let (recorded, _guard) = capture_warnings();
+
+    let result: Result<(u8, u8)> = manager
+        .dial_over_wires(&candidate, TransportKind::Tcp, true, |wire| async move {
+            Err(anyhow!("wire {wire} is down"))
+        })
+        .await;
+
+    result.expect_err("no wire can build");
+    assert_eq!(recorded.count(), 4, "each of the four wires must warn once on its failed dial");
 }

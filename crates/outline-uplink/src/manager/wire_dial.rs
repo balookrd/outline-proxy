@@ -155,20 +155,29 @@ impl UplinkManager {
                     // (`fallback[1] (ss)`), not just its index, because on
                     // this fleet the wires differ in transport family.
                     //
-                    // Gated on `allow_fallbacks`, not on `multi_wire`: with
-                    // the gate off the TUN ingress only ever tries wire 0, and
-                    // that path is the one `tun_wire_dial` promises to leave
-                    // byte-identical — its per-uplink failure logging in
-                    // `select_tcp_candidate_and_connect` already covers it.
-                    // The SOCKS ingress passes `true` unconditionally, which
-                    // is the level its own per-wire logging sat at before this
-                    // loop replaced it.
-                    if allow_fallbacks {
+                    // Gated on `allow_fallbacks && multi_wire`, not on
+                    // `allow_fallbacks` alone: `allow_fallbacks` only says
+                    // fallbacks are *permitted*, not that this candidate has
+                    // any — `order` is computed above from `allow_fallbacks &&
+                    // total_wires > 1`, and `wire_dial_order` always returns a
+                    // complete permutation (`order.len() == total_wires`), so
+                    // for the SOCKS ingress (which always passes `true`)
+                    // `multi_wire` is exactly `total_wires > 1`. That
+                    // reproduces the pre-loop SOCKS behaviour precisely: the
+                    // deleted per-ingress loops (`failover.rs`,
+                    // `transport.rs`, removed in `e464d917`) had an explicit
+                    // `total_wires == 1` short-circuit straight to the
+                    // primary dial that logged nothing, and the per-wire
+                    // `warn!` lived only in the multi-wire loop below it. A
+                    // single-wire uplink must stay just as silent here. A
+                    // gate-off TUN node still logs nothing either way, since
+                    // gate-off always resolves `order` to one entry and
+                    // `multi_wire` is `false`.
+                    if allow_fallbacks && multi_wire {
                         warn!(
                             uplink = %candidate.uplink.name,
                             transport = ?transport,
                             wire = %wire_label(candidate, wire),
-                            more_wires = multi_wire,
                             error = %format!("{error:#}"),
                             "wire dial failed",
                         );
@@ -347,6 +356,32 @@ async fn sample_manager_with_three_fallbacks() -> UplinkManager {
     UplinkManager::new_for_test(
         "main",
         vec![uplink_with_three_fallbacks()],
+        test_probe_cfg(),
+        test_lb(),
+    )
+    .unwrap()
+}
+
+/// Test fixture: the same uplink as [`uplink_with_three_fallbacks`] but with
+/// no fallbacks at all — one wire, total. This is the shape the SOCKS
+/// ingress's old `total_wires == 1` short-circuit covered, which is why the
+/// per-wire `warn!` must stay silent for it even with `allow_fallbacks: true`.
+#[cfg(test)]
+fn uplink_with_no_fallbacks() -> crate::config::UplinkConfig {
+    crate::config::UplinkConfig {
+        fallbacks: Vec::new(),
+        ..uplink_with_three_fallbacks()
+    }
+}
+
+/// Test fixture: a manager with one single-wire uplink, used by
+/// `dial_over_wires`'s tests to pin the `allow_fallbacks && multi_wire`
+/// warning predicate against a single-wire candidate.
+#[cfg(test)]
+async fn sample_manager_with_no_fallbacks() -> UplinkManager {
+    UplinkManager::new_for_test(
+        "main",
+        vec![uplink_with_no_fallbacks()],
         test_probe_cfg(),
         test_lb(),
     )
