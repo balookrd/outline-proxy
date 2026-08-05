@@ -100,6 +100,16 @@ async fn build_manager_with_dead_primary_wire(
     nuxt_fallback_url: Url,
     senko_primary_url: Url,
 ) -> UplinkManager {
+    build_manager_with_dead_primary_wire_gated(nuxt_fallback_url, senko_primary_url, true).await
+}
+
+/// Same fixture as `build_manager_with_dead_primary_wire`, with the gate
+/// exposed so the gate-off counterpart test can flip it off.
+async fn build_manager_with_dead_primary_wire_gated(
+    nuxt_fallback_url: Url,
+    senko_primary_url: Url,
+    tun_wire_dial: bool,
+) -> UplinkManager {
     let nuxt = ss_uplink("nuxt", dead_url(), vec![ss_fallback(nuxt_fallback_url)]);
     let senko = ss_uplink("senko", senko_primary_url, Vec::new());
     UplinkManager::new_for_test(
@@ -107,7 +117,7 @@ async fn build_manager_with_dead_primary_wire(
         vec![nuxt, senko],
         super::test_probe_config(),
         LoadBalancingConfig {
-            tun_wire_dial: true,
+            tun_wire_dial,
             ..super::test_load_balancing_config()
         },
     )
@@ -186,6 +196,91 @@ async fn tun_tcp_falls_back_to_a_sibling_wire_before_leaving_the_uplink() {
     assert!(
         senko_primary.try_target().await.is_none(),
         "a dead primary wire must not fail the whole uplink over to a sibling"
+    );
+
+    assert!(engine.inner.flows.contains_key(&key));
+}
+
+/// The gate-off half of the fixture above: `tun_wire_dial` is the reason a
+/// dead primary carrier costs the flow the whole uplink instead of falling
+/// back within it. Same topology, same dead `nuxt` primary — but with the
+/// gate off, `dial_over_wires` only ever tries wire 0, so `nuxt` must fail
+/// outright and the flow must land on `senko`, never on `nuxt`'s fallback
+/// wire. That is the observable difference between gated and ungated; without
+/// this test the claim that a gate-off node never touches a fallback wire
+/// rested only on the gate-on test still passing.
+#[tokio::test]
+async fn tun_tcp_gate_off_leaves_the_uplink_instead_of_using_a_sibling_wire() {
+    let nuxt_fallback = TestTcpUpstream::start().await;
+    let senko_primary = TestTcpUpstream::start().await;
+    let manager =
+        build_manager_with_dead_primary_wire_gated(nuxt_fallback.url(), senko_primary.url(), false)
+            .await;
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        Duration::from_secs(60),
+        false,
+        test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+    let (client_port, remote_port) = (40500, 443);
+    let key = TcpFlowKey {
+        version: IpVersion::V4,
+        client_ip: client_ip.into(),
+        client_port,
+        remote_ip: remote_ip.into(),
+        remote_port,
+    };
+
+    engine
+        .handle_packet_unverified(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            100,
+            0,
+            4096,
+            TCP_FLAG_SYN,
+            &[],
+        ))
+        .await
+        .unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
+    assert_eq!(syn_ack.flags, TCP_FLAG_SYN | TCP_FLAG_ACK);
+    let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+
+    engine
+        .handle_packet_unverified(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            101,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            &[],
+        ))
+        .await
+        .unwrap();
+
+    // With the gate off the flow must reach `senko` — the *second uplink* —
+    // rather than `nuxt`'s fallback wire, because a gate-off node never dials
+    // anything but wire 0.
+    let target = senko_primary.expect_target().await;
+    let (target, _) = TargetAddr::from_wire_bytes(&target).unwrap();
+    assert_eq!(target, TargetAddr::IpV4(remote_ip, remote_port));
+
+    assert!(
+        nuxt_fallback.try_target().await.is_none(),
+        "gate-off must never dial a fallback wire, even on a dead primary"
     );
 
     assert!(engine.inner.flows.contains_key(&key));
