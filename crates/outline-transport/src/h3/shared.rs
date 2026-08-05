@@ -244,6 +244,28 @@ impl SharedH3Connection {
         self.active_streams.load(Ordering::Relaxed)
     }
 
+    /// A `Weak` observer onto this connection's loss counters (see
+    /// `crate::CarrierLossCounters`). Cheap — downgrading an `Arc` only
+    /// touches the reference count — and, unlike a `quinn::Connection` clone,
+    /// adds no strong reference: once every real consumer of this shared
+    /// connection drops it, `SharedH3Connection` (and the `quinn::Connection`
+    /// inside it) is freed and this probe starts reporting itself dead
+    /// instead of pinning the carrier open.
+    pub(crate) fn loss_probe(self: &Arc<Self>) -> crate::CarrierLossProbe {
+        // `Arc::downgrade` is generic in `T`; handing it `self` (`&Arc<Self>`,
+        // concrete) directly would infer `T = dyn CarrierLossCounters` from
+        // the target type below and then fail to unify with the concrete
+        // input. Unsizing to `Arc<dyn CarrierLossCounters>` first (a plain
+        // coercion, not a generic call) sidesteps that; downgrading the
+        // already-unsized `Arc` needs no further annotation.
+        let dyn_self: Arc<dyn crate::CarrierLossCounters> = self.clone();
+        let counters = Arc::downgrade(&dyn_self);
+        crate::CarrierLossProbe::Quic {
+            counters,
+            identity: self.connection.stable_id() as u64,
+        }
+    }
+
     pub(super) async fn open_websocket(
         self: &Arc<Self>,
         server_name: &str,
@@ -350,6 +372,31 @@ impl crate::SharedConnectionHealth for SharedH3Connection {
 
     fn mode(&self) -> &'static str {
         "h3"
+    }
+
+    // No override of `loss_probe` here (default: `None`): the trait's `&self`
+    // receiver can't produce the `Weak` that `SharedH3Connection::loss_probe`
+    // needs (it requires `self: &Arc<Self>` to downgrade). Nothing calls this
+    // impl through a `dyn SharedConnectionHealth` for H3 today — `H3WsStream`
+    // holds a concrete `Arc<SharedH3Connection>` and calls the inherent
+    // `loss_probe` above directly; only H2 stores its shared connection
+    // behind `Arc<dyn SharedConnectionHealth>`. This impl exists solely to
+    // satisfy the `is_open`/`conn_id`/`mode` bound `WsDialer::Conn` requires.
+}
+
+/// Loss counters read directly off this connection's `PathStats` and close
+/// state — the same fields `is_open`/`loss_probe` above already read. Exists
+/// so a probe can observe them through a `Weak<dyn CarrierLossCounters>`
+/// (see that trait) instead of holding a `quinn::Connection` clone of its
+/// own.
+impl crate::CarrierLossCounters for SharedH3Connection {
+    fn loss_counters(&self) -> Option<crate::CarrierLossSample> {
+        let path = self.connection.stats().path;
+        Some(crate::CarrierLossSample {
+            sent: path.sent_packets,
+            lost: path.lost_packets,
+            alive: self.connection.close_reason().is_none(),
+        })
     }
 }
 

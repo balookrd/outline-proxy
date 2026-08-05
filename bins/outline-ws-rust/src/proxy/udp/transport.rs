@@ -204,6 +204,12 @@ async fn dial_udp_fallback(
                 );
             }
             resume_store.ss().store_if_issued(resume_key, issued);
+            uplinks.register_carrier_loss_probe(
+                parent.index,
+                wire_index,
+                TransportKind::Udp,
+                transport.loss_probe(),
+            );
             uplinks
                 .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())
                 .await;
@@ -265,6 +271,20 @@ async fn dial_udp_fallback(
             .with_resume_scope(uplinks.resume_scope_owned(&parent.uplink.name))
             .with_resume_store(resume_store.clone())
             .with_uplink_binding(binding());
+            // No carrier-loss registration here, deliberately: `mux` has not
+            // dialed anything yet. VLESS-UDP opens one session per destination
+            // lazily on first packet (see `VlessUdpSessionMux`'s module doc),
+            // so at this point in time there is no single carrier to attribute
+            // counters to — the mux may end up holding any number of per-target
+            // carriers, each dialed later, on its own schedule. Registering a
+            // probe for "the" carrier here would have to arbitrarily pick one
+            // of those (possibly zero) per-target sessions and attribute its
+            // counters to the whole uplink — a misattribution, not a
+            // measurement. VLESS-UDP carries no loss signal as a result — a
+            // known, accepted gap (alongside `xhttp_h1`, which dials two
+            // independent plain sockets with no single carrier to attribute
+            // either), to be surfaced to operators
+            // by the documentation pass at the end of this plan.
             uplinks
                 .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())
                 .await;

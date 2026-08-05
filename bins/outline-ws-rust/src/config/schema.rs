@@ -553,6 +553,20 @@ pub(super) struct UplinkGroupSection {
     pub(super) warm_standby_tcp: Option<usize>,
     pub(super) warm_standby_udp: Option<usize>,
     pub(super) rtt_ewma_alpha: Option<f64>,
+    /// Strength of the carrier-loss latency inflation applied at scoring
+    /// time: `1 + k · loss`. `0.0` (default) observes without acting — the
+    /// loss ratio is measured and published, but selection is unchanged.
+    pub(super) loss_latency_penalty_k: Option<f64>,
+    /// Ceiling on the carrier-loss latency multiplier. Default: `4.0`, valid
+    /// range `[1.0, 100.0]` (values outside it are rejected at load time).
+    pub(super) loss_latency_inflation_max: Option<f64>,
+    /// Sampling grid, in seconds, for carrier loss counters. Default: `10`.
+    pub(super) loss_sample_interval_secs: Option<u64>,
+    /// Minimum packets a wire must send within one sampling window for that
+    /// window's loss ratio to count. Default: `200`.
+    pub(super) loss_sample_min_packets: Option<u64>,
+    /// Smoothing factor for the per-wire loss EWMA. Default: `0.2`.
+    pub(super) loss_ewma_alpha: Option<f64>,
     pub(super) failure_penalty_ms: Option<u64>,
     pub(super) failure_penalty_max_ms: Option<u64>,
     pub(super) failure_penalty_halflife_secs: Option<u64>,
@@ -568,6 +582,20 @@ pub(super) struct UplinkGroupSection {
     /// seconds while an equal-or-higher-weight, non-degraded, probe-stable
     /// candidate exists. `0` disables. Default: `3 * mode_downgrade_secs`.
     pub(super) carrier_degraded_failover_secs: Option<u64>,
+    /// Loss-driven strict-mode failover: loss ratio (in `[0, 1]`) above
+    /// which the active uplink's active-wire carrier counts as degraded for
+    /// this check. `0.0` (default) disables the check entirely — this is
+    /// the one part of the carrier-loss feature that moves traffic without
+    /// an operator setting it explicitly, so it ships inert like the rest.
+    /// See `docs/UPLINK-CONFIGURATIONS.md` "Carrier loss in uplink
+    /// selection".
+    pub(super) loss_failover_ratio: Option<f64>,
+    /// How long `loss_failover_ratio` must be exceeded **continuously**
+    /// (one tick back at or below it restarts the clock) before the strict
+    /// active uplink yields to a clean, equal-or-higher-weight sibling.
+    /// Unset (default) disables the check independently of
+    /// `loss_failover_ratio`.
+    pub(super) loss_failover_secs: Option<u64>,
     /// Window over which consecutive runtime (data-plane) failures are
     /// counted toward the health-flip escalation. A new failure arriving
     /// later than this window after the previous one resets the streak to
@@ -782,7 +810,7 @@ pub(super) struct TlsProbeSection {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LoadBalancingSection {
+pub(crate) struct LoadBalancingSection {
     pub(super) mode: Option<LoadBalancingMode>,
     pub(super) routing_scope: Option<RoutingScope>,
     /// Share one resumption id across all uplinks in this group (scoped to the
@@ -797,6 +825,20 @@ pub(super) struct LoadBalancingSection {
     pub(super) warm_standby_tcp: Option<usize>,
     pub(super) warm_standby_udp: Option<usize>,
     pub(super) rtt_ewma_alpha: Option<f64>,
+    /// Strength of the carrier-loss latency inflation applied at scoring
+    /// time: `1 + k · loss`. `0.0` (default) observes without acting — the
+    /// loss ratio is measured and published, but selection is unchanged.
+    pub(super) loss_latency_penalty_k: Option<f64>,
+    /// Ceiling on the carrier-loss latency multiplier. Default: `4.0`, valid
+    /// range `[1.0, 100.0]` (values outside it are rejected at load time).
+    pub(super) loss_latency_inflation_max: Option<f64>,
+    /// Sampling grid, in seconds, for carrier loss counters. Default: `10`.
+    pub(super) loss_sample_interval_secs: Option<u64>,
+    /// Minimum packets a wire must send within one sampling window for that
+    /// window's loss ratio to count. Default: `200`.
+    pub(super) loss_sample_min_packets: Option<u64>,
+    /// Smoothing factor for the per-wire loss EWMA. Default: `0.2`.
+    pub(super) loss_ewma_alpha: Option<f64>,
     pub(super) failure_penalty_ms: Option<u64>,
     pub(super) failure_penalty_max_ms: Option<u64>,
     pub(super) failure_penalty_halflife_secs: Option<u64>,
@@ -812,6 +854,20 @@ pub(super) struct LoadBalancingSection {
     /// seconds while an equal-or-higher-weight, non-degraded, probe-stable
     /// candidate exists. `0` disables. Default: `3 * mode_downgrade_secs`.
     pub(super) carrier_degraded_failover_secs: Option<u64>,
+    /// Loss-driven strict-mode failover: loss ratio (in `[0, 1]`) above
+    /// which the active uplink's active-wire carrier counts as degraded for
+    /// this check. `0.0` (default) disables the check entirely — this is
+    /// the one part of the carrier-loss feature that moves traffic without
+    /// an operator setting it explicitly, so it ships inert like the rest.
+    /// See `docs/UPLINK-CONFIGURATIONS.md` "Carrier loss in uplink
+    /// selection".
+    pub(super) loss_failover_ratio: Option<f64>,
+    /// How long `loss_failover_ratio` must be exceeded **continuously**
+    /// (one tick back at or below it restarts the clock) before the strict
+    /// active uplink yields to a clean, equal-or-higher-weight sibling.
+    /// Unset (default) disables the check independently of
+    /// `loss_failover_ratio`.
+    pub(super) loss_failover_secs: Option<u64>,
     /// Window over which consecutive runtime (data-plane) failures are
     /// counted toward the health-flip escalation. A new failure arriving
     /// later than this window after the previous one resets the streak to

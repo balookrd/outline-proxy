@@ -213,7 +213,11 @@ pub(super) async fn run_dns_probe(
                             None,
                             None,
                         );
-                        let (t, _issued, downgraded) =
+                        // The probe's own carrier is deliberately not registered:
+                        // it is a short-lived socket that never carries user
+                        // traffic, so its counters would describe the probe rather
+                        // than the data path.
+                        let (t, _issued, downgraded, _probe) =
                             crate::dial::with_uplink_padding_scope(uplink, connect)
                                 .await
                                 .with_context(|| TransportOperation::Connect {

@@ -697,6 +697,45 @@ pub struct LoadBalancingConfig {
     pub warm_standby_tcp: usize,
     pub warm_standby_udp: usize,
     pub rtt_ewma_alpha: f64,
+    /// Strength of the carrier-loss latency inflation: the wire's smoothed
+    /// loss ratio multiplies scoring latency by `1 + k · loss`. `0.0` (the
+    /// default) observes without acting — the loss ratio is measured and
+    /// published, but selection is unchanged. There is no principled value to
+    /// derive `k` from a priori; it is meant to be set once the field spread
+    /// between uplinks is visible in the metrics.
+    pub loss_latency_penalty_k: f64,
+    /// Ceiling on that multiplier. Bounds how far one bad measurement window
+    /// can push an uplink down the ranking: a lossy path must lose rank, not
+    /// drop out of ranking altogether — it may still be the only live one.
+    pub loss_latency_inflation_max: f64,
+    /// Sampling grid for carrier loss counters. Deliberately independent of
+    /// the probe cycle, which runs far coarser and skips cycles for uplinks
+    /// carrying traffic — differencing cumulative counters needs an even grid.
+    ///
+    /// 30 s rather than something tighter because the window has to collect
+    /// `loss_sample_min_packets` *sent* packets, and a plane can be nearly
+    /// idle while the node is busy: with video riding QUIC, the measured TCP
+    /// plane sent ~30 packets per 10 s — right at the floor, so its verdict
+    /// flickered in and out. Three times the window is three times the
+    /// evidence at no cost to freshness, since the ratio is an EWMA anyway.
+    /// A longer window used to be actively harmful, because a carrier had to
+    /// survive two ticks to count at all; anchoring the baseline at
+    /// registration removed that.
+    pub loss_sample_interval: Duration,
+    /// Minimum packets a wire must send within one window for that window to
+    /// count. Below this the ratio is rounding noise: one lost packet out of
+    /// ten is not "10% loss".
+    ///
+    /// The floor counts packets this side **sent**, which is what makes the
+    /// default (50) far lower than a first guess suggests: a gateway whose
+    /// users are downloading transmits little beyond acknowledgements, so a
+    /// window that carries megabytes inbound can hold only tens of outbound
+    /// packets. The original 200 was set from throughput intuition and left
+    /// the busiest node in the fleet without a verdict for most of the day —
+    /// 50 is what its measured quiet-hour rate actually clears.
+    pub loss_sample_min_packets: u64,
+    /// Smoothing factor for the per-wire loss EWMA.
+    pub loss_ewma_alpha: f64,
     pub failure_penalty: Duration,
     pub failure_penalty_max: Duration,
     pub failure_penalty_halflife: Duration,
@@ -717,6 +756,31 @@ pub struct LoadBalancingConfig {
     /// the leg — only a window that keeps being extended by ongoing failures
     /// crosses the threshold.
     pub carrier_degraded_failover: Option<Duration>,
+    /// Strict-mode loss-driven failover: loss ratio (in `[0, 1]`) above
+    /// which the active uplink's active-wire carrier counts as degraded for
+    /// this check. `0.0` (the default) disables the check entirely,
+    /// independently of [`Self::loss_failover_duration`] — this is the only
+    /// part of the carrier-loss feature (see [`Self::loss_latency_penalty_k`])
+    /// that moves production traffic without an operator asking, so both
+    /// knobs ship inert.
+    ///
+    /// Where [`Self::loss_latency_penalty_k`] only *ranks* a lossy uplink
+    /// lower, this is what makes a pinned strict active actually yield: in
+    /// `active_passive` with `auto_failback = false` (the common fleet
+    /// shape), `strict_transport_candidates` returns the active the moment
+    /// probe calls it healthy — `score` is never consulted there, so no
+    /// value of `k` alone can move a healthy-but-lossy pinned active. This
+    /// knob is the mechanism that does.
+    pub loss_failover_ratio: f64,
+    /// How long the active uplink's gate-transport loss ratio must stay
+    /// **continuously** above [`Self::loss_failover_ratio`] — see
+    /// `UplinkManager::sample_carrier_loss_once`, which maintains the
+    /// per-transport episode timestamp with the same continuous-episode
+    /// discipline [`Self::carrier_degraded_failover`]'s descent window uses
+    /// — before the strict active slot yields to a probe-healthy, clean,
+    /// equal-or-higher-weight sibling. `None` (the default) disables the
+    /// check independently of [`Self::loss_failover_ratio`].
+    pub loss_failover_duration: Option<Duration>,
     /// In `routing_scope = "global"`, controls whether UDP health gates the
     /// active uplink alongside TCP health. When `false` (default), UDP probe
     /// failures and UDP cooldown are informational only — used in score
@@ -971,6 +1035,24 @@ pub struct LoadBalancingConfig {
     /// from loop start). `None` = disabled. Mutually exclusive with
     /// `reselect_at`; only valid in `active_passive` mode.
     pub reselect_interval: Option<Duration>,
+}
+
+impl LoadBalancingConfig {
+    /// How long a qualifying carrier-loss measurement may go unconfirmed
+    /// before it is treated as unmeasured rather than still-current
+    /// evidence: `3 × loss_sample_interval`, mirroring
+    /// [`crate::loss::MAX_IDLE_TICKS`] (the bound the carrier-loss registry
+    /// itself uses before evicting an idle probe). Shared by
+    /// `UplinkManager::sample_carrier_loss_once` (freshness for the
+    /// *active* uplink's own episode,
+    /// [`crate::manager::status::PerTransportStatus::update_loss_elevated_since`])
+    /// and [`crate::manager::status::PerTransportStatus::selection_view`]
+    /// (freshness for every *candidate's* ratio, consumed by
+    /// `UplinkManager::loss_failover_switch_target`) — one definition, so
+    /// the two sides of the freshness check can never drift apart.
+    pub(crate) fn loss_max_staleness(&self) -> Duration {
+        self.loss_sample_interval.saturating_mul(3)
+    }
 }
 
 /// Policy for the `tcp_mid_session_retry_overflow_policy` knob.

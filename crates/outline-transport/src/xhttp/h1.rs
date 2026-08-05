@@ -174,6 +174,13 @@ pub(super) async fn connect_xhttp_h1(
                 XhttpSubmode::PacketUp,
                 false,
                 udp_records,
+                // h1 dials two plain sockets (downlink GET, uplink POSTs) with
+                // no single carrier connection to attribute a probe to; this
+                // last-resort fallback carrier is out of scope for loss
+                // measurement (see the h2/h3 siblings for the covered carriers).
+                None,
+                // No owned QUIC carrier either — h1 is TCP-only.
+                None,
             ),
             issued_session_id,
             ack_prefix_echo,

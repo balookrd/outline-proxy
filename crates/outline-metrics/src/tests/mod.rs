@@ -56,6 +56,14 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         udp_rtt_ewma_ms: None,
         tcp_active_wire_rtt_ewma_ms: None,
         udp_active_wire_rtt_ewma_ms: None,
+        tcp_carrier_loss_ratio: None,
+        udp_carrier_loss_ratio: None,
+        tcp_carrier_loss_packets: None,
+        udp_carrier_loss_packets: None,
+        tcp_loss_elevated_ms: None,
+        udp_loss_elevated_ms: None,
+        tcp_inflated_latency_ms: None,
+        udp_inflated_latency_ms: None,
         tcp_penalty_ms: None,
         udp_penalty_ms: None,
         tcp_effective_latency_ms: None,
@@ -1009,6 +1017,196 @@ fn tun_tcp_flow_gauges_emit_same_series_as_per_call_helpers() {
         rendered
             .contains("outline_ws_tun_tcp_inflight_bytes{group=\"fg_grp\",uplink=\"fg_up2\"} 128"),
         "post-failover uplink series missing:\n{rendered}"
+    );
+}
+
+// ── Carrier-loss ratio / observed volume / inflated latency ─────────────
+
+#[test]
+fn carrier_loss_is_rendered_per_uplink_and_transport() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut uplink = snapshot_uplink("primary");
+    uplink.tcp_carrier_loss_ratio = Some(0.02);
+    uplink.tcp_carrier_loss_packets = Some(10_000);
+    snapshot.uplinks.push(uplink);
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+
+    assert!(
+        rendered.contains(
+            "outline_ws_uplink_carrier_loss_ratio{group=\"main\",transport=\"tcp\",uplink=\"primary\"} 0.02"
+        ),
+        "loss ratio gauge missing or wrong in:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_uplink_carrier_loss_observed_packets{group=\"main\",transport=\"tcp\",uplink=\"primary\"} 10000"
+        ),
+        "observed-packets gauge missing or wrong in:\n{rendered}"
+    );
+}
+
+/// "No data" must not render as "no loss": an uplink with no qualifying window
+/// publishes no series at all, so a dashboard cannot mistake silence for a
+/// clean path.
+#[test]
+fn an_unmeasured_uplink_publishes_no_loss_series() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    snapshot.uplinks.push(snapshot_uplink("primary"));
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+    assert!(!rendered.contains("outline_ws_uplink_carrier_loss_ratio"));
+    assert!(!rendered.contains("outline_ws_uplink_carrier_loss_observed_packets"));
+}
+
+#[test]
+fn render_prometheus_clears_previous_carrier_loss_series() {
+    // First scrape reports a measured loss ratio for `nuxt`. Second scrape
+    // has no qualifying window (e.g. traffic went idle). The stale gauge
+    // must disappear, not linger at its last value — a lingering value
+    // would misreport a currently-unmeasured uplink as still lossy.
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut lossy = snapshot_uplink("nuxt");
+    lossy.udp_carrier_loss_ratio = Some(0.05);
+    lossy.udp_carrier_loss_packets = Some(5_000);
+    snapshot.uplinks.push(lossy);
+    render_prometheus(&[snapshot]).expect("render first metrics");
+
+    let mut clean = empty_snapshot();
+    clean.uplinks.push(snapshot_uplink("nuxt"));
+    let rendered = render_prometheus(&[clean]).expect("render second metrics");
+
+    assert!(
+        !rendered.contains("outline_ws_uplink_carrier_loss_ratio{"),
+        "loss ratio series should be cleared once the window no longer qualifies:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("outline_ws_uplink_carrier_loss_observed_packets{"),
+        "observed-packets series should be cleared once the window no longer qualifies:\n{rendered}"
+    );
+}
+
+#[test]
+fn loss_elevated_seconds_is_rendered_per_uplink_and_transport() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut uplink = snapshot_uplink("primary");
+    uplink.tcp_loss_elevated_ms = Some(90_000); // 90s into the episode
+    snapshot.uplinks.push(uplink);
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+
+    assert!(
+        rendered.contains(
+            "outline_ws_uplink_loss_elevated_seconds{group=\"main\",transport=\"tcp\",uplink=\"primary\"} 90"
+        ),
+        "loss-elevated gauge missing or wrong in:\n{rendered}"
+    );
+}
+
+/// No episode running must not render as "elevated for 0 seconds" — same
+/// absence discipline as the loss-ratio gauge: a dashboard cannot tell "no
+/// episode" apart from "just started" if both render as 0.
+#[test]
+fn an_uplink_with_no_running_episode_publishes_no_loss_elevated_series() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    snapshot.uplinks.push(snapshot_uplink("primary"));
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+    assert!(!rendered.contains("outline_ws_uplink_loss_elevated_seconds"));
+}
+
+#[test]
+fn render_prometheus_clears_a_resolved_loss_elevated_episode() {
+    // First scrape reports a running episode. Second scrape has none (it
+    // cleared — a clean tick, or the standby went stale). The stale gauge
+    // must disappear, not linger at its last value.
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut elevated = snapshot_uplink("nuxt");
+    elevated.udp_loss_elevated_ms = Some(30_000);
+    snapshot.uplinks.push(elevated);
+    render_prometheus(&[snapshot]).expect("render first metrics");
+
+    let mut resolved = empty_snapshot();
+    resolved.uplinks.push(snapshot_uplink("nuxt"));
+    let rendered = render_prometheus(&[resolved]).expect("render second metrics");
+
+    assert!(
+        !rendered.contains("outline_ws_uplink_loss_elevated_seconds{"),
+        "loss-elevated series should be cleared once the episode resolves:\n{rendered}"
+    );
+}
+
+#[test]
+fn record_loss_failover_increments_a_dedicated_counter() {
+    // Distinct from `outline_ws_uplink_failovers_total`: an operator must be
+    // able to tell "this switch happened because of measured packet loss"
+    // apart from a data-plane / runtime failover, without parsing log lines.
+    let _guard = test_guard();
+    init();
+
+    record_loss_failover("tcp", "main", "primary", "backup");
+    record_loss_failover("tcp", "main", "primary", "backup");
+    record_failover("tcp", "main", "primary", "backup");
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    assert!(
+        rendered.contains(
+            "outline_ws_uplink_loss_failovers_total{from_uplink=\"primary\",group=\"main\",to_uplink=\"backup\",transport=\"tcp\"} 2"
+        ),
+        "loss-failover counter missing or wrong in:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_uplink_failovers_total{from_uplink=\"primary\",group=\"main\",to_uplink=\"backup\",transport=\"tcp\"} 1"
+        ),
+        "generic failover counter must stay independent of the loss-driven one:\n{rendered}"
+    );
+}
+
+#[test]
+fn inflated_latency_is_rendered_and_absent_without_a_wire_measurement() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut uplink = snapshot_uplink("primary");
+    uplink.tcp_inflated_latency_ms = Some(150);
+    snapshot.uplinks.push(uplink);
+    // A second uplink with no measurement at all — must not emit the gauge.
+    snapshot.uplinks.push(snapshot_uplink("senko"));
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+
+    assert!(
+        rendered.contains(
+            "outline_ws_uplink_latency_inflated_seconds{group=\"main\",transport=\"tcp\",uplink=\"primary\"} 0.15"
+        ),
+        "inflated latency gauge missing or wrong in:\n{rendered}"
+    );
+    assert!(
+        !rendered.lines().any(|l| {
+            l.starts_with("outline_ws_uplink_latency_inflated_seconds")
+                && l.contains("uplink=\"senko\"")
+        }),
+        "uplink without an inflated-latency measurement must not emit the gauge"
     );
 }
 
