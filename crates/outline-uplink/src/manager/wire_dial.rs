@@ -64,6 +64,12 @@ impl UplinkManager {
             vec![0]
         };
 
+        // Whether this call ever had more than one wire to walk. Gate-off (and
+        // any uplink with no fallbacks configured) always resolves `order` to a
+        // single entry, so this is known before the loop runs, not derived from
+        // how many attempts actually happened.
+        let multi_wire = order.len() > 1;
+
         let mut last_err: Option<anyhow::Error> = None;
         for &wire in &order {
             match build(wire).await {
@@ -118,20 +124,41 @@ impl UplinkManager {
                             total_wires,
                         );
                     }
-                    debug!(
-                        uplink = %candidate.uplink.name,
-                        wire,
-                        error = %format!("{error:#}"),
-                        "wire dial failed, trying the next one",
-                    );
+                    // Skip the log on a single-wire attempt: "trying the next
+                    // one" would be false (there is no next wire) and on
+                    // gate-off this line runs for every failed TUN TCP dial,
+                    // which is exactly the inert path this flag promises not
+                    // to change. The pre-existing per-uplink failure logging
+                    // in `select_tcp_candidate_and_connect` already covers
+                    // this case.
+                    if multi_wire {
+                        debug!(
+                            uplink = %candidate.uplink.name,
+                            wire,
+                            error = %format!("{error:#}"),
+                            "wire dial failed, trying the next one",
+                        );
+                    }
                     last_err = Some(error);
                 },
             }
         }
 
-        Err(last_err
-            .unwrap_or_else(|| anyhow!("no wires configured"))
-            .context(format!("all wires failed on uplink {}", candidate.uplink.name)))
+        let error = last_err.unwrap_or_else(|| anyhow!("no wires configured"));
+        // Only a genuine multi-wire exhaustion earns the "all wires failed"
+        // wrapper: it exists to tell a caller that every sibling carrier was
+        // tried, which is not true of a single-wire attempt (gate-off, or an
+        // uplink with no fallbacks configured). Wrapping unconditionally used
+        // to double the uplink name into the error text and, worse, become
+        // the metric `detail` label via `normalize_other_runtime_failure_detail`
+        // — burying the real cause behind a per-uplink prefix that ate most of
+        // the 48-character budget. A single-wire failure must surface its
+        // cause exactly as it did before this loop existed.
+        if multi_wire {
+            Err(error.context(format!("all wires failed on uplink {}", candidate.uplink.name)))
+        } else {
+            Err(error)
+        }
     }
 }
 

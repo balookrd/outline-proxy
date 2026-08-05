@@ -67,6 +67,31 @@ async fn exhausting_every_wire_yields_one_error() {
 }
 
 #[tokio::test]
+async fn a_single_wire_failure_carries_no_all_wires_failed_wrapper() {
+    // Gate-off (and any uplink with no fallbacks) only ever attempts wire 0,
+    // so its failure must surface exactly as it did before this loop existed
+    // — not wrapped in a context meant for a genuine multi-wire exhaustion.
+    // That wrapper doubles the uplink name into the error text and, worse,
+    // becomes the metric `detail` label (see
+    // `normalize_other_runtime_failure_detail`), burying the real cause.
+    let manager = sample_manager_with_three_fallbacks().await;
+    let candidate = manager.tcp_candidates_for_test(0).await;
+
+    let result: Result<(u8, u8)> = manager
+        .dial_over_wires(&candidate, TransportKind::Tcp, false, |wire| async move {
+            Err(anyhow!("wire {wire} is down"))
+        })
+        .await;
+
+    let error = result.expect_err("the only wire tried fails");
+    let rendered = format!("{error:#}");
+    assert_eq!(
+        rendered, "wire 0 is down",
+        "a single-wire attempt must not gain the multi-wire wrapper, got: {rendered}"
+    );
+}
+
+#[tokio::test]
 async fn a_not_applicable_wire_is_skipped_without_recording_an_outcome() {
     let manager = sample_manager_with_three_fallbacks().await;
     let candidate = manager.tcp_candidates_for_test(0).await;
