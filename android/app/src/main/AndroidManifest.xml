@@ -5,6 +5,10 @@
     <!-- Needed to enumerate installed apps for the split-tunnel picker. VPN is
          an allowed use case for this permission. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- Needed to watch the underlying network so the tunnel can follow
+         Wi-Fi <-> cellular handovers (setUnderlyingNetworks). Without it
+         registering a NetworkCallback throws SecurityException. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
