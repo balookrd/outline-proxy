@@ -265,3 +265,93 @@ pub(super) async fn sample_manager_with_live_wire_two(wire2_url: Url) -> UplinkM
     let uplink = uplink_with_two_fallbacks(&closed_url, &closed_url, &wire2_url);
     UplinkManager::new_for_test("test", vec![uplink], probe_cfg(), lb()).unwrap()
 }
+
+/// A VLESS fallback wire whose carrier is `url` — never actually dialed by
+/// [`sample_manager_with_vless_fallback`]'s tests, since building a VLESS-UDP
+/// mux does not dial eagerly (it dials lazily per destination on first
+/// packet). What matters here is the *shape*: transport, url and uuid must
+/// come from this fallback, not from the parent uplink.
+fn vless_fallback_wire_at(url: &Url, uuid: [u8; 16]) -> FallbackTransport {
+    FallbackTransport {
+        transport: UplinkTransport::Vless,
+        tcp_ws_url: None,
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: Some(url.clone()),
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        vless_id: Some(uuid),
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: String::new(),
+        fwmark: None,
+        ipv6_first: false,
+        fingerprint_profile: None,
+    }
+}
+
+/// An SS uplink whose primary points at a closed port and whose one fallback
+/// (wire 1) is VLESS pointing at `vless_url` — the shape of a fleet uplink
+/// whose primary and first fallback are different transport families. The
+/// primary being SS (not VLESS) is deliberate: it is what makes a regression
+/// to reading `candidate.uplink.transport` instead of `spec.transport`
+/// observable — the wrong read would route wire 1 through the SS dial path
+/// against the closed primary port instead of building a VLESS mux.
+fn uplink_with_vless_fallback(closed_url: &Url, vless_url: &Url, uuid: [u8; 16]) -> UplinkConfig {
+    UplinkConfig {
+        name: "vless-fallback-udp-test".to_string(),
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: Some(closed_url.clone()),
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: Some(closed_url.clone()),
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "shared".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+        fingerprint_profile: None,
+        fallbacks: vec![vless_fallback_wire_at(vless_url, uuid)],
+        shuffle_wires: false,
+        carrier_downgrade: true,
+        padding: None,
+        shuffle_timer: None,
+    }
+}
+
+/// A manager with one uplink whose primary is SS (closed port) and whose
+/// wire 1 is VLESS. `vless_url` need not be routable: the VLESS-UDP branch
+/// builds a mux without dialing.
+pub(super) async fn sample_manager_with_vless_fallback() -> UplinkManager {
+    let closed_url = closed_port_url().await;
+    let vless_url = Url::parse("wss://unroutable.invalid/vless").unwrap();
+    let uuid = [7u8; 16];
+    let uplink = uplink_with_vless_fallback(&closed_url, &vless_url, uuid);
+    UplinkManager::new_for_test("test", vec![uplink], probe_cfg(), lb()).unwrap()
+}
+
+/// An [`UplinkCandidate`] for uplink `index` on `manager`. UDP dial-path
+/// tests use this name for readability at call sites; the construction is
+/// transport-agnostic and identical to
+/// [`UplinkManager::tcp_candidates_for_test`], which it delegates to rather
+/// than duplicating the pattern.
+pub(super) async fn udp_candidate_for_test(
+    manager: &UplinkManager,
+    index: usize,
+) -> UplinkCandidate {
+    manager.tcp_candidates_for_test(index).await
+}

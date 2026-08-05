@@ -5,11 +5,17 @@ mod refill;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-use tests::sample_manager_with_live_wire_two;
+use tests::{
+    sample_manager_with_live_wire_two, sample_manager_with_vless_fallback, udp_candidate_for_test,
+};
 
 #[cfg(test)]
 #[path = "tests/wire_dial_tcp.rs"]
 mod wire_dial_tcp_tests;
+
+#[cfg(test)]
+#[path = "tests/wire_dial_udp.rs"]
+mod wire_dial_udp_tests;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -516,8 +522,10 @@ impl UplinkManager {
         .await
     }
 
-    /// Acquire a UDP carrier for `candidate`, keeping its Session IDs in
-    /// `resume_store`.
+    /// Acquire a UDP carrier for `candidate`'s primary wire, keeping its
+    /// Session IDs in `resume_store`. The shape every pre-existing caller
+    /// gets; see [`Self::acquire_udp_on_wire`] for the wire-aware entry
+    /// point.
     ///
     /// The store is what decides *whose* id this dial presents. Under
     /// [`UdpResumeStore::ProcessWide`](outline_transport::UdpResumeStore::ProcessWide)
@@ -531,60 +539,90 @@ impl UplinkManager {
         source: &'static str,
         resume_store: &outline_transport::UdpResumeStore,
     ) -> Result<UdpSessionTransport> {
+        self.acquire_udp_on_wire(candidate, 0, source, resume_store).await
+    }
+
+    /// Acquire a UDP carrier on `wire`, keeping its Session IDs in
+    /// `resume_store`. `wire = 0` is the primary carrier and reproduces the
+    /// behaviour every existing caller has.
+    ///
+    /// Built from [`WireSpec`](crate::WireSpec) rather than `candidate.uplink`
+    /// directly, so a VLESS fallback wire is just as dialable as an SS one —
+    /// the QUIC mux used to be built out of the parent uplink's fields, which
+    /// meant a fallback wire could only ever be SS. On a fleet whose primary
+    /// *and* first fallback are both VLESS that left the UDP plane with no
+    /// usable fallback at all.
+    pub async fn acquire_udp_on_wire(
+        &self,
+        candidate: &UplinkCandidate,
+        wire: u8,
+        source: &'static str,
+        resume_store: &outline_transport::UdpResumeStore,
+    ) -> Result<UdpSessionTransport> {
         use outline_transport::UplinkConnectionBinding;
+        let spec = crate::WireSpec::of(&candidate.uplink, wire)
+            .ok_or_else(|| anyhow!("uplink {} has no wire {}", candidate.uplink.name, wire))?;
         let cache = self.inner.dns_cache.as_ref();
         // Per-uplink attribution for the open-connection gauge / close-time
         // classification counter. Built once per dial because every code path
         // below ends in a transport that owns its own `_lifetime` guard
         // attached via `with_uplink_binding`.
-        let binding = || {
-            UplinkConnectionBinding::new(
-                self.inner.group_name.as_str(),
-                "udp",
-                candidate.uplink.name.as_str(),
-            )
-        };
-        if candidate.uplink.transport == UplinkTransport::Vless {
+        let binding =
+            || UplinkConnectionBinding::new(self.inner.group_name.as_str(), "udp", spec.name);
+        if spec.transport == UplinkTransport::Vless {
             // VLESS UDP has no warm-standby pool — each destination opens its
             // own session inside the mux on first packet, so there is no
             // single pre-dialed stream to hand out up front.
-            metrics::record_warm_standby_acquire(
-                "udp",
-                &self.inner.group_name,
-                &candidate.uplink.name,
-                "miss",
-            );
-            let udp_ws_url = candidate.uplink.udp_dial_url().ok_or_else(|| {
-                anyhow!("vless dial URL is not configured for uplink {}", candidate.uplink.name)
+            metrics::record_warm_standby_acquire("udp", &self.inner.group_name, spec.name, "miss");
+            let udp_ws_url = spec.dial_url(crate::Plane::Udp).ok_or_else(|| {
+                anyhow!(
+                    "vless dial URL is not configured for uplink {} wire {}",
+                    spec.name,
+                    spec.wire
+                )
             })?;
-            let uuid = candidate.uplink.vless_id.ok_or_else(|| {
-                anyhow!("uplink {} is VLESS but has no vless_id", candidate.uplink.name)
+            let uuid = spec.vless_id.ok_or_else(|| {
+                anyhow!("uplink {} wire {} is VLESS but has no vless_id", spec.name, spec.wire)
             })?;
-            let mode = self.effective_udp_mode(candidate.index).await;
+            let mode = self.effective_udp_mode_for_wire(candidate.index, spec.wire).await;
             // Hook fired the first time the mux observes a transport-level
             // H3→H2/H1 downgrade on a per-target dial. The mux latches on
             // the first call so a burst of fresh sessions during the same
             // outage doesn't spam the uplink-manager. Mirrors the QUIC-mux
             // `on_fallback` wiring above so both pivots flow through the
             // same per-uplink `mode_downgrade_until` window.
+            //
+            // The wire is captured here, not read at fire time: the
+            // notification lands well after this call returns, once the mux
+            // has actually observed a per-target dial, so the closure is the
+            // only place that still knows which wire it was building.
             let manager = self.clone();
             let index = candidate.index;
+            let downgrade_wire = spec.wire;
             let on_downgrade: outline_transport::VlessUdpDowngradeNotifier =
                 Arc::new(move |requested: outline_transport::TransportMode| {
-                    manager.note_silent_transport_fallback(index, TransportKind::Udp, requested);
+                    manager.note_silent_transport_fallback_for_wire(
+                        index,
+                        TransportKind::Udp,
+                        downgrade_wire,
+                        requested,
+                    );
                 });
             // VLESS-UDP is dialed lazily per destination, so there is no
             // single carrier to register when the mux is built — the mux has
             // to hand each one over as it appears. Without this the whole UDP
             // plane of a VLESS uplink is unmeasured, which on a VLESS-only
-            // fleet is where nearly all the traffic lives.
+            // fleet is where nearly all the traffic lives. Same wire-capture
+            // reasoning as `on_downgrade` above: a wire-2 mux must file its
+            // probe under wire 2, never under wire 0's slot.
             let probe_manager = self.clone();
             let probe_index = candidate.index;
+            let probe_wire = spec.wire;
             let on_carrier: outline_transport::VlessUdpCarrierNotifier =
                 Arc::new(move |probe: Option<outline_transport::CarrierLossProbe>| {
                     probe_manager.register_carrier_loss_probe(
                         probe_index,
-                        0,
+                        probe_wire,
                         TransportKind::Udp,
                         probe,
                     );
@@ -594,14 +632,16 @@ impl UplinkManager {
                 udp_ws_url.clone(),
                 mode,
                 uuid,
-                candidate.uplink.fwmark,
-                candidate.uplink.ipv6_first,
+                spec.fwmark,
+                spec.ipv6_first,
                 source,
                 self.inner.load_balancing.udp_ws_keepalive_interval,
                 self.inner.load_balancing.vless_udp_mux_limits,
             )
             .with_on_downgrade(Some(on_downgrade))
             .with_on_carrier(Some(on_carrier))
+            // Padding is configured per uplink, not per wire — read from the
+            // parent, mirroring `dial_in_uplink_scope` on every other path.
             .with_padding_override(candidate.uplink.padding)
             .with_resume_scope(self.resume_scope(&candidate.uplink.name).to_string())
             .with_resume_store(resume_store.clone())
@@ -612,59 +652,61 @@ impl UplinkManager {
         // WS-pooled UDP: try to reuse a pooled stream first. `try_take_alive`
         // loops past zombie entries (e.g. underlying H2/H3 torn down after
         // pooling) so we never hand a dead transport to the caller.
-        let ctx = self.standby_ctx(candidate.index, TransportKind::Udp).await;
-        if let Some(ws) = ctx.try_take_alive(&candidate.uplink.name).await {
-            // Same reason as the TCP take above: a carrier reused out of the
-            // pool is never dialled, so without this it is never measured.
-            self.register_carrier_loss_probe(
-                candidate.index,
-                0,
-                TransportKind::Udp,
-                ws.loss_probe(),
-            );
-            // A pooled stream was dialled as a fresh session by the refill loop,
-            // so the server minted it an id and it is riding on the stream. Move
-            // it into this carrier's store or the flow would have no id of its
-            // own and could never migrate — the reused-standby path was the one
-            // place a TUN UDP flow silently lost its resume identity.
-            let pooled_resume_key =
-                resume_cache_key(self.resume_scope(&candidate.uplink.name), "udp");
-            resume_store
-                .ss()
-                .store_if_issued(pooled_resume_key, ws.issued_session_id());
-            // `from_websocket` reads the carrier padding at build time, which on
-            // the hot path runs after the dial returns — outside any dial scope.
-            // Wrap the build in the per-uplink padding scope so a padded uplink's
-            // reused standby stream frames its datagrams (mirrors VLESS-UDP).
-            let transport = crate::dial::with_uplink_padding_scope(&candidate.uplink, async {
-                UdpWsTransport::from_websocket(
-                    ws,
-                    candidate.uplink.cipher,
-                    &candidate.uplink.password,
-                    source,
-                    self.inner.load_balancing.udp_ws_keepalive_interval,
-                )
-            })
-            .await?;
-            return Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())));
+        //
+        // The pool is filled on the primary wire until Task 8 moves it onto
+        // the active wire; a fallback-wire acquire must never be handed a
+        // primary-wire stream, so this take is gated to `wire == 0`.
+        if spec.wire == 0 {
+            let ctx = self.standby_ctx(candidate.index, TransportKind::Udp).await;
+            if let Some(ws) = ctx.try_take_alive(&candidate.uplink.name).await {
+                // Same reason as the TCP take above: a carrier reused out of the
+                // pool is never dialled, so without this it is never measured.
+                self.register_carrier_loss_probe(
+                    candidate.index,
+                    spec.wire,
+                    TransportKind::Udp,
+                    ws.loss_probe(),
+                );
+                // A pooled stream was dialled as a fresh session by the refill loop,
+                // so the server minted it an id and it is riding on the stream. Move
+                // it into this carrier's store or the flow would have no id of its
+                // own and could never migrate — the reused-standby path was the one
+                // place a TUN UDP flow silently lost its resume identity.
+                let pooled_resume_key =
+                    resume_cache_key(self.resume_scope(&candidate.uplink.name), "udp");
+                resume_store
+                    .ss()
+                    .store_if_issued(pooled_resume_key, ws.issued_session_id());
+                // `from_websocket` reads the carrier padding at build time, which on
+                // the hot path runs after the dial returns — outside any dial scope.
+                // Wrap the build in the per-uplink padding scope so a padded uplink's
+                // reused standby stream frames its datagrams (mirrors VLESS-UDP).
+                let transport = crate::dial::with_uplink_padding_scope(&candidate.uplink, async {
+                    UdpWsTransport::from_websocket(
+                        ws,
+                        spec.cipher,
+                        spec.password,
+                        source,
+                        self.inner.load_balancing.udp_ws_keepalive_interval,
+                    )
+                })
+                .await?;
+                return Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())));
+            }
         }
 
-        metrics::record_warm_standby_acquire(
-            "udp",
-            &self.inner.group_name,
-            &candidate.uplink.name,
-            "miss",
-        );
+        metrics::record_warm_standby_acquire("udp", &self.inner.group_name, spec.name, "miss");
         debug!(
-            uplink = %candidate.uplink.name,
+            uplink = %spec.name,
+            wire = spec.wire,
             "no warm-standby UDP websocket available, dialing on-demand"
         );
-        // Combined-SS-aware: `udp_dial_url()` resolves to `ss_xhttp_url`/
-        // `ss_ws_url` on a combined wire (split `udp_ws_url` is None there).
-        let udp_ws_url = candidate.uplink.udp_dial_url().ok_or_else(|| {
-            anyhow!("no udp dial URL configured for uplink {}", candidate.uplink.name)
+        // Combined-SS-aware: `dial_url()` resolves to `ss_xhttp_url`/
+        // `ss_ws_url` on a combined wire (split `udp_url` is None there).
+        let udp_ws_url = spec.dial_url(crate::Plane::Udp).ok_or_else(|| {
+            anyhow!("no udp dial URL configured for uplink {} wire {}", spec.name, spec.wire)
         })?;
-        let mode = self.effective_udp_mode(candidate.index).await;
+        let mode = self.effective_udp_mode_for_wire(candidate.index, spec.wire).await;
         let started = Instant::now();
         // Cross-transport session resumption for SS-UDP-over-WS.
         // Mirrors the TCP path's ResumeCache wiring; the cache key
@@ -680,14 +722,14 @@ impl UplinkManager {
             cache,
             udp_ws_url,
             mode,
-            candidate.uplink.cipher,
-            &candidate.uplink.password,
-            candidate.uplink.fwmark,
-            candidate.uplink.ipv6_first,
+            spec.cipher,
+            spec.password,
+            spec.fwmark,
+            spec.ipv6_first,
             source,
             self.inner.load_balancing.udp_ws_keepalive_interval,
             udp_resume_request,
-            candidate.uplink.combined_ss_kind(SsPathKind::Udp),
+            spec.combined_ss_kind(SsPathKind::Udp),
         );
         let (transport, udp_issued, udp_downgraded_from) =
             crate::dial::with_uplink_padding_scope(&candidate.uplink, connect)
@@ -696,20 +738,34 @@ impl UplinkManager {
                     target: format!("to {}", udp_ws_url),
                 })?;
         resume_store.ss().store_if_issued(udp_resume_key, udp_issued);
-        // The standby pool always dials the primary wire (`wire = 0`).
+        // Attribution follows the wire that was actually dialed — see the TCP
+        // twin (`connect_tcp_ws_fresh_internal`) for why filing this under
+        // the primary wire unconditionally puts the loss verdict in a slot
+        // nothing reads once `active_wire` moves, and lets one carrier's
+        // descent cap another's.
         self.register_carrier_loss_probe(
             candidate.index,
-            0,
+            spec.wire,
             TransportKind::Udp,
             transport.loss_probe(),
         );
-        self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
-            .await;
+        self.report_connection_latency_for_wire(
+            candidate.index,
+            TransportKind::Udp,
+            spec.wire,
+            started.elapsed(),
+        )
+        .await;
         // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`
         // or inline H3→H2/H1 fallback) into the per-uplink window so
-        // `effective_udp_mode` reflects reality on subsequent dials.
+        // `effective_udp_mode_for_wire` reflects reality on subsequent dials.
         if let Some(requested) = udp_downgraded_from {
-            self.note_silent_transport_fallback(candidate.index, TransportKind::Udp, requested);
+            self.note_silent_transport_fallback_for_wire(
+                candidate.index,
+                TransportKind::Udp,
+                spec.wire,
+                requested,
+            );
         }
         Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())))
     }
