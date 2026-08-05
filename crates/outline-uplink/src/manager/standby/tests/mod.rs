@@ -355,3 +355,132 @@ pub(super) async fn udp_candidate_for_test(
 ) -> UplinkCandidate {
     manager.tcp_candidates_for_test(index).await
 }
+
+/// `lb()` with `tun_wire_dial` on — the pool-follows-active-wire tests need
+/// the gate enabled so `standby_ctx` actually reads `active_wire` instead of
+/// pinning to `0`.
+fn lb_with_wire_dial() -> LoadBalancingConfig {
+    LoadBalancingConfig { tun_wire_dial: true, ..lb() }
+}
+
+/// An SS uplink whose primary and three fallback wires (wires 1–3) all point
+/// at closed ports — the pool-wire tests never actually dial anything, they
+/// only manipulate the pool and the active-wire state directly, so a live
+/// listener is unnecessary. `warm_standby_tcp` / `_udp` are left at `lb()`'s
+/// `0`: these tests fill the pool through the `fill_pool_for_test` backdoor,
+/// not through the real refill loop.
+pub(super) async fn sample_manager_with_three_fallbacks() -> UplinkManager {
+    sample_manager_with_three_fallbacks_and_lb(lb_with_wire_dial()).await
+}
+
+/// Same shape as [`sample_manager_with_three_fallbacks`], but with
+/// `tun_wire_dial` left off — the gate-inertness counterpart: a deployed
+/// binary with the gate off must keep resolving the pool to wire `0` no
+/// matter where `active_wire` has wandered.
+pub(super) async fn sample_manager_with_three_fallbacks_gate_off() -> UplinkManager {
+    sample_manager_with_three_fallbacks_and_lb(lb()).await
+}
+
+async fn sample_manager_with_three_fallbacks_and_lb(lb: LoadBalancingConfig) -> UplinkManager {
+    let closed_url = closed_port_url().await;
+    let uplink = UplinkConfig {
+        name: "three-fallback-test".to_string(),
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: Some(closed_url.clone()),
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: Some(closed_url.clone()),
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "shared".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+        fingerprint_profile: None,
+        fallbacks: vec![
+            fallback_wire_at(&closed_url),
+            fallback_wire_at(&closed_url),
+            fallback_wire_at(&closed_url),
+        ],
+        shuffle_wires: false,
+        carrier_downgrade: true,
+        padding: None,
+        shuffle_timer: None,
+    };
+    UplinkManager::new_for_test("test", vec![uplink], probe_cfg(), lb).unwrap()
+}
+
+/// A combined-SS fallback wire: one URL (`ss_ws_url`) carries both legs,
+/// discriminated server-side by the hidden tcp/udp bit. `is_combined_ss()`
+/// reads `ss_ws_url` / `ss_xhttp_url`, not the split `tcp_*` / `udp_*`
+/// fields, so leaving those `None` here is enough to mark the wire combined.
+fn combined_ss_fallback_wire_at(url: &Url) -> FallbackTransport {
+    FallbackTransport {
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: None,
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: Some(url.clone()),
+        ss_xhttp_url: None,
+        ss_mode: Some(TransportMode::WsH1),
+        vless_id: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "shared".to_string(),
+        fwmark: None,
+        ipv6_first: false,
+        fingerprint_profile: None,
+    }
+}
+
+/// An SS uplink whose primary (wire 0) is split-path — the default shape,
+/// carrying no combined-SS discriminator — and whose one fallback (wire 1) is
+/// combined-SS. The mismatch between the two wires' shapes is exactly what
+/// makes a regression to reading the discriminator off the parent uplink
+/// (rather than the wire actually being prewarmed) observable: the parent is
+/// split-path, so that bug would silently read `None` for wire 1's pool too.
+pub(super) async fn sample_manager_with_combined_ss_fallback() -> UplinkManager {
+    let closed_url = closed_port_url().await;
+    let uplink = UplinkConfig {
+        name: "combined-ss-fallback-test".to_string(),
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: Some(closed_url.clone()),
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: Some(closed_url.clone()),
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "shared".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+        fingerprint_profile: None,
+        fallbacks: vec![combined_ss_fallback_wire_at(&closed_url)],
+        shuffle_wires: false,
+        carrier_downgrade: true,
+        padding: None,
+        shuffle_timer: None,
+    };
+    UplinkManager::new_for_test("test", vec![uplink], probe_cfg(), lb_with_wire_dial()).unwrap()
+}

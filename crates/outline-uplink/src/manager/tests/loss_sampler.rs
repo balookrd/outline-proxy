@@ -505,7 +505,7 @@ async fn taking_a_carrier_from_the_warm_pool_registers_its_loss_probe() {
         index: 0,
         uplink: manager.inner.uplinks[0].clone(),
     };
-    let taken = manager.try_take_tcp_standby(&candidate).await;
+    let taken = manager.try_take_tcp_standby(&candidate, 0).await;
 
     assert!(taken.is_some(), "the pooled carrier must be handed out");
     assert_eq!(

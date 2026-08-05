@@ -352,4 +352,75 @@ impl UplinkManager {
             .lock()
             .registered_wires_for_test(transport)
     }
+
+    /// Test helper: push `count` connected-but-never-dialed streams into
+    /// `(index, transport)`'s warm-standby pool and stamp its wire marker to
+    /// `wire`. Lets pool-wire tests stage "the pool currently holds carriers
+    /// dialed on wire W" without driving a real refill through the network.
+    ///
+    /// Each entry is a genuine loopback TCP socket wrapped as an `Http1`
+    /// `TransportStream` (mirrors the pattern in
+    /// `taking_a_carrier_from_the_warm_pool_registers_its_loss_probe`): the
+    /// take path peeks the socket for liveness before handing it out, so a
+    /// fabricated stream would be discarded as stale before a test ever
+    /// observes the behaviour under test.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) async fn fill_pool_for_test(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+        wire: u8,
+        count: usize,
+    ) {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+        use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+        let pool = &self.inner.standby_pools[index];
+        let deque = match transport {
+            crate::types::TransportKind::Tcp => &pool.tcp,
+            crate::types::TransportKind::Udp => &pool.udp,
+        };
+        for _ in 0..count {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let (server, _) = listener.accept().await.unwrap();
+            // Keep the accepted server-side socket open for the life of the
+            // test. Dropping it here (end of loop iteration) closes the TCP
+            // connection, so the client side the pool actually holds would
+            // observe closure and the take path's liveness peek would
+            // discard it as stale before any wire logic under test ever
+            // runs — masking the behaviour these tests exist to pin.
+            tokio::spawn(async move {
+                let _server = server;
+                std::future::pending::<()>().await
+            });
+            let ws =
+                WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None)
+                    .await;
+            deque
+                .lock()
+                .await
+                .push_back(outline_transport::TransportStream::new_http1(ws));
+        }
+        pool.wire_marker(transport)
+            .store(wire, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Test helper: current length of `(index, transport)`'s warm-standby
+    /// pool, via the same `len_hint()` `/metrics` scrapes read.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn pool_len_for_test(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+    ) -> usize {
+        let pool = &self.inner.standby_pools[index];
+        match transport {
+            crate::types::TransportKind::Tcp => pool.tcp.len_hint(),
+            crate::types::TransportKind::Udp => pool.udp.len_hint(),
+        }
+    }
 }
