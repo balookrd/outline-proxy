@@ -365,3 +365,72 @@ async fn socks_fallback_still_reports_the_wire_it_landed_on() {
         .expect("mock fallback server task must finish within the timeout")
         .unwrap();
 }
+
+/// The warm pool follows the active wire once `tun_wire_dial` is on, so the
+/// SOCKS ingress must ask it for **the wire it is dialing**, not for wire 0.
+/// Asking for 0 while the pool prewarms wire 1 is a guaranteed miss on every
+/// session: the ingress paid for the prewarm and then dialed fresh anyway.
+///
+/// Fixture: dead primary, live fallback, `active_wire` primed to 1 through the
+/// state machine's own API, `warm_standby_tcp = 1` and one synchronous
+/// maintenance pass so the pool holds exactly one carrier — dialed on wire 1.
+/// The mock server accepts once; a `FreshDial` verdict here would mean the
+/// acquisition went around the pool.
+#[tokio::test]
+async fn socks_takes_the_warm_pool_of_the_active_wire() {
+    let dead_url = dead_port_url().await;
+
+    let fallback_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fallback_addr = fallback_listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = fallback_listener.accept().await.unwrap();
+        if let Ok(ws) = accept_async(stream).await {
+            let _ = shutdown_rx.await;
+            drop(ws);
+        }
+    });
+
+    let uplink = ss_uplink_with_dead_primary("u1", dead_url, ss_fallback_wire_at(fallback_addr));
+    let uplinks = UplinkManager::new_for_test(
+        "main",
+        vec![uplink.clone()],
+        probe_disabled(),
+        LoadBalancingConfig {
+            tun_wire_dial: true,
+            warm_standby_tcp: 1,
+            ..lb()
+        },
+    )
+    .unwrap();
+
+    // Prime the active wire through the same call `dial_over_wires` makes, so
+    // the pool's own `standby_ctx` resolves to wire 1 (`min_failures = 1`).
+    uplinks.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    assert_eq!(
+        uplinks.active_wire(0, TransportKind::Tcp),
+        1,
+        "fixture setup: the pool must be prewarming the fallback wire",
+    );
+    uplinks.test_maintain_pool(0, TransportKind::Tcp).await;
+
+    let candidate = UplinkCandidate { index: 0, uplink: uplink.into() };
+    let target = TargetAddr::Domain("example.test".to_string(), 443);
+    let connected = connect_tcp_uplink(&uplinks, &candidate, &target)
+        .await
+        .expect("the pooled carrier on wire 1 must serve this connection");
+
+    assert_eq!(connected.wire_index, 1, "the active wire is the one dialed");
+    assert_eq!(
+        connected.source,
+        TcpUplinkSource::Standby,
+        "a pool prewarmed on wire 1 must be reachable from a wire-1 acquisition; \
+         asking it about wire 0 is a permanent miss",
+    );
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("mock fallback server task must finish within the timeout")
+        .unwrap();
+}

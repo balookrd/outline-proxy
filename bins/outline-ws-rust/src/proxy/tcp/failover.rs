@@ -177,42 +177,24 @@ async fn connect_tcp_uplink_inner(
     // wire support is new enough to need `tun_wire_dial` gating.
     let (connected, wire) = uplinks
         .dial_over_wires(candidate, TransportKind::Tcp, true, |wire| async move {
-            if wire == 0 {
-                // The pool (and its own standby/fresh-dial fallback) only ever
-                // serves the primary wire.
-                return connect_tcp_uplink_primary(uplinks, candidate, target)
-                    .await
-                    .map(WireAttempt::Built);
-            }
             let spec = WireSpec::of(&candidate.uplink, wire)
                 .ok_or_else(|| anyhow!("uplink {} has no wire {wire}", candidate.uplink.name))?;
-            // A fresh fallback dial never presents a Session ID — this is the
-            // initial dial loop, there is no prior session to resume.
-            record_tcp_resume_lookup(uplinks, None);
-            let ws = uplinks
-                .connect_tcp_ws_fresh_on_wire(candidate, wire, "socks_tcp_fb")
-                .await?;
-            let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
-            let binding = tcp_binding(uplinks, spec.name);
-            // Capture before `do_tcp_ss_setup` takes ownership of the stream.
-            let session_id = ws.issued_session_id();
-            let (writer, reader) = do_tcp_ss_setup(
-                ws,
-                &spec,
-                target,
-                "socks_tcp_fb",
-                keepalive_interval,
-                binding,
-                false,
-            )
-            .await?;
-            Ok(WireAttempt::Built(ConnectedTcpUplink {
-                writer,
-                reader,
-                source: TcpUplinkSource::FreshDial,
-                wire_index: wire,
-                session_id,
-            }))
+            // A fallback wire with no TCP path was never dialable on this
+            // plane, so it must not be charged as a broken wire — the same rule
+            // the UDP twin (`proxy/udp/transport.rs`) already applies with
+            // `supports_udp`. The primary is always allowed to attempt: its
+            // shape is what the candidate filter already selected on.
+            if wire != 0 && !spec.supports_tcp() {
+                debug!(
+                    uplink = %candidate.uplink.name,
+                    wire,
+                    "skipping wire with no TCP path configured",
+                );
+                return Ok(WireAttempt::NotApplicable);
+            }
+            connect_tcp_uplink_on_wire(uplinks, candidate, target, &spec)
+                .await
+                .map(WireAttempt::Built)
         })
         .await?;
 
@@ -237,7 +219,7 @@ async fn connect_tcp_uplink_inner(
 /// wire just failed and wants to skip it.
 ///
 /// No resume id is presented here, unlike [`connect_tcp_specific_wire_fresh`]:
-/// `wire_index == 0` is served from the warm-standby pool, and a pooled socket
+/// this dial may be served from the warm-standby pool, and a pooled socket
 /// already completed its upgrade under its *own* Session ID. Resume is a
 /// property of the handshake, so it can only be requested by a dial we make
 /// ourselves.
@@ -249,30 +231,9 @@ pub(super) async fn connect_tcp_specific_wire(
 ) -> Result<ConnectedTcpUplink> {
     // Padding scope wraps the dial + transport build (see `connect_tcp_uplink`).
     outline_uplink::dial::with_uplink_padding_scope(&candidate.uplink, async move {
-        if wire_index == 0 {
-            return connect_tcp_uplink_primary(uplinks, candidate, target).await;
-        }
         let spec = WireSpec::of(&candidate.uplink, wire_index)
             .ok_or_else(|| anyhow!("uplink {} has no wire {wire_index}", candidate.uplink.name))?;
-        // A fresh wire-handover dial never presents a Session ID — see this
-        // function's doc.
-        record_tcp_resume_lookup(uplinks, None);
-        let ws = uplinks
-            .connect_tcp_ws_fresh_on_wire(candidate, wire_index, "socks_tcp_fb")
-            .await?;
-        let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
-        let binding = tcp_binding(uplinks, spec.name);
-        let session_id = ws.issued_session_id();
-        let (writer, reader) =
-            do_tcp_ss_setup(ws, &spec, target, "socks_tcp_fb", keepalive_interval, binding, false)
-                .await?;
-        Ok(ConnectedTcpUplink {
-            writer,
-            reader,
-            source: TcpUplinkSource::FreshDial,
-            wire_index,
-            session_id,
-        })
+        connect_tcp_uplink_on_wire(uplinks, candidate, target, &spec).await
     })
     .await
 }
@@ -331,39 +292,53 @@ pub(super) async fn connect_tcp_specific_wire_fresh(
     .await
 }
 
-async fn connect_tcp_uplink_primary(
+/// Dial one wire of `candidate` for a brand-new session: warm pool first, fresh
+/// dial second.
+///
+/// The pool is asked for **the wire being dialed**, not for wire 0. The pool
+/// follows the active wire once `tun_wire_dial` is on (`standby_ctx`), so a
+/// hard-coded `0` here meant that on a node with the gate on and the active
+/// wire moved, the SOCKS ingress could never reach its own prewarmed carriers:
+/// the wire it dials is the active one, and the pool it asked about was the
+/// primary. `try_take_tcp_standby` answers `None` for any wire the pool is not
+/// prewarming, so this is a widening — it can hit where it used to always miss,
+/// and never hands out a carrier from a foreign wire.
+async fn connect_tcp_uplink_on_wire(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
     target: &TargetAddr,
+    spec: &WireSpec<'_>,
 ) -> Result<ConnectedTcpUplink> {
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+    let wire = spec.wire;
+    // The dial source labels stay split primary/fallback exactly as they were
+    // before the pool was widened, so the metric series do not move.
+    let source = if wire == 0 { "socks_tcp" } else { "socks_tcp_fb" };
 
     // Variant A: try a standby pool connection first.  If it turns out to be
     // stale (fails before any server bytes arrive), discard it silently and
     // retry with a fresh on-demand dial — without recording a runtime failure.
-    if let Some(ws) = uplinks.try_take_tcp_standby(candidate, 0).await {
-        let spec = WireSpec::from_uplink(&candidate.uplink);
+    if let Some(ws) = uplinks.try_take_tcp_standby(candidate, wire).await {
         let binding = tcp_binding(uplinks, spec.name);
         // Read the ID off the stream *before* `do_tcp_ss_setup` consumes it:
         // a pooled standby carrier was dialed fresh (no resume request), so
         // the ID the server minted for it now belongs to this session.
         let session_id = ws.issued_session_id();
         // A pooled carrier was dialed by the refill loop with no id of its own.
-        match do_tcp_ss_setup(ws, &spec, target, "socks_tcp", keepalive_interval, binding, false)
-            .await
-        {
+        match do_tcp_ss_setup(ws, spec, target, source, keepalive_interval, binding, false).await {
             Ok((writer, reader)) => {
                 return Ok(ConnectedTcpUplink {
                     writer,
                     reader,
                     source: TcpUplinkSource::Standby,
-                    wire_index: 0,
+                    wire_index: wire,
                     session_id,
                 });
             },
             Err(e) => {
                 debug!(
                     uplink = %candidate.uplink.name,
+                    wire,
                     error = %format!("{e:#}"),
                     "stale standby TCP pool connection, retrying with fresh dial"
                 );
@@ -372,7 +347,25 @@ async fn connect_tcp_uplink_primary(
     }
 
     // Initial dial of a brand-new session — no prior Session ID to present.
-    connect_tcp_uplink_fresh(uplinks, candidate, target, None).await
+    if wire == 0 {
+        return connect_tcp_uplink_fresh(uplinks, candidate, target, None).await;
+    }
+    // A fresh fallback dial never presents a Session ID — this is the initial
+    // dial loop, there is no prior session to resume.
+    record_tcp_resume_lookup(uplinks, None);
+    let ws = uplinks.connect_tcp_ws_fresh_on_wire(candidate, wire, source).await?;
+    let binding = tcp_binding(uplinks, spec.name);
+    // Capture before `do_tcp_ss_setup` takes ownership of the stream.
+    let session_id = ws.issued_session_id();
+    let (writer, reader) =
+        do_tcp_ss_setup(ws, spec, target, source, keepalive_interval, binding, false).await?;
+    Ok(ConnectedTcpUplink {
+        writer,
+        reader,
+        source: TcpUplinkSource::FreshDial,
+        wire_index: wire,
+        session_id,
+    })
 }
 
 /// `resume_request` is this session's own Session ID when the caller is

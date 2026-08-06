@@ -161,10 +161,14 @@ pub(super) async fn redial_tcp_uplink_for_migration(
     Ok((writer, reader, session_id))
 }
 
-/// Resolves and redials the flow's own active wire — not always the parent
-/// uplink's primary — mirroring the fresh-dial path's wire selection
-/// (`connect_tcp_uplink_inner`). Gated by `tun_wire_dial`: with the gate off
-/// this always dials wire 0, exactly as it did before wire support existed.
+/// Resolves and redials **the uplink's current active wire** — not always its
+/// primary — mirroring the fresh-dial path's wire selection
+/// (`connect_tcp_uplink_inner`). Deliberately not "the wire this flow was
+/// riding": no per-flow wire memory exists (the fresh path discards the wire it
+/// landed on), so the redial follows whatever wire the uplink's state machine
+/// points at right now, which may differ from the one the dying carrier used.
+/// Gated by `tun_wire_dial`: with the gate off this always dials wire 0,
+/// exactly as it did before wire support existed.
 /// `active_wire` is not provably 0 on a gate-off node even so (the
 /// fallback-wire prober, the shuffle timer's `rotate_active_wire`, and the
 /// SOCKS ingress can all move it independently of this ingress's own gate),
@@ -181,6 +185,17 @@ pub(super) async fn redial_tcp_uplink_for_migration(
 /// rather than letting one through silently. It is **not** what keeps an
 /// XHTTP carrier out: the carrier (`ws_h*` versus `xhttp_h*`) is a property of
 /// the wire's `TransportMode`, which this predicate does not read.
+///
+/// **One wire, no cascade.** Unlike the fresh path this does *not* go through
+/// `dial_over_wires`: it resolves exactly one wire, dials it, and fails the
+/// migration if that dial fails — no sibling wire is tried and no
+/// `record_wire_outcome` is filed. That is deliberate. A migration is rescuing
+/// a live flow whose upstream is parked under a Session ID, and only a wire of
+/// this same uplink can re-attach it; cascading here would spend the rescue
+/// budget dialing carriers while the flow's ack clock runs out, and the caller
+/// already treats a failed migration as "tear the flow down" (the pre-wire
+/// behaviour). The visible consequence, gate-on only: when the active wire has
+/// no TCP URL the migration hard-fails instead of degrading to wire 0.
 async fn redial_tcp_uplink_for_migration_inner(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
@@ -195,8 +210,23 @@ async fn redial_tcp_uplink_for_migration_inner(
     } else {
         0
     };
-    let spec = outline_uplink::WireSpec::of(&candidate.uplink, wire)
-        .ok_or_else(|| anyhow!("uplink {} has no wire {wire}", candidate.uplink.name))?;
+    // Wire 0 is projected infallibly: every uplink has a primary, so routing it
+    // through the fallible `of()` produced a "has no wire 0" arm that cannot be
+    // reached — and it was the *only* arm a gate-off node could ever take, which
+    // made the error text read as if wire support had introduced a new failure
+    // mode there. A missing wire is only possible gate-on, when `active_wire`
+    // points past a chain a config reload has shrunk, and the message now says
+    // exactly that.
+    let spec = match wire {
+        0 => outline_uplink::WireSpec::from_uplink(&candidate.uplink),
+        w => outline_uplink::WireSpec::of(&candidate.uplink, w).ok_or_else(|| {
+            anyhow!(
+                "uplink {} has no wire {w}: the active wire points past the configured \
+                 fallback chain",
+                candidate.uplink.name,
+            )
+        })?,
+    };
     if !spec.is_ws_family() {
         bail!(
             "carrier migration needs a WS-family wire (SS-WS or VLESS-WS); uplink {} wire {} \
@@ -291,6 +321,24 @@ async fn connect_tcp_uplink_inner(
             // with its own family, cipher and password.
             let spec = outline_uplink::WireSpec::of(&candidate.uplink, wire)
                 .ok_or_else(|| anyhow!("uplink {} has no wire {wire}", candidate.uplink.name))?;
+
+            // A wire with no TCP path is not a broken wire — it was never
+            // dialable on this plane, so it must not move the wire state
+            // machine. Mirrors the UDP twin's `supports_udp` skip
+            // (`udp/lifecycle.rs`); charging it as a failure taught the
+            // liveness weights that a perfectly healthy UDP-only wire is
+            // failing, and on `shuffle_wires` it burned a round slot too.
+            //
+            // Gated on `wires_enabled`, not on `wire == 0`, for the same reason
+            // the UDP twin is: with the gate off `dial_over_wires` only ever
+            // asks for wire 0, and that call must still reach
+            // `connect_tcp_ws_fresh_on_wire` and fail with its own "missing tcp
+            // dial URL" text — swapping it for `dial_over_wires`'s generic "no
+            // wires configured" would change a production metric label on a
+            // node this flag promises to leave inert.
+            if wires_enabled && !spec.supports_tcp() {
+                return Ok(WireAttempt::NotApplicable);
+            }
 
             // Variant A: a warm-standby connection. The pool follows the
             // active wire, so `try_take_tcp_standby` answers `None` on its

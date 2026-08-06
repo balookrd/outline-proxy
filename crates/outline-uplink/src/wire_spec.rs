@@ -10,7 +10,11 @@
 //!
 //! Padding is deliberately absent: it is configured per uplink
 //! (`UplinkConfig::padding`), not per wire, so the padding scope stays wrapped
-//! around the parent by the callers.
+//! around the parent by the callers. The TLS fingerprint strategy *is* here and
+//! *is* read: the TCP dial and the warm-pool refill scope it through
+//! [`crate::dial::dial_in_wire_scope`]. A fallback that omits the key inherits
+//! the parent's at config-load time, so carrying it per wire changes nothing
+//! for an uplink whose fallbacks say nothing about fingerprints.
 
 use url::Url;
 
@@ -126,6 +130,14 @@ impl<'a> WireSpec<'a> {
     /// Whether this wire has a UDP path configured at all.
     pub fn supports_udp(&self) -> bool {
         self.udp_url.is_some()
+    }
+
+    /// Whether this wire has a TCP path configured at all. The plane-symmetric
+    /// twin of [`Self::supports_udp`]: both ingresses use it to tell "this wire
+    /// is broken" apart from "this wire was never a candidate on this plane",
+    /// which is the distinction the per-wire liveness weights are built on.
+    pub fn supports_tcp(&self) -> bool {
+        self.tcp_url.is_some()
     }
 
     /// Whether this wire's family can be dialed by the WS-family dial paths.
