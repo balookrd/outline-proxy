@@ -8,6 +8,20 @@ pub fn record_tun_packet(direction: &'static str, ip_family: &'static str, outco
         .inc();
 }
 
+/// Advance a kernel TUN netdev counter by the delta observed since the last
+/// scrape. Takes a delta rather than the absolute sysfs value because these are
+/// exported as Prometheus counters: the collector owns the previous reading and
+/// only ever moves the series forward.
+pub fn add_tun_device_packets(direction: &'static str, outcome: &'static str, delta: u64) {
+    if delta == 0 {
+        return;
+    }
+    METRICS
+        .tun_device_packets_total
+        .with_label_values(&[direction, outcome])
+        .inc_by(delta);
+}
+
 pub fn record_tun_flow_created(group: &str, uplink: &str) {
     METRICS
         .tun_flows_total
