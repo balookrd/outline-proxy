@@ -190,10 +190,13 @@ impl Metrics {
                     .with_label_values(&[group, "udp", &uplink.name])
                     .set(packets as f64);
             }
-            // Loss-driven failover episode: absent while no episode is
-            // running (ratio not currently elevated, feature off, or the
-            // last qualifying measurement went stale) — same "absence is
-            // not a zero" discipline as the ratio/packets gauges above.
+            // Loss-driven failover episode. Unlike the ratio/packets gauges
+            // above, absence here means only one thing: the feature is off,
+            // so nothing is watching. An armed threshold with no open episode
+            // (ratio not elevated, or the last qualifying measurement went
+            // stale) reports a plain zero — otherwise a mechanism that has
+            // simply never fired is indistinguishable from one that was never
+            // armed, since both stay silent.
             if let Some(elevated_ms) = uplink.tcp_loss_elevated_ms {
                 self.uplink_loss_elevated_seconds
                     .with_label_values(&[group, "tcp", &uplink.name])

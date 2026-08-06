@@ -14,7 +14,7 @@ use super::super::routing_key::RoutingKey;
 use super::super::selection::{
     any_wire_recent_success, effective_health, effective_latency, selection_score,
 };
-use super::super::time::duration_to_millis_option;
+use super::super::time::{duration_to_millis_option, loss_elevated_ms};
 use super::super::types::{
     StickyRouteSnapshot, TransportKind, UplinkManager, UplinkManagerSnapshot, UplinkSnapshot,
 };
@@ -319,6 +319,12 @@ impl UplinkManager {
                 &self.inner.load_balancing,
                 self.inner.load_balancing.routing_scope,
             );
+            // A configured threshold is what starts the episode clock (see
+            // `UplinkStatus::update_loss_elevated_since`, which zeroes the
+            // episode outright when the threshold is not positive), so it is
+            // also what makes "no episode" a meaningful zero rather than an
+            // absence.
+            let loss_failover_armed = self.inner.load_balancing.loss_failover_ratio > 0.0;
             // Carrier loss for the wire new sessions currently land on.
             // `observed_packets` is only meaningful once a window has
             // qualified — gate it on `ratio` so an unmeasured uplink
@@ -396,14 +402,16 @@ impl UplinkManager {
                 udp_carrier_loss_ratio: udp_loss.ratio(),
                 tcp_carrier_loss_packets: tcp_loss.ratio().map(|_| tcp_loss.observed_packets()),
                 udp_carrier_loss_packets: udp_loss.ratio().map(|_| udp_loss.observed_packets()),
-                tcp_loss_elevated_ms: status
-                    .tcp
-                    .loss_elevated_since
-                    .map(|since| now.duration_since(since).as_millis()),
-                udp_loss_elevated_ms: status
-                    .udp
-                    .loss_elevated_since
-                    .map(|since| now.duration_since(since).as_millis()),
+                tcp_loss_elevated_ms: loss_elevated_ms(
+                    status.tcp.loss_elevated_since,
+                    loss_failover_armed,
+                    now,
+                ),
+                udp_loss_elevated_ms: loss_elevated_ms(
+                    status.udp.loss_elevated_since,
+                    loss_failover_armed,
+                    now,
+                ),
                 tcp_inflated_latency_ms: view.tcp.base_latency.map(|v| v.as_millis()),
                 udp_inflated_latency_ms: view.udp.base_latency.map(|v| v.as_millis()),
                 cooldown_tcp_ms: status
