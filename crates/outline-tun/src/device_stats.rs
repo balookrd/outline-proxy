@@ -126,6 +126,12 @@ async fn collect_loop(dir: PathBuf, interval: Duration) {
         },
     };
 
+    // Publish the baseline against itself: every delta is zero, but the six
+    // series now exist from the first scrape. Without this, `dropped` and
+    // `error` would be absent until the very first drop, and an absent series
+    // reads the same as a collector that never started.
+    previous.publish_delta(&previous);
+
     let mut ticker = tokio::time::interval(interval);
     // `interval` fires immediately on its first tick; the baseline above already
     // covers that instant.

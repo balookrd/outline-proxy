@@ -12,10 +12,12 @@ pub fn record_tun_packet(direction: &'static str, ip_family: &'static str, outco
 /// scrape. Takes a delta rather than the absolute sysfs value because these are
 /// exported as Prometheus counters: the collector owns the previous reading and
 /// only ever moves the series forward.
+///
+/// A zero delta is *not* skipped: touching the series keeps it present in
+/// `/metrics` from the first scrape on, so "no drops" reads as a flat zero
+/// instead of a missing series that is indistinguishable from a broken
+/// collector.
 pub fn add_tun_device_packets(direction: &'static str, outcome: &'static str, delta: u64) {
-    if delta == 0 {
-        return;
-    }
     METRICS
         .tun_device_packets_total
         .with_label_values(&[direction, outcome])
