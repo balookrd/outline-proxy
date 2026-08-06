@@ -269,7 +269,9 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "outline_ws_uplink_carrier_loss_ratio",
         "Smoothed packet-loss ratio measured on the carrier of the wire currently \
          carrying traffic (QUIC lost/sent, TCP retransmits/segments out). Absent \
-         when no sampling window has cleared the minimum-volume threshold.",
+         when no sampling window has cleared the minimum-volume threshold. When a \
+         wire's tcp and udp planes share one carrier, the two series are the same \
+         carrier measured twice, not independent readings.",
         ["group", "transport", "uplink"]
     );
     let uplink_carrier_loss_observed_packets = register_labeled!(
@@ -277,7 +279,8 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         GaugeVec,
         "outline_ws_uplink_carrier_loss_observed_packets",
         "Packets observed behind outline_ws_uplink_carrier_loss_ratio — how much \
-         traffic the loss verdict is based on.",
+         traffic the loss verdict is based on. Duplicated across tcp/udp when both \
+         planes share one carrier (compare outline_ws_uplink_active_wire_index).",
         ["group", "transport", "uplink"]
     );
     let uplink_loss_elevated_seconds = register_labeled!(

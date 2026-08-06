@@ -1118,6 +1118,67 @@ uplink}`:
   `k` is set, comparing the two series is what shows the penalty
   actually being applied.
 
+**When both planes share a wire, `tcp` and `udp` are the same
+measurement twice, not two independent ones.** `CarrierLossRegistry::register`
+(`crates/outline-uplink/src/loss.rs`) de-duplicates probes by
+`(transport, wire, identity)` — `transport` is part of the key, not a
+filter on what gets measured. On a carrier that is genuinely shared
+across planes (the fleet's `xhttp_h3` wires: one QUIC connection serving
+every session, TCP and UDP alike), the *same* `quinn::Connection` gets
+registered once under `transport = "tcp"` and once under
+`transport = "udp"`, and each registration reads that connection's whole
+`PathStats`. Neither series is wrong on its own; the pair is one carrier
+counted twice under two labels. Whether this applies to a given uplink
+at a given moment depends on whether its TCP and UDP planes currently
+sit on the same wire — compare `outline_ws_uplink_active_wire_index`
+for `transport="tcp"` and `transport="udp"` on that uplink; equal
+indices mean shared carrier, unequal mean genuinely independent
+measurements.
+
+Measured on the fleet, packets sampled per 2-minute interval on uplink
+`senko` (`wire tcp`/`wire udp` are `active_wire_index` per plane):
+
+```
+wire tcp=0 udp=1 | pkts tcp=5133    udp=10504     different
+wire tcp=0 udp=1 | pkts tcp=7506    udp=7390      different
+wire tcp=3 udp=3 | pkts tcp=14455   udp=14455   ← identical
+wire tcp=3 udp=3 | pkts tcp=10796   udp=10796   ← identical
+wire tcp=3 udp=3 | pkts tcp=9920    udp=9920    ← identical
+wire tcp=1 udp=2 | pkts tcp=50539   udp=16389     different
+```
+
+The correlation is exact: same wire index on both planes means the two
+series are the same carrier, packet-for-packet identical; different wire
+indices mean two carriers, and the two series diverge. This is how the
+duplication was first noticed — an operator watching a `tcp`-labelled
+loss row rise in step with a user's QUIC video traffic, because the row
+was, in fact, describing the QUIC connection carrying that video. The
+registry, sampler and metrics are deliberately left as-is: an uplink
+whose planes share a wire is a real, common configuration (it is the
+fleet's default), and de-duplicating the pair would require attributing
+loss to "the carrier" rather than "the plane", a bigger change than this
+caveat justifies. Read a `tcp` row on a shared-wire uplink as describing
+the carrier, including whatever `udp` traffic rides it — not as an
+isolated TCP-only measurement.
+
+**The limit of this caveat: on different wires, the two planes are
+fully independent measurements.** Measured minutes later on the same
+uplink, with `tcp` on wire 0 and `udp` on wire 3:
+
+```
+udp: 463 897 packets, loss 0.56%
+tcp: 117 951 packets, loss 1.30%
+```
+
+That is a node streaming video over QUIC: the UDP plane correctly
+carries about four times the TCP plane's volume, and the two loss
+numbers are genuinely different because they come from two different
+carriers. The rule for reading either the dashboard or `/metrics`
+directly: compare the two planes' `outline_ws_uplink_active_wire_index`
+before comparing their loss numbers. Equal wire index means "same
+carrier, don't double-count it as two data points"; different wire
+index means "trust both numbers independently."
+
 **An absent series means "not measured" — never "no loss".** There are
 four distinct reasons a wire may have no `carrier_loss_ratio` series
 at a given moment, and none of them is "this path is clean":
