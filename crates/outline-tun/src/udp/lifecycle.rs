@@ -610,10 +610,12 @@ impl TunUdpEngine {
         // session continuity.
         let carried_an_id = resume_store.holds_any_id().unwrap_or(false);
 
-        // Redial the flow's own active wire, not always the primary: a
-        // soft-switch redial that ignored a repointed-away-from-primary wire
-        // would migrate the flow off the carrier its own uplink is actually
-        // serving traffic on.
+        // Redial the *target uplink's* current active wire, not always its
+        // primary: a soft-switch redial that ignored a repointed-away-from-
+        // primary wire would migrate the flow off the carrier that uplink is
+        // actually serving traffic on. Not "the flow's own wire" — a flow keeps
+        // no wire memory, so this follows whatever the uplink's state machine
+        // points at at redial time.
         //
         // But only when the gate is on. `tun_wire_dial` exists so this binary
         // can be deployed to the fleet inert — gate off must behave exactly
@@ -628,6 +630,14 @@ impl TunUdpEngine {
         // would have dialed before this feature existed. Do not "simplify"
         // this back to an unconditional read — that is precisely the bug
         // this comment exists to prevent.
+        //
+        // One wire, no cascade: this resolves a single wire and dials it
+        // directly rather than walking `dial_over_wires`, so no sibling wire is
+        // tried and no `record_wire_outcome` is filed. A failed redial tears the
+        // flow down exactly as a hard switch would (the arm below), which is the
+        // pre-wire behaviour. Gate-on consequence: an active wire with no UDP
+        // path is dialed and fails here rather than being skipped as
+        // `NotApplicable` the way the fresh path skips it.
         let wire = if manager.load_balancing().tun_wire_dial {
             manager.active_wire(candidate.index, TransportKind::Udp)
         } else {

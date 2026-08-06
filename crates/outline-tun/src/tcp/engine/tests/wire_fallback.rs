@@ -285,3 +285,96 @@ async fn tun_tcp_gate_off_leaves_the_uplink_instead_of_using_a_sibling_wire() {
 
     assert!(engine.inner.flows.contains_key(&key));
 }
+
+/// A wire with no TCP path configured must be *skipped*, not charged as a
+/// broken wire — the plane-symmetric twin of
+/// `crate::udp::tests::wire_fallback::tun_udp_skips_a_wire_with_no_udp_path_instead_of_dialing_and_failing_it`.
+/// Charging it teaches the per-wire liveness weights that a healthy
+/// UDP-only wire is failing, and (with `shuffle_wires`) burns a slot of the
+/// chain-exhaustion round on a wire that never ran a dial.
+///
+/// Topology: wire 0 dead, wire 1 UDP-only (no TCP URL at all), wire 2 live.
+/// `min_failures = 1` (`super::test_probe_config()`), so every recorded
+/// failure on the active wire advances `active_wire` by exactly one — which
+/// is what makes the final index a direct readout of how many wires were
+/// charged.
+#[tokio::test]
+async fn tun_tcp_skips_a_wire_with_no_tcp_path_instead_of_charging_it() {
+    let live_wire = TestTcpUpstream::start().await;
+    let udp_only = FallbackTransport {
+        tcp_ws_url: None,
+        udp_ws_url: Some("ws://127.0.0.1:1/udp".parse().unwrap()),
+        ..ss_fallback(dead_url())
+    };
+    let nuxt = ss_uplink("nuxt", dead_url(), vec![udp_only, ss_fallback(live_wire.url())]);
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![nuxt],
+        super::test_probe_config(),
+        LoadBalancingConfig {
+            tun_wire_dial: true,
+            ..super::test_load_balancing_config()
+        },
+    )
+    .unwrap();
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager.clone()),
+        128,
+        Duration::from_secs(60),
+        false,
+        test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+    let (client_port, remote_port) = (40600, 443);
+
+    engine
+        .handle_packet_unverified(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            100,
+            0,
+            4096,
+            TCP_FLAG_SYN,
+            &[],
+        ))
+        .await
+        .unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
+    let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+    engine
+        .handle_packet_unverified(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            101,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            &[],
+        ))
+        .await
+        .unwrap();
+
+    // The flow reached wire 2 — proof the TCP-less wire 1 did not sink the
+    // uplink on its way there.
+    let target = live_wire.expect_target().await;
+    let (target, _) = TargetAddr::from_wire_bytes(&target).unwrap();
+    assert_eq!(target, TargetAddr::IpV4(remote_ip, remote_port));
+
+    // The load-bearing assertion: exactly one advance (0 -> 1), off wire 0's
+    // real dial failure. A second advance (1 -> 2) can only mean wire 1's
+    // absent TCP path was recorded as a failure rather than skipped.
+    assert_eq!(
+        manager.active_wire(0, outline_uplink::TransportKind::Tcp),
+        1,
+        "wire 1 (no TCP path configured) must not have recorded an outcome",
+    );
+}

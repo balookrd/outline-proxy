@@ -1319,7 +1319,10 @@ async fn force_failover_to_second_uplink(manager: &outline_uplink::UplinkManager
 }
 
 // ---------------------------------------------------------------------------
-// Task 9: a migrating flow follows its own active wire, not the primary.
+// Task 9: a migrating flow follows the uplink's current active wire, not the
+// primary. Not the wire the flow itself was riding — no per-flow wire memory
+// exists — which is exactly what the gate-on test below demonstrates: the flow
+// is born on wire 0 and the redial still goes to wire 1.
 //
 // One uplink, two wires (primary + one fallback), each backed by its own
 // `ResumableUpstream`. `active_wire` is primed to the fallback the way
@@ -1412,13 +1415,16 @@ async fn wait_until_connections(upstream: &ResumableUpstream, expected: usize) {
     panic!("upstream never reached {expected} connections (got {})", upstream.connections());
 }
 
-/// The money test for Task 9: a flow whose active wire has moved away from
-/// the primary must redial *that* wire when its carrier dies. Redialing the
-/// primary would slam a carrier this flow never used, and its failure would
-/// surface as a runtime failure on the parent uplink — the false flap the
-/// active-wire state machine exists to prevent.
+/// The money test for Task 9: when an uplink's active wire has moved away from
+/// the primary, a migrating flow on that uplink must redial *that* wire.
+/// Redialing the primary would slam a carrier the uplink is no longer serving
+/// traffic on, and its failure would surface as a runtime failure on the parent
+/// uplink — the false flap the active-wire state machine exists to prevent.
+///
+/// The flow here is born on wire 0 and the redial goes to wire 1, which is the
+/// literal proof that the wire followed is the UPLINK's, not the flow's own.
 #[tokio::test]
-async fn a_migrating_flow_redials_its_own_active_wire_not_the_primary() {
+async fn a_migrating_flow_redials_the_uplinks_current_active_wire() {
     let primary = ResumableUpstream::start().await;
     let fallback = ResumableUpstream::start().await;
     let manager = build_test_manager_with_wire(primary.url(), fallback.url(), true).await;
@@ -1460,12 +1466,12 @@ async fn a_migrating_flow_redials_its_own_active_wire_not_the_primary() {
     assert_eq!(
         fallback.connections(),
         1,
-        "the redial must have followed the flow's active wire (1), not the primary"
+        "the redial must have followed the uplink's current active wire (1), not the primary"
     );
     assert_eq!(
         primary.connections(),
         1,
-        "redialing the primary would slam a carrier this flow never used, and its \
+        "redialing the primary would slam a carrier the uplink has moved off, and its \
          failure would surface as a runtime failure on the parent uplink"
     );
 }

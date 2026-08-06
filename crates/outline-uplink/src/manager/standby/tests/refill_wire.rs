@@ -117,3 +117,47 @@ async fn a_refill_dials_with_the_wires_own_network_options() {
         "wire 1 pins its own mark and prefers v6; the parent pins neither",
     );
 }
+
+/// The TLS fingerprint strategy is per wire too, and the assertion is on what
+/// the dial scope actually resolves — `fingerprint_profile::select`, the
+/// function the transport calls — not on the `StandbyCtx` field, which is
+/// populated from the `WireSpec` whatever the dial site goes on to read.
+///
+/// A fallback that pins its own `fingerprint_profile` had that key accepted by
+/// the config loader and reported through the probe's `wire_view`, then ignored
+/// by every dial: the dial scopes came off the parent. A fallback that omits
+/// the key inherits the parent's at load time, so nothing changes for uplinks
+/// that say nothing about fingerprints.
+#[tokio::test]
+async fn a_refill_dials_under_the_wires_own_fingerprint_strategy() {
+    let manager = sample_manager_with_vless_primary_and_ss_fallback().await;
+    manager.test_set_active_wire(0, TransportKind::Tcp, 1);
+    let ctx = manager.standby_ctx_for_test(0, TransportKind::Tcp).await;
+    let url: url::Url = "https://fingerprint.example.com/path".parse().unwrap();
+
+    assert_eq!(
+        ctx.fingerprint_profile,
+        Some(outline_transport::FingerprintProfileStrategy::PerHostStable),
+        "the context carries wire 1's strategy, not the parent's `None` — this is the \
+         value `refill` hands to `dial_in_wire_scope`",
+    );
+
+    let under_wire = crate::dial::dial_in_wire_scope(ctx.uplink, ctx.fingerprint_profile, async {
+        outline_transport::fingerprint_profile::select(&url).map(|profile| profile.name)
+    })
+    .await;
+    assert!(
+        under_wire.is_some(),
+        "wire 1 pins `per_host_stable`, so a dial scoped on the wire selects a profile",
+    );
+
+    let under_parent = crate::dial::dial_in_uplink_scope(ctx.uplink, async {
+        outline_transport::fingerprint_profile::select(&url).map(|profile| profile.name)
+    })
+    .await;
+    assert_eq!(
+        under_parent, None,
+        "the parent pins nothing and the process default is off — which is exactly \
+         what the wire's own strategy was being replaced by",
+    );
+}

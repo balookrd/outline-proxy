@@ -308,14 +308,16 @@ impl<'a> StandbyCtx<'a> {
                 break;
             }
 
-            // The parent, deliberately, and the last thing on this path that
-            // reads it: padding and the fingerprint strategy are configured
-            // per uplink rather than per wire (see `WireSpec`'s module docs),
-            // and every sibling dial site scopes them off the parent the same
-            // way. Everything the dial's *shape* depends on comes off the
-            // wire — see the option builders below.
-            let ws = crate::dial::dial_in_uplink_scope(
+            // Padding off the parent (it is configured per uplink — see
+            // `WireSpec`'s module docs — and every sibling dial site scopes it
+            // the same way), fingerprint strategy off THIS wire: a fallback may
+            // pin its own, and prewarming with the parent's would fill the pool
+            // with handshakes the wire's config never asked for. Everything else
+            // the dial's shape depends on comes off the wire too — see the
+            // option builders below.
+            let ws = crate::dial::dial_in_wire_scope(
                 self.uplink,
+                self.fingerprint_profile,
                 connect_transport(
                     TransportDialOptions::new(cache, url, self.mode, self.refill_source)
                         // Resolved against THIS wire, not the parent — see

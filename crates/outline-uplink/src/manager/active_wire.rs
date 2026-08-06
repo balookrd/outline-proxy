@@ -436,6 +436,26 @@ impl UplinkManager {
             });
         }
 
+        // NOTE, `shuffle_wires` only — the same failure is charged by two
+        // machines. The dial that exhausts the chain is recorded here (health
+        // flip + cooldown, inside the lock above) and then again by the
+        // caller's `report_runtime_failure` once `dial_over_wires` returns the
+        // error: both ingresses report the uplink as failing after the whole
+        // chain is gone. The second charge lands on an uplink this call has
+        // *just* put in cooldown, so `report_runtime_failure_inner` takes its
+        // `already_in_cooldown` arm: no second cooldown or penalty is applied
+        // (the charge is absorbed, not doubled), but the failure is counted on
+        // `runtime_failures_suppressed_total` rather than
+        // `runtime_failures_total`, and it logs at DEBUG instead of WARN.
+        //
+        // Left as is deliberately: the alternative — suppressing the wire
+        // machine's own flip so the uplink machine can own the event — would
+        // reintroduce the delay this flip exists to remove, and the operator
+        // signal is not lost. The exhaustion has its own WARN below and its own
+        // `record_failover("*_shuffle_round_exhausted")` series, which is the
+        // one to read for "why did this uplink drop out", rather than looking
+        // for a runtime-failure tick that will be in the suppressed series.
+        //
         // Round exhausted: every wire of the chain has been advanced
         // through without an intervening success on this transport.
         // The healthy flip + cooldown are applied inside the lock above,

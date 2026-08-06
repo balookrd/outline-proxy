@@ -28,6 +28,10 @@ mod pool_wire_tests;
 #[path = "tests/refill_wire.rs"]
 mod refill_wire_tests;
 
+#[cfg(test)]
+#[path = "tests/acquire_metric.rs"]
+mod acquire_metric_tests;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -35,7 +39,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use tokio::time::{Instant, sleep};
 use tracing::debug;
 
-use outline_metrics as metrics;
 use outline_transport::{
     DialNetworkOptions, DialResumeOptions, SessionId, TransportDialOptions, TransportOperation,
     TransportStream, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, connect_transport,
@@ -417,6 +420,11 @@ impl UplinkManager {
         source: &'static str,
         resume_request: Option<SessionId>,
     ) -> Result<TransportStream> {
+        // Every field spelled out, matching
+        // `connect_tcp_ws_migrate_with_symmetric_replay_on_wire` below: the two
+        // migrate helpers differ *only* in the v2 fields, and that difference is
+        // the thing a reader comes here to check. `..Default::default()` hid
+        // exactly those two behind a default.
         self.connect_tcp_ws_fresh_internal(
             candidate,
             source,
@@ -424,8 +432,9 @@ impl UplinkManager {
                 wire,
                 resume_request,
                 ack_prefix_requested: true,
+                symmetric_replay_requested: false,
+                client_acked_offset: 0,
                 bypass_mode_downgrade: true,
-                ..Default::default()
             },
         )
         .await
@@ -507,7 +516,12 @@ impl UplinkManager {
         if !spec.is_ws_family() {
             bail!("uplink {} wire {} does not use websocket transport", spec.name, spec.wire);
         }
-        metrics::record_warm_standby_acquire("tcp", &self.inner.group_name, spec.name, "miss");
+        // No `warm_standby_acquire{outcome="miss"}` here. This function serves
+        // every fresh/redial/migrate dial, most of which never consult the pool
+        // at all (a migration redial cannot use a pooled carrier — resume is a
+        // property of the handshake), so ticking a pool miss from here counted
+        // acquisitions the pool was never offered. The miss is recorded by
+        // `try_take_alive`, which is the code that actually asks the pool.
         let mode = self
             .tcp_dial_mode_for(candidate, &spec, dial.bypass_mode_downgrade)
             .await;
@@ -531,8 +545,14 @@ impl UplinkManager {
         // handed to a session that then owns their ID. Nothing is stashed in
         // a process-global slot, so a concurrent session can no longer
         // present an ID that was minted for somebody else.
-        let ws = crate::dial::dial_in_uplink_scope(
+        // Fingerprint strategy off the WIRE, padding off the parent — see
+        // `dial_in_wire_scope`. A fallback that pins its own
+        // `fingerprint_profile` had it read by config and probe but never by a
+        // dial; a fallback that omits it inherits the parent's at load time, so
+        // the fleet's shape is unaffected.
+        let ws = crate::dial::dial_in_wire_scope(
             &candidate.uplink,
+            spec.fingerprint_profile,
             connect_transport(
                 TransportDialOptions::new(cache, url, mode, source)
                     .with_network(DialNetworkOptions {
@@ -659,8 +679,11 @@ impl UplinkManager {
         if spec.transport == UplinkTransport::Vless {
             // VLESS UDP has no warm-standby pool — each destination opens its
             // own session inside the mux on first packet, so there is no
-            // single pre-dialed stream to hand out up front.
-            metrics::record_warm_standby_acquire("udp", &self.inner.group_name, spec.name, "miss");
+            // single pre-dialed stream to hand out up front. That is also why
+            // no `warm_standby_acquire{outcome="miss"}` is recorded here: on a
+            // VLESS-primary fleet it made every UDP acquisition look like a
+            // pool miss for a pool that does not exist, and the counter's
+            // denominator is "acquisitions that consulted a pool".
             let udp_ws_url = spec.dial_url(crate::Plane::Udp).ok_or_else(|| {
                 anyhow!(
                     "vless dial URL is not configured for uplink {} wire {}",
@@ -783,7 +806,9 @@ impl UplinkManager {
             return Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())));
         }
 
-        metrics::record_warm_standby_acquire("udp", &self.inner.group_name, spec.name, "miss");
+        // The `miss` for this take was recorded by `try_take_alive` above —
+        // recording it again here would double-count every SS-UDP acquisition
+        // that fell through to a dial.
         debug!(
             uplink = %spec.name,
             wire = spec.wire,

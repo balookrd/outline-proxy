@@ -28,12 +28,47 @@ pub async fn dial_in_uplink_scope<F, T>(uplink: &UplinkConfig, fut: F) -> T
 where
     F: Future<Output = T>,
 {
-    // Two independent per-uplink overrides, each `None` meaning "inherit the
-    // process-wide default": the fingerprint-profile strategy and the
-    // carrier-padding on/off. Padding is nested inside the fingerprint scope so
-    // a single uplink can pin both without either leaking to siblings on the
-    // same host:port.
-    match (uplink.fingerprint_profile, uplink.padding) {
+    scope_dial(uplink.fingerprint_profile, uplink.padding, fut).await
+}
+
+/// [`dial_in_uplink_scope`] for a dial that targets a specific wire: the
+/// fingerprint strategy comes from the **wire** being dialed, the padding
+/// override still from the parent uplink.
+///
+/// A fallback may pin its own `fingerprint_profile` (the loader inherits the
+/// parent's when the key is omitted, so a fallback that says nothing keeps
+/// behaving exactly as before). Scoping the parent's strategy over a fallback
+/// dial made that key silently inert on every dial path — a per-fallback
+/// profile was accepted by the config loader, reported by the probe's
+/// `wire_view`, and then ignored by the dial it was written for.
+///
+/// Padding is deliberately *not* per wire: it is configured per uplink
+/// (`UplinkConfig::padding`) and [`crate::WireSpec`] does not carry it. See
+/// that type's module docs.
+pub async fn dial_in_wire_scope<F, T>(
+    uplink: &UplinkConfig,
+    wire_fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
+    fut: F,
+) -> T
+where
+    F: Future<Output = T>,
+{
+    scope_dial(wire_fingerprint_profile, uplink.padding, fut).await
+}
+
+async fn scope_dial<F, T>(
+    fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
+    padding: Option<bool>,
+    fut: F,
+) -> T
+where
+    F: Future<Output = T>,
+{
+    // Two independent overrides, each `None` meaning "inherit the process-wide
+    // default": the fingerprint-profile strategy and the carrier-padding
+    // on/off. Padding is nested inside the fingerprint scope so a single uplink
+    // can pin both without either leaking to siblings on the same host:port.
+    match (fingerprint_profile, padding) {
         (Some(strategy), Some(on)) => {
             outline_transport::fingerprint_profile::with_strategy_override(
                 strategy,

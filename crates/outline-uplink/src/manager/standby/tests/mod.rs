@@ -52,7 +52,7 @@ fn h3_uplink() -> UplinkConfig {
     }
 }
 
-fn lb() -> LoadBalancingConfig {
+pub(super) fn lb() -> LoadBalancingConfig {
     LoadBalancingConfig {
         mode: LoadBalancingMode::ActivePassive,
         routing_scope: RoutingScope::Global,
@@ -103,7 +103,7 @@ fn lb() -> LoadBalancingConfig {
     }
 }
 
-fn probe_cfg() -> ProbeConfig {
+pub(super) fn probe_cfg() -> ProbeConfig {
     ProbeConfig {
         interval: Duration::from_secs(10),
         timeout: Duration::from_secs(10),
@@ -188,7 +188,7 @@ async fn migration_dial_ignores_the_cap_the_carrier_death_just_installed() {
 /// An SS fallback wire whose carrier is `url` — same shape regardless of
 /// whether `url` is a real listener or a closed port, since the caller
 /// decides what happens when it is actually dialed.
-fn fallback_wire_at(url: &Url) -> FallbackTransport {
+pub(super) fn fallback_wire_at(url: &Url) -> FallbackTransport {
     FallbackTransport {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(url.clone()),
@@ -247,7 +247,7 @@ fn uplink_with_two_fallbacks(closed_url: &Url, wire1_url: &Url, wire2_url: &Url)
 
 /// A TCP port that was bound then immediately dropped, so a dial against it
 /// fails fast (connection refused) instead of hanging on real network I/O.
-async fn closed_port_url() -> Url {
+pub(super) async fn closed_port_url() -> Url {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let url = Url::parse(&format!("ws://{}/tcp", listener.local_addr().unwrap())).unwrap();
     drop(listener);
@@ -532,7 +532,11 @@ fn ss_xhttp_h3_fallback_wire_at(url: &Url) -> FallbackTransport {
         // sides would make a regression to the parent's unobservable.
         fwmark: Some(0x12),
         ipv6_first: true,
-        fingerprint_profile: None,
+        // Same reasoning as `fwmark` / `ipv6_first` above, for the TLS
+        // fingerprint strategy: the parent pins nothing, this wire pins a
+        // strategy, so a dial that scopes the parent's is observable (it
+        // selects no profile at all).
+        fingerprint_profile: Some(outline_transport::FingerprintProfileStrategy::PerHostStable),
     }
 }
 

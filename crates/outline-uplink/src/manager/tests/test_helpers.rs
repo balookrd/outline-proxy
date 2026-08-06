@@ -26,6 +26,17 @@ impl UplinkManager {
         )
     }
 
+    /// Test helper: run one warm-standby maintenance pass (validate + refill)
+    /// for `(index, transport)` synchronously, so a test can fill the pool
+    /// without waiting for the background sweep. Exposed to out-of-crate tests
+    /// (`test-helpers`) because the ingress crates own the code that *takes*
+    /// from the pool, and pinning "this acquisition came from the pool" needs
+    /// a filled pool on this side of the boundary.
+    #[doc(hidden)]
+    pub async fn test_maintain_pool(&self, index: usize, transport: crate::types::TransportKind) {
+        self.maintain_pool(index, transport).await;
+    }
+
     /// Test helper: directly set TCP health / latency for uplink `index`.
     #[doc(hidden)]
     pub async fn test_set_tcp_health(&self, index: usize, healthy: bool, rtt_ms: u64) {
