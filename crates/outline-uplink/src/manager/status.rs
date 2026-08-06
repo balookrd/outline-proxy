@@ -233,6 +233,18 @@ pub(crate) struct PerTransportStatus {
     /// Timestamp of the most recent downstream-throttle signal on this
     /// transport, used to render a "recently throttled" badge on the dashboard.
     pub(crate) last_downstream_throttle_at: Option<Instant>,
+    /// Whether the most recent `shuffle_timer` tick on this transport found
+    /// no live alternative (every other wire at `health_weight_floor`) and
+    /// left `active_wire` untouched. Exists purely to throttle the
+    /// operator-facing log for that condition in
+    /// [`super::UplinkManager::rotate_active_wire`]: a two-wire uplink whose
+    /// only alternative is floored repeats this outcome on every tick, so a
+    /// bare per-tick `warn!` becomes ~5800 lines/day/uplink at a 30s
+    /// `shuffle_timer`. `warn!` fires only on the `false -> true` edge (a
+    /// fresh "stuck" condition); it keeps logging at `debug!` while the
+    /// condition persists, and the flag resets on the tick that finds a live
+    /// alternative again.
+    pub(crate) reroll_no_live_alt: bool,
     /// Test-only: number of times [`super::UplinkManager::record_wire_outcome`]
     /// has been invoked for each wire, regardless of success or failure.
     /// Exists solely so `dial_over_wires` tests can observe the negative —

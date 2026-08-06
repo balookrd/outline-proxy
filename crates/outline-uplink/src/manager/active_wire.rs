@@ -537,6 +537,16 @@ impl UplinkManager {
     /// No-op for uplinks without any fallbacks (the chain is a
     /// singleton; nothing to reroll to).
     ///
+    /// Per transport, the weight computation, the draw, and (when it finds a
+    /// live alternative) the apply all happen under one acquisition of the
+    /// status lock — see the comment at the call site — so "a reroll always
+    /// changes the wire, or leaves it provably untouched" holds even against
+    /// a concurrent probe/dial success advancing `active_wire` mid-call.
+    ///
+    /// The operator-facing WARN for "no live alternative" fires only on the
+    /// tick that newly finds the condition; it stays at DEBUG for as long as
+    /// the condition persists (see [`super::status::PerTransportStatus::reroll_no_live_alt`]).
+    ///
     /// Returns the `(tcp_wire, udp_wire)` pair the uplink ends this call
     /// on — the freshly-rolled wire for a transport that had a live
     /// alternative, or the unchanged previous wire for one that did not —
@@ -550,31 +560,27 @@ impl UplinkManager {
         let total = total_wires as u8;
         let floor = self.inner.load_balancing.health_weight_floor;
         let now = Instant::now();
-        // Per-wire liveness weight is computed unconditionally — `wire_weight`
-        // is a pure function of the decaying penalty state, not gated on
-        // `health_weighted_selection` — because the exclude-current +
-        // floor-filter candidate set (see `draw_reroll_wire`) applies to the
-        // plain-random draw exactly as it does to the weighted one.
-        let (tcp_active, tcp_weights, udp_active, udp_weights): (u8, Vec<f64>, u8, Vec<f64>) =
-            self.inner.with_status_mut(uplink_index, |status| {
-                let tcp_weights = (0..total)
-                    .map(|w| status.tcp.wire_weight(w, now, &self.inner.load_balancing, floor))
-                    .collect();
-                let udp_weights = (0..total)
-                    .map(|w| status.udp.wire_weight(w, now, &self.inner.load_balancing, floor))
-                    .collect();
-                (status.tcp.active_wire, tcp_weights, status.udp.active_wire, udp_weights)
-            });
         let weighted = self.inner.load_balancing.health_weighted_selection;
-        let mut rng = rand::rng();
-        let tcp_pick = draw_reroll_wire(&tcp_weights, tcp_active, floor, weighted, &mut rng);
-        let udp_pick = draw_reroll_wire(&udp_weights, udp_active, floor, weighted, &mut rng);
-
-        let group_name = self.inner.group_name.clone();
-        let uplink_name = uplink.name.clone();
         let pin_window = self.inner.load_balancing.mode_downgrade_duration;
         let runtime_failure_window = self.inner.load_balancing.runtime_failure_window;
-        self.inner.with_status_mut(uplink_index, |status| {
+        let mut rng = rand::rng();
+
+        // Draw *and* apply happen inside one lock acquisition (one call to
+        // `with_status_mut`) rather than the previous read-lock-draw /
+        // release / re-lock-apply shape. `draw_reroll_wire` is synchronous
+        // and cheap (weight computation + one RNG draw over at most a
+        // handful of wires), so there is no reason to release the lock
+        // between the draw and the apply — and doing so opened a window: a
+        // concurrent probe or dial success advancing `status.tcp.active_wire`
+        // (or `.udp`) between the two acquisitions would let this call apply
+        // the wire that had *just* become active, silently breaking "a
+        // reroll always changes the wire" for that tick. Computing weights,
+        // drawing, and applying under a single guard removes the window
+        // (and the extra lock round-trip).
+        let (
+            (tcp_active, tcp_pick, tcp_became_stuck, tcp_still_stuck),
+            (udp_active, udp_pick, udp_became_stuck, udp_still_stuck),
+        ) = self.inner.with_status_mut(uplink_index, |status| {
             let apply = |st: &mut super::status::PerTransportStatus, new_wire: u8| {
                 // The anti-DPI reroll always changes which wire new sessions
                 // start on. Whether it ALSO clears the failure-accounting
@@ -629,17 +635,32 @@ impl UplinkManager {
                 st.active_wire_pinned_until =
                     if new_wire == 0 { None } else { Some(now + pin_window) };
             };
-            // Only the transports that actually drew a live alternative get
-            // `apply`'d — a `None` pick leaves that transport's `st`
-            // completely untouched (no pin refresh, no failure-accounting
-            // reset), per the doc comment above.
-            if let Some(new_wire) = tcp_pick {
-                apply(&mut status.tcp, new_wire);
-            }
-            if let Some(new_wire) = udp_pick {
-                apply(&mut status.udp, new_wire);
-            }
+            // Compute weights, draw, and (if the draw found a live
+            // alternative) apply — all under the same `st` borrow, for one
+            // transport. Also updates `st.reroll_no_live_alt` and reports
+            // the `false -> true` / `true -> true` edges so the caller can
+            // throttle the operator-facing log to "once per new occurrence"
+            // instead of once per tick.
+            let mut roll =
+                |st: &mut super::status::PerTransportStatus| -> (u8, Option<u8>, bool, bool) {
+                    let weights: Vec<f64> = (0..total)
+                        .map(|w| st.wire_weight(w, now, &self.inner.load_balancing, floor))
+                        .collect();
+                    let active = st.active_wire;
+                    let pick = draw_reroll_wire(&weights, active, floor, weighted, &mut rng);
+                    let was_stuck = st.reroll_no_live_alt;
+                    let stuck_now = pick.is_none();
+                    st.reroll_no_live_alt = stuck_now;
+                    if let Some(new_wire) = pick {
+                        apply(st, new_wire);
+                    }
+                    (active, pick, stuck_now && !was_stuck, stuck_now && was_stuck)
+                };
+            (roll(&mut status.tcp), roll(&mut status.udp))
         });
+
+        let group_name = self.inner.group_name.clone();
+        let uplink_name = uplink.name.clone();
         // Report the wire each transport actually ends this call on: the
         // freshly-rolled one when the draw found a live alternative, else
         // the unchanged previous active wire. `*_changed` keeps the log
@@ -659,7 +680,16 @@ impl UplinkManager {
             total_wires,
             "shuffle_timer reroll: active wire randomized per transport where a live alternative existed",
         );
-        if tcp_pick.is_none() {
+        // WARN only on the tick that *newly* finds no live alternative — a
+        // two-wire uplink whose only alternative sits at the floor would
+        // otherwise repeat this outcome every tick (at `shuffle_timer =
+        // "30s"`, ~5800 lines/day/uplink for a condition that by definition
+        // keeps recurring until something changes). Once the condition is
+        // already flagged, later ticks that are still stuck log at DEBUG
+        // instead — the state is fully captured by `reroll_no_live_alt` on
+        // the dashboard / snapshot for anyone who wants "is it stuck right
+        // now" without the WARN noise.
+        if tcp_became_stuck {
             warn!(
                 group = %group_name,
                 uplink = %uplink_name,
@@ -668,8 +698,17 @@ impl UplinkManager {
                 total_wires,
                 "shuffle_timer reroll: no live TCP alternative (every other wire at health_weight_floor) — active wire left unchanged",
             );
+        } else if tcp_still_stuck {
+            debug!(
+                group = %group_name,
+                uplink = %uplink_name,
+                transport = ?TransportKind::Tcp,
+                active_wire = tcp_active,
+                total_wires,
+                "shuffle_timer reroll: still no live TCP alternative — active wire left unchanged",
+            );
         }
-        if udp_pick.is_none() {
+        if udp_became_stuck {
             warn!(
                 group = %group_name,
                 uplink = %uplink_name,
@@ -677,6 +716,15 @@ impl UplinkManager {
                 active_wire = udp_active,
                 total_wires,
                 "shuffle_timer reroll: no live UDP alternative (every other wire at health_weight_floor) — active wire left unchanged",
+            );
+        } else if udp_still_stuck {
+            debug!(
+                group = %group_name,
+                uplink = %uplink_name,
+                transport = ?TransportKind::Udp,
+                active_wire = udp_active,
+                total_wires,
+                "shuffle_timer reroll: still no live UDP alternative — active wire left unchanged",
             );
         }
         if tcp_pick.is_some() {
@@ -763,6 +811,17 @@ impl UplinkManager {
 /// Returns `None` when no wire qualifies: the caller must leave that
 /// transport's active wire completely untouched rather than re-apply the
 /// wire it already had.
+///
+/// `floor >= 1.0` is a degenerate but validator-accepted edge of the
+/// configured range: `penalty_weight`'s `.max(floor)` clamps *every* wire's
+/// weight to exactly `1.0` in that case, so the plain `w > floor` test below
+/// could never be true for any wire — every tick would find zero candidates
+/// and the reroll would go permanently silent, with no config error to
+/// explain why. Since the floor carries no discriminating information at
+/// `1.0` anyway (every wire looks equally healthy to it), treat that case as
+/// "every non-active wire is a candidate" instead, so the anti-DPI rotation
+/// keeps working — merely without the liveness bias `health_weight_floor`
+/// would otherwise have provided.
 fn draw_reroll_wire<R: Rng + ?Sized>(
     weights: &[f64],
     active: u8,
@@ -770,10 +829,11 @@ fn draw_reroll_wire<R: Rng + ?Sized>(
     weighted: bool,
     rng: &mut R,
 ) -> Option<u8> {
+    let floor_discriminates = floor < 1.0;
     let candidates: Vec<u8> = weights
         .iter()
         .enumerate()
-        .filter(|&(idx, &w)| idx as u8 != active && w > floor)
+        .filter(|&(idx, &w)| idx as u8 != active && (!floor_discriminates || w > floor))
         .map(|(idx, _)| idx as u8)
         .collect();
     if candidates.is_empty() {

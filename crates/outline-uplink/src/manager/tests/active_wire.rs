@@ -261,7 +261,11 @@ async fn weighted_rotate_avoids_flaky_wire_but_not_entirely() {
         tcp_hits[0] < tcp_hits[1] && tcp_hits[0] < tcp_hits[2],
         "the anti-DPI reroll lands on the flaky wire least often: {tcp_hits:?}"
     );
-    assert!(tcp_hits[0] > 0, "but the floor keeps the flaky wire reachable: {tcp_hits:?}");
+    assert!(
+        tcp_hits[0] > 0,
+        "but its weight, still strictly above health_weight_floor at this penalty level, \
+         keeps it reachable: {tcp_hits:?}"
+    );
 }
 
 /// New: repeated draws never return the wire that was active going into that
@@ -355,6 +359,49 @@ async fn reroll_leaves_active_wire_untouched_when_every_alternative_is_at_the_fl
     );
 }
 
+/// New: `health_weight_floor = 1.0` is a degenerate but validator-accepted
+/// edge of the documented `[0, 1]` range — `penalty_weight`'s `.max(floor)`
+/// clamps *every* wire's weight to exactly `1.0` at that setting, so a plain
+/// `w > floor` candidate filter can never be true for any wire. Without the
+/// `floor >= 1.0` fallback in `draw_reroll_wire`, every tick would find zero
+/// candidates and the anti-DPI reroll would silently stop working forever —
+/// the operator's only symptom two WARN lines per tick that read like "every
+/// wire is unhealthy" rather than "this knob disabled the feature". Assert
+/// the reroll keeps changing the active wire on every tick even at this
+/// setting, with a heavily-penalised wire in the mix (to prove the fallback
+/// really does ignore weight, not just coincidentally pick the same wires
+/// weight would have anyway).
+#[tokio::test]
+async fn reroll_still_works_when_health_weight_floor_is_1_0() {
+    let mgr = UplinkManager::new_for_test(
+        "main",
+        vec![three_wire_uplink()],
+        probe(),
+        LoadBalancingConfig { health_weight_floor: 1.0, ..lb(true) },
+    )
+    .unwrap();
+    mgr.test_add_wire_penalty(0, TransportKind::Tcp, 1, 60);
+    mgr.test_add_wire_penalty(0, TransportKind::Udp, 1, 60);
+
+    let mut tcp_active = mgr.read_status_for_test(0).tcp.active_wire;
+    let mut udp_active = mgr.read_status_for_test(0).udp.active_wire;
+    for i in 0..200 {
+        let (tcp_wire, udp_wire) = mgr
+            .rotate_active_wire(0)
+            .expect("multi-wire uplink rerolls even with a degenerate floor");
+        assert_ne!(
+            tcp_wire, tcp_active,
+            "draw {i}: health_weight_floor = 1.0 must not freeze the TCP reroll"
+        );
+        assert_ne!(
+            udp_wire, udp_active,
+            "draw {i}: health_weight_floor = 1.0 must not freeze the UDP reroll"
+        );
+        tcp_active = tcp_wire;
+        udp_active = udp_wire;
+    }
+}
+
 /// New: TCP and UDP draw independently. Penalising every TCP alternative
 /// down to the floor must not stop UDP (with healthy alternatives) from
 /// rerolling — and vice versa is exercised implicitly by every other test
@@ -364,15 +411,24 @@ async fn reroll_planes_are_independent_when_only_one_has_no_live_alternative() {
     let mgr = manager(true);
     mgr.test_add_wire_penalty(0, TransportKind::Tcp, 1, 60);
     mgr.test_add_wire_penalty(0, TransportKind::Tcp, 2, 60);
-    let udp_active_before = mgr.read_status_for_test(0).udp.active_wire;
+    let mut udp_active = mgr.read_status_for_test(0).udp.active_wire;
 
-    let (tcp_wire, udp_wire) = mgr.rotate_active_wire(0).expect("multi-wire uplink rerolls");
+    // Looped, not a single draw: a single call only fails under a revert of
+    // the exclude-current fix about a third of the time (the weighted draw
+    // still favours wire 0 by chance even without the exclusion), so a
+    // one-shot assertion here is a weak regression trap. 200 iterations
+    // (the weighted sibling test above runs 3000 for the same reason) make a
+    // revert fail reliably instead of flaking green.
+    for i in 0..200 {
+        let (tcp_wire, udp_wire) = mgr.rotate_active_wire(0).expect("multi-wire uplink rerolls");
 
-    assert_eq!(tcp_wire, 0, "TCP has no live alternative and must stay on wire 0");
-    assert_ne!(
-        udp_wire, udp_active_before,
-        "UDP has healthy alternatives and must still reroll despite TCP's plane being stuck"
-    );
+        assert_eq!(tcp_wire, 0, "draw {i}: TCP has no live alternative and must stay on wire 0");
+        assert_ne!(
+            udp_wire, udp_active,
+            "draw {i}: UDP has healthy alternatives and must still reroll despite TCP's plane being stuck"
+        );
+        udp_active = udp_wire;
+    }
 }
 
 #[tokio::test]

@@ -885,8 +885,22 @@ pub struct LoadBalancingConfig {
     /// `health_weighted_selection` is enabled. Guarantees that even a
     /// persistently-failing wire / carrier family keeps a non-zero probability
     /// of being chosen — so real traffic keeps re-probing it and a recovered
-    /// path is noticed — and stops the anti-DPI wire reroll from *never*
-    /// touching a given wire (itself a detectable signature). Default `0.05`.
+    /// path is noticed. The anti-DPI wire reroll (`shuffle_timer`) reads it
+    /// the other way round: a wire whose weight has decayed all the way down
+    /// to the floor is treated as "not a live alternative" and *excluded*
+    /// from the reroll draw — the floor is what lets the reroll skip such a
+    /// wire, not what stops it from doing so. Default `0.05`.
+    ///
+    /// `1.0` is a degenerate but accepted edge of the range: every weight is
+    /// clamped to exactly `1.0` (see [`crate::penalty::penalty_weight`]), so
+    /// the "strictly above the floor" reroll filter can no longer tell
+    /// wires apart by health. Rather than reject it at load time (an
+    /// operator who set `1.0` gets a working binary, not a startup failure)
+    /// or let it silently freeze the reroll (every wire tied at the floor
+    /// would otherwise mean *no* candidate ever qualifies), the reroll
+    /// treats `floor >= 1.0` as "the floor is not discriminating" and falls
+    /// back to every non-active wire being a candidate — see
+    /// `draw_reroll_wire` in `manager/active_wire.rs`.
     pub health_weight_floor: f64,
     /// Bounds on the per-uplink VLESS UDP session mux: max concurrent sessions
     /// (LRU-evicted beyond the cap), per-session idle timeout, and janitor
