@@ -206,6 +206,40 @@ async fn snapshot_reports_loss_elevated_episode_duration() {
     assert_eq!(snap.uplinks[0].udp_loss_elevated_ms, None, "UDP has no episode running");
 }
 
+/// With loss-driven failover armed, a quiet uplink must report a zero rather
+/// than nothing: absence is reserved for "the feature is off, nothing is
+/// watching". Without the distinction, a mechanism that has never fired looks
+/// exactly like one that was never configured — both simply publish no series.
+#[tokio::test]
+async fn snapshot_publishes_a_zero_episode_while_armed_and_quiet() {
+    let mut config = lb(false);
+    config.loss_failover_ratio = 0.05;
+    let manager =
+        UplinkManager::new_for_test("main", vec![uplink()], probe_disabled(), config).unwrap();
+
+    let snap = manager.snapshot().await;
+
+    assert_eq!(
+        snap.uplinks[0].tcp_loss_elevated_ms,
+        Some(0),
+        "armed threshold with no open episode must publish zero, not absence"
+    );
+    assert_eq!(snap.uplinks[0].udp_loss_elevated_ms, Some(0));
+}
+
+/// The counterpart: with the feature off the series must stay absent, so a
+/// dashboard cannot show a reassuring zero for a node that is not watching at
+/// all — which is exactly what the fleet's cloud nodes looked like.
+#[tokio::test]
+async fn snapshot_omits_the_episode_entirely_while_disarmed() {
+    let manager = manager(false);
+
+    let snap = manager.snapshot().await;
+
+    assert_eq!(snap.uplinks[0].tcp_loss_elevated_ms, None);
+    assert_eq!(snap.uplinks[0].udp_loss_elevated_ms, None);
+}
+
 #[tokio::test]
 async fn snapshot_combined_ss_surfaces_ss_mode_not_split_default() {
     // A combined-SS uplink keeps its dial URL + carrier mode in
