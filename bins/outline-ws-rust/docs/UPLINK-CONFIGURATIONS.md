@@ -576,7 +576,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `tcp_chunk0_failover_timeout_secs`   | `10`               | s     | wait for the first response byte from origin before failing over to the next uplink               |
 | `auto_failback`                      | `false`            | bool  | return to the originally-preferred uplink once it recovers                                        |
 | `health_weighted_selection`          | `true`             | bool  | rank the wire (sub-uplink) and carrier-family (H3/H2/H1) choices by liveness — weighted-random with a decaying penalty so a flaky candidate is dialed less but still retried and recovers over time; `false` restores the legacy fixed cyclic wire order + binary carrier downgrade cap |
-| `health_weight_floor`                | `0.05`             | [0,1] | minimum selection weight under `health_weighted_selection`, so a persistently-failing wire / carrier keeps a small retry probability and the anti-DPI reroll never *fully* avoids a wire |
+| `health_weight_floor`                | `0.05`             | [0,1] | minimum selection weight under `health_weighted_selection`, so a persistently-failing wire / carrier keeps a small retry probability; the anti-DPI `shuffle_timer` reroll excludes any wire whose weight has decayed down to this floor as "not a live alternative" (see below) — `1.0` is a degenerate but accepted value: every weight clamps to `1.0`, so the reroll instead treats every non-active wire as a candidate |
 | `warm_standby_tcp`                   | `0`                | int   | pre-warmed TCP connections to keep on standby uplinks                                             |
 | `warm_standby_udp`                   | `0`                | int   | same for UDP                                                                                      |
 | `warm_probe_keepalive_secs`          | `20`               | s     | keepalive cadence for cached warm-probe pipes (`0` disables)                                      |
@@ -2217,6 +2217,17 @@ Each tick, for TCP and UDP independently:
 * Pins the new wire for `mode_downgrade_duration`, except when
   the roll happens to land back on primary (matches the
   dial- / probe-path pin policy).
+
+A wire excluded from one tick's draw is not permanently unreachable:
+its penalty decays on the usual `failure_penalty_halflife` curve,
+proven end-to-end delivery on it zeroes the penalty outright, and
+`wire_dial_order` (which the per-session dial cascade walks) still
+returns a complete permutation that includes floored wires — so a
+"floored" wire keeps carrying traffic inside a session and can become
+`active_wire` again via the ordinary dial / probe path, independently
+of `shuffle_timer`. The exclusion is a per-tick liveness filter, not a
+standing "never wire X" ban — it self-heals as soon as the wire proves
+itself again.
 
 When to use it:
 
