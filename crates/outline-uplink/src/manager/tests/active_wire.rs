@@ -241,8 +241,16 @@ async fn weighted_order_demotes_flaky_wire_but_keeps_it_reachable() {
 #[tokio::test]
 async fn weighted_rotate_avoids_flaky_wire_but_not_entirely() {
     let mgr = manager(true);
-    mgr.test_add_wire_penalty(0, TransportKind::Tcp, 0, 60);
-    mgr.test_add_wire_penalty(0, TransportKind::Udp, 0, 60);
+    // 18 additions saturate `value_secs` at 9.0s (18 * 0.5s), giving weight
+    // `1 / (1 + 9.0/0.5) = 1/19 ≈ 0.0526` — strictly *above* `health_weight_floor`
+    // (0.05), unlike a fully-saturated penalty (60 additions caps at
+    // `failure_penalty_max` = 30s, clamping the weight down to the floor
+    // exactly — see `reroll_leaves_active_wire_untouched_when_every_alternative_is_at_the_floor`,
+    // which covers that case: the wire must then be excluded, not merely
+    // rare). This wire stays a *candidate* whenever it isn't the active one,
+    // just a heavily-deprioritised one.
+    mgr.test_add_wire_penalty(0, TransportKind::Tcp, 0, 18);
+    mgr.test_add_wire_penalty(0, TransportKind::Udp, 0, 18);
     let trials = 3_000;
     let mut tcp_hits = [0u32; 3];
     for _ in 0..trials {
@@ -254,6 +262,117 @@ async fn weighted_rotate_avoids_flaky_wire_but_not_entirely() {
         "the anti-DPI reroll lands on the flaky wire least often: {tcp_hits:?}"
     );
     assert!(tcp_hits[0] > 0, "but the floor keeps the flaky wire reachable: {tcp_hits:?}");
+}
+
+/// New: repeated draws never return the wire that was active going into that
+/// draw — the whole point of "reroll", for both the weighted and the plain
+/// (`health_weighted_selection = false`) draw. Before the exclude-current
+/// fix, a uniform (or weighted) draw over *every* wire landed back on the
+/// active wire roughly `1/total_wires` of the time — observed on the fleet
+/// as a `shuffle_timer` tick reporting `udp_wire = 0` when wire 0 was
+/// already active.
+#[tokio::test]
+async fn reroll_never_returns_the_wire_that_was_active() {
+    for weighted in [true, false] {
+        let mgr = manager(weighted);
+        let mut active_tcp = mgr.read_status_for_test(0).tcp.active_wire;
+        let mut active_udp = mgr.read_status_for_test(0).udp.active_wire;
+        for i in 0..500 {
+            let (tcp_wire, udp_wire) =
+                mgr.rotate_active_wire(0).expect("multi-wire uplink rerolls");
+            assert_ne!(
+                tcp_wire, active_tcp,
+                "draw {i} (weighted={weighted}): reroll must not return the previously-active TCP wire"
+            );
+            assert_ne!(
+                udp_wire, active_udp,
+                "draw {i} (weighted={weighted}): reroll must not return the previously-active UDP wire"
+            );
+            active_tcp = tcp_wire;
+            active_udp = udp_wire;
+        }
+    }
+}
+
+/// New: when every non-active wire's weight has decayed all the way down to
+/// `health_weight_floor` (not merely *toward* it — see the doc comment on
+/// `weighted_rotate_avoids_flaky_wire_but_not_entirely` for the distinction),
+/// the reroll must leave that transport's active wire, pin and
+/// failure-accounting completely untouched: `apply` must not run for that
+/// transport at all.
+#[tokio::test]
+async fn reroll_leaves_active_wire_untouched_when_every_alternative_is_at_the_floor() {
+    let mgr = manager(true);
+    // Saturate wires 1 and 2 to `failure_penalty_max` (30s via 60
+    // additions of 0.5s each), which clamps their weight down to exactly
+    // `health_weight_floor` (0.05) — "every alternative parked at the
+    // floor", the case the reroll must treat as "no live alternative".
+    // Wire 0 (active, default) is left unpenalised.
+    mgr.test_add_wire_penalty(0, TransportKind::Tcp, 1, 60);
+    mgr.test_add_wire_penalty(0, TransportKind::Tcp, 2, 60);
+
+    // Stage failure-accounting and a pin that a real reroll would clear —
+    // the untouched-plane guarantee must hold even though the uplink is
+    // "recently proven" (which would otherwise take the reset branch).
+    mgr.inner.with_status_mut(0, |status| {
+        status.tcp.active_wire_streak = 3;
+        status.tcp.wires_failed_in_round = 1;
+        status.tcp.consecutive_failures = 2;
+        status.tcp.consecutive_runtime_failures = 4;
+        status.tcp.chunk0_consecutive_failures = 1;
+        status.tcp.last_any_wire_success = Some(tokio::time::Instant::now());
+    });
+    let before = mgr.read_status_for_test(0).tcp;
+
+    let (tcp_wire, _udp_wire) = mgr.rotate_active_wire(0).expect("multi-wire uplink rerolls");
+
+    assert_eq!(tcp_wire, 0, "no live TCP alternative: active wire must stay put");
+    let after = mgr.read_status_for_test(0).tcp;
+    assert_eq!(after.active_wire, 0);
+    assert_eq!(
+        after.active_wire_streak, before.active_wire_streak,
+        "untouched plane: streak must not reset"
+    );
+    assert_eq!(
+        after.wires_failed_in_round, before.wires_failed_in_round,
+        "untouched plane: shuffle_wires round-progress must not reset"
+    );
+    assert_eq!(
+        after.consecutive_failures, before.consecutive_failures,
+        "untouched plane: probe failure streak must not reset"
+    );
+    assert_eq!(
+        after.consecutive_runtime_failures, before.consecutive_runtime_failures,
+        "untouched plane: runtime failure streak must not reset"
+    );
+    assert_eq!(
+        after.chunk0_consecutive_failures, before.chunk0_consecutive_failures,
+        "untouched plane: chunk0 failure streak must not reset"
+    );
+    assert_eq!(
+        after.active_wire_pinned_until, before.active_wire_pinned_until,
+        "untouched plane: no pin refresh"
+    );
+}
+
+/// New: TCP and UDP draw independently. Penalising every TCP alternative
+/// down to the floor must not stop UDP (with healthy alternatives) from
+/// rerolling — and vice versa is exercised implicitly by every other test
+/// here that only ever inspects `tcp_wire`.
+#[tokio::test]
+async fn reroll_planes_are_independent_when_only_one_has_no_live_alternative() {
+    let mgr = manager(true);
+    mgr.test_add_wire_penalty(0, TransportKind::Tcp, 1, 60);
+    mgr.test_add_wire_penalty(0, TransportKind::Tcp, 2, 60);
+    let udp_active_before = mgr.read_status_for_test(0).udp.active_wire;
+
+    let (tcp_wire, udp_wire) = mgr.rotate_active_wire(0).expect("multi-wire uplink rerolls");
+
+    assert_eq!(tcp_wire, 0, "TCP has no live alternative and must stay on wire 0");
+    assert_ne!(
+        udp_wire, udp_active_before,
+        "UDP has healthy alternatives and must still reroll despite TCP's plane being stuck"
+    );
 }
 
 #[tokio::test]

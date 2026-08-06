@@ -494,29 +494,52 @@ impl UplinkManager {
         });
     }
 
-    /// Reroll the active wire on both transports for `uplink_index` to a
-    /// fresh random index drawn from `0..total_wires`. Powers the
-    /// `shuffle_timer` scheduler: a periodic task fires this on each
-    /// tick so an uplink that has been serving traffic on the same
-    /// wire for hours pivots to a different carrier shape on schedule
-    /// (defence against time-based DPI heuristics).
+    /// Reroll the active wire on both transports for `uplink_index`,
+    /// independently. Powers the `shuffle_timer` scheduler: a periodic task
+    /// fires this on each tick so an uplink that has been serving traffic on
+    /// the same wire for hours pivots to a different carrier shape on
+    /// schedule (defence against time-based DPI heuristics).
     ///
-    /// The reroll is per-transport — TCP and UDP land on independently
-    /// chosen wires — and resets the per-wire failure budgets
-    /// (`active_wire_streak`, `wires_failed_in_round`,
-    /// `consecutive_failures`, `consecutive_runtime_failures`) so the
-    /// new wire starts from a clean budget rather than inheriting any
-    /// accumulated failure history from the wire it just replaced.
-    /// The mode-downgrade cap (if any) is also cleared because the
-    /// new wire's carrier stack is independent of the old wire's; a
-    /// stale cap installed for a previous wire would otherwise persist
-    /// across the pivot and skew the dial-time mode for the freshly-
-    /// chosen wire.
+    /// **The draw always excludes the wire currently active** on that
+    /// transport — fleet observation showed a naive draw over every wire
+    /// (including the active one) frequently "rerolled" onto the same wire
+    /// it started on, defeating the whole point of the rotation. Candidates
+    /// are every *other* wire whose [`super::status::PerTransportStatus::wire_weight`]
+    /// is strictly above `health_weight_floor`, i.e. has not been pushed all
+    /// the way down by an accumulated liveness penalty — see
+    /// [`draw_reroll_wire`], which mirrors `draw_reselect_candidate`'s
+    /// exclude + eligibility-filter shape one level down (wires within one
+    /// uplink's chain, rather than uplinks within a group). This exclude +
+    /// floor filter is identical whether `health_weighted_selection` is on
+    /// (the draw among candidates is then biased toward the healthier ones)
+    /// or off (the draw among candidates is uniform, restoring the legacy
+    /// flat distribution) — whether "a reroll changes the wire" must not
+    /// depend on that flag.
+    ///
+    /// **When a transport has no live alternative** (every non-active wire
+    /// is at the floor), that transport's active wire is left **completely
+    /// untouched**: no pin refresh, no failure-accounting reset — `apply`
+    /// below simply does not run for that transport. TCP and UDP draw
+    /// independently, so one plane having no live alternative never blocks
+    /// the other from rerolling.
+    ///
+    /// When a reroll *does* land on a new wire, whether the per-wire failure
+    /// budgets (`active_wire_streak`, `wires_failed_in_round`,
+    /// `consecutive_failures`, `consecutive_runtime_failures`) reset to give
+    /// it a clean budget depends on `recently_proven` below — see that
+    /// comment for why a fully dead `shuffle_wires` uplink must keep its
+    /// accounting instead. The mode-downgrade cap (if any) is cleared on the
+    /// same condition, because the new wire's carrier stack is independent
+    /// of the old wire's; a stale cap installed for a previous wire would
+    /// otherwise persist across the pivot and skew the dial-time mode for
+    /// the freshly-chosen wire.
     ///
     /// No-op for uplinks without any fallbacks (the chain is a
     /// singleton; nothing to reroll to).
     ///
-    /// Returns the `(tcp_wire, udp_wire)` pair the uplink landed on,
+    /// Returns the `(tcp_wire, udp_wire)` pair the uplink ends this call
+    /// on — the freshly-rolled wire for a transport that had a live
+    /// alternative, or the unchanged previous wire for one that did not —
     /// or `None` for the no-fallback case.
     pub fn rotate_active_wire(&self, uplink_index: usize) -> Option<(u8, u8)> {
         let uplink = &self.inner.uplinks[uplink_index];
@@ -525,36 +548,30 @@ impl UplinkManager {
             return None;
         }
         let total = total_wires as u8;
-        let (tcp_wire, udp_wire) = if self.inner.load_balancing.health_weighted_selection {
-            // Weighted reroll: still random (anti-DPI rotation), but biased
-            // toward the healthier wires. The non-zero `health_weight_floor`
-            // keeps every wire reachable, so the rotation never *completely*
-            // avoids a wire (a "never wire X" pattern would itself be a
-            // detectable signature) — it just lands on dead wires less often.
-            let floor = self.inner.load_balancing.health_weight_floor;
-            let now = Instant::now();
-            let (tcp_weights, udp_weights): (Vec<f64>, Vec<f64>) =
-                self.inner.with_status_mut(uplink_index, |status| {
-                    let tcp = (0..total)
-                        .map(|w| status.tcp.wire_weight(w, now, &self.inner.load_balancing, floor))
-                        .collect();
-                    let udp = (0..total)
-                        .map(|w| status.udp.wire_weight(w, now, &self.inner.load_balancing, floor))
-                        .collect();
-                    (tcp, udp)
-                });
-            let mut rng = rand::rng();
-            (
-                weighted_pick_with_rng(&tcp_weights, &mut rng).unwrap_or(0) as u8,
-                weighted_pick_with_rng(&udp_weights, &mut rng).unwrap_or(0) as u8,
-            )
-        } else {
-            let mut rng = rand::rng();
-            (rng.random_range(0..total), rng.random_range(0..total))
-        };
+        let floor = self.inner.load_balancing.health_weight_floor;
+        let now = Instant::now();
+        // Per-wire liveness weight is computed unconditionally — `wire_weight`
+        // is a pure function of the decaying penalty state, not gated on
+        // `health_weighted_selection` — because the exclude-current +
+        // floor-filter candidate set (see `draw_reroll_wire`) applies to the
+        // plain-random draw exactly as it does to the weighted one.
+        let (tcp_active, tcp_weights, udp_active, udp_weights): (u8, Vec<f64>, u8, Vec<f64>) =
+            self.inner.with_status_mut(uplink_index, |status| {
+                let tcp_weights = (0..total)
+                    .map(|w| status.tcp.wire_weight(w, now, &self.inner.load_balancing, floor))
+                    .collect();
+                let udp_weights = (0..total)
+                    .map(|w| status.udp.wire_weight(w, now, &self.inner.load_balancing, floor))
+                    .collect();
+                (status.tcp.active_wire, tcp_weights, status.udp.active_wire, udp_weights)
+            });
+        let weighted = self.inner.load_balancing.health_weighted_selection;
+        let mut rng = rand::rng();
+        let tcp_pick = draw_reroll_wire(&tcp_weights, tcp_active, floor, weighted, &mut rng);
+        let udp_pick = draw_reroll_wire(&udp_weights, udp_active, floor, weighted, &mut rng);
+
         let group_name = self.inner.group_name.clone();
         let uplink_name = uplink.name.clone();
-        let now = Instant::now();
         let pin_window = self.inner.load_balancing.mode_downgrade_duration;
         let runtime_failure_window = self.inner.load_balancing.runtime_failure_window;
         self.inner.with_status_mut(uplink_index, |status| {
@@ -612,29 +629,72 @@ impl UplinkManager {
                 st.active_wire_pinned_until =
                     if new_wire == 0 { None } else { Some(now + pin_window) };
             };
-            apply(&mut status.tcp, tcp_wire);
-            apply(&mut status.udp, udp_wire);
+            // Only the transports that actually drew a live alternative get
+            // `apply`'d — a `None` pick leaves that transport's `st`
+            // completely untouched (no pin refresh, no failure-accounting
+            // reset), per the doc comment above.
+            if let Some(new_wire) = tcp_pick {
+                apply(&mut status.tcp, new_wire);
+            }
+            if let Some(new_wire) = udp_pick {
+                apply(&mut status.udp, new_wire);
+            }
         });
+        // Report the wire each transport actually ends this call on: the
+        // freshly-rolled one when the draw found a live alternative, else
+        // the unchanged previous active wire. `*_changed` keeps the log
+        // truthful about which case happened — a plain `tcp_wire` field
+        // alone cannot distinguish "rerolled back onto the wire it started
+        // at" (impossible now, since the draw excludes it) from "left
+        // untouched because nothing else qualified".
+        let tcp_wire = tcp_pick.unwrap_or(tcp_active);
+        let udp_wire = udp_pick.unwrap_or(udp_active);
         info!(
             group = %group_name,
             uplink = %uplink_name,
             tcp_wire,
+            tcp_changed = tcp_pick.is_some(),
             udp_wire,
+            udp_changed = udp_pick.is_some(),
             total_wires,
-            "shuffle_timer reroll: active wire randomized for both transports",
+            "shuffle_timer reroll: active wire randomized per transport where a live alternative existed",
         );
-        outline_metrics::record_failover(
-            "tcp_shuffle_timer",
-            &group_name,
-            &uplink_name,
-            &uplink_name,
-        );
-        outline_metrics::record_failover(
-            "udp_shuffle_timer",
-            &group_name,
-            &uplink_name,
-            &uplink_name,
-        );
+        if tcp_pick.is_none() {
+            warn!(
+                group = %group_name,
+                uplink = %uplink_name,
+                transport = ?TransportKind::Tcp,
+                active_wire = tcp_active,
+                total_wires,
+                "shuffle_timer reroll: no live TCP alternative (every other wire at health_weight_floor) — active wire left unchanged",
+            );
+        }
+        if udp_pick.is_none() {
+            warn!(
+                group = %group_name,
+                uplink = %uplink_name,
+                transport = ?TransportKind::Udp,
+                active_wire = udp_active,
+                total_wires,
+                "shuffle_timer reroll: no live UDP alternative (every other wire at health_weight_floor) — active wire left unchanged",
+            );
+        }
+        if tcp_pick.is_some() {
+            outline_metrics::record_failover(
+                "tcp_shuffle_timer",
+                &group_name,
+                &uplink_name,
+                &uplink_name,
+            );
+        }
+        if udp_pick.is_some() {
+            outline_metrics::record_failover(
+                "udp_shuffle_timer",
+                &group_name,
+                &uplink_name,
+                &uplink_name,
+            );
+        }
         Some((tcp_wire, udp_wire))
     }
 
@@ -678,6 +738,52 @@ impl UplinkManager {
                 }
             });
         }
+    }
+}
+
+/// Draw one wire index for [`UplinkManager::rotate_active_wire`]'s anti-DPI
+/// reroll on a single transport.
+///
+/// Candidates are every index in `weights` **except `active`** whose weight
+/// is strictly above `floor` — a wire whose accumulated liveness penalty has
+/// pushed it down to the floor (see
+/// [`super::status::PerTransportStatus::wire_weight`]) is not a "live
+/// alternative" and is excluded exactly like the active wire itself. Mirrors
+/// `draw_reselect_candidate`'s (`manager/reselect.rs`) exclude +
+/// eligibility-filter shape one level down: wires within a single uplink's
+/// fallback chain, rather than uplinks within a group.
+///
+/// `weighted = true` draws proportionally to each candidate's own weight
+/// (the `health_weighted_selection` bias toward the healthier wires);
+/// `weighted = false` draws uniformly among the same candidate set (the
+/// legacy flat distribution, restored by `health_weighted_selection =
+/// false`). The exclude-current + floor filter is identical either way, so
+/// whether a reroll changes the wire never depends on that flag.
+///
+/// Returns `None` when no wire qualifies: the caller must leave that
+/// transport's active wire completely untouched rather than re-apply the
+/// wire it already had.
+fn draw_reroll_wire<R: Rng + ?Sized>(
+    weights: &[f64],
+    active: u8,
+    floor: f64,
+    weighted: bool,
+    rng: &mut R,
+) -> Option<u8> {
+    let candidates: Vec<u8> = weights
+        .iter()
+        .enumerate()
+        .filter(|&(idx, &w)| idx as u8 != active && w > floor)
+        .map(|(idx, _)| idx as u8)
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    if weighted {
+        let candidate_weights: Vec<f64> = candidates.iter().map(|&w| weights[w as usize]).collect();
+        weighted_pick_with_rng(&candidate_weights, rng).map(|pos| candidates[pos])
+    } else {
+        Some(candidates[rng.random_range(0..candidates.len())])
     }
 }
 

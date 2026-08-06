@@ -2182,11 +2182,30 @@ shuffle_timer = "1h"      # every hour
 # shuffle_timer = "3600"  # bare integer = seconds
 ```
 
-Each tick:
+Each tick, for TCP and UDP independently:
 
-* Picks a random wire from `0..total_wires` for TCP and UDP
-  independently.
-* Zeroes out `active_wire_streak`, `wires_failed_in_round`,
+* Picks a random wire from every wire **other than the one currently
+  active** on that transport, so a reroll always actually changes the
+  wire — it never "rerolls" back onto the same one by chance. A wire
+  whose liveness weight (the same decaying penalty
+  `health_weighted_selection` scores wires by) has decayed all the way
+  down to `health_weight_floor` is excluded too, alongside the active
+  wire: it is not a *live* alternative. Under `health_weighted_selection
+  = true` the draw among the remaining candidates is biased toward the
+  healthier ones (same weighting as elsewhere); with it `= false` the
+  draw is uniform among the same candidate set — either way the
+  exclusion is identical, so whether a reroll changes the wire never
+  depends on that flag.
+* **If a transport has no live alternative** (every other wire is
+  currently at the floor), that transport's active wire is left
+  **completely untouched** for this tick: no pin refresh, no
+  failure-accounting reset, nothing applied. The journal logs this
+  case explicitly (`"no live TCP/UDP alternative ... active wire left
+  unchanged"`) so it reads as "found nothing to roll onto" rather than
+  silently doing nothing. TCP and UDP are independent: one transport
+  having no live alternative never blocks the other from rerolling.
+* When a reroll *does* land on a new wire, it zeroes out
+  `active_wire_streak`, `wires_failed_in_round`,
   `consecutive_failures`, `consecutive_runtime_failures`, and
   `chunk0_consecutive_failures` — the new wire starts with a
   fresh failure budget rather than inheriting the old wire's
@@ -2213,9 +2232,12 @@ chain ordering at config load) — the two can be combined or set
 independently. No-op for uplinks without any fallbacks.
 
 The interval is surfaced on the JSON snapshot as
-`shuffle_timer_secs: Option<u64>` and a rotation event records a
-metric `outline_ws_uplink_failover_total{transport="tcp_shuffle_timer"}`
-(and the `udp_shuffle_timer` counterpart).
+`shuffle_timer_secs: Option<u64>` and a transport that actually
+rerolled (i.e. had a live alternative) records a metric
+`outline_ws_uplink_failover_total{transport="tcp_shuffle_timer"}`
+(and the `udp_shuffle_timer` counterpart) — a tick that left a
+transport untouched for lack of a live alternative does not record
+that transport's metric.
 
 **Probe-driven early-failback is suppressed** while
 `shuffle_timer = Some(_)` is in effect. The default behaviour of
