@@ -101,6 +101,8 @@ impl Metrics {
             #[cfg(feature = "tun")]
             tun_packets_total: tun.tun_packets_total,
             #[cfg(feature = "tun")]
+            tun_device_packets_total: tun.tun_device_packets_total,
+            #[cfg(feature = "tun")]
             tun_flows_total: tun.tun_flows_total,
             #[cfg(feature = "tun")]
             tun_flow_duration_seconds: tun.tun_flow_duration_seconds,

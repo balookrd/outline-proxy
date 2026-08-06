@@ -1839,7 +1839,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Pinned-relay mid-session retry attempts, broken down by outcome. `success` — uplink (v1) and downlink (v2) replay completed without truncation. `failed_redial` — the redial itself or the v1/v2 control-frame consume timed out. `failed_replay` — the v1 uplink replay write failed mid-suffix. `buffer_overflow` — the client's v1 ring buffer overflowed (only seen under `tcp_mid_session_retry_overflow_policy = \"soft\"`). `downlink_truncated` — v2 was engaged and the server returned `REPLAY_TRUNCATED`. Stacked so the success ratio is visible at a glance.",
+      "description": "Pinned-relay mid-session retry attempts, broken down by outcome. `success` \u2014 uplink (v1) and downlink (v2) replay completed without truncation. `failed_redial` \u2014 the redial itself or the v1/v2 control-frame consume timed out. `failed_replay` \u2014 the v1 uplink replay write failed mid-suffix. `buffer_overflow` \u2014 the client's v1 ring buffer overflowed (only seen under `tcp_mid_session_retry_overflow_policy = \"soft\"`). `downlink_truncated` \u2014 v2 was engaged and the server returned `REPLAY_TRUNCATED`. Stacked so the success ratio is visible at a glance.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2042,7 +2042,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Live count of upstream transports still attached to an uplink that is no longer the active one for its (group, transport) — i.e. sessions that survived a Global / PerUplink switchover and continue to consume the old uplink's resources until they finish naturally. Non-zero is expected briefly after a switch (TCP cannot migrate); a value that fails to drain over time is the leak signal. Built by subtracting the active-uplink indicator from the open-connection gauge: any uplink with `global_active_uplink_info != 1` (or `per_uplink_active_uplink_info != 1` for the matching transport) but with open connections counts here.",
+      "description": "Live count of upstream transports still attached to an uplink that is no longer the active one for its (group, transport) \u2014 i.e. sessions that survived a Global / PerUplink switchover and continue to consume the old uplink's resources until they finish naturally. Non-zero is expected briefly after a switch (TCP cannot migrate); a value that fails to drain over time is the leak signal. Built by subtracting the active-uplink indicator from the open-connection gauge: any uplink with `global_active_uplink_info != 1` (or `per_uplink_active_uplink_info != 1` for the matching transport) but with open connections counts here.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2112,7 +2112,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Currently open upstream transports per uplink, split by `transport` (tcp/udp). After a Global / PerUplink switchover the new active uplink starts climbing while the old one continues to drain — that drain rate is the recovery speed. Cross-check with `outline_ws_global_active_uplink_info` to identify which series belongs to the active vs the stranded uplink.",
+      "description": "Currently open upstream transports per uplink, split by `transport` (tcp/udp). After a Global / PerUplink switchover the new active uplink starts climbing while the old one continues to drain \u2014 that drain rate is the recovery speed. Cross-check with `outline_ws_global_active_uplink_info` to identify which series belongs to the active vs the stranded uplink.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2207,7 +2207,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Rate of upstream-transport closes on uplinks that were no longer active at close time, broken down by uplink. Spikes after a switchover are normal (stranded TCP sessions finishing naturally); a sustained non-zero rate without a recent switch suggests sessions are being dialled through a non-active uplink — typically a stale sticky route, a warm-standby pool that pre-dates the switch, or a `PerUplink`/`Global` mode misconfiguration. Pairs with the gauge above: integral of this rate ≈ delta of stranded gauge between scrapes.",
+      "description": "Rate of upstream-transport closes on uplinks that were no longer active at close time, broken down by uplink. Spikes after a switchover are normal (stranded TCP sessions finishing naturally); a sustained non-zero rate without a recent switch suggests sessions are being dialled through a non-active uplink \u2014 typically a stale sticky route, a warm-standby pool that pre-dates the switch, or a `PerUplink`/`Global` mode misconfiguration. Pairs with the gauge above: integral of this rate \u2248 delta of stranded gauge between scrapes.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -3769,7 +3769,7 @@
           ],
           "title": "TUN UDP Flow Migration",
           "type": "timeseries",
-          "description": "Outcome of a strict-active-uplink repoint on a tunnelled UDP flow. `soft_switch_migrated` — the flow followed the switch presenting its own Session ID, so the exit kept its source port. `soft_switch_migrated_no_resume_id` — it followed, but the server had issued this flow no Session ID (resumption off server-side, or a reused warm-standby stream that carried none), so the source port did change. `soft_switch_migration_failed` — the redial failed and the flow was torn down exactly as a hard switch would have. `soft_switch_target_invalid` — the pointer named an uplink that is not in the group. All four flat at zero while `outline_ws_tun_flows_total{reason=\"global_switch\"}` climbs means the verdict is aborting rather than migrating — check the group's `shared_resume` and whether the switch was an operator drain."
+          "description": "Outcome of a strict-active-uplink repoint on a tunnelled UDP flow. `soft_switch_migrated` \u2014 the flow followed the switch presenting its own Session ID, so the exit kept its source port. `soft_switch_migrated_no_resume_id` \u2014 it followed, but the server had issued this flow no Session ID (resumption off server-side, or a reused warm-standby stream that carried none), so the source port did change. `soft_switch_migration_failed` \u2014 the redial failed and the flow was torn down exactly as a hard switch would have. `soft_switch_target_invalid` \u2014 the pointer named an uplink that is not in the group. All four flat at zero while `outline_ws_tun_flows_total{reason=\"global_switch\"}` climbs means the verdict is aborting rather than migrating \u2014 check the group's `shared_resume` and whether the switch was an operator drain."
         },
         {
           "datasource": {
@@ -5020,6 +5020,196 @@
       "type": "row"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Packets the **kernel** discarded on the TUN netdev, from `/sys/class/net/<dev>/statistics/`. This is loss we cause, not loss out on the path: the daemon's own counters cannot see it, because the packet never reached (or never left) the fd. Direction is named from the daemon's point of view and is the inverse of the netdev's own rx/tx: `write` is what we write(2) into the fd (the downlink towards the client, counted by the interface as `rx_*`), `read` is what the kernel queues for us to read(2) (the client's uplink towards us, counted as `tx_*`). In practice `read` is the one that moves \u2014 the kernel dropping client packets because the read loop did not drain the device queue (`txqueuelen`) in time. Each one costs a round trip: the client retransmits, and the flow reads it as path loss. Sustained `write` drops would instead mean the kernel is refusing our downlink.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 109
+      },
+      "id": 326,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace(sum by (instance, direction) (rate(outline_ws_tun_device_packets_total{job=~\"$job\",instance=~\"$instance\",outcome=\"dropped\"}[$__rate_interval])), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{direction}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Kernel drops on the TUN device",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The same drops as a share of all packets in that direction (`dropped / (dropped + ok)`), which is what makes two gateways with different traffic volumes comparable. Direction is named from the daemon's point of view and is the inverse of the netdev's own rx/tx: `write` is what we write(2) into the fd (the downlink towards the client, counted by the interface as `rx_*`), `read` is what the kernel queues for us to read(2) (the client's uplink towards us, counted as `tx_*`). A steady non-zero `read` ratio points at the read loop rather than the network \u2014 the device queue is overflowing before the daemon gets to it.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 109
+      },
+      "id": 327,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace(\n  sum by (instance, direction) (rate(outline_ws_tun_device_packets_total{job=~\"$job\",instance=~\"$instance\",outcome=\"dropped\"}[$__rate_interval]))\n  /\n  sum by (instance, direction) (rate(outline_ws_tun_device_packets_total{job=~\"$job\",instance=~\"$instance\",outcome=~\"dropped|ok\"}[$__rate_interval])),\n  \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{direction}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Kernel drop ratio on the TUN device",
+      "type": "timeseries"
+    },
+    {
       "type": "row",
       "collapsed": false,
       "title": "TUN Offload (GSO / GRO)",
@@ -5028,7 +5218,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 109
+        "y": 117
       },
       "panels": []
     },
@@ -5037,7 +5227,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Downlink TSO super-segments written to the TUN device per second (`[tun] gso`). Each is one large TCP super-segment the kernel splits into MSS packets, so routing / nftables / conntrack / WireGuard run once per super-segment instead of per MSS. Rising under download means write-side TSO is active — this is the main CPU win. Zero with `gso = true` means the traffic is not coalescible (small / interactive) at that moment.",
+      "description": "Downlink TSO super-segments written to the TUN device per second (`[tun] gso`). Each is one large TCP super-segment the kernel splits into MSS packets, so routing / nftables / conntrack / WireGuard run once per super-segment instead of per MSS. Rising under download means write-side TSO is active \u2014 this is the main CPU win. Zero with `gso = true` means the traffic is not coalescible (small / interactive) at that moment.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5095,7 +5285,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 110
+        "y": 118
       },
       "id": 241,
       "options": {
@@ -5132,7 +5322,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Uplink TCP GRO super-packets read from the TUN device per second (`[tun] gro`). Each is several inbound MSS segments the kernel coalesced into one >MSS packet, fed whole into the userspace TCP engine — the read-side offload win. Rises only under a bulk upload burst; near-zero on a light / ACK-only uplink is expected (nothing to coalesce). Compare against the downlink TSO rate to judge whether GRO earns its keep on this link.",
+      "description": "Uplink TCP GRO super-packets read from the TUN device per second (`[tun] gro`). Each is several inbound MSS segments the kernel coalesced into one >MSS packet, fed whole into the userspace TCP engine \u2014 the read-side offload win. Rises only under a bulk upload burst; near-zero on a light / ACK-only uplink is expected (nothing to coalesce). Compare against the downlink TSO rate to judge whether GRO earns its keep on this link.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5190,7 +5380,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 110
+        "y": 118
       },
       "id": 242,
       "options": {
@@ -5227,7 +5417,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "UDP GRO super-packets read from the TUN device per second. Expected to stay at 0: `TUN_F_USO4/6` is never requested, so the kernel re-segments UDP GRO back to datagrams before we read them and UDP stays per-datagram. A sustained non-zero value means a stale `TUN_F_USO` offload lingered on a persistent TUN interface from a previous run (recreate `ws0` to clear it, or restart with `gro = false` which now resets offload to 0). The read loop re-segments these back into datagrams, so UDP keeps working — but non-zero here is the signal to investigate stale offload.",
+      "description": "UDP GRO super-packets read from the TUN device per second. Expected to stay at 0: `TUN_F_USO4/6` is never requested, so the kernel re-segments UDP GRO back to datagrams before we read them and UDP stays per-datagram. A sustained non-zero value means a stale `TUN_F_USO` offload lingered on a persistent TUN interface from a previous run (recreate `ws0` to clear it, or restart with `gro = false` which now resets offload to 0). The read loop re-segments these back into datagrams, so UDP keeps working \u2014 but non-zero here is the signal to investigate stale offload.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5289,7 +5479,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 110
+        "y": 118
       },
       "id": 243,
       "options": {
@@ -5326,7 +5516,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Downlink UDP USO super-segments written to the TUN device per second (`outcome=\"uso_supersegment\"`). Each is one GSO_UDP_L4 aggregate of equal-sized datagrams the kernel splits per datagram — the write-side UDP offload from `[tun] uso`, aimed at bulk QUIC video. Non-zero means downlink UDP is coalescing; zero under heavy UDP means the source is not bursting equal-sized datagrams (or `uso` is off / unsupported).",
+      "description": "Downlink UDP USO super-segments written to the TUN device per second (`outcome=\"uso_supersegment\"`). Each is one GSO_UDP_L4 aggregate of equal-sized datagrams the kernel splits per datagram \u2014 the write-side UDP offload from `[tun] uso`, aimed at bulk QUIC video. Non-zero means downlink UDP is coalescing; zero under heavy UDP means the source is not bursting equal-sized datagrams (or `uso` is off / unsupported).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5384,7 +5574,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 118
+        "y": 126
       },
       "id": 244,
       "options": {
@@ -5422,7 +5612,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 126
+        "y": 134
       },
       "id": 250,
       "panels": [],
@@ -5434,7 +5624,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "What BBR believes the last hop can carry (`estimate`) and how fast it is actually pouring into it (`pacing`, after the STARTUP/PROBE gain and both ceilings). Both gauges are sums over flows, so they are divided by the active-flow count here.\n\nRead it against the real capacity of the last hop. An estimate far above what the link can do means BBR is over-reading the path and will pace into it until packets drop — the failure that capped the TUN downlink at ~5-10 Mbit (estimate sat at ~741 Mbit per flow). Estimate in the tens of Mbit on a Wi-Fi last hop is healthy.\n\n`loss cap` is the loss-driven ceiling, averaged over the flows it is actually holding down (0 = no flow capped). Watch for it pinned near its 1 Mbit floor: that means the last hop keeps dropping and the cap cannot climb back.",
+      "description": "What BBR believes the last hop can carry (`estimate`) and how fast it is actually pouring into it (`pacing`, after the STARTUP/PROBE gain and both ceilings). Both gauges are sums over flows, so they are divided by the active-flow count here.\n\nRead it against the real capacity of the last hop. An estimate far above what the link can do means BBR is over-reading the path and will pace into it until packets drop \u2014 the failure that capped the TUN downlink at ~5-10 Mbit (estimate sat at ~741 Mbit per flow). Estimate in the tens of Mbit on a Wi-Fi last hop is healthy.\n\n`loss cap` is the loss-driven ceiling, averaged over the flows it is actually holding down (0 = no flow capped). Watch for it pinned near its 1 Mbit floor: that means the last hop keeps dropping and the cap cannot climb back.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5492,7 +5682,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 127
+        "y": 135
       },
       "id": 251,
       "options": {
@@ -5543,7 +5733,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "min-RTT is the best round-trip the path has shown (BBR's basis for the BDP); smoothed RTT is what it is answering in right now. The **gap between them is standing queue** — buffer we are filling ourselves.\n\nHealthy: the two track each other. A smoothed RTT several times the min means bufferbloat on the last hop, and loss is usually already following. During the ~5-10 Mbit ceiling this ran 21 ms against a 2 ms min (12x); after the rate-sample fix it settled at ~2.8 ms against ~0.9 ms.",
+      "description": "min-RTT is the best round-trip the path has shown (BBR's basis for the BDP); smoothed RTT is what it is answering in right now. The **gap between them is standing queue** \u2014 buffer we are filling ourselves.\n\nHealthy: the two track each other. A smoothed RTT several times the min means bufferbloat on the last hop, and loss is usually already following. During the ~5-10 Mbit ceiling this ran 21 ms against a 2 ms min (12x); after the rate-sample fix it settled at ~2.8 ms against ~0.9 ms.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5601,7 +5791,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 127
+        "y": 135
       },
       "id": 252,
       "options": {
@@ -5645,7 +5835,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Rate of loss episodes (fast-recovery entry or RTO) across TUN TCP flows. **The primary health signal for the downlink.**\n\nOccasional blips are normal — BBR probes upward by design and a Wi-Fi last hop will drop the odd packet. A sustained rate means we are overrunning the last hop: each episode also halves the Reno window, and a window crushed by repeated loss becomes the real throughput limit regardless of what BBR thinks.",
+      "description": "Rate of loss episodes (fast-recovery entry or RTO) across TUN TCP flows. **The primary health signal for the downlink.**\n\nOccasional blips are normal \u2014 BBR probes upward by design and a Wi-Fi last hop will drop the odd packet. A sustained rate means we are overrunning the last hop: each episode also halves the Reno window, and a window crushed by repeated loss becomes the real throughput limit regardless of what BBR thinks.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5703,7 +5893,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 135
+        "y": 143
       },
       "id": 253,
       "options": {
@@ -5740,7 +5930,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Flows whose BBR rate is currently throttled by the loss-driven cap: each loss episode multiplies the cap by 0.85, and loss-free rounds relax it back toward the estimate.\n\nA few capped flows on a lossy hop are the mechanism working. Many flows pinned here — especially with the cap sitting near its 1 Mbit floor — means the last hop keeps dropping and the cap can never recover.",
+      "description": "Flows whose BBR rate is currently throttled by the loss-driven cap: each loss episode multiplies the cap by 0.85, and loss-free rounds relax it back toward the estimate.\n\nA few capped flows on a lossy hop are the mechanism working. Many flows pinned here \u2014 especially with the cap sitting near its 1 Mbit floor \u2014 means the last hop keeps dropping and the cap can never recover.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5798,7 +5988,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 135
+        "y": 143
       },
       "id": 254,
       "options": {
@@ -5835,7 +6025,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Bytes in flight per flow against the BBRv2 in-flight ceilings that bound it. The effective send window is `min(bbr_bdp_cap, inflight_hi, inflight_lo)` — a single BBRv2 model, no Reno window. `inflight_hi` is the long-term ceiling (where the path starts to overflow); `inflight_lo` is the short-term ceiling, backed off on a measured loss and released each probe. Both read 0 while unset (no loss over the 2% threshold yet). Pair with the RTT panel to see the queue being built.",
+      "description": "Bytes in flight per flow against the BBRv2 in-flight ceilings that bound it. The effective send window is `min(bbr_bdp_cap, inflight_hi, inflight_lo)` \u2014 a single BBRv2 model, no Reno window. `inflight_hi` is the long-term ceiling (where the path starts to overflow); `inflight_lo` is the short-term ceiling, backed off on a measured loss and released each probe. Both read 0 while unset (no loss over the 2% threshold yet). Pair with the RTT panel to see the queue being built.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5893,7 +6083,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 135
+        "y": 143
       },
       "id": 255,
       "options": {
@@ -5945,7 +6135,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 142
+        "y": 150
       },
       "id": 106,
       "panels": [],
@@ -5988,7 +6178,7 @@
         "h": 3,
         "w": 6,
         "x": 0,
-        "y": 143
+        "y": 151
       },
       "id": 130,
       "options": {
@@ -6070,7 +6260,7 @@
         "h": 3,
         "w": 6,
         "x": 6,
-        "y": 143
+        "y": 151
       },
       "id": 123,
       "options": {
@@ -6137,7 +6327,7 @@
         "h": 3,
         "w": 6,
         "x": 12,
-        "y": 143
+        "y": 151
       },
       "id": 132,
       "options": {
@@ -6196,7 +6386,7 @@
         "h": 3,
         "w": 6,
         "x": 18,
-        "y": 143
+        "y": 151
       },
       "id": 133,
       "options": {
@@ -6324,7 +6514,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 146
+        "y": 154
       },
       "id": 26,
       "options": {
@@ -6362,7 +6552,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 152
+        "y": 160
       },
       "id": 126,
       "panels": [],
@@ -6421,7 +6611,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 153
+        "y": 161
       },
       "id": 30,
       "options": {
@@ -6504,7 +6694,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 153
+        "y": 161
       },
       "id": 152,
       "options": {
@@ -6589,7 +6779,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 153
+        "y": 161
       },
       "id": 124,
       "options": {
@@ -6762,7 +6952,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 153
+        "y": 161
       },
       "id": 31,
       "options": {
@@ -6886,7 +7076,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 153
+        "y": 161
       },
       "id": 121,
       "options": {
@@ -6995,7 +7185,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 157
+        "y": 165
       },
       "id": 153,
       "options": {
@@ -7134,7 +7324,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 157
+        "y": 165
       },
       "id": 29,
       "options": {
@@ -7273,7 +7463,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 157
+        "y": 165
       },
       "id": 32,
       "options": {
@@ -7397,7 +7587,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 161
+        "y": 169
       },
       "id": 122,
       "options": {
@@ -7430,7 +7620,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 165
+        "y": 173
       },
       "id": 260,
       "panels": [],
@@ -7504,7 +7694,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 166
+        "y": 174
       },
       "id": 261,
       "options": {
@@ -7598,7 +7788,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 166
+        "y": 174
       },
       "id": 262,
       "options": {
@@ -7631,7 +7821,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 173
+        "y": 181
       },
       "id": 320,
       "panels": [],
@@ -7643,7 +7833,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Packet loss measured on the carrier socket of the wire currently carrying traffic (QUIC lost/sent, TCP retransmits/segments-out), smoothed by an EWMA. A MISSING series means not measured, never 'no loss': a wire that has not sent loss_sample_min_packets within a sampling window produces no verdict at all, and an idle uplink therefore shows nothing. Send-direction only — a path losing mostly server-to-client registers here only indirectly, through lost ACKs.\n\nWhen tcp and udp sit on the same wire (compare active_wire_index per plane), they are the same carrier sampled twice under two labels — CarrierLossRegistry keys probes by (transport, wire, identity), and a shared xhttp_h3 QUIC connection registers once per transport. Measured on senko: matching wire index gave packet-for-packet identical tcp/udp readings every time; mismatched wires never did. A tcp curve on such an uplink describes the carrier, including whatever udp traffic rides it.",
+      "description": "Packet loss measured on the carrier socket of the wire currently carrying traffic (QUIC lost/sent, TCP retransmits/segments-out), smoothed by an EWMA. A MISSING series means not measured, never 'no loss': a wire that has not sent loss_sample_min_packets within a sampling window produces no verdict at all, and an idle uplink therefore shows nothing. Send-direction only \u2014 a path losing mostly server-to-client registers here only indirectly, through lost ACKs.\n\nWhen tcp and udp sit on the same wire (compare active_wire_index per plane), they are the same carrier sampled twice under two labels \u2014 CarrierLossRegistry keys probes by (transport, wire, identity), and a shared xhttp_h3 QUIC connection registers once per transport. Measured on senko: matching wire index gave packet-for-packet identical tcp/udp readings every time; mismatched wires never did. A tcp curve on such an uplink describes the carrier, including whatever udp traffic rides it.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7701,7 +7891,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 174
+        "y": 182
       },
       "id": 321,
       "options": {
@@ -7732,7 +7922,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Packets newly sampled behind the verdict during each interval. Read it next to the ratio: a ratio drawn on a few hundred packets is a hint, one drawn on tens of thousands is evidence — an early reading of 2% on 300 packets is six packets and mostly noise.\n\nThis is a rate, not the raw counter, and deliberately so. The underlying gauge is a running total inside ONE wire's slot: it restarts from zero whenever that wire loses its last carrier (the verdict is reset so it cannot outlive the traffic that produced it), and the series switches to a different slot's history whenever the active wire rotates. Plotted raw it therefore drew a sawtooth, and a panel read at the wrong moment showed a handful of packets on a plane that was in fact carrying a video stream. increase() folds those resets back into the interval they belong to.\n\nA flat zero means no qualifying window closed in that interval — the plane sent fewer than loss_sample_min_packets. It never means \"no loss\".\n\nWhen tcp and udp share a wire (same carrier, two transport labels), their sampled-packet counts are identical too — not a coincidence, the same PathStats read twice.",
+      "description": "Packets newly sampled behind the verdict during each interval. Read it next to the ratio: a ratio drawn on a few hundred packets is a hint, one drawn on tens of thousands is evidence \u2014 an early reading of 2% on 300 packets is six packets and mostly noise.\n\nThis is a rate, not the raw counter, and deliberately so. The underlying gauge is a running total inside ONE wire's slot: it restarts from zero whenever that wire loses its last carrier (the verdict is reset so it cannot outlive the traffic that produced it), and the series switches to a different slot's history whenever the active wire rotates. Plotted raw it therefore drew a sawtooth, and a panel read at the wrong moment showed a handful of packets on a plane that was in fact carrying a video stream. increase() folds those resets back into the interval they belong to.\n\nA flat zero means no qualifying window closed in that interval \u2014 the plane sent fewer than loss_sample_min_packets. It never means \"no loss\".\n\nWhen tcp and udp share a wire (same carrier, two transport labels), their sampled-packet counts are identical too \u2014 not a coincidence, the same PathStats read twice.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7790,7 +7980,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 174
+        "y": 182
       },
       "id": 322,
       "options": {
@@ -7821,7 +8011,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "How much carrier loss is adding to the latency selection ranks by: the ranked value minus the measured one. A flat zero is the expected picture at loss_latency_penalty_k = 0 (the shipped default) — loss is being measured but changes no decision. Once a coefficient is set, this is the penalty each uplink carries, in milliseconds. Absolute RTTs live in the Latency row above; this panel deliberately shows only the difference, because at k = 0 the two curves coincide and plotting both says nothing.",
+      "description": "How much carrier loss is adding to the latency selection ranks by: the ranked value minus the measured one. A flat zero is the expected picture at loss_latency_penalty_k = 0 (the shipped default) \u2014 loss is being measured but changes no decision. Once a coefficient is set, this is the penalty each uplink carries, in milliseconds. Absolute RTTs live in the Latency row above; this panel deliberately shows only the difference, because at k = 0 the two curves coincide and plotting both says nothing.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7882,7 +8072,7 @@
         "h": 6,
         "w": 7,
         "x": 10,
-        "y": 181
+        "y": 189
       },
       "id": 323,
       "options": {
@@ -7913,7 +8103,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "How long an uplink has been continuously above loss_failover_ratio — compare it against loss_failover_secs to see how close a leg is to moving before it moves. Absent while no episode is running. The bars count switches the loss episode actually caused; both knobs are off by default, so an empty panel is the expected state until an operator enables them.",
+      "description": "How long an uplink has been continuously above loss_failover_ratio \u2014 compare it against loss_failover_secs to see how close a leg is to moving before it moves. Absent while no episode is running. The bars count switches the loss episode actually caused; both knobs are off by default, so an empty panel is the expected state until an operator enables them.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7972,7 +8162,7 @@
         "h": 6,
         "w": 7,
         "x": 17,
-        "y": 181
+        "y": 189
       },
       "id": 324,
       "options": {
@@ -8008,7 +8198,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "One row per uplink and plane. Loss is what the carrier socket reports for the wire currently carrying traffic; the sample column is how many packets that verdict rests on — tens of thousands is evidence, a few hundred is a hint. A row that is absent entirely means the uplink was not measured (usually idle), never that it is clean. Compare the loss column across uplinks before choosing loss_latency_penalty_k: the spread between them is what a coefficient acts on.\n\n\"Plane\" is misleading whenever an uplink's tcp and udp rows land on the same wire: they are then one carrier measured twice, not independent evidence. On senko, rows with matching wire index (tcp=3/udp=3) carried identical sample counts every interval observed; rows with different wire indices (tcp=0/udp=1, tcp=1/udp=2) diverged. Check active_wire_index before reading two rows as corroborating each other.",
+      "description": "One row per uplink and plane. Loss is what the carrier socket reports for the wire currently carrying traffic; the sample column is how many packets that verdict rests on \u2014 tens of thousands is evidence, a few hundred is a hint. A row that is absent entirely means the uplink was not measured (usually idle), never that it is clean. Compare the loss column across uplinks before choosing loss_latency_penalty_k: the spread between them is what a coefficient acts on.\n\n\"Plane\" is misleading whenever an uplink's tcp and udp rows land on the same wire: they are then one carrier measured twice, not independent evidence. On senko, rows with matching wire index (tcp=3/udp=3) carried identical sample counts every interval observed; rows with different wire indices (tcp=0/udp=1, tcp=1/udp=2) diverged. Check active_wire_index before reading two rows as corroborating each other.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -8140,7 +8330,7 @@
         "h": 6,
         "w": 10,
         "x": 0,
-        "y": 181
+        "y": 189
       },
       "id": 325,
       "options": {

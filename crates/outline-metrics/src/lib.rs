@@ -74,7 +74,7 @@ pub use self::transport::{
 };
 #[cfg(all(feature = "prometheus", feature = "tun"))]
 pub use self::tun::{
-    TunFlowCounterU64, TunFlowGaugeF64, TunFlowGaugeI64, TunTcpFlowGauges,
+    TunFlowCounterU64, TunFlowGaugeF64, TunFlowGaugeI64, TunTcpFlowGauges, add_tun_device_packets,
     add_tun_tcp_ack_progress_stall_flows, add_tun_tcp_ack_progress_stall_seconds,
     add_tun_tcp_async_connects_active, add_tun_tcp_backlog_pressure_flows,
     add_tun_tcp_backlog_pressure_seconds, add_tun_tcp_buffered_client_segments,
@@ -135,6 +135,8 @@ struct Metrics {
     carrier_writer_terminations_total: IntCounterVec,
     #[cfg(feature = "tun")]
     tun_packets_total: IntCounterVec,
+    #[cfg(feature = "tun")]
+    tun_device_packets_total: IntCounterVec,
     #[cfg(feature = "tun")]
     tun_flows_total: IntCounterVec,
     #[cfg(feature = "tun")]

@@ -9,6 +9,12 @@ mod classify;
 pub mod config;
 pub(crate) mod defrag;
 mod device;
+// Only Linux exposes these counters (the sysfs path is the platform-specific
+// part), but the module itself is plain file parsing — keep it compiled and
+// tested everywhere rather than hiding it behind `cfg` and losing the tests on
+// non-Linux hosts.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod device_stats;
 mod engine;
 pub(crate) mod error_classify;
 mod frag;

@@ -237,6 +237,7 @@ pub fn record_tun_packet(
     _outcome: &'static str,
 ) {
 }
+pub fn add_tun_device_packets(_direction: &'static str, _outcome: &'static str, _delta: u64) {}
 pub fn record_tun_flow_created(_group: &str, _uplink: &str) {}
 pub fn record_tun_flow_closed(
     _group: &str,

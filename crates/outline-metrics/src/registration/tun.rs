@@ -3,6 +3,7 @@ use prometheus::{Gauge, GaugeVec, HistogramVec, IntCounterVec, IntGauge, IntGaug
 
 pub(super) struct TunFields {
     pub(super) tun_packets_total: IntCounterVec,
+    pub(super) tun_device_packets_total: IntCounterVec,
     pub(super) tun_flows_total: IntCounterVec,
     pub(super) tun_flow_duration_seconds: HistogramVec,
     pub(super) tun_flows_active: IntGaugeVec,
@@ -48,6 +49,21 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         "outline_ws_tun_packets_total",
         "Packets observed on the TUN path by direction, IP family and outcome.",
         ["direction", "ip_family", "outcome"]
+    );
+    // Kernel-side counters for the TUN netdev, scraped from sysfs. `direction`
+    // is stated from the *process* point of view and is deliberately the
+    // inverse of the netdev's own rx/tx naming: what we write(2) into the fd
+    // arrives as the interface's `rx_*`, and what the kernel queues for us to
+    // read(2) is its `tx_*`. `outcome="dropped"` on `direction="read"` is the
+    // one that matters in practice — the kernel discarding client packets
+    // because the read loop did not drain the txqueue in time.
+    let tun_device_packets_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_tun_device_packets_total",
+        "Kernel TUN netdev packet counters by process-side direction (write = we write(2), \
+         read = we read(2)) and outcome.",
+        ["direction", "outcome"]
     );
     let tun_flows_total = register_labeled!(
         registry,
@@ -302,6 +318,7 @@ pub(super) fn build(registry: &Registry) -> TunFields {
 
     TunFields {
         tun_packets_total,
+        tun_device_packets_total,
         tun_flows_total,
         tun_flow_duration_seconds,
         tun_flows_active,

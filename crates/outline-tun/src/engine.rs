@@ -116,6 +116,13 @@ pub async fn spawn_tun_loop(
         tcp_engine.set_dial_admission(dial_admission);
     }
     metrics::set_tun_config(max_flows, idle_timeout);
+    // Kernel-side netdev counters: the only place a packet dropped *by the
+    // kernel* (rather than by us) is visible from inside the process. sysfs is
+    // Linux-only; elsewhere the engine simply runs without this series.
+    #[cfg(target_os = "linux")]
+    if let Some(name) = tun_name.as_deref() {
+        crate::device_stats::spawn_collector(name);
+    }
     tokio::spawn(async move {
         if let Err(error) = tun_read_loop(
             async_fd,
