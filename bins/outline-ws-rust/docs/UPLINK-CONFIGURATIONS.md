@@ -1129,11 +1129,18 @@ registered once under `transport = "tcp"` and once under
 `transport = "udp"`, and each registration reads that connection's whole
 `PathStats`. Neither series is wrong on its own; the pair is one carrier
 counted twice under two labels. Whether this applies to a given uplink
-at a given moment depends on whether its TCP and UDP planes currently
-sit on the same wire — compare `outline_ws_uplink_active_wire_index`
-for `transport="tcp"` and `transport="udp"` on that uplink; equal
-indices mean shared carrier, unequal mean genuinely independent
-measurements.
+at a given moment depends on whether its TCP and UDP planes are on the
+same *carrier* — which is not the same question as whether they are on
+the same wire. A shared wire index is necessary for the duplication but
+not sufficient: VLESS builds its UDP mux per destination, separate from
+the TCP connections, so both planes can report `active_wire_index = 0`
+and still be measuring two different QUIC connections. Measured on
+`senko` while its planes both sat on wire 0: `tcp` read 19.58% loss over
+49 142 packets while `udp` read 0.0038% over 144 167 — four orders of
+magnitude apart, on the same wire index. The reliable tell is the values
+themselves: duplication makes the two series identical packet-for-packet,
+so equal numbers mean one carrier and diverging numbers mean two,
+whatever the indices say.
 
 Measured on the fleet, packets sampled per 2-minute interval on uplink
 `senko` (`wire tcp`/`wire udp` are `active_wire_index` per plane):
@@ -1147,9 +1154,10 @@ wire tcp=3 udp=3 | pkts tcp=9920    udp=9920    ← identical
 wire tcp=1 udp=2 | pkts tcp=50539   udp=16389     different
 ```
 
-The correlation is exact: same wire index on both planes means the two
-series are the same carrier, packet-for-packet identical; different wire
-indices mean two carriers, and the two series diverge. This is how the
+In that sample the correlation was exact — but read it as evidence of
+what duplication looks like, not as a rule for detecting it: different
+wire indices always mean two carriers, while equal indices only *may*
+mean one (see the `senko` counter-example above). This is how the
 duplication was first noticed — an operator watching a `tcp`-labelled
 loss row rise in step with a user's QUIC video traffic, because the row
 was, in fact, describing the QUIC connection carrying that video. The
