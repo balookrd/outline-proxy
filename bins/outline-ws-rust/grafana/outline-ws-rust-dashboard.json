@@ -7732,7 +7732,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Packets observed on the wire behind its current verdict. Read it next to the ratio: a ratio drawn on a few hundred packets is a hint, one drawn on tens of thousands is evidence — an early reading of 2% on 300 packets is six packets and mostly noise. A drop back to zero is NOT lost data: it means the wire lost its last carrier and the verdict was reset, so the count starts again with the next one. The counter is cumulative since that reset, so it says how long the wire has been measured, not how confident the current ratio is — the ratio itself is an EWMA over roughly ten windows.",
+      "description": "Packets newly sampled behind the verdict during each interval. Read it next to the ratio: a ratio drawn on a few hundred packets is a hint, one drawn on tens of thousands is evidence — an early reading of 2% on 300 packets is six packets and mostly noise.\n\nThis is a rate, not the raw counter, and deliberately so. The underlying gauge is a running total inside ONE wire's slot: it restarts from zero whenever that wire loses its last carrier (the verdict is reset so it cannot outlive the traffic that produced it), and the series switches to a different slot's history whenever the active wire rotates. Plotted raw it therefore drew a sawtooth, and a panel read at the wrong moment showed a handful of packets on a plane that was in fact carrying a video stream. increase() folds those resets back into the interval they belong to.\n\nA flat zero means no qualifying window closed in that interval — the plane sent fewer than loss_sample_min_packets. It never means \"no loss\".",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7808,12 +7808,12 @@
       },
       "targets": [
         {
-          "expr": "label_replace((outline_ws_uplink_carrier_loss_observed_packets{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace(increase(outline_ws_uplink_carrier_loss_observed_packets{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}}",
           "refId": "A"
         }
       ],
-      "title": "Loss Sample Volume (packets behind the verdict)",
+      "title": "Loss Sample Volume (packets sampled per interval)",
       "type": "timeseries"
     },
     {
