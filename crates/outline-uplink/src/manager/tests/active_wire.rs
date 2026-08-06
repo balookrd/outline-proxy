@@ -559,8 +559,16 @@ async fn a_penalised_active_wire_does_not_always_lead() {
             active_leads += 1;
         }
     }
+    // A proportional bound, not `< trials`: the latter only rejects a literal
+    // 500/500, so a half-broken predicate that still pinned the active wire
+    // 400 times out of 500 would pass. With the pin correctly yielding, wire 0
+    // is drawn at its own weight — `floor / (floor + 1 + 1 + 1)` =
+    // `0.05 / 3.05` ≈ 1.6 %, i.e. ~8 of 500 — so `trials / 6` (83) sits far
+    // above the honest rate and far below anything a surviving pin produces.
+    // Mirrors `weighted_order_demotes_flaky_wire_but_keeps_it_reachable`'s
+    // bound, which is the statistical counterpart to this test.
     assert!(
-        active_leads < trials,
-        "a penalised active wire must not be pinned to the head every draw: {active_leads}/{trials}"
+        active_leads < trials / 6,
+        "a penalised active wire must not be pinned to the head: {active_leads}/{trials}"
     );
 }

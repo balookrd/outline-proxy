@@ -79,6 +79,12 @@ pub(super) struct StandbyCtx<'a> {
     /// This wire's address-family preference, per-wire for the same reason as
     /// [`Self::fwmark`].
     pub(super) ipv6_first: bool,
+    /// This wire's TLS fingerprint-profile strategy, `None` meaning "inherit
+    /// the process-wide default". Per-wire because a fallback may pin its own
+    /// (the loader inherits the parent's when the key is omitted), and a pool
+    /// prewarmed with the parent's strategy would hand the session a carrier
+    /// whose handshake looks nothing like the one its config asked for.
+    pub(super) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }
 
 impl UplinkManager {
@@ -125,6 +131,7 @@ impl UplinkManager {
                 combined_ss: spec.combined_ss_kind(SsPathKind::Tcp),
                 fwmark: spec.fwmark,
                 ipv6_first: spec.ipv6_first,
+                fingerprint_profile: spec.fingerprint_profile,
             },
             TransportKind::Udp => StandbyCtx {
                 manager: self,
@@ -143,6 +150,7 @@ impl UplinkManager {
                 combined_ss: spec.combined_ss_kind(SsPathKind::Udp),
                 fwmark: spec.fwmark,
                 ipv6_first: spec.ipv6_first,
+                fingerprint_profile: spec.fingerprint_profile,
             },
         }
     }
@@ -171,6 +179,15 @@ impl<'a> StandbyCtx<'a> {
     }
 
     /// Emits `record_warm_standby_acquire` with the transport's label.
+    ///
+    /// Every outcome of this counter is recorded from inside
+    /// [`Self::try_take_alive`], and deliberately so: the counter answers "of
+    /// the acquisitions that consulted the pool, how many did it serve?", so a
+    /// dial that never asked the pool anything — a migration redial, a
+    /// mid-session retry, the VLESS-UDP mux which has no pool at all — must not
+    /// tick it. Those dials used to record a `miss` each, which inflated the
+    /// denominator with acquisitions the pool was never given a chance at and
+    /// made the fleet's hit-rate unreadable.
     pub(super) fn record_acquire(&self, outcome: &'static str) {
         metrics::record_warm_standby_acquire(self.label, self.group(), &self.uplink.name, outcome);
     }
@@ -206,8 +223,10 @@ impl<'a> StandbyCtx<'a> {
         // problem: the pool belongs to the active wire, and this caller wants
         // a different one. Draining here would fight the refill loop in a
         // permanent cycle — drain, refill on the active wire, drain again on
-        // the next take for another wire.
+        // the next take for another wire. It is still a `miss` for the caller:
+        // it asked the pool and got nothing.
         if wanted != self.wire {
+            self.record_acquire("miss");
             return None;
         }
         // The pool's own wire names what its carriers were dialed on. A
@@ -316,6 +335,13 @@ impl<'a> StandbyCtx<'a> {
         // maintenance sweep already own that case.
         if popped_any {
             self.manager.spawn_refill(self.index, self.transport);
+        }
+        // The pool was consulted and could not serve this caller — either it
+        // was empty or everything in it was stale. The caller's own fresh dial
+        // used to record this, which is why dials that never consult a pool
+        // recorded it too; it belongs here, next to `hit` and `stale`.
+        if taken.is_none() {
+            self.record_acquire("miss");
         }
         taken
     }

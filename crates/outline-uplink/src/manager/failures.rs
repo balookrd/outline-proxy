@@ -301,6 +301,15 @@ impl UplinkManager {
         let now = Instant::now();
         let uplink_name = self.inner.uplinks[index].name.clone();
         let group_name = self.inner.group_name.clone();
+        // Note for the `shuffle_wires` case: when the dial loop has just
+        // exhausted the whole wire chain, `record_wire_outcome` has already
+        // flipped this uplink unhealthy and stamped its cooldown, so the
+        // caller's uplink-level report arriving here immediately afterwards
+        // finds `already_in_cooldown` and is absorbed — counted on
+        // `runtime_failures_suppressed_total`, logged at DEBUG. That is by
+        // design; see the note next to the `chain_exhausted` warn in
+        // `active_wire.rs`.
+        //
         // shuffle_wires accounting. When the round is still in progress
         // (active wire has not yet completed a full forward pass without
         // success), we suppress the probe-style uplink-level `healthy =
