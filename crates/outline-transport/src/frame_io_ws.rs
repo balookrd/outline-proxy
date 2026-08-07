@@ -25,7 +25,7 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
 };
 use outline_wire::padding::PaddingDecoder;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::{Message, frame::coding::CloseCode};
 use tracing::debug;
@@ -37,6 +37,12 @@ use crate::ws_writer_diag::{KIND_COVER, KIND_CTRL, KIND_DATA, WRITER_FRAME, send
 /// Pings/Pongs/Close are tiny and rare; a deeper queue would only
 /// delay close propagation.
 const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
+/// How long `close()` waits for the writer task to put the queued Close frame
+/// on the wire before giving up on it. A Close is a handful of bytes, so on any
+/// carrier whose peer is still reading this resolves immediately; the bound is
+/// there for a peer that has stopped reading and whose socket buffer is full,
+/// where waiting longer would only stall the caller's own teardown.
+const WS_CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 /// Far-future deadline the cover timer parks at when cover is disabled (the
 /// `if cover.is_some()` select guard keeps the arm inert). One day is well
 /// beyond any real session.
@@ -80,9 +86,40 @@ pub(crate) fn carrier_liveness(
 
 // ── Writer task ────────────────────────────────────────────────────────────
 
+/// Signals that the writer task has stopped, whichever way it stopped: a clean
+/// Close, a write error, or an abort from [`AbortOnDrop`] when the carrier is
+/// dropped. Held inside the task, so the notification is tied to the task's
+/// future being dropped rather than to any one exit path.
+struct WriterExit(watch::Sender<bool>);
+
+impl Drop for WriterExit {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+
+/// Waits for the writer task to stop, bounded by [`WS_CLOSE_FLUSH_TIMEOUT`].
+///
+/// A `close()` that only queues the Close frame returns before the writer has
+/// taken it off the queue, and the caller is typically dropping the carrier on
+/// the next line — [`AbortOnDrop`] then kills the writer with the frame still
+/// queued, so the peer is never told the session ended. Waiting here is what
+/// makes "close" mean the frame reached the socket.
+async fn await_writer_exit(exit: &watch::Receiver<bool>) {
+    let mut exit = exit.clone();
+    if *exit.borrow() {
+        return;
+    }
+    // A timeout here leaves the carrier exactly where it was before this wait
+    // existed: the drop that follows aborts the writer. Bounded on purpose —
+    // a peer that has stopped reading must not pin the closing task.
+    let _ = timeout(WS_CLOSE_FLUSH_TIMEOUT, exit.changed()).await;
+}
+
 /// Spawn the WS writer task: drains `ctrl_rx` (Pings/Pongs/Close) with
 /// priority over `data_rx` (Binary frames) into `ws_stream`. Returns the
-/// task handle and the data/ctrl senders.
+/// task handle, the data/ctrl senders, and a receiver that fires once the
+/// writer has stopped (see [`await_writer_exit`]).
 fn spawn_ws_writer(
     ws_stream: TransportStream,
     cover: Option<CarrierPadding>,
@@ -91,6 +128,7 @@ fn spawn_ws_writer(
     BudgetedSender<Message>,
     mpsc::Sender<Message>,
     SplitStream<TransportStream>,
+    watch::Receiver<bool>,
 ) {
     let (sink, stream) = ws_stream.split();
     // Byte-budgeted data queue: VLESS coalesces up to `FRAME_SOFT_CAP` per
@@ -98,7 +136,9 @@ fn spawn_ws_writer(
     // fits both without throttling either. Control frames stay unbudgeted.
     let (data_tx, mut data_rx) = carrier_queue::channel::<Message>();
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(WS_CTRL_CHANNEL_CAPACITY);
+    let (exit_tx, exit_rx) = watch::channel(false);
     let task = tokio::spawn(async move {
+        let _exit = WriterExit(exit_tx);
         let mut ws_sink = sink;
         let mut ctrl_open = true;
         // Idle cover timer. Parked far in the future when cover is off (the
@@ -182,7 +222,7 @@ fn spawn_ws_writer(
             }
         }
     });
-    (AbortOnDrop::new(task), data_tx, ctrl_tx, stream)
+    (AbortOnDrop::new(task), data_tx, ctrl_tx, stream, exit_rx)
 }
 
 /// Re-arms the cover timer to the next jittered idle gap. No-op when cover is
@@ -228,6 +268,10 @@ fn spawn_keepalive(ctrl_tx: mpsc::Sender<Message>, interval: Duration) -> AbortO
 pub struct WsFrameSink {
     data_tx: Option<BudgetedSender<Message>>,
     _writer_task: AbortOnDrop,
+    /// Fires once the writer task has stopped. `close()` waits on it so the
+    /// Close frame is on the wire before the caller drops this sink and
+    /// [`AbortOnDrop`] takes the writer down with it.
+    writer_exit: watch::Receiver<bool>,
     _keepalive_task: Option<AbortOnDrop>,
     /// Process-wide carrier padding read at construction. Disabled by default,
     /// in which case `send_frame` leaves the bytes untouched and the wire stays
@@ -267,8 +311,11 @@ impl FrameSink for WsFrameSink {
 
     async fn close(&mut self) -> Result<()> {
         // Drop the sender; the writer task observes this via `recv() == None`
-        // and emits a clean Close frame before exiting.
+        // and emits a clean Close frame before exiting. Then wait for that exit:
+        // the caller is free to drop this sink the moment `close` returns, and
+        // an abort at that point would strand the Close frame unsent.
         drop(self.data_tx.take());
+        await_writer_exit(&self.writer_exit).await;
         Ok(())
     }
 }
@@ -419,11 +466,12 @@ pub fn from_ws_frames(
     // used by SS-UDP / VLESS-UDP) do not.
     let padding = carrier_padding::effective_carrier_padding();
     let cover = padding.cover_enabled().then_some(padding);
-    let (writer_task, data_tx, ctrl_tx, stream) = spawn_ws_writer(ws_stream, cover);
+    let (writer_task, data_tx, ctrl_tx, stream, writer_exit) = spawn_ws_writer(ws_stream, cover);
     let keepalive_task = keepalive.map(|i| spawn_keepalive(ctrl_tx.clone(), i));
     let sink = WsFrameSink {
         data_tx: Some(data_tx),
         _writer_task: writer_task,
+        writer_exit,
         _keepalive_task: keepalive_task,
         padding,
     };
@@ -450,6 +498,10 @@ pub struct WsDatagramChannel {
     data_tx: BudgetedSender<Message>,
     downlink_rx: Mutex<mpsc::Receiver<Result<Bytes>>>,
     _writer_task: AbortOnDrop,
+    /// Fires once the writer task has stopped. `close()` waits on it so the
+    /// Close frame is on the wire before the carrier is dropped — see
+    /// [`await_writer_exit`].
+    writer_exit: watch::Receiver<bool>,
     _reader_task: AbortOnDrop,
     _keepalive_task: Option<AbortOnDrop>,
 }
@@ -476,6 +528,13 @@ impl DatagramChannel for WsDatagramChannel {
     async fn close(&self) {
         // Unbudgeted: a Close must propagate even when the data queue is full.
         let _ = self.data_tx.send_control(Message::Close(None)).await;
+        // Queuing the frame is not sending it. Callers close a carrier and drop
+        // it immediately after (uplink repoint, session teardown), and the drop
+        // aborts the writer — so without this wait the peer sees no Close at
+        // all, and on a carrier whose descriptor is duplicated elsewhere (the
+        // TCP carrier-loss probe) it sees no FIN either, leaving the session
+        // open on the server until its own idle watchdog fires.
+        await_writer_exit(&self.writer_exit).await;
     }
 }
 
@@ -497,7 +556,7 @@ pub fn from_ws_datagrams(
 ) -> WsDatagramChannel {
     // No cover on the datagram pipe: SS-UDP stays plain, and VLESS-UDP is
     // padded per-datagram inside `VlessUdpTransport`, not here.
-    let (writer_task, data_tx, ctrl_tx, mut stream) = spawn_ws_writer(ws_stream, None);
+    let (writer_task, data_tx, ctrl_tx, mut stream, writer_exit) = spawn_ws_writer(ws_stream, None);
     let keepalive_task = keepalive.map(|i| spawn_keepalive(ctrl_tx.clone(), i));
     let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Bytes>>(64);
     let reader_ctrl_tx = ctrl_tx.clone();
@@ -554,6 +613,7 @@ pub fn from_ws_datagrams(
         data_tx,
         downlink_rx: Mutex::new(downlink_rx),
         _writer_task: writer_task,
+        writer_exit,
         _reader_task: AbortOnDrop::new(reader_task),
         _keepalive_task: keepalive_task,
     }
