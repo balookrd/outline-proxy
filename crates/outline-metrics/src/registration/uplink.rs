@@ -112,6 +112,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_effective_latency_seconds: GaugeVec,
     pub(super) uplink_score_seconds: GaugeVec,
     pub(super) uplink_weight: GaugeVec,
+    pub(super) uplink_enabled: IntGaugeVec,
     pub(super) uplink_cert_expiry_timestamp_seconds: GaugeVec,
     pub(super) uplink_cooldown_seconds: GaugeVec,
     pub(super) uplink_standby_ready: IntGaugeVec,
@@ -331,6 +332,19 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         GaugeVec,
         "outline_ws_uplink_weight",
         "Configured static weight for each uplink.",
+        ["group", "uplink"]
+    );
+    // Published for every configured uplink, disabled ones included — that is
+    // the whole point. An operator switching an uplink off via the dashboard
+    // takes it out of the probe loop, so its `uplink_health` series stops
+    // appearing entirely, and "switched off by hand" becomes indistinguishable
+    // from "not probed yet" or "metrics broken". This series says which it is.
+    let uplink_enabled = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_uplink_enabled",
+        "Whether an uplink is administratively enabled (1) or switched off by an operator via \
+         /control/uplink_enabled (0). Runtime state, not persisted across restarts.",
         ["group", "uplink"]
     );
     let uplink_cert_expiry_timestamp_seconds = register_labeled!(
@@ -572,6 +586,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_effective_latency_seconds,
         uplink_score_seconds,
         uplink_weight,
+        uplink_enabled,
         uplink_cert_expiry_timestamp_seconds,
         uplink_cooldown_seconds,
         uplink_standby_ready,
