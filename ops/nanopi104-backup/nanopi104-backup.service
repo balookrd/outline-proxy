@@ -1,0 +1,31 @@
+[Unit]
+Description=Backup NanoPi userdata (mmcblk0p9) to NFS
+Documentation=file:/usr/local/share/nanopi104-backup/README.md
+# Don't fight the network coming up; NFS is mounted by the script itself.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Config lives here (NFS_HOST/NFS_EXPORT/KEEP/MODE/STOP_SERVICES). Edit this file,
+# not the script, so updates to the script don't clobber your settings.
+EnvironmentFile=-/etc/default/nanopi104-backup
+ExecStart=/usr/local/sbin/backup-p9.sh
+
+# --- Resource guards: this 1 GiB board is prone to memory-livelock, so the
+# --- backup job must never be the thing that pushes it over. cgroup MemoryMax is
+# --- a synchronous ceiling: if the job (incl. NFS write-back dirty pages) exceeds
+# --- it, the job is throttled/killed — the board stays alive.
+MemoryAccounting=yes
+MemoryHigh=192M
+MemoryMax=256M
+# Lowest CPU/IO priority so the tunnel is never starved by the backup.
+Nice=19
+CPUWeight=10
+IOSchedulingClass=idle
+IOWeight=10
+# A stuck soft-NFS mount shouldn't hang forever.
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

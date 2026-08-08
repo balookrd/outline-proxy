@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+#
+# heartbeat-watch — mail the owner when the Grafana dead man's switch stops
+# reporting. Runs on cloud1/cloud2 from a systemd timer; deliberately uses
+# nothing but the standard library, because the whole point of this watcher is
+# to keep working when the monitoring host it watches is gone.
+
+import argparse
+import email.message
+import json
+import os
+import re
+import smtplib
+import socket
+import ssl
+import sys
+import time
+from datetime import datetime
+
+# nginx combined log: 1.2.3.4 - - [07/Aug/2026:12:00:00 +0300] "POST ..." 204 0
+TS_RE = re.compile(r"\[([^\]]+)\]")
+TS_FMT = "%d/%b/%Y:%H:%M:%S %z"
+
+
+def last_heartbeat(log_path):
+    """Epoch seconds of the most recent heartbeat, or None if there was never one.
+
+    Reads the rotated file as well: logrotate runs nightly, and for the minutes
+    between the rotation and the next heartbeat the live log is empty. Judging
+    by the live file alone would report an outage every night.
+    """
+    for path in (log_path, log_path + ".1"):
+        try:
+            with open(path, "rb") as fh:
+                lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        except FileNotFoundError:
+            continue
+        if not lines:
+            continue
+        match = TS_RE.search(lines[-1].decode("utf-8", "replace"))
+        if not match:
+            continue
+        try:
+            return int(datetime.strptime(match.group(1), TS_FMT).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+def load_state(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (FileNotFoundError, ValueError):
+        return {"state": "up", "notified_at": 0}
+
+
+def save_state(path, state):
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh)
+    os.replace(tmp, path)
+
+
+def send_mail(kind, age, now):
+    """Send through the same Gmail account Grafana uses. Raises on failure."""
+    host = os.environ["SMTP_HOST"]
+    user = os.environ["SMTP_USER"]
+    password = os.environ["SMTP_PASSWORD"]
+    to = os.environ["MAIL_TO"]
+    observer = socket.gethostname()
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now))
+
+    msg = email.message.EmailMessage()
+    msg["From"] = user
+    msg["To"] = to
+    if kind == "DOWN":
+        msg["Subject"] = f"[{observer}] outline: no heartbeat from .102"
+        body = (
+            f"No heartbeat from the Grafana dead man's switch on .102.\n\n"
+            f"Observer:       {observer}\n"
+            f"Last heartbeat: {'never' if age is None else str(int(age)) + ' seconds ago'}\n"
+            f"Checked at:     {stamp}\n\n"
+            f"Mail from only one observer usually means the path to that observer\n"
+            f"is broken. Mail from both cloud1 and cloud2 means .102 itself is down.\n"
+        )
+    else:
+        msg["Subject"] = f"[{observer}] outline: heartbeat from .102 resumed"
+        body = f"Heartbeat resumed.\n\nObserver: {observer}\nAt:       {stamp}\n"
+    msg.set_content(body)
+
+    hostname, _, port = host.partition(":")
+    with smtplib.SMTP(hostname, int(port or 587), timeout=30) as smtp:
+        smtp.starttls(context=ssl.create_default_context())
+        smtp.login(user, password)
+        smtp.send_message(msg)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="alert when the heartbeat stops")
+    ap.add_argument("--log", default="/var/log/nginx/heartbeat.log")
+    ap.add_argument("--state", default="/var/lib/heartbeat-watch/state.json")
+    ap.add_argument("--threshold", type=int, default=900)
+    ap.add_argument("--repeat", type=int, default=21600)
+    ap.add_argument("--now", type=int, default=None)
+    # --dry-run is for humans: it must not touch the state file. A diagnostic
+    # run that records "already notified" would silence the next real outage.
+    ap.add_argument("--dry-run", action="store_true", help="print the decision, change nothing")
+    # --simulate is for the tests: same printing, but state advances, so a
+    # sequence of runs exercises the real transitions without sending mail.
+    ap.add_argument("--simulate", action="store_true", help="like --dry-run but persist state")
+    args = ap.parse_args()
+
+    now = args.now if args.now is not None else int(time.time())
+    last = last_heartbeat(args.log)
+    state = load_state(args.state)
+
+    # No log at all means the receiver has never been hit — a fresh install,
+    # not an outage. Staying quiet here is what keeps the first deploy silent.
+    down = last is not None and (now - last) > args.threshold
+    age = None if last is None else now - last
+
+    send = None
+    if down and state["state"] != "down":
+        send = "DOWN"
+    elif down and (now - state.get("notified_at", 0)) >= args.repeat:
+        send = "DOWN"
+    elif not down and state["state"] == "down":
+        send = "RESOLVED"
+
+    if args.dry_run or args.simulate:
+        label = "down" if down else "up"
+        suffix = f" send={send or 'none'}" if (down or send) else ""
+        print(f"state={label}{suffix}")
+    elif send:
+        send_mail(send, age, now)
+
+    if args.dry_run:
+        return 0
+
+    if send == "DOWN":
+        state = {"state": "down", "notified_at": now}
+    elif down:
+        state["state"] = "down"
+    else:
+        state = {"state": "up", "notified_at": 0}
+    save_state(args.state, state)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,42 @@
+# The `unbound-exporter` job as it stands in the VictoriaMetrics scrape config
+# on .102 (/opt/victoria-metrics/data/scrape.yaml). Reference copy only —
+# nothing in ops/provision-node writes it: the file lives on the monitoring
+# node, not on the node being provisioned.
+#
+# A new node exporting unbound metrics is invisible until its own two-line
+# target block is added here. The exporter is reached through nginx on 443
+# (location /unbound-exporter/metrics → 127.0.0.1:9167/metrics), so the target
+# is the node's public name, not its exporter port.
+#
+# After editing, reload VictoriaMetrics on .102 rather than restarting it:
+#   curl -s http://127.0.0.1:8428/-/reload
+#
+# Keep this snippet in step with the live file when the fleet gains or loses a
+# node — it is documentation of the shape, not a source that gets applied.
+
+- job_name: unbound-exporter
+  static_configs:
+  - targets:
+    - https://cloud1.beerloga.su/unbound-exporter/metrics
+    labels:
+      hostname: 'cloud1'
+  - targets:
+    - https://cloud2.beerloga.su/unbound-exporter/metrics
+    labels:
+      hostname: 'cloud2'
+  - targets:
+    - https://nuxt.beerloga.su/unbound-exporter/metrics
+    labels:
+      hostname: 'nuxt'
+  - targets:
+    - https://nuxt2.beerloga.su/unbound-exporter/metrics
+    labels:
+      hostname: 'nuxt2'
+  # A new node goes here:
+  #  - targets:
+  #    - https://<host>.beerloga.su/unbound-exporter/metrics
+  #    labels:
+  #      hostname: '<host>'
+  relabel_configs:
+    - source_labels: [hostname]
+      target_label: instance

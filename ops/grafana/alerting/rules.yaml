@@ -1,0 +1,269 @@
+# Grafana alert rules, provisioned from file.
+#
+# Thresholds come from replaying seven days of fleet data, not from taste; the
+# reasoning for each number is in
+# docs/superpowers/specs/2026-08-07-uplink-email-alerting-design.md.
+#
+# Every rule's query A returns 1 on a problem and 0 otherwise (the `bool`
+# modifier), and condition C fires above 0.
+#
+# noDataState and execErrState are OK everywhere on purpose: a dead
+# VictoriaMetrics would otherwise turn every rule into its own alert, and that
+# failure is already covered — the dead man's switch queries the datasource too,
+# so it goes silent and both observers mail.
+apiVersion: 1
+
+# Removing a rule from this file does NOT remove it from Grafana — provisioning
+# only adds and updates. A rule that has to go needs an explicit entry here, and
+# provisioned rules cannot be deleted from the UI either. Verified 2026-08-07,
+# when a temporary self-test rule survived its own removal from the file.
+deleteRules:
+  - orgId: 1
+    uid: uplink-selftest
+
+groups:
+  - orgId: 1
+    name: uplink
+    folder: Alerts
+    interval: 1m
+    rules:
+      - uid: uplink-target-down
+        title: TargetDown
+        condition: C
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.instance }} ({{ $labels.job }}) stopped reporting'
+          description: >-
+            No successful scrape for five minutes. Either the process is gone or
+            the path to it is. Five minutes is above every ordinary scrape gap
+            seen in the last week (1-7 minutes) and below the real outages.
+            `unbound-exporter` is in the list because it was not: its container
+            on cloud1 stayed down for three days after a reboot and nothing said
+            a word.
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: adnsc1wi03doga
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: 'up{job=~"rust-ws-exporter|rust-ss-exporter|unbound-exporter"} < bool 1'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+
+      - uid: uplink-all-down
+        title: AllUplinksDown
+        condition: C
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.instance }} has no healthy uplink at all'
+          description: >-
+            Every leg on this client is unhealthy — no tunnel. Baseline is 12
+            healthy legs on cloud1/cloud2 and 4 on debian/ubuntu, so zero is
+            unambiguous.
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: adnsc1wi03doga
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: 'sum by (instance) (outline_ws_uplink_health_effective) < bool 1'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+
+      - uid: uplink-loss-high
+        title: UplinkCarrierLossHigh
+        condition: C
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.uplink }}/{{ $labels.transport }} on {{ $labels.instance }} is losing packets'
+          description: >-
+            Carrier loss above 5% for ten minutes. The threshold matches the
+            loss-failover threshold already calibrated on .102 and .104; the
+            ten-minute sustain is what separates this from the spikes that reach
+            42% for a single sample.
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: adnsc1wi03doga
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: 'outline_ws_uplink_carrier_loss_ratio > bool 0.05'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+
+      - uid: uplink-failover-storm
+        title: UplinkFailoverStorm
+        condition: C
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.instance }} is churning through uplinks'
+          description: >-
+            More than 30 failovers in 15 minutes. Peaks over the last week were
+            63 (debian), 50 (cloud1), 28 (ubuntu) and 24 (cloud2); at a threshold
+            of 10 this rule would have been true for over half the week on two
+            nodes. No `for` is needed — the 15-minute window is the sustain.
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: {from: 1800, to: 0}
+            datasourceUid: adnsc1wi03doga
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: 'sum by (instance) (increase(outline_ws_uplink_failovers_total{job="rust-ws-exporter"}[15m])) > bool 30'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+
+      - uid: uplink-cert-expiring
+        title: UplinkCertExpiringSoon
+        condition: C
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: 'certificate for {{ $labels.uplink }} expires in under 14 days'
+          description: >-
+            Seen from {{ $labels.instance }}. The nearest expiry on 2026-08-07
+            was 49 days out, so this stays silent until it matters.
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3900, to: 0}
+            datasourceUid: adnsc1wi03doga
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: '(outline_ws_uplink_cert_expiry_timestamp_seconds - time()) / 86400 < bool 14'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+
+      - uid: uplink-client-restarted
+        title: ClientRestarted
+        condition: C
+        for: 0s
+        labels:
+          severity: info
+        annotations:
+          summary: 'outline-ws-rust restarted on {{ $labels.instance }}'
+          description: >-
+            Detected as a counter reset: the client exports no
+            process_start_time_seconds, so a restart shows up as
+            outline_ws_uplink_selected_total going backwards. `resets` is applied
+            per series and only then aggregated — on a `sum` the same expression
+            would also fire whenever a series appears or disappears, which is not
+            a restart. Frequent by nature (~13 per week on ubuntu), so its own
+            notification route collapses it into a daily digest.
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: {from: 3900, to: 0}
+            datasourceUid: adnsc1wi03doga
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: 'max by (instance) (resets(outline_ws_uplink_selected_total[1h])) > bool 0'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+
+  - orgId: 1
+    name: heartbeat
+    folder: Alerts
+    interval: 1m
+    rules:
+      # Always firing, by design. Its notifications are the pulse that cloud1
+      # and cloud2 listen for; silence is the signal.
+      #
+      # The condition runs through the datasource rather than being a constant:
+      # `count(up)` needs VictoriaMetrics to answer. If VM dies, this query
+      # errors, execErrState sends the rule to OK, the pulse stops and both
+      # observers mail. A `vector(1)` condition would keep pulsing over a dead
+      # database and hide exactly the outage this is here to catch.
+      - uid: heartbeat-dead-man
+        title: DeadMansSwitch
+        condition: C
+        for: 0s
+        labels:
+          severity: none
+        annotations:
+          summary: 'pulse from .102 — this alert is always firing on purpose'
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: adnsc1wi03doga
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: 'count(up) >= bool 1'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}

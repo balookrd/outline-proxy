@@ -1,0 +1,40 @@
+# Unbound stack for an exit node. Owned by
+# ops/provision-node/assets/unbound/docker-compose.exit.yml — install.sh writes
+# this file to /opt/unbound/docker-compose.yml verbatim, so edit it here rather
+# than on a node.
+#
+# The resolver listens on loopback only (see unbound.conf) and nothing fronts
+# it: an exit node resolves for itself. The entry family adds dnsproxy on top —
+# see docker-compose.entry.yml.
+#
+# `restart: unless-stopped` on every service is not decoration: without it on
+# unbound-exporter the container stayed down from the first reboot onwards and
+# the node silently stopped reporting DNS metrics (cloud1/cloud2, until
+# 2026-08-08).
+
+services:
+  unbound:
+    image: klutchell/unbound:latest
+    container_name: unbound
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ["unbound"]
+    command: ["-d", "-c", "/etc/unbound/unbound.conf"]
+    volumes:
+      - /opt/unbound/unbound.conf:/etc/unbound/unbound.conf:ro
+
+  unbound-exporter:
+    image: saarphil/unbound_exporter:latest
+    container_name: unbound-exporter
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - unbound
+    # The empty ca/cert/key are required, not optional: the exporter defaults
+    # to unbound's TLS control channel, and its defaults point at certificate
+    # files that do not exist here. unbound.conf sets control-use-cert: no.
+    command:
+      - --unbound.host=tcp://127.0.0.1:8953
+      - "--unbound.ca="
+      - "--unbound.cert="
+      - "--unbound.key="

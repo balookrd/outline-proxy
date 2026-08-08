@@ -1,0 +1,50 @@
+# Grafana contact points, provisioned from file.
+#
+# Deployed to /opt/grafana/provisioning/alerting/ by deploy.sh, which
+# substitutes __HEARTBEAT_TOKEN__, __TELEGRAM_BOT_TOKEN__ and
+# __TELEGRAM_CHAT_ID__ from host-local files, so no secret is in git. The SMTP
+# credentials are not here either: they are container environment
+# (see ../README.md).
+apiVersion: 1
+
+contactPoints:
+  # Both channels carry every alert. Telegram is the one that actually reaches a
+  # phone; mail is the fallback for the day Telegram is blocked or the bot token
+  # is revoked. Neither is trusted alone.
+  - orgId: 1
+    name: owner
+    receivers:
+      - uid: email-owner-1
+        type: email
+        settings:
+          addresses: balookrd@gmail.com
+          # One mail per alert group rather than one per alert — grouping is
+          # what keeps a fleet-wide event from arriving as six messages.
+          singleEmail: true
+      - uid: owner-telegram-1
+        type: telegram
+        settings:
+          bottoken: __TELEGRAM_BOT_TOKEN__
+          chatid: '__TELEGRAM_CHAT_ID__'
+          # HTML rather than the default: alert summaries carry <, > and & from
+          # PromQL and label values, and Markdown parsing rejects the message
+          # outright on an unbalanced character instead of degrading.
+          parse_mode: HTML
+
+  - orgId: 1
+    name: heartbeat-observers
+    receivers:
+      # Two independent observers. One of them mailing means that observer's
+      # path is probably broken; both mailing means .102 is genuinely down.
+      - uid: heartbeat-cloud1
+        type: webhook
+        settings:
+          url: https://cloud1.beerloga.su/hb/__HEARTBEAT_TOKEN__
+          httpMethod: POST
+        disableResolveMessage: true
+      - uid: heartbeat-cloud2
+        type: webhook
+        settings:
+          url: https://cloud2.beerloga.su/hb/__HEARTBEAT_TOKEN__
+          httpMethod: POST
+        disableResolveMessage: true
