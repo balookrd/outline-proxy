@@ -38,7 +38,7 @@ Usage: collect-from-reference.sh --reference <user@host> --profile <name|path> \
   --force                  overwrite an existing bundle directory
 
 The bundle keeps secrets (service configs, access keys, ACME material, ocserv
-passwords, xray ids) under <dir>/secrets with mode 0700. Treat the whole
+passwords) under <dir>/secrets with mode 0700. Treat the whole
 directory as sensitive: do not commit it.
 EOF
 }

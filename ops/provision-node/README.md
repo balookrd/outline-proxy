@@ -96,8 +96,7 @@ ping6 -c3 -I <that-address> 2606:4700:4700::1111
 ip -6 addr del <prefix-with-random-suffix>/128 dev lo
 ```
 
-Two things the reference runs are deliberately outside the clone: **xray**
-(binary, units, exporter and its VLESS-carrying config) and the **GRE/BGP
+One thing the reference has is deliberately outside the clone: the **GRE/BGP
 tunnels** `bgp0`/`bgp1`. Because those tunnels are defined in the reference's
 `/etc/network/interfaces`, this profile collects no network configuration at
 all — the new node's interfaces are set up before install runs.
@@ -232,7 +231,7 @@ ocserv-run.sh       regenerated from the *running* container, not from the stale
 payload/            /opt whitelist, binaries, units, nginx, sysctl, docker daemon.json,
                     daemon configs (ndppd), and — where a profile collects them —
                     network files, which are staged and never applied
-secrets/            0700: service configs, users.txt, ACME material, ocserv passwords, xray ids
+secrets/            0700: service configs, users.txt, ACME material, ocserv passwords
 ```
 
 Dormant material on the reference is not collected: `accel-ppp`, `wireguard`,
@@ -380,9 +379,10 @@ one has a default, so a profile only states what it has.
 Rules worth keeping:
 
 - **Anything holding a credential belongs in `SECRET_TARS`, not the payload.**
-  On nuxt the live xray config is `/opt/xray/config.json` (the unit's
-  `ExecStart` points there, not at the stock `/usr/local/etc/xray`), and it
-  carries VLESS ids — collecting it as ordinary payload would have put ids in
+  Check where a service actually reads its config from rather than where the
+  package puts it: on this fleet the live file is regularly the one in `/opt`,
+  not the stock path under `/etc` or `/usr/local/etc`, and it is the live one
+  that carries the keys. Collecting it as ordinary payload puts credentials in
   the non-secret half of the bundle.
 - **List a file in `REHOST_FILES` if it names the reference host.** Each
   `rehost_file` call reports how many occurrences it replaced and warns when a
