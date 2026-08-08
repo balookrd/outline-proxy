@@ -47,11 +47,11 @@ impl CompressionContext {
                     ),
                     config,
                 }
-            },
+            }
             _ => {
                 let config = mode.to_deflate_config().unwrap();
                 CompressionContext::Dedicated(DeflateContext::server(config))
-            },
+            }
         }
     }
 
@@ -69,11 +69,11 @@ impl CompressionContext {
                     ),
                     config,
                 }
-            },
+            }
             _ => {
                 let config = mode.to_deflate_config().unwrap();
                 CompressionContext::Dedicated(DeflateContext::client(config))
-            },
+            }
         }
     }
 
@@ -81,12 +81,22 @@ impl CompressionContext {
     pub fn with_shared_pool(pool: Arc<SharedCompressorPool>, is_server: bool) -> Self {
         let config = pool.config.clone();
         let decoder = if is_server {
-            DeflateDecoder::new(config.client_max_window_bits, config.client_no_context_takeover)
+            DeflateDecoder::new(
+                config.client_max_window_bits,
+                config.client_no_context_takeover,
+            )
         } else {
-            DeflateDecoder::new(config.server_max_window_bits, config.server_no_context_takeover)
+            DeflateDecoder::new(
+                config.server_max_window_bits,
+                config.server_no_context_takeover,
+            )
         };
 
-        CompressionContext::Shared { pool, decoder, config }
+        CompressionContext::Shared {
+            pool,
+            decoder,
+            config,
+        }
     }
 
     /// Check if compression is enabled
@@ -108,7 +118,7 @@ impl CompressionContext {
                     return Ok(None);
                 }
                 pool.compress(data)
-            },
+            }
         }
     }
 
@@ -119,7 +129,7 @@ impl CompressionContext {
                 // This shouldn't happen - protocol layer should not call decompress
                 // if compression is disabled
                 Ok(Bytes::copy_from_slice(data))
-            },
+            }
             CompressionContext::Dedicated(ctx) => ctx.decompress(data, max_size),
             CompressionContext::Shared { decoder, .. } => decoder.decompress(data, max_size),
         }
@@ -172,8 +182,10 @@ impl SharedCompressorPool {
     /// Compress data using a pooled encoder
     pub fn compress(&self, data: &[u8]) -> Result<Option<Bytes>> {
         // Round-robin selection
-        let idx =
-            self.next_encoder.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % SHARED_POOL_SIZE;
+        let idx = self
+            .next_encoder
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % SHARED_POOL_SIZE;
 
         let mut encoder = self.encoders[idx].lock();
         encoder.compress(data)
