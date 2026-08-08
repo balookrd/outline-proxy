@@ -1,9 +1,16 @@
 diff --git a/src/error.rs b/src/error.rs
-index 518bae5..520903e 100644
+index 518bae5..7792ccd 100644
 --- a/src/error.rs
 +++ b/src/error.rs
-@@ -111,9 +111,15 @@ impl CloseReason {
-         }
+@@ -105,15 +105,18 @@ impl CloseReason {
+ 
+     /// Create a new close reason
+     pub fn new(code: u16, reason: impl Into<String>) -> Self {
+-        Self {
+-            code,
+-            reason: reason.into(),
+-        }
++        Self { code, reason: reason.into() }
      }
  
 -    /// Check if the close code is valid per RFC 6455
@@ -20,20 +27,77 @@ index 518bae5..520903e 100644
      }
  }
  
+@@ -304,7 +307,7 @@ impl fmt::Display for Error {
+                 } else {
+                     write!(f, "Connection closed")
+                 }
+-            }
++            },
+             Error::InvalidCloseCode(code) => write!(f, "Invalid close code: {}", code),
+             Error::Capacity(msg) => write!(f, "Capacity exceeded: {}", msg),
+             Error::Compression(msg) => write!(f, "Compression error: {}", msg),
+@@ -318,7 +321,7 @@ impl fmt::Display for Error {
+             Error::QuicWrite(e) => write!(f, "QUIC write error: {}", e),
+             Error::ExtendedConnectNotSupported => {
+                 write!(f, "Extended CONNECT protocol not supported by server")
+-            }
++            },
+             Error::StreamReset => write!(f, "Stream was reset by peer"),
+         }
+     }
+@@ -358,10 +361,10 @@ impl From<Error> for io::Error {
+             Error::WouldBlock => io::Error::new(io::ErrorKind::WouldBlock, "would block"),
+             Error::ConnectionReset => {
+                 io::Error::new(io::ErrorKind::ConnectionReset, "connection reset")
+-            }
++            },
+             Error::ConnectionClosed => {
+                 io::Error::new(io::ErrorKind::BrokenPipe, "connection closed")
+-            }
++            },
+             other => io::Error::other(other.to_string()),
+         }
+     }
 diff --git a/src/server.rs b/src/server.rs
-index 11da3b8..696d113 100644
+index 11da3b8..f481641 100644
 --- a/src/server.rs
 +++ b/src/server.rs
-@@ -53,7 +53,7 @@ use bytes::Bytes;
+@@ -263,10 +263,10 @@ impl WebSocketServer<Http1> {
+                 match server.accept(stream).await {
+                     Ok((ws, handshake)) => {
+                         handler(ws, handshake).await;
+-                    }
++                    },
+                     Err(e) => {
+                         eprintln!("WebSocket handshake error: {}", e);
+-                    }
++                    },
+                 }
+             });
+         }
+@@ -461,9 +461,7 @@ where
+         // Accept the WebSocket upgrade
+         let response = build_extended_connect_response(ws_req.subprotocols.as_deref(), None);
  
- #[cfg(any(feature = "http2", feature = "http3"))]
- use crate::extended_connect::{
--    ExtendedConnectRequest, build_extended_connect_error, build_extended_connect_response,
-+    build_extended_connect_error, build_extended_connect_response, ExtendedConnectRequest,
- };
+-        let send_stream = respond
+-            .send_response(response, false)
+-            .map_err(Error::from)?;
++        let send_stream = respond.send_response(response, false).map_err(Error::from)?;
  
- // ============================================================================
-@@ -584,6 +584,19 @@ impl WebSocketServer<Http3> {
+         let recv_stream = request.into_body();
+ 
+@@ -518,9 +516,7 @@ where
+ 
+         let response = build_extended_connect_response(ws_req.subprotocols.as_deref(), None);
+ 
+-        let send_stream = respond
+-            .send_response(response, false)
+-            .map_err(Error::from)?;
++        let send_stream = respond.send_response(response, false).map_err(Error::from)?;
+ 
+         let recv_stream = request.into_body();
+         let h2_stream = Stream::<Http2>::from_h2(send_stream, recv_stream);
+@@ -584,6 +580,19 @@ impl WebSocketServer<Http3> {
          }
      }
  
@@ -53,7 +117,7 @@ index 11da3b8..696d113 100644
      /// Get the local address the server is bound to
      pub fn local_addr(&self) -> Result<SocketAddr> {
          match &self.inner {
-@@ -626,7 +639,9 @@ impl WebSocketServer<Http3> {
+@@ -626,7 +635,9 @@ impl WebSocketServer<Http3> {
  
              tokio::spawn(async move {
                  if let Err(e) = handle_http3_connection(incoming, handler, config).await {
@@ -64,7 +128,7 @@ index 11da3b8..696d113 100644
                  }
              });
          }
-@@ -664,7 +679,9 @@ impl WebSocketServer<Http3> {
+@@ -664,7 +675,9 @@ impl WebSocketServer<Http3> {
                  if let Err(e) =
                      handle_http3_connection_filtered(incoming, filter, handler, config).await
                  {
@@ -75,8 +139,21 @@ index 11da3b8..696d113 100644
                  }
              });
          }
-@@ -724,7 +741,9 @@ where
-             }
+@@ -710,7 +723,7 @@ where
+                     Err(e) => {
+                         eprintln!("Failed to resolve request: {}", e);
+                         continue;
+-                    }
++                    },
+                 };
+ 
+                 let handler = handler.clone();
+@@ -721,12 +734,14 @@ where
+                         eprintln!("HTTP/3 request error: {}", e);
+                     }
+                 });
+-            }
++            },
              Ok(None) => break,
              Err(e) => {
 -                eprintln!("HTTP/3 accept error: {}", e);
@@ -84,10 +161,26 @@ index 11da3b8..696d113 100644
 +                    eprintln!("HTTP/3 accept error: {}", e);
 +                }
                  break;
-             }
+-            }
++            },
          }
-@@ -778,7 +797,9 @@ where
-             }
+     }
+ 
+@@ -760,7 +775,7 @@ where
+                     Err(e) => {
+                         eprintln!("Failed to resolve request: {}", e);
+                         continue;
+-                    }
++                    },
+                 };
+ 
+                 let handler = handler.clone();
+@@ -775,12 +790,14 @@ where
+                         eprintln!("HTTP/3 request error: {}", e);
+                     }
+                 });
+-            }
++            },
              Ok(None) => break,
              Err(e) => {
 -                eprintln!("HTTP/3 accept error: {}", e);
@@ -95,9 +188,12 @@ index 11da3b8..696d113 100644
 +                    eprintln!("HTTP/3 accept error: {}", e);
 +                }
                  break;
-             }
+-            }
++            },
          }
-@@ -841,6 +862,19 @@ where
+     }
+ 
+@@ -841,6 +858,19 @@ where
      Ok(())
  }
  
@@ -118,10 +214,114 @@ index 11da3b8..696d113 100644
  async fn handle_http3_request_filtered<F, Fut, Filter>(
      request: http::Request<()>,
 diff --git a/src/stream/transport_stream.rs b/src/stream/transport_stream.rs
-index 0b15673..783e994 100644
+index 0b15673..bf1a15b 100644
 --- a/src/stream/transport_stream.rs
 +++ b/src/stream/transport_stream.rs
-@@ -363,11 +363,25 @@ enum Http3StreamInner {
+@@ -253,12 +253,12 @@ impl AsyncRead for Stream<Http2> {
+                 }
+ 
+                 Poll::Ready(Ok(()))
+-            }
++            },
+             Poll::Ready(Some(Err(e))) => Poll::Ready(Err(io::Error::other(e))),
+             Poll::Ready(None) => {
+                 inner.recv_eof = true;
+                 Poll::Ready(Ok(()))
+-            }
++            },
+             Poll::Pending => Poll::Pending,
+         }
+     }
+@@ -292,23 +292,19 @@ impl AsyncWrite for Stream<Http2> {
+                 let to_send = std::cmp::min(capacity, buf.len());
+                 let data = Bytes::copy_from_slice(&buf[..to_send]);
+ 
+-                inner
+-                    .send
+-                    .send_data(data, false)
+-                    .map_err(io::Error::other)?;
++                inner.send.send_data(data, false).map_err(io::Error::other)?;
+ 
+                 inner.capacity_needed = 0;
+                 Poll::Ready(Ok(to_send))
+-            }
++            },
+             Poll::Ready(Some(Err(e))) => Poll::Ready(Err(io::Error::other(e))),
+-            Poll::Ready(None) => Poll::Ready(Err(io::Error::new(
+-                io::ErrorKind::BrokenPipe,
+-                "HTTP/2 stream closed",
+-            ))),
++            Poll::Ready(None) => {
++                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/2 stream closed")))
++            },
+             Poll::Pending => {
+                 inner.capacity_needed = buf.len();
+                 Poll::Pending
+-            }
++            },
+         }
+     }
+ 
+@@ -324,10 +320,7 @@ impl AsyncWrite for Stream<Http2> {
+         };
+ 
+         // Send empty DATA frame with END_STREAM flag
+-        inner
+-            .send
+-            .send_data(Bytes::new(), true)
+-            .map_err(io::Error::other)?;
++        inner.send.send_data(Bytes::new(), true).map_err(io::Error::other)?;
+         Poll::Ready(Ok(()))
+     }
+ }
+@@ -350,6 +343,46 @@ impl fmt::Debug for Stream<Http2> {
+ // HTTP/3 Stream Implementation
+ // ============================================================================
+ 
++/// What `poll_shutdown` is allowed to do next on an h3 stream.
++#[cfg(feature = "http3")]
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum H3ShutdownPhase {
++    /// A prior `poll_write` left data queued but un-drained: drain it before
++    /// touching `send_data` again.
++    DrainPendingWrite,
++    /// Queue the GREASE frame (exactly once per stream).
++    Grease,
++    /// Nothing may be queued any more — drive the QUIC FIN.
++    Finish,
++}
++
++/// Decide the next `poll_shutdown` phase from the stream's send-side state.
++///
++/// `send_poisoned` is the critical input: once a write failed, h3-quinn keeps
++/// its internal `writing` slot occupied (its `poll_ready` only clears the slot
++/// on the success path), while our own `write_queued` has already been reset.
++/// Calling `queue_grease()` in that state hits h3-quinn's misuse guard, which
++/// reports `ConnectionErrorIncoming::InternalError`; h3 escalates that to a
++/// connection-level `H3_INTERNAL_ERROR`, tearing down every stream multiplexed
++/// on the shared QUIC connection. A poisoned send side therefore skips straight
++/// to the FIN.
++#[cfg(feature = "http3")]
++fn h3_shutdown_phase(
++    send_poisoned: bool,
++    write_queued: bool,
++    shutdown_started: bool,
++) -> H3ShutdownPhase {
++    if send_poisoned {
++        H3ShutdownPhase::Finish
++    } else if write_queued {
++        H3ShutdownPhase::DrainPendingWrite
++    } else if !shutdown_started {
++        H3ShutdownPhase::Grease
++    } else {
++        H3ShutdownPhase::Finish
++    }
++}
++
+ #[cfg(feature = "http3")]
+ enum Http3StreamInner {
+     /// Raw QUIC streams (for direct QUIC usage)
+@@ -363,11 +396,33 @@ enum Http3StreamInner {
      Server {
          stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
          read_buf: BytesMut,
@@ -132,6 +332,10 @@ index 0b15673..783e994 100644
 +        /// `true` once `queue_grease` has been called during `poll_shutdown`.
 +        /// Prevents re-calling it (and re-entering `send_data`) on retries.
 +        shutdown_started: bool,
++        /// `true` once any send-side operation failed. h3-quinn leaves its
++        /// `writing` slot occupied on a failed drain, so every later
++        /// `send_data` would trip its misuse guard and collapse the carrier.
++        send_poisoned: bool,
      },
      /// Client-side h3 request stream
      Client {
@@ -144,29 +348,53 @@ index 0b15673..783e994 100644
 +        /// `true` once `queue_grease` has been called during `poll_shutdown`.
 +        /// Prevents re-calling it (and re-entering `send_data`) on retries.
 +        shutdown_started: bool,
++        /// `true` once any send-side operation failed. h3-quinn leaves its
++        /// `writing` slot occupied on a failed drain, so every later
++        /// `send_data` would trip its misuse guard and collapse the carrier.
++        send_poisoned: bool,
      },
  }
  
-@@ -403,6 +417,8 @@ impl Stream<Http3> {
+@@ -403,6 +458,9 @@ impl Stream<Http3> {
              inner: StreamInner::Http3(Http3StreamInner::Server {
                  stream,
                  read_buf: BytesMut::with_capacity(64 * 1024),
 +                write_queued: None,
 +                shutdown_started: false,
++                send_poisoned: false,
              }),
              _marker: PhantomData,
          }
-@@ -418,6 +434,8 @@ impl Stream<Http3> {
+@@ -418,6 +476,9 @@ impl Stream<Http3> {
              inner: StreamInner::Http3(Http3StreamInner::Client {
                  stream,
                  read_buf: BytesMut::with_capacity(64 * 1024),
 +                write_queued: None,
 +                shutdown_started: false,
++                send_poisoned: false,
              }),
              _marker: PhantomData,
          }
-@@ -468,8 +486,8 @@ impl AsyncRead for Stream<Http3> {
-                     }
+@@ -440,12 +501,7 @@ impl AsyncRead for Stream<Http3> {
+         buf: &mut ReadBuf<'_>,
+     ) -> Poll<io::Result<()>> {
+         match &mut self.inner {
+-            StreamInner::Http3(Http3StreamInner::Raw {
+-                recv,
+-                recv_buf,
+-                recv_finished,
+-                ..
+-            }) => {
++            StreamInner::Http3(Http3StreamInner::Raw { recv, recv_buf, recv_finished, .. }) => {
+                 // First drain buffered data
+                 if !recv_buf.is_empty() {
+                     let to_copy = std::cmp::min(buf.remaining(), recv_buf.len());
+@@ -465,11 +521,11 @@ impl AsyncRead for Stream<Http3> {
+                             *recv_finished = true;
+                         }
+                         Poll::Ready(Err(io::Error::other(e)))
+-                    }
++                    },
                      Poll::Pending => Poll::Pending,
                  }
 -            }
@@ -176,7 +404,13 @@ index 0b15673..783e994 100644
                  // First drain buffered data
                  if !read_buf.is_empty() {
                      let to_copy = std::cmp::min(buf.remaining(), read_buf.len());
-@@ -500,8 +518,8 @@ impl AsyncRead for Stream<Http3> {
+@@ -495,13 +551,13 @@ impl AsyncRead for Stream<Http3> {
+                             }
+                         }
+                         Poll::Ready(Ok(()))
+-                    }
++                    },
+                     Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
                      Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                      Poll::Pending => Poll::Pending,
                  }
@@ -187,7 +421,22 @@ index 0b15673..783e994 100644
                  // First drain buffered data
                  if !read_buf.is_empty() {
                      let to_copy = std::cmp::min(buf.remaining(), read_buf.len());
-@@ -556,26 +574,48 @@ impl AsyncWrite for Stream<Http3> {
+@@ -527,12 +583,12 @@ impl AsyncRead for Stream<Http3> {
+                             }
+                         }
+                         Poll::Ready(Ok(()))
+-                    }
++                    },
+                     Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
+                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
+                     Poll::Pending => Poll::Pending,
+                 }
+-            }
++            },
+             _ => unreachable!(),
+         }
+     }
+@@ -556,29 +612,70 @@ impl AsyncWrite for Stream<Http3> {
                      Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e))),
                      Poll::Pending => Poll::Pending,
                  }
@@ -204,6 +453,7 @@ index 0b15673..783e994 100644
 +            StreamInner::Http3(Http3StreamInner::Server {
 +                stream,
 +                write_queued,
++                send_poisoned,
 +                ..
 +            }) => {
 +                if write_queued.is_none() {
@@ -211,18 +461,28 @@ index 0b15673..783e994 100644
 +                    let n = data.len();
 +                    match stream.queue_send(data) {
 +                        Ok(()) => *write_queued = Some(n),
-+                        Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
++                        Err(e) => {
++                            *send_poisoned = true;
++                            return Poll::Ready(Err(io::Error::other(e.to_string())));
++                        },
 +                    }
 +                }
 +                match stream.poll_drain(cx) {
 +                    Poll::Ready(Ok(())) => Poll::Ready(Ok(write_queued.take().unwrap())),
 +                    Poll::Ready(Err(e)) => {
++                        // h3-quinn's `poll_ready` only clears its `writing`
++                        // slot on the success path, so a failed drain leaves
++                        // the send side occupied even though our own
++                        // `write_queued` is reset here. Record that, or a
++                        // later `queue_grease()` would trip h3-quinn's misuse
++                        // guard and collapse the whole shared QUIC carrier.
 +                        *write_queued = None;
++                        *send_poisoned = true;
 +                        Poll::Ready(Err(io::Error::other(e.to_string())))
-+                    }
++                    },
                      Poll::Pending => Poll::Pending,
                  }
-             }
+-            }
 -            StreamInner::Http3(Http3StreamInner::Client { stream, .. }) => {
 -                let data = Bytes::copy_from_slice(buf);
 -                let fut = stream.send_data(data);
@@ -231,9 +491,11 @@ index 0b15673..783e994 100644
 -                match fut.poll(cx) {
 -                    Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.len())),
 -                    Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
++            },
 +            StreamInner::Http3(Http3StreamInner::Client {
 +                stream,
 +                write_queued,
++                send_poisoned,
 +                ..
 +            }) => {
 +                if write_queued.is_none() {
@@ -241,19 +503,30 @@ index 0b15673..783e994 100644
 +                    let n = data.len();
 +                    match stream.queue_send(data) {
 +                        Ok(()) => *write_queued = Some(n),
-+                        Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
++                        Err(e) => {
++                            *send_poisoned = true;
++                            return Poll::Ready(Err(io::Error::other(e.to_string())));
++                        },
 +                    }
 +                }
 +                match stream.poll_drain(cx) {
 +                    Poll::Ready(Ok(())) => Poll::Ready(Ok(write_queued.take().unwrap())),
 +                    Poll::Ready(Err(e)) => {
++                        // See the Server arm: a failed drain leaves h3-quinn's
++                        // `writing` slot occupied, so the send side must be
++                        // marked poisoned before `poll_shutdown` runs.
 +                        *write_queued = None;
++                        *send_poisoned = true;
 +                        Poll::Ready(Err(io::Error::other(e.to_string())))
-+                    }
++                    },
                      Poll::Pending => Poll::Pending,
                  }
-             }
-@@ -594,21 +634,84 @@ impl AsyncWrite for Stream<Http3> {
+-            }
++            },
+             _ => unreachable!(),
+         }
+     }
+@@ -594,26 +691,124 @@ impl AsyncWrite for Stream<Http3> {
                  Ok(()) => Poll::Ready(Ok(())),
                  Err(e) => Poll::Ready(Err(io::Error::other(e))),
              },
@@ -266,6 +539,7 @@ index 0b15673..783e994 100644
 +                stream,
 +                write_queued,
 +                shutdown_started,
++                send_poisoned,
 +                ..
 +            }) => {
 +                // Phase 0: drain any un-drained prior `poll_write` before greasing.
@@ -275,76 +549,165 @@ index 0b15673..783e994 100644
 +                // `H3_INTERNAL_ERROR` that tears down every stream multiplexed on
 +                // the shared QUIC connection. This fires when a relay teardown /
 +                // task abort races an in-flight write.
-+                if write_queued.is_some() {
++                //
++                // A send side that already failed is poisoned: h3-quinn kept its
++                // `writing` slot occupied, so neither the drain nor the GREASE
++                // frame may be attempted — go straight to the FIN.
++                if h3_shutdown_phase(*send_poisoned, write_queued.is_some(), *shutdown_started)
++                    == H3ShutdownPhase::DrainPendingWrite
++                {
 +                    match stream.poll_drain(cx) {
 +                        Poll::Ready(Ok(())) => *write_queued = None,
 +                        Poll::Ready(Err(e)) => {
 +                            *write_queued = None;
++                            *send_poisoned = true;
 +                            return Poll::Ready(Err(io::Error::other(e.to_string())));
-+                        }
++                        },
 +                        Poll::Pending => return Poll::Pending,
 +                    }
 +                }
 +                // Phase 1: queue the GREASE frame exactly once (no-op if disabled).
 +                // Re-calling send_data while `writing` is occupied causes
 +                // H3_INTERNAL_ERROR, so guard with `shutdown_started`.
-+                if !*shutdown_started {
++                if h3_shutdown_phase(*send_poisoned, write_queued.is_some(), *shutdown_started)
++                    == H3ShutdownPhase::Grease
++                {
 +                    match stream.queue_grease() {
 +                        Ok(()) => *shutdown_started = true,
-+                        Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
++                        Err(e) => {
++                            *send_poisoned = true;
++                            return Poll::Ready(Err(io::Error::other(e.to_string())));
++                        },
 +                    }
 +                }
 +                // Phase 2: drain the GREASE frame (or returns Ready immediately
-+                // if no frame was queued).
-+                match stream.poll_drain(cx) {
-+                    Poll::Pending => return Poll::Pending,
-+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
-+                    Poll::Ready(Ok(())) => {}
++                // if no frame was queued). Skipped on a poisoned send side —
++                // there is nothing of ours left to flush there.
++                if !*send_poisoned {
++                    match stream.poll_drain(cx) {
++                        Poll::Pending => return Poll::Pending,
++                        Poll::Ready(Err(e)) => {
++                            *send_poisoned = true;
++                            return Poll::Ready(Err(io::Error::other(e.to_string())));
++                        },
++                        Poll::Ready(Ok(())) => {},
++                    }
 +                }
-+                // Phase 3: send QUIC FIN.
++                // Phase 3: send QUIC FIN. `finish()` never goes through
++                // `send_data`, so it is safe on a poisoned send side.
 +                match stream.poll_quic_finish(cx) {
                      Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
                      Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                      Poll::Pending => Poll::Pending,
                  }
-             }
+-            }
 -            StreamInner::Http3(Http3StreamInner::Client { stream, .. }) => {
 -                let fut = stream.finish();
 -                tokio::pin!(fut);
 -
 -                match fut.poll(cx) {
++            },
 +            StreamInner::Http3(Http3StreamInner::Client {
 +                stream,
 +                write_queued,
 +                shutdown_started,
++                send_poisoned,
 +                ..
 +            }) => {
 +                // Phase 0: drain any un-drained prior `poll_write` before greasing
 +                // (see the Server arm above) — a `queue_grease()` `send_data` while
 +                // h3-quinn's `writing` is still occupied escalates to a
 +                // connection-level `H3_INTERNAL_ERROR` that collapses the carrier.
-+                if write_queued.is_some() {
++                // A poisoned send side skips every queuing phase.
++                if h3_shutdown_phase(*send_poisoned, write_queued.is_some(), *shutdown_started)
++                    == H3ShutdownPhase::DrainPendingWrite
++                {
 +                    match stream.poll_drain(cx) {
 +                        Poll::Ready(Ok(())) => *write_queued = None,
 +                        Poll::Ready(Err(e)) => {
 +                            *write_queued = None;
++                            *send_poisoned = true;
 +                            return Poll::Ready(Err(io::Error::other(e.to_string())));
-+                        }
++                        },
 +                        Poll::Pending => return Poll::Pending,
 +                    }
 +                }
-+                if !*shutdown_started {
++                if h3_shutdown_phase(*send_poisoned, write_queued.is_some(), *shutdown_started)
++                    == H3ShutdownPhase::Grease
++                {
 +                    match stream.queue_grease() {
 +                        Ok(()) => *shutdown_started = true,
-+                        Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
++                        Err(e) => {
++                            *send_poisoned = true;
++                            return Poll::Ready(Err(io::Error::other(e.to_string())));
++                        },
 +                    }
 +                }
-+                match stream.poll_drain(cx) {
-+                    Poll::Pending => return Poll::Pending,
-+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
-+                    Poll::Ready(Ok(())) => {}
++                if !*send_poisoned {
++                    match stream.poll_drain(cx) {
++                        Poll::Pending => return Poll::Pending,
++                        Poll::Ready(Err(e)) => {
++                            *send_poisoned = true;
++                            return Poll::Ready(Err(io::Error::other(e.to_string())));
++                        },
++                        Poll::Ready(Ok(())) => {},
++                    }
 +                }
 +                match stream.poll_quic_finish(cx) {
                      Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
                      Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                      Poll::Pending => Poll::Pending,
+                 }
+-            }
++            },
+             _ => unreachable!(),
+         }
+     }
+@@ -623,11 +818,7 @@ impl AsyncWrite for Stream<Http3> {
+ impl fmt::Debug for Stream<Http3> {
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         match &self.inner {
+-            StreamInner::Http3(Http3StreamInner::Raw {
+-                recv_buf,
+-                recv_finished,
+-                ..
+-            }) => f
++            StreamInner::Http3(Http3StreamInner::Raw { recv_buf, recv_finished, .. }) => f
+                 .debug_struct("Stream<Http3>")
+                 .field("variant", &"Raw")
+                 .field("recv_buf_len", &recv_buf.len())
+@@ -676,4 +867,34 @@ mod tests {
+         #[cfg(feature = "http3")]
+         assert_send::<Stream<Http3>>();
+     }
++
++    /// A poisoned send side must never queue anything again — neither the
++    /// pending-write drain nor the GREASE frame. Queuing on top of h3-quinn's
++    /// still-occupied `writing` slot is escalated to a connection-level
++    /// `H3_INTERNAL_ERROR` that collapses the whole shared QUIC carrier.
++    #[cfg(feature = "http3")]
++    #[test]
++    fn poisoned_send_side_skips_straight_to_finish() {
++        for write_queued in [false, true] {
++            for shutdown_started in [false, true] {
++                assert_eq!(
++                    h3_shutdown_phase(true, write_queued, shutdown_started),
++                    H3ShutdownPhase::Finish,
++                    "poisoned send side must not queue (write_queued={write_queued}, \
++                     shutdown_started={shutdown_started})"
++                );
++            }
++        }
++    }
++
++    /// The healthy path is unchanged: drain a pending write first, then grease
++    /// exactly once, then finish.
++    #[cfg(feature = "http3")]
++    #[test]
++    fn healthy_send_side_drains_then_greases_once() {
++        assert_eq!(h3_shutdown_phase(false, true, false), H3ShutdownPhase::DrainPendingWrite);
++        assert_eq!(h3_shutdown_phase(false, true, true), H3ShutdownPhase::DrainPendingWrite);
++        assert_eq!(h3_shutdown_phase(false, false, false), H3ShutdownPhase::Grease);
++        assert_eq!(h3_shutdown_phase(false, false, true), H3ShutdownPhase::Finish);
++    }
+ }
