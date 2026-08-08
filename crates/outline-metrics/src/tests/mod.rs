@@ -164,6 +164,33 @@ fn render_prometheus_exports_uplink_reselect_total() {
     );
 }
 
+/// A group that has never rotated must still publish all three outcomes at
+/// zero. Re-selection can fire once a night, and an absent counter reads the
+/// same as one that never fired — worse, it hides a rotation that *did* happen
+/// across a restart, because the series reappears already at 1 and
+/// `increase()` over the restart sees a constant.
+#[test]
+fn render_prometheus_publishes_zero_reselect_outcomes_for_an_untouched_group() {
+    let _guard = test_guard();
+    init();
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+
+    // Assert presence, not the value: the registry is process-global and a
+    // sibling test increments `switched`, so pinning a zero here would make
+    // this pass or fail on test ordering. Presence is the whole fix anyway —
+    // the bug was a series that did not exist at all.
+    let group = empty_snapshot().group;
+    for outcome in ["switched", "no_candidate", "skipped"] {
+        assert!(
+            rendered.contains(&format!(
+                "outline_ws_uplink_reselect_total{{group=\"{group}\",outcome=\"{outcome}\"}}"
+            )),
+            "outcome '{outcome}' missing from exposition:\n{rendered}"
+        );
+    }
+}
+
 #[test]
 fn render_prometheus_exports_uplink_cert_expiry_gauge() {
     let _guard = test_guard();
