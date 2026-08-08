@@ -66,8 +66,19 @@ Logical changes carried by `h3-0.0.8.patch`:
 > (not the crates.io-published reformatting), so `sockudo-ws-1.7.5.patch`
 > applies directly to a clean `git clone` of that tag — no rustfmt step. The
 > library `Cargo.toml` still drops the upstream `[[bin]]` / bench targets, as
-> a published library crate would; `rustfmt.toml` has `ignore = ["vendor"]`
-> so the tree no longer drifts to the project format.
+> a published library crate would (so `src/bin/` is absent here and is not
+> part of the patch).
+>
+> **Formatting drift is not prevented automatically.** rustfmt's `ignore` key
+> is nightly-only, so the `ignore = ["vendor"]` line in `rustfmt.toml` is inert
+> on the stable toolchain the gate runs: a bare `cargo fmt --all` *will*
+> reformat `vendor/` to the project style and silently desynchronise the tree
+> from this patch (that is exactly how 21 files drifted between 2026-07-11 and
+> 2026-08-08). Keep `cargo fmt` scoped to the explicit package list in
+> `AGENTS.md`, and revert any format-only diff under `vendor/`. To verify the
+> tree still matches: clone the tag, `git apply sockudo-ws-1.7.5.patch`, and
+> `diff -r` the two `src/` trees — they must be byte-identical apart from
+> `src/bin/`.
 
 Logical changes carried by `sockudo-ws-1.7.5.patch`:
 
@@ -87,10 +98,17 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
    write (relay teardown under a stream-open/close burst) calls `send_data`
    while h3-quinn's send stream still has `writing = Some(..)`, which h3-quinn
    escalates to a connection-level `H3_INTERNAL_ERROR` that collapses every
-   multiplexed session on the shared QUIC carrier. (Note: the unused
-   `Http3ServerStream` / `Http3ClientStream` wrappers in `src/http3/stream.rs`
-   are left at upstream vanilla — the data plane never instantiates them, so the
-   fix lives only in the one live stream type.)
+   multiplexed session on the shared QUIC carrier. A third state flag,
+   `send_poisoned`, closes the remaining hole: h3-quinn's `poll_ready` clears
+   its `writing` slot **only on the success path**, so a drain that fails leaves
+   the send side occupied while our own `write_queued` is reset — the next
+   `queue_grease()` then trips the very misuse guard the drain was meant to
+   avoid. Any send-side failure now poisons the stream, and `h3_shutdown_phase`
+   (unit-tested) routes a poisoned stream straight to the QUIC FIN, which never
+   goes through `send_data`. (Note: the unused `Http3ServerStream` /
+   `Http3ClientStream` wrappers in `src/http3/stream.rs` are left at upstream
+   vanilla — the data plane never instantiates them, so the fix lives only in
+   the one live stream type.)
 3. **valid-close-codes-1012-1014** (`src/error.rs`) — `Error::is_valid_code`
    accepted only `1000..=1003 | 1007..=1011 | 3000..=4999`, rejecting the
    IANA-registered 1012 (Service Restart), 1013 (Try Again Later) and 1014
