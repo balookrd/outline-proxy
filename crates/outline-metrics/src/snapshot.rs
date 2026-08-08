@@ -66,6 +66,20 @@ impl Metrics {
 
     fn update_group_metrics(&self, snapshot: &UplinkManagerSnapshot) {
         let group = snapshot.group.as_str();
+        // Re-selection is rare — a scheduled group may fire once a night — and
+        // a counter that does not exist until its first event cannot be read
+        // as "it has not fired". Worse, it misreports across a restart: the
+        // series vanishes with the old process and reappears already at 1, so
+        // `increase()` over a window spanning the restart sees a constant and
+        // reports no rotation at all. Observed on the fleet, where a 03:20
+        // reselect that the journal recorded was invisible at 24h while the
+        // same query at 12h showed it. Touching all three outcomes here — the
+        // first place a group name is known — keeps them at a readable zero.
+        for outcome in ["switched", "no_candidate", "skipped"] {
+            self.uplink_reselect_total
+                .with_label_values(&[group, outcome])
+                .inc_by(0);
+        }
         // Counts come from the exact totals, never from `sticky_routes` — that
         // list is a capped sample.
         self.sticky_routes_total
