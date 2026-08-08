@@ -1,0 +1,14 @@
+[Unit]
+Description=Weekly NanoPi userdata (p9) backup to NFS
+Documentation=file:/usr/local/share/nanopi104-backup/README.md
+
+[Timer]
+# Sunday 04:00 local — a quiet window (no CDN flow-bursts) on a fragile board.
+OnCalendar=Sun *-*-* 04:00:00
+# Spread the exact start a little; harmless here, good hygiene.
+RandomizedDelaySec=15min
+# If the board was off/asleep at 04:00, run at next boot instead of skipping.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

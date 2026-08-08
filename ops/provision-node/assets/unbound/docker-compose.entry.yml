@@ -1,0 +1,69 @@
+# Unbound stack for an entry node. Owned by
+# ops/provision-node/assets/unbound/docker-compose.entry.yml — install.sh
+# writes this file to /opt/unbound/docker-compose.yml verbatim, so edit it here
+# rather than on a node.
+#
+# Same two services as the exit family (docker-compose.exit.yml) plus dnsproxy,
+# which is what actually serves the fleet: DoT on 8853, DoH on 8443, both
+# terminated with this node's own certificate and forwarded to unbound on
+# 127.0.0.1:53.
+#
+# %DOMAIN% is expanded by install.sh to this node's FQDN, so the certificate
+# paths name the node the file is installed on and not the reference it was
+# cloned from.
+#
+# `restart: unless-stopped` on every service is not decoration: without it on
+# unbound-exporter the container stayed down from the first reboot onwards and
+# the node silently stopped reporting DNS metrics (cloud1/cloud2, until
+# 2026-08-08).
+
+services:
+  unbound:
+    image: klutchell/unbound:latest
+    container_name: unbound
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ["unbound"]
+    command: ["-d", "-c", "/etc/unbound/unbound.conf"]
+    volumes:
+      - /opt/unbound/unbound.conf:/etc/unbound/unbound.conf:ro
+
+  unbound-exporter:
+    image: saarphil/unbound_exporter:latest
+    container_name: unbound-exporter
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - unbound
+    # The empty ca/cert/key are required, not optional: the exporter defaults
+    # to unbound's TLS control channel, and its defaults point at certificate
+    # files that do not exist here. unbound.conf sets control-use-cert: no.
+    command:
+      - --unbound.host=tcp://127.0.0.1:8953
+      - "--unbound.ca="
+      - "--unbound.cert="
+      - "--unbound.key="
+
+  dnsproxy:
+    image: adguard/dnsproxy:latest
+    container_name: dnsproxy
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - unbound
+    # --hosts-file-enabled=false is load-bearing. dnsproxy resolves from hosts
+    # files by default and `network_mode: host` hands it a copy of this node's
+    # /etc/hosts, so without it the resolver answers `<node>.beerloga.su →
+    # 127.0.1.1` for its own name to everyone using it (2026-08-08: the
+    # dashboard on .102 hit its own port 443 and reported cloud2 offline).
+    command:
+      - "--listen=::"
+      - --tls-port=8853
+      - --https-port=8443
+      - --tls-crt=/certs/%DOMAIN%.crt
+      - --tls-key=/certs/%DOMAIN%.key
+      - --upstream=127.0.0.1:53
+      - --hosts-file-enabled=false
+      - --http3
+    volumes:
+      - /opt/beerloga/.lego/certificates:/certs:ro

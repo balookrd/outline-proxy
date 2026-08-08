@@ -1,0 +1,36 @@
+# Grafana notification policy tree, provisioned from file.
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: owner
+    group_by: [alertname, instance]
+    group_wait: 30s
+    group_interval: 5m
+    # Twelve hours, not five minutes: an ongoing problem should be one mail a
+    # day, not a stream. The fleet has taught us that a burst right after a
+    # restart is not a regression — long `for` durations and a long repeat are
+    # both part of not crying wolf.
+    repeat_interval: 12h
+    routes:
+      # The dead man's switch is not a notification — it is a pulse. It leaves
+      # the tree immediately and never reaches the mail contact point.
+      - receiver: heartbeat-observers
+        object_matchers:
+          - [alertname, =, DeadMansSwitch]
+        group_wait: 0s
+        group_interval: 1m
+        repeat_interval: 5m
+
+      # Client restarts are frequent — measured on 2026-08-07, roughly 13 per
+      # week on ubuntu and 12 on debian. Under the default route that would be
+      # a mail most days. Collapsing the whole fleet into one group with a
+      # daily repeat turns it into a digest, which is all an info-level signal
+      # deserves.
+      - receiver: owner
+        object_matchers:
+          - [alertname, =, ClientRestarted]
+        group_by: [alertname]
+        group_wait: 5m
+        group_interval: 30m
+        repeat_interval: 24h

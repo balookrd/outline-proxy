@@ -1,0 +1,15 @@
+[Unit]
+Description=Alert by mail when the Grafana heartbeat from .102 stops
+Documentation=file:/usr/local/share/heartbeat-watch/README.md
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/heartbeat-watch/smtp.env
+ExecStart=/usr/local/sbin/heartbeat-watch
+# The watcher reads an nginx log and writes one small state file. Nothing else
+# on this host is its business.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/heartbeat-watch
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
