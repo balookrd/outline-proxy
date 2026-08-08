@@ -466,7 +466,9 @@ impl FrameParser {
                     // Check RSV bits (must be 0 unless extension negotiated)
                     // RSV1 is allowed when compression is enabled
                     if rsv1 && !self.allow_rsv1 {
-                        return Err(Error::Protocol("RSV1 must be 0 (compression not negotiated)"));
+                        return Err(Error::Protocol(
+                            "RSV1 must be 0 (compression not negotiated)",
+                        ));
                     }
                     if rsv2 || rsv3 {
                         return Err(Error::Protocol("RSV2 and RSV3 must be 0"));
@@ -595,7 +597,7 @@ impl FrameParser {
                         mask,
                     });
                     self.state = ParseState::Payload;
-                },
+                }
 
                 ParseState::ExtendedLen16 => {
                     // Need bytes 2 and 3 for 16-bit length (total 4 bytes for header so far)
@@ -631,7 +633,7 @@ impl FrameParser {
                     } else {
                         self.state = ParseState::Payload;
                     }
-                },
+                }
 
                 ParseState::ExtendedLen64 => {
                     // Need bytes 2-9 for 64-bit length (total 10 bytes for header so far)
@@ -676,7 +678,7 @@ impl FrameParser {
                     } else {
                         self.state = ParseState::Payload;
                     }
-                },
+                }
 
                 ParseState::Mask => {
                     let header = self.header.as_mut().unwrap();
@@ -727,7 +729,7 @@ impl FrameParser {
                     ]);
 
                     self.state = ParseState::Payload;
-                },
+                }
 
                 ParseState::Payload => {
                     let header = self.header.as_ref().unwrap();
@@ -786,7 +788,7 @@ impl FrameParser {
 
                     self.reset();
                     return Ok(Some(frame));
-                },
+                }
             }
         }
     }
