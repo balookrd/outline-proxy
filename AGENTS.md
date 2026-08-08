@@ -110,12 +110,19 @@ vendored-крейты, которые держим в upstream-стиле.
   (`rustls-aws-lc-rs` у quinn). Проверка: `cargo tree -i 'rustls@0.23' -e features
   | grep 'rustls feature "ring"'` — пусто. `ring`-крейт остаётся только для
   SS-AEAD/SHA-256, не как rustls-провайдер. aws-lc-sys требует cmake при сборке.
-- **Единый `vendor/`.** `vendor/sockudo-ws` = upstream 1.7.5 + наложенные
-  патчи h3-noerror и poll-write (protocol —
-  `writer.shutdown()` в WebSocket `close()`: FIN вместо RESET_STREAM, иначе
-  `H3_INTERNAL_ERROR` рвёт всё QUIC-соединение; плюс `is_normal_h3_shutdown`).
-  Также restored `WebSocketServer::into_parts` (нужен серверному accept-loop).
-  Не плоди вторые копии vendored и не поднимай версии без явной причины.
+- **Единый `vendor/`.** `vendor/sockudo-ws` = upstream 1.7.5 + ровно три
+  логических патча, и все они живут в трёх файлах — `src/error.rs`
+  (valid-close-codes 1012-1014), `src/server.rs` (h3-noerror:
+  `is_normal_h3_shutdown` + restored `WebSocketServer::into_parts`, нужен
+  серверному accept-loop) и `src/stream/transport_stream.rs` (fix-h3-poll-write:
+  машина состояний `queue_send`/`poll_drain`/`queue_grease`/`poll_quic_finish`,
+  она же даёт FIN вместо RESET_STREAM на закрытии — иначе
+  `H3_INTERNAL_ERROR` рвёт всё QUIC-соединение). Ищешь close-логику — она в
+  `transport_stream.rs::poll_shutdown`, а НЕ в `protocol.rs`: там ни у нас, ни
+  в upstream нет ни одного `shutdown()`. Остальные файлы `vendor/sockudo-ws`
+  обязаны быть побайтово равны upstream — сверка описана в
+  [`PATCHES.ru.md`](PATCHES.ru.md). Не плоди вторые копии vendored и не поднимай
+  версии без явной причины.
 - **Единый профиль.** `[profile.release]` (lto=fat, panic=abort) — только в
   корневом `Cargo.toml`. Package-манифесты в `bins/*` тонкие, без
   `[workspace]`/`[profile]`/`[patch]`.
