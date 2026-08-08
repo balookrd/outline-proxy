@@ -191,6 +191,41 @@ fn render_prometheus_publishes_zero_reselect_outcomes_for_an_untouched_group() {
     }
 }
 
+/// The point of `uplink_enabled` is the case where every other per-uplink
+/// series goes quiet: switching an uplink off takes it out of the probe loop,
+/// so `uplink_health` stops being published for it entirely. Both states must
+/// be published side by side, or "off by hand" stays indistinguishable from
+/// "not probed yet" — the exact confusion this metric was added to end.
+#[test]
+fn render_prometheus_reports_admin_disabled_uplinks_as_zero() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let live = snapshot_uplink("nuxt");
+    let mut switched_off = snapshot_uplink("senko");
+    switched_off.admin_disabled = true;
+    snapshot.uplinks = vec![live, switched_off];
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+
+    assert!(
+        rendered.contains("outline_ws_uplink_enabled{group=\"main\",uplink=\"nuxt\"} 1"),
+        "enabled uplink must report 1:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("outline_ws_uplink_enabled{group=\"main\",uplink=\"senko\"} 0"),
+        "administratively disabled uplink must report 0:\n{rendered}"
+    );
+    // Neither uplink carries a probe verdict here, so health stays absent —
+    // which is precisely the state the new series has to disambiguate.
+    assert!(
+        !rendered
+            .contains("outline_ws_uplink_health{group=\"main\",transport=\"tcp\",uplink=\"senko\""),
+        "test premise broken: health must be absent for this to prove anything:\n{rendered}"
+    );
+}
+
 #[test]
 fn render_prometheus_exports_uplink_cert_expiry_gauge() {
     let _guard = test_guard();

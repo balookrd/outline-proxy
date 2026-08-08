@@ -42,6 +42,7 @@ impl Metrics {
         self.uplink_effective_latency_seconds.reset();
         self.uplink_score_seconds.reset();
         self.uplink_weight.reset();
+        self.uplink_enabled.reset();
         self.uplink_cert_expiry_timestamp_seconds.reset();
         self.uplink_cooldown_seconds.reset();
         self.uplink_standby_ready.reset();
@@ -121,6 +122,15 @@ impl Metrics {
             self.uplink_weight
                 .with_label_values(&[group, &uplink.name])
                 .set(uplink.weight);
+            // Unconditional, disabled uplinks included. Switching an uplink off
+            // takes it out of the probe loop, so its `uplink_health` series
+            // stops being published at all — without this one, "off by hand" is
+            // indistinguishable from "not probed yet". Read the pair: present
+            // here but absent from `uplink_health` means an operator switched
+            // it off.
+            self.uplink_enabled
+                .with_label_values(&[group, &uplink.name])
+                .set(if uplink.admin_disabled { 0 } else { 1 });
             if let Some(cert_not_after_ms) = uplink.cert_not_after_unix_ms {
                 self.uplink_cert_expiry_timestamp_seconds
                     .with_label_values(&[group, &uplink.name])
