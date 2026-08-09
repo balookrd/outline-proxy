@@ -1,27 +1,65 @@
-# Grafana на узле-шлюзе (.102)
+# Grafana
 
-Grafana OSS в docker (`/opt/grafana/grafana.sh`), порт `4000 → 3000`, данные в
-`/opt/grafana/data`, провижининг из `/opt/grafana/provisioning`. Источник
-данных — VictoriaMetrics на `:8428` (uid `adnsc1wi03doga`).
+Grafana OSS 13.0.2 живёт **в k3s-кластере** (`monitoring/grafana`), снаружи —
+`https://grafana.k3s.beerloga.su`. До 2026-08-09 она работала в docker на
+`198.18.1.102`; там всё оставлено как путь отката: `/opt/grafana` нетронут,
+контейнер остановлен и снят с автозапуска (`docker update --restart=no`).
 
-## Дашборды
+VictoriaMetrics осталась на `.102` (`:8428`) — датасорс `prometheus`
+(uid `adnsc1wi03doga`) ходит туда по сети. **UID менять нельзя:** дашборды
+ссылаются на датасорс именно по нему, и с чужим UID все панели окажутся пустыми.
 
-[`provisioning-dashboards.yaml`](provisioning-dashboards.yaml) кладётся в
-`/opt/grafana/provisioning/dashboards/outline.yaml`, сами дашборды — в
-`/opt/grafana/data/dashboards/`. В UI они read-only (`allowUiUpdates: false`):
-править нужно файл в репозитории и копировать на узел. Для экспериментов в UI —
-«Save as», копия обычная и редактируемая.
+Состояние — SQLite на `local-path` (NVMe ноды). Кроме провижиненных, в ней живут
+семь дашбордов, заведённых руками и отсутствующих в git (`Power`, `Temperature`,
+`Node Exporter Full`, `Tunnels`, `Outline`, `VictoriaMetrics`, `Xray Dashboard`),
+поэтому ночной бэкап здесь не формальность.
 
-**Копирования недостаточно — нужен рестарт.** `updateIntervalSeconds: 30` на
-Grafana 13.0.2 не работает: в логе `provision dashboards` появляется только при
-старте контейнера, периодического перечитывания нет. Проверено 2026-08-09 —
-три дашборда, обновлённых в 08:51, продолжали отдавать старые версии, потому что
-контейнер стартовал накануне днём. То есть правило «провижининг применяется
-только при старте» распространяется и на дашборды, и на алертинг.
+## Раскатка
 
 ```bash
-./ops/grafana/dashboards/deploy.sh   # копирует
-ssh mmv@198.18.1.102 'sudo docker restart grafana'
+export KUBECONFIG=~/.kube/k3s-home.yaml
+./ops/grafana/dashboards/deploy.sh --k3s   # ConfigMap на каждый дашборд
+./ops/grafana/alerting/deploy.sh --k3s     # Secret с rules/policies/contact-points
+kubectl -n monitoring rollout restart deploy/grafana
+```
+
+**Рестарт обязателен.** Провижининг и дашбордов, и алертинга выполняется только
+при старте: `updateIntervalSeconds` на 13.0.2 ничего не перечитывает. Проверено
+2026-08-09 — три дашборда, обновлённых в 08:51, продолжали отдавать старые
+версии, потому что контейнер стартовал накануне.
+
+Грабли режима `--k3s`:
+
+- **Дашборды собираются из трёх мест.** Кроме этого каталога, скрипт забирает
+  `bins/outline-ss-rust/grafana/` и `bins/outline-ws-rust/grafana/`. Так и надо:
+  провайдер стоит с `disableDeletion: false`, и дашборд, не попавший в
+  смонтированный каталог, будет удалён из БД при следующем старте.
+- **Применение только `--server-side`.** Обычный `kubectl apply` пишет весь
+  объект в аннотацию `last-applied-configuration`, а у аннотаций лимит 256 КБ —
+  `outline-ws-rust-dashboard.json` (252 КБ) его пробивает, хотя в сам ConfigMap
+  (лимит 1 МиБ) влезает свободно.
+- **Новый дашборд надо примонтировать.** Один ConfigMap на файл, список
+  источников — в projected volume в
+  [`apps/monitoring/grafana.yaml`](../nanopi-r5c-k3s/apps/monitoring/grafana.yaml);
+  скрипт печатает строку, которую туда добавить.
+
+## Бэкап
+
+CronJob `grafana-backup` в 03:30 снимает консистентный снимок БД и кладёт
+`grafana-YYYYmmdd-HHMM.db.gz` на NAS
+(`198.18.1.125:/mnt/HD/HD_a2/k8s/backup/grafana`), хранит семь последних. Снимок
+делается модулем `sqlite3` из `python:alpine`, а не утилитой `sqlite3`: под
+работает под uid 472, а `apk add` требует root.
+
+## Legacy: docker на .102
+
+Прежний путь раскатки (те же скрипты без `--k3s`) остался рабочим на случай
+отката:
+
+```bash
+./ops/grafana/dashboards/deploy.sh
+./ops/grafana/alerting/deploy.sh
+ssh mmv@198.18.1.102 'sudo docker update --restart=unless-stopped grafana && sudo docker start grafana'
 ```
 
 ### Дашборд `outline alerting`
@@ -37,18 +75,16 @@ ssh mmv@198.18.1.102 'sudo docker restart grafana'
 посмотреть, как правило вело бы себя в прошлом, до того как его завели.
 
 Метрики `grafana_alerting_*` берутся из самой Grafana: в `scrape.yaml` на `.102`
-добавлен job `grafana` (`127.0.0.1:4000`). Конфиг VictoriaMetrics перечитывается
+добавлен job `grafana`. После переезда в кластер он ходит на
+`https://grafana.k3s.beerloga.su/metrics` (`scheme: https` — ingress редиректит
+http на TLS, и без схемы scrape ловил бы `308`). Конфиг VictoriaMetrics перечитывается
 без рестарта — `curl -X POST http://127.0.0.1:8428/-/reload` (автоперечитывание
 выключено: `promscrape.configCheckInterval=0s`).
 
-Дашборды, не привязанные к бинарю, лежат в [`dashboards/`](dashboards/):
-
-```bash
-scp ops/grafana/dashboards/unbound-dashboard.json mmv@198.18.1.102:/opt/grafana/data/dashboards/
-```
-
-Дашборды бинарей живут рядом с ними — `bins/outline-ws-rust/grafana/`,
-`bins/outline-ss-rust/grafana/`.
+Дашборды, не привязанные к бинарю, лежат в [`dashboards/`](dashboards/);
+дашборды бинарей — рядом с ними, в `bins/outline-ws-rust/grafana/` и
+`bins/outline-ss-rust/grafana/`. Раскатывать их надо все разом
+(`./dashboards/deploy.sh --k3s` собирает все три каталога) — см. «Раскатка».
 
 **Как забрать дашборд, заведённый руками в UI.** Начиная с Grafana 12 дашборды
 хранятся в unified storage — таблица `resource` в `/opt/grafana/data/grafana.db`,
@@ -111,21 +147,20 @@ exporter отдаёт 56 семейств `unbound_*` вместо 27. Вклю�
 файлы маршрутизации и конфиг VictoriaMetrics через `/-/reload`.
 
 ```bash
-sudo docker restart grafana
+kubectl -n monitoring rollout restart deploy/grafana
 ```
-
-`docker restart` предпочтительнее `sh /opt/grafana/grafana.sh`: последний делает
-`docker pull` и может подтянуть новую версию Grafana, чего при раскатке правил
-никто не просил.
-
-**Но `docker restart` не видит правок `grafana.sh`.** Он перезапускает контейнер
-с теми переменными окружения, с которыми тот был *создан*. Провижининг подхватится
-(он в volume), а новый `GF_SMTP_USER` — нет. Правило простое:
 
 | Что поменял | Чем применять |
 |-------------|---------------|
-| файлы в `provisioning/alerting/` | `docker restart grafana` |
-| переменные в `grafana.sh` (SMTP и прочее) | `sh /opt/grafana/grafana.sh` (пересоздание) |
+| `alerting/*.yaml` | `./alerting/deploy.sh --k3s` + `rollout restart` |
+| дашборд | `./dashboards/deploy.sh --k3s` + `rollout restart` |
+| переменные окружения (SMTP и прочее) | правка `apps/monitoring/grafana.yaml` + `kubectl apply` |
+
+Legacy-путь на `.102` жил по тем же правилам, но там `docker restart` не видел
+правок `grafana.sh`: контейнер перезапускался со старым окружением, и новый
+`GF_SMTP_USER` не подхватывался — требовалось пересоздание через
+`sh /opt/grafana/grafana.sh`. В кластере этой ловушки нет: `kubectl apply`
+пересоздаёт под целиком.
 
 ## Каналы доставки
 

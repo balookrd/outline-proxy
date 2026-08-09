@@ -42,13 +42,18 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 пропускаются `zigbee2mqtt` (`<COORDINATOR_IP>`), `outline/*` и `ocserv` (`<REGISTRY>/<TAG>`)
 — заполнишь значения, повторный прогон их подхватит.
 
-**Секреты — до раскатки, вне git.** Создать из шаблонов `*.secret.example.yaml`:
+**Секреты — до раскатки, вне git.** Секреты Grafana (`grafana-smtp`,
+`grafana-alerting`) создаются скриптами из [`ops/grafana/`](../../grafana/) —
+см. тамошний README. Пароля администратора среди них нет намеренно: он живёт в
+перенесённой БД, а `GF_SECURITY_ADMIN_PASSWORD` сбрасывал бы его при каждом
+старте пода. Остальное — из шаблонов `*.secret.example.yaml` (ocserv-certs,
+когда дойдёт до ocserv).
 
-```bash
-kubectl -n monitoring create secret generic grafana-admin \
-  --from-literal=password='<STRONG_PASSWORD>'
-# ocserv-certs — когда дойдёт до ocserv (см. vpn/ocserv-certs.secret.example.yaml)
-```
+Grafana мигрирована с `198.18.1.102` 2026-08-09: данные — SQLite на
+`local-path` (PV несёт node-affinity, поэтому под приколочен к своей ноде),
+конфигурация — ConfigMap `grafana-datasources` и `grafana-dashboard-provider`,
+дашборды — по ConfigMap на файл, алертинг — Secret `grafana-alerting`. Ночной
+бэкап на NAS — CronJob `grafana-backup`.
 
 `local-path` уже встроен в k3s и смотрит в `/var/lib/rancher/k3s/storage` — то есть в
 смонтированный NVMe (шаг 8 runbook). Отдельно ставить нечего.
