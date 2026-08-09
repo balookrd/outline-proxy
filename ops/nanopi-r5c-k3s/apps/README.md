@@ -12,7 +12,7 @@ Longhorn/Ceph сознательно не используются: все на�
 | Класс | Носитель | Кому |
 |---|---|---|
 | `local-path` (default, встроен в k3s) | локальный NVMe ноды | только IOPS-heavy: VictoriaMetrics |
-| `nfs-client` | внешний NAS по NFS | всё остальное stateful — переезжает за подом |
+| `nfs-client` | NAS `198.18.1.125:/mnt/HD/HD_a2/k8s/pvc` (NFSv3) | всё остальное stateful — переезжает за подом |
 
 Почему так: см. рассуждение в шапке каждого манифеста. Коротко — синглтон нельзя
 запустить в двух репликах (z2m подерётся за координатор, VM за базу), поэтому HA = один
@@ -106,6 +106,17 @@ API, инкрементально).
 `local-path` уже встроен в k3s и смотрит в `/var/lib/rancher/k3s/storage` — то есть в
 смонтированный NVMe (шаг 8 runbook). Отдельно ставить нечего.
 
+`nfs-client` ставится чартом (`./deploy.sh storage`). Автосозданные тома идут в
+подкаталог `pvc/`, отдельно от каталогов, заведённых руками при переездах с
+`.102` (`zigbee2mqtt-data`, `mosquitto-data`, `registry`, `smarthome`) и от
+`backup/`. NAS отвечает **только по NFSv3** — на `nfsvers=4.1` и `nfsvers=4`
+монтирование падает с «Protocol not supported». Root не сквошится, поэтому
+провижнер может выставлять права на то, что создал.
+
+Тома z2m и mosquitto подключены **inline** (`nfs:` в манифесте), а не через
+`nfs-client`: их данные перенесены руками и лежат в каталогах с осмысленными
+именами, тогда как провижнер называет каталоги по uid тома.
+
 ## Вход трафика
 
 Три класса, три пути — детали в [`ingress/README.md`](ingress/README.md):
@@ -131,7 +142,6 @@ MetalLB, Traefik, namespace'ы и ingress-объекты, не трогая work
 
 Помечено `TODO` / `<...>` в файлах:
 
-- **`<NAS_IP>` / `<EXPORT_PATH>`** — экспорт NFS с NAS (`storage/nfs-provisioner.values.yaml`).
 - **outline-топология** — `outline-ws-rust` привязан к одному uplink или к каждой ноде?
   От этого DaemonSet vs pinned Deployment (`outline/`).
 - **VM retention/объём** — влезает ли в NVMe-раздел, нужен ли отдельный

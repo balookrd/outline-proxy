@@ -5,14 +5,19 @@
 #     -n kube-system -f nfs-provisioner.values.yaml
 #
 # The provisioner creates one subdirectory per PVC on the NAS export and
-# chowns it. The export must allow that — see the mount notes below.
+# chmods it 0777. The export must allow that — see the mount notes below.
 
 nfs:
   server: 198.18.1.125
-  path: /nfs/k8s
-  # TODO: confirm the NAS actually serves NFSv4.1; drop to nfsvers=3 if not.
+  # The NAS exports /mnt/HD/HD_a2/k8s and nothing else — there is no /nfs/k8s.
+  # Auto-provisioned volumes go into a pvc/ subdirectory rather than the export
+  # root, which already holds hand-made directories (zigbee2mqtt-data, backup,
+  # registry, smarthome). Machine-managed and hand-managed data stay separate.
+  path: /mnt/HD/HD_a2/k8s/pvc
+  # NFSv3 only: the NAS answers "Protocol not supported" to both nfsvers=4.1
+  # and nfsvers=4 (checked 2026-08-09 by mounting from k3s-1).
   mountOptions:
-    - nfsvers=4.1
+    - nfsvers=3
     - hard
     - noatime
 
@@ -20,8 +25,9 @@ storageClass:
   name: nfs-client
   defaultClass: false       # local-path stays default; nfs-client is explicit
   # retain: a deleted PVC leaves its subdir on the NAS instead of wiping it.
-  # Critical for z2m/database.db — an accidental PVC delete must not lose the
-  # Zigbee network map. Recreate the PVC and re-link the subdir by hand.
+  # Critical for anything holding state that cannot be regenerated — an
+  # accidental PVC delete must not lose it. Recreate the PVC and re-link the
+  # subdir by hand.
   onDelete: retain
   archiveOnDelete: false
 
@@ -33,7 +39,12 @@ resources:
     cpu: 10m
     memory: 32Mi
 
-# NAS export requirements (configure on the NAS, not here):
-#   - allow the k3s node IPs (or the interconnect subnet) read-write;
-#   - no_root_squash OR map to a uid the provisioner can chown as;
-#   - enough inodes/space for all PVCs (tiny here: z2m/grafana/mosquitto < 300 MB total).
+# NAS export state (verified 2026-08-09, configured on the NAS itself):
+#   - export is world-accessible (`*`) and served over NFSv3 only;
+#   - no root squash: a directory created by root keeps root as its owner,
+#     so the provisioner can chmod what it creates;
+#   - the export root is 0777, and so is pvc/.
+#
+# Note that zigbee2mqtt and mosquitto do NOT use this storage class: they mount
+# their directories inline (`nfs:` volumes) because those were migrated by hand
+# off 198.18.1.102 and have names a provisioner would not have chosen.
