@@ -39,8 +39,8 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
 **Guard.** Скрипт не применяет `*.example.yaml` (шаблоны секретов) и любой манифест с
 незаполненными `<PLACEHOLDER>` — вместо битого объекта печатает `[skip]`. Сейчас
-пропускаются `zigbee2mqtt` (`<COORDINATOR_IP>`), `outline/*` и `ocserv` (`<REGISTRY>/<TAG>`)
-— заполнишь значения, повторный прогон их подхватит.
+пропускаются `outline/*` и `ocserv` (`<REGISTRY>/<TAG>`) — заполнишь значения,
+повторный прогон их подхватит.
 
 **Секреты — до раскатки, вне git.** Секреты Grafana (`grafana-smtp`,
 `grafana-alerting`) создаются скриптами из [`ops/grafana/`](../../grafana/) —
@@ -54,6 +54,14 @@ Grafana мигрирована с `198.18.1.102` 2026-08-09: данные — SQ
 конфигурация — ConfigMap `grafana-datasources` и `grafana-dashboard-provider`,
 дашборды — по ConfigMap на файл, алертинг — Secret `grafana-alerting`. Ночной
 бэкап на NAS — CronJob `grafana-backup`.
+
+zigbee2mqtt мигрирован с `198.18.1.102` 2026-08-09. Координатор сетевой
+(`tcp://198.18.1.106:8888`), поэтому под не привязан к железу. Настройки — в
+`configuration.yaml` внутри PVC, а НЕ в переменных окружения: там же лежат
+`network_key` и `pan_id`, без которых сеть из 22 устройств не соберётся.
+Брокер mosquitto **остался на `.102`** вместе с шестью контейнерами умного дома
+и четырьмя внешними клиентами; z2m ходит на него по прежнему адресу. Ночной
+бэкап — CronJob `zigbee2mqtt-backup`, семь копий.
 
 `local-path` уже встроен в k3s и смотрит в `/var/lib/rancher/k3s/storage` — то есть в
 смонтированный NVMe (шаг 8 runbook). Отдельно ставить нечего.
