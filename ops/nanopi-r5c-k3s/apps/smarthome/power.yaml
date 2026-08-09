@@ -30,7 +30,7 @@ spec:
             - --mqtt
             - mqtt.beerloga.su
             - --victoria
-            - vm.beerloga.su
+            - victoria-metrics.monitoring
           env:
             - { name: TZ, value: Europe/Moscow }
           volumeMounts:
