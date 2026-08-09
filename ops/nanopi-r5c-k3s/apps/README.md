@@ -76,6 +76,33 @@ hostNetwork для Wake-on-LAN, а токены авторизации Samsung �
 подтверждения на экране телевизора. Образы собираются на маке и лежат в кластерном реестре
 `registry.k3s.beerloga.su` (см. [`registry/README.md`](registry/README.md)).
 
+VictoriaMetrics мигрирована с `198.18.1.102` 2026-08-09 — namespace
+`monitoring`, под прибит к `k3s-1`, данные на `local-path` (NVMe). Здесь
+сознательно НЕ NFS: у TSDB поток мелких записей с fsync, сетевая ФС для этого не
+годится — в отличие от z2m и smarthome, где она уместна.
+
+В кластере обращаться по `http://victoria-metrics.monitoring:8428`, снаружи —
+`https://vm.k3s.beerloga.su`. Ночной бэкап — CronJob `vmbackup` (снапшот через
+API, инкрементально).
+
+**Скрейпить сервисы кластера надо по ClusterIP, а не через ingress.** Запрос из
+пода на MetalLB-VIP собственного кластера уходит наружу и возвращается; Traefik
+на таком hairpin отвечает `5xx`, при этом снаружи тот же URL даёт `200`. На этом
+отвалился скрейп Grafana сразу после переезда — цель переведена на
+`grafana.monitoring:3000`.
+
+Метрики самих нод собирает DaemonSet `node-exporter` (версия 1.11.1, как на
+парке; `hostNetwork` + `hostPID`, иначе отдавал бы метрики контейнера). Цели
+дописаны в существующий job `node-exporter` рядом с остальными узлами.
+
+**Раскладка на NAS:** данные лежат в корне экспорта (`registry/`, `smarthome/`,
+`zigbee2mqtt-data/`), бэкапы — в `backup/` (`backup/grafana/`,
+`backup/victoria-metrics/`).
+
+**Все stateful-поды на `k3s-1`** — VictoriaMetrics, Grafana, samsung-tv. Одна
+нода, одно место для данных и для восстановления; плата — её потеря затрагивает
+всех троих.
+
 `local-path` уже встроен в k3s и смотрит в `/var/lib/rancher/k3s/storage` — то есть в
 смонтированный NVMe (шаг 8 runbook). Отдельно ставить нечего.
 
