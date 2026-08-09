@@ -1,0 +1,48 @@
+# Datasource and dashboard-provider configuration for the cluster Grafana.
+#
+# The datasource UID is not cosmetic: dashboards reference datasources by UID,
+# and the migrated ones all point at adnsc1wi03doga. Change it and every panel
+# comes up empty.
+#
+# VictoriaMetrics stays on 198.18.1.102 — it holds 90 days of history and every
+# scrape target of the fleet points at it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: prometheus
+        uid: adnsc1wi03doga
+        type: prometheus
+        access: proxy
+        url: http://198.18.1.102:8428
+        isDefault: true
+        jsonData:
+          timeInterval: 15s
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: monitoring
+data:
+  outline.yaml: |
+    apiVersion: 1
+    providers:
+      - name: outline
+        orgId: 1
+        type: file
+        # A deleted file removes the dashboard, so the directory is the single
+        # source of truth rather than an additive overlay. Hand-made dashboards
+        # live in the database and belong to no provider — they are untouched.
+        disableDeletion: false
+        allowUiUpdates: false
+        options:
+          # NOT /var/lib/grafana/dashboards as on the host: that path is inside
+          # the PVC, and a ConfigMap cannot be mounted there.
+          path: /etc/grafana/dashboards
+          foldersFromFilesStructure: false

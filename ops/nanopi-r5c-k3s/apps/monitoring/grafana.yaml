@@ -1,9 +1,14 @@
-# Grafana.
+# Grafana, migrated off the docker container on 198.18.1.102.
 #
-# Singleton on NFS: SQLite state (dashboards, datasources) follows the pod on a
-# node move. SQLite-over-NFS is safe with a single writer, which a one-replica
-# Grafana is. For extra safety, provision dashboards from git and treat the PVC
-# as recoverable rather than precious.
+# Singleton on local-path: Grafana 13 keeps everything — dashboards included —
+# in one SQLite file under unified storage, and SQLite over NFS corrupts on
+# network hiccups. The local-path PV carries node affinity, so the pod follows
+# its data without a nodeSelector. Durability comes from the nightly backup to
+# the NAS, not from the volume.
+#
+# The admin password is NOT set through the environment on purpose: it lives in
+# the migrated database, and GF_SECURITY_ADMIN_PASSWORD would silently reset it
+# on every pod start.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,7 +17,7 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: Recreate
+    type: Recreate            # SQLite tolerates exactly one writer
   selector:
     matchLabels: { app: grafana }
   template:
@@ -20,27 +25,66 @@ spec:
       labels: { app: grafana }
     spec:
       securityContext:
-        fsGroup: 472            # grafana uid/gid — needs write on the NFS subdir
-        runAsUser: 472
+        runAsUser: 472        # the image's own uid; migrated files get chowned
+        fsGroup: 472
       containers:
         - name: grafana
-          image: grafana/grafana:11.4.0
+          image: grafana/grafana-oss:13.0.2
           ports:
             - { containerPort: 3000, name: http }
           env:
-            - name: GF_SECURITY_ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: grafana-admin, key: password }
-            - { name: GF_DATABASE_TYPE, value: sqlite3 }
+            - { name: TZ, value: Europe/Moscow }
+            - { name: GF_DATABASE_WAL, value: "true" }
+            # Grafana 13 preinstalls four app plugins (loki-explore, explore-
+            # traces, metrics-drilldown, pyroscope) on first start — 47 MB into
+            # the PVC for panels nothing here uses. It also keeps retrying to
+            # reinstall the bundled elasticsearch plugin and failing on
+            # permissions, which pollutes the log with level=error.
+            - { name: GF_PLUGINS_PREINSTALL_DISABLED, value: "true" }
+            - { name: GF_SMTP_ENABLED, value: "true" }
+            - { name: GF_SMTP_HOST, value: "smtp.gmail.com:587" }
+            - { name: GF_SMTP_USER, value: balookrd@gmail.com }
+            - { name: GF_SMTP_PASSWORD__FILE, value: /etc/grafana/secrets/smtp }
+            - { name: GF_SMTP_FROM_ADDRESS, value: balookrd@gmail.com }
+            - { name: GF_SMTP_FROM_NAME, value: "outline alerting" }
           volumeMounts:
             - { name: data, mountPath: /var/lib/grafana }
+            - { name: datasources, mountPath: /etc/grafana/provisioning/datasources }
+            - { name: dashboard-provider, mountPath: /etc/grafana/provisioning/dashboards }
+            - { name: alerting, mountPath: /etc/grafana/provisioning/alerting }
+            - { name: dashboards, mountPath: /etc/grafana/dashboards }
+            - { name: smtp, mountPath: /etc/grafana/secrets }
+          readinessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
-            limits:   { memory: 256Mi }
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { memory: 768Mi }
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: grafana-data
+        - name: datasources
+          configMap: { name: grafana-datasources }
+        - name: dashboard-provider
+          configMap: { name: grafana-dashboard-provider }
+        - name: alerting
+          secret: { secretName: grafana-alerting }
+        - name: smtp
+          secret: { secretName: grafana-smtp }
+        # One ConfigMap per dashboard (the 1 MiB object limit rules out a single
+        # one — outline-ws-rust alone is 252 KB), projected into one directory.
+        # Adding a dashboard means adding a source here; deploy.sh --k3s prints
+        # the list it generated.
+        - name: dashboards
+          projected:
+            sources:
+              - configMap: { name: grafana-dashboard-outline-alerting }
+              - configMap: { name: grafana-dashboard-outline-ss-rust-dashboard }
+              - configMap: { name: grafana-dashboard-outline-ws-rust-dashboard }
+              - configMap: { name: grafana-dashboard-outline-ws-rust-hang-diagnostics }
+              - configMap: { name: grafana-dashboard-unbound-dashboard }
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -49,13 +93,11 @@ metadata:
   namespace: monitoring
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: nfs-client
+  storageClassName: local-path
   resources:
     requests:
-      storage: 1Gi
+      storage: 2Gi
 ---
-# The grafana-admin Secret is NOT here — create it out of band before deploy
-# (see grafana-admin.secret.example.yaml). deploy.sh skips *.example.yaml.
 apiVersion: v1
 kind: Service
 metadata:
