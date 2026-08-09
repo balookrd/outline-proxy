@@ -1,0 +1,56 @@
+# samsung_tv — управление телевизором, включая Wake-on-LAN.
+#
+# hostNetwork здесь не роскошь: WoL шлётся как sendto(('255.255.255.255', 9))
+# с SO_BROADCAST, а из pod-сети 10.42.0.0/16 такой бродкаст в LAN не уйдёт.
+# dnsPolicy обязателен вместе с hostNetwork — иначе под теряет кластерный DNS.
+#
+# /run/udev, который монтировал docker-скрипт, не переносится: в коде нет ни
+# одного обращения к нему.
+#
+# ВНИМАНИЕ при первой раскатке: Samsung привязывает токен авторизации к
+# клиенту, а клиент сменился (был .102, стала нода). Телевизоры могут
+# потребовать подтверждения на экране — раскатывать, когда есть возможность
+# подойти к ним с пультом.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: samsung-tv
+  namespace: smarthome
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: samsung-tv }
+  template:
+    metadata:
+      labels: { app: samsung-tv }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      imagePullSecrets:
+        - name: registry-creds
+      containers:
+        - name: samsung-tv
+          image: registry.k3s.beerloga.su/samsung_tv:c521877
+          imagePullPolicy: IfNotPresent
+          args:
+            - --path
+            - /app/conf
+            - --mqtt
+            - mqtt.beerloga.su
+          env:
+            - { name: TZ, value: Europe/Moscow }
+          volumeMounts:
+            - { name: conf, mountPath: /app/conf }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits:   { memory: 192Mi }
+      volumes:
+        - name: conf
+          nfs:
+            server: 198.18.1.125
+            path: /mnt/HD/HD_a2/k8s/smarthome/samsung_tv

@@ -1,0 +1,52 @@
+# humidity — телеметрия влажности: читает MQTT, пишет в VictoriaMetrics.
+#
+# Никаких портов: сервис только исходящий, поэтому ни Service, ни Ingress.
+# conf лежит на NFS, а не в PVC: devices.json — состояние, которое сервис
+# переписывает атомарно (.new -> rename -> .old), блокировок нет, писатель один,
+# так что сетевая ФС безопасна и пода не привязывает к ноде.
+#
+# mqtt.beerloga.su и vm.beerloga.su резолвятся с нод в 198.18.1.102 — брокер и
+# VictoriaMetrics остались на шлюзовом узле.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: humidity
+  namespace: smarthome
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: humidity }
+  template:
+    metadata:
+      labels: { app: humidity }
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      imagePullSecrets:
+        - name: registry-creds
+      containers:
+        - name: humidity
+          image: registry.k3s.beerloga.su/humidity:c521877
+          imagePullPolicy: IfNotPresent
+          args:
+            - --path
+            - /app/conf
+            - --mqtt
+            - mqtt.beerloga.su
+            - --victoria
+            - vm.beerloga.su
+          env:
+            - { name: TZ, value: Europe/Moscow }
+          volumeMounts:
+            - { name: conf, mountPath: /app/conf }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits:   { memory: 192Mi }
+      volumes:
+        - name: conf
+          nfs:
+            server: 198.18.1.125
+            path: /mnt/HD/HD_a2/k8s/smarthome/humidity

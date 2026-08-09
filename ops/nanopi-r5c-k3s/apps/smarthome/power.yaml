@@ -1,0 +1,45 @@
+# power — учёт потребления: читает MQTT, пишет в VictoriaMetrics.
+# Устройство то же, что у humidity: без портов, conf на NFS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: power
+  namespace: smarthome
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: power }
+  template:
+    metadata:
+      labels: { app: power }
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      imagePullSecrets:
+        - name: registry-creds
+      containers:
+        - name: power
+          image: registry.k3s.beerloga.su/power:c521877
+          imagePullPolicy: IfNotPresent
+          args:
+            - --path
+            - /app/conf
+            - --mqtt
+            - mqtt.beerloga.su
+            - --victoria
+            - vm.beerloga.su
+          env:
+            - { name: TZ, value: Europe/Moscow }
+          volumeMounts:
+            - { name: conf, mountPath: /app/conf }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits:   { memory: 192Mi }
+      volumes:
+        - name: conf
+          nfs:
+            server: 198.18.1.125
+            path: /mnt/HD/HD_a2/k8s/smarthome/power
