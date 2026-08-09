@@ -1,0 +1,291 @@
+{
+  "uid": "outline-alerting",
+  "title": "outline alerting",
+  "description": "История и здоровье алертинга. Верхний ряд — состояние самого механизма; ниже — по одной панели на правило: метрика, пороговая линия и вертикальные полосы фактических срабатываний. Так видно и то, что правило сработало, и то, что происходило с метрикой до и после.",
+  "tags": ["outline", "alerting"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "1m",
+  "time": {"from": "now-24h", "to": "now"},
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "name": "Срабатывания правил",
+        "target": {"limit": 100, "matchAny": false, "tags": ["grafana_folder:Alerts"], "type": "tags"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "id": 100,
+      "title": "Здоровье алертинга",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "id": 1,
+      "title": "Активных алертов",
+      "description": "Единица здесь — норма: это DeadMansSwitch, который firing всегда, потому что он пульс, а не тревога. Два и больше — что-то действительно сработало.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+      "targets": [{"refId": "A", "expr": "grafana_alerting_alerts{state=\"alerting\"}", "legendFormat": "alerting"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "orange", "value": 2}
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "stat",
+      "id": 2,
+      "title": "Правил в работе",
+      "description": "Сколько правил взял планировщик. Расхождение с семью означает, что провижининг не применился — файлы читаются только при старте Grafana.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+      "targets": [{"refId": "A", "expr": "grafana_alerting_schedule_alert_rules", "legendFormat": "правил"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "green", "value": 7}
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "stat",
+      "id": 3,
+      "title": "Ошибок вычисления за 24ч",
+      "description": "Правило, которое не может вычислиться, не сработает никогда — молчание такого правила неотличимо от тишины исправного. Ноль обязателен.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+      "targets": [{"refId": "A", "expr": "increase(grafana_alerting_rule_evaluation_failures_total[24h])", "legendFormat": "ошибок"}],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "red", "value": 1}
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "stat",
+      "id": 4,
+      "title": "Отставание планировщика",
+      "description": "Насколько поздно планировщик начинает такт. Секунды означают, что вычисление правил не успевает за интервалом, и алерт придёт с задержкой.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+      "targets": [{"refId": "A", "expr": "grafana_alerting_scheduler_behind_seconds", "legendFormat": "отставание"}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "orange", "value": 1},
+            {"color": "red", "value": 10}
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none"}
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "Уведомления по каналам (за час)",
+      "description": "webhook — это пульс dead-man, он и должен идти постоянно (примерно 60 в час). email и telegram растут только на настоящих срабатываниях. Пустой webhook при живой Grafana означает, что наблюдатели вот-вот начнут писать.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "targets": [{"refId": "A", "expr": "increase(grafana_alerting_notifications_total[1h])", "legendFormat": "{{integration}}"}],
+      "fieldConfig": {
+        "defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}, "decimals": 0},
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "Переходы состояний (за час)",
+      "description": "Сколько раз правила меняли состояние. Ровный ненулевой фон — признак флапающего правила: его порог стоит пересмотреть, иначе оно приучит игнорировать себя.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "targets": [{"refId": "A", "expr": "increase(grafana_alerting_state_history_transitions_total[1h])", "legendFormat": "переходов"}],
+      "fieldConfig": {
+        "defaults": {"custom": {"drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never"}, "decimals": 0},
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": false}, "tooltip": {"mode": "single"}}
+    },
+    {
+      "type": "annolist",
+      "id": 7,
+      "title": "История срабатываний",
+      "description": "Фактические переходы Alerting↔Normal, как их записала Grafana. Это единственный источник, который переживает перезапуск и не зависит от того, дошло ли уведомление.",
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 13},
+      "options": {
+        "onlyFromThisDashboard": false,
+        "onlyInTimeRange": false,
+        "tags": ["grafana_folder:Alerts"],
+        "limit": 50,
+        "showTags": true,
+        "showTime": true,
+        "showUser": false
+      }
+    },
+    {
+      "type": "row",
+      "id": 101,
+      "title": "По правилам: метрика, порог, срабатывания",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "id": 8,
+      "title": "TargetDown — доступность экспортеров",
+      "description": "1 = скрейп идёт. Правило срабатывает после пяти минут нуля: короткие провалы (1–7 минут) в норме и отсекаются намеренно.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
+      "targets": [{"refId": "A", "expr": "up{job=~\"rust-ws-exporter|rust-ss-exporter\"}", "legendFormat": "{{instance}} / {{job}}"}],
+      "fieldConfig": {
+        "defaults": {"custom": {"drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"}, "min": 0, "max": 1.2, "decimals": 0},
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "AllUplinksDown — здоровых ног на клиенте",
+      "description": "Сумма health_effective. Норма — 12 на cloud1/cloud2 и 4 на debian/ubuntu; ноль означает отсутствие туннеля вообще и срабатывает через три минуты.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23},
+      "targets": [{"refId": "A", "expr": "sum by (instance) (outline_ws_uplink_health_effective)", "legendFormat": "{{instance}}"}],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "thresholdsStyle": {"mode": "line"}},
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "green", "value": 1}
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "UplinkCarrierLossHigh — потери носителя",
+      "description": "Красная линия — порог 5%. Правило требует десяти минут выше порога: одиночные пики достигают 42% и тревогой не являются.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 31},
+      "targets": [{"refId": "A", "expr": "outline_ws_uplink_carrier_loss_ratio", "legendFormat": "{{instance}} / {{uplink}} / {{transport}}"}],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never", "thresholdsStyle": {"mode": "line"}},
+          "unit": "percentunit",
+          "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "red", "value": 0.05}
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "UplinkFailoverStorm — failover за 15 минут",
+      "description": "Порог 30 выбран по пикам недели (63 на debian, 50 на cloud1), а не по среднему: при пороге 10 правило было бы истинным больше половины времени.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 31},
+      "targets": [{"refId": "A", "expr": "sum by (instance) (increase(outline_ws_uplink_failovers_total{job=\"rust-ws-exporter\"}[15m]))", "legendFormat": "{{instance}}"}],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "thresholdsStyle": {"mode": "line"}},
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "red", "value": 30}
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    },
+    {
+      "type": "timeseries",
+      "id": 12,
+      "title": "UplinkCertExpiringSoon — дней до истечения",
+      "description": "Порог 14 дней. Панель полезна и вне тревоги: по ней видно, обновляются ли сертификаты вообще — пила означает исправный автопродлеватель.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 39},
+      "targets": [{"refId": "A", "expr": "(outline_ws_uplink_cert_expiry_timestamp_seconds - time()) / 86400", "legendFormat": "{{instance}} / {{uplink}}"}],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never", "thresholdsStyle": {"mode": "line"}},
+          "unit": "d",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "green", "value": 14}
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "asc"}}
+    },
+    {
+      "type": "timeseries",
+      "id": 13,
+      "title": "ClientRestarted — сбросы счётчика за час",
+      "description": "Клиент не экспортирует время старта, поэтому рестарт виден как сброс outline_ws_uplink_selected_total. Всплеск в день раскатки — норма, а не отказ: 2026-08-08 таких было 18 на четыре узла.",
+      "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 39},
+      "targets": [{"refId": "A", "expr": "max by (instance) (resets(outline_ws_uplink_selected_total[1h]))", "legendFormat": "{{instance}}"}],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never"},
+          "min": 0,
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}}
+    }
+  ]
+}

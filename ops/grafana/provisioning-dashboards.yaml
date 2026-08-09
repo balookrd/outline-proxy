@@ -11,8 +11,16 @@
 # `allowUiUpdates: false` makes the provisioned dashboards read-only in the
 # UI. That is the point: before this, the JSON in the repository and the
 # dashboard on screen drifted apart with every hand-made edit. Change a
-# dashboard by editing the file in the repository and copying it here; the
-# provider re-reads it within `updateIntervalSeconds`, no restart needed.
+# dashboard by editing the file in the repository and copying it here.
+#
+# `updateIntervalSeconds` below is kept because the schema wants it, but do NOT
+# rely on it: on Grafana 13.0.2 it does not re-read anything. Provisioning runs
+# once at startup — the log shows `provision dashboards` only at container
+# start, never on an interval. Verified 2026-08-09, when three dashboards edited
+# at 08:51 were still serving their old versions from a container started the
+# previous afternoon. Copy the file, then restart:
+#
+#     sudo docker restart grafana
 #
 # To experiment in the UI, use "Save as" — a copy is a normal, editable
 # dashboard, and the provisioned original stays authoritative.
