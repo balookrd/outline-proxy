@@ -76,10 +76,25 @@ pub fn set_tun_ip_fragment_sets_active(ip_family: &'static str, count: usize) {
         .set(i64::try_from(count).unwrap_or(i64::MAX));
 }
 
-pub fn set_tun_config(max_flows: usize, idle_timeout: Duration) {
+/// RSS a single tunnelled TUN UDP flow costs, its carrier included. Measured
+/// on Linux against a plain `ws://` upstream: 1000 flows moved RSS by 279 MiB
+/// (0.279 MiB each), against 0.010 MiB for a carrier-less direct flow. It is a
+/// floor, not a ceiling — a TLS/H3 carrier holds more, and the 2026-08-08
+/// `.102` livelock worked out to ~2 MiB per flow with `xhttp_h3` upstreams.
+/// Published so a dashboard can size the carrier budget from the same number
+/// the cap was calibrated against.
+pub const CARRIER_FLOW_MEMORY_ESTIMATE_BYTES: i64 = 292_552;
+
+pub fn set_tun_config(max_flows: usize, max_carrier_flows: usize, idle_timeout: Duration) {
     METRICS
         .tun_max_flows
         .set(i64::try_from(max_flows).unwrap_or(i64::MAX));
+    METRICS
+        .tun_max_carrier_flows
+        .set(i64::try_from(max_carrier_flows).unwrap_or(i64::MAX));
+    METRICS
+        .tun_carrier_flow_memory_estimate_bytes
+        .set(CARRIER_FLOW_MEMORY_ESTIMATE_BYTES);
     METRICS.tun_idle_timeout_seconds.set(idle_timeout.as_secs_f64());
 }
 

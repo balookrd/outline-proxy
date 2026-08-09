@@ -156,6 +156,10 @@ struct Metrics {
     #[cfg(feature = "tun")]
     tun_max_flows: IntGauge,
     #[cfg(feature = "tun")]
+    tun_max_carrier_flows: IntGauge,
+    #[cfg(feature = "tun")]
+    tun_carrier_flow_memory_estimate_bytes: IntGauge,
+    #[cfg(feature = "tun")]
     tun_idle_timeout_seconds: Gauge,
     #[cfg(feature = "tun")]
     tun_tcp_events_total: IntCounterVec,

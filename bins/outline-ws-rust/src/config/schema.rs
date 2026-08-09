@@ -235,6 +235,15 @@ pub(super) struct TunSection {
     pub(super) name: Option<String>,
     pub(super) mtu: Option<usize>,
     pub(super) max_flows: Option<usize>,
+    /// Cap on concurrent *tunnelled* UDP flows — those that each own a carrier.
+    /// A carrier costs ~28× a direct flow's socket in RSS, so `max_flows`
+    /// (which prices both alike) is reached long after the memory is gone: on
+    /// 2026-08-08 a `.102` flow burst held ~1155 flows against a 4096 limit
+    /// while its 419 carriers drove RSS into the cgroup's `MemoryHigh` and
+    /// froze the runtime. Overflow evicts the least-recently-seen tunnelled
+    /// flow, as `max_flows` does; direct flows are never charged against it.
+    /// Default `0` (only `max_flows` applies); set it on memory-capped hosts.
+    pub(super) max_carrier_flows: Option<usize>,
     pub(super) idle_timeout_secs: Option<u64>,
     /// Process-wide cap on concurrent upstream dials, shared by the TCP and
     /// UDP TUN engines. A flow burst dials one carrier handshake per flow;

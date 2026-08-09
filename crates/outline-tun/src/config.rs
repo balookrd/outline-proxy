@@ -8,6 +8,18 @@ pub struct TunConfig {
     pub name: Option<String>,
     pub mtu: usize,
     pub max_flows: usize,
+    /// Cap on concurrent *tunnelled* UDP flows — the ones that each dial a
+    /// carrier of their own. A carrier costs ~28× a direct flow's socket
+    /// (measured 0.28 MiB vs 0.010 MiB against a plain `ws://` upstream, and
+    /// more once TLS/H3 state is in play), so `max_flows` — which prices both
+    /// alike — is the wrong ceiling to reach first: on the 2026-08-08 `.102`
+    /// livelock the table held ~1155 flows against a 4096 limit while the 419
+    /// carriers under them had already driven RSS from 199 to 757 MiB, into the
+    /// cgroup's `MemoryHigh` throttle that froze the runtime. This cap binds
+    /// before that, and overflow evicts the least-recently-seen tunnelled flow
+    /// (the `max_flows` path) rather than refusing the new one. Direct flows
+    /// are not charged against it. `0` disables the cap.
+    pub max_carrier_flows: usize,
     pub idle_timeout: Duration,
     /// Process-wide cap on concurrent upstream dials, shared by the TCP and
     /// UDP engines. Every new tunnelled flow dials its upstream on its own

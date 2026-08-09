@@ -273,6 +273,8 @@ async fn build_engine(manager: UplinkManager) -> TunUdpEngine {
         test_tun_writer(),
         TunRouting::new(UplinkRegistry::from_single_manager(manager), None, None, false),
         128,
+        // No carrier cap: these tests exercise other limits.
+        0,
         Duration::from_secs(60),
         false,
         true,

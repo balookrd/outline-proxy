@@ -122,6 +122,10 @@ impl Metrics {
             #[cfg(feature = "tun")]
             tun_max_flows: tun.tun_max_flows,
             #[cfg(feature = "tun")]
+            tun_max_carrier_flows: tun.tun_max_carrier_flows,
+            #[cfg(feature = "tun")]
+            tun_carrier_flow_memory_estimate_bytes: tun.tun_carrier_flow_memory_estimate_bytes,
+            #[cfg(feature = "tun")]
             tun_idle_timeout_seconds: tun.tun_idle_timeout_seconds,
             #[cfg(feature = "tun")]
             tun_tcp_events_total: tun.tun_tcp_events_total,

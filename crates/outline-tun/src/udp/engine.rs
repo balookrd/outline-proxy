@@ -58,6 +58,11 @@ pub(super) struct TunUdpEngineInner {
     pub(super) direct_eviction_index: Arc<FlowEvictionIndex<UdpFlowKey>>,
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
+    /// Ceiling on `flows` (the tunnelled table) alone — one carrier each, and a
+    /// carrier is ~28× a direct flow in RSS. See
+    /// [`crate::config::TunConfig::max_carrier_flows`]. `0` disables it, in
+    /// which case only `max_flows` applies.
+    pub(super) max_carrier_flows: usize,
     pub(super) idle_timeout: Duration,
     /// Async cleanup pool: flows removed from the table are sent here so
     /// `transport.close()` runs off the hot path without holding any map lock.
@@ -104,12 +109,26 @@ pub(super) struct TunUdpEngineInner {
     pub(super) dial_admission: std::sync::OnceLock<Arc<tokio::sync::Semaphore>>,
 }
 
+impl TunUdpEngineInner {
+    /// Ceiling on the tunnelled table. `max_carrier_flows` binds when set, but
+    /// never above `max_flows` — the flow table's own limit still holds, and a
+    /// carrier cap larger than it would be a silent no-op.
+    pub(super) fn tunnelled_flow_cap(&self) -> usize {
+        if self.max_carrier_flows == 0 {
+            self.max_flows
+        } else {
+            self.max_carrier_flows.min(self.max_flows)
+        }
+    }
+}
+
 impl TunUdpEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         writer: SharedTunWriter,
         dispatch: TunRouting,
         max_flows: usize,
+        max_carrier_flows: usize,
         idle_timeout: Duration,
         pmtud_emit_below_quic_initial: bool,
         sniff_quic: bool,
@@ -128,6 +147,7 @@ impl TunUdpEngine {
                 direct_eviction_index: Arc::new(FlowEvictionIndex::new()),
                 next_flow_id: CounterU64::new(1),
                 max_flows,
+                max_carrier_flows,
                 idle_timeout,
                 close_tx,
                 pmtud_emit_below_quic_initial,

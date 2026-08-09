@@ -21,6 +21,13 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         .or_else(|| tun.and_then(|section| section.mtu))
         .unwrap_or(1500);
     let max_flows = tun.and_then(|section| section.max_flows).unwrap_or(4096);
+    // Tunnelled flows own a carrier each and cost ~28× a direct flow's socket
+    // (0.279 MiB vs 0.010 MiB measured against a plain `ws://` upstream; more
+    // with TLS/H3). `max_flows` prices both alike, so it is not the ceiling
+    // that binds first on a memory-capped host — the cgroup is, and its
+    // `MemoryHigh` throttle wedges the runtime rather than failing fast.
+    // Default off so the limit stays an explicit operator decision.
+    let max_carrier_flows = tun.and_then(|section| section.max_carrier_flows).unwrap_or(0);
     let idle_timeout =
         Duration::from_secs(tun.and_then(|section| section.idle_timeout_secs).unwrap_or(300));
     // Shared TCP+UDP admission gate on concurrent upstream dials: a flow burst
@@ -43,6 +50,15 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
     }
     if max_flows == 0 {
         bail!("tun max_flows must be greater than zero");
+    }
+    // A cap above `max_flows` can never bind — the flow table stops growing
+    // first — so it is a config mistake worth naming rather than silently
+    // clamping.
+    if max_carrier_flows > max_flows {
+        bail!(
+            "tun max_carrier_flows ({max_carrier_flows}) must not exceed tun max_flows \
+             ({max_flows}); it caps the tunnelled subset of that table"
+        );
     }
     if idle_timeout < Duration::from_secs(5) {
         bail!("tun idle_timeout_secs must be at least 5");
@@ -293,6 +309,7 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         name,
         mtu,
         max_flows,
+        max_carrier_flows,
         idle_timeout,
         max_concurrent_upstream_dials,
         tcp,

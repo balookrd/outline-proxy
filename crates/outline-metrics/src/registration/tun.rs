@@ -13,6 +13,8 @@ pub(super) struct TunFields {
     pub(super) tun_ip_reassemblies_total: IntCounterVec,
     pub(super) tun_ip_fragment_sets_active: IntGaugeVec,
     pub(super) tun_max_flows: IntGauge,
+    pub(super) tun_max_carrier_flows: IntGauge,
+    pub(super) tun_carrier_flow_memory_estimate_bytes: IntGauge,
     pub(super) tun_idle_timeout_seconds: Gauge,
     pub(super) tun_tcp_events_total: IntCounterVec,
     pub(super) tun_udp_events_total: IntCounterVec,
@@ -126,6 +128,18 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         IntGauge,
         "outline_ws_tun_max_flows",
         "Configured maximum number of TUN UDP flows."
+    );
+    let tun_max_carrier_flows = register_scalar!(
+        registry,
+        IntGauge,
+        "outline_ws_tun_max_carrier_flows",
+        "Configured maximum number of tunnelled (carrier-owning) TUN UDP flows; 0 = only max_flows applies."
+    );
+    let tun_carrier_flow_memory_estimate_bytes = register_scalar!(
+        registry,
+        IntGauge,
+        "outline_ws_tun_carrier_flow_memory_estimate_bytes",
+        "Measured RSS a single tunnelled TUN UDP flow costs (its carrier included). Multiply by tun_flows_active excluding uplink=\"direct\" to size the carrier budget."
     );
     let tun_idle_timeout_seconds = register_scalar!(
         registry,
@@ -328,6 +342,8 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         tun_ip_reassemblies_total,
         tun_ip_fragment_sets_active,
         tun_max_flows,
+        tun_max_carrier_flows,
+        tun_carrier_flow_memory_estimate_bytes,
         tun_idle_timeout_seconds,
         tun_tcp_events_total,
         tun_udp_events_total,

@@ -83,6 +83,7 @@ pub async fn spawn_tun_loop(
 
     let idle_timeout = config.idle_timeout;
     let max_flows = config.max_flows;
+    let max_carrier_flows = config.max_carrier_flows;
     let defrag_max_fragment_sets = config.defrag_max_fragment_sets;
     let defrag_max_fragments_per_set = config.defrag_max_fragments_per_set;
     let defrag_max_total_bytes = config.defrag_max_total_bytes;
@@ -91,6 +92,7 @@ pub async fn spawn_tun_loop(
         writer.clone(),
         routing.clone(),
         max_flows,
+        max_carrier_flows,
         idle_timeout,
         config.pmtud_emit_below_quic_initial,
         config.sniff_quic,
@@ -115,7 +117,7 @@ pub async fn spawn_tun_loop(
         udp_engine.set_dial_admission(Arc::clone(&dial_admission));
         tcp_engine.set_dial_admission(dial_admission);
     }
-    metrics::set_tun_config(max_flows, idle_timeout);
+    metrics::set_tun_config(max_flows, max_carrier_flows, idle_timeout);
     // Kernel-side netdev counters: the only place a packet dropped *by the
     // kernel* (rather than by us) is visible from inside the process. sysfs is
     // Linux-only; elsewhere the engine simply runs without this series.
@@ -148,6 +150,7 @@ pub async fn spawn_tun_loop(
         name = tun_name.as_deref().unwrap_or("n/a"),
         mtu = tun_mtu,
         max_flows,
+        max_carrier_flows,
         idle_timeout_secs = idle_timeout.as_secs(),
         gso = gso.vnet_hdr,
         rx_gro = gso.tcp_gro,
