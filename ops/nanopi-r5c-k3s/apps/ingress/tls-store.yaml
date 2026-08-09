@@ -1,0 +1,14 @@
+# Default certificate for every TLS router in the cluster. Ingress objects opt
+# into HTTPS with the router.tls annotation and get this certificate — no
+# per-namespace copies of the Secret, no reflector.
+#
+# The Secret itself is produced outside the cluster: lego on 198.18.1.102 issues
+# *.k3s.beerloga.su and publish-cert.sh pushes it here (see ingress/README.md).
+apiVersion: traefik.io/v1alpha1
+kind: TLSStore
+metadata:
+  name: default
+  namespace: traefik
+spec:
+  defaultCertificate:
+    secretName: k3s-wildcard-tls

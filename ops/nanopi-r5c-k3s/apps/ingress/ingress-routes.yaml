@@ -1,14 +1,22 @@
 # HTTP ingress objects. All resolve to the Traefik VIP 198.18.1.200; Traefik
-# routes by Host header. Point *.k3s.local at 198.18.1.200 in DNS (see README).
+# routes by Host header. Point *.k3s.beerloga.su at 198.18.1.200 in DNS (see
+# README) — LAN-only, no public record.
+#
+# TLS: no per-Ingress secretName here on purpose. The wildcard certificate is
+# served by the `default` TLSStore (tls-store.yaml), so the Secret lives once in
+# the traefik namespace instead of being copied into monitoring/home.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: grafana
   namespace: monitoring
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
   ingressClassName: traefik
   rules:
-    - host: grafana.k3s.local
+    - host: grafana.k3s.beerloga.su
       http:
         paths:
           - path: /
@@ -24,10 +32,13 @@ kind: Ingress
 metadata:
   name: zigbee2mqtt
   namespace: home
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
   ingressClassName: traefik
   rules:
-    - host: z2m.k3s.local
+    - host: z2m.k3s.beerloga.su
       http:
         paths:
           - path: /

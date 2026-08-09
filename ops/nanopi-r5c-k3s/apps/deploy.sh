@@ -10,6 +10,8 @@
 # Usage:
 #   ./deploy.sh                # run every stage in order
 #   ./deploy.sh metallb        # one stage: repos|storage|metallb|traefik|apps|ingress
+#   ./deploy.sh edge           # ingress layer only: MetalLB + Traefik + routes,
+#                              # without touching workloads
 #
 # Files ending in .example.yaml are never applied (secret templates). Any
 # manifest still carrying <PLACEHOLDER> tokens is left unapplied with a warning
@@ -93,9 +95,15 @@ stage_traefik() {
   warn "Traefik still has no EXTERNAL-IP — check MetalLB controller/pool"
 }
 
-stage_apps() {
+# Namespaces are needed by the ingress layer too (the Ingress objects live in
+# monitoring/home), so they are a stage of their own rather than part of apps.
+stage_namespaces() {
   log "namespaces"
   kubectl apply -f namespaces.yaml
+}
+
+stage_apps() {
+  stage_namespaces
   local d
   for d in monitoring home outline vpn; do
     log "workloads: $d"
@@ -104,6 +112,9 @@ stage_apps() {
 }
 
 stage_ingress() {
+  log "cert publisher RBAC + default TLSStore"
+  apply_file ingress/cert-publisher.rbac.yaml
+  apply_file ingress/tls-store.yaml
   log "HTTP ingress routes"
   apply_file ingress/ingress-routes.yaml
 }
@@ -119,8 +130,9 @@ main() {
     traefik) stage_repos; stage_traefik ;;
     apps)    stage_apps ;;
     ingress) stage_ingress ;;
+    edge)    stage_repos; stage_metallb; stage_traefik; stage_namespaces; stage_ingress ;;
     all)     stage_repos; stage_storage; stage_metallb; stage_traefik; stage_apps; stage_ingress ;;
-    *)       die "unknown stage '$stage' (repos|storage|metallb|traefik|apps|ingress|all)" ;;
+    *)       die "unknown stage '$stage' (repos|storage|metallb|traefik|apps|ingress|edge|all)" ;;
   esac
   log "done: $stage"
 }

@@ -1,10 +1,16 @@
-# Helm values for Traefik (traefik/traefik chart, v3).
+# Helm values for Traefik (traefik/traefik chart 41.x, Traefik v3.7).
 # Install:
 #   helm install traefik traefik/traefik -n traefik --create-namespace \
 #     -f traefik.values.yaml
 #
-# LAN-only, HTTP. TLS/websecure left off — add a websecure entrypoint +
-# cert-manager later if anything needs HTTPS.
+# LAN-only, HTTPS. The wildcard certificate for *.k3s.beerloga.su comes from
+# lego on 198.18.1.102 via the `default` TLSStore (tls-store.yaml); there is no
+# cert-manager and no ACME resolver configured here.
+#
+# The chart validates values against a JSON schema — keys that look plausible
+# but are not in `helm show values traefik/traefik` (logs, ports.web.redirectTo,
+# ports.websecure.tls) are rejected at install time. Check the schema before
+# adding anything here.
 
 deployment:
   # Single replica is fine for a home LAN; MetalLB moves the VIP on node loss,
@@ -22,9 +28,20 @@ ports:
     exposedPort: 80        # LAN clients hit :80 on 198.18.1.200
     expose:
       default: true
+    http:
+      redirections:
+        entryPoint:
+          to: websecure    # plain HTTP always bounces to TLS
+          scheme: https
+          permanent: true
   websecure:
+    port: 8443
+    exposedPort: 443
     expose:
-      default: false       # no TLS yet
+      default: true
+    http:
+      tls:
+        enabled: true      # certificate comes from the default TLSStore
   traefik:
     expose:
       default: false       # dashboard/API stays internal (port-forward to view)
@@ -33,7 +50,7 @@ providers:
   kubernetesIngress:
     enabled: true          # watch standard Ingress objects
   kubernetesCRD:
-    enabled: true          # IngressRoute CRDs, if needed later
+    enabled: true          # IngressRoute + TLSStore CRDs
 
 # 4 GB nodes — keep Traefik lean.
 resources:
@@ -43,8 +60,8 @@ resources:
   limits:
     memory: 192Mi
 
-logs:
-  general:
-    level: INFO
-  access:
-    enabled: false         # turn on only when debugging routing
+log:
+  level: INFO
+
+accessLog:
+  enabled: false           # turn on only when debugging routing

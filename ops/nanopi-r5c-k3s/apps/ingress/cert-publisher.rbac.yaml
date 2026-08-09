@@ -1,0 +1,48 @@
+# Credentials for the off-cluster certificate publisher (lego on 198.18.1.102).
+#
+# Deliberately narrow: no `create` verb — it cannot be restricted by
+# resourceNames, so the first k3s-wildcard-tls Secret is created by hand during
+# rollout and this token can only refresh that one object. Nothing else in the
+# cluster is reachable with it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-publisher
+  namespace: traefik
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cert-publisher
+  namespace: traefik
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["k3s-wildcard-tls"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cert-publisher
+  namespace: traefik
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cert-publisher
+subjects:
+  - kind: ServiceAccount
+    name: cert-publisher
+    namespace: traefik
+---
+# Long-lived token: Kubernetes 1.24+ no longer mints one per ServiceAccount
+# automatically, and a `kubectl create token` TTL would silently expire the
+# nightly renewal.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cert-publisher-token
+  namespace: traefik
+  annotations:
+    kubernetes.io/service-account.name: cert-publisher
+type: kubernetes.io/service-account-token
