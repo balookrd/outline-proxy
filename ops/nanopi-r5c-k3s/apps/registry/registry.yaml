@@ -1,0 +1,97 @@
+# Private image registry for the cluster.
+#
+# Behind Traefik on purpose: it gets the wildcard *.k3s.beerloga.su certificate
+# from the default TLSStore, and containerd trusts an ordinary Let's Encrypt
+# certificate — so registries.yaml on the nodes stays untouched. A plain HTTP
+# registry would mean editing insecure-registries on all three nodes instead.
+#
+# Storage is NFS rather than local-path: a registry is blobs on a filesystem,
+# with no database and no locking, so a network filesystem is safe here (unlike
+# Grafana's and z2m's SQLite). The payoff is that the pod survives losing a node
+# and does not depend on which node comes back first after a cluster restart.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: registry
+---
+# Basic auth: without it anyone on the LAN can push into the registry the
+# cluster runs its code from. The Secret holds an htpasswd line and is created
+# out of band — see README.md.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: registry-auth
+  namespace: registry
+spec:
+  basicAuth:
+    secret: registry-auth
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: registry
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: registry }
+  template:
+    metadata:
+      labels: { app: registry }
+    spec:
+      containers:
+        - name: registry
+          image: registry:2.8.3
+          ports:
+            - { containerPort: 5000, name: http }
+          env:
+            - { name: REGISTRY_STORAGE_DELETE_ENABLED, value: "true" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/registry }
+          readinessProbe:
+            httpGet: { path: /v2/, port: 5000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits:   { memory: 256Mi }
+      volumes:
+        - name: data
+          nfs:
+            server: 198.18.1.125
+            path: /mnt/HD/HD_a2/k8s/registry
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  namespace: registry
+spec:
+  selector: { app: registry }
+  ports:
+    - { port: 5000, targetPort: 5000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: registry
+  namespace: registry
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: registry-registry-auth@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: registry.k3s.beerloga.su
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: registry
+                port:
+                  number: 5000
