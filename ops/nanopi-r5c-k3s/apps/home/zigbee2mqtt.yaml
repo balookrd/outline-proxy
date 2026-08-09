@@ -1,12 +1,18 @@
-# zigbee2mqtt.
+# zigbee2mqtt, migrated off the docker container on 198.18.1.102.
 #
-# Coordinator is network (TCP), so the pod is NOT pinned to hardware and can
-# migrate between nodes — data lives on NFS and follows it. Still a singleton:
-# only one z2m may hold the coordinator session at a time, so replicas: 1 +
-# Recreate. Two replicas would fight over the coordinator and corrupt the mesh.
+# The coordinator is a network adapter (tcp://198.18.1.106:8888), not a USB
+# stick, so the pod is free to run on any node — no device passthrough, no
+# nodeSelector. Data lives on local-path and the PV's node affinity keeps the
+# pod with it.
 #
-# database.db (the Zigbee network map) is the one file you must never lose —
-# nfs onDelete=retain guards accidental PVC deletion; back it up too.
+# Singleton, and not merely by convention: the coordinator accepts exactly one
+# client. Two replicas would fight over the session, so replicas: 1 + Recreate.
+#
+# There are deliberately NO environment variables here. configuration.yaml
+# inside the PVC is the single source of truth — it already carries the
+# coordinator address, the MQTT broker (mqtt://198.18.1.102:1883, still on the
+# gateway node) and, critically, network_key / pan_id / ext_pan_id. Duplicating
+# half of it into env is how the two drift apart.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,22 +28,24 @@ spec:
     metadata:
       labels: { app: zigbee2mqtt }
     spec:
+      securityContext:
+        runAsUser: 1000       # matches the image and the migrated files
+        fsGroup: 1000
       containers:
         - name: zigbee2mqtt
-          image: koenkk/zigbee2mqtt:2.1.1
+          image: koenkk/zigbee2mqtt:2.12.0
           ports:
             - { containerPort: 8080, name: frontend }
-          env:
-            # TCP coordinator: adapter over the network, not a USB device.
-            - { name: ZIGBEE2MQTT_CONFIG_SERIAL_PORT,    value: "tcp://<COORDINATOR_IP>:6638" }  # TODO
-            - { name: ZIGBEE2MQTT_CONFIG_SERIAL_ADAPTER, value: "ember" }   # TODO: match your coordinator fw
-            - { name: ZIGBEE2MQTT_CONFIG_MQTT_SERVER,    value: "mqtt://mosquitto.home:1883" }
-            - { name: ZIGBEE2MQTT_CONFIG_FRONTEND_ENABLED, value: "true" }
           volumeMounts:
             - { name: data, mountPath: /app/data }
+          readinessProbe:
+            # tcpSocket, not httpGet: the frontend answers / with a redirect.
+            tcpSocket: { port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
           resources:
             requests: { cpu: 50m, memory: 128Mi }
-            limits:   { memory: 256Mi }
+            limits:   { memory: 384Mi }   # measured 102 MB in steady state
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -50,7 +58,7 @@ metadata:
   namespace: home
 spec:
   accessModes: [ReadWriteOnce]
-  storageClassName: nfs-client
+  storageClassName: local-path
   resources:
     requests:
       storage: 1Gi
