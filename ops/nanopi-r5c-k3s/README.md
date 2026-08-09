@@ -859,8 +859,13 @@ cd apps
 Перед раскаткой:
 
 - исключить пул `198.18.1.200–210` из DHCP роутера (иначе конфликт IP);
-- завести DNS `*.k3s.local → 198.18.1.200`;
+- завести на Keenetic DNS `*.k3s.beerloga.su → 198.18.1.200` (LAN-only);
+- выпустить wildcard-серт на `.102` и залить его в Secret `k3s-wildcard-tls`
+  (см. [`apps/ingress/README.md`](apps/ingress/README.md));
 - создать секреты вне git из `*.secret.example.yaml`.
+
+Слой входа поднимается отдельно от приложений — `./deploy.sh edge` (MetalLB,
+Traefik, namespace'ы, ingress-объекты), workloads он не трогает.
 
 ## Известные риски
 

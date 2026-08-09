@@ -64,8 +64,15 @@ kubectl -n monitoring create secret generic grafana-admin \
 | VictoriaMetrics | ClusterIP, наружу нет | — |
 | outline-ss/ws, ocserv | hostNetwork, свои порты | IP прибитой ноды |
 
-Пул MetalLB `198.18.1.200–210` **исключить из DHCP роутера**. DNS: `*.k3s.local →
-198.18.1.200`.
+Пул MetalLB `198.18.1.200–210` **исключить из DHCP роутера**. DNS: wildcard
+`*.k3s.beerloga.su → 198.18.1.200` на Keenetic, только внутри LAN. Сертификат
+`*.k3s.beerloga.su` выпускает lego на `.102` и заливает в Secret
+`k3s-wildcard-tls` — подробности в [`ingress/README.md`](ingress/README.md).
+
+Слой входа поднимается отдельно от приложений: `./deploy.sh edge` ставит
+MetalLB, Traefik, namespace'ы и ingress-объекты, не трогая workloads. Пока
+приложения не развёрнуты, Ingress'ы штатно отдают `404` — сертификат при этом
+уже валидный.
 
 ## Что заполнить перед деплоем (открытые вопросы)
 
