@@ -1,12 +1,13 @@
-# VictoriaMetrics single-node.
+# VictoriaMetrics, migrated off the docker container on 198.18.1.102.
 #
-# Storage: local-path on NVMe, NOT NFS — this is the only IOPS-heavy workload,
-# and TSDB writes over 2.5GbE/NFS would bottleneck on the wire. Pinned to one
-# node; durability comes from the nightly vmbackup CronJob to the NAS, not from
-# disk replication. Losing this node = move VM here + restore last snapshot
-# (a gap of up to one night of metrics — acceptable for a home setup).
+# Storage is local-path, NOT NFS — the opposite of what z2m and the smarthome
+# services use. A TSDB writes small blocks continuously and fsyncs them, which
+# is exactly the workload a network filesystem handles worst; upstream advises
+# against it. Durability comes from the nightly vmbackup, not from the volume.
 #
-# TODO: pick the node and set retention/size to fit the NVMe partition.
+# Pinned to k3s-1 explicitly. local-path would pin it anyway through the PV's
+# node affinity, but writing it down makes the placement predictable: it is
+# clear up front which disk holds the data and where a restore has to go.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,19 +24,27 @@ spec:
       labels: { app: victoria-metrics }
     spec:
       nodeSelector:
-        kubernetes.io/hostname: k3s-1     # TODO: pin to the node holding the PVC
+        kubernetes.io/hostname: k3s-1
+      securityContext:
+        runAsUser: 1000       # same as --user 1000:1000 in docker
+        fsGroup: 1000
       containers:
         - name: victoria-metrics
-          image: victoriametrics/victoria-metrics:v1.103.0
+          image: victoriametrics/victoria-metrics:v1.149.0
           args:
-            - --storageDataPath=/storage
-            - --retentionPeriod=90d          # TODO: tune vs NVMe size
-            - --httpListenAddr=:8428
-            - --memory.allowedPercent=60     # 4 GB node — keep VM bounded
+            - -retentionPeriod=90d
+            - -inmemoryDataFlushInterval=60s
+            # The scrape config lives inside the data directory, exactly as on
+            # the gateway node: it migrates together with the data.
+            - -promscrape.config=/victoria-metrics-data/scrape.yaml
           ports:
             - { containerPort: 8428, name: http }
           volumeMounts:
-            - { name: data, mountPath: /storage }
+            - { name: data, mountPath: /victoria-metrics-data }
+          readinessProbe:
+            httpGet: { path: /health, port: 8428 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
           resources:
             requests: { cpu: 100m, memory: 256Mi }
             limits:   { memory: 1Gi }
@@ -54,7 +63,7 @@ spec:
   storageClassName: local-path
   resources:
     requests:
-      storage: 40Gi           # TODO: fit within the 128 GB NVMe with headroom
+      storage: 20Gi           # 1.4 GB in use at 90 days retention
 ---
 apiVersion: v1
 kind: Service
@@ -66,49 +75,27 @@ spec:
   ports:
     - { port: 8428, targetPort: 8428 }
 ---
-# Nightly snapshot → NAS. vmbackup talks to VM's snapshot API and pushes an
-# incremental backup to an NFS-mounted path (or S3). Here: NFS PVC on the NAS.
-apiVersion: batch/v1
-kind: CronJob
+# External access for a browser and for debugging. In-cluster clients (power,
+# humidity, Grafana) use the ClusterIP name instead — there is no reason to
+# leave the cluster and come back through the ingress.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
 metadata:
-  name: vmbackup
+  name: victoria-metrics
   namespace: monitoring
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
-  schedule: "0 4 * * *"       # 04:00 daily
-  concurrencyPolicy: Forbid
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          restartPolicy: OnFailure
-          nodeSelector:
-            kubernetes.io/hostname: k3s-1   # same node as VM: shares the data dir
-          containers:
-            - name: vmbackup
-              image: victoriametrics/vmbackup:v1.103.0
-              args:
-                - --storageDataPath=/storage
-                - --snapshot.createURL=http://victoria-metrics.monitoring:8428/snapshot/create
-                - --dst=fs:///backup/victoria-metrics
-              volumeMounts:
-                - { name: data, mountPath: /storage }
-                - { name: backup, mountPath: /backup }
-          volumes:
-            - name: data
-              persistentVolumeClaim:
-                claimName: victoria-metrics-data
-            - name: backup
-              persistentVolumeClaim:
-                claimName: vmbackup-nas
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: vmbackup-nas
-  namespace: monitoring
-spec:
-  accessModes: [ReadWriteOnce]
-  storageClassName: nfs-client      # backups live on the NAS, not the NVMe
-  resources:
-    requests:
-      storage: 50Gi
+  ingressClassName: traefik
+  rules:
+    - host: vm.k3s.beerloga.su
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: victoria-metrics
+                port:
+                  number: 8428

@@ -1,0 +1,50 @@
+# Nightly VictoriaMetrics backup to the NAS.
+#
+# vmbackup rather than tar: it asks VictoriaMetrics for a snapshot through the
+# API and copies incrementally, so the result is consistent even though the
+# database keeps writing. Copying the directory of a live TSDB is not.
+#
+# Same nodeSelector as the database: both mount the same ReadWriteOnce volume,
+# so they have to sit on the same node.
+#
+# Backups live under backup/ on the export, data lives in the root — otherwise
+# the two are indistinguishable a month later.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vmbackup
+  namespace: monitoring
+spec:
+  schedule: "15 4 * * *"      # after grafana-backup at 03:30
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/hostname: k3s-1
+          securityContext:
+            runAsUser: 1000
+            fsGroup: 1000
+          containers:
+            - name: vmbackup
+              image: victoriametrics/vmbackup:v1.149.0
+              args:
+                - -storageDataPath=/victoria-metrics-data
+                - -snapshot.createURL=http://victoria-metrics.monitoring:8428/snapshot/create
+                - -dst=fs:///backup/victoria-metrics
+              volumeMounts:
+                - { name: data, mountPath: /victoria-metrics-data }
+                - { name: backup, mountPath: /backup }
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: victoria-metrics-data
+            - name: backup
+              nfs:
+                server: 198.18.1.125
+                path: /mnt/HD/HD_a2/k8s/backup
