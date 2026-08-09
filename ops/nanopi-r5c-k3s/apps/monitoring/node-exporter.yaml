@@ -1,0 +1,50 @@
+# node-exporter на нодах кластера.
+#
+# До этого мониторились все узлы парка, кроме самих k3s-нод — их метрики никуда
+# не собирались. DaemonSet закрывает дыру и подхватывает новые ноды сам.
+#
+# hostNetwork + hostPID + корень хоста в /host: без этого экспортёр отдавал бы
+# метрики контейнера, а не машины. Порт 9100 занимается прямо на ноде, поэтому
+# Service не нужен — VictoriaMetrics скрейпит ноды по их адресам, как остальной
+# парк.
+#
+# Версия та же, что на .102 и .104 (1.11.1): разные версии дают разный набор
+# метрик, и дашборды начинают показывать пустоту на части узлов.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels: { app: node-exporter }
+  template:
+    metadata:
+      labels: { app: node-exporter }
+    spec:
+      hostNetwork: true
+      hostPID: true
+      securityContext:
+        runAsUser: 65534        # nobody: root для чтения /proc и /sys не нужен
+        runAsNonRoot: true
+      containers:
+        - name: node-exporter
+          image: prom/node-exporter:v1.11.1
+          args:
+            - --path.rootfs=/host
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            # Точки монтирования контейнеров и kubelet — это не диски машины;
+            # без исключения дашборд утонет в сотнях overlay-файловых систем.
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/k3s|var/lib/kubelet|var/lib/rancher/k3s/agent)($|/)
+          ports:
+            - { containerPort: 9100, hostPort: 9100, name: metrics }
+          volumeMounts:
+            - { name: root, mountPath: /host, readOnly: true, mountPropagation: HostToContainer }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits:   { memory: 128Mi }
+      volumes:
+        - name: root
+          hostPath:
+            path: /
