@@ -2,9 +2,12 @@
 #
 # Singleton on local-path: Grafana 13 keeps everything — dashboards included —
 # in one SQLite file under unified storage, and SQLite over NFS corrupts on
-# network hiccups. The local-path PV carries node affinity, so the pod follows
-# its data without a nodeSelector. Durability comes from the nightly backup to
-# the NAS, not from the volume.
+# network hiccups. Durability comes from the nightly backup to the NAS, not from
+# the volume.
+#
+# Pinned to k3s-1: local-path ties the volume to a node anyway, and keeping all
+# stateful services on one node means one place to look for data and one place
+# to restore into.
 #
 # The admin password is NOT set through the environment on purpose: it lives in
 # the migrated database, and GF_SECURITY_ADMIN_PASSWORD would silently reset it
@@ -24,6 +27,8 @@ spec:
     metadata:
       labels: { app: grafana }
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: k3s-1
       securityContext:
         runAsUser: 472        # the image's own uid; migrated files get chowned
         fsGroup: 472

@@ -13,6 +13,9 @@
 #
 # The NFS volume is declared inline instead of going through a StorageClass:
 # nfs-provisioner is not deployed, and one CronJob does not justify it.
+#
+# Backups live under backup/ on the export, data lives in the root — otherwise
+# the two are indistinguishable a month later.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -74,4 +77,4 @@ spec:
             - name: backup
               nfs:
                 server: 198.18.1.125
-                path: /mnt/HD/HD_a2/k8s
+                path: /mnt/HD/HD_a2/k8s/backup

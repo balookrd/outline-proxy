@@ -19,7 +19,7 @@ data:
         uid: adnsc1wi03doga
         type: prometheus
         access: proxy
-        url: http://198.18.1.102:8428
+        url: http://victoria-metrics.monitoring:8428
         isDefault: true
         jsonData:
           timeInterval: 15s
