@@ -70,9 +70,10 @@ zigbee2mqtt мигрирован с `198.18.1.102` 2026-08-09. Координа�
 
 Сервисы умного дома (`humidity`, `power`, `conditioner`, `presence`) мигрированы
 с `198.18.1.102` 2026-08-09 — namespace `smarthome`, подробности в
-[`smarthome/README.md`](smarthome/README.md). `samsung-tv` пока остался в docker:
-ему нужен hostNetwork для Wake-on-LAN и, вероятно, повторная авторизация на
-телевизорах. Образы собираются на маке и лежат в кластерном реестре
+[`smarthome/README.md`](smarthome/README.md). `samsung-tv` тоже в кластере: ему нужен
+hostNetwork для Wake-on-LAN, а токены авторизации Samsung хранятся отдельно на
+каждый исходящий IP — иначе переезд пода на другую ноду требовал бы повторного
+подтверждения на экране телевизора. Образы собираются на маке и лежат в кластерном реестре
 `registry.k3s.beerloga.su` (см. [`registry/README.md`](registry/README.md)).
 
 `local-path` уже встроен в k3s и смотрит в `/var/lib/rancher/k3s/storage` — то есть в
