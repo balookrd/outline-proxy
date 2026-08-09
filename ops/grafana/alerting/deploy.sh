@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 #
-# deploy.sh — push the Grafana alerting provisioning to the gateway.
-# Run from the development machine: ./deploy.sh
+# deploy.sh — push the Grafana alerting provisioning.
+# Run from the development machine:
+#   ./deploy.sh          # legacy: copy to the docker Grafana on .102
+#   ./deploy.sh --k3s    # cluster: one Secret in the monitoring namespace
 #
 # Grafana re-reads provisioning files on its own, so this needs no restart —
 # which is the whole reason the rules live in files rather than in the UI.
 
 set -euo pipefail
 cd "$(dirname "$0")"
+
+k3s=0
+if [ "${1:-}" = "--k3s" ]; then
+	k3s=1
+	shift
+fi
 
 host=${GRAFANA_HOST:-mmv@198.18.1.102}
 conf=${OUTLINE_SECRETS_DIR:-$HOME/.config/outline}
@@ -55,6 +63,32 @@ elif command -v ruby >/dev/null; then
 else
 	echo "no YAML parser available (pyyaml or ruby) — refusing to deploy unchecked" >&2
 	exit 1
+fi
+
+if [ "$k3s" = 1 ]; then
+	# Cluster mode: the three files become one Secret, not a ConfigMap —
+	# contact-points.yaml carries the Telegram bot token and the heartbeat
+	# token after substitution.
+	command -v kubectl >/dev/null || { echo "kubectl not in PATH" >&2; exit 1; }
+	: "${KUBECONFIG:?set KUBECONFIG (e.g. ~/.kube/k3s-home.yaml)}"
+	kubectl create secret generic grafana-alerting -n monitoring \
+		--from-file="$tmp/rules.yaml" \
+		--from-file="$tmp/contact-points.yaml" \
+		--from-file="$tmp/policies.yaml" \
+		--dry-run=client -o yaml | kubectl apply -f -
+	cat <<EOF
+
+==> Secret applied, but NOT yet in force. Alerting provisioning runs once at
+    startup, so the pod has to restart (a production action — ask the owner
+    first):
+
+    kubectl -n monitoring rollout restart deploy/grafana
+
+and confirm it took:
+
+    kubectl -n monitoring logs deploy/grafana --since=2m | grep "provision alerting"
+EOF
+	exit 0
 fi
 
 echo "==> copying to $host:$dest"
