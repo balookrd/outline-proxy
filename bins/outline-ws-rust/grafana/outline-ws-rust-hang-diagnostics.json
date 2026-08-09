@@ -943,7 +943,7 @@
       }
     ]
   },
-  "time": {"from": "now-3h", "to": "now"},
+  "time": { "from": "now-24h", "to": "now"},
   "timepicker": {},
   "timezone": "browser",
   "title": "outline-ws-rust hang diagnostics",
