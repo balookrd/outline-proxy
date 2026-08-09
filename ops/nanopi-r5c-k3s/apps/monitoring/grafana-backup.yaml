@@ -1,0 +1,77 @@
+# Nightly Grafana backup to the NAS.
+#
+# Python's sqlite3 module rather than the sqlite3 CLI: the backup API takes a
+# consistent snapshot of a live database, WAL included, and python:alpine ships
+# it out of the box. An alpine image plus `apk add sqlite` does NOT work here —
+# the pod runs as uid 472 and apk needs root.
+#
+# This matters more than usual: seven dashboards exist only inside this file and
+# in no git repository.
+#
+# /data is mounted read-write on purpose. A read-only mount breaks the WAL
+# handling — SQLite needs to touch the -shm file even when only reading.
+#
+# The NFS volume is declared inline instead of going through a StorageClass:
+# nfs-provisioner is not deployed, and one CronJob does not justify it.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: grafana-backup
+  namespace: monitoring
+spec:
+  schedule: "30 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 472
+            fsGroup: 472
+          containers:
+            - name: backup
+              image: python:3.12-alpine
+              command: ["python3", "-c"]
+              args:
+                - |
+                  import gzip, os, shutil, sqlite3, time
+
+                  DST = "/backup/grafana"
+                  KEEP = 7
+                  os.makedirs(DST, exist_ok=True)
+
+                  stamp = time.strftime("%Y%m%d-%H%M")
+                  tmp = "/tmp/grafana.db"
+                  src = sqlite3.connect("/data/grafana.db")
+                  dst = sqlite3.connect(tmp)
+                  src.backup(dst)
+                  dst.close()
+                  src.close()
+
+                  out = f"{DST}/grafana-{stamp}.db.gz"
+                  with open(tmp, "rb") as f, gzip.open(out, "wb") as g:
+                      shutil.copyfileobj(f, g)
+                  os.unlink(tmp)
+                  print(f"written {out} ({os.path.getsize(out)} bytes)")
+
+                  # The timestamp format sorts lexically in chronological order.
+                  snaps = sorted(f for f in os.listdir(DST) if f.startswith("grafana-") and f.endswith(".db.gz"))
+                  for old in snaps[:-KEEP]:
+                      os.unlink(f"{DST}/{old}")
+                      print("pruned", old)
+                  print("kept:", len(snaps[-KEEP:]))
+              volumeMounts:
+                - { name: data, mountPath: /data }
+                - { name: backup, mountPath: /backup }
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: grafana-data
+            - name: backup
+              nfs:
+                server: 198.18.1.125
+                path: /mnt/HD/HD_a2/k8s
