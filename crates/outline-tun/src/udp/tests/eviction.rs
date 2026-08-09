@@ -289,11 +289,49 @@ fn test_tun_writer() -> SharedTunWriter {
 }
 
 async fn build_engine(max_flows: usize) -> TunUdpEngine {
+    build_engine_with_carrier_cap(max_flows, 0).await
+}
+
+async fn build_engine_with_carrier_cap(max_flows: usize, max_carrier_flows: usize) -> TunUdpEngine {
     let manager = build_test_manager_with_urls(None, Some(spawn_idle_udp_upstream().await)).await;
     TunUdpEngine::new(
         test_tun_writer(),
         crate::TunRouting::from_single_manager(manager),
         max_flows,
+        max_carrier_flows,
+        Duration::from_secs(60),
+        false,
+        false,
+        false,
+        Vec::new().into(),
+        false,
+    )
+}
+
+/// A direct-routed engine: `via = "direct"` for every destination, so flows
+/// land in `direct_flows` and never dial a carrier.
+async fn build_direct_engine(max_flows: usize, max_carrier_flows: usize) -> TunUdpEngine {
+    let manager = build_test_manager_with_urls(None, Some(spawn_idle_udp_upstream().await)).await;
+    let table = Arc::new(
+        outline_routing::RoutingTable::compile(&outline_routing::RoutingTableConfig {
+            rules: Vec::new(),
+            default_target: outline_routing::RouteTarget::Direct,
+            default_fallback: None,
+        })
+        .await
+        .unwrap(),
+    );
+    let routing = crate::TunRouting::new(
+        outline_uplink::UplinkRegistry::from_single_manager(manager),
+        Some(table),
+        None,
+        false,
+    );
+    TunUdpEngine::new(
+        test_tun_writer(),
+        routing,
+        max_flows,
+        max_carrier_flows,
         Duration::from_secs(60),
         false,
         false,
@@ -363,5 +401,69 @@ async fn engine_evicts_least_recently_seen_flow_and_keeps_the_index_in_step() {
         engine.inner.eviction_index.len(),
         flows.len(),
         "the index must not outgrow the table it orders",
+    );
+}
+
+/// A tunnelled flow dials a carrier of its own, and a carrier costs ~28× what a
+/// direct flow's socket does (measured: 0.28 MiB vs 0.010 MiB on a plain `ws://`
+/// upstream, more once TLS/H3 is in play). `max_flows` prices both alike, so on
+/// the 2026-08-08 `.102` livelock the flow table was still far under its 4096
+/// limit while 419 carriers had already pushed RSS into the cgroup's
+/// `MemoryHigh` — the throttle, not the flow cap, is what stopped the runtime.
+/// The carrier cap is the limit that binds first, and it evicts rather than
+/// refuses so the newest flow always gets served.
+#[tokio::test]
+async fn carrier_cap_binds_before_the_flow_table_limit() {
+    let engine = build_engine_with_carrier_cap(64, 2).await;
+
+    send_from_client_port(&engine, 40000).await;
+    send_from_client_port(&engine, 40001).await;
+    send_from_client_port(&engine, 40002).await;
+
+    let flows = engine.inner.flows.read().await;
+    assert_eq!(
+        flows.len(),
+        2,
+        "the carrier cap bounds the tunnelled table well below max_flows (64)",
+    );
+    assert!(flows.contains_key(&flow_key(40002)), "the newest flow is admitted, not refused");
+    assert_eq!(
+        engine.inner.eviction_index.len(),
+        flows.len(),
+        "the index must stay in step when the carrier cap evicts",
+    );
+}
+
+/// Direct flows hold a socket and two tasks — no carrier, no TLS state — so
+/// they must not consume the carrier budget. Pricing them alike would make a
+/// LAN full of direct UDP (DNS, games, IPsec) evict tunnelled flows for no
+/// memory saving at all.
+#[tokio::test]
+async fn direct_flows_do_not_count_against_the_carrier_cap() {
+    let echo = Arc::new(tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await.unwrap());
+    let echo_addr = echo.local_addr().unwrap();
+    let engine = build_direct_engine(64, 1).await;
+
+    for client_port in 41000u16..41004 {
+        let bytes = crate::udp::build_ipv4_udp_packet(
+            CLIENT_IP,
+            Ipv4Addr::LOCALHOST,
+            client_port,
+            echo_addr.port(),
+            b"datagram",
+        )
+        .unwrap();
+        let parsed = crate::udp::parse_udp_packet(&bytes).unwrap();
+        engine.handle_packet(parsed).await.unwrap();
+    }
+
+    assert_eq!(
+        engine.inner.direct_flows.read().await.len(),
+        4,
+        "a carrier cap of 1 must not evict carrier-less direct flows",
+    );
+    assert!(
+        engine.inner.flows.read().await.is_empty(),
+        "direct routing dials no carrier at all",
     );
 }

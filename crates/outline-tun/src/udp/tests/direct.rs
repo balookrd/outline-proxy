@@ -97,6 +97,8 @@ async fn direct_engine(writer: SharedTunWriter) -> TunUdpEngine {
         writer,
         routing,
         128,
+        // No carrier cap: these tests exercise other limits.
+        0,
         Duration::from_secs(60),
         false,
         false,

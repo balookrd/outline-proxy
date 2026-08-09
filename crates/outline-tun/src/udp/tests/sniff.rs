@@ -88,6 +88,8 @@ async fn build_engine(upstream_url: Url, sniff_quic: bool) -> TunUdpEngine {
         test_tun_writer(),
         crate::TunRouting::from_single_manager(manager),
         128,
+        // No carrier cap: these tests exercise other limits.
+        0,
         Duration::from_secs(60),
         false,
         sniff_quic,
@@ -184,6 +186,8 @@ async fn tun_udp_quic_excluded_host_keeps_ip_target() {
         test_tun_writer(),
         crate::TunRouting::from_single_manager(manager),
         128,
+        // No carrier cap: these tests exercise other limits.
+        0,
         Duration::from_secs(60),
         false,
         true,

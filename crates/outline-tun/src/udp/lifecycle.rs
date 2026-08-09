@@ -160,7 +160,11 @@ impl TunUdpEngine {
                 record_flow_activity(&self.inner.eviction_index, &key, &mut *existing);
                 existing.outbound_tx.clone()
             } else {
-                if guard.len() >= self.inner.max_flows {
+                // `tunnelled_flow_cap` — the carrier cap when set, `max_flows`
+                // otherwise. Each of these flows owns a carrier, and a carrier
+                // is ~28× a direct flow in RSS, so this table has to be bounded
+                // tighter than the shared `max_flows` prices it.
+                if guard.len() >= self.inner.tunnelled_flow_cap() {
                     // Victim selection is a single O(log n) index pop: no scan of
                     // the table and no other flow's lock is taken, so the
                     // write-lock this read-loop holds is released in constant
@@ -208,7 +212,9 @@ impl TunUdpEngine {
                 warn!(
                     evicted_flow_id = snapshot.id,
                     evicted_uplink = %snapshot.uplink_name,
+                    limit = self.inner.tunnelled_flow_cap(),
                     max_flows = self.inner.max_flows,
+                    max_carrier_flows = self.inner.max_carrier_flows,
                     "evicted oldest TUN UDP flow due to flow table limit"
                 );
             }

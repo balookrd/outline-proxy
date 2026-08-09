@@ -153,6 +153,8 @@ async fn build_engine(upstream_url: Url, route_by_sni: bool) -> (TunUdpEngine, A
         test_tun_writer(),
         routing,
         128,
+        // No carrier cap: these tests exercise other limits.
+        0,
         Duration::from_secs(60),
         false,
         true,

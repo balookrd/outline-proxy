@@ -423,6 +423,7 @@ async fn load_config_enables_tun_when_configured() {
         path = "/dev/tun0"
         mtu = 1500
         max_flows = 512
+        max_carrier_flows = 128
         idle_timeout_secs = 60
         max_concurrent_upstream_dials = 24
 
@@ -448,6 +449,7 @@ async fn load_config_enables_tun_when_configured() {
     assert_eq!(config.tun.as_ref().unwrap().path, PathBuf::from("/dev/tun0"));
     assert_eq!(config.tun.as_ref().unwrap().mtu, 1500);
     assert_eq!(config.tun.as_ref().unwrap().max_flows, 512);
+    assert_eq!(config.tun.as_ref().unwrap().max_carrier_flows, 128);
     assert_eq!(config.tun.as_ref().unwrap().idle_timeout, Duration::from_secs(60));
     assert_eq!(config.tun.as_ref().unwrap().tcp.connect_timeout, Duration::from_secs(7));
     assert_eq!(config.tun.as_ref().unwrap().tcp.handshake_timeout, Duration::from_secs(9));
@@ -918,6 +920,41 @@ async fn load_config_allows_tun_without_socks5_listener() {
     let config = super::load_config(&path, &args).await.unwrap();
     assert!(config.listen.is_none());
     assert!(config.tun.is_some());
+    // Off unless asked for: turning the carrier cap on evicts live tunnelled
+    // flows once it binds, which is an explicit operator trade, not a default.
+    assert_eq!(config.tun.as_ref().unwrap().max_carrier_flows, 0);
+}
+
+/// A cap above `max_flows` can never bind — the flow table fills first — so it
+/// is a silent no-op the operator would read as protection. Reject it instead.
+#[cfg(feature = "tun")]
+#[tokio::test]
+async fn load_config_rejects_carrier_cap_above_max_flows() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [tun]
+        name = "tun0"
+        path = "/dev/tun0"
+        max_flows = 512
+        max_carrier_flows = 1024
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = super::load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("max_carrier_flows") && msg.contains("512"),
+        "the error must name the offending key and the limit it exceeds; got: {msg}"
+    );
 }
 
 // ── Edge-case validation tests ───────────────────────────────────────────────
