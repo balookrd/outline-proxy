@@ -2,8 +2,12 @@
 #
 # The coordinator is a network adapter (tcp://198.18.1.106:8888), not a USB
 # stick, so the pod is free to run on any node — no device passthrough, no
-# nodeSelector. Data lives on local-path and the PV's node affinity keeps the
-# pod with it.
+# nodeSelector.
+#
+# Data lives on NFS rather than local-path. z2m's database.db is a JSON-lines
+# file, not SQLite: no locking, no page cache to corrupt, one writer. So the
+# usual reason to avoid a network filesystem does not apply, and in exchange the
+# pod stops being pinned to whichever node happened to hold the volume.
 #
 # Singleton, and not merely by convention: the coordinator accepts exactly one
 # client. Two replicas would fight over the session, so replicas: 1 + Recreate.
@@ -48,20 +52,9 @@ spec:
             limits:   { memory: 384Mi }   # measured 102 MB in steady state
       volumes:
         - name: data
-          persistentVolumeClaim:
-            claimName: zigbee2mqtt-data
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: zigbee2mqtt-data
-  namespace: home
-spec:
-  accessModes: [ReadWriteOnce]
-  storageClassName: local-path
-  resources:
-    requests:
-      storage: 1Gi
+          nfs:
+            server: 198.18.1.125
+            path: /mnt/HD/HD_a2/k8s/zigbee2mqtt-data
 ---
 apiVersion: v1
 kind: Service
