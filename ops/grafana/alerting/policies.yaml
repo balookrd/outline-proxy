@@ -27,10 +27,21 @@ policies:
       # a mail most days. Collapsing the whole fleet into one group with a
       # daily repeat turns it into a digest, which is all an info-level signal
       # deserves.
-      - receiver: owner
+      #
+      # `owner-events` rather than `owner`: no resolved notice. The rule clears
+      # itself three minutes after the restart, and a "recovered" mail for an
+      # event already over when the first one arrived only muddies the timeline.
+      #
+      # group_wait 30s, not the 5m a digest would want: the rule's window has to
+      # outlive it (evaluation is 1m, so the alert exists by ~T+1m and the mail
+      # leaves by ~T+1.5m), and stretching the window to fit a 5-minute batch is
+      # what made the alert sit "firing" long after the service was back. The
+      # trade is real — a fleet-wide rollout now sends a few mails instead of
+      # one — but a restart is worth knowing about while it is still news.
+      - receiver: owner-events
         object_matchers:
           - [alertname, =, ClientRestarted]
         group_by: [alertname]
-        group_wait: 5m
-        group_interval: 30m
+        group_wait: 30s
+        group_interval: 5m
         repeat_interval: 24h

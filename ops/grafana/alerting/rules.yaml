@@ -200,24 +200,35 @@ groups:
         annotations:
           summary: 'outline-ws-rust restarted on {{ $labels.instance }}'
           description: >-
-            Detected as a counter reset: the client exports no
-            process_start_time_seconds, so a restart shows up as
-            outline_ws_uplink_selected_total going backwards. `resets` is applied
-            per series and only then aggregated — on a `sum` the same expression
-            would also fire whenever a series appears or disappears, which is not
-            a restart. Frequent by nature (~13 per week on ubuntu), so its own
-            notification route collapses it into a daily digest.
+            Fires while the client's process is younger than 3 minutes, read
+            straight off outline_ws_start_time_seconds. It used to be inferred
+            from outline_ws_uplink_selected_total going backwards, on the
+            premise that the client exports no start time — it does, and the
+            counter-reset detour cost an hour of ambiguity: `resets[1h]` keeps
+            the alert firing for a full hour after a restart the service
+            recovered from in seconds, so the state said "something is wrong"
+            long after everything was fine. A restart is an event, not a
+            condition. The window is sized by delivery, not by recovery: this
+            group evaluates once a minute and the route waits 30s to batch, so
+            an alert has to outlive ~1.5 minutes or the notification never
+            leaves — 3 minutes is that floor plus slack. Frequent by nature
+            (~13 per week on ubuntu), so its route also drops resolved notices:
+            "recovered" for an event already over when the first mail landed
+            reads as a second incident rather than the end of the first.
         noDataState: OK
         execErrState: OK
         data:
           - refId: A
-            relativeTimeRange: {from: 3900, to: 0}
+            relativeTimeRange: {from: 900, to: 0}
             datasourceUid: adnsc1wi03doga
             model:
               refId: A
               editorMode: code
               instant: true
-              expr: 'max by (instance) (resets(outline_ws_uplink_selected_total[1h])) > bool 0'
+              # `min by (instance)`, so on the (unexpected) day an instance
+              # exports two start-time series the freshest one decides — a max
+              # would let a stale series mask the restart.
+              expr: 'min by (instance) (time() - outline_ws_start_time_seconds) < bool 180'
           - refId: C
             datasourceUid: __expr__
             model:

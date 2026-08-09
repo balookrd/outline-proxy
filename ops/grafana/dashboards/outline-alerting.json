@@ -272,14 +272,15 @@
     {
       "type": "timeseries",
       "id": 13,
-      "title": "ClientRestarted — сбросы счётчика за час",
-      "description": "Клиент не экспортирует время старта, поэтому рестарт виден как сброс outline_ws_uplink_selected_total. Всплеск в день раскатки — норма, а не отказ: 2026-08-08 таких было 18 на четыре узла.",
+      "title": "ClientRestarted — возраст процесса клиента",
+      "description": "Возраст процесса из outline_ws_start_time_seconds: падение к нулю — рестарт, и ниже 3 минут горит правило. Раньше здесь считались сбросы outline_ws_uplink_selected_total, потому что клиент якобы не отдаёт время старта — отдаёт; обходной путь через resets[1h] держал алерт час после рестарта, от которого сервис оправлялся за секунды. Всплеск в день раскатки — норма, а не отказ: 2026-08-08 таких было 18 на четыре узла.",
       "datasource": {"type": "prometheus", "uid": "adnsc1wi03doga"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 39},
-      "targets": [{"refId": "A", "expr": "max by (instance) (resets(outline_ws_uplink_selected_total[1h]))", "legendFormat": "{{instance}}"}],
+      "targets": [{"refId": "A", "expr": "min by (instance) (time() - outline_ws_start_time_seconds)", "legendFormat": "{{instance}}"}],
       "fieldConfig": {
         "defaults": {
-          "custom": {"drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60, "showPoints": "never"},
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never"},
+          "unit": "s",
           "min": 0,
           "decimals": 0
         },

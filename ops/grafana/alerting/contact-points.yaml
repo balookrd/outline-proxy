@@ -31,6 +31,27 @@ contactPoints:
           # outright on an unbalanced character instead of degrading.
           parse_mode: HTML
 
+  # Same two channels as `owner`, minus the resolved notice. For event-shaped
+  # alerts — a restart already over by the time the mail lands — "resolved"
+  # says nothing the firing message did not, and arriving minutes later it
+  # reads as a second incident rather than the end of the first.
+  - orgId: 1
+    name: owner-events
+    receivers:
+      - uid: email-owner-events-1
+        type: email
+        settings:
+          addresses: balookrd@gmail.com
+          singleEmail: true
+        disableResolveMessage: true
+      - uid: owner-events-telegram-1
+        type: telegram
+        settings:
+          bottoken: __TELEGRAM_BOT_TOKEN__
+          chatid: '__TELEGRAM_CHAT_ID__'
+          parse_mode: HTML
+        disableResolveMessage: true
+
   - orgId: 1
     name: heartbeat-observers
     receivers:
