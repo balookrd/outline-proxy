@@ -194,42 +194,58 @@ impl Metrics {
             }
             // Carrier loss: absence means "not measured", never "no loss" —
             // no zero-fill here, unlike the always-published gauges above.
-            if let Some(ratio) = uplink.tcp_carrier_loss_ratio {
-                self.uplink_carrier_loss_ratio
-                    .with_label_values(&[group, "tcp", &uplink.name])
-                    .set(ratio);
-            }
-            if let Some(ratio) = uplink.udp_carrier_loss_ratio {
-                self.uplink_carrier_loss_ratio
-                    .with_label_values(&[group, "udp", &uplink.name])
-                    .set(ratio);
-            }
-            if let Some(packets) = uplink.tcp_carrier_loss_packets {
-                self.uplink_carrier_loss_observed_packets
-                    .with_label_values(&[group, "tcp", &uplink.name])
-                    .set(packets as f64);
-            }
-            if let Some(packets) = uplink.udp_carrier_loss_packets {
-                self.uplink_carrier_loss_observed_packets
-                    .with_label_values(&[group, "udp", &uplink.name])
-                    .set(packets as f64);
-            }
-            // Loss-driven failover episode. Unlike the ratio/packets gauges
-            // above, absence here means only one thing: the feature is off,
-            // so nothing is watching. An armed threshold with no open episode
-            // (ratio not elevated, or the last qualifying measurement went
-            // stale) reports a plain zero — otherwise a mechanism that has
-            // simply never fired is indistinguishable from one that was never
-            // armed, since both stay silent.
-            if let Some(elevated_ms) = uplink.tcp_loss_elevated_ms {
-                self.uplink_loss_elevated_seconds
-                    .with_label_values(&[group, "tcp", &uplink.name])
-                    .set(elevated_ms as f64 / 1000.0);
-            }
-            if let Some(elevated_ms) = uplink.udp_loss_elevated_ms {
-                self.uplink_loss_elevated_seconds
-                    .with_label_values(&[group, "udp", &uplink.name])
-                    .set(elevated_ms as f64 / 1000.0);
+            //
+            // A disabled uplink is exactly that "not measured" case, so it
+            // publishes nothing: the snapshot keeps its last reading forever
+            // (nothing recomputes it once the uplink leaves the probe loop and
+            // stops carrying traffic), and publishing that frozen number reads
+            // as a live measurement. On 2026-08-10 nuxt2 was switched off on
+            // three nodes while losing ~55%, and the gauges stayed at 0.5x —
+            // so the alert fired over uplinks carrying no packets at all, and
+            // turning a bad uplink off, the correct response, made its alert
+            // permanent instead of clearing it. `uplink_enabled` is what says
+            // an uplink exists but is off; these gauges only ever mean "this
+            // is what the carrier is doing right now".
+            if !uplink.admin_disabled {
+                if let Some(ratio) = uplink.tcp_carrier_loss_ratio {
+                    self.uplink_carrier_loss_ratio
+                        .with_label_values(&[group, "tcp", &uplink.name])
+                        .set(ratio);
+                }
+                if let Some(ratio) = uplink.udp_carrier_loss_ratio {
+                    self.uplink_carrier_loss_ratio
+                        .with_label_values(&[group, "udp", &uplink.name])
+                        .set(ratio);
+                }
+                if let Some(packets) = uplink.tcp_carrier_loss_packets {
+                    self.uplink_carrier_loss_observed_packets
+                        .with_label_values(&[group, "tcp", &uplink.name])
+                        .set(packets as f64);
+                }
+                if let Some(packets) = uplink.udp_carrier_loss_packets {
+                    self.uplink_carrier_loss_observed_packets
+                        .with_label_values(&[group, "udp", &uplink.name])
+                        .set(packets as f64);
+                }
+                // Loss-driven failover episode. Unlike the ratio/packets gauges
+                // above, absence here means only one thing: the feature is off,
+                // so nothing is watching. An armed threshold with no open episode
+                // (ratio not elevated, or the last qualifying measurement went
+                // stale) reports a plain zero — otherwise a mechanism that has
+                // simply never fired is indistinguishable from one that was never
+                // armed, since both stay silent. A disabled uplink is excluded
+                // for the same reason as the gauges above: no episode can open
+                // on a carrier nothing is dialling.
+                if let Some(elevated_ms) = uplink.tcp_loss_elevated_ms {
+                    self.uplink_loss_elevated_seconds
+                        .with_label_values(&[group, "tcp", &uplink.name])
+                        .set(elevated_ms as f64 / 1000.0);
+                }
+                if let Some(elevated_ms) = uplink.udp_loss_elevated_ms {
+                    self.uplink_loss_elevated_seconds
+                        .with_label_values(&[group, "udp", &uplink.name])
+                        .set(elevated_ms as f64 / 1000.0);
+                }
             }
             // Latency selection actually ranks by (loss-inflated). Mirrors
             // the loss-inflated `tcp_score_ms` / `udp_score_ms` below — both

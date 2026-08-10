@@ -1127,6 +1127,56 @@ fn an_unmeasured_uplink_publishes_no_loss_series() {
     assert!(!rendered.contains("outline_ws_uplink_carrier_loss_observed_packets"));
 }
 
+/// Switching an uplink off must take its loss series with it. The snapshot
+/// keeps whatever was measured last — nothing recomputes it once the uplink
+/// leaves the probe loop and stops carrying traffic — so publishing that value
+/// presents a frozen reading as a live one. On 2026-08-10 nuxt2 was disabled on
+/// three nodes while losing ~55% and its gauges stayed at 0.5x, which kept the
+/// loss alert firing over a carrier that was no longer moving a single packet:
+/// turning the bad uplink off, the correct response, made the alert permanent.
+/// `uplink_enabled` is what reports an uplink that exists but is off.
+#[test]
+fn a_disabled_uplink_publishes_no_loss_series() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut live = snapshot_uplink("nuxt");
+    live.tcp_carrier_loss_ratio = Some(0.02);
+    live.tcp_carrier_loss_packets = Some(10_000);
+    let mut switched_off = snapshot_uplink("nuxt2");
+    switched_off.admin_disabled = true;
+    switched_off.tcp_carrier_loss_ratio = Some(0.55);
+    switched_off.tcp_carrier_loss_packets = Some(20_000);
+    switched_off.tcp_loss_elevated_ms = Some(60_000);
+    snapshot.uplinks = vec![live, switched_off];
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+
+    assert!(
+        rendered.contains(
+            "outline_ws_uplink_carrier_loss_ratio{group=\"main\",transport=\"tcp\",uplink=\"nuxt\"} 0.02"
+        ),
+        "an uplink still in service must keep publishing its loss:\n{rendered}"
+    );
+    for metric in [
+        "outline_ws_uplink_carrier_loss_ratio",
+        "outline_ws_uplink_carrier_loss_observed_packets",
+        "outline_ws_uplink_loss_elevated_seconds",
+    ] {
+        assert!(
+            !rendered.contains(&format!(
+                "{metric}{{group=\"main\",transport=\"tcp\",uplink=\"nuxt2\"}}"
+            )),
+            "{metric} must not be published for a disabled uplink:\n{rendered}"
+        );
+    }
+    assert!(
+        rendered.contains("outline_ws_uplink_enabled{group=\"main\",uplink=\"nuxt2\"} 0"),
+        "the disabled uplink must still be visible through uplink_enabled:\n{rendered}"
+    );
+}
+
 #[test]
 fn render_prometheus_clears_previous_carrier_loss_series() {
     // First scrape reports a measured loss ratio for `nuxt`. Second scrape
