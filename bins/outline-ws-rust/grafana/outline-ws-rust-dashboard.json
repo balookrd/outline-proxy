@@ -8011,7 +8011,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "How much carrier loss is adding to the latency selection ranks by: the ranked value minus the measured one. A flat zero is the expected picture at loss_latency_penalty_k = 0 (the shipped default) \u2014 loss is being measured but changes no decision. Once a coefficient is set, this is the penalty each uplink carries, in milliseconds. Absolute RTTs live in the Latency row above; this panel deliberately shows only the difference, because at k = 0 the two curves coincide and plotting both says nothing.",
+      "description": "How much the ranked latency differs from the measured one: ranked minus measured. Two things move it. Carrier loss inflates the ranked value \u2014 a flat zero is expected at loss_latency_penalty_k = 0 (the shipped default), where loss is measured but changes no decision. Age moves it too: ranking weights a measurement by 0.5^(age / rtt_ewma_halflife), so a slot nothing refreshes drifts toward the next link of the chain \u2014 check \"RTT Measurement Age\" below before reading a gap here as loss. Absolute RTTs live in the Latency row above; this panel deliberately shows only the difference, because at k = 0 the two curves coincide and plotting both says nothing.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -8396,6 +8396,114 @@
         }
       ],
       "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 195
+      },
+      "id": 329,
+      "panels": [],
+      "title": "RTT measurement freshness (ranking input)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "How long ago the active wire's RTT slot last moved. Selection weights that measurement by 0.5^(age / rtt_ewma_halflife_secs) and stops counting it as measured after four half-lives, so a rising line means ranking is progressively falling back to primary's EWMA / the last probe sample for that uplink.\n\nA sawtooth at roughly one half-life is the healthy picture on a multi-wire uplink: the staleness-triggered fallback-wire probe re-measures the slot and the age resets. A line that climbs past four half-lives and stays there means nothing is refreshing that wire at all \u2014 the shape behind the 2026-08-10 incident, where an uplink was ranked for hours on a 4.18 s sample taken while its carrier was broken, and only recreating the uplink cleared it.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 196
+      },
+      "id": 328,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "label_replace(outline_ws_uplink_active_wire_rtt_age_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}, \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} {{transport}}",
+          "refId": "A"
+        }
+      ],
+      "title": "RTT Measurement Age (how fresh is the number ranking uses)",
+      "type": "timeseries"
     }
   ],
   "preload": false,

@@ -303,6 +303,7 @@ impl UplinkManager {
         };
 
         let alpha = self.inner.load_balancing.rtt_ewma_alpha;
+        let now = tokio::time::Instant::now();
         self.inner.with_status_mut(index, |status| {
             if result.tcp_ok {
                 // Per-wire RTT EWMA: feed the fallback-wire probe latency
@@ -310,14 +311,20 @@ impl UplinkManager {
                 // wire that's actually carrying traffic, not primary's
                 // (now-stale) measurement. The any-wire liveness stamp is
                 // applied via `mark_wire_data_proven` below.
-                status
-                    .tcp
-                    .record_fallback_wire_latency(wire_index_u8, result.tcp_latency, alpha);
+                status.tcp.record_fallback_wire_latency(
+                    wire_index_u8,
+                    result.tcp_latency,
+                    alpha,
+                    now,
+                );
             }
             if result.udp_applicable && result.udp_ok {
-                status
-                    .udp
-                    .record_fallback_wire_latency(wire_index_u8, result.udp_latency, alpha);
+                status.udp.record_fallback_wire_latency(
+                    wire_index_u8,
+                    result.udp_latency,
+                    alpha,
+                    now,
+                );
             }
         });
         // Carrier bookkeeping for this wire's own descent stack. Kept

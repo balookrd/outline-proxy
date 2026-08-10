@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
+use crate::rtt::RttEwma;
 use crate::selection::{StatusView, TransportStatusView};
 use crate::types::TransportKind;
 
@@ -24,7 +25,9 @@ mod tests;
 pub(crate) struct PerTransportStatus {
     pub(crate) healthy: Option<bool>,
     pub(crate) latency: Option<Duration>,
-    pub(crate) rtt_ewma: Option<Duration>,
+    /// Primary wire's smoothed RTT, with the instant it last moved — see
+    /// [`RttEwma`] for why the age travels with the value.
+    pub(crate) rtt_ewma: RttEwma,
     pub(crate) penalty: PenaltyState,
     pub(crate) cooldown_until: Option<Instant>,
     pub(crate) consecutive_failures: u32,
@@ -103,7 +106,16 @@ pub(crate) struct PerTransportStatus {
     /// by the per-wire probe walk in
     /// [`crate::manager::probe::wire`], so scoring of an uplink whose
     /// `active_wire` is non-zero uses that wire's measured RTT.
-    pub(crate) fallback_rtt_ewma: Vec<Option<Duration>>,
+    ///
+    /// Each slot carries the age of its own measurement ([`RttEwma`]), because
+    /// a fallback slot is the one thing on this struct that nothing routinely
+    /// refreshes: the fallback-wire probe only runs when primary is failing or
+    /// this slot has gone stale (`crate::manager::probe::wire`), and a real
+    /// dial only lands here when the balancer already chose this wire. A slot
+    /// measured while the carrier was broken would otherwise rank the uplink
+    /// forever on that number, and the uplink could never earn its way back —
+    /// see [`Self::base_latency_with`] for how age is spent.
+    pub(crate) fallback_rtt_ewma: Vec<RttEwma>,
     /// Smoothed carrier loss for the primary wire. The live probes it is
     /// derived from live in the manager's registry, not here: they own
     /// duplicated descriptors, and `UplinkStatus` is cloned on every snapshot.
@@ -475,7 +487,7 @@ impl PerTransportStatus {
             penalty: self.penalty,
             descent_window_until: self.descent.until(),
             descent_window_started_at: self.descent.window_started_at(),
-            base_latency: self.base_latency_with(config),
+            base_latency: self.base_latency_with(config, now),
             loss_elevated_since: self.loss_elevated_since,
             loss_ratio: self.active_wire_loss().ratio(),
             loss_ratio_fresh: self.loss_is_fresh(config.loss_max_staleness(), now),
@@ -494,11 +506,19 @@ impl PerTransportStatus {
     /// rather than primary's measurement, which may belong to a wire
     /// that the dial loop has long since moved off.
     pub(crate) fn active_wire_rtt_ewma(&self) -> Option<Duration> {
+        self.active_wire_rtt_slot().value()
+    }
+
+    /// The whole RTT slot for [`Self::active_wire`], age included. Callers that
+    /// only want the number use [`Self::active_wire_rtt_ewma`]; callers that
+    /// have to reason about how old that number is (ranking, the snapshot's
+    /// age field) need the slot.
+    pub(crate) fn active_wire_rtt_slot(&self) -> RttEwma {
         if self.active_wire == 0 {
             return self.rtt_ewma;
         }
         let slot_idx = (self.active_wire - 1) as usize;
-        self.fallback_rtt_ewma.get(slot_idx).copied().flatten()
+        self.fallback_rtt_ewma.get(slot_idx).copied().unwrap_or_default()
     }
 
     /// Fold a fresh latency sample into the per-fallback-wire EWMA slot
@@ -517,17 +537,16 @@ impl PerTransportStatus {
         wire_index: u8,
         sample: Option<Duration>,
         alpha: f64,
+        now: Instant,
     ) {
         if wire_index == 0 {
             return;
         }
         let slot_idx = (wire_index - 1) as usize;
         while self.fallback_rtt_ewma.len() <= slot_idx {
-            self.fallback_rtt_ewma.push(None);
+            self.fallback_rtt_ewma.push(RttEwma::default());
         }
-        let mut current = self.fallback_rtt_ewma[slot_idx];
-        crate::penalty::update_rtt_ewma(&mut current, sample, alpha);
-        self.fallback_rtt_ewma[slot_idx] = current;
+        self.fallback_rtt_ewma[slot_idx].record(sample, alpha, now);
     }
 
     /// Loss for the wire new sessions currently land on. Same active-wire rule
@@ -619,10 +638,17 @@ impl PerTransportStatus {
     }
 
     /// The latency this transport is ranked by, paired with the loss slot
-    /// **attributed to the same wire it came from** — the single fallback
-    /// chain shared by [`TransportStatusView::base_latency`] (raw value) and
-    /// [`Self::base_latency_with`] (loss-inflated value), so the two can
-    /// never drift apart.
+    /// **attributed to the same wire it came from** — the fallback chain
+    /// behind both [`TransportStatusView::base_latency`] (the raw, config-free
+    /// value) and [`Self::base_latency_with`] (the value ranking actually
+    /// uses), so the order of preference can never drift between them.
+    ///
+    /// The two differ in what they do with the chain, not in what the chain
+    /// is: this method takes the first link that has a value and stops, while
+    /// `base_latency_with` weights each link by its age and blends. Ranking
+    /// goes exclusively through the latter (`selection_view` →
+    /// `TransportSelectionView::base_latency`), so the abrupt version is only
+    /// ever read by callers that hold neither a config nor a clock.
     ///
     /// - The active wire's own RTT EWMA is preferred, so cross-uplink scoring
     ///   compares the latency of the wire that is **actually carrying
@@ -643,16 +669,46 @@ impl PerTransportStatus {
         if let Some(active) = self.active_wire_rtt_ewma() {
             return Some((active, self.active_wire_loss()));
         }
-        if let Some(primary) = self.rtt_ewma {
+        if let Some(primary) = self.rtt_ewma.value() {
             return Some((primary, self.carrier_loss));
         }
         Some((self.latency?, crate::loss::LossEwma::default()))
     }
 
-    /// Penalty-free latency this transport is ranked by, with carrier loss on
-    /// the same wire the latency came from folded in — see
-    /// [`Self::base_latency_and_wire_loss`] for which wire's loss slot
-    /// applies to which fallback branch.
+    /// Penalty-free latency this transport is ranked by: each link of the
+    /// chain inflated by carrier loss on the wire that link's latency came
+    /// from (see [`Self::base_latency_and_wire_loss`] for which loss slot
+    /// belongs to which link), then weighted by how old that link's
+    /// measurement is and blended over the link behind it.
+    ///
+    /// # Why age is spent here
+    ///
+    /// A slot nothing refreshes used to rank forever. The fallback-wire slots
+    /// are the acute case — the fallback-wire probe only runs when primary is
+    /// failing or the slot has gone stale, and a real dial only lands there
+    /// once the balancer has already chosen that wire — so a measurement taken
+    /// while a carrier was broken kept the uplink out of selection, which kept
+    /// traffic away, which kept the measurement from ever being replaced. The
+    /// field case was an uplink whose carrier had been fixed hours earlier
+    /// still ranking on a four-second sample, visibly flipping between that and
+    /// its healthy primary reading as `shuffle_timer` rerolled the active wire
+    /// under it. Weighting by `0.5^(age / rtt_ewma_halflife)` is what lets such
+    /// an uplink work its way back without an operator recreating it.
+    ///
+    /// The decay is asymmetric by construction, which is what keeps it from
+    /// becoming the opposite bug (a carrier that just failed being waved back
+    /// in): a fresh bad sample lands at full weight through the EWMA
+    /// immediately, while an old one only ever fades **toward the next
+    /// measured link** — never toward zero, and never below what some other
+    /// measurement of this uplink actually says. A wire that failed also stays
+    /// held down by machinery this function does not touch at all
+    /// (`wire_penalty`, the carrier-descent window's `failure_penalty_max`
+    /// surcharge in `crate::selection::effective_latency`), none of which
+    /// decays on this curve.
+    ///
+    /// With `rtt_ewma_halflife = 0` every link weighs `1.0` and the arithmetic
+    /// collapses to "first link wins", exactly as it behaved before decay
+    /// existed.
     ///
     /// Loss is applied as a multiplier on latency rather than as a separate
     /// term because that is what it physically is: every retransmit costs the
@@ -696,38 +752,22 @@ impl PerTransportStatus {
     pub(crate) fn base_latency_with(
         &self,
         config: &crate::config::LoadBalancingConfig,
+        now: Instant,
     ) -> Option<Duration> {
-        let (base, loss) = self.base_latency_and_wire_loss()?;
-        let multiplier =
-            loss.inflation(config.loss_latency_penalty_k, config.loss_latency_inflation_max);
-        if multiplier <= 1.0 {
-            return Some(base);
+        // Terminal link: the last probe sample. It carries no wire attribution
+        // (hence no loss verdict) and does not decay — there is nothing behind
+        // it to decay toward, and the probe loop refreshes it on its own
+        // schedule.
+        let probe_sample = self
+            .latency
+            .map(|latency| inflate_by_loss(latency, crate::loss::LossEwma::default(), config));
+        let primary = blend_over(self.rtt_ewma, self.carrier_loss, probe_sample, config, now);
+        if self.active_wire == 0 {
+            // The active-wire slot *is* the primary slot; blending it against
+            // itself would only re-apply the same decay twice.
+            return primary;
         }
-        // `try_from_secs_f64` rather than the panicking `from_secs_f64`: the
-        // config loader bounds `loss_latency_inflation_max` to `[1, 100]`
-        // (`bins/outline-ws-rust/src/config/load/balancing.rs`), but this
-        // stays as defence in depth against this function's own
-        // multiplication overflowing regardless of that bound, saturating to
-        // `Duration::MAX` (effectively "worst possible") here rather than
-        // panicking.
-        //
-        // Saturating here does not, on its own, guarantee no caller ever
-        // panics on the result: `crate::selection::weighted_latency_score`
-        // divides this value by the uplink's `weight` (unbounded above —
-        // only `> 0.0` is enforced at load time, see
-        // `bins/outline-ws-rust/src/config/load/uplinks/mod.rs`) and calls
-        // the panicking `Duration::from_secs_f64` again, so a genuine
-        // `Duration::MAX` here divided by a `weight < 1.0` would overflow
-        // past `Duration::MAX` and panic there instead. What actually makes
-        // this unreachable is that the `[1, 100]` bound on
-        // `loss_latency_inflation_max` keeps `base * multiplier` from ever
-        // *reaching* `Duration::MAX` for any base latency a real RTT sample
-        // could produce — the saturating branch below is defence against an
-        // input that is not itself reachable, so there is nothing for
-        // `weighted_latency_score`'s division to overflow. It stays this
-        // function's job to keep its own output sane; it is not what
-        // protects the caller from an unrelated unbounded `weight`.
-        Some(Duration::try_from_secs_f64(base.as_secs_f64() * multiplier).unwrap_or(Duration::MAX))
+        blend_over(self.active_wire_rtt_slot(), self.active_wire_loss(), primary, config, now)
     }
 
     /// Fold one sampling window into the slot for `wire`. Returns whether
@@ -802,6 +842,89 @@ impl PerTransportStatus {
             None => 1.0,
         }
     }
+}
+
+/// Apply one wire's smoothed carrier loss to a latency measured on that same
+/// wire. Kept a free function so every link of the ranking chain in
+/// [`PerTransportStatus::base_latency_with`] is inflated by its own wire's
+/// verdict — the pairing rule [`PerTransportStatus::base_latency_and_wire_loss`]
+/// documents survives the blend, instead of one wire's loss being applied to a
+/// latency that came from another.
+fn inflate_by_loss(
+    base: Duration,
+    loss: crate::loss::LossEwma,
+    config: &crate::config::LoadBalancingConfig,
+) -> Duration {
+    let multiplier =
+        loss.inflation(config.loss_latency_penalty_k, config.loss_latency_inflation_max);
+    if multiplier <= 1.0 {
+        return base;
+    }
+    // `try_from_secs_f64` rather than the panicking `from_secs_f64`: the
+    // config loader bounds `loss_latency_inflation_max` to `[1, 100]`
+    // (`bins/outline-ws-rust/src/config/load/balancing.rs`), but this
+    // stays as defence in depth against this function's own
+    // multiplication overflowing regardless of that bound, saturating to
+    // `Duration::MAX` (effectively "worst possible") here rather than
+    // panicking.
+    //
+    // Saturating here does not, on its own, guarantee no caller ever
+    // panics on the result: `crate::selection::weighted_latency_score`
+    // divides this value by the uplink's `weight` (unbounded above —
+    // only `> 0.0` is enforced at load time, see
+    // `bins/outline-ws-rust/src/config/load/uplinks/mod.rs`) and calls
+    // the panicking `Duration::from_secs_f64` again, so a genuine
+    // `Duration::MAX` here divided by a `weight < 1.0` would overflow
+    // past `Duration::MAX` and panic there instead. What actually makes
+    // this unreachable is that the `[1, 100]` bound on
+    // `loss_latency_inflation_max` keeps `base * multiplier` from ever
+    // *reaching* `Duration::MAX` for any base latency a real RTT sample
+    // could produce — the saturating branch below is defence against an
+    // input that is not itself reachable, so there is nothing for
+    // `weighted_latency_score`'s division to overflow. It stays this
+    // function's job to keep its own output sane; it is not what
+    // protects the caller from an unrelated unbounded `weight`.
+    Duration::try_from_secs_f64(base.as_secs_f64() * multiplier).unwrap_or(Duration::MAX)
+}
+
+/// One link of the ranking chain, weighted by its own age and blended over
+/// whatever the chain falls back to behind it.
+///
+/// Three cases, and the last two are where the asymmetry lives:
+///
+/// * an unmeasured slot contributes nothing and hands `next` straight through
+///   — identical to the abrupt chain's "skip this link";
+/// * a slot with **nothing behind it** ranks at full strength no matter how
+///   old it is. Decaying it would mean discarding this uplink's only
+///   measurement, and an uplink ranked on `None` drops out of scoring
+///   altogether — which is a far bigger claim than "this number is old";
+/// * otherwise the link fades toward `next` on the `0.5^(age/halflife)` curve.
+///   `next` is always another *measured* value, so a stale link can lose its
+///   grip on the ranking but can never invent a better one than something else
+///   observed about this uplink.
+fn blend_over(
+    slot: RttEwma,
+    loss: crate::loss::LossEwma,
+    next: Option<Duration>,
+    config: &crate::config::LoadBalancingConfig,
+    now: Instant,
+) -> Option<Duration> {
+    let Some(value) = slot.value() else {
+        return next;
+    };
+    let inflated = inflate_by_loss(value, loss, config);
+    let Some(next) = next else {
+        return Some(inflated);
+    };
+    let confidence = slot.confidence(config.rtt_ewma_halflife, now);
+    if confidence >= 1.0 {
+        return Some(inflated);
+    }
+    let blended = inflated.as_secs_f64() * confidence + next.as_secs_f64() * (1.0 - confidence);
+    // Both inputs are finite `Duration`s and `confidence` is in `[0, 1]`, so
+    // the blend lies between them and cannot overflow; `try_from_secs_f64`
+    // keeps the same defence-in-depth posture as `inflate_by_loss` above.
+    Some(Duration::try_from_secs_f64(blended).unwrap_or(Duration::MAX))
 }
 
 /// One non-primary wire's carrier-descent slot: the same

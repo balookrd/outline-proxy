@@ -48,6 +48,7 @@ impl Metrics {
             uplink_latency_seconds: u.uplink_latency_seconds,
             uplink_rtt_ewma_seconds: u.uplink_rtt_ewma_seconds,
             uplink_active_wire_rtt_ewma_seconds: u.uplink_active_wire_rtt_ewma_seconds,
+            uplink_active_wire_rtt_age_seconds: u.uplink_active_wire_rtt_age_seconds,
             uplink_carrier_loss_ratio: u.uplink_carrier_loss_ratio,
             uplink_carrier_loss_observed_packets: u.uplink_carrier_loss_observed_packets,
             uplink_loss_elevated_seconds: u.uplink_loss_elevated_seconds,

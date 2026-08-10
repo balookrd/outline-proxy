@@ -43,7 +43,10 @@ impl UplinkManager {
         self.inner.with_status_mut(index, |status| {
             status.tcp.healthy = Some(healthy);
             status.tcp.latency = Some(Duration::from_millis(rtt_ms));
-            status.tcp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
+            status.tcp.rtt_ewma = crate::rtt::RttEwma::measured(
+                Duration::from_millis(rtt_ms),
+                tokio::time::Instant::now(),
+            );
         });
     }
 
@@ -53,7 +56,10 @@ impl UplinkManager {
         self.inner.with_status_mut(index, |status| {
             status.udp.healthy = Some(healthy);
             status.udp.latency = Some(Duration::from_millis(rtt_ms));
-            status.udp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
+            status.udp.rtt_ewma = crate::rtt::RttEwma::measured(
+                Duration::from_millis(rtt_ms),
+                tokio::time::Instant::now(),
+            );
         });
     }
 

@@ -80,6 +80,14 @@ pub(crate) fn load_balancing_config(
         warm_standby_tcp: lb.and_then(|l| l.warm_standby_tcp).unwrap_or(0),
         warm_standby_udp: lb.and_then(|l| l.warm_standby_udp).unwrap_or(0),
         rtt_ewma_alpha,
+        // Default: 300 s, the scale `probe.liveness_interval` already uses for
+        // "how long may an uplink go unobserved". `0` is the documented off
+        // switch (every RTT slot keeps full weight forever, i.e. pre-decay
+        // ranking) and is therefore accepted rather than rejected — same
+        // posture as the sibling `loss_sample_interval` zero above.
+        rtt_ewma_halflife: Duration::from_secs(
+            lb.and_then(|l| l.rtt_ewma_halflife_secs).unwrap_or(300),
+        ),
         loss_latency_penalty_k,
         loss_latency_inflation_max,
         // Default: 10 s. `0` is the sampling loop's own off switch —

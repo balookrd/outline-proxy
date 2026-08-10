@@ -697,6 +697,27 @@ pub struct LoadBalancingConfig {
     pub warm_standby_tcp: usize,
     pub warm_standby_udp: usize,
     pub rtt_ewma_alpha: f64,
+    /// Half-life of an RTT measurement's influence on ranking. A per-wire RTT
+    /// slot keeps weight `0.5^(age / halflife)` in
+    /// `PerTransportStatus::base_latency_with`, fading toward whatever the
+    /// chain falls back to behind it, and stops counting as measured at all
+    /// after `crate::rtt::EXPIRY_HALFLIVES` half-lives.
+    ///
+    /// This exists because a slot nothing refreshes used to rank forever, and
+    /// the per-fallback-wire slots have no routine refresher: the fallback-wire
+    /// probe runs only when primary is failing or the slot has already gone
+    /// stale, and a real dial only lands there once the balancer has chosen
+    /// that wire. A sample taken while the carrier was broken therefore kept
+    /// the uplink out of selection, which kept traffic away, which kept the
+    /// sample from being replaced — an uplink could not recover without an
+    /// operator recreating it.
+    ///
+    /// `0` disables decay entirely (every slot weighs `1.0`, ranking behaves
+    /// exactly as it did before this knob existed). The default, 300 s, is the
+    /// scale `probe.liveness_interval` already uses for "how long may an uplink
+    /// go unobserved": with the companion staleness-triggered fallback-wire
+    /// probe, a slot is normally re-measured long before it fades far.
+    pub rtt_ewma_halflife: Duration,
     /// Strength of the carrier-loss latency inflation: the wire's smoothed
     /// loss ratio multiplies scoring latency by `1 + k · loss`. `0.0` (the
     /// default) observes without acting — the loss ratio is measured and

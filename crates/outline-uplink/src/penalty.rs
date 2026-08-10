@@ -1,8 +1,9 @@
-//! EWMA RTT smoothing and exponentially-decaying failure penalty for uplinks.
+//! Exponentially-decaying failure penalty for uplinks.
 //!
-//! Both quantities live on `PerTransportStatus` and are updated by the probe
-//! and runtime-failure paths to bias load-balancing scores away from links
-//! that have been recently slow or unreliable.
+//! The penalty lives on `PerTransportStatus` and is updated by the probe and
+//! runtime-failure paths to bias load-balancing scores away from links that
+//! have been recently unreliable. Its RTT counterpart — which needs the same
+//! kind of time-decay for a different reason — lives in [`crate::rtt`].
 
 use std::time::Duration;
 
@@ -11,22 +12,6 @@ use tokio::time::Instant;
 
 use crate::config::LoadBalancingConfig;
 use crate::manager::status::PenaltyState;
-
-pub(crate) fn update_rtt_ewma(
-    current: &mut Option<Duration>,
-    sample: Option<Duration>,
-    alpha: f64,
-) {
-    let Some(sample) = sample else {
-        return;
-    };
-    *current = Some(match *current {
-        Some(existing) => Duration::from_secs_f64(
-            existing.as_secs_f64() * (1.0 - alpha) + sample.as_secs_f64() * alpha,
-        ),
-        None => sample,
-    });
-}
 
 pub(crate) fn current_penalty(
     state: &PenaltyState,

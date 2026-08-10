@@ -5,7 +5,7 @@ use tracing::{debug, warn};
 
 use crate::config::{LoadBalancingConfig, TransportMode, UplinkTransport};
 
-use super::super::super::penalty::{add_penalty, update_rtt_ewma};
+use super::super::super::penalty::add_penalty;
 use super::super::super::types::{TransportKind, Uplink, UplinkManager};
 use super::super::mode_downgrade::ModeDowngradeTrigger;
 use super::super::status::PerTransportStatus;
@@ -438,8 +438,8 @@ impl UplinkManager {
             status.last_checked = Some(now);
             status.tcp.latency = result.tcp_latency;
             status.udp.latency = result.udp_latency;
-            update_rtt_ewma(&mut status.tcp.rtt_ewma, result.tcp_latency, rtt_ewma_alpha);
-            update_rtt_ewma(&mut status.udp.rtt_ewma, result.udp_latency, rtt_ewma_alpha);
+            status.tcp.rtt_ewma.record(result.tcp_latency, rtt_ewma_alpha, now);
+            status.udp.rtt_ewma.record(result.udp_latency, rtt_ewma_alpha, now);
             if !result.tcp_ok {
                 if !tcp_skip_escalation {
                     record_transport_failure(
@@ -643,8 +643,16 @@ impl UplinkManager {
         let (tcp_rtt_ewma_ms, udp_rtt_ewma_ms) = {
             let s = self.inner.read_status(index);
             (
-                s.tcp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
-                s.udp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
+                s.tcp
+                    .rtt_ewma
+                    .value()
+                    .map(|v| v.as_millis() as u64)
+                    .unwrap_or_default(),
+                s.udp
+                    .rtt_ewma
+                    .value()
+                    .map(|v| v.as_millis() as u64)
+                    .unwrap_or_default(),
             )
         };
         debug!(

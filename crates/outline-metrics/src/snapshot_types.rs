@@ -111,11 +111,35 @@ pub struct UplinkSnapshot {
     /// Prometheus consumers that already rely on its semantics; the
     /// dashboard prefers this field so the operator sees the latency of
     /// the wire actually carrying traffic.
+    ///
+    /// Goes back to `None` once the slot has gone unmeasured for four
+    /// `rtt_ewma_halflife`s: at that point no current measurement exists for
+    /// this wire, which is exactly what `None` has always meant here. Ranking
+    /// does not stop at that point — it keeps walking the chain — so a `None`
+    /// here alongside a `Some` in [`Self::tcp_inflated_latency_ms`] is the
+    /// normal reading for a wire nobody has probed lately, not a bug.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tcp_active_wire_rtt_ewma_ms: Option<u128>,
     /// UDP counterpart to [`Self::tcp_active_wire_rtt_ewma_ms`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub udp_active_wire_rtt_ewma_ms: Option<u128>,
+    /// How long ago the TCP active wire's RTT slot last moved, in
+    /// milliseconds. `None` when that wire has never been measured.
+    ///
+    /// Published because the two latency fields above can legitimately
+    /// disagree, and their disagreement is only interpretable with the age in
+    /// hand: a large gap between `tcp_active_wire_rtt_ewma_ms` and
+    /// `tcp_inflated_latency_ms` means "this slot is old and ranking has
+    /// largely stopped believing it", while the same gap at a small age means
+    /// carrier loss is inflating a fresh measurement. Diagnosing the 2026-08-10
+    /// field incident — an uplink starved by a four-second sample nothing was
+    /// refreshing — took a manual uplink recreation precisely because this
+    /// number was not observable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_active_wire_rtt_age_ms: Option<u128>,
+    /// UDP counterpart to [`Self::tcp_active_wire_rtt_age_ms`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_active_wire_rtt_age_ms: Option<u128>,
     /// Smoothed carrier loss ratio on the wire currently carrying TCP traffic,
     /// in `[0, 1]`. `None` until a sampling window clears the volume
     /// threshold — absence means "not measured", never "no loss".
@@ -148,14 +172,18 @@ pub struct UplinkSnapshot {
     pub udp_loss_elevated_ms: Option<u128>,
     /// Latency selection actually ranks TCP by: the active wire's RTT EWMA,
     /// falling back to primary's EWMA and then the last probe sample, after
-    /// carrier-loss inflation. At `loss_latency_penalty_k = 0` this is that
-    /// base latency uninflated — but it is not always equal to
-    /// [`Self::tcp_active_wire_rtt_ewma_ms`]: right after a wire flip, before
-    /// the active wire has its own RTT sample, this field still falls back to
-    /// primary's EWMA / the last probe sample and publishes `Some`, while
-    /// `tcp_active_wire_rtt_ewma_ms` (active-wire EWMA only, no fallback)
-    /// publishes `None`. `None` only when no latency measurement exists at
-    /// all for this uplink.
+    /// carrier-loss inflation and age-weighting. At `loss_latency_penalty_k =
+    /// 0` and a fresh slot this is that base latency uninflated — but it is
+    /// not always equal to [`Self::tcp_active_wire_rtt_ewma_ms`], for two
+    /// reasons. Right after a wire flip, before the active wire has its own
+    /// RTT sample, this field still falls back to primary's EWMA / the last
+    /// probe sample and publishes `Some`, while `tcp_active_wire_rtt_ewma_ms`
+    /// (active-wire EWMA only, no fallback) publishes `None`. And as a slot
+    /// ages, ranking blends it toward the next link of that chain on the
+    /// `0.5^(age / rtt_ewma_halflife)` curve, so this field drifts away from
+    /// the measured value it started at — read [`Self::tcp_active_wire_rtt_age_ms`]
+    /// to tell the two causes apart. `None` only when no latency measurement
+    /// exists at all for this uplink.
     pub tcp_inflated_latency_ms: Option<u128>,
     /// UDP counterpart to [`Self::tcp_inflated_latency_ms`].
     pub udp_inflated_latency_ms: Option<u128>,
