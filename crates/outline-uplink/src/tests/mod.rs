@@ -35,6 +35,7 @@ pub(crate) fn lb() -> LoadBalancingConfig {
         warm_standby_tcp: 0,
         warm_standby_udp: 0,
         rtt_ewma_alpha: 0.25,
+        rtt_ewma_halflife: Duration::from_secs(300),
         loss_latency_penalty_k: 0.0,
         loss_latency_inflation_max: 4.0,
         loss_sample_interval: Duration::from_secs(30),
@@ -80,7 +81,10 @@ fn weighted_score_prefers_higher_weight_for_same_latency() {
     let status = UplinkStatus {
         tcp: PerTransportStatus {
             latency: Some(Duration::from_millis(100)),
-            rtt_ewma: Some(Duration::from_millis(100)),
+            rtt_ewma: crate::rtt::RttEwma::measured(
+                Duration::from_millis(100),
+                tokio::time::Instant::now(),
+            ),
             ..PerTransportStatus::default()
         },
         ..UplinkStatus::default()
@@ -224,7 +228,10 @@ async fn set_tcp_status(manager: &UplinkManager, index: usize, healthy: bool, rt
     manager.inner.with_status_mut(index, |status| {
         status.tcp.healthy = Some(healthy);
         status.tcp.latency = Some(Duration::from_millis(rtt_ms));
-        status.tcp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
+        status.tcp.rtt_ewma = crate::rtt::RttEwma::measured(
+            Duration::from_millis(rtt_ms),
+            tokio::time::Instant::now(),
+        );
     });
 }
 
@@ -232,7 +239,10 @@ async fn set_udp_status(manager: &UplinkManager, index: usize, healthy: bool, rt
     manager.inner.with_status_mut(index, |status| {
         status.udp.healthy = Some(healthy);
         status.udp.latency = Some(Duration::from_millis(rtt_ms));
-        status.udp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
+        status.udp.rtt_ewma = crate::rtt::RttEwma::measured(
+            Duration::from_millis(rtt_ms),
+            tokio::time::Instant::now(),
+        );
     });
 }
 

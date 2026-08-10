@@ -105,6 +105,7 @@ fn lb_global() -> LoadBalancingConfig {
         warm_standby_tcp: 0,
         warm_standby_udp: 0,
         rtt_ewma_alpha: 0.3,
+        rtt_ewma_halflife: Duration::from_secs(300),
         loss_latency_penalty_k: 0.0,
         loss_latency_inflation_max: 4.0,
         loss_sample_interval: Duration::from_secs(30),
@@ -521,7 +522,10 @@ async fn candidate_order_ranks_by_active_wire_rtt() {
     // up-a has descended onto its first fallback wire, which measures 200 ms.
     manager.inner.with_status_mut(0, |s| {
         s.tcp.active_wire = 1;
-        s.tcp.fallback_rtt_ewma = vec![Some(Duration::from_millis(200))];
+        s.tcp.fallback_rtt_ewma = vec![crate::rtt::RttEwma::measured(
+            Duration::from_millis(200),
+            tokio::time::Instant::now(),
+        )];
     });
 
     let order: Vec<usize> = manager
@@ -544,7 +548,10 @@ async fn candidate_order_ranks_by_active_wire_rtt() {
     manager.test_set_tcp_health(1, true, 50).await;
     manager.inner.with_status_mut(0, |s| {
         s.tcp.active_wire = 0;
-        s.tcp.fallback_rtt_ewma = vec![Some(Duration::from_millis(200))];
+        s.tcp.fallback_rtt_ewma = vec![crate::rtt::RttEwma::measured(
+            Duration::from_millis(200),
+            tokio::time::Instant::now(),
+        )];
     });
 
     let order: Vec<usize> = manager

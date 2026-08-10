@@ -129,11 +129,18 @@ async fn a_fallback_wire_udp_dial_attributes_itself_to_wire_two_not_primary() {
 
     let status = manager.read_status_for_test(0);
     assert!(
-        status.udp.fallback_rtt_ewma.get(1).copied().flatten().is_some(),
+        status
+            .udp
+            .fallback_rtt_ewma
+            .get(1)
+            .copied()
+            .unwrap_or_default()
+            .value()
+            .is_some(),
         "wire 2's own RTT slot (fallback_rtt_ewma[1]) must get the connection-latency sample"
     );
     assert!(
-        status.udp.rtt_ewma.is_none(),
+        status.udp.rtt_ewma.value().is_none(),
         "the sample must not land on primary's rtt_ewma slot"
     );
 

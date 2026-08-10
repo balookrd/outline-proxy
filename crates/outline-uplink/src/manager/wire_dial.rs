@@ -308,6 +308,7 @@ fn test_lb() -> crate::config::LoadBalancingConfig {
         warm_standby_tcp: 0,
         warm_standby_udp: 0,
         rtt_ewma_alpha: 0.3,
+        rtt_ewma_halflife: std::time::Duration::from_secs(300),
         loss_latency_penalty_k: 0.0,
         loss_latency_inflation_max: 4.0,
         loss_sample_interval: std::time::Duration::from_secs(30),

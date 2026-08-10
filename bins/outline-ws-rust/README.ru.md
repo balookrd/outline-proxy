@@ -532,6 +532,7 @@ hysteresis_ms = 50
 failure_cooldown_secs = 10
 tcp_chunk0_failover_timeout_secs = 10
 rtt_ewma_alpha = 0.3
+rtt_ewma_halflife_secs = 300
 failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60

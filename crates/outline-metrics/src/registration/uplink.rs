@@ -104,6 +104,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_latency_seconds: GaugeVec,
     pub(super) uplink_rtt_ewma_seconds: GaugeVec,
     pub(super) uplink_active_wire_rtt_ewma_seconds: GaugeVec,
+    pub(super) uplink_active_wire_rtt_age_seconds: GaugeVec,
     pub(super) uplink_carrier_loss_ratio: GaugeVec,
     pub(super) uplink_carrier_loss_observed_packets: GaugeVec,
     pub(super) uplink_loss_elevated_seconds: GaugeVec,
@@ -261,7 +262,25 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         GaugeVec,
         "outline_ws_uplink_active_wire_rtt_ewma_seconds",
         "EWMA RTT latency of the wire currently carrying traffic on this uplink \
-         (primary's EWMA when active_wire == 0, the matching fallback's slot otherwise).",
+         (primary's EWMA when active_wire == 0, the matching fallback's slot otherwise). \
+         Absent once the slot has gone unmeasured for four rtt_ewma_halflife periods — \
+         at that point there is no current measurement for this wire, and ranking has \
+         moved on down the chain (see outline_ws_uplink_latency_inflated_seconds).",
+        ["group", "transport", "uplink"]
+    );
+    // Age of the measurement behind the gauge above. Without it, a gap
+    // between the measured and the ranked latency has two indistinguishable
+    // causes — carrier-loss inflation of a fresh sample, or age-weighting of
+    // a stale one — and the 2026-08-10 field incident showed that telling
+    // them apart from the metrics alone was impossible.
+    let uplink_active_wire_rtt_age_seconds = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_uplink_active_wire_rtt_age_seconds",
+        "Age of the RTT measurement behind outline_ws_uplink_active_wire_rtt_ewma_seconds. \
+         Ranking weights that measurement by 0.5^(age / rtt_ewma_halflife), so a large age \
+         here explains a ranked latency that has drifted away from the measured one. Absent \
+         when the wire has never been measured.",
         ["group", "transport", "uplink"]
     );
     let uplink_carrier_loss_ratio = register_labeled!(
@@ -578,6 +597,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_latency_seconds,
         uplink_rtt_ewma_seconds,
         uplink_active_wire_rtt_ewma_seconds,
+        uplink_active_wire_rtt_age_seconds,
         uplink_carrier_loss_ratio,
         uplink_carrier_loss_observed_packets,
         uplink_loss_elevated_seconds,
