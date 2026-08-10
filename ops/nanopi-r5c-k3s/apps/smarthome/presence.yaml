@@ -33,6 +33,20 @@ spec:
             - { name: TZ, value: Europe/Moscow }
           volumeMounts:
             - { name: conf, mountPath: /app/conf }
+          # Heartbeat трогает главный цикл сервиса, так что проба ловит его
+          # зависание; упавшую с исключением задачу TaskSupervisor гасит сам.
+          # HEALTHCHECK из образа в k8s не действует — тот же порог 60 с
+          # продублирован здесь.
+          livenessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - "import os,sys,time; f='/tmp/presence.heartbeat'; sys.exit(0 if os.path.exists(f) and time.time()-os.path.getmtime(f) < 60 else 1)"
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             requests: { cpu: 20m, memory: 64Mi }
             limits:   { memory: 192Mi }
