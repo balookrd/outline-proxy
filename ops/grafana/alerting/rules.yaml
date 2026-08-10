@@ -31,6 +31,12 @@ groups:
         title: TargetDown
         condition: C
         for: 5m
+        # A target on a lossy path does not fail cleanly — it answers, misses,
+        # answers again, and each recovery-then-failure pair is a fresh
+        # notification: 35 of them on the night of 2026-08-09, all from nuxt2
+        # while its link was dropping up to 83% of packets. Fifteen minutes of
+        # hold turns that into one alert per genuine outage.
+        keep_firing_for: 15m
         labels:
           severity: critical
         annotations:
@@ -98,6 +104,14 @@ groups:
         title: UplinkCarrierLossHigh
         condition: C
         for: 10m
+        # A degrading uplink does not sit still above the threshold — it
+        # oscillates across it. On the night of 2026-08-09 nuxt2 was over 5% for
+        # 340 of 720 minutes with peaks at 83%, and the rule crossed into
+        # Alerting 59 separate times: one outage, dozens of mails. `for` cannot
+        # help, since it only delays the entry. This holds the alert firing for
+        # half an hour after the condition clears, so a flapping link is one
+        # incident until it is genuinely quiet.
+        keep_firing_for: 30m
         labels:
           severity: warning
         annotations:
@@ -106,7 +120,8 @@ groups:
             Carrier loss above 5% for ten minutes. The threshold matches the
             loss-failover threshold already calibrated on .102 and .104; the
             ten-minute sustain is what separates this from the spikes that reach
-            42% for a single sample.
+            42% for a single sample. It stays firing for 30 minutes past the
+            last breach so that an oscillating link reads as one incident.
         noDataState: OK
         execErrState: OK
         data:
@@ -131,6 +146,11 @@ groups:
         title: UplinkFailoverStorm
         condition: C
         for: 0s
+        # Same flapping shape as the loss rule, and usually the same cause: the
+        # failover count crosses 30-per-15-minutes, drops under it, crosses
+        # again. 113 notifications on the night of 2026-08-09 for what was one
+        # sustained episode on nuxt2.
+        keep_firing_for: 30m
         labels:
           severity: warning
         annotations:
