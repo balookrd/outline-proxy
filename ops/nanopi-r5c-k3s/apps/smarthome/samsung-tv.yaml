@@ -35,7 +35,7 @@ spec:
         - name: registry-creds
       containers:
         - name: samsung-tv
-          image: registry.k3s.beerloga.su/samsung_tv:377e3a2
+          image: registry.k3s.beerloga.su/samsung_tv:b433f60
           imagePullPolicy: IfNotPresent
           args:
             - --path
