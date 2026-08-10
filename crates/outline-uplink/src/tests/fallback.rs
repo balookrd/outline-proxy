@@ -354,6 +354,7 @@ fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig 
         warm_standby_tcp: 0,
         warm_standby_udp: 0,
         rtt_ewma_alpha: 0.25,
+        rtt_ewma_halflife: std::time::Duration::from_secs(300),
         loss_latency_penalty_k: 0.0,
         loss_latency_inflation_max: 4.0,
         loss_sample_interval: std::time::Duration::from_secs(10),
@@ -1942,10 +1943,16 @@ fn xhttp_recovery_cooldown_cleared_by_clear_mode_downgrade() {
 fn active_wire_rtt_ewma_reads_primary_slot_for_wire_zero() {
     use crate::manager::status::PerTransportStatus;
     let mut st = PerTransportStatus {
-        rtt_ewma: Some(std::time::Duration::from_millis(40)),
+        rtt_ewma: crate::rtt::RttEwma::measured(
+            std::time::Duration::from_millis(40),
+            tokio::time::Instant::now(),
+        ),
         ..Default::default()
     };
-    st.fallback_rtt_ewma.push(Some(std::time::Duration::from_millis(120)));
+    st.fallback_rtt_ewma.push(crate::rtt::RttEwma::measured(
+        std::time::Duration::from_millis(120),
+        tokio::time::Instant::now(),
+    ));
     st.active_wire = 0;
     assert_eq!(st.active_wire_rtt_ewma(), Some(std::time::Duration::from_millis(40)));
 }
@@ -1954,10 +1961,16 @@ fn active_wire_rtt_ewma_reads_primary_slot_for_wire_zero() {
 fn active_wire_rtt_ewma_reads_fallback_slot_when_advanced() {
     use crate::manager::status::PerTransportStatus;
     let mut st = PerTransportStatus {
-        rtt_ewma: Some(std::time::Duration::from_millis(40)),
+        rtt_ewma: crate::rtt::RttEwma::measured(
+            std::time::Duration::from_millis(40),
+            tokio::time::Instant::now(),
+        ),
         ..Default::default()
     };
-    st.fallback_rtt_ewma.push(Some(std::time::Duration::from_millis(120)));
+    st.fallback_rtt_ewma.push(crate::rtt::RttEwma::measured(
+        std::time::Duration::from_millis(120),
+        tokio::time::Instant::now(),
+    ));
     st.active_wire = 1;
     assert_eq!(
         st.active_wire_rtt_ewma(),
@@ -1970,7 +1983,10 @@ fn active_wire_rtt_ewma_reads_fallback_slot_when_advanced() {
 fn active_wire_rtt_ewma_returns_none_when_fallback_slot_unset() {
     use crate::manager::status::PerTransportStatus;
     let mut st = PerTransportStatus {
-        rtt_ewma: Some(std::time::Duration::from_millis(40)),
+        rtt_ewma: crate::rtt::RttEwma::measured(
+            std::time::Duration::from_millis(40),
+            tokio::time::Instant::now(),
+        ),
         ..Default::default()
     };
     // No `fallback_rtt_ewma` push — slot 0 is missing.
@@ -1986,24 +2002,37 @@ fn record_fallback_wire_latency_lazy_extends_vec() {
     use crate::manager::status::PerTransportStatus;
     let mut st = PerTransportStatus::default();
     // Wire 2 first — slot 1. Slot 0 should be auto-filled with None.
-    st.record_fallback_wire_latency(2, Some(std::time::Duration::from_millis(80)), 0.5);
+    st.record_fallback_wire_latency(
+        2,
+        Some(std::time::Duration::from_millis(80)),
+        0.5,
+        tokio::time::Instant::now(),
+    );
     assert_eq!(st.fallback_rtt_ewma.len(), 2);
-    assert_eq!(st.fallback_rtt_ewma[0], None);
-    assert_eq!(st.fallback_rtt_ewma[1], Some(std::time::Duration::from_millis(80)));
+    assert_eq!(st.fallback_rtt_ewma[0].value(), None);
+    assert_eq!(st.fallback_rtt_ewma[1].value(), Some(std::time::Duration::from_millis(80)));
 }
 
 #[test]
 fn record_fallback_wire_latency_is_noop_for_primary() {
     use crate::manager::status::PerTransportStatus;
     let mut st = PerTransportStatus {
-        rtt_ewma: Some(std::time::Duration::from_millis(40)),
+        rtt_ewma: crate::rtt::RttEwma::measured(
+            std::time::Duration::from_millis(40),
+            tokio::time::Instant::now(),
+        ),
         ..Default::default()
     };
-    st.record_fallback_wire_latency(0, Some(std::time::Duration::from_millis(999)), 0.5);
+    st.record_fallback_wire_latency(
+        0,
+        Some(std::time::Duration::from_millis(999)),
+        0.5,
+        tokio::time::Instant::now(),
+    );
     // Primary's EWMA goes through the existing `update_rtt_ewma` path in the
     // probe outcome handler; this helper deliberately ignores wire 0 so the
     // per-wire probe walk doesn't double-write primary's slot.
-    assert_eq!(st.rtt_ewma, Some(std::time::Duration::from_millis(40)));
+    assert_eq!(st.rtt_ewma.value(), Some(std::time::Duration::from_millis(40)));
     assert!(st.fallback_rtt_ewma.is_empty());
 }
 
@@ -2012,10 +2041,20 @@ fn record_fallback_wire_latency_smooths_subsequent_samples() {
     use crate::manager::status::PerTransportStatus;
     let mut st = PerTransportStatus::default();
     let alpha = 0.5;
-    st.record_fallback_wire_latency(1, Some(std::time::Duration::from_millis(100)), alpha);
-    st.record_fallback_wire_latency(1, Some(std::time::Duration::from_millis(200)), alpha);
+    st.record_fallback_wire_latency(
+        1,
+        Some(std::time::Duration::from_millis(100)),
+        alpha,
+        tokio::time::Instant::now(),
+    );
+    st.record_fallback_wire_latency(
+        1,
+        Some(std::time::Duration::from_millis(200)),
+        alpha,
+        tokio::time::Instant::now(),
+    );
     // EWMA: 100 → (100*0.5 + 200*0.5) = 150ms.
-    assert_eq!(st.fallback_rtt_ewma[0], Some(std::time::Duration::from_millis(150)));
+    assert_eq!(st.fallback_rtt_ewma[0].value(), Some(std::time::Duration::from_millis(150)));
 }
 
 #[test]
@@ -2023,12 +2062,17 @@ fn scoring_base_latency_uses_active_wire_ewma_when_advanced() {
     use crate::manager::status::PerTransportStatus;
     use crate::selection::scoring_base_latency;
     let mut tcp = PerTransportStatus {
-        rtt_ewma: Some(std::time::Duration::from_millis(40)),
+        rtt_ewma: crate::rtt::RttEwma::measured(
+            std::time::Duration::from_millis(40),
+            tokio::time::Instant::now(),
+        ),
         latency: Some(std::time::Duration::from_millis(50)),
         ..Default::default()
     };
-    tcp.fallback_rtt_ewma
-        .push(Some(std::time::Duration::from_millis(120)));
+    tcp.fallback_rtt_ewma.push(crate::rtt::RttEwma::measured(
+        std::time::Duration::from_millis(120),
+        tokio::time::Instant::now(),
+    ));
     tcp.active_wire = 1;
     let status = crate::manager::status::UplinkStatus { tcp, ..Default::default() };
     assert_eq!(
@@ -2043,7 +2087,10 @@ fn scoring_base_latency_falls_back_to_primary_when_fallback_ewma_unset() {
     use crate::manager::status::PerTransportStatus;
     use crate::selection::scoring_base_latency;
     let mut tcp = PerTransportStatus {
-        rtt_ewma: Some(std::time::Duration::from_millis(40)),
+        rtt_ewma: crate::rtt::RttEwma::measured(
+            std::time::Duration::from_millis(40),
+            tokio::time::Instant::now(),
+        ),
         latency: Some(std::time::Duration::from_millis(50)),
         ..Default::default()
     };

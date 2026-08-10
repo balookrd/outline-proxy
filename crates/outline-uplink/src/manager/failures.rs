@@ -10,7 +10,7 @@ use super::super::error_classify::{
 };
 use outline_transport::payload_integrity_cause;
 
-use super::super::penalty::{add_penalty, current_penalty, update_rtt_ewma};
+use super::super::penalty::{add_penalty, current_penalty};
 use super::super::types::{TransportKind, UplinkManager};
 use super::mode_downgrade::ModeDowngradeTrigger;
 
@@ -800,12 +800,13 @@ impl UplinkManager {
         latency: Duration,
     ) {
         let alpha = self.inner.load_balancing.rtt_ewma_alpha;
+        let now = Instant::now();
         self.inner.with_status_mut(index, |status| match transport {
             TransportKind::Tcp => {
-                update_rtt_ewma(&mut status.tcp.rtt_ewma, Some(latency), alpha);
+                status.tcp.rtt_ewma.record(Some(latency), alpha, now);
             },
             TransportKind::Udp => {
-                update_rtt_ewma(&mut status.udp.rtt_ewma, Some(latency), alpha);
+                status.udp.rtt_ewma.record(Some(latency), alpha, now);
             },
         });
     }
@@ -829,12 +830,13 @@ impl UplinkManager {
             return self.report_connection_latency(index, transport, latency).await;
         }
         let alpha = self.inner.load_balancing.rtt_ewma_alpha;
+        let now = Instant::now();
         self.inner.with_status_mut(index, |status| {
             let per = match transport {
                 TransportKind::Tcp => &mut status.tcp,
                 TransportKind::Udp => &mut status.udp,
             };
-            per.record_fallback_wire_latency(wire, Some(latency), alpha);
+            per.record_fallback_wire_latency(wire, Some(latency), alpha, now);
         });
     }
 }

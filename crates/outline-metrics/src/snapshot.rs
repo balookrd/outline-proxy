@@ -34,6 +34,7 @@ impl Metrics {
         self.uplink_latency_seconds.reset();
         self.uplink_rtt_ewma_seconds.reset();
         self.uplink_active_wire_rtt_ewma_seconds.reset();
+        self.uplink_active_wire_rtt_age_seconds.reset();
         self.uplink_carrier_loss_ratio.reset();
         self.uplink_carrier_loss_observed_packets.reset();
         self.uplink_loss_elevated_seconds.reset();
@@ -191,6 +192,20 @@ impl Metrics {
                 self.uplink_active_wire_rtt_ewma_seconds
                     .with_label_values(&[group, "udp", &uplink.name])
                     .set(latency_ms as f64 / 1000.0);
+            }
+            // Age of the measurement behind the gauge above. Published even
+            // once that gauge has gone absent on expiry: "how long has nobody
+            // measured this wire" is precisely the question an operator has at
+            // that moment, and it is the only series that still answers it.
+            if let Some(age_ms) = uplink.tcp_active_wire_rtt_age_ms {
+                self.uplink_active_wire_rtt_age_seconds
+                    .with_label_values(&[group, "tcp", &uplink.name])
+                    .set(age_ms as f64 / 1000.0);
+            }
+            if let Some(age_ms) = uplink.udp_active_wire_rtt_age_ms {
+                self.uplink_active_wire_rtt_age_seconds
+                    .with_label_values(&[group, "udp", &uplink.name])
+                    .set(age_ms as f64 / 1000.0);
             }
             // Carrier loss: absence means "not measured", never "no loss" —
             // no zero-fill here, unlike the always-published gauges above.

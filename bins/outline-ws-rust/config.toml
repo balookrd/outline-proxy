@@ -383,6 +383,7 @@ name = "example.com"
 # warm_standby_tcp = 1
 # warm_standby_udp = 1
 # rtt_ewma_alpha = 0.3
+# rtt_ewma_halflife_secs = 300  # RTT measurements lose ranking weight as they age (0 = never)
 # failure_penalty_ms = 500
 # failure_penalty_max_ms = 30000
 # failure_penalty_halflife_secs = 60
@@ -439,6 +440,15 @@ hysteresis_ms = 50
 failure_cooldown_secs = 10
 tcp_chunk0_failover_timeout_secs = 10
 rtt_ewma_alpha = 0.3
+# Half-life of an RTT measurement's influence on ranking. A per-wire RTT slot
+# keeps weight 0.5^(age / halflife) and stops counting as measured after four
+# half-lives, fading toward the next measurement in the chain (primary's EWMA,
+# then the last probe sample) rather than toward zero. Without this, a slot
+# measured while a carrier was broken ranked forever: the bad score kept the
+# balancer from sending traffic, and only traffic (or the paired fallback-wire
+# refresh probe this enables) would ever replace the measurement. Set to 0 to
+# disable decay entirely. Default: 300.
+rtt_ewma_halflife_secs = 300
 failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60

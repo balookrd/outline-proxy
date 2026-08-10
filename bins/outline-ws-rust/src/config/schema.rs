@@ -562,6 +562,13 @@ pub(super) struct UplinkGroupSection {
     pub(super) warm_standby_tcp: Option<usize>,
     pub(super) warm_standby_udp: Option<usize>,
     pub(super) rtt_ewma_alpha: Option<f64>,
+    /// Half-life, in seconds, of an RTT measurement's influence on ranking.
+    /// A per-wire RTT slot keeps weight `0.5^(age / halflife)` and stops
+    /// counting as measured after four half-lives, so an uplink held down by a
+    /// measurement taken while its carrier was broken can recover on its own
+    /// instead of being starved of the traffic that would re-measure it.
+    /// Default: `300`. `0` disables decay (pre-1.6 ranking behaviour).
+    pub(super) rtt_ewma_halflife_secs: Option<u64>,
     /// Strength of the carrier-loss latency inflation applied at scoring
     /// time: `1 + k · loss`. `0.0` (default) observes without acting — the
     /// loss ratio is measured and published, but selection is unchanged.
@@ -836,6 +843,13 @@ pub(crate) struct LoadBalancingSection {
     pub(super) warm_standby_tcp: Option<usize>,
     pub(super) warm_standby_udp: Option<usize>,
     pub(super) rtt_ewma_alpha: Option<f64>,
+    /// Half-life, in seconds, of an RTT measurement's influence on ranking.
+    /// A per-wire RTT slot keeps weight `0.5^(age / halflife)` and stops
+    /// counting as measured after four half-lives, so an uplink held down by a
+    /// measurement taken while its carrier was broken can recover on its own
+    /// instead of being starved of the traffic that would re-measure it.
+    /// Default: `300`. `0` disables decay (pre-1.6 ranking behaviour).
+    pub(super) rtt_ewma_halflife_secs: Option<u64>,
     /// Strength of the carrier-loss latency inflation applied at scoring
     /// time: `1 + k · loss`. `0.0` (default) observes without acting — the
     /// loss ratio is measured and published, but selection is unchanged.

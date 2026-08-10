@@ -37,6 +37,37 @@ pub(super) struct ProbeCycle {
     outcome: Result<ProbeOutcome>,
 }
 
+/// Whether either plane's active wire has gone long enough without an RTT
+/// measurement that ranking has started discounting it — the trigger for a
+/// refresh pass over the fallback wire even while primary is perfectly
+/// healthy.
+///
+/// Only wires other than primary qualify. Wire 0's slot is refreshed by the
+/// regular probe every cycle by construction, so it can never be the stale one
+/// here; a non-primary active wire, on the other hand, has no routine
+/// refresher at all — the fallback-wire probe historically ran only when
+/// primary was failing, and a real dial only lands on that wire once the
+/// balancer has already chosen it. That is the loop this closes: a slot
+/// measured while the carrier was broken kept the uplink from being chosen,
+/// which kept anything from re-measuring it.
+///
+/// One half-life is deliberately earlier than the expiry horizon
+/// ([`crate::rtt::EXPIRY_HALFLIVES`]): the point is to re-measure while the
+/// decay is still recoverable, not to confirm the slot after ranking has
+/// already written it off. It also bounds the cost — at most one extra probe
+/// per multi-wire uplink per half-life (300 s by default), a rate set by the
+/// half-life rather than by `probe.interval`, so tightening the probe schedule
+/// does not multiply these.
+fn active_wire_rtt_needs_refresh(status: &UplinkStatus, halflife: Duration, now: Instant) -> bool {
+    if halflife.is_zero() {
+        return false;
+    }
+    [&status.tcp, &status.udp].into_iter().any(|per| {
+        per.active_wire != 0
+            && per.active_wire_rtt_slot().age(now).is_none_or(|age| age >= halflife)
+    })
+}
+
 /// Whether the regular probe agrees the uplink is unusable: it errored out,
 /// or neither plane reached its target. A probe that got through on either
 /// plane is proof the uplink still works, whatever the bare-TCP pre-check
@@ -472,12 +503,22 @@ impl UplinkManager {
                     );
                 },
             }
-            // Per-wire probe walk: when primary failed, validate the
-            // active fallback wire so `last_any_wire_success` (and the
-            // dashboard / Prometheus `*_health_effective` view) reflect
-            // a working fallback even on a passive uplink with no
-            // client traffic. No-op when the uplink has no fallbacks.
-            if primary_failing && !uplink.fallbacks.is_empty() {
+            // Per-wire probe walk, for either of two reasons. When primary
+            // failed, it validates the active fallback wire so
+            // `last_any_wire_success` (and the dashboard / Prometheus
+            // `*_health_effective` view) reflect a working fallback even on a
+            // passive uplink with no client traffic. When primary is fine but
+            // the active wire's RTT slot has gone stale, it is the only thing
+            // that will ever re-measure that wire: ranking reads the slot,
+            // ranking decides who gets traffic, and only traffic (or this
+            // probe) writes the slot. No-op when the uplink has no fallbacks.
+            let refresh_stale_wire_rtt = !primary_failing
+                && active_wire_rtt_needs_refresh(
+                    &self.inner.read_status(index),
+                    self.inner.load_balancing.rtt_ewma_halflife,
+                    Instant::now(),
+                );
+            if (primary_failing || refresh_stale_wire_rtt) && !uplink.fallbacks.is_empty() {
                 self.run_fallback_wire_probe(
                     index,
                     &uplink,

@@ -340,3 +340,107 @@ fn the_check_stays_off_when_the_operator_disabled_it() {
         &Ok(outcome(false, true, false))
     ));
 }
+
+/// The staleness trigger for the fallback-wire refresh pass.
+///
+/// This is the other half of RTT decay: decay alone stops a stale slot from
+/// starving an uplink forever, but only a probe puts a real number back in the
+/// slot. The trigger has to fire on a *healthy* uplink, because that is
+/// precisely the state the field incident was stuck in — primary probing green
+/// while the wire actually carrying traffic went unmeasured.
+mod active_wire_rtt_refresh {
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
+    use crate::manager::status::{PerTransportStatus, UplinkStatus};
+    use crate::rtt::RttEwma;
+
+    use super::super::active_wire_rtt_needs_refresh;
+
+    const HALFLIFE: Duration = Duration::from_secs(300);
+
+    fn status_on_wire(wire: u8, slot: RttEwma) -> UplinkStatus {
+        UplinkStatus {
+            tcp: PerTransportStatus {
+                active_wire: wire,
+                fallback_rtt_ewma: if wire == 0 { vec![] } else { vec![slot] },
+                rtt_ewma: if wire == 0 { slot } else { RttEwma::default() },
+                ..Default::default()
+            },
+            ..UplinkStatus::default()
+        }
+    }
+
+    #[test]
+    fn a_freshly_measured_fallback_wire_needs_nothing() {
+        let now = Instant::now();
+        let status = status_on_wire(1, RttEwma::measured(Duration::from_millis(200), now));
+
+        assert!(!active_wire_rtt_needs_refresh(&status, HALFLIFE, now));
+    }
+
+    #[test]
+    fn a_fallback_wire_stale_by_a_halflife_asks_for_a_probe() {
+        let now = Instant::now();
+        let status =
+            status_on_wire(1, RttEwma::measured(Duration::from_millis(200), now - HALFLIFE));
+
+        assert!(active_wire_rtt_needs_refresh(&status, HALFLIFE, now));
+    }
+
+    #[test]
+    fn a_never_measured_fallback_wire_asks_for_a_probe() {
+        let now = Instant::now();
+        let status = status_on_wire(1, RttEwma::default());
+
+        assert!(
+            active_wire_rtt_needs_refresh(&status, HALFLIFE, now),
+            "a wire the balancer is already landing sessions on, with no measurement at all, is \
+             the strongest case for probing it",
+        );
+    }
+
+    #[test]
+    fn primary_never_triggers_the_refresh() {
+        let now = Instant::now();
+        let status =
+            status_on_wire(0, RttEwma::measured(Duration::from_millis(200), now - HALFLIFE * 10));
+
+        assert!(
+            !active_wire_rtt_needs_refresh(&status, HALFLIFE, now),
+            "wire 0 is refreshed by the regular probe every cycle; spending a second probe on it \
+             would double the handshake cost for nothing",
+        );
+    }
+
+    #[test]
+    fn the_udp_plane_can_trigger_it_on_its_own() {
+        let now = Instant::now();
+        let mut status = status_on_wire(0, RttEwma::measured(Duration::from_millis(200), now));
+        status.udp = PerTransportStatus {
+            active_wire: 1,
+            fallback_rtt_ewma: vec![RttEwma::measured(
+                Duration::from_millis(200),
+                now - HALFLIFE * 2,
+            )],
+            ..Default::default()
+        };
+
+        assert!(active_wire_rtt_needs_refresh(&status, HALFLIFE, now));
+    }
+
+    #[test]
+    fn zero_halflife_switches_the_refresh_off_with_the_decay() {
+        let now = Instant::now();
+        let status = status_on_wire(
+            1,
+            RttEwma::measured(Duration::from_millis(200), now - Duration::from_secs(86_400)),
+        );
+
+        assert!(
+            !active_wire_rtt_needs_refresh(&status, Duration::ZERO, now),
+            "with decay off nothing goes stale, so there is nothing to refresh",
+        );
+    }
+}

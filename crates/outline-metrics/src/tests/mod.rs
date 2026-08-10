@@ -56,6 +56,8 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         udp_rtt_ewma_ms: None,
         tcp_active_wire_rtt_ewma_ms: None,
         udp_active_wire_rtt_ewma_ms: None,
+        tcp_active_wire_rtt_age_ms: None,
+        udp_active_wire_rtt_age_ms: None,
         tcp_carrier_loss_ratio: None,
         udp_carrier_loss_ratio: None,
         tcp_carrier_loss_packets: None,
@@ -223,6 +225,44 @@ fn render_prometheus_reports_admin_disabled_uplinks_as_zero() {
         !rendered
             .contains("outline_ws_uplink_health{group=\"main\",transport=\"tcp\",uplink=\"senko\""),
         "test premise broken: health must be absent for this to prove anything:\n{rendered}"
+    );
+}
+
+#[test]
+fn render_prometheus_exports_active_wire_rtt_age_gauge() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut stale = snapshot_uplink("sebek");
+    // The measured value has expired out of the EWMA field, but the age is
+    // exactly what an operator needs at that moment — "nobody has measured
+    // this wire in 40 minutes" — so it must still be published.
+    stale.tcp_active_wire_rtt_ewma_ms = None;
+    stale.tcp_active_wire_rtt_age_ms = Some(2_400_000);
+    snapshot.uplinks.push(stale);
+    // A wire that has never been measured has no age to report.
+    snapshot.uplinks.push(snapshot_uplink("senko"));
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+
+    let line = rendered
+        .lines()
+        .find(|l| {
+            l.starts_with("outline_ws_uplink_active_wire_rtt_age_seconds{")
+                && l.contains("uplink=\"sebek\"")
+                && l.contains("transport=\"tcp\"")
+        })
+        .expect("age gauge present even though the measurement itself expired");
+    let value: f64 = line.rsplit(' ').next().unwrap().parse().expect("numeric gauge value");
+    assert_eq!(value, 2_400.0, "published in seconds, not milliseconds");
+
+    assert!(
+        !rendered.lines().any(|l| {
+            l.starts_with("outline_ws_uplink_active_wire_rtt_age_seconds")
+                && l.contains("uplink=\"senko\"")
+        }),
+        "a never-measured wire must not emit an age"
     );
 }
 
