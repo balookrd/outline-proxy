@@ -132,7 +132,15 @@ groups:
               refId: A
               editorMode: code
               instant: true
-              expr: 'outline_ws_uplink_carrier_loss_ratio > bool 0.05'
+              # `and on(...) uplink_enabled == 1` — an uplink an operator has
+              # switched off must stop alerting. It does not on its own: unlike
+              # `uplink_health`, which disappears when the uplink leaves the
+              # probe loop, `carrier_loss_ratio` keeps being published with its
+              # last measured value. On 2026-08-10 nuxt2 was disabled on three
+              # nodes at ~50% loss and the gauge simply froze there, so turning
+              # the bad uplink off — the correct operator response — left the
+              # alert firing forever instead of clearing it.
+              expr: 'outline_ws_uplink_carrier_loss_ratio > bool 0.05 and on (instance, uplink) outline_ws_uplink_enabled == 1'
           - refId: C
             datasourceUid: __expr__
             model:
