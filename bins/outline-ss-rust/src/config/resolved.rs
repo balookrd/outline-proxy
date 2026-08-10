@@ -72,6 +72,12 @@ pub struct Config {
     /// `"h3"` (HTTP/3 + WebSocket-over-HTTP/3) is supported. Resolved
     /// from `[server.h3].alpn`; defaults to `["h3"]`.
     pub h3_alpn: Vec<H3Alpn>,
+    /// Operator-pinned initial QUIC datagram size from
+    /// `[server.h3].initial_mtu`, in bytes. `None` keeps the
+    /// 1500-Ethernet defaults; `Some` also stops MTU discovery from
+    /// probing above the pinned value, because a host is only pinned
+    /// where the path is known to be smaller.
+    pub h3_initial_mtu: Option<u16>,
     pub metrics_listen: Option<SocketAddr>,
     pub metrics_path: String,
     pub prefer_ipv4_upstream: bool,

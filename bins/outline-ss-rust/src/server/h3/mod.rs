@@ -12,8 +12,9 @@ use super::{
     bootstrap::{h3_cert_paths, load_h3_tls_config, spawn_cert_reloader},
     cluster::ClusterCtx,
     constants::{
-        CERT_RELOAD_POLL_INTERVAL_SECS, H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS,
-        H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
+        CERT_RELOAD_POLL_INTERVAL_SECS, H3_DEFAULT_INITIAL_MTU, H3_MAX_CONCURRENT_CONNECTIONS,
+        H3_MAX_CONCURRENT_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE, H3_MTU_DISCOVERY_UPPER_BOUND,
+        H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
     },
     state::{AuthPolicy, RoutesSnapshot, Services},
     transport::{
@@ -34,7 +35,7 @@ pub(in crate::server) async fn build_h3_server(
     let profile = &config.tuning;
     let tls_config = load_h3_tls_config(config)?;
     let ws_config = build_h3_ws_config(profile);
-    let server_config = build_h3_quinn_server_config(tls_config, profile)?;
+    let server_config = build_h3_quinn_server_config(tls_config, profile, config.h3_initial_mtu)?;
     let socket = bind_h3_udp_socket(listen, profile)?;
     let mut endpoint_config = quinn::EndpointConfig::default();
     endpoint_config
@@ -71,7 +72,8 @@ pub(in crate::server) fn spawn_h3_cert_reloader(
         shutdown,
         move || {
             let tls_config = load_h3_tls_config(config.as_ref())?;
-            let server_config = build_h3_quinn_server_config(tls_config, &config.tuning)?;
+            let server_config =
+                build_h3_quinn_server_config(tls_config, &config.tuning, config.h3_initial_mtu)?;
             endpoint.set_server_config(Some(server_config));
             Ok(())
         },
@@ -94,15 +96,20 @@ fn build_h3_ws_config(profile: &TuningProfile) -> H3WebSocketConfig {
 fn build_h3_quinn_server_config(
     tls_config: rustls::ServerConfig,
     profile: &TuningProfile,
+    pinned_initial_mtu: Option<u16>,
 ) -> Result<quinn::ServerConfig> {
     let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
         .map_err(|_| anyhow!("invalid HTTP/3 TLS config"))?;
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
-    server_config.transport_config(Arc::new(build_h3_transport_config(profile)?));
+    server_config
+        .transport_config(Arc::new(build_h3_transport_config(profile, pinned_initial_mtu)?));
     Ok(server_config)
 }
 
-fn build_h3_transport_config(profile: &TuningProfile) -> Result<quinn::TransportConfig> {
+fn build_h3_transport_config(
+    profile: &TuningProfile,
+    pinned_initial_mtu: Option<u16>,
+) -> Result<quinn::TransportConfig> {
     let mut transport = quinn::TransportConfig::default();
     transport
         .max_concurrent_bidi_streams(quinn::VarInt::from_u32(
@@ -136,11 +143,22 @@ fn build_h3_transport_config(profile: &TuningProfile) -> Result<quinn::Transport
     // DPLPMTUD probes upward — long enough to hurt real traffic on a
     // 1500-Ethernet link. Bump the floor to 1400 (safe whenever the
     // path supports standard 1500 MTU) and let MTU discovery target
-    // 1452 from there. The matching client config in outline-ws-rust
-    // uses identical values.
-    transport.initial_mtu(1400);
+    // 1452 from there.
+    //
+    // On a host whose path is smaller that default backfires: the kernel
+    // rejects every oversized datagram with EMSGSIZE and quinn drops to the
+    // 1200-byte QUIC floor instead of the largest size that would fit, so the
+    // node runs ~12% short on every packet and pays retries during each
+    // handshake. `[server.h3].initial_mtu` pins the real number there, and a
+    // pinned host also stops probing above it: the operator pinned it
+    // precisely because larger does not get through.
+    let (initial_mtu, discovery_upper_bound) = match pinned_initial_mtu {
+        Some(pinned) => (pinned, pinned),
+        None => (H3_DEFAULT_INITIAL_MTU, H3_MTU_DISCOVERY_UPPER_BOUND),
+    };
+    transport.initial_mtu(initial_mtu);
     let mut mtu = quinn::MtuDiscoveryConfig::default();
-    mtu.upper_bound(1452);
+    mtu.upper_bound(discovery_upper_bound);
     transport.mtu_discovery_config(Some(mtu));
     // BBR instead of quinn's default (Cubic) for the server→client (downlink)
     // sender. On a lossy / DPI-throttled international path Cubic treats loss as

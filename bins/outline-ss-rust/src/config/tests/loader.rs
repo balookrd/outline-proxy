@@ -111,3 +111,33 @@ fn rejects_duplicate_peer_shard() {
     };
     assert!(resolve_cluster(Some(s)).is_err());
 }
+
+#[test]
+fn h3_initial_mtu_defaults_to_unpinned() {
+    // Unset means "standard 1500 path": the transport builder then uses its own
+    // 1400 default and lets MTU discovery probe upward. Pinning is opt-in, so a
+    // config that says nothing must not start constraining anything.
+    assert_eq!(resolve_h3_initial_mtu(None).unwrap(), None);
+}
+
+#[test]
+fn h3_initial_mtu_accepts_the_supported_range() {
+    // 1372 is the value a 1400-MTU host needs (1400 minus the 28-byte IPv4/UDP
+    // header); the bounds themselves must also be accepted, since an operator
+    // computing them from the path has no reason to expect an off-by-one.
+    for value in [H3_MIN_INITIAL_MTU, 1372, H3_MAX_INITIAL_MTU] {
+        assert_eq!(resolve_h3_initial_mtu(Some(value)).unwrap(), Some(value));
+    }
+}
+
+#[test]
+fn h3_initial_mtu_rejects_out_of_range() {
+    // Below the QUIC floor quinn would silently clamp, and above the discovery
+    // ceiling the value could not be reached anyway — both are typos worth
+    // failing at startup rather than turning into a slowdown found much later
+    // in a packet capture.
+    for value in [0, 1199, 1453, u16::MAX] {
+        let error = resolve_h3_initial_mtu(Some(value)).unwrap_err().to_string();
+        assert!(error.contains("server.h3.initial_mtu"), "unexpected error for {value}: {error}");
+    }
+}

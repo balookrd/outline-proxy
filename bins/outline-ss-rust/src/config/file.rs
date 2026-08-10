@@ -129,6 +129,16 @@ pub(super) struct ServerH3Section {
     /// when unset.
     #[serde(default)]
     pub alpn: Option<Vec<String>>,
+    /// Largest QUIC datagram the server starts sending, in bytes — the UDP
+    /// payload, so the wire frame is this plus 28 (IPv4) or 48 (IPv6) bytes.
+    ///
+    /// Set this on a host whose path MTU is below the standard 1500: leaving
+    /// the default makes the kernel reject every datagram with `EMSGSIZE`, and
+    /// quinn then falls all the way back to the 1200-byte QUIC floor rather
+    /// than to the largest size that actually fits. Unset keeps the
+    /// 1500-Ethernet defaults. See [`super::loader::resolve_h3_initial_mtu`].
+    #[serde(default)]
+    pub initial_mtu: Option<u16>,
 }
 
 /// One entry in `[[server.certs]]` / `[[server.h3.certs]]`. Each maps
