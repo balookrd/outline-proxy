@@ -187,6 +187,7 @@ fn load_balancing_config_from_group(
         warm_standby_tcp: section.warm_standby_tcp,
         warm_standby_udp: section.warm_standby_udp,
         rtt_ewma_alpha: section.rtt_ewma_alpha,
+        rtt_ewma_halflife_secs: section.rtt_ewma_halflife_secs,
         loss_latency_penalty_k: section.loss_latency_penalty_k,
         loss_latency_inflation_max: section.loss_latency_inflation_max,
         loss_sample_interval_secs: section.loss_sample_interval_secs,

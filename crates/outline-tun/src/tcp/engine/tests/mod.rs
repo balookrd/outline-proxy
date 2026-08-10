@@ -2070,6 +2070,7 @@ fn test_load_balancing_config() -> LoadBalancingConfig {
         warm_standby_tcp: 0,
         warm_standby_udp: 0,
         rtt_ewma_alpha: 0.3,
+        rtt_ewma_halflife: Duration::from_secs(300),
         loss_latency_penalty_k: 0.0,
         loss_latency_inflation_max: 4.0,
         loss_sample_interval: Duration::from_secs(30),

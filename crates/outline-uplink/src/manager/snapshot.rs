@@ -325,6 +325,7 @@ impl UplinkManager {
             // also what makes "no episode" a meaningful zero rather than an
             // absence.
             let loss_failover_armed = self.inner.load_balancing.loss_failover_ratio > 0.0;
+            let rtt_halflife = self.inner.load_balancing.rtt_ewma_halflife;
             // Carrier loss for the wire new sessions currently land on.
             // `observed_packets` is only meaningful once a window has
             // qualified — gate it on `ratio` so an unmeasured uplink
@@ -382,15 +383,36 @@ impl UplinkManager {
                 ),
                 tcp_latency_ms: status.tcp.latency.map(|v| v.as_millis()),
                 udp_latency_ms: status.udp.latency.map(|v| v.as_millis()),
-                tcp_rtt_ewma_ms: status.tcp.rtt_ewma.map(|v| v.as_millis()),
-                udp_rtt_ewma_ms: status.udp.rtt_ewma.map(|v| v.as_millis()),
+                tcp_rtt_ewma_ms: status.tcp.rtt_ewma.value().map(|v| v.as_millis()),
+                udp_rtt_ewma_ms: status.udp.rtt_ewma.value().map(|v| v.as_millis()),
+                // Published as measured, not as ranked: this field answers
+                // "what did we observe on the wire traffic lands on", and the
+                // decay applies to ranking. It does go to `None` once the slot
+                // has fully expired, because at that point there genuinely is
+                // no current measurement — which is the same thing `None` has
+                // always meant here. `*_inflated_latency_ms` keeps publishing
+                // `Some` through the rest of the chain, and the pair of them
+                // plus `*_active_wire_rtt_age_ms` is what tells an operator
+                // whether a number is observed or inherited.
                 tcp_active_wire_rtt_ewma_ms: status
                     .tcp
-                    .active_wire_rtt_ewma()
+                    .active_wire_rtt_slot()
+                    .value_if_unexpired(rtt_halflife, now)
                     .map(|v| v.as_millis()),
                 udp_active_wire_rtt_ewma_ms: status
                     .udp
-                    .active_wire_rtt_ewma()
+                    .active_wire_rtt_slot()
+                    .value_if_unexpired(rtt_halflife, now)
+                    .map(|v| v.as_millis()),
+                tcp_active_wire_rtt_age_ms: status
+                    .tcp
+                    .active_wire_rtt_slot()
+                    .age(now)
+                    .map(|v| v.as_millis()),
+                udp_active_wire_rtt_age_ms: status
+                    .udp
+                    .active_wire_rtt_slot()
+                    .age(now)
                     .map(|v| v.as_millis()),
                 tcp_penalty_ms: duration_to_millis_option(tcp_penalty),
                 udp_penalty_ms: duration_to_millis_option(udp_penalty),

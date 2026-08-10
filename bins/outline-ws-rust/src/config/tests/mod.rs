@@ -304,6 +304,35 @@ fn loss_sample_interval_zero_is_accepted_as_the_off_switch() {
     assert_eq!(lb.loss_sample_interval, Duration::ZERO);
 }
 
+#[test]
+fn load_balancing_parses_the_rtt_decay_halflife() {
+    let lb = load_balancing(
+        &parse_config("[outline.load_balancing]\nrtt_ewma_halflife_secs = 120").unwrap(),
+    );
+    assert_eq!(lb.rtt_ewma_halflife, Duration::from_secs(120));
+}
+
+/// Decay ships on, unlike the carrier-loss knobs next to it: with fresh
+/// measurements it is arithmetically identical to the old ranking (weight
+/// 1.0), and it only engages where the old ranking was already deciding on a
+/// number of unknown age.
+#[test]
+fn rtt_decay_defaults_to_five_minutes() {
+    let lb = load_balancing(&parse_config("[outline]").unwrap());
+    assert_eq!(lb.rtt_ewma_halflife, Duration::from_secs(300));
+}
+
+/// `0` is the documented off switch (see `LoadBalancingConfig::rtt_ewma_halflife`),
+/// restoring pre-decay ranking — accepted, not rejected as a typo, exactly
+/// like `loss_sample_interval_secs = 0` above.
+#[test]
+fn rtt_halflife_zero_is_accepted_as_the_off_switch() {
+    let lb = load_balancing(
+        &parse_config("[outline.load_balancing]\nrtt_ewma_halflife_secs = 0").unwrap(),
+    );
+    assert_eq!(lb.rtt_ewma_halflife, Duration::ZERO);
+}
+
 /// A negative coefficient would reward loss; reject it at load time rather
 /// than discovering it as an inverted ranking in production.
 #[test]
@@ -734,6 +763,55 @@ async fn load_config_parses_tun_icmp_suppression_flag_on_groups() {
     assert!(config.groups[0].load_balancing.tun_suppress_icmp_reply_when_down);
     // Unset groups keep the legacy always-reply behaviour.
     assert!(!config.groups[1].load_balancing.tun_suppress_icmp_reply_when_down);
+}
+
+/// Per-group `rtt_ewma_halflife_secs` has to survive the shim that reprojects
+/// a `[[uplink_group]]` onto the legacy `[outline.load_balancing]` shape
+/// (`load_balancing_config_from_group`). A field missed there loads silently
+/// at its default, so the knob would appear to work everywhere except in the
+/// group layout the fleet actually runs.
+#[tokio::test]
+async fn load_config_parses_rtt_halflife_on_groups() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+        rtt_ewma_halflife_secs = 90
+
+        [[uplink_group]]
+        name = "backup"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://main.example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[uplinks]]
+        name = "edge"
+        group = "backup"
+        tcp_ws_url = "wss://backup.example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = super::load_config(&path, &args).await.unwrap();
+    assert_eq!(config.groups[0].load_balancing.rtt_ewma_halflife, Duration::from_secs(90));
+    assert_eq!(
+        config.groups[1].load_balancing.rtt_ewma_halflife,
+        Duration::from_secs(300),
+        "a group that says nothing keeps the default"
+    );
 }
 
 #[tokio::test]

@@ -1,21 +1,9 @@
-use std::time::Duration;
-
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use tokio::time::Instant;
 
-use super::{
-    add_penalty, penalty_weight, update_rtt_ewma, weighted_permutation_with_rng,
-    weighted_pick_with_rng,
-};
+use super::{add_penalty, penalty_weight, weighted_permutation_with_rng, weighted_pick_with_rng};
 use crate::manager::status::PenaltyState;
-
-#[test]
-fn rtt_ewma_smooths_new_samples() {
-    let mut current = Some(Duration::from_millis(100));
-    update_rtt_ewma(&mut current, Some(Duration::from_millis(300)), 0.25);
-    assert_eq!(current, Some(Duration::from_millis(150)));
-}
 
 #[test]
 fn penalty_weight_is_full_without_penalty() {

@@ -14,11 +14,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::time::sleep;
+use tokio::time::{Instant, sleep};
 use tracing::debug;
 
 use crate::config::UplinkTransport;
-use crate::penalty::update_rtt_ewma;
 use crate::probe::dns::build_dns_query;
 use crate::probe::http::build_http_probe_request;
 use crate::types::{TransportKind, UplinkManager};
@@ -193,13 +192,14 @@ impl UplinkManager {
     /// uplink for the last N cycles.
     fn record_keepalive_latency(&self, index: usize, transport: TransportKind, rtt: Duration) {
         let alpha = self.inner.load_balancing.rtt_ewma_alpha;
+        let now = Instant::now();
         self.inner.with_status_mut(index, |status| {
             let per = match transport {
                 TransportKind::Tcp => &mut status.tcp,
                 TransportKind::Udp => &mut status.udp,
             };
             per.latency = Some(rtt);
-            update_rtt_ewma(&mut per.rtt_ewma, Some(rtt), alpha);
+            per.rtt_ewma.record(Some(rtt), alpha, now);
         });
     }
 }

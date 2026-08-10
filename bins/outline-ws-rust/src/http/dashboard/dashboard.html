@@ -1103,12 +1103,22 @@ function weightCell(u) {
   // primary's value for older snapshots / single-wire uplinks.
   const tcpRtt = u.tcp_active_wire_rtt_ewma_ms ?? u.tcp_rtt_ewma_ms;
   const udpRtt = u.udp_active_wire_rtt_ewma_ms ?? u.udp_rtt_ewma_ms;
-  if (tcpRtt != null) parts.push(`tcp: ${tcpRtt}ms`);
-  if (udpRtt != null) parts.push(`udp: ${udpRtt}ms`);
+  if (tcpRtt != null) parts.push(`tcp: ${tcpRtt}ms${rttAgeSuffix(u.tcp_active_wire_rtt_age_ms)}`);
+  if (udpRtt != null) parts.push(`udp: ${udpRtt}ms${rttAgeSuffix(u.udp_active_wire_rtt_age_ms)}`);
   const rtt = parts.length
     ? `<span class="switch-reason">${escapeHtml(parts.join(' · '))}</span>`
     : '';
   return `<div class="role-cell"><span>${escapeHtml(String(w))}</span>${rtt}</div>`;
+}
+// Age marker for an RTT reading the operator is about to trust. Selection
+// weights a measurement by 0.5^(age / rtt_ewma_halflife), so a number that
+// nothing has refreshed in minutes is not what ranking is really using — and
+// without the age on screen, a stale slot and a fresh one look identical.
+// Under a minute is normal probe cadence and stays unannotated.
+function rttAgeSuffix(ageMs) {
+  if (ageMs == null || ageMs < 60_000) return "";
+  const minutes = Math.round(ageMs / 60_000);
+  return minutes < 60 ? ` (${minutes}m old)` : ` (${Math.round(minutes / 60)}h old)`;
 }
 function uplinkRoleCell(u) {
   const reasons = switchReasons(u);

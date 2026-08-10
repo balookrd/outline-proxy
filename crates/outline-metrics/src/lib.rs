@@ -218,6 +218,7 @@ struct Metrics {
     uplink_latency_seconds: GaugeVec,
     uplink_rtt_ewma_seconds: GaugeVec,
     uplink_active_wire_rtt_ewma_seconds: GaugeVec,
+    uplink_active_wire_rtt_age_seconds: GaugeVec,
     uplink_carrier_loss_ratio: GaugeVec,
     uplink_carrier_loss_observed_packets: GaugeVec,
     uplink_loss_elevated_seconds: GaugeVec,

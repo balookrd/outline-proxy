@@ -142,10 +142,22 @@ struct ControlUplinkTopology {
     /// the latency of the wire actually carrying traffic without breaking
     /// Prometheus consumers that already rely on `tcp_rtt_ewma_ms`'s
     /// primary-only semantics.
+    /// Absent once the slot has gone unmeasured past the decay horizon —
+    /// see `tcp_active_wire_rtt_age_ms` for how to tell that apart from a
+    /// wire that has simply never been probed.
     #[serde(skip_serializing_if = "Option::is_none")]
     tcp_active_wire_rtt_ewma_ms: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
     udp_active_wire_rtt_ewma_ms: Option<u128>,
+    /// Age of the measurement behind `*_active_wire_rtt_ewma_ms`. Ranking
+    /// weights that measurement by `0.5^(age / rtt_ewma_halflife)`, so this
+    /// is what explains a ranked latency (`*_score_ms`) that has drifted
+    /// away from the measured one. Absent when the wire has never been
+    /// measured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tcp_active_wire_rtt_age_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    udp_active_wire_rtt_age_ms: Option<u128>,
     tcp_healthy: Option<bool>,
     udp_healthy: Option<bool>,
     /// Effective health on this transport — true when probe-confirmed OR
@@ -374,6 +386,8 @@ fn build_uplink_topology(
         udp_rtt_ewma_ms: uplink.udp_rtt_ewma_ms,
         tcp_active_wire_rtt_ewma_ms: uplink.tcp_active_wire_rtt_ewma_ms,
         udp_active_wire_rtt_ewma_ms: uplink.udp_active_wire_rtt_ewma_ms,
+        tcp_active_wire_rtt_age_ms: uplink.tcp_active_wire_rtt_age_ms,
+        udp_active_wire_rtt_age_ms: uplink.udp_active_wire_rtt_age_ms,
         tcp_healthy: uplink.tcp_healthy,
         tcp_health_effective: uplink.tcp_health_effective,
         udp_health_effective: uplink.udp_health_effective,

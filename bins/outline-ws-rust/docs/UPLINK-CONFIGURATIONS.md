@@ -581,6 +581,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `warm_standby_udp`                   | `0`                | int   | same for UDP                                                                                      |
 | `warm_probe_keepalive_secs`          | `20`               | s     | keepalive cadence for cached warm-probe pipes (`0` disables)                                      |
 | `rtt_ewma_alpha`                     | `0.3`              | (0,1] | smoothing factor for the per-uplink RTT EWMA used in selection scoring                            |
+| `rtt_ewma_halflife_secs`             | `300`              | s     | half-life of an RTT measurement's influence on ranking: a per-wire RTT slot keeps weight `0.5^(age / halflife)`, fading toward the next measurement in the chain, and stops counting as measured after four half-lives. Also arms a fallback-wire refresh probe once the active wire's slot is a half-life old. `0` disables both. See "Ageing RTT measurements" below |
 | `loss_latency_penalty_k`             | `0.0`              | ≥0    | strength of carrier-loss latency inflation (`latency × (1 + k · loss)`); `0.0` measures without acting — selection is unchanged. See "Carrier loss in uplink selection" below |
 | `loss_latency_inflation_max`         | `4.0`              | [1,100] | ceiling on that multiplier — bounds how far one bad sampling window can push an uplink down the ranking |
 | `loss_sample_interval_secs`          | `30`               | s     | sampling grid for the carrier-loss counters, independent of `probe.interval`; `0` disables sampling entirely (carriers still register probes, nothing ever differences them) |
@@ -1016,6 +1017,61 @@ Symmetric Downlink Replay (v2):
 - Same eligibility gate as v1 — SS-WS / VLESS-WS / VLESS-XHTTP
   carriers.
 
+### Ageing RTT measurements
+
+**Why this exists.** An RTT measurement used to rank an uplink forever,
+however old it was. That is a self-sustaining trap for any wire that is
+not primary: a bad score keeps the balancer from sending the uplink
+traffic, and traffic is what would produce a new measurement. On
+2026-08-10 a node whose MTU had been fixed hours earlier was still
+ranked on the 4.18 s sample taken while it was broken — its base
+latency probed at 0.253 s the whole time, its carrier loss was not even
+measured, and a separate client pinned to the very same carrier
+measured 0.199 s. The only cure was deleting the uplink from the config
+and re-applying it, because that is what creates empty slots.
+
+**What ages.** Each wire's RTT EWMA carries the instant it last moved.
+When selection ranks an uplink, a slot keeps weight
+`0.5^(age / rtt_ewma_halflife_secs)` and the remainder goes to the next
+link of the same chain the ranking already walks: the active wire's
+slot, then primary's EWMA, then the last probe sample. Past four
+half-lives a slot stops counting as measured at all.
+
+**What it does not do.** Decay never makes an uplink look better than
+something actually measured about it: a stale slot fades toward another
+*measurement*, never toward zero, and a slot with nothing behind it in
+the chain keeps its full weight however old it is — dropping it would
+remove the uplink from ranking, which claims much more than "this
+number is old". A carrier that just failed is also still held down by
+machinery that does not decay on this curve at all: the per-wire
+liveness penalty (`health_weighted_selection`) and the carrier-descent
+window's penalty surcharge. Fresh bad samples land at full weight
+immediately, through the EWMA, exactly as before.
+
+**The refresh probe.** Decay alone would decide by assumption rather
+than by measurement, so once the active wire's slot is one half-life
+old, the fallback-wire probe (previously run only when the primary
+probe failed) runs on that uplink's cycle as well. That is at most one
+extra handshake per multi-wire uplink per half-life; the rate follows
+`rtt_ewma_halflife_secs`, not `probe.interval`, so tightening the probe
+schedule does not multiply these. Uplinks with no fallbacks never pay
+it — primary's slot is refreshed by the regular probe every cycle.
+
+**Reading it in the metrics.**
+
+| series | meaning |
+| ------ | ------- |
+| `outline_ws_uplink_active_wire_rtt_ewma_seconds` | what was measured on the wire carrying traffic; absent once the slot has expired |
+| `outline_ws_uplink_active_wire_rtt_age_seconds`  | how old that measurement is |
+| `outline_ws_uplink_latency_inflated_seconds`     | what ranking actually uses, after loss inflation and age-weighting |
+
+A gap between the first and the third has two causes, and the age is
+what tells them apart: a large age means ranking has largely stopped
+believing the slot, a small one means carrier loss is inflating a fresh
+measurement. Setting `rtt_ewma_halflife_secs = 0` disables both the
+decay and the refresh probe, restoring the pre-1.6 behaviour where the
+first link with any value wins outright.
+
 ### Carrier loss in uplink selection
 
 **Why this exists.** Selection ranks uplinks by RTT — and RTT alone is
@@ -1429,6 +1485,7 @@ failure_cooldown_secs = 10
 warm_standby_tcp = 1
 warm_standby_udp = 1
 rtt_ewma_alpha = 0.3
+rtt_ewma_halflife_secs = 300
 failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
