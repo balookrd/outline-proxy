@@ -225,6 +225,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `[server.h3].cert_path` / `[server.h3].key_path` | Default cert for the QUIC listener. When the `[server.h3]` table omits them, the QUIC listener inherits the cert/key from `[server]` so a single cert block can cover both transports |
 | `[[server.h3.certs]]` | SNI-selected cert array for the QUIC listener; same shape as `[[server.certs]]`. When the `[server.h3]` table omits this array entirely, it inherits `[[server.certs]]` |
 | `[server.h3].alpn` | List of ALPN protocols advertised on the QUIC endpoint. Only `"h3"` (HTTP/3 + WebSocket-over-HTTP/3) is supported. Defaults to `["h3"]` |
+| `[server.h3].initial_mtu` | Largest QUIC datagram the server starts with, as a **UDP payload** size (path MTU minus 28 for IPv4, 48 for IPv6). Range 1200–1452. Set it only on a host whose path is below the standard 1500: unset, the server starts at 1400, the kernel rejects every datagram with `EMSGSIZE`, and quinn falls back to the 1200-byte QUIC floor instead of the largest size that fits — costing ~12% of every packet plus retries on each handshake. A pinned host also stops probing above the pinned value |
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
 | `prefer_ipv4_upstream` | Prefer IPv4 for upstream DNS resolution and connects; useful when IPv6 paths are broken |

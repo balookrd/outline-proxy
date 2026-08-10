@@ -118,6 +118,7 @@ impl AppMode {
             h3_key_path,
             h3_certs,
             h3_alpn: resolve_h3_alpn(server_h3.alpn.as_deref())?,
+            h3_initial_mtu: resolve_h3_initial_mtu(server_h3.initial_mtu)?,
             metrics_listen: args.metrics_listen.or(metrics.listen),
             metrics_path: args
                 .metrics_path
@@ -301,6 +302,35 @@ fn resolve_cluster(section: Option<ClusterSection>) -> Result<Option<ClusterConf
 #[cfg(test)]
 #[path = "tests/loader.rs"]
 mod tests;
+
+/// Smallest datagram QUIC itself allows (RFC 9000 §14): anything below this
+/// cannot carry an Initial packet, and quinn silently clamps up to it.
+pub(crate) const H3_MIN_INITIAL_MTU: u16 = 1200;
+/// Ceiling for a pinned value. Matches the MTU-discovery upper bound used on
+/// an unpinned host, so the two paths cannot disagree about what is reachable.
+pub(crate) const H3_MAX_INITIAL_MTU: u16 = 1452;
+
+/// Validate `[server.h3].initial_mtu`.
+///
+/// The value is a UDP payload size, so the operator computes it as
+/// `path MTU - 28` (IPv4) or `- 48` (IPv6). Getting it wrong in the safe
+/// direction only costs throughput; getting it wrong upward is what the
+/// default already does on a small-MTU host, so the bounds are checked rather
+/// than clamped — a typo should be loud at startup, not a silent slowdown
+/// discovered months later in a packet capture.
+fn resolve_h3_initial_mtu(input: Option<u16>) -> Result<Option<u16>> {
+    let Some(value) = input else {
+        return Ok(None);
+    };
+    if !(H3_MIN_INITIAL_MTU..=H3_MAX_INITIAL_MTU).contains(&value) {
+        anyhow::bail!(
+            "server.h3.initial_mtu must be between {H3_MIN_INITIAL_MTU} and \
+             {H3_MAX_INITIAL_MTU} bytes (got {value}); it is a UDP payload size, \
+             i.e. the path MTU minus 28 (IPv4) or 48 (IPv6)"
+        );
+    }
+    Ok(Some(value))
+}
 
 fn resolve_h3_alpn(input: Option<&[String]>) -> Result<Vec<H3Alpn>> {
     let Some(raw) = input else {

@@ -20,6 +20,14 @@ pub(super) const HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 pub(super) const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
 pub(super) const H3_QUIC_PING_INTERVAL_SECS: u64 = 10;
 pub(super) const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
+/// Initial server→client QUIC datagram size on a host that does not pin one.
+/// Safe on a standard 1500-MTU path; a smaller path needs
+/// `[server.h3].initial_mtu`, or the kernel rejects these with EMSGSIZE and
+/// quinn falls back to the 1200-byte QUIC floor.
+pub(super) const H3_DEFAULT_INITIAL_MTU: u16 = 1_400;
+/// How far DPLPMTUD may probe upward from the default. Unused when the host
+/// pins its own value — there, probing above the pin is exactly what fails.
+pub(super) const H3_MTU_DISCOVERY_UPPER_BOUND: u16 = 1_452;
 // Cap on concurrent active HTTP/3 QUIC connections. Matches the TLS listener
 // so an attacker cannot force unbounded per-connection task spawns by opening
 // many QUIC handshakes in parallel.
