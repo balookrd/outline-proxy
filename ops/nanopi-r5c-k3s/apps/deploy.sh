@@ -105,7 +105,7 @@ stage_namespaces() {
 stage_apps() {
   stage_namespaces
   local d
-  for d in monitoring home outline vpn; do
+  for d in monitoring home smarthome outline vpn; do
     log "workloads: $d"
     apply_dir "$d"
   done

@@ -6,7 +6,7 @@
 чтобы ни одна железка умного дома не осталась без брокера — включая waterius,
 который перенастроить нельзя.
 
-**Архитектура:** `eclipse-mosquitto:2.1.2` в namespace `home`, конфиг и оба
+**Архитектура:** `eclipse-mosquitto:2.1.2-alpine` в namespace `home`, конфиг и оба
 ACL-файла в ConfigMap, `mosquitto.db` — на NFS тем же inline-томом, что у
 zigbee2mqtt (`198.18.1.125:/mnt/HD/HD_a2/k8s/mosquitto-data`). Наружу —
 `Service type=LoadBalancer` на MetalLB-VIP `198.18.1.201` с портами 1883 и 1888;
@@ -19,8 +19,9 @@ Keenetic (`198.18.1.1`) как LAN-DNS.
 
 ## Global Constraints
 
-- Образ пинуется: `eclipse-mosquitto:2.1.2`. На `.102` тянулся `latest` —
-  повторять это в кластере нельзя.
+- Образ пинуется: `eclipse-mosquitto:2.1.2-alpine`. Тега `2.1.2` не существует:
+  ветка 2.1 публикуется только в `-alpine`, и её digest совпадает с `latest`,
+  который тянул докер на `.102`. Оставлять `latest` в кластере нельзя.
 - Оба листенера обязательны: **1883** с `acl_allow_all.conf`, **1888** с
   `acl_spruthub.conf`. Потеря второго не проявится как ошибка — spruthub просто
   начнёт видеть `espresense/#`.
@@ -144,13 +145,25 @@ spec:
         fsGroup: 1000
       containers:
         - name: mosquitto
-          image: eclipse-mosquitto:2.1.2
+          image: eclipse-mosquitto:2.1.2-alpine
           ports:
             - { containerPort: 1883, name: mqtt }
             - { containerPort: 1888, name: mqtt-spruthub }
+          # Three subPath mounts instead of one directory mount, because
+          # mosquitto 2.1 refuses to open an acl_file that is a symlink —
+          # and a ConfigMap mounted as a directory is nothing but symlinks
+          # into ..data. The failure is "Unable to open acl_file", which
+          # reads like a permissions problem and is not one: mosquitto.conf
+          # itself loads fine through the very same symlink.
+          #
+          # The cost of subPath: edits to the ConfigMap do not reach the
+          # container until the pod restarts. Mosquitto would need a restart
+          # to pick up a new ACL anyway.
           volumeMounts:
             - { name: data,   mountPath: /mosquitto/data }
-            - { name: config, mountPath: /mosquitto/config }
+            - { name: config, mountPath: /mosquitto/config/mosquitto.conf,      subPath: mosquitto.conf }
+            - { name: config, mountPath: /mosquitto/config/acl_allow_all.conf,  subPath: acl_allow_all.conf }
+            - { name: config, mountPath: /mosquitto/config/acl_spruthub.conf,   subPath: acl_spruthub.conf }
           readinessProbe:
             tcpSocket: { port: 1883 }
             initialDelaySeconds: 5
@@ -294,27 +307,35 @@ nc -z -G2 198.18.1.201 1883 && echo "1883 ok"; nc -z -G2 198.18.1.201 1888 && ec
 на маке. Публикуем в `espresense/probe` через 1883 и пытаемся прочитать через
 1888 — второй листенер обязан не отдать ничего.
 
+Клиенты `mosquitto_pub`/`mosquitto_sub` есть в самом образе, поэтому проба
+идёт через `exec` в работающий под. Отдельный под с `kubectl run -i` для этого
+не годится: он подвисает на предупреждении о записи сессии в логи.
+
 ```bash
-ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home run mqtt-probe --rm -i --restart=Never --image=eclipse-mosquitto:2.1.2 -- sh -c "
-  mosquitto_pub -h mosquitto -p 1883 -t espresense/probe -m hello -r &&
-  echo \"--- via 1883:\" && mosquitto_sub -h mosquitto -p 1883 -t espresense/probe -C 1 -W 3 &&
-  echo \"--- via 1888:\" && mosquitto_sub -h mosquitto -p 1888 -t espresense/probe -C 1 -W 3; echo \"exit=\$?\""'
+kubectl -n home exec deploy/mosquitto -- sh -c '
+mosquitto_pub -h 127.0.0.1 -p 1883 -t espresense/probe -m hello -r
+mosquitto_pub -h 127.0.0.1 -p 1883 -t other/probe -m visible -r
+echo "--- espresense через 1883:"; mosquitto_sub -h 127.0.0.1 -p 1883 -t "espresense/#" -C 1 -W 3 -v; echo "rc=$?"
+echo "--- espresense через 1888 (должно быть пусто):"; mosquitto_sub -h 127.0.0.1 -p 1888 -t "espresense/#" -C 1 -W 3 -v; echo "rc=$?"
+echo "--- other через 1888 (должно прийти):"; mosquitto_sub -h 127.0.0.1 -p 1888 -t "other/#" -C 1 -W 3 -v; echo "rc=$?"'
 ```
 
-Ожидается: после `--- via 1883:` строка `hello`; после `--- via 1888:` —
-пусто и `exit=27` (таймаут `-W`). Если `hello` пришло и через 1888 — ACL не
-подхватился, смотреть `kubectl -n home logs deploy/mosquitto`.
-
-Порт 1883 в этой пробе — ClusterIP `mosquitto`, а не VIP: так проверяется
-ровно тот путь, которым в Task 6 пойдут поды.
+Ожидается: `espresense/probe hello` и `rc=0` через 1883; `Timed out` и `rc=27`
+через 1888; `other/probe visible` и `rc=0` через 1888. Если espresense
+приходит и на 1888 — ACL не подхватился, смотреть логи пода.
 
 - [ ] **Шаг 6: убрать тестовое retained-сообщение**
 
 Иначе оно уедет в перенесённую БД и останется там навсегда.
 
 ```bash
-ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home run mqtt-probe --rm -i --restart=Never --image=eclipse-mosquitto:2.1.2 -- mosquitto_pub -h mosquitto -p 1883 -t espresense/probe -r -n'
+kubectl -n home exec deploy/mosquitto -- sh -c '
+mosquitto_pub -h 127.0.0.1 -p 1883 -t espresense/probe -r -n
+mosquitto_pub -h 127.0.0.1 -p 1883 -t other/probe -r -n
+mosquitto_sub -h 127.0.0.1 -p 1883 -t "#" -W 3 -v'
 ```
+
+Последняя подписка должна отдать `Timed out` — ничего retained не осталось.
 
 **ЧЕКПОЙНТ:** брокер в кластере поднят и проверен, прод не тронут. Дальше
 начинается окно простоя — согласовать с владельцем.
@@ -376,7 +397,7 @@ ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home s
 - [ ] **Шаг 5: retained-сообщения пережили переезд**
 
 ```bash
-ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home run mqtt-probe --rm -i --restart=Never --image=eclipse-mosquitto:2.1.2 -- mosquitto_sub -h mosquitto -p 1883 -t "zigbee2mqtt/bridge/state" -C 1 -W 5'
+kubectl -n home exec deploy/mosquitto -- mosquitto_sub -h 127.0.0.1 -p 1883 -t "zigbee2mqtt/bridge/state" -C 1 -W 5
 ```
 
 Ожидается немедленный ответ вида `{"state":"online"}` — это сообщение
@@ -460,7 +481,7 @@ ssh mmv@198.18.1.102 'sudo systemctl daemon-reload && sudo systemctl enable --no
 `.102` уже скачан.
 
 ```bash
-ssh mmv@198.18.1.102 'docker run --rm --network host eclipse-mosquitto:2.1.2 mosquitto_sub -h 198.18.1.102 -p 1883 -t "zigbee2mqtt/bridge/state" -C 1 -W 5'
+ssh mmv@198.18.1.102 'docker run --rm --network host eclipse-mosquitto:2.1.2-alpine mosquitto_sub -h 198.18.1.102 -p 1883 -t "zigbee2mqtt/bridge/state" -C 1 -W 5'
 ```
 
 Ожидается `{"state":"online"}` — запрос прошёл `.102` → socat → VIP → под.
@@ -534,7 +555,7 @@ ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home e
 - [ ] **Шаг 5: espresense снова публикует**
 
 ```bash
-ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home run mqtt-probe --rm -i --restart=Never --image=eclipse-mosquitto:2.1.2 -- mosquitto_sub -h mosquitto -p 1883 -t "espresense/#" -C 3 -W 60 -v'
+kubectl -n home exec deploy/mosquitto -- mosquitto_sub -h 127.0.0.1 -p 1883 -t "espresense/#" -C 3 -W 60 -v
 ```
 
 Ожидаются три строки с топиками `espresense/...` в течение минуты.
@@ -545,10 +566,10 @@ ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home r
 сообщении.
 
 ```bash
-ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home run mqtt-probe --rm -i --restart=Never --image=eclipse-mosquitto:2.1.2 -- sh -c "mosquitto_sub -h mosquitto -p 1888 -t \"espresense/#\" -C 1 -W 30 -v; echo exit=\$?"'
+kubectl -n home exec deploy/mosquitto -- sh -c 'mosquitto_sub -h 127.0.0.1 -p 1888 -t "espresense/#" -C 1 -W 30 -v; echo "rc=$?"'
 ```
 
-Ожидается пусто и `exit=27`, притом что шаг 5 только что дал три сообщения.
+Ожидается пусто и `rc=27`, притом что шаг 5 только что дал три сообщения.
 
 **ЧЕКПОЙНТ:** железки на новом брокере, ACL подтверждён на живом трафике.
 
@@ -645,7 +666,7 @@ ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home e
 Ожидается не меньше девяти подключений: шесть подов + три ESPresense.
 
 ```bash
-ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home run mqtt-probe --rm -i --restart=Never --image=eclipse-mosquitto:2.1.2 -- mosquitto_sub -h mosquitto -p 1883 -t "zigbee2mqtt/#" -C 5 -W 120 -v'
+kubectl -n home exec deploy/mosquitto -- mosquitto_sub -h 127.0.0.1 -p 1883 -t "zigbee2mqtt/#" -C 5 -W 120 -v
 ```
 
 Ожидаются пять сообщений от z2m — значит он публикует уже в новый брокер.
@@ -695,7 +716,7 @@ ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home e
 
 ```bash
 ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home rollout restart deploy/mosquitto && sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home rollout status deploy/mosquitto --timeout=120s'
-ssh mmv@198.18.1.102 'docker run --rm --network host eclipse-mosquitto:2.1.2 mosquitto_sub -h 198.18.1.102 -p 1883 -t "zigbee2mqtt/bridge/state" -C 1 -W 15'
+ssh mmv@198.18.1.102 'docker run --rm --network host eclipse-mosquitto:2.1.2-alpine mosquitto_sub -h 198.18.1.102 -p 1883 -t "zigbee2mqtt/bridge/state" -C 1 -W 15'
 ```
 
 Ожидается `{"state":"online"}` — брокер поднялся, retained на месте, и socat
@@ -707,7 +728,7 @@ ssh mmv@198.18.1.102 'docker run --rm --network host eclipse-mosquitto:2.1.2 mos
 Топик уточнить у владельца или найти по спискам:
 
 ```bash
-ssh mmv@198.18.1.51 'sudo KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n home run mqtt-probe --rm -i --restart=Never --image=eclipse-mosquitto:2.1.2 -- mosquitto_sub -h mosquitto -p 1883 -t "#" -W 20 -v | cut -d/ -f1 | sort -u'
+kubectl -n home exec deploy/mosquitto -- mosquitto_sub -h 127.0.0.1 -p 1883 -t "#" -W 20 -v | cut -d/ -f1 | sort -u
 ```
 
 Ожидается список корневых топиков; в нём должен со временем появиться

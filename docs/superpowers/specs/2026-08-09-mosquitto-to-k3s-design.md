@@ -42,7 +42,7 @@
 
 ### Брокер в кластере
 
-Namespace `home`, образ `eclipse-mosquitto:2.1.2` (версия пинуется), конфиг и
+Namespace `home`, образ `eclipse-mosquitto:2.1.2-alpine` (версия пинуется), конфиг и
 оба ACL-файла — в ConfigMap, `mosquitto.db` — на NFS
 (`198.18.1.125:/mnt/HD/HD_a2/k8s/mosquitto-data`) тем же inline-томом, что у
 zigbee2mqtt.

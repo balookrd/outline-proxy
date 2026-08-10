@@ -5,8 +5,11 @@
 # переписывает атомарно (.new -> rename -> .old), блокировок нет, писатель один,
 # так что сетевая ФС безопасна и пода не привязывает к ноде.
 #
-# mqtt.beerloga.su и vm.beerloga.su резолвятся с нод в 198.18.1.102 — брокер и
-# VictoriaMetrics остались на шлюзовом узле.
+# Брокер и VictoriaMetrics оба переехали в кластер, поэтому адресуются по
+# внутренним именам — mosquitto.home и victoria-metrics.monitoring. Ходить к
+# ним по внешним именам (mqtt.beerloga.su) значило бы гонять трафик пода через
+# LAN-VIP собственного кластера: путь длиннее, и он уже подводил в связке
+# Grafana↔Traefik.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,7 +38,7 @@ spec:
             - --path
             - /app/conf
             - --mqtt
-            - mqtt.beerloga.su
+            - mosquitto.home
             - --victoria
             - victoria-metrics.monitoring
           env:

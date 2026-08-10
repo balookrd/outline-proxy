@@ -1,18 +1,55 @@
-# Mosquitto MQTT broker.
+# Mosquitto MQTT broker, migrated off the docker container on 198.18.1.102.
 #
-# Singleton on NFS so retained messages + persistence.db survive a node move.
-# Latency-insensitive and tiny, so NFS is fine.
+# Two listeners, not one. 1883 is open to everything; 1888 exists solely so
+# spruthub cannot see espresense/# — the ACL files are the whole point of this
+# config, and dropping the second listener would not fail, it would silently
+# leak topics.
+#
+# The tag is 2.1.2-alpine, not 2.1.2: the 2.1 line is published only in the
+# -alpine form. Same digest as the `latest` the docker container on .102 was
+# running (sha256:6f8d8a94…), so this pins what production already had.
+#
+# Data on NFS, same as zigbee2mqtt. mosquitto.db is not SQLite: mosquitto
+# rewrites it whole on every autosave, with no locking and no page cache for a
+# network filesystem to tear. So the usual reason to avoid NFS does not apply,
+# and in exchange the pod is not nailed to whichever node holds the volume.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mosquitto-config
   namespace: home
 data:
+  # Copied verbatim from /opt/mosquitto/config on 198.18.1.102, minus the
+  # `user 1000` directive: the container already runs as uid 1000 via
+  # securityContext, and mosquitto only warns when it cannot drop privileges
+  # it never had.
   mosquitto.conf: |
-    persistence true
-    persistence_location /mosquitto/data/
+    per_listener_settings true
+
     listener 1883
-    allow_anonymous true          # TODO: lock down if the broker is reachable beyond the cluster
+    listener_allow_anonymous true
+    acl_file /mosquitto/config/acl_allow_all.conf
+
+    listener 1888
+    listener_allow_anonymous true
+    acl_file /mosquitto/config/acl_spruthub.conf
+
+    persistence true
+    persistence_file mosquitto.db
+    persistence_location /mosquitto/data
+    autosave_interval 1800
+    autosave_on_changes false
+
+    log_dest stdout
+    log_type error
+    log_type warning
+    connection_messages false
+    log_timestamp false
+  acl_allow_all.conf: |
+    topic readwrite #
+  acl_spruthub.conf: |
+    topic deny espresense/#
+    topic readwrite #
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -22,45 +59,57 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: Recreate
+    type: Recreate            # one writer for mosquitto.db, one bind of :1883
   selector:
     matchLabels: { app: mosquitto }
   template:
     metadata:
       labels: { app: mosquitto }
     spec:
+      securityContext:
+        runAsUser: 1000       # same uid the docker container ran as
+        fsGroup: 1000
       containers:
         - name: mosquitto
-          image: eclipse-mosquitto:2.0.20
+          image: eclipse-mosquitto:2.1.2-alpine
           ports:
             - { containerPort: 1883, name: mqtt }
+            - { containerPort: 1888, name: mqtt-spruthub }
+          # Three subPath mounts instead of one directory mount, because
+          # mosquitto 2.1 refuses to open an acl_file that is a symlink —
+          # and a ConfigMap mounted as a directory is nothing but symlinks
+          # into ..data. The failure is "Unable to open acl_file", which
+          # reads like a permissions problem and is not one: mosquitto.conf
+          # itself loads fine through the very same symlink.
+          #
+          # The cost of subPath: edits to the ConfigMap do not reach the
+          # container until the pod restarts. Mosquitto would need a restart
+          # to pick up a new ACL anyway.
           volumeMounts:
             - { name: data,   mountPath: /mosquitto/data }
-            - { name: config, mountPath: /mosquitto/config/mosquitto.conf, subPath: mosquitto.conf }
+            - { name: config, mountPath: /mosquitto/config/mosquitto.conf,      subPath: mosquitto.conf }
+            - { name: config, mountPath: /mosquitto/config/acl_allow_all.conf,  subPath: acl_allow_all.conf }
+            - { name: config, mountPath: /mosquitto/config/acl_spruthub.conf,   subPath: acl_spruthub.conf }
+          readinessProbe:
+            tcpSocket: { port: 1883 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
           resources:
             requests: { cpu: 20m, memory: 32Mi }
-            limits:   { memory: 64Mi }
+            limits:   { memory: 128Mi }
       volumes:
         - name: data
-          persistentVolumeClaim:
-            claimName: mosquitto-data
+          nfs:
+            server: 198.18.1.125
+            path: /mnt/HD/HD_a2/k8s/mosquitto-data
         - name: config
           configMap:
             name: mosquitto-config
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: mosquitto-data
-  namespace: home
-spec:
-  accessModes: [ReadWriteOnce]
-  storageClassName: nfs-client
-  resources:
-    requests:
-      storage: 1Gi
----
-# In-cluster access (z2m and other pods reach the broker by this ClusterIP).
+# In-cluster access: z2m and the smarthome services reach the broker by this
+# name. They must NOT go through the LoadBalancer VIP — a pod talking to its
+# own cluster's MetalLB address leaves the node and comes back, which already
+# bit us once with Grafana behind Traefik.
 apiVersion: v1
 kind: Service
 metadata:
@@ -69,11 +118,17 @@ metadata:
 spec:
   selector: { app: mosquitto }
   ports:
-    - { port: 1883, targetPort: 1883 }
+    - { name: mqtt, port: 1883, targetPort: 1883 }
 ---
-# External MQTT access — ONLY if non-cluster clients (ESP devices, HA outside
-# k3s) connect. Deleting this Service does not affect in-cluster z2m->mosquitto.
-# L4, so it bypasses Traefik and takes its own MetalLB VIP.
+# LAN access for the smart-home devices. L4, so it bypasses Traefik entirely
+# and takes its own MetalLB VIP.
+#
+# externalTrafficPolicy: Local keeps the client's source address — without it
+# kube-proxy SNATs every connection to a node address and the broker's
+# connection list stops telling which device is which. Only the node running
+# the pod then attracts traffic, which is exactly what MetalLB's L2 speaker
+# already does: it announces the VIP from that node and re-announces when the
+# pod moves.
 apiVersion: v1
 kind: Service
 metadata:
@@ -83,6 +138,8 @@ metadata:
     metallb.universe.tf/loadBalancerIPs: 198.18.1.201
 spec:
   type: LoadBalancer
+  externalTrafficPolicy: Local
   selector: { app: mosquitto }
   ports:
-    - { port: 1883, targetPort: 1883 }
+    - { name: mqtt,          port: 1883, targetPort: 1883 }
+    - { name: mqtt-spruthub, port: 1888, targetPort: 1888 }

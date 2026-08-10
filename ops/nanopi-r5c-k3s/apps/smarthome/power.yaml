@@ -28,7 +28,7 @@ spec:
             - --path
             - /app/conf
             - --mqtt
-            - mqtt.beerloga.su
+            - mosquitto.home
             - --victoria
             - victoria-metrics.monitoring
           env:
