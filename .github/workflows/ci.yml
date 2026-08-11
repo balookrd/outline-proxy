@@ -169,3 +169,11 @@ jobs:
       # it). shellcheck is preinstalled on ubuntu runners.
       - name: invariant — install scripts (syntax, shellcheck, shared helpers)
         run: .github/scripts/check-install-scripts.sh
+
+      # Access-key invariant: the directory the nodes serve <user>.conf /
+      # <user>.json / <user>.txt from is unguessable-by-design and unguarded
+      # otherwise, so it stays in the node's config.toml and out of the tree.
+      # Also refuses tracked *.pyc — that is where the path once survived a
+      # history rewrite, textual rewriting having skipped the binary blob.
+      - name: invariant — served access-key path stays out of the repo
+        run: .github/scripts/check-served-key-path.sh
