@@ -83,6 +83,16 @@ listen = "[::1]:9090"
 # # Per-instance control HTTP request timeout (default 5s). Raise for slow WAN
 # # links, lower for tighter dashboard responsiveness.
 # request_timeout_secs = 5
+# # Optional secret guarding the dashboard listener itself. Unset (the default)
+# # leaves it unauthenticated, and reaching it is equivalent to holding every
+# # instance token below: it proxies uplink activation and config apply to all
+# # of them. Send it as `Authorization: Bearer <token>`, or answer the browser's
+# # Basic prompt with any username and the token as the password. A non-loopback
+# # listener without it logs a warning on startup.
+# token = "long-random-secret"
+# # Or keep the secret out of the config (path resolved relative to this file).
+# # Mutually exclusive with `token`.
+# # token_file = "/etc/outline-ws/dashboard.token"
 #
 # [[dashboard.instances]]
 # name = "inst-01"

@@ -7,6 +7,7 @@ fn test_state() -> DashboardState {
     DashboardState {
         refresh_interval_secs: 5,
         request_timeout_secs: 5,
+        token: None,
         instances: Vec::new(),
     }
 }

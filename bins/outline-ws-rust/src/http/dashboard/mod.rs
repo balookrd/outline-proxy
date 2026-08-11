@@ -4,11 +4,13 @@
 //! process config and are used server-side when proxying to each control API.
 
 mod api;
+mod auth;
 mod backend_client;
 mod response;
 mod ui;
 
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -32,7 +34,21 @@ use self::response::{DashboardResponse, html_response, plain_response, redirect_
 struct DashboardState {
     refresh_interval_secs: u64,
     request_timeout_secs: u64,
+    /// Secret guarding this listener, if configured. `Arc` because the state is
+    /// cloned per connection and per request.
+    token: Option<Arc<str>>,
     instances: Vec<DashboardInstanceConfig>,
+}
+
+impl DashboardState {
+    fn from_config(config: DashboardConfig) -> Self {
+        Self {
+            refresh_interval_secs: config.refresh_interval_secs,
+            request_timeout_secs: config.request_timeout_secs,
+            token: config.token.as_deref().map(Arc::from),
+            instances: config.instances,
+        }
+    }
 }
 
 /// Bound concurrent dashboard requests so a single misbehaving browser tab
@@ -48,11 +64,7 @@ pub fn spawn_dashboard_server(
     shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let listen = config.listen;
-    let state = DashboardState {
-        refresh_interval_secs: config.refresh_interval_secs,
-        request_timeout_secs: config.request_timeout_secs,
-        instances: config.instances,
-    };
+    let state = DashboardState::from_config(config);
     tokio::spawn(async move {
         if let Err(error) = run_dashboard_server(listen, state, shutdown).await {
             warn!(error = %format!("{error:#}"), "dashboard server stopped");
@@ -68,7 +80,13 @@ async fn run_dashboard_server(
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("failed to bind dashboard listener {listen}"))?;
-    info!(%listen, instances = state.instances.len(), "dashboard server started");
+    info!(
+        %listen,
+        instances = state.instances.len(),
+        authenticated = state.token.is_some(),
+        "dashboard server started"
+    );
+    auth::warn_if_unauthenticated_exposure(listen, state.token.is_some());
 
     serve_with_shutdown(
         listener,
@@ -104,6 +122,13 @@ async fn handle_connection(stream: TcpStream, state: DashboardState) -> Result<(
 }
 
 async fn handle_request(request: Request<Incoming>, state: DashboardState) -> DashboardResponse {
+    // The gate runs before the route match, not inside the arms: every route
+    // below reaches the configured instances' control APIs with their bearer
+    // tokens injected server-side, and a route added later must not be able to
+    // bypass the check by simply not asking for it.
+    if let Some(refusal) = auth::reject_unauthorized(&request, state.token.as_deref()) {
+        return refusal;
+    }
     match (request.method(), request.uri().path()) {
         (&Method::GET, "/") => redirect_response("/dashboard"),
         (&Method::GET, "/dashboard") => {
@@ -136,3 +161,6 @@ async fn handle_request(request: Request<Incoming>, state: DashboardState) -> Da
         ),
     }
 }
+
+#[cfg(test)]
+mod tests;

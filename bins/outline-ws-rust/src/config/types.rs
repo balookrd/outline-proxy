@@ -168,6 +168,9 @@ pub struct DashboardConfig {
     pub listen: SocketAddr,
     pub refresh_interval_secs: u64,
     pub request_timeout_secs: u64,
+    /// Optional shared secret required by the dashboard listener itself.
+    /// `None` keeps the listener unauthenticated, as it has always been.
+    pub token: Option<String>,
     pub instances: Vec<DashboardInstanceConfig>,
 }
 

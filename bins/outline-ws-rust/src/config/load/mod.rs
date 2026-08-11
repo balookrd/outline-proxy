@@ -260,12 +260,54 @@ async fn load_dashboard_config(
         loaded.push(DashboardInstanceConfig { name, control_url, token });
     }
 
+    let token = resolve_dashboard_token(
+        section.token.as_deref(),
+        section.token_file.as_deref(),
+        config_dir,
+        "[dashboard]",
+    )
+    .await?;
+
     Ok(Some(DashboardConfig {
         listen,
         refresh_interval_secs,
         request_timeout_secs,
+        token,
         instances: loaded,
     }))
+}
+
+/// Inline-or-file secret guarding the dashboard listener itself. Mirrors the
+/// server's `resolve_token`: an empty inline value is a typo rather than a
+/// credential, declaring both forms is a config error, and an empty file is
+/// refused instead of silently leaving the listener open. `label` names the
+/// offender in error messages.
+async fn resolve_dashboard_token(
+    inline: Option<&str>,
+    token_file: Option<&Path>,
+    config_dir: &Path,
+    label: &str,
+) -> Result<Option<String>> {
+    let inline = inline.filter(|token| !token.is_empty()).map(str::to_owned);
+    if inline.is_some() && token_file.is_some() {
+        bail!("{label}: specify either token or token_file, not both");
+    }
+    let from_file = match token_file {
+        Some(path) => {
+            let resolved = routing::resolve_config_path(path, config_dir)
+                .with_context(|| format!("invalid {label}.token_file"))?;
+            let raw = fs::read_to_string(&resolved).await.with_context(|| {
+                format!("failed to read {label} token from {}", resolved.display())
+            })?;
+            let trimmed = raw.trim().to_owned();
+            if trimmed.is_empty() {
+                bail!("{label} token file {} is empty", resolved.display());
+            }
+            Some(trimmed)
+        },
+        None => None,
+    };
+    Ok(inline.or(from_file))
 }
 
 async fn load_control_config(

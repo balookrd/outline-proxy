@@ -1928,6 +1928,7 @@ version = "1.7.0"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "base64",
  "bytes",
  "clap",
  "futures-util",

@@ -25,6 +25,8 @@ use tracing::warn;
 
 use handlers::ErrorResponse;
 
+use super::constant_time_eq;
+
 pub(crate) type ControlResponse = Response<Full<Bytes>>;
 
 pub(crate) fn is_authorized(request: &Request<Incoming>, expected: &str) -> bool {
@@ -38,17 +40,6 @@ pub(crate) fn is_authorized(request: &Request<Incoming>, expected: &str) -> bool
         return false;
     };
     constant_time_eq(presented.as_bytes(), expected.as_bytes())
-}
-
-pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 pub(crate) fn unauthorized_response() -> ControlResponse {
