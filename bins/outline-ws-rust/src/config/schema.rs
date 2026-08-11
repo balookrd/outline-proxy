@@ -215,6 +215,11 @@ pub(super) struct DashboardSection {
     pub(super) listen: Option<SocketAddr>,
     pub(super) refresh_interval_secs: Option<u64>,
     pub(super) request_timeout_secs: Option<u64>,
+    /// Optional shared secret guarding the dashboard listener itself. Unset
+    /// leaves it unauthenticated, as it has always been. Mutually exclusive
+    /// with `token_file`.
+    pub(super) token: Option<String>,
+    pub(super) token_file: Option<PathBuf>,
     pub(super) instances: Option<Vec<DashboardInstanceSection>>,
 }
 

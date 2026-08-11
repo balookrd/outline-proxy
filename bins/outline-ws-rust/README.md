@@ -380,6 +380,12 @@ listen = "[::1]:9090"
 # refresh_interval_secs = 5
 # # Per-instance control HTTP request timeout (default 5s).
 # request_timeout_secs = 5
+# # Optional secret guarding this listener itself. Unset leaves it open —
+# # reaching it is equivalent to holding every instance token below. Accepted
+# # as `Authorization: Bearer <token>` or as the HTTP Basic password (any
+# # username). Mutually exclusive with token_file.
+# token = "long-random-secret"
+# # token_file = "/etc/outline-ws/dashboard.token"
 #
 # [[dashboard.instances]]
 # name = "inst-01"
@@ -1435,6 +1441,16 @@ genuine request failures keep their `warn`.
   management network, treat the bearer token as a credential (rotate, store
   out of band), and never re-use the metrics port for it. The control listener
   is the only path that can mutate active-uplink selection.
+- Protect `dashboard.listen` as strictly as `control.listen`. The dashboard
+  proxies to every configured instance with that instance's bearer token
+  injected server-side, so reaching the dashboard socket is equivalent to
+  holding all of those tokens — including uplink activation, operator on/off,
+  and `POST /control/apply`. Keep it on loopback, or set `dashboard.token` /
+  `dashboard.token_file` when it must be reachable from elsewhere. With a
+  secret set, every request must carry `Authorization: Bearer <token>`;
+  browsers can instead answer the `Basic` challenge with any username and the
+  token as the password. Refusals are `401` with `Cache-Control: no-store`. A
+  non-loopback listener without a secret logs a warning on startup.
 - Listener hardening against slowloris / idle-connection DoS is built in:
   the SOCKS5 accept loop caps in-flight connections at 4096 and enforces a
   10 s handshake timeout on `negotiate`; the `/metrics` listener caps
