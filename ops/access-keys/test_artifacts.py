@@ -93,18 +93,43 @@ class UrlHelpersTest(unittest.TestCase):
     def setUp(self):
         self.server = cm.load(GOLDEN)
         self.ak = self.server.access_keys
-        self.user = next(u for u in self.server.users if u.name == "both")
+
+    def user(self, name):
+        return next(u for u in self.server.users if u.name == name)
 
     def test_config_url_uses_the_sanitised_filename(self):
         self.assertEqual(
-            artifacts.config_url(self.user, self.ak),
+            artifacts.config_url(self.user("both"), self.ak),
             "https://keys.example.com/SECRET/both.conf",
         )
 
-    def test_access_key_url_is_the_ssconf_form(self):
+    def test_outline_url_is_the_ssconf_form(self):
         self.assertEqual(
-            artifacts.access_key_url(self.user, self.ak),
+            artifacts.outline_url(self.user("both"), self.ak),
             "ssconf://keys.example.com/SECRET/both.conf",
+        )
+
+    def test_outline_url_absent_without_a_password(self):
+        self.assertIsNone(artifacts.outline_url(self.user("vless-only"), self.ak))
+
+    def test_happ_url_points_at_the_json_subscription(self):
+        self.assertEqual(
+            artifacts.happ_url(self.user("both"), self.ak),
+            "https://keys.example.com/SECRET/both.json",
+        )
+
+    def test_happ_url_keeps_the_json_extension_regardless_of_file_extension(self):
+        # file_extension applies to the Outline artifact only; the subscription
+        # is always <user>.json.
+        self.assertTrue(artifacts.happ_url(self.user("both"), self.ak).endswith(".json"))
+
+    def test_happ_url_absent_without_a_vless_subscription(self):
+        self.assertIsNone(artifacts.happ_url(self.user("ss-only"), self.ak))
+
+    def test_happ_url_uses_the_sanitised_filename(self):
+        self.assertEqual(
+            artifacts.happ_url(self.user("needs sanitising/1"), self.ak),
+            "https://keys.example.com/SECRET/needs_sanitising_1.json",
         )
 
 

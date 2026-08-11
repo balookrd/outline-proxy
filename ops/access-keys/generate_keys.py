@@ -25,12 +25,15 @@ import xray_json  # noqa: E402
 DEFAULT_CONFIG = "/opt/outline/outline-ss-rust/config.toml"
 DEFAULT_OUT_DIR = "/var/www/html/<keys-prefix>"
 
+# `config_url` is deliberately not reported: it was the same file as
+# `outline_url` with a different scheme, and the very same link is already the
+# first line of <user>.txt.
 _REPORT_FIELDS = (
     ("conf", "written_conf"),
     ("json", "written_json"),
     ("txt", "written_txt"),
-    ("config_url", "config_url"),
-    ("access_key_url", "access_key_url"),
+    ("outline_url", "outline_url"),
+    ("happ_url", "happ_url"),
 )
 
 
@@ -103,7 +106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 write_atomic(target, outline)
             record["conf"] = str(target)
 
-        if user.vless_id and (user.ws_path_vless or user.xhttp_path_vless):
+        if artifacts.has_subscription(user):
             document = xray_json.build_config(user, nodes)
             target = out_dir / f"{user.filename}.json"
             if not args.dry_run:
@@ -119,8 +122,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 write_atomic(target, "\n".join(urls) + "\n")
             record["txt"] = str(target)
 
-        record["config_url"] = artifacts.config_url(user, ak)
-        record["access_key_url"] = artifacts.access_key_url(user, ak)
+        record["outline_url"] = artifacts.outline_url(user, ak)
+        record["happ_url"] = artifacts.happ_url(user, ak)
         written.append(record)
 
     # Never a credential: paths and counts only.

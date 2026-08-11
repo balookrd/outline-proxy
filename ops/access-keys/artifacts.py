@@ -28,9 +28,29 @@ def config_url(user: User, ak: AccessKeys) -> str | None:
     return uri.join_url(ak.url_base, f"{user.filename}{ak.file_extension}")
 
 
-def access_key_url(user: User, ak: AccessKeys) -> str | None:
+def outline_url(user: User, ak: AccessKeys) -> str | None:
+    """The `ssconf://` link an Outline client is given.
+
+    Same file as `config_url`, different scheme: Outline follows it as a
+    dynamic access key and re-reads the config when it changes.
+    """
     url = config_url(user, ak)
     return uri.ssconf_url(url) if url else None
+
+
+def has_subscription(user: User) -> bool:
+    """Whether this user gets a <user>.json — a VLESS id plus a path to reach."""
+    return bool(user.vless_id) and bool(user.ws_path_vless or user.xhttp_path_vless)
+
+
+def happ_url(user: User, ak: AccessKeys) -> str | None:
+    """The link handed to xray-family clients: the Xray-JSON subscription.
+
+    Always `.json` — `file_extension` applies to the Outline artifact only.
+    """
+    if not ak.url_base or not has_subscription(user):
+        return None
+    return uri.join_url(ak.url_base, f"{user.filename}.json")
 
 
 def outline_artifact(user: User, ak: AccessKeys) -> str | None:
@@ -133,7 +153,7 @@ def user_urls(user: User, ak: AccessKeys, has_h3: bool) -> list[str]:
     can never drift.
     """
     lines: list[str] = []
-    ssconf = access_key_url(user, ak)
+    ssconf = outline_url(user, ak)
     if ssconf:
         lines.append(ssconf)
     lines.extend(

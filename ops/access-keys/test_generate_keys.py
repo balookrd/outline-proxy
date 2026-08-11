@@ -137,8 +137,8 @@ class ReportTest(unittest.TestCase):
                     "conf": "/out/both.conf",
                     "json": "/out/both.json",
                     "txt": "/out/both.txt",
-                    "config_url": "https://h/SECRET/both.conf",
-                    "access_key_url": "ssconf://h/SECRET/both.conf",
+                    "outline_url": "ssconf://h/SECRET/both.conf",
+                    "happ_url": "https://h/SECRET/both.json",
                 }
             ]
         )
@@ -148,13 +148,40 @@ class ReportTest(unittest.TestCase):
             "written_conf: /out/both.conf\n"
             "written_json: /out/both.json\n"
             "written_txt: /out/both.txt\n"
-            "config_url: https://h/SECRET/both.conf\n"
-            "access_key_url: ssconf://h/SECRET/both.conf\n",
+            "outline_url: ssconf://h/SECRET/both.conf\n"
+            "happ_url: https://h/SECRET/both.json\n",
         )
+
+    def test_report_carries_no_config_url(self):
+        # It duplicated outline_url modulo the scheme, and the same link is the
+        # first line of <user>.txt.
+        report = gk.render_report(
+            [{"user": "b", "txt": "/b.txt", "config_url": "https://h/b.conf"}]
+        )
+        self.assertNotIn("config_url", report)
 
     def test_absent_fields_are_omitted(self):
         report = gk.render_report([{"user": "v", "json": "/out/v.json", "txt": "/out/v.txt"}])
         self.assertEqual(report, "user: v\nwritten_json: /out/v.json\nwritten_txt: /out/v.txt\n")
+
+    def test_report_from_the_real_config_carries_both_urls(self):
+        import artifacts
+        import config_model as cm
+
+        server = cm.load(GOLDEN)
+        ak = server.access_keys
+        user = next(u for u in server.users if u.name == "both")
+        report = gk.render_report(
+            [
+                {
+                    "user": user.name,
+                    "outline_url": artifacts.outline_url(user, ak),
+                    "happ_url": artifacts.happ_url(user, ak),
+                }
+            ]
+        )
+        self.assertIn("outline_url: ssconf://keys.example.com/SECRET/both.conf\n", report)
+        self.assertIn("happ_url: https://keys.example.com/SECRET/both.json\n", report)
 
     def test_blocks_are_separated_by_a_blank_line(self):
         report = gk.render_report([{"user": "a", "txt": "/a.txt"}, {"user": "b", "txt": "/b.txt"}])
