@@ -2068,13 +2068,13 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
 name   = "edge-links"
 group  = "main"
 weight = 1.0
-link   = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=xhttp&security=tls&path=%2FSECRET%2Fxhttp&alpn=h3&mode=stream-one"
+link   = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=xhttp&security=tls&alpn=h3&mode=stream-one&path=%2FSECRET%2Fxhttp"
 
   [[outline.uplinks.fallbacks]]
-  link = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fws&alpn=h3"
+  link = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=ws&security=tls&alpn=h3&path=%2FSECRET%2Fws"
 
   [[outline.uplinks.fallbacks]]
-  link = "ss://BASE64URL@cdn.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fss&alpn=h3"
+  link = "ss://BASE64URL@cdn.example.com:443?type=ws&security=tls&alpn=h3&path=%2FSECRET%2Fss"
 ```
 
 Креды едут внутри каждой ссылки, поэтому `cipher` / `password` родителя для
