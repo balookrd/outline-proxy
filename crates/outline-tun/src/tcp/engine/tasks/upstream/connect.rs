@@ -388,7 +388,23 @@ impl TunTcpEngine {
                     Some(stream) => stream,
                     None => {
                         metrics::record_tun_tcp_async_connect(last_outcome);
-                        warn!(flow_id, remote = %target, outcome = last_outcome, "failed to establish direct TUN TCP connection to any candidate");
+                        // Debug, not warn: an unreachable direct destination is
+                        // the internet's ordinary background, not a fault of
+                        // ours. A client behind the tunnel dials whatever it
+                        // likes — a peer's 192.168/16 address that does not
+                        // route from here, a host that is simply down — and
+                        // each one printed a WARN. On .104 that was ~30 an
+                        // hour against 41886 successful dials in the same
+                        // period: 0.2% of attempts producing 100% of the
+                        // unit's log volume, which is how a real warning gets
+                        // missed. The per-candidate lines above are already
+                        // debug for the same reason. Nothing is lost:
+                        // `record_tun_tcp_async_connect` right above counts
+                        // every outcome, so a direct path that genuinely
+                        // breaks shows as timeout/failed climbing against
+                        // connected — visible on a dashboard rather than
+                        // buried in a log.
+                        debug!(flow_id, remote = %target, outcome = last_outcome, "failed to establish direct TUN TCP connection to any candidate");
                         let reason = match last_outcome {
                             "timeout" => "connect_timeout",
                             "recent_failure" => "connect_recent_failure",
