@@ -37,10 +37,27 @@ sudo /opt/outline/access-keys/generate_keys.py
 | Флаг | Значение по умолчанию |
 |---|---|
 | `--config` | `/opt/outline/outline-ss-rust/config.toml` |
-| `--out-dir` | `/var/www/html/<keys-prefix>` |
+| `--out-dir` | из `[access_keys] write_dir`; своего дефолта нет |
 | `--file-extension` | из `[access_keys] file_extension`, иначе `.yaml` |
 | `--node` | `cloud1.beerloga.su`, `cloud2.beerloga.su`; повторяется на каждый узел |
 | `--dry-run` | всё отрендерить, ничего не писать |
+
+## ⚠️ Каталог раздачи — секрет, и живёт он в `config.toml`
+
+Имя каталога не угадывается и ничем больше не защищено: nginx раздаёт его без
+авторизации, а `<user>.conf` / `<user>.json` / `<user>.txt` несут пароль и
+`vless_id`. Кто знает путь — знает креды всех юзеров узла, перебрав имена.
+
+Поэтому путь задаётся на узле, ключом `[access_keys] write_dir` в
+`config.toml` — тем же, который читает бинарь в режиме
+`--write-access-keys-dir`, — и в репозиторий не попадает. Встроенного дефолта у
+генератора нет намеренно: он был бы публикацией секрета в исходниках. Без
+`write_dir` и без `--out-dir` генератор падает с явной ошибкой, ничего не
+записав.
+
+Тот же префикс нужен nginx-блоку подписок — там он остаётся плейсхолдером
+`__KEYS_PREFIX__` (см. [`nginx-subscription-headers.conf`](nginx-subscription-headers.conf)),
+как токен в [`ops/heartbeat/nginx-heartbeat.conf`](../heartbeat/nginx-heartbeat.conf).
 
 **`--file-extension` на узлах обязателен.** В боевых `config.toml` ключа
 `file_extension` нет — расширение `.conf` раньше передавалось бинарю флагом
@@ -82,7 +99,7 @@ Outline ходит по ней как по динамическому ключу
 Проверить результат, не светя креды:
 
 ```bash
-sudo jq -r '.[0].outbounds[].tag' /var/www/html/<keys-prefix>/<user>.json
+sudo jq -r '.[0].outbounds[].tag' <keys-dir>/<user>.json   # <keys-dir> = [access_keys] write_dir
 ```
 
 `cat` любого артефакта выводит пароль или `vless_id` — не делайте этого.
@@ -137,7 +154,7 @@ WS-ноги остаются на `http/1.1`, и это ограничение �
 python3 -m unittest discover -s ops/access-keys -p "test_*.py"
 ```
 
-99 тестов, stdlib-only, в сеть не ходят и за пределы временного каталога не
+114 тестов, stdlib-only, в сеть не ходят и за пределы временного каталога не
 пишут. Главный из них — `test_artifacts.py`: собирает все 32 артефакта и
 сверяет с golden побайтово.
 
@@ -167,6 +184,21 @@ ssh sysadm@<node> 'sudo -n cp -a /tmp/access-keys/. /opt/outline/access-keys/ \
 уже раздаёт с диска. Вызов прописывается в `save-keys.sh` вместо прежнего
 `outline-ss-rust --write-access-keys-dir`.
 
+Начиная с версии без встроенного дефолта каталога, на каждом узле должен быть
+задан путь — иначе генератор откажется работать (и это его правильное
+поведение, а не регрессия). Один раз на узел:
+
+```bash
+# 1) прописать каталог в config.toml, в секцию [access_keys]
+#    write_dir = "/var/www/html/<keys-dir>"
+# 2) проверить, что генератор его видит — ничего не записывая
+sudo /opt/outline/access-keys/generate_keys.py --file-extension .conf --dry-run
+```
+
+Узлы, где `save-keys.sh` уже передаёт `--out-dir` явно, продолжают работать и
+без правки конфига: флаг бьёт `write_dir`. Прописать `write_dir` всё равно
+стоит — тогда каталог назван в одном месте, а не в двух.
+
 Раскатано 2026-08-11 на **девять узлов**:
 
 | Узлы | `--node` | Раздача |
@@ -191,7 +223,7 @@ ssh sysadm@<node> 'sudo -n cp -a /tmp/access-keys/. /opt/outline/access-keys/ \
 
 - на `nuxt2` и `sebek` `url_base` указывал на каталог, отличный от того, куда
   писал `save-keys.sh`; раздавались устаревшие файлы, а актуальные лежали рядом.
-  Приведено к `<keys-prefix>` на обоих;
+  Приведено к одному каталогу на обоих (тому, что в `[access_keys] write_dir`);
 - на `nuxt`, `senko`, `aeza` артефакты не обновлялись месяцами и разошлись с
   конфигом (на `sebek` разошлись все 62 — там ротировали пути и креды);
 - в каталогах копились файлы старых схем именования (`<user>-vless.conf`) и

@@ -23,7 +23,13 @@ import config_model  # noqa: E402
 import xray_json  # noqa: E402
 
 DEFAULT_CONFIG = "/opt/outline/outline-ss-rust/config.toml"
-DEFAULT_OUT_DIR = "/var/www/html/<keys-prefix>"
+
+# There is deliberately no default output directory. The served directory's
+# name is a secret — it is the only thing guarding the artifacts, which carry
+# every user's password and vless_id — so it lives in the node's config.toml
+# (`[access_keys] write_dir`, the same key the binary reads) and never in this
+# repository. A hard-coded fallback here would publish it to anyone who can
+# read the source.
 
 # `config_url` is deliberately not reported: it was the same file as
 # `outline_url` with a different scheme, and the very same link is already the
@@ -59,7 +65,12 @@ def render_report(written: Sequence[dict]) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate access-key artifacts.")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="outline-ss-rust config.toml")
-    parser.add_argument("--out-dir", default=DEFAULT_OUT_DIR, help="where artifacts are written")
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help="where artifacts are written; overrides [access_keys] write_dir. "
+        "One of the two is required — there is no built-in default.",
+    )
     parser.add_argument(
         "--node",
         action="append",
@@ -90,7 +101,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not server.users:
         raise SystemExit(f"{args.config}: no enabled users")
 
-    out_dir = Path(args.out_dir)
+    out_dir_raw = args.out_dir or server.access_keys.write_dir
+    if not out_dir_raw:
+        raise SystemExit(
+            f"{args.config}: no output directory — set [access_keys] write_dir "
+            "in the config or pass --out-dir"
+        )
+
+    out_dir = Path(out_dir_raw)
     if not args.dry_run:
         out_dir.mkdir(parents=True, exist_ok=True)
 

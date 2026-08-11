@@ -1720,7 +1720,7 @@ import config_model
 import xray_json
 
 DEFAULT_CONFIG = "/opt/outline/outline-ss-rust/config.toml"
-DEFAULT_OUT_DIR = "/var/www/html/<keys-prefix>"
+DEFAULT_OUT_DIR = "/var/www/html/<keys-dir>"
 
 _REPORT_FIELDS = (
     ("conf", "written_conf"),
@@ -1995,11 +1995,11 @@ ssh sysadm@cloud2.beerloga.su 'sudo -n cp -a /opt/outline/outline-ss-rust/save-k
 #
 # Access-key artifacts: <user>.conf, <user>.json, <user>.txt.
 # Generator lives in ops/access-keys and reads this node config.toml.
-# Keys dir: /var/www/html/<keys-prefix>/
+# Keys dir: /var/www/html/<keys-dir>/
 
 /opt/outline/access-keys/generate_keys.py \
   --config /opt/outline/outline-ss-rust/config.toml \
-  --out-dir /var/www/html/<keys-prefix>/ \
+  --out-dir /var/www/html/<keys-dir>/ \
   > /opt/outline/outline-ss-rust/users.txt
 EOF
 sudo -n chmod 0755 /opt/outline/outline-ss-rust/save-keys.sh && sudo -n sh -n /opt/outline/outline-ss-rust/save-keys.sh && echo "syntax ok"'
@@ -2010,9 +2010,9 @@ Expected: `syntax ok`
 - [ ] **Step 5: Record the pre-switch checksums, then run it**
 
 ```bash
-ssh sysadm@cloud2.beerloga.su 'sudo -n sh -c "cd /var/www/html/<keys-prefix> && sha256sum *.conf | grep -vE \"-(ss|vless)-\" | sort > /tmp/conf-before.sha"'
+ssh sysadm@cloud2.beerloga.su 'sudo -n sh -c "cd /var/www/html/<keys-dir> && sha256sum *.conf | grep -vE \"-(ss|vless)-\" | sort > /tmp/conf-before.sha"'
 ssh sysadm@cloud2.beerloga.su 'sudo -n /opt/outline/outline-ss-rust/save-keys.sh && echo "generated"'
-ssh sysadm@cloud2.beerloga.su 'sudo -n sh -c "cd /var/www/html/<keys-prefix> && sha256sum *.conf | grep -vE \"-(ss|vless)-\" | sort > /tmp/conf-after.sha; diff /tmp/conf-before.sha /tmp/conf-after.sha && echo \"outline artifacts unchanged\"; rm -f /tmp/conf-before.sha /tmp/conf-after.sha"'
+ssh sysadm@cloud2.beerloga.su 'sudo -n sh -c "cd /var/www/html/<keys-dir> && sha256sum *.conf | grep -vE \"-(ss|vless)-\" | sort > /tmp/conf-after.sha; diff /tmp/conf-before.sha /tmp/conf-after.sha && echo \"outline artifacts unchanged\"; rm -f /tmp/conf-before.sha /tmp/conf-after.sha"'
 ```
 
 Expected: `generated`, then `outline artifacts unchanged` — the `<user>.conf`
@@ -2021,7 +2021,7 @@ files must be byte-identical across the switch.
 - [ ] **Step 6: Confirm the new layout**
 
 ```bash
-ssh sysadm@cloud2.beerloga.su 'sudo -n sh -c "cd /var/www/html/<keys-prefix> && echo -n \"conf: \"; ls *.conf | grep -cvE \"-(ss|vless)-\"; echo -n \"json: \"; ls *.json | wc -l; echo -n \"txt: \"; ls *.txt | wc -l; echo -n \"legacy: \"; ls *.conf | grep -cE \"-(ss|vless)-\" || true"'
+ssh sysadm@cloud2.beerloga.su 'sudo -n sh -c "cd /var/www/html/<keys-dir> && echo -n \"conf: \"; ls *.conf | grep -cvE \"-(ss|vless)-\"; echo -n \"json: \"; ls *.json | wc -l; echo -n \"txt: \"; ls *.txt | wc -l; echo -n \"legacy: \"; ls *.conf | grep -cE \"-(ss|vless)-\" || true"'
 ```
 
 Expected: 12 conf, 12 json, 12 txt, and 63 legacy files still present — they are
@@ -2032,7 +2032,7 @@ removed in the next step, not by the generator.
 The owner confirmed on 2026-08-11 that nothing subscribes to these URLs.
 
 ```bash
-ssh sysadm@cloud2.beerloga.su 'sudo -n sh -c "cd /var/www/html/<keys-prefix> && ls *.conf | grep -E \"-(ss|vless)-\" | xargs -r rm -- && echo -n \"remaining files: \"; ls | wc -l"'
+ssh sysadm@cloud2.beerloga.su 'sudo -n sh -c "cd /var/www/html/<keys-dir> && ls *.conf | grep -E \"-(ss|vless)-\" | xargs -r rm -- && echo -n \"remaining files: \"; ls | wc -l"'
 ```
 
 Expected: `remaining files: 36` — three per user, nothing else.
@@ -2115,7 +2115,7 @@ KEYS_DIR="$(REF_SSH "sed -n 's#.*--out-dir *##p;s#.*--write-access-keys-dir *##p
 ssh sysadm@cloud2.beerloga.su "sed -n 's#.*--out-dir *##p;s#.*--write-access-keys-dir *##p' /opt/outline/outline-ss-rust/save-keys.sh | tr -d ' \\\\' | head -1"
 ```
 
-Expected: `/var/www/html/<keys-prefix>/`
+Expected: `/var/www/html/<keys-dir>/`
 
 - [ ] **Step 13: Commit** *(only after the owner explicitly asks)*
 

@@ -128,6 +128,44 @@ class MainTest(unittest.TestCase):
             self.assertEqual((out / "both.txt").read_text(encoding="utf-8"), first)
 
 
+class OutDirResolutionTest(unittest.TestCase):
+    """Where the artifacts land: the flag, else the config, else an error.
+
+    There is no built-in default on purpose — the served directory's name is
+    the only thing guarding the artifacts, so it stays in the node's
+    config.toml and out of this repository.
+    """
+
+    def config_with_write_dir(self, tmp, write_dir):
+        text = GOLDEN.read_text(encoding="utf-8").replace(
+            "[access_keys]", f'[access_keys]\nwrite_dir = "{write_dir}"', 1
+        )
+        path = Path(tmp) / "config.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_missing_flag_and_missing_write_dir_is_an_error(self):
+        with self.assertRaises(SystemExit) as raised:
+            gk.main(["--config", str(GOLDEN), "--dry-run"])
+        self.assertIn("write_dir", str(raised.exception))
+
+    def test_write_dir_from_the_config_is_used_without_the_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "keys"
+            config = self.config_with_write_dir(tmp, out)
+            self.assertEqual(gk.main(["--config", str(config)]), 0)
+            self.assertTrue((out / "both.conf").exists())
+
+    def test_the_flag_wins_over_the_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            from_config = Path(tmp) / "from-config"
+            from_flag = Path(tmp) / "from-flag"
+            config = self.config_with_write_dir(tmp, from_config)
+            gk.main(["--config", str(config), "--out-dir", str(from_flag)])
+            self.assertTrue((from_flag / "both.conf").exists())
+            self.assertFalse(from_config.exists())
+
+
 class ReportTest(unittest.TestCase):
     def test_report_has_one_block_per_user(self):
         report = gk.render_report(

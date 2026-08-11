@@ -713,7 +713,7 @@ Extend the imports at the top of `ops/xray-json-sub/generate_xray_json.py` with
 
 ```python
 DEFAULT_CONFIG = "/opt/outline/outline-ss-rust/config.toml"
-DEFAULT_OUT_DIR = "/var/www/html/<keys-prefix>"
+DEFAULT_OUT_DIR = "/var/www/html/<keys-dir>"
 
 
 def write_subscription(out_dir: Path, user: User, document: dict) -> Path:
@@ -1030,7 +1030,7 @@ ssh sysadm@cloud2.beerloga.su \
   "sed -n 's#.*--write-access-keys-dir *##p' /opt/outline/outline-ss-rust/save-keys.sh | tr -d ' \\\\' | head -1"
 ```
 
-Expected: `/var/www/html/<keys-prefix>/`
+Expected: `/var/www/html/<keys-dir>/`
 
 - [ ] **Step 8: Repeat Steps 1–7 for cloud1**
 

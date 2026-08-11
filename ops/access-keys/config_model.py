@@ -22,6 +22,12 @@ DEFAULT_EXTENSION = ".yaml"
 class AccessKeys:
     """The `[access_keys]` fields the artifacts are built from.
 
+    `write_dir` is where the artifacts land. It is the same key the binary's
+    `--write-access-keys-dir` mode reads, so the node's config.toml is the one
+    place naming that directory. It stays out of this repository on purpose:
+    the served directory is unguessable-by-design and its name is the only
+    thing standing between the internet and every user's credentials.
+
     `print` is deliberately absent: it gated an extra stdout report in the
     binary, the generator has no such report, and carrying a field nothing
     reads only invites someone to believe it does something.
@@ -31,6 +37,7 @@ class AccessKeys:
     public_scheme: str
     url_base: str | None
     file_extension: str
+    write_dir: str | None
 
 
 @dataclass(frozen=True)
@@ -103,6 +110,7 @@ def load(path: str | Path) -> ServerConfig:
         public_scheme=ak_section.get("public_scheme") or DEFAULT_SCHEME,
         url_base=ak_section.get("url_base"),
         file_extension=ak_section.get("file_extension") or DEFAULT_EXTENSION,
+        write_dir=ak_section.get("write_dir"),
     )
     if access_keys.public_scheme not in ("ws", "wss"):
         raise SystemExit(f'{path}: public_scheme must be either "ws" or "wss"')

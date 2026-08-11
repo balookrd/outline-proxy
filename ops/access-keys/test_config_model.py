@@ -29,6 +29,11 @@ class LoadTest(unittest.TestCase):
         self.assertEqual(ak.url_base, "https://keys.example.com/SECRET")
         self.assertEqual(ak.file_extension, ".conf")
 
+    def test_write_dir_is_none_when_the_config_does_not_set_it(self):
+        # The golden config names no output directory: the served path is a
+        # secret and never lives in this repository.
+        self.assertIsNone(self.server.access_keys.write_dir)
+
     def test_print_is_not_carried_into_the_model(self):
         # The golden config sets `print = false`; the generator has no report
         # for it to gate, so the field must not exist rather than sit unused.
@@ -79,6 +84,19 @@ class SanitizeTest(unittest.TestCase):
 
     def test_empty_becomes_user(self):
         self.assertEqual(cm.sanitize_filename(""), "user")
+
+
+class WriteDirTest(unittest.TestCase):
+    def test_write_dir_is_read_from_the_access_keys_section(self):
+        text = (
+            '[access_keys]\npublic_host = "h"\nwrite_dir = "/var/www/html/KEYS"\n'
+            '\n[[users]]\nid = "u"\npassword = "p"\n'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(text, encoding="utf-8")
+            server = cm.load(path)
+        self.assertEqual(server.access_keys.write_dir, "/var/www/html/KEYS")
 
 
 class H3DetectionTest(unittest.TestCase):

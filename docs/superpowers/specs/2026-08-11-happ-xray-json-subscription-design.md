@@ -40,7 +40,7 @@ lowestdelay` выбирает сервер **в момент запуска пр
   `id`/`password`/`vless_id`): один `vless_id` валиден и на cloud1, и на
   cloud2. Это и делает балансер возможным без per-node кредов.
 - Артефакты доступа генерируются `save-keys.sh`:
-  `outline-ss-rust --write-access-keys-dir /var/www/html/<keys-prefix>/
+  `outline-ss-rust --write-access-keys-dir /var/www/html/<keys-dir>/
   --access-key-file-extension .conf` и раздаются статикой nginx (`:80`) через
   `[http_fallback] backend = http://127.0.0.1:8080` → nginx `:8080` → `:80`,
   то есть по `https://cloud.beerloga.su/<keys-prefix>/<файл>`.
@@ -174,7 +174,7 @@ JSON-режиме Happ сам решает, какие фрагменты geo-б
   аплинков (`nuxt`, `senko`, `aeza`) несут свои пути, и первая версия
   генератора, читавшая только глобальную секцию, выдала им нерабочие подписки
   (исправлено 2026-08-11 в тот же день);
-- на каждого юзера пишет `<id>.json` в `/var/www/html/<keys-prefix>/`,
+- на каждого юзера пишет `<id>.json` в `/var/www/html/<keys-dir>/`,
   рядом с существующими `.conf` и теми же правами (`0644 root:root`);
 - узлы балансера (`cloud1.beerloga.su`, `cloud2.beerloga.su`) и каталог вывода
   задаются флагами со значениями по умолчанию — скрипт не зашивает топологию;

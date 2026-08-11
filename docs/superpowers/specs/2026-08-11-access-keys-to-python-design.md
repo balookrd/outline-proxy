@@ -37,7 +37,7 @@ ALPN, форме пути XHTTP и режимам `packet-up` / `stream-one`, и
 
 `POST /control/users` ссылок не возвращает — он отдаёт `UserView`.
 
-Артефакты складываются в `/var/www/html/<keys-prefix>/` и раздаются
+Артефакты складываются в `/var/www/html/<keys-dir>/` и раздаются
 через nginx. Отчёт о записи уходит в `/opt/outline/outline-ss-rust/users.txt`
 (28 686 байт на cloud1).
 
