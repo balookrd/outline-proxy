@@ -15,6 +15,7 @@ pub(crate) mod standby_pool;
 pub(crate) mod state;
 pub(crate) mod status;
 pub(crate) mod sticky;
+pub(crate) mod sync_order;
 #[cfg(any(test, feature = "test-helpers"))]
 #[path = "tests/test_helpers.rs"]
 mod test_helpers;
@@ -42,6 +43,23 @@ use super::types::{ActiveUplinksSnapshot, TransportKind, Uplink, UplinkManager};
 impl UplinkManager {
     pub async fn initialize_strict_active_selection(&self) {
         if !self.strict_global_active_uplink() && !self.strict_per_uplink_active_uplink() {
+            return;
+        }
+
+        // Under `reselect_sync` the slot decision — not the state store — owns
+        // the choice: a restored active is precisely the mid-day leg a restart
+        // must not resurrect, since it may be a failover leftover this node's
+        // twin never followed (see `manager/sync_order.rs`). Probing is
+        // unconditional here, unlike the path below: there is no restored
+        // selection to skip it for, and a slot decision needs health to be
+        // known before it can pick. Records one
+        // `outline_ws_uplink_reselect_total{outcome}` sample at startup, which
+        // is how "which leg did this node boot onto" stays visible.
+        if self.inner.load_balancing.reselect_sync {
+            if self.inner.probe.enabled() {
+                self.probe_all().await;
+            }
+            self.reselect_active_uplink("startup_sync", true).await;
             return;
         }
 

@@ -1084,6 +1084,20 @@ pub struct LoadBalancingConfig {
     /// from loop start). `None` = disabled. Mutually exclusive with
     /// `reselect_at`; only valid in `active_passive` mode.
     pub reselect_interval: Option<Duration>,
+    /// Make scheduled re-selection agree across independent nodes: instead of
+    /// an OS-seeded draw over locally-weighted candidates, every node derives
+    /// the same per-slot order from `(group name, uplink names, local day,
+    /// slot index)` and takes the first entry of it that is healthy locally.
+    /// Two nodes carrying the same group config therefore land on the same
+    /// uplink without exchanging anything, which is what keeps a shared client
+    /// population on one egress address.
+    ///
+    /// Requires `reselect_at`: the `(day, slot)` key is what both sides agree
+    /// on, and `reselect_interval` fires relative to each process's own start.
+    /// Health, cooldown and admin state stay local, so a node whose leg dies
+    /// still leaves on its own — at the cost of the pair staying split until
+    /// the next slot when only one of them saw the failure.
+    pub reselect_sync: bool,
 }
 
 impl LoadBalancingConfig {

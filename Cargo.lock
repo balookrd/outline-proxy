@@ -1885,6 +1885,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "base64",
+ "blake3",
  "bytes",
  "futures-util",
  "libc",

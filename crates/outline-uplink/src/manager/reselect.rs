@@ -22,6 +22,7 @@ use tokio::time::{Instant, sleep};
 use tracing::info;
 
 use crate::config::{LoadBalancingMode, RoutingScope};
+use crate::manager::sync_order::current_slot_key;
 use crate::penalty::{penalty_weight, weighted_pick_with_rng};
 use crate::routing_key::strict_route_key;
 use crate::selection::{
@@ -348,6 +349,15 @@ impl UplinkManager {
         weighted_pick_with_rng(&weights, rng).map(|pos| candidates[pos])
     }
 
+    /// This slot's decision for `gate` under `reselect_sync`: `None` when the
+    /// clock is unreadable, when no slots are configured (the config loader
+    /// refuses that combination) or when nothing is currently eligible.
+    fn sync_target(&self, gate: TransportKind, scope: RoutingScope) -> Option<usize> {
+        let (day_key, secs) = local_day_and_secs()?;
+        let key = current_slot_key(day_key, secs, &self.inner.load_balancing.reselect_at)?;
+        self.sync_pick(key, gate, scope, Instant::now())
+    }
+
     /// `RoutingScope::Global`: one active slot, one draw.
     async fn reselect_global<R: Rng + ?Sized>(
         &self,
@@ -363,8 +373,24 @@ impl UplinkManager {
         let scope = self.inner.load_balancing.routing_scope;
         let gate = strict_gate_transport(scope, TransportKind::Tcp);
         let current = self.inner.active_uplinks.read().await.global;
-        let Some(target) = self.draw_reselect_candidate(gate, scope, current, rng) else {
-            return ReselectOutcome::NoCandidate;
+        let sync = self.inner.load_balancing.reselect_sync;
+        let target = if sync {
+            let Some(target) = self.sync_target(gate, scope) else {
+                return ReselectOutcome::NoCandidate;
+            };
+            // Re-applying a decision this node already follows must not move
+            // the slot to itself. The unsynchronized path cannot reach this
+            // case (it excludes the current active by construction); the
+            // synchronized one hits it whenever the node is already correct.
+            if current == Some(target) {
+                return ReselectOutcome::Skipped { reason: "already on the slot's uplink" };
+            }
+            target
+        } else {
+            let Some(target) = self.draw_reselect_candidate(gate, scope, current, rng) else {
+                return ReselectOutcome::NoCandidate;
+            };
+            target
         };
         let from = current.map(|i| self.inner.uplinks[i].name.clone());
         let to = self.inner.uplinks[target].name.clone();
@@ -381,6 +407,7 @@ impl UplinkManager {
             to = %to,
             soft,
             reason,
+            sync,
             "weighted re-selection moved the strict active uplink (global)",
         );
         ReselectOutcome::Switched { from, to, soft }
@@ -414,8 +441,21 @@ impl UplinkManager {
         };
         let tcp_gate = strict_gate_transport(scope, TransportKind::Tcp);
         let udp_gate = strict_gate_transport(scope, TransportKind::Udp);
-        let tcp_target = self.draw_reselect_candidate(tcp_gate, scope, cur_tcp, rng);
-        let udp_target = self.draw_reselect_candidate(udp_gate, scope, cur_udp, rng);
+        // Under `reselect_sync` "already correct" and "nothing eligible" both
+        // collapse to `None` here, so a fully-converged per-uplink group
+        // reports `NoCandidate` where the global scope reports `Skipped`. Both
+        // are no-ops, and the fleet shape this flag targets is global scope.
+        let sync = self.inner.load_balancing.reselect_sync;
+        let tcp_target = if sync {
+            self.sync_target(tcp_gate, scope).filter(|&t| cur_tcp != Some(t))
+        } else {
+            self.draw_reselect_candidate(tcp_gate, scope, cur_tcp, rng)
+        };
+        let udp_target = if sync {
+            self.sync_target(udp_gate, scope).filter(|&t| cur_udp != Some(t))
+        } else {
+            self.draw_reselect_candidate(udp_gate, scope, cur_udp, rng)
+        };
 
         if tcp_target.is_none() && udp_target.is_none() {
             return ReselectOutcome::NoCandidate;

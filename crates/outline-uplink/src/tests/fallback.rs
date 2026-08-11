@@ -388,6 +388,7 @@ fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig 
         bypass_when_down: false,
         reselect_at: Vec::new(),
         reselect_interval: None,
+        reselect_sync: false,
     }
 }
 

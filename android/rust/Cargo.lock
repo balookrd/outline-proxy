@@ -1965,6 +1965,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "base64",
+ "blake3",
  "futures-util",
  "libc",
  "outline-metrics",

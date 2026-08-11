@@ -101,6 +101,7 @@ pub(super) fn lb() -> LoadBalancingConfig {
         bypass_when_down: false,
         reselect_at: Vec::new(),
         reselect_interval: None,
+        reselect_sync: false,
     }
 }
 

@@ -705,6 +705,10 @@ pub(super) struct UplinkGroupSection {
     /// Period between automatic re-selections ("10h", "1h30m", bare seconds).
     /// Mutually exclusive with `reselect_at`. Requires `mode = "active_passive"`.
     pub(super) reselect_interval: Option<String>,
+    /// Derive the scheduled re-selection order deterministically so that nodes
+    /// sharing this group config pick the same uplink without coordinating.
+    /// Requires `reselect_at`. Default: `false`.
+    pub(super) reselect_sync: Option<bool>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
     pub(super) probe: Option<ProbeSection>,
 }
@@ -976,4 +980,8 @@ pub(crate) struct LoadBalancingSection {
     /// Period between automatic re-selections ("10h", "1h30m", bare seconds).
     /// Mutually exclusive with `reselect_at`. Requires `mode = "active_passive"`.
     pub(super) reselect_interval: Option<String>,
+    /// Derive the scheduled re-selection order deterministically so that nodes
+    /// sharing this group config pick the same uplink. See the same-named
+    /// field on `UplinkGroupSection`. Requires `reselect_at`. Default: `false`.
+    pub(super) reselect_sync: Option<bool>,
 }
