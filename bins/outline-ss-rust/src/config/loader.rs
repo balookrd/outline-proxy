@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
     time::Duration,
 };
 
@@ -16,22 +15,16 @@ use super::{
     file::{
         ClusterSection, FileConfig, TlsCertSection, default_config_path_if_exists, load_file_config,
     },
-    resolved::{
-        AccessKeyConfig, ClusterConfig, ClusterPsk, Config, H3Alpn, PaddingConfig,
-        SessionResumptionConfig,
-    },
+    resolved::{ClusterConfig, ClusterPsk, Config, H3Alpn, PaddingConfig, SessionResumptionConfig},
     sni::{SniFallbackConfig, TlsCertEntry},
     user_entry::CipherKind,
 };
 
+/// Only one mode remains: the binary serves. Access-key generation moved to
+/// `ops/access-keys` (2026-08-11), and with it the `[access_keys]` keys that
+/// used to switch the process into a one-shot generator.
 pub enum AppMode {
     Serve(Config),
-    GenerateKeys {
-        config: Config,
-        access_key: AccessKeyConfig,
-        print: bool,
-        write_dir: Option<PathBuf>,
-    },
 }
 
 impl AppMode {
@@ -66,21 +59,12 @@ impl AppMode {
         let outbound = file.outbound.unwrap_or_default();
         let websocket = file.websocket.unwrap_or_default();
         let http_root = file.http_root.unwrap_or_default();
-        let access_keys_file = file.access_keys.unwrap_or_default();
+        // `[access_keys]` is parsed and ignored. The section still lives in
+        // every deployed config and feeds ops/access-keys, and the config
+        // structs are `deny_unknown_fields`, so refusing it here would fail
+        // those configs at startup.
+        let _ = file.access_keys;
         let shadowsocks = file.shadowsocks.unwrap_or_default();
-
-        let access_key = AccessKeyConfig {
-            public_host: args.public_host.or(access_keys_file.public_host),
-            public_scheme: args
-                .public_scheme
-                .or(access_keys_file.public_scheme)
-                .unwrap_or_else(|| "wss".to_owned()),
-            access_key_url_base: args.access_key_url_base.or(access_keys_file.url_base),
-            access_key_file_extension: normalize_access_key_file_extension(
-                args.access_key_file_extension.or(access_keys_file.file_extension),
-            ),
-        };
-        access_key.validate()?;
 
         // Multi-cert arrays. The h3 array only inherits from the TCP
         // listener's array when the h3 table omits `certs` entirely —
@@ -187,7 +171,6 @@ impl AppMode {
                 .method
                 .or(shadowsocks.method)
                 .unwrap_or(CipherKind::Chacha20IetfPoly1305),
-            access_key: access_key.clone(),
             tuning,
             session_resumption: SessionResumptionConfig::from_section(
                 file.session_resumption.unwrap_or_default(),
@@ -201,14 +184,7 @@ impl AppMode {
         };
         config.validate()?;
 
-        let print = args.print_access_keys.or(access_keys_file.print).unwrap_or(false);
-        let write_dir = args.write_access_keys_dir.or(access_keys_file.write_dir);
-
-        if print || write_dir.is_some() {
-            Ok(AppMode::GenerateKeys { config, access_key, print, write_dir })
-        } else {
-            Ok(AppMode::Serve(config))
-        }
+        Ok(AppMode::Serve(config))
     }
 }
 
@@ -222,15 +198,6 @@ fn parse_tls_cert_array(
         out.push(TlsCertEntry::from_section(entry, &format!("{label}[{idx}]"))?);
     }
     Ok(Some(out))
-}
-
-fn normalize_access_key_file_extension(extension: Option<String>) -> String {
-    let extension = extension.unwrap_or_else(|| ".yaml".to_owned());
-    if extension.starts_with('.') {
-        extension
-    } else {
-        format!(".{extension}")
-    }
 }
 
 pub fn default_http_root_realm() -> String {

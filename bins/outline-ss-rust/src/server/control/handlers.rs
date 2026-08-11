@@ -14,7 +14,7 @@ use tracing::warn;
 
 use crate::config::{CipherKind, OneOrManyCidr, UserEntry};
 
-use super::manager::{AccessUrlError, FieldPatch, UserManager, UserPatch, UserView};
+use super::manager::{FieldPatch, UserManager, UserPatch, UserView};
 
 #[derive(Clone)]
 pub(super) struct ControlState {
@@ -159,27 +159,6 @@ pub(super) async fn get_user(
     match state.manager.get(&id).await {
         Some(view) => ok_json(view),
         None => error_response(StatusCode::NOT_FOUND, format!("user {id:?} not found")),
-    }
-}
-
-pub(super) async fn get_user_access_urls(
-    State(state): State<ControlState>,
-    Path(id): Path<String>,
-) -> axum::response::Response {
-    match state.manager.access_urls(&id).await {
-        Ok(view) => ok_json(view),
-        Err(error) => {
-            let status = match &error {
-                AccessUrlError::NotFound(_) => StatusCode::NOT_FOUND,
-                AccessUrlError::Build(_) => StatusCode::BAD_REQUEST,
-            };
-            let msg = match &error {
-                AccessUrlError::NotFound(_) => error.to_string(),
-                AccessUrlError::Build(err) => format!("{err:#}"),
-            };
-            warn!(%id, error = %msg, "control access URL generation failed");
-            error_response(status, msg)
-        },
     }
 }
 

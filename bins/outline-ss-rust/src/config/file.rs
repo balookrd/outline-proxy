@@ -218,8 +218,22 @@ pub(super) struct HttpRootSection {
     pub realm: Option<String>,
 }
 
+/// Accepted and ignored since access-key generation moved to
+/// `ops/access-keys` (2026-08-11). The section still describes where and how
+/// that generator publishes artifacts, and it is present in every deployed
+/// config — and because these structs are `deny_unknown_fields`, dropping it
+/// here would fail those configs at startup. So it is parsed, validated as
+/// TOML, and never read.
+///
+/// `write_dir` in particular must stay unread: while the binary honoured it,
+/// its presence switched the process into a one-shot key generator instead of
+/// serving.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(
+    dead_code,
+    reason = "parsed for config compatibility; ops/access-keys owns the section"
+)]
 pub(super) struct AccessKeysSection {
     pub public_host: Option<String>,
     pub public_scheme: Option<String>,

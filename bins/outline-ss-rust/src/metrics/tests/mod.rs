@@ -53,7 +53,6 @@ pub(super) fn test_config() -> Config {
             aliases: None,
         }],
         method: crate::config::CipherKind::Chacha20IetfPoly1305,
-        access_key: Default::default(),
         tuning: Default::default(),
         session_resumption: Default::default(),
         padding: Default::default(),

@@ -133,7 +133,6 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         http_root_realm: "Authorization required".into(),
         users,
         method: CipherKind::Chacha20IetfPoly1305,
-        access_key: Default::default(),
         tuning: Default::default(),
         session_resumption: Default::default(),
         padding: Default::default(),

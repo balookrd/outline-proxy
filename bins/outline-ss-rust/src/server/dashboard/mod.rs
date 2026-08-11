@@ -98,7 +98,6 @@ fn build_router(state: DashboardState) -> Router {
             "/dashboard/api/users/{id}",
             patch(handlers::update_user).delete(handlers::delete_user),
         )
-        .route("/dashboard/api/users/{id}/access-urls", get(handlers::get_user_access_urls))
         .route("/dashboard/api/users/{id}/block", post(handlers::block_user))
         .route("/dashboard/api/users/{id}/unblock", post(handlers::unblock_user))
         .fallback(handlers::not_found);

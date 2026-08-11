@@ -92,15 +92,6 @@ pub(super) async fn delete_user(
     proxy::forward(state, query, Method::DELETE, &path, None).await
 }
 
-pub(super) async fn get_user_access_urls(
-    State(state): State<DashboardState>,
-    Query(query): Query<InstanceQuery>,
-    Path(id): Path<String>,
-) -> Response {
-    let path = format!("/control/users/{}/access-urls", encode_path_segment(&id));
-    proxy::forward(state, query, Method::GET, &path, None).await
-}
-
 pub(super) async fn block_user(
     State(state): State<DashboardState>,
     Query(query): Query<InstanceQuery>,
