@@ -187,6 +187,18 @@ cargo release-musl-aarch64
   читайте тело через общий helper `crate::http::body::read_limited_body`
   (`src/http/body.rs`, `MAX_REQUEST_BODY_BYTES` = 1 MiB, 413 на превышение).
   Новые эндпоинты обеих плоскостей заводите сразу через него.
+- Origin-проверки дашборда (`src/http/dashboard/guard.rs`) вызываются в
+  `handle_request` ДО разбора маршрута — так новый роут не может оказаться мимо
+  них. Три проверки: `Host` против набора «loopback + адрес привязки +
+  `[dashboard] allowed_hosts`» (403), `Origin` (если он есть) против `Host`
+  (403) и `Content-Type: application/json` на всех методах с телом (415, тело
+  не разбирается). Дашборд разбирает JSON вручную, поэтому preflight его не
+  прикрывает: POST с `text/plain` — «простой» CORS-запрос, и без этих проверок
+  посторонняя страница переключала аплинк через браузер оператора. Не
+  переносите проверки внутрь хендлеров и не ослабляйте `Host` до «любого
+  имени»: именно `Host` закрывает DNS rebinding. Порт в `Host` намеренно НЕ
+  проверяется (`ssh -L` / проброс порта контейнера — штатный доступ), а
+  `Origin` сравнивается с `Host` дословно, вместе с портом.
 - Ожидание пермита в accept-loop'ах идёт через
   `crate::accept::acquire_permit_or_shutdown` (`src/accept.rs`): голый
   `acquire_owned().await` под насыщением делает цикл глухим к SIGTERM, пока

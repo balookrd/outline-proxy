@@ -93,6 +93,12 @@ listen = "[::1]:9090"
 # # Or keep the secret out of the config (path resolved relative to this file).
 # # Mutually exclusive with `token`.
 # # token_file = "/etc/outline-ws/dashboard.token"
+# # Host names accepted on top of the built-in set (loopback names/addresses
+# # and the bound address). Needed only behind a reverse proxy that serves the
+# # panel under a DNS name — any other name is answered with 403, which is what
+# # stops DNS rebinding from reaching a loopback listener. Matched by host
+# # name; a port, if written, is ignored.
+# allowed_hosts = ["panel.example.com"]
 #
 # [[dashboard.instances]]
 # name = "inst-01"
