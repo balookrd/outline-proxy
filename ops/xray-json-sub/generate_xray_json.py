@@ -19,33 +19,36 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class User:
+    """A VLESS-capable user with its paths already resolved.
+
+    The paths are effective, not raw: a per-user `ws_path_vless` /
+    `xhttp_path_vless` wins over the global `[websocket]` one, mirroring
+    `UserEntry::effective_ws_path_vless` in outline-ss-rust. Production really
+    relies on this — the inter-node uplink accounts carry their own paths — and
+    reading only the global section silently produces subscriptions that dial a
+    path the server does not serve for that user.
+    """
+
     name: str
     vless_id: str
+    xhttp_path: str | None
+    ws_path: str | None
 
 
-@dataclass(frozen=True)
-class ServerConfig:
-    xhttp_path: str
-    ws_path: str
-    users: tuple[User, ...]
+def load_users(path: str | Path) -> tuple[User, ...]:
+    """Parse config.toml into the VLESS users the subscription needs.
 
-
-def load_server_config(path: str | Path) -> ServerConfig:
-    """Parse config.toml into the subset the subscription needs.
-
-    Users without a `vless_id` are Shadowsocks-only and are skipped with a
-    warning; a missing VLESS path is fatal, since every outbound needs it.
+    Skipped with a warning: users without a `vless_id` (Shadowsocks-only) and
+    users left with no VLESS path at all, who have no reachable carrier. A user
+    with only one of the two paths keeps that transport and loses the other,
+    which is how the server treats them too.
     """
     with open(path, "rb") as handle:
         raw = tomllib.load(handle)
 
     websocket = raw.get("websocket", {})
-    xhttp_path = websocket.get("xhttp_path_vless")
-    ws_path = websocket.get("ws_path_vless")
-    if not xhttp_path or not ws_path:
-        raise SystemExit(
-            f"{path}: [websocket] must define both xhttp_path_vless and ws_path_vless"
-        )
+    global_xhttp = websocket.get("xhttp_path_vless")
+    global_ws = websocket.get("ws_path_vless")
 
     users: list[User] = []
     for entry in raw.get("users", []):
@@ -56,9 +59,18 @@ def load_server_config(path: str | Path) -> ServerConfig:
         if not vless_id:
             print(f"skip {name}: no vless_id", file=sys.stderr)
             continue
-        users.append(User(name=name, vless_id=vless_id))
 
-    return ServerConfig(xhttp_path=xhttp_path, ws_path=ws_path, users=tuple(users))
+        xhttp_path = entry.get("xhttp_path_vless") or global_xhttp
+        ws_path = entry.get("ws_path_vless") or global_ws
+        if not xhttp_path and not ws_path:
+            print(f"skip {name}: no VLESS path, neither per-user nor global", file=sys.stderr)
+            continue
+
+        users.append(
+            User(name=name, vless_id=vless_id, xhttp_path=xhttp_path, ws_path=ws_path)
+        )
+
+    return tuple(users)
 
 
 DEFAULT_NODES: tuple[str, ...] = ("cloud1.beerloga.su", "cloud2.beerloga.su")
@@ -92,7 +104,10 @@ def _vless_outbound(tag: str, node: str, vless_id: str, stream: dict) -> dict:
 
 
 def build_outbounds(
-    vless_id: str, xhttp_path: str, ws_path: str, nodes: Sequence[str]
+    vless_id: str,
+    xhttp_path: str | None,
+    ws_path: str | None,
+    nodes: Sequence[str],
 ) -> list[dict]:
     """Six proxy legs across two axes — node and transport — then direct/block.
 
@@ -100,43 +115,49 @@ def build_outbounds(
     value. h3 rides QUIC, h2 rides TCP, and the WS legs must stay on http/1.1
     because xray's wsSettings speaks plain HTTP/1.1 Upgrade only (no RFC 8441),
     even though outline-ss-rust would accept Extended CONNECT.
+
+    A path of None drops its transport rather than emitting a leg that dials
+    nothing: a user configured for only one carrier gets a smaller balancer,
+    not a broken one.
     """
     proxies: list[dict] = []
 
-    for alpn, suffix in (("h3", "xhttp-h3"), ("h2", "xhttp-h2")):
+    if xhttp_path:
+        for alpn, suffix in (("h3", "xhttp-h3"), ("h2", "xhttp-h2")):
+            for node in nodes:
+                proxies.append(
+                    _vless_outbound(
+                        f"{node_tag(node)}-{suffix}",
+                        node,
+                        vless_id,
+                        {
+                            "network": "xhttp",
+                            "security": "tls",
+                            "tlsSettings": _tls_settings(node, [alpn]),
+                            "xhttpSettings": {
+                                "path": xhttp_path,
+                                "host": node,
+                                "mode": "stream-one",
+                            },
+                        },
+                    )
+                )
+
+    if ws_path:
         for node in nodes:
             proxies.append(
                 _vless_outbound(
-                    f"{node_tag(node)}-{suffix}",
+                    f"{node_tag(node)}-ws",
                     node,
                     vless_id,
                     {
-                        "network": "xhttp",
+                        "network": "ws",
                         "security": "tls",
-                        "tlsSettings": _tls_settings(node, [alpn]),
-                        "xhttpSettings": {
-                            "path": xhttp_path,
-                            "host": node,
-                            "mode": "stream-one",
-                        },
+                        "tlsSettings": _tls_settings(node, ["http/1.1"]),
+                        "wsSettings": {"path": ws_path, "host": node},
                     },
                 )
             )
-
-    for node in nodes:
-        proxies.append(
-            _vless_outbound(
-                f"{node_tag(node)}-ws",
-                node,
-                vless_id,
-                {
-                    "network": "ws",
-                    "security": "tls",
-                    "tlsSettings": _tls_settings(node, ["http/1.1"]),
-                    "wsSettings": {"path": ws_path, "host": node},
-                },
-            )
-        )
 
     # INVARIANT: direct/block stay last. A leastPing balancer falls back to
     # outbounds[0] until the first observatory probe lands, so a `direct` in
@@ -170,8 +191,8 @@ PRIVATE_CIDRS = [
 ]
 
 
-def build_config(user: User, server: ServerConfig, nodes: Sequence[str]) -> dict:
-    """One complete Xray config for a single user."""
+def build_config(user: User, nodes: Sequence[str]) -> dict:
+    """One complete Xray config for a single user, using that user's paths."""
     selector = [f"{node_tag(node)}-" for node in nodes]
 
     return {
@@ -200,7 +221,7 @@ def build_config(user: User, server: ServerConfig, nodes: Sequence[str]) -> dict
             },
         ],
         "outbounds": build_outbounds(
-            user.vless_id, server.xhttp_path, server.ws_path, nodes
+            user.vless_id, user.xhttp_path, user.ws_path, nodes
         ),
         "routing": {
             "domainStrategy": "AsIs",
@@ -268,18 +289,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     nodes = tuple(args.nodes) if args.nodes else DEFAULT_NODES
-    server = load_server_config(args.config)
-    if not server.users:
-        raise SystemExit(f"{args.config}: no users with a vless_id")
+    users = load_users(args.config)
+    if not users:
+        raise SystemExit(f"{args.config}: no users with a vless_id and a VLESS path")
 
     out_dir = Path(args.out_dir)
-    for user in server.users:
-        document = build_config(user, server, nodes)
+    for user in users:
+        document = build_config(user, nodes)
         target = write_subscription(out_dir, user, document)
         # Never the vless_id: file names and counts only.
         print(f"wrote {target}")
 
-    print(f"{len(server.users)} subscription(s) across {len(nodes)} node(s)")
+    print(f"{len(users)} subscription(s) across {len(nodes)} node(s)")
     return 0
 
 

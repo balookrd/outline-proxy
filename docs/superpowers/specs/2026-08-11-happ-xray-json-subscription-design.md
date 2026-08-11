@@ -167,7 +167,13 @@ JSON-режиме Happ сам решает, какие фрагменты geo-б
 он не парсит; в 3.12 есть штатный `tomllib`).
 
 - читает `/opt/outline/outline-ss-rust/config.toml`: `[[users]]` (`id`,
-  `vless_id`), `[websocket]` (`xhttp_path_vless`, `ws_path_vless`);
+  `vless_id`, и per-user `ws_path_vless` / `xhttp_path_vless`), `[websocket]`
+  (`xhttp_path_vless`, `ws_path_vless`) как глобальный дефолт. Пути
+  разрешаются **на юзера**, как в `UserEntry::effective_ws_path_vless`: своё
+  бьёт глобальное. На проде это не теория — служебные учётки межузловых
+  аплинков (`nuxt`, `senko`, `aeza`) несут свои пути, и первая версия
+  генератора, читавшая только глобальную секцию, выдала им нерабочие подписки
+  (исправлено 2026-08-11 в тот же день);
 - на каждого юзера пишет `<id>.json` в `/var/www/html/<keys-prefix>/`,
   рядом с существующими `.conf` и теми же правами (`0644 root:root`);
 - узлы балансера (`cloud1.beerloga.su`, `cloud2.beerloga.su`) и каталог вывода
