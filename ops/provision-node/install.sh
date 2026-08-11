@@ -893,8 +893,148 @@ phase_rehost() {
 # -------------------------------------------------------------------- uplinks
 #
 # Replace the reference's per-uplink credentials with this node's own. Paths,
-# URLs and transport settings stay untouched — only vless_id and password
-# inside each [[outline.uplinks]] block (and its fallbacks) change.
+# URLs and transport settings stay untouched — only the secrets inside each
+# [[outline.uplinks]] block (and its fallbacks) change.
+#
+# Two config shapes carry those secrets and both are handled: the long form
+# (`vless_id` / `password` on their own lines) and the share-link form
+# (`link = "vless://…"` / `"ss://…"`), where the same secrets live inside the
+# URI — the uuid as VLESS userinfo, the password inside SS's base64 userinfo.
+# A config may mix them (a link primary with long-form fallbacks, say).
+
+# is_shared_uplink <name> — true when the operator asked this uplink to keep
+# the reference's credentials (--shared-uplink), because the peer accounts for
+# nodes by alias rather than one account per node.
+is_shared_uplink() {
+    local needle="$1" item
+    for item in ${SHARED_UPLINKS//,/ }; do
+        [ "$item" = "$needle" ] && return 0
+    done
+    return 1
+}
+
+# rewrite_link_creds <link> <uuid> <password> — swap the credentials inside one
+# share link, leaving host, path, carrier and every query parameter untouched.
+#
+# VLESS keeps its uuid as plain userinfo, so that one is a straight swap. SS
+# keeps base64url("method:password"), so its password can only be replaced by
+# decoding, substituting and re-encoding — no line-oriented rewrite can reach
+# it. Prints the rewritten link, or the original with a non-zero exit when
+# there is nothing to swap in or the userinfo is not the expected shape.
+rewrite_link_creds() {
+    local link="$1" uuid="$2" password="$3"
+    local scheme rest userinfo tail decoded method
+
+    scheme="${link%%://*}"
+    rest="${link#*://}"
+    case "$rest" in *@*) ;; *) printf '%s' "$link"; return 1 ;; esac
+    userinfo="${rest%%@*}"
+    tail="${rest#*@}"
+
+    case "$scheme" in
+        vless)
+            [ -n "$uuid" ] || { printf '%s' "$link"; return 1; }
+            printf 'vless://%s@%s' "$uuid" "$tail"
+            ;;
+        ss)
+            [ -n "$password" ] || { printf '%s' "$link"; return 1; }
+            # SIP002 userinfo is url-safe base64, conventionally unpadded.
+            case $(( ${#userinfo} % 4 )) in
+                2) userinfo="$userinfo==" ;;
+                3) userinfo="$userinfo=" ;;
+            esac
+            decoded="$(printf '%s' "$userinfo" | tr '_-' '/+' | base64 -d 2>/dev/null)" ||
+                { printf '%s' "$link"; return 1; }
+            case "$decoded" in *:*) ;; *) printf '%s' "$link"; return 1 ;; esac
+            method="${decoded%%:*}"
+            printf 'ss://%s@%s' \
+                "$(printf '%s:%s' "$method" "$password" |
+                    base64 -w0 | tr '+/' '-_' | tr -d '=')" \
+                "$tail"
+            ;;
+        *) printf '%s' "$link"; return 1 ;;
+    esac
+}
+
+# rewrite_uplink_creds <config> — print the config with this node's credentials
+# swapped in. The per-uplink report (which uplinks had no credentials, which
+# were declared shared, how many lines changed) goes to stderr in the same
+# shape the caller has always parsed.
+rewrite_uplink_creds() {
+    local config="$1"
+    local line trimmed indent field value raw new cur="" in_uplink=0 replaced=0
+    local key id_var pw_var uuid password
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Keep the line's own indentation: nested `[[…fallbacks]]` blocks are
+        # conventionally indented under their uplink, and a rewrite should not
+        # reformat the file it edits.
+        indent="${line%%[![:space:]]*}"
+        trimmed="${line#"$indent"}"
+
+        # Any top-level table header ends the current uplink block, except the
+        # fallbacks sub-table, which belongs to the uplink above it.
+        case "$trimmed" in
+            "[[outline.uplinks]]"*) in_uplink=1; cur=""; printf '%s\n' "$line"; continue ;;
+            "[[outline.uplinks.fallbacks]]"*) printf '%s\n' "$line"; continue ;;
+            \[*) in_uplink=0; cur=""; printf '%s\n' "$line"; continue ;;
+        esac
+
+        case "$trimmed" in *=*) ;; *) printf '%s\n' "$line"; continue ;; esac
+        field="${trimmed%%=*}"
+        field="${field%"${field##*[![:space:]]}"}"
+        value="${trimmed#*=}"
+        raw="${value#*\"}"; raw="${raw%%\"*}"
+
+        if [ "$in_uplink" = 1 ] && [ -z "$cur" ] && [ "$field" = "name" ]; then
+            cur="$raw"
+            key="$(normalize_name "$cur")"
+            id_var="UPLK_${key}_VLESS_ID"; pw_var="UPLK_${key}_PASSWORD"
+            if [ -z "${!id_var:-}" ] && [ -z "${!pw_var:-}" ]; then
+                if is_shared_uplink "$cur"; then
+                    printf 'SHARED:%s\n' "$cur" >&2
+                else
+                    printf 'MISSING_CREDS:%s\n' "$cur" >&2
+                fi
+            fi
+            printf '%s\n' "$line"; continue
+        fi
+
+        if [ "$in_uplink" = 1 ] && [ -n "$cur" ]; then
+            key="$(normalize_name "$cur")"
+            id_var="UPLK_${key}_VLESS_ID"; pw_var="UPLK_${key}_PASSWORD"
+            uuid="${!id_var:-}"; password="${!pw_var:-}"
+            case "$field" in
+                vless_id)
+                    if [ -n "$uuid" ]; then
+                        printf '%svless_id = "%s"\n' "$indent" "$uuid"
+                        replaced=$((replaced + 1)); continue
+                    fi ;;
+                password)
+                    if [ -n "$password" ]; then
+                        printf '%spassword = "%s"\n' "$indent" "$password"
+                        replaced=$((replaced + 1)); continue
+                    fi ;;
+                link)
+                    if new="$(rewrite_link_creds "$raw" "$uuid" "$password")"; then
+                        printf '%slink = "%s"\n' "$indent" "$new"
+                        replaced=$((replaced + 1)); continue
+                    fi
+                    # A link we could not rewrite while holding credentials for
+                    # this uplink would keep dialling as the reference node —
+                    # the exact silent-wrong-account failure this phase exists
+                    # to prevent, so say so rather than pass it through quietly.
+                    if [ -n "$uuid" ] || [ -n "$password" ]; then
+                        printf 'SKIPPED_LINK:%s\n' "$cur" >&2
+                    fi ;;
+            esac
+        fi
+
+        printf '%s\n' "$line"
+    done < "$config"
+
+    printf 'REPLACED:%s\n' "$replaced" >&2
+}
 
 phase_uplinks() {
     log "phase uplinks"
@@ -907,7 +1047,7 @@ phase_uplinks() {
         return 0
     fi
 
-    # Export creds as env vars the awk pass can look up: "beerloga-1.vless_id"
+    # Export creds as env vars the rewrite pass can look up: "beerloga-1.vless_id"
     # becomes UPLK_BEERLOGA_1_VLESS_ID.
     local line name field value norm names=""
     while IFS= read -r line; do
@@ -935,8 +1075,6 @@ phase_uplinks() {
         fi
     done
 
-    export UPLK_SHARED="$SHARED_UPLINKS"
-
     # Checked after the creds file, so a --dry-run on a node that has not been
     # populated yet still validates the credentials it was handed.
     local config=/etc/outline-ws-rust/config.toml
@@ -951,64 +1089,19 @@ phase_uplinks() {
     local tmpdir tmp
     tmpdir="$(mktemp -d)"
     tmp="$tmpdir/config.toml"
-    awk '
-        function norm(s,   out) {
-            out = toupper(s)
-            gsub(/[^A-Z0-9]/, "_", out)
-            return out
-        }
-        # Uplinks the operator marked --shared-uplink keep the reference'"'"'s
-        # credentials on purpose: the peer accounts for nodes by alias, not by
-        # a separate account per node.
-        function is_shared(n,   i, parts, count) {
-            count = split(ENVIRON["UPLK_SHARED"], parts, /[ ,]+/)
-            for (i = 1; i <= count; i++)
-                if (parts[i] == n) return 1
-            return 0
-        }
-        # Any top-level table header ends the current uplink block, except the
-        # fallbacks sub-table, which belongs to the uplink above it.
-        /^[[:space:]]*\[/ {
-            if ($0 ~ /^[[:space:]]*\[\[outline\.uplinks\]\]/) {
-                in_uplink = 1; cur = ""
-            } else if ($0 ~ /^[[:space:]]*\[\[outline\.uplinks\.fallbacks\]\]/) {
-                # keep cur
-            } else {
-                in_uplink = 0; cur = ""
-            }
-            print; next
-        }
-        in_uplink && cur == "" && /^[[:space:]]*name[[:space:]]*=/ {
-            match($0, /"[^"]*"/)
-            cur = substr($0, RSTART + 1, RLENGTH - 2)
-            key = norm(cur)
-            if (!(("UPLK_" key "_VLESS_ID") in ENVIRON) &&
-                !(("UPLK_" key "_PASSWORD") in ENVIRON)) {
-                if (is_shared(cur))
-                    print "SHARED:" cur > "/dev/stderr"
-                else
-                    print "MISSING_CREDS:" cur > "/dev/stderr"
-            }
-            print; next
-        }
-        in_uplink && cur != "" && /^[[:space:]]*vless_id[[:space:]]*=/ {
-            key = "UPLK_" norm(cur) "_VLESS_ID"
-            if (key in ENVIRON) { print "vless_id = \"" ENVIRON[key] "\""; replaced++; next }
-        }
-        in_uplink && cur != "" && /^[[:space:]]*password[[:space:]]*=/ {
-            key = "UPLK_" norm(cur) "_PASSWORD"
-            if (key in ENVIRON) { print "password = \"" ENVIRON[key] "\""; replaced++; next }
-        }
-        { print }
-        END { print "REPLACED:" replaced+0 > "/dev/stderr" }
-    ' "$config" > "$tmp" 2> "$tmpdir/err"
+    rewrite_uplink_creds "$config" > "$tmp" 2> "$tmpdir/err"
 
-    local missing shared replaced
+    local missing shared skipped replaced
     missing="$(sed -n 's/^MISSING_CREDS://p' "$tmpdir/err" | tr '\n' ' ')"
     shared="$(sed -n 's/^SHARED://p' "$tmpdir/err" | tr '\n' ' ')"
+    skipped="$(sed -n 's/^SKIPPED_LINK://p' "$tmpdir/err" | sort -u | tr '\n' ' ')"
     replaced="$(sed -n 's/^REPLACED://p' "$tmpdir/err")"
     if [ -n "$shared" ]; then
         dim "uplink(s) keeping shared credentials by request: $shared"
+    fi
+    if [ -n "$skipped" ]; then
+        rm -rf "$tmpdir"
+        die "could not rewrite the share link(s) of uplink(s): $skipped — the URI is not a \`vless://uuid@…\` or \`ss://base64(method:password)@…\`, so this node would keep dialling as $REF_HOST"
     fi
     if [ -n "$missing" ]; then
         rm -rf "$tmpdir"

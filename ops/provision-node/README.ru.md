@@ -285,7 +285,7 @@ secrets/            0700: конфиги сервисов, users.txt, ACME-ма�
 | `files` | `/opt`, `/usr/local/{bin,sbin}`, юниты, сайт nginx, sysctl, симлинк `occtl` и сгенерированный `post-up.service`, если профиль его описывает. Затем поверх — файлы репозитория (`ASSET_FILES`) и недостающие `NGINX_LOCATIONS` в файл сайта |
 | `secrets` | конфиги сервисов с владельцами и правами, `users.txt`, пароли ocserv, ACME-материал, затем `permission-certs.sh` (ему нужен уже созданный фазой `users` юзер `outline-ss-rust`) |
 | `rehost` | переписывает все упоминания эталона: пути сертификатов, ddns-крон, флаги dnsproxy, `SRV_CN` у ocserv, а с `--ipv6-prefix` — ещё и IPv6 `/64`. Добавляет профильные `COMPOSE_REQUIRED_ARGS` и проверяет себя: эталон не должен остаться нигде, а каждый упомянутый путь к сертификату/ключу — существовать на этом узле |
-| `uplinks` | подставляет собственные `vless_id`/`password` узла в каждый блок `[[outline.uplinks]]` |
+| `uplinks` | подставляет собственные `vless_id`/`password` узла в каждый блок `[[outline.uplinks]]` — в длинной форме отдельными строками, в ссылочной внутри каждого `link = "…"` (userinfo у VLESS, base64-userinfo у SS с сохранением шифра) |
 | `network` | распаковывает описания интерфейсов эталона в `/root/provision-network-<host>` и останавливается. Никогда не применяет — см. ниже |
 | `ddns` | пересобирает python-venv либо собирает образ контейнера — по профилю |
 | `certs` | выпускает `<host>.beerloga.su` через lego, повторно гоняет `permission-certs.sh`, перевешивает симлинки `/opt/ddns/certs` на сертификат нового хоста |

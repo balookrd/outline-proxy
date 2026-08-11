@@ -282,7 +282,7 @@ phase is safe to re-run.
 | `files` | `/opt`, `/usr/local/{bin,sbin}`, units, nginx site, sysctl, `occtl` symlink, and the generated `post-up.service` where the profile defines one. Then the repo-owned files (`ASSET_FILES`) over the top, and any missing `NGINX_LOCATIONS` into the site |
 | `secrets` | service configs with owners and modes, `users.txt`, ocserv passwords, ACME material, then `permission-certs.sh` (needs the `users` phase to have created `outline-ss-rust`) |
 | `rehost` | rewrites every reference-host reference: cert paths, ddns cron, dnsproxy flags, ocserv `SRV_CN`, and the IPv6 `/64` when `--ipv6-prefix` is given. Adds the profile's `COMPOSE_REQUIRED_ARGS`, then audits itself: nothing may still name the reference, and every cert/key path it names must exist here |
-| `uplinks` | swaps this node's own `vless_id`/`password` into each `[[outline.uplinks]]` block |
+| `uplinks` | swaps this node's own `vless_id`/`password` into each `[[outline.uplinks]]` block — in the long form as their own lines, in the share-link form inside each `link = "…"` URI (VLESS userinfo, SS base64 userinfo with the cipher kept) |
 | `network` | unpacks the reference's interface definitions into `/root/provision-network-<host>` and stops. Never applied — see below |
 | `ddns` | rebuilds the python venv, or builds the container image, per the profile |
 | `certs` | issues `<host>.beerloga.su` via lego, re-runs `permission-certs.sh`, repoints the `/opt/ddns/certs` symlinks at the new host certificate |
