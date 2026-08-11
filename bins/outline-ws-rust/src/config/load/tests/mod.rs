@@ -172,6 +172,7 @@ fn dashboard_section(token: Option<&str>, token_file: Option<&Path>) -> Dashboar
         request_timeout_secs: None,
         token: token.map(str::to_owned),
         token_file: token_file.map(Path::to_path_buf),
+        allowed_hosts: None,
         instances: Some(vec![DashboardInstanceSection {
             name: Some("inst-01".to_string()),
             control_url: Some("http://127.0.0.1:9091".parse().unwrap()),
