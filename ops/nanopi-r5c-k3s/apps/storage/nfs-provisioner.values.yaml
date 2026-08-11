@@ -9,13 +9,18 @@
 
 nfs:
   server: 198.18.1.125
-  # The NAS exports /mnt/HD/HD_a2/k8s and nothing else — there is no /nfs/k8s.
+  # /nfs/k8s is the same directory under a shorter alias the NAS also accepts
+  # (that is how .102 mounts its shares through autofs). showmount -e only
+  # advertises the canonical path, so that is what is spelled out here.
+  #
   # Auto-provisioned volumes go into a pvc/ subdirectory rather than the export
   # root, which already holds hand-made directories (zigbee2mqtt-data, backup,
   # registry, smarthome). Machine-managed and hand-managed data stay separate.
   path: /mnt/HD/HD_a2/k8s/pvc
   # NFSv3 only: the NAS answers "Protocol not supported" to both nfsvers=4.1
-  # and nfsvers=4 (checked 2026-08-09 by mounting from k3s-1).
+  # and nfsvers=4 (checked 2026-08-09 by mounting from k3s-1). That error is
+  # about the protocol version, not the path — do not read it as "no such
+  # export".
   mountOptions:
     - nfsvers=3
     - hard
