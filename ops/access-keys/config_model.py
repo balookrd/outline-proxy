@@ -20,11 +20,17 @@ DEFAULT_EXTENSION = ".yaml"
 
 @dataclass(frozen=True)
 class AccessKeys:
+    """The `[access_keys]` fields the artifacts are built from.
+
+    `print` is deliberately absent: it gated an extra stdout report in the
+    binary, the generator has no such report, and carrying a field nothing
+    reads only invites someone to believe it does something.
+    """
+
     public_host: str
     public_scheme: str
     url_base: str | None
     file_extension: str
-    print_report: bool
 
 
 @dataclass(frozen=True)
@@ -97,7 +103,6 @@ def load(path: str | Path) -> ServerConfig:
         public_scheme=ak_section.get("public_scheme") or DEFAULT_SCHEME,
         url_base=ak_section.get("url_base"),
         file_extension=ak_section.get("file_extension") or DEFAULT_EXTENSION,
-        print_report=bool(ak_section.get("print", False)),
     )
     if access_keys.public_scheme not in ("ws", "wss"):
         raise SystemExit(f'{path}: public_scheme must be either "ws" or "wss"')

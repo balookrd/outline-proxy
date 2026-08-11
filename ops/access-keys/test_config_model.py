@@ -28,7 +28,11 @@ class LoadTest(unittest.TestCase):
         self.assertEqual(ak.public_scheme, "wss")
         self.assertEqual(ak.url_base, "https://keys.example.com/SECRET")
         self.assertEqual(ak.file_extension, ".conf")
-        self.assertFalse(ak.print_report)
+
+    def test_print_is_not_carried_into_the_model(self):
+        # The golden config sets `print = false`; the generator has no report
+        # for it to gate, so the field must not exist rather than sit unused.
+        self.assertFalse(hasattr(self.server.access_keys, "print_report"))
 
     def test_disabled_user_is_dropped(self):
         self.assertNotIn("disabled", [u.name for u in self.server.users])
