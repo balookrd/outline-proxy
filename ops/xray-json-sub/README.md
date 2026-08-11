@@ -133,10 +133,39 @@ https://cloud.beerloga.su/<keys-prefix>/<user>.json
 ```
 
 Раздаётся уже работающей статикой: nginx `:80` ← `[http_fallback]` ←
-TLS-терминация `outline-ss-rust`. Новых location в nginx не требуется. Сегмент
-пути — тот же секретный каталог, что и у `.conf`.
+TLS-терминация `outline-ss-rust`. Сегмент пути — тот же секретный каталог, что
+и у `.conf`.
 
-В Happ добавляется как подписка; профиль называется `<user> cloud-balancer`.
+В Happ добавляется как подписка. Подписка называется «Beerloga Cloud»
+(заголовок `profile-title`), профиль внутри неё — `<user> cloud-balancer`
+(поле `remarks`).
+
+## Заголовки подписки
+
+`nginx` отдаёт на `<user>.json` два заголовка:
+
+| Заголовок | Значение | Что делает |
+|---|---|---|
+| `profile-title` | `base64:QmVlcmxvZ2EgQ2xvdWQ=` | имя подписки в клиенте («Beerloga Cloud») |
+| `profile-update-interval` | `12` | как часто клиент обновляет подписку, **в часах** |
+
+`profile-title` кодируется base64 от UTF-8 с префиксом `base64:` — так требует
+конвенция заголовков подписки; raw-строка тоже принимается, но ломается на
+не-ASCII.
+
+Блок лежит в [`nginx-subscription-headers.conf`](nginx-subscription-headers.conf)
+и вставлен в `server`-блок `/etc/nginx/sites-available/beerloga.su` на обоих
+узлах. **Не snippet:** бандл provision-node собирает только `nginx.conf` и
+`sites-available/beerloga.su` (`ETC_NGINX_PATHS` в
+`ops/provision-node/profiles/cloud1.conf`), поэтому snippet потерялся бы на
+новом узле, склонированном с эталона.
+
+Location — регексповый, поэтому выигрывает у префиксного `location /` в том же
+блоке, но ограничен `.json` внутри каталога подписок: `.conf`-ключи и маршруты
+экспортеров заголовков не получают. Проверено после раскатки.
+
+Менять значения — правкой этого файла и `beerloga.su` на обоих узлах, затем
+`nginx -t && systemctl reload nginx`.
 
 ## Раскатка
 

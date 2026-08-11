@@ -187,13 +187,29 @@ JSON-режиме Happ сам решает, какие фрагменты geo-б
 
 `https://cloud.beerloga.su/<keys-prefix>/<user>.json`
 
-Отдаётся уже работающей статикой; новых location в nginx не требуется.
+Отдаётся уже работающей статикой.
+
+### Заголовки подписки
+
+На `.json` в каталоге подписок nginx добавляет `profile-title:
+base64:QmVlcmxvZ2EgQ2xvdWQ=` («Beerloga Cloud») и `profile-update-interval: 12`
+(часы). Первый именует подписку в клиенте, второй задаёт период автообновления.
+`profile-title` кодируется base64 от UTF-8 с префиксом `base64:` по конвенции
+заголовков подписки.
+
+Блок живёт прямо в `server`-блоке `sites-available/beerloga.su`, а не в
+snippet: бандл provision-node собирает только `nginx.conf` и этот файл
+(`ETC_NGINX_PATHS`), поэтому snippet потерялся бы на узле, склонированном с
+эталона. Копия блока — в `ops/xray-json-sub/nginx-subscription-headers.conf`.
+
+Location регексповый и ограничен `.json` внутри каталога подписок: `.conf` и
+маршруты экспортеров заголовков не получают.
 
 ## Что НЕ входит
 
-- **Заголовки подписки** (`profile-title`, `profile-update-interval`,
-  `subscription-userinfo`). Полезны, но это отдельная правка nginx; сейчас без
-  них.
+- **`subscription-userinfo`** (трафик и срок действия). Учёта квот нет, поэтому
+  заполнять нечем. `profile-title` и `profile-update-interval` изначально были
+  здесь же, но добавлены по ходу работы — см. ниже.
 - **RU-исключения в маршрутизации** (`geosite:category-ru`, `geoip:ru` →
   direct). Решено: весь трафик в туннель, кроме приватных сетей.
 - **Автогенерация по таймеру.** Юзеры заводятся редко и через
