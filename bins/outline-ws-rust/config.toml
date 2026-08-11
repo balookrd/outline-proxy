@@ -636,6 +636,26 @@ password = "Secret0"
 # vless_mode = "ws_h2"
 # vless_id = "11111111-2222-3333-4444-555555555555"
 
+# The same uplink written entirely as share links: every wire — primary and
+# each fallback — is one URI. The scheme picks the transport (`vless://` →
+# vless, `ss://` → combined-path ss), `type` + `alpn` pick the carrier
+# (`type=ws&alpn=h3` → ws_h3, `type=xhttp&alpn=h3` → xhttp_h3), and the
+# credentials ride inside the URI, so a fallback needs no other field.
+# Identity and policy (name / group / weight / shuffle_* / padding) stay in
+# TOML — a link carries a wire, not an uplink.
+#
+# [[outline.uplinks]]
+# name = "edge-links"
+# group = "main"
+# weight = 1.0
+# link = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=xhttp&security=tls&path=%2FSECRET%2Fxhttp&alpn=h3&mode=stream-one"
+#
+# [[outline.uplinks.fallbacks]]
+# link = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fws&alpn=h3"
+#
+# [[outline.uplinks.fallbacks]]
+# link = "ss://BASE64URL@cdn.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fss&alpn=h3"
+
 # Random forward-only wire rotation. When set to `true`:
 #   * the wire chain `[primary, fallbacks[0], fallbacks[1], …]` is reshuffled
 #     once at config load (each process restart picks a different ordering —

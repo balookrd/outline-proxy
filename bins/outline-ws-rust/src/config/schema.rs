@@ -507,15 +507,19 @@ pub(crate) struct UplinkSection {
 }
 
 /// One `[[outline.uplinks.fallbacks]]` entry. Mirrors the wire-shape
-/// subset of [`UplinkSection`] — no `name` / `weight` / `group` / `link`
-/// (those are parent-level) and `transport` is required (no implicit
-/// default; the whole point of a fallback is to switch the wire family).
-/// `cipher` / `password` / `fwmark` / `ipv6_first` / `fingerprint_profile`
-/// are optional and inherited from the parent uplink at validation time.
+/// subset of [`UplinkSection`] — no `name` / `weight` / `group` (those are
+/// parent-level) and `transport` is required unless a `link` supplies it
+/// (no implicit default; the whole point of a fallback is to switch the
+/// wire family). `cipher` / `password` / `fwmark` / `ipv6_first` /
+/// `fingerprint_profile` are optional and inherited from the parent uplink
+/// at validation time.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FallbackSection {
-    pub(crate) transport: UplinkTransport,
+    /// `ss` / `vless`. Required unless `link` supplies the transport through
+    /// its URI scheme (`ss://` → `ss`, `vless://` → `vless`); a value written
+    /// next to a `link` must agree with the scheme.
+    pub(crate) transport: Option<UplinkTransport>,
     pub(crate) tcp_ws_url: Option<Url>,
     /// `transport = "ss"` only. Base URL for SS-over-XHTTP; dialed instead
     /// of `tcp_ws_url` when `tcp_mode` is `xhttp_h1` / `xhttp_h2` /
@@ -532,6 +536,15 @@ pub(crate) struct FallbackSection {
     pub(crate) ss_ws_url: Option<Url>,
     pub(crate) ss_xhttp_url: Option<Url>,
     pub(crate) ss_mode: Option<TransportMode>,
+    /// Share-link URI for this wire. A `vless://UUID@HOST:PORT?...` link
+    /// expands into `vless_id` / `vless_*_url` / `vless_mode`; an
+    /// `ss://BASE64(method:password)@HOST:PORT?...` link expands into the
+    /// combined-path `ss_*_url` / `ss_mode` plus `method` / `password`. The
+    /// scheme also supplies `transport`. Mutually exclusive with the explicit
+    /// wire fields; `#NAME` is ignored (identity belongs to the parent
+    /// uplink). See `docs/UPLINK-CONFIGURATIONS.md` "Per-uplink fallback
+    /// transports".
+    pub(crate) link: Option<String>,
     pub(crate) method: Option<CipherKind>,
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,

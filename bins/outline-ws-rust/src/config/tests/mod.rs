@@ -1568,6 +1568,44 @@ async fn load_config_rejects_link_alongside_explicit_vless_url() {
     );
 }
 
+#[tokio::test]
+async fn load_config_expands_share_link_inside_fallbacks() {
+    // A fallback wire described by nothing but `link` must resolve into the
+    // same shape a hand-written `[[outline.uplinks.fallbacks]]` block does.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[outline.uplinks]]
+        name = "edge"
+        group = "main"
+        link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=xhttp&security=tls&path=%2Fsecret%2Fxhttp&alpn=h3&mode=stream-one"
+
+        [[outline.uplinks.fallbacks]]
+        link = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpzZWNyZXQ@ss.example.com:443?type=ws&security=tls&path=%2Fsecret%2Fss&alpn=h3"
+
+        [[uplink_group]]
+        name = "main"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    let uplink = &config.groups[0].uplinks[0];
+    assert_eq!(uplink.fallbacks.len(), 1);
+    let wire = &uplink.fallbacks[0];
+    assert_eq!(wire.transport, UplinkTransport::Ss);
+    let url = wire.ss_ws_url.as_ref().expect("ss_ws_url expanded from the link");
+    assert_eq!(url.scheme(), "wss");
+    assert_eq!(url.host_str(), Some("ss.example.com"));
+    assert_eq!(url.path(), "/secret/ss");
+}
+
 #[test]
 fn config_deserialises_fingerprint_profile_aliases() {
     // Each accepted alias must round-trip into the matching enum

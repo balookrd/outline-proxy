@@ -2021,15 +2021,39 @@ password        = "BASE64=="
 
 Every fallback entry carries its own wire-shape fields, mirroring the
 top-level `[[outline.uplinks]]` schema **minus** the identity attributes
-that belong to the parent (`name`, `weight`, `group`, `link`):
+that belong to the parent (`name`, `weight`, `group`):
 
 | Field | Required for | Notes |
 |---|---|---|
-| `transport` | always | `ss` / `vless` (`ss` also accepts the deprecated `ws` / `websocket` aliases). **No uniqueness restriction** — same-transport-as-parent and duplicate-transport entries are explicitly allowed. The most common cross-family shape is a VLESS primary on `xhttp_h*` with a VLESS fallback on `ws_h*` (same `transport = "vless"`, different carrier family, different dial URL); two VLESS fallbacks at distinct hosts as belt-and-suspenders also work. The dial loop and per-wire mode tracking treat each fallback as its own wire regardless of `transport`. |
+| `transport` | unless `link` is set | `ss` / `vless` (`ss` also accepts the deprecated `ws` / `websocket` aliases). Omit it next to a `link` — the URI scheme supplies it; a value that disagrees with the scheme is rejected at load. **No uniqueness restriction** — same-transport-as-parent and duplicate-transport entries are explicitly allowed. The most common cross-family shape is a VLESS primary on `xhttp_h*` with a VLESS fallback on `ws_h*` (same `transport = "vless"`, different carrier family, different dial URL); two VLESS fallbacks at distinct hosts as belt-and-suspenders also work. The dial loop and per-wire mode tracking treat each fallback as its own wire regardless of `transport`. |
+| `link` | — | Share-link URI for this wire (`vless://…` or `ss://…`), the same format section 5 and "Share-link URI (`ss://`)" describe. Expands into the wire fields of its transport plus the credentials it carries, so a link-configured fallback needs no other field. Mutually exclusive with the explicit wire fields (`tcp_*`, `udp_*`, `vless_*`, `ss_*`, `vless_id`; `method` / `password` conflict with an `ss://` link only). `#NAME` is ignored — identity belongs to the parent uplink. There is no single-URL form for the split `tcp_*` / `udp_*` SS layout; use the long form for it. |
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws\_\* → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
-| `cipher`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. |
-| `fwmark`, `ipv6_first`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. |
+| `cipher`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. A wire configured by an `ss://` `link` takes them from the URI instead, and never falls back to the parent's. |
+| `fwmark`, `ipv6_first`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. Inheritance is unaffected by `link` — these are dial properties, not wire shape. |
+
+An uplink whose wires are all share links — the shape a subscription-driven
+config takes:
+
+```toml
+[[outline.uplinks]]
+name   = "edge-links"
+group  = "main"
+weight = 1.0
+link   = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=xhttp&security=tls&path=%2FSECRET%2Fxhttp&alpn=h3&mode=stream-one"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fws&alpn=h3"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://BASE64URL@cdn.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fss&alpn=h3"
+```
+
+Credentials ride inside each URI, so the parent's `cipher` / `password` are not
+consulted for these wires — an `ss://` fallback under a VLESS parent needs no
+explicit secret. Everything that is *not* wire shape still comes from the
+parent: `fwmark`, `ipv6_first` and `fingerprint_profile` are inherited exactly
+as they are for a hand-written fallback.
 
 ### Behaviour
 

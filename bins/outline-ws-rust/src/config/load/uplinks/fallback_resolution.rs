@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use anyhow::{Result, anyhow, bail};
 
 use outline_transport::TransportMode;
@@ -6,6 +8,7 @@ use outline_uplink::{FallbackTransport, UplinkConfig, UplinkTransport};
 use crate::config::schema::FallbackSection;
 
 use super::credentials::{parse_vless_id, validate_shared_secret};
+use super::wire_shape::{LinkConflictFields, expand_share_link};
 
 pub(super) fn resolve_fallbacks(
     parent: &UplinkConfig,
@@ -23,6 +26,69 @@ pub(super) fn resolve_fallbacks(
     Ok(fallbacks)
 }
 
+/// Expand a fallback's `link = "…"` into its wire fields before the regular
+/// validation runs, and resolve the wire's transport.
+///
+/// Filling the section rather than teaching `resolve_fallback` about links
+/// keeps one description of a share link in the tree: the carrier↔URL checks,
+/// the `h3`-feature gate and the parent-inheritance rules below then apply to
+/// a link-configured wire exactly as they do to a hand-written one. The
+/// credentials the link carries land in the section, so the inherit-from-parent
+/// defaults never kick in for this wire — which is what lets an `ss://`
+/// fallback sit under a VLESS parent with no explicit `method` / `password`.
+fn apply_link<'a>(
+    parent_name: &str,
+    section: &'a FallbackSection,
+    idx: usize,
+) -> Result<(Cow<'a, FallbackSection>, UplinkTransport)> {
+    let Some(raw_link) = section.link.as_deref() else {
+        let transport = section.transport.ok_or_else(|| {
+            anyhow!("uplink {parent_name}: fallbacks[{idx}] requires `transport` (`ss` or `vless`)")
+        })?;
+        return Ok((Cow::Borrowed(section), transport));
+    };
+
+    let expansion = expand_share_link(
+        &format!("uplink {parent_name}: fallbacks[{idx}]"),
+        raw_link,
+        section.transport,
+        LinkConflictFields {
+            tcp_ws_url: section.tcp_ws_url.is_some(),
+            tcp_xhttp_url: section.tcp_xhttp_url.is_some(),
+            tcp_mode: section.tcp_mode.is_some(),
+            udp_ws_url: section.udp_ws_url.is_some(),
+            udp_xhttp_url: section.udp_xhttp_url.is_some(),
+            udp_mode: section.udp_mode.is_some(),
+            vless_ws_url: section.vless_ws_url.is_some(),
+            vless_xhttp_url: section.vless_xhttp_url.is_some(),
+            vless_mode: section.vless_mode.is_some(),
+            ss_ws_url: section.ss_ws_url.is_some(),
+            ss_xhttp_url: section.ss_xhttp_url.is_some(),
+            ss_mode: section.ss_mode.is_some(),
+            vless_id: section.vless_id.is_some(),
+            method: section.method.is_some(),
+            password: section.password.is_some(),
+        },
+    )?;
+
+    let mut expanded = section.clone();
+    expanded.transport = Some(expansion.transport);
+    expanded.vless_ws_url = expansion.vless_ws_url;
+    expanded.vless_xhttp_url = expansion.vless_xhttp_url;
+    expanded.vless_mode = expansion.vless_mode;
+    expanded.ss_ws_url = expansion.ss_ws_url;
+    expanded.ss_xhttp_url = expansion.ss_xhttp_url;
+    expanded.ss_mode = expansion.ss_mode;
+    expanded.vless_id = expansion.vless_id;
+    if expansion.cipher.is_some() {
+        expanded.method = expansion.cipher;
+    }
+    if expansion.password.is_some() {
+        expanded.password = expansion.password;
+    }
+    Ok((Cow::Owned(expanded), expansion.transport))
+}
+
 /// Validate a single `[[outline.uplinks.fallbacks]]` entry against the parent's
 /// resolved shape. Inheritance: `cipher` / `password` / `fwmark` / `ipv6_first`
 /// / `fingerprint_profile` default to the parent's value when omitted; URLs /
@@ -33,7 +99,8 @@ fn resolve_fallback(
     idx: usize,
 ) -> Result<FallbackTransport> {
     let parent_name = &parent.name;
-    let transport = section.transport;
+    let (section, transport) = apply_link(parent_name, section, idx)?;
+    let section = section.as_ref();
 
     // Same-transport-as-parent fallbacks are explicitly allowed: the most
     // common shape is a VLESS primary on `xhttp_h*` falling back to a

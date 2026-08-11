@@ -2049,15 +2049,39 @@ password        = "BASE64=="
 
 Каждая fallback-секция несёт собственные wire-поля, повторяющие схему
 top-level `[[outline.uplinks]]` **минус** атрибуты идентичности, которые
-принадлежат родителю (`name`, `weight`, `group`, `link`):
+принадлежат родителю (`name`, `weight`, `group`):
 
 | Поле | Обязательно для | Заметки |
 |---|---|---|
-| `transport` | всегда | `ss` / `vless` (`ss` также принимает deprecated-алиасы `ws` / `websocket`). **Ограничений по уникальности нет** — same-transport-as-parent и duplicate-transport entries разрешены явно. Самая распространённая кросс-family форма: VLESS primary на `xhttp_h*` плюс VLESS fallback на `ws_h*` (тот же `transport = "vless"`, другая carrier-семья, другой dial URL); два VLESS fallback'а на разные хосты (belt-and-suspenders) тоже работают. Dial-loop и per-wire mode tracking трактуют каждый fallback как собственный wire независимо от `transport`. |
+| `transport` | если не задан `link` | `ss` / `vless` (`ss` также принимает deprecated-алиасы `ws` / `websocket`). Рядом с `link` его можно не писать — транспорт даёт схема URI; значение, противоречащее схеме, отбивается при загрузке. **Ограничений по уникальности нет** — same-transport-as-parent и duplicate-transport entries разрешены явно. Самая распространённая кросс-family форма: VLESS primary на `xhttp_h*` плюс VLESS fallback на `ws_h*` (тот же `transport = "vless"`, другая carrier-семья, другой dial URL); два VLESS fallback'а на разные хосты (belt-and-suspenders) тоже работают. Dial-loop и per-wire mode tracking трактуют каждый fallback как собственный wire независимо от `transport`. |
+| `link` | — | Share-link URI этого wire (`vless://…` либо `ss://…`), тот же формат, что в разделе 5 и «Share-link URI (`ss://`)». Разворачивается в wire-поля своего транспорта плюс креды, которые несёт, поэтому fallback'у со ссылкой другие поля не нужны. Взаимоисключающ с явными wire-полями (`tcp_*`, `udp_*`, `vless_*`, `ss_*`, `vless_id`; `method` / `password` конфликтуют только с `ss://`-ссылкой). `#NAME` игнорируется — идентичность принадлежит родительскому аплинку. Для split-раскладки `tcp_*` / `udp_*` формы одной ссылкой нет — там остаётся длинная форма. |
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` обязателен; `udp_ws_url` опционален (UDP-fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL должен соответствовать `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws\_\* → `vless_ws_url`). `vless_id` per-wire и **не наследуется** от родителя — у разных VLESS-эндпоинтов разные uuid'ы. |
-| `cipher`, `password` | наследуются | По умолчанию — значение родителя. Переопределите тут, если fallback использует другой shared secret. |
-| `fwmark`, `ipv6_first`, `fingerprint_profile` | наследуются | То же самое: дефолтятся к родителю, можно переопределить per-fallback. |
+| `cipher`, `password` | наследуются | По умолчанию — значение родителя. Переопределите тут, если fallback использует другой shared secret. Wire, заданный `ss://`-ссылкой, берёт их из URI и к родительским никогда не откатывается. |
+| `fwmark`, `ipv6_first`, `fingerprint_profile` | наследуются | То же самое: дефолтятся к родителю, можно переопределить per-fallback. `link` на наследование не влияет — это свойства дайла, а не wire-форма. |
+
+Аплинк, у которого все wire заданы ссылками — форма, в которую складывается
+конфиг, собранный из подписки:
+
+```toml
+[[outline.uplinks]]
+name   = "edge-links"
+group  = "main"
+weight = 1.0
+link   = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=xhttp&security=tls&path=%2FSECRET%2Fxhttp&alpn=h3&mode=stream-one"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fws&alpn=h3"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://BASE64URL@cdn.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fss&alpn=h3"
+```
+
+Креды едут внутри каждой ссылки, поэтому `cipher` / `password` родителя для
+этих wire не читаются — `ss://`-fallback под VLESS-родителем не требует явного
+секрета. Всё, что не относится к wire-форме, по-прежнему приходит от родителя:
+`fwmark`, `ipv6_first` и `fingerprint_profile` наследуются ровно так же, как у
+рукописного fallback'а.
 
 ### Поведение
 
