@@ -250,7 +250,7 @@ phase is safe to re-run.
 | `preflight` | root, arch match, bundle checksums, does `<host>.beerloga.su` point here, uplink creds present |
 | `identity` | what a disk-image clone kept and no bundle carries: machine-id (regenerated when it is still the reference's), hostname, the `/etc/hosts` line |
 | `packages` | docker apt repo + packages, `daemon.json` (restarts docker only if it changed) |
-| `users` | `outline-ss-rust`, `outline-ws`, group `certs`, state/log directories |
+| `users` | `outline-ss-rust`, group `certs`, state/log directories — plus `outline-ws` and its directories on profiles that carry the client (`INSTALL_WS_RUST=1`, entry only) |
 | `files` | `/opt`, `/usr/local/{bin,sbin}`, units, nginx site, sysctl, `occtl` symlink, and the generated `post-up.service` where the profile defines one. Then the repo-owned files (`ASSET_FILES`) over the top, and any missing `NGINX_LOCATIONS` into the site |
 | `secrets` | service configs with owners and modes, `users.txt`, ocserv passwords, ACME material, then `permission-certs.sh` (needs the `users` phase to have created `outline-ss-rust`) |
 | `rehost` | rewrites every reference-host reference: cert paths, ddns cron, dnsproxy flags, ocserv `SRV_CN`, and the IPv6 `/64` when `--ipv6-prefix` is given. Adds the profile's `COMPOSE_REQUIRED_ARGS`, then audits itself: nothing may still name the reference, and every cert/key path it names must exist here |

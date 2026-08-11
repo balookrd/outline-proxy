@@ -126,7 +126,7 @@ DOCKER_START=(); VERIFY_UNITS=(); VERIFY_TIMERS=(); VERIFY_METRICS=(); VERIFY_PO
 CERT_DOMAINS=(); DDNS_MODE="none"; DDNS_BUILD=""; DDNS_START=""; DDNS_IMAGE=""
 CERT_ISSUE_CMD=""
 NGINX_SITE=""; OCCTL_SYMLINK=0; ACCESS_KEYS_REGEN=0; IPV6=0
-CERT_NEEDS_WEBROOT=0; REQUIRES_UPLINK_CREDS=0
+CERT_NEEDS_WEBROOT=0; REQUIRES_UPLINK_CREDS=0; INSTALL_WS_RUST=0
 # shellcheck source=/dev/null
 . "$BUNDLE/profile.conf"
 
@@ -362,7 +362,10 @@ phase_users() {
         run useradd --system --user-group --no-create-home \
             --home-dir /var/lib/outline-ss-rust --shell /usr/sbin/nologin outline-ss-rust
     fi
-    if ! getent passwd outline-ws >/dev/null; then
+    # Only profiles that actually install the client need its account. An exit
+    # node used to get it anyway, together with a dormant unit and empty state
+    # directories — dead weight that outlived the reason for it.
+    if [ "$INSTALL_WS_RUST" = "1" ] && ! getent passwd outline-ws >/dev/null; then
         run useradd --system --user-group --no-create-home \
             --home-dir /home/outline-ws --shell /usr/sbin/nologin outline-ws
     fi
@@ -373,7 +376,9 @@ phase_users() {
     fi
 
     run install -d -o outline-ss-rust -g outline-ss-rust -m 0755 /var/lib/outline-ss-rust
-    run install -d -o root -g root -m 0755 /var/lib/outline-ws-rust /var/log/outline-ws-rust
+    if [ "$INSTALL_WS_RUST" = "1" ]; then
+        run install -d -o root -g root -m 0755 /var/lib/outline-ws-rust /var/log/outline-ws-rust
+    fi
     ok "service accounts ready"
 }
 
