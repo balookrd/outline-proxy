@@ -17,6 +17,11 @@ DEFAULT_METHOD = "chacha20-ietf-poly1305"
 DEFAULT_SCHEME = "wss"
 DEFAULT_EXTENSION = ".yaml"
 
+# nginx serves the artifacts from here on every node in the fleet
+# (`root /var/www/html` in sites-available/default), which is what makes a
+# URL path derivable from `write_dir` at all.
+NGINX_DOCUMENT_ROOT = "/var/www/html"
+
 
 @dataclass(frozen=True)
 class AccessKeys:
@@ -96,19 +101,27 @@ def _h3_in_alpn(server: dict) -> bool:
 def _derive_url_base(public_host: str, public_scheme: str, write_dir: str | None) -> str | None:
     """Where clients fetch the artifacts from, when the config does not say.
 
-    It is `public_host` plus the served directory's last segment — the same two
-    values spelled a second time, which is one more place to get wrong. The
-    URL scheme follows the transport one: `wss` is served over https, `ws` over
-    http. Without `write_dir` there is nothing to derive from, and the user
-    simply gets no ssconf/happ links.
+    The URL path is `write_dir` taken relative to the nginx document root, so
+    a nested directory keeps its whole path: `/var/www/html/keys/prod` becomes
+    `/keys/prod`, not `/prod`. The scheme follows the transport one — `wss` is
+    served over https, `ws` over http.
+
+    A `write_dir` outside the document root derives nothing. The URL path
+    simply is not knowable from a filesystem path in that case, and inventing
+    one would fail the worst way available here: artifacts written correctly,
+    with links inside them pointing at a directory that does not exist. Such a
+    deployment must spell `url_base` out.
     """
     if not write_dir:
         return None
-    segment = PurePosixPath(write_dir.rstrip("/")).name
-    if not segment:
+    try:
+        relative = PurePosixPath(write_dir.rstrip("/")).relative_to(NGINX_DOCUMENT_ROOT)
+    except ValueError:
+        return None
+    if not relative.parts:
         return None
     scheme = "https" if public_scheme == "wss" else "http"
-    return f"{scheme}://{public_host}/{segment}"
+    return f"{scheme}://{public_host}/{relative}"
 
 
 def load(path: str | Path) -> ServerConfig:

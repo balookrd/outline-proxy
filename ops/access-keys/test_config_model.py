@@ -121,6 +121,31 @@ password = "p"
         )
         self.assertEqual(without.access_keys.url_base, "https://h.example.com/SECRET")
 
+    def test_nested_directory_keeps_the_whole_path_below_the_webroot(self):
+        # Taking only the last segment would build /prod instead of /keys/prod:
+        # artifacts written correctly, links pointing nowhere, no error.
+        server = self.load_text(
+            '[access_keys]\npublic_host = "h.example.com"\n'
+            'write_dir = "/var/www/html/keys/prod/"\n' + self.USERS
+        )
+        self.assertEqual(server.access_keys.url_base, "https://h.example.com/keys/prod")
+
+    def test_directory_outside_the_webroot_derives_nothing(self):
+        # The URL path cannot be known from a filesystem path alone; refuse
+        # loudly (no links at all) rather than inventing a wrong one.
+        server = self.load_text(
+            '[access_keys]\npublic_host = "h.example.com"\n'
+            'write_dir = "/srv/elsewhere/SECRET"\n' + self.USERS
+        )
+        self.assertIsNone(server.access_keys.url_base)
+
+    def test_webroot_itself_derives_nothing(self):
+        server = self.load_text(
+            '[access_keys]\npublic_host = "h.example.com"\n'
+            'write_dir = "/var/www/html"\n' + self.USERS
+        )
+        self.assertIsNone(server.access_keys.url_base)
+
     def test_no_write_dir_leaves_url_base_unset(self):
         # Nothing to derive from: the user simply gets no ssconf/happ links.
         server = self.load_text(
