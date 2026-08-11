@@ -56,8 +56,8 @@ pub(crate) struct UplinkPayload {
 }
 
 /// JSON wire shape for one fallback wire — same fields as the TOML
-/// `[[outline.uplinks.fallbacks]]` block (no `name` / `weight` / `group` /
-/// `link`; those belong to the parent uplink). Mirrors
+/// `[[outline.uplinks.fallbacks]]` block (no `name` / `weight` / `group`;
+/// those belong to the parent uplink). Mirrors
 /// `crate::config::schema::FallbackSection`. Validation happens through
 /// the same `UplinkSection → ResolvedUplinkInput::try_into` pipeline as
 /// the TOML loader, so error messages stay consistent across the two
@@ -65,7 +65,13 @@ pub(crate) struct UplinkPayload {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FallbackPayload {
-    pub(crate) transport: String,
+    /// `ss` / `vless`. Optional when `link` is set — the URI scheme picks the
+    /// transport, mirroring `[[outline.uplinks.fallbacks]]` in the TOML.
+    pub(crate) transport: Option<String>,
+    /// Share-link URI for this wire (`vless://…` / `ss://…`). Same semantics
+    /// as `UplinkPayload::link`, applied to a single fallback wire.
+    #[serde(alias = "share_link")]
+    pub(crate) link: Option<String>,
     pub(crate) tcp_ws_url: Option<String>,
     pub(crate) tcp_xhttp_url: Option<String>,
     pub(crate) tcp_mode: Option<String>,
@@ -225,7 +231,8 @@ fn fallbacks_to_array(fallbacks: &[FallbackPayload]) -> ArrayOfTables {
                 tbl.insert(key, Item::Value(Value::from(v)));
             }
         }
-        sub.insert("transport", Item::Value(Value::from(fb.transport.as_str())));
+        set_str(&mut sub, "transport", fb.transport.as_deref());
+        set_str(&mut sub, "link", fb.link.as_deref());
         set_str(&mut sub, "tcp_ws_url", fb.tcp_ws_url.as_deref());
         set_str(&mut sub, "tcp_xhttp_url", fb.tcp_xhttp_url.as_deref());
         set_str(&mut sub, "tcp_mode", fb.tcp_mode.as_deref());

@@ -290,7 +290,7 @@ fn payload_with_fallbacks_round_trips_through_section() {
         password: Some("some-long-password".into()),
         fallbacks: Some(vec![
             FallbackPayload {
-                transport: "ws".into(),
+                transport: Some("ws".into()),
                 tcp_ws_url: Some("wss://ws.example.com/tcp".into()),
                 tcp_xhttp_url: None,
                 tcp_mode: Some("ws_h2".into()),
@@ -300,7 +300,7 @@ fn payload_with_fallbacks_round_trips_through_section() {
                 ..Default::default()
             },
             FallbackPayload {
-                transport: "ws".into(),
+                transport: Some("ws".into()),
                 tcp_ws_url: Some("wss://ws2.example.com/tcp".into()),
                 tcp_xhttp_url: None,
                 udp_ws_url: Some("wss://ws2.example.com/udp".into()),
@@ -313,9 +313,9 @@ fn payload_with_fallbacks_round_trips_through_section() {
     let section = payload_to_section(&payload, Some("core")).unwrap();
     let fbs = section.fallbacks.as_ref().expect("fallbacks must round-trip");
     assert_eq!(fbs.len(), 2);
-    assert_eq!(format!("{:?}", fbs[0].transport), "Ss");
+    assert_eq!(format!("{:?}", fbs[0].transport), "Some(Ss)");
     assert_eq!(fbs[0].tcp_ws_url.as_ref().unwrap().as_str(), "wss://ws.example.com/tcp");
-    assert_eq!(format!("{:?}", fbs[1].transport), "Ss");
+    assert_eq!(format!("{:?}", fbs[1].transport), "Some(Ss)");
     // Validation walks the same pipeline as the TOML loader.
     validate_uplink_section(&section, 0).unwrap();
 }
@@ -337,7 +337,7 @@ fn rendered_toml_inserted_into_document_includes_fallbacks_array() {
         ss_mode: None,
         vless_id: Some("00000000-0000-0000-0000-000000000000".into()),
         fallbacks: Some(vec![FallbackPayload {
-            transport: "ws".into(),
+            transport: Some("ws".into()),
             tcp_ws_url: Some("wss://ws.example.com/tcp".into()),
             tcp_xhttp_url: None,
             tcp_mode: Some("ws_h1".into()),
@@ -389,7 +389,7 @@ tcp_ws_url = "wss://old.example.com:8388/tcp"
     let tbl = arr.get_mut(idx).unwrap();
     let patch = UplinkPayload {
         fallbacks: Some(vec![FallbackPayload {
-            transport: "ws".into(),
+            transport: Some("ws".into()),
             tcp_ws_url: Some("wss://newws.example.com/tcp".into()),
             tcp_xhttp_url: None,
             tcp_mode: Some("ws_h1".into()),
@@ -504,7 +504,7 @@ fn payload_accepts_vless_xhttp_primary_with_vless_ws_fallback() {
         method: Some("chacha20-ietf-poly1305".into()),
         password: Some("some-long-password".into()),
         fallbacks: Some(vec![FallbackPayload {
-            transport: "vless".into(),
+            transport: Some("vless".into()),
             vless_ws_url: Some("wss://vless-ws.example.com/v".into()),
             vless_mode: Some("ws_h3".into()),
             ss_ws_url: None,
@@ -521,4 +521,124 @@ fn payload_accepts_vless_xhttp_primary_with_vless_ws_fallback() {
     assert!(matches!(cfg.fallbacks[0].transport, outline_uplink::UplinkTransport::Vless));
     // Different carrier family from primary's xhttp_h3.
     assert!(matches!(cfg.fallbacks[0].vless_mode, outline_uplink::TransportMode::WsH3));
+}
+
+// ── Share links in fallback payloads ────────────────────────────────────────
+
+#[test]
+fn fallback_payload_accepts_share_link_without_transport() {
+    let payload = UplinkPayload {
+        name: Some("edge".into()),
+        link: Some(
+            "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443\
+             ?type=xhttp&security=tls&path=%2Fxhttp&alpn=h3"
+                .into(),
+        ),
+        fallbacks: Some(vec![FallbackPayload {
+            link: Some(
+                "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpzZWNyZXQ@ss.example.com:443\
+                 ?type=ws&security=tls&path=%2Fss&alpn=h3"
+                    .into(),
+            ),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let section = payload_to_section(&payload, Some("core")).unwrap();
+    let fbs = section.fallbacks.as_ref().expect("fallbacks must round-trip");
+    assert_eq!(fbs.len(), 1);
+    assert!(fbs[0].transport.is_none(), "transport comes from the link scheme");
+    assert!(fbs[0].link.is_some(), "link must survive the JSON → TOML round-trip");
+    // Validation walks the same pipeline as the TOML loader.
+    validate_uplink_section(&section, 0).unwrap();
+}
+
+#[test]
+fn rendered_fallback_toml_carries_link_and_omits_absent_transport() {
+    let payload = UplinkPayload {
+        name: Some("edge".into()),
+        link: Some(
+            "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443\
+             ?type=ws&security=tls&path=%2Fv&alpn=h3"
+                .into(),
+        ),
+        fallbacks: Some(vec![FallbackPayload {
+            link: Some(
+                "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpzZWNyZXQ@ss.example.com:443\
+                 ?type=ws&security=tls&path=%2Fss&alpn=h3"
+                    .into(),
+            ),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut doc = r#"
+[[uplink_group]]
+name = "core"
+"#
+    .parse::<DocumentMut>()
+    .unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    arr.push(payload_to_table(&payload));
+    let rendered = doc.to_string();
+    assert!(
+        rendered.contains("[[outline.uplinks.fallbacks]]"),
+        "rendered TOML must contain fallbacks array-of-tables:\n{rendered}",
+    );
+    assert!(
+        rendered.contains("link = \"ss://"),
+        "fallback link must be rendered:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("transport = \"\""),
+        "absent transport must be omitted, not rendered empty:\n{rendered}",
+    );
+}
+
+#[test]
+fn patch_replaces_fallbacks_with_share_link_entry() {
+    let mut doc = r#"
+[[uplink_group]]
+name = "core"
+
+[[outline.uplinks]]
+name = "edge"
+group = "core"
+transport = "vless"
+vless_ws_url = "wss://primary.example.com/v"
+vless_mode = "ws_h2"
+vless_id = "00000000-0000-0000-0000-000000000000"
+method = "chacha20-ietf-poly1305"
+password = "some-long-password"
+
+[[outline.uplinks.fallbacks]]
+transport = "ws"
+tcp_ws_url = "wss://old.example.com:8388/tcp"
+"#
+    .parse::<DocumentMut>()
+    .unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let idx = find_outline_uplink_index(arr, "core", "edge").unwrap();
+    let tbl = arr.get_mut(idx).unwrap();
+    let patch = UplinkPayload {
+        fallbacks: Some(vec![FallbackPayload {
+            link: Some(
+                "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpzZWNyZXQ@ss.example.com:443\
+                 ?type=ws&security=tls&path=%2Fss&alpn=h3"
+                    .into(),
+            ),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    merge_patch_into_table(tbl, &patch);
+    let rendered = doc.to_string();
+    assert!(
+        rendered.contains("link = \"ss://"),
+        "patched link must be rendered:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("old.example.com"),
+        "patch must replace the existing fallbacks list:\n{rendered}",
+    );
 }
