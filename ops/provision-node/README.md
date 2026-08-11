@@ -121,6 +121,34 @@ netplan/networkd host the ifupdown hooks would never have fired anyway. Without
 this the node comes up with no firewall and no NAT — an exit node that neither
 filters nor forwards.
 
+### Keeping the policy rule alive (`NET_POLICY_RULE_GUARD=1`)
+
+`post-up.service` runs once at boot, and on a client-bearing node its last step
+(`tunnel-init.sh` → `init-ws0.sh`) adds the policy rule that sends marked client
+traffic into the tunnel: `from all fwmark 0xa lookup 110`. That rule does not
+survive a `systemd-networkd` restart — networkd deletes every routing policy
+rule it did not create itself, and `ManageForeignRoutingPolicyRules` defaults to
+yes. An unattended `systemd` upgrade restarts networkd mid-day, so the rule can
+vanish on a node nobody touched.
+
+The failure is silent and total. The table-110 route and the nftables marking
+both survive, so the chain breaks only at its last hop: every marked connection
+leaves through the node's own public IP instead of the tunnel. Uplinks stay
+healthy, metrics stay green, and nothing logs an error — the node just proxies
+nothing while looking fine. On `cloud1` this cost most of a working day on
+2026-08-11.
+
+So a profile that carries the tunnel sets `NET_POLICY_RULE_GUARD=1`, and
+`install.sh` writes two layers:
+
+- `/etc/systemd/networkd.conf.d/10-keep-foreign-rules.conf` —
+  `ManageForeignRoutingPolicyRules=no`, so networkd stops deleting the rule;
+- `outline-ws0-routing.service` — `PartOf=`/`WantedBy=systemd-networkd.service`,
+  so a networkd restart replays `init-ws0.sh` even if the rule does go.
+
+`verify` fails the run when either family is missing the rule, because a node
+without it looks healthy in every other check.
+
 The firewall scripts themselves need no rewriting: `iptables-init.sh` derives
 the WAN interface, its address and the routed `/64` at run time, and re-running
 it is a no-op (every rule is added through `-C || -A`). The mesh allow-list in
