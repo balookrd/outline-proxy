@@ -130,6 +130,7 @@ fn lb() -> LoadBalancingConfig {
         bypass_when_down: false,
         reselect_at: Vec::new(),
         reselect_interval: None,
+        reselect_sync: false,
     }
 }
 
@@ -428,4 +429,135 @@ fn initial_last_fired_is_none_outside_any_window() {
 #[test]
 fn initial_last_fired_is_none_for_empty_slots() {
     assert_eq!(initial_last_fired(700, 3 * 3600, &[]), None);
+}
+
+/// Strict `active_passive` group with `reselect_sync` on: the rotation is
+/// derived from the slot key instead of the local RNG.
+fn manager_sync(uplinks: Vec<UplinkConfig>) -> UplinkManager {
+    let cfg = LoadBalancingConfig {
+        reselect_at: vec![(3, 20)],
+        reselect_sync: true,
+        ..lb()
+    };
+    let mgr = UplinkManager::new_for_test("main", uplinks, probe(), cfg).unwrap();
+    for index in 0..mgr.uplinks().len() {
+        mgr.inner.with_status_mut(index, |status| {
+            status.tcp.healthy = Some(true);
+        });
+    }
+    mgr
+}
+
+#[tokio::test]
+async fn sync_reselect_lands_two_nodes_on_the_same_uplink() {
+    // Six candidates and six independent RNG pairs: an unsynchronized draw
+    // would have to coincide six times in a row to pass this, which is what
+    // makes the test fail without the feature rather than by luck.
+    let names =
+        || vec![uplink("a"), uplink("b"), uplink("c"), uplink("d"), uplink("e"), uplink("f")];
+    for (seed_one, seed_two) in [(1, 999), (2, 31), (3, 777), (4, 12345), (5, 42), (6, 8)] {
+        let one = manager_sync(names());
+        let two = manager_sync(names());
+        // Start them deliberately apart, the way a night of independent
+        // rotation leaves the real fleet.
+        one.initialize_strict_active_selection().await;
+        two.set_active_uplink_by_name("f", None, false).await.unwrap();
+        // A manual switch calls `reset_all_uplink_statuses`, so re-seed health
+        // afterwards — otherwise every candidate reads `healthy == None` and
+        // the group has nothing eligible to rotate onto.
+        for index in 0..two.uplinks().len() {
+            two.inner.with_status_mut(index, |status| {
+                status.tcp.healthy = Some(true);
+            });
+        }
+        assert_ne!(
+            one.active_uplinks_snapshot().global,
+            two.active_uplinks_snapshot().global,
+            "fixture must start split, otherwise the test proves nothing"
+        );
+
+        let mut rng = StdRng::seed_from_u64(seed_one);
+        one.reselect_active_uplink_with_rng("test", false, &mut rng).await;
+        // A different local RNG must not matter under the flag.
+        let mut rng = StdRng::seed_from_u64(seed_two);
+        two.reselect_active_uplink_with_rng("test", false, &mut rng).await;
+
+        let left = one.active_uplinks_snapshot().global.expect("selected");
+        let right = two.active_uplinks_snapshot().global.expect("selected");
+        assert_eq!(
+            one.uplinks()[left].name,
+            two.uplinks()[right].name,
+            "reselect_sync must converge independent nodes (seeds {seed_one}/{seed_two})"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sync_reselect_is_idempotent_within_a_slot() {
+    let mgr = manager_sync(vec![uplink("a"), uplink("b"), uplink("c")]);
+    let mut rng = StdRng::seed_from_u64(1);
+    mgr.reselect_active_uplink_with_rng("test", false, &mut rng).await;
+    let first = mgr.active_uplinks_snapshot().global;
+
+    let outcome = mgr.reselect_active_uplink_with_rng("test", false, &mut rng).await;
+    assert!(
+        matches!(outcome, ReselectOutcome::Skipped { .. }),
+        "re-applying the same slot decision must not move the slot: {outcome:?}"
+    );
+    assert_eq!(mgr.active_uplinks_snapshot().global, first);
+}
+
+#[tokio::test]
+async fn sync_reselect_reports_no_candidate_when_everything_is_down() {
+    let mgr = manager_sync(vec![uplink("a"), uplink("b")]);
+    for index in 0..mgr.uplinks().len() {
+        mgr.inner.with_status_mut(index, |status| {
+            status.tcp.healthy = Some(false);
+        });
+    }
+    let mut rng = StdRng::seed_from_u64(1);
+    let outcome = mgr.reselect_active_uplink_with_rng("test", false, &mut rng).await;
+    assert!(matches!(outcome, ReselectOutcome::NoCandidate), "got {outcome:?}");
+}
+
+#[tokio::test]
+async fn sync_startup_overrides_a_restored_active_uplink() {
+    // A node restarting mid-day restores the leg it was last on. Under
+    // reselect_sync that leg is exactly what must NOT come back: it may be a
+    // failover leftover its twin never followed.
+    let uplinks = vec![uplink("a"), uplink("b"), uplink("c")];
+    let cfg = LoadBalancingConfig {
+        reselect_at: vec![(3, 20)],
+        reselect_sync: true,
+        ..lb()
+    };
+    let restored = UplinkManager::new_with_state(
+        "main",
+        uplinks.clone(),
+        probe(),
+        cfg,
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+        None,
+        Some("c".to_string()),
+        None,
+        None,
+        Vec::new(),
+    )
+    .unwrap();
+    for index in 0..restored.uplinks().len() {
+        restored.inner.with_status_mut(index, |status| {
+            status.tcp.healthy = Some(true);
+        });
+    }
+    assert_eq!(restored.active_uplinks_snapshot().global, Some(2), "fixture starts on \"c\"");
+
+    restored.initialize_strict_active_selection().await;
+
+    let fresh = manager_sync(uplinks);
+    fresh.initialize_strict_active_selection().await;
+    assert_eq!(
+        restored.active_uplinks_snapshot().global,
+        fresh.active_uplinks_snapshot().global,
+        "a restarted node must land where a freshly started one does"
+    );
 }

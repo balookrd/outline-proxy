@@ -23,6 +23,7 @@ test-helpers = []
 anyhow = "1.0"
 arc-swap = "1.7"
 base64 = "0.22"
+blake3 = "1.8"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 libc = "0.2"
 outline-metrics = { path = "../outline-metrics", default-features = false }

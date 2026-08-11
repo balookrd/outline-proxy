@@ -403,6 +403,10 @@ name = "example.com"
 #                                    # unit suffix: "10" one keystroke off "10h" would still
 #                                    # be rejected below 60s, but a typo landing at/above the
 #                                    # floor (e.g. "600" meant as "600m") would not be caught.
+# reselect_sync = true               # derive the slot's order deterministically instead of drawing
+#                                    # it: every node with this group name and uplink list picks the
+#                                    # same uplink, without coordinating. Requires reselect_at, and
+#                                    # all such nodes must share a timezone.
 # udp_ws_keepalive_secs = 60        # ignored on the H3 carrier (QUIC keep-alive owns liveness)
 # tcp_ws_keepalive_secs = 60
 # tcp_ws_standby_keepalive_secs = 20

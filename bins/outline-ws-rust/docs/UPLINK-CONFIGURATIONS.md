@@ -612,6 +612,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `vless_udp_janitor_interval_secs`    | `15`               | s     | how often the VLESS UDP janitor scans for idle sessions                                           |
 | `reselect_at`                        | unset (disabled)   | list  | wall-clock `"HH:MM"` local-time slots for scheduled weighted re-selection of the strict active uplink (`active_passive` only); mutually exclusive with `reselect_interval`. See "Scheduled re-selection" below |
 | `reselect_interval`                  | unset (disabled)   | duration | fixed-period equivalent of `reselect_at` (`"90m"`, `"1h30m"`; a bare integer is read as seconds but a unit suffix is recommended); minimum `60s`; mutually exclusive with `reselect_at`         |
+| `reselect_sync`                      | `false`            | bool  | derive the scheduled re-selection order deterministically from group name, uplink names, local day and slot index, so that independent nodes sharing this group config pick the same uplink without coordinating. Requires `reselect_at`. See "Synchronized re-selection" below |
 
 Source of defaults:
 [`src/config/load/balancing.rs`](src/config/load/balancing.rs); the
@@ -858,6 +859,55 @@ a schedule, not only when something fails:
   eligible besides the current active), or `skipped` (the group is not
   in `active_passive` mode, or has no single strict active slot to
   rotate).
+
+**Synchronized re-selection (`reselect_sync`).**
+
+```toml
+[[uplink_group]]
+name = "main"
+mode = "active_passive"
+reselect_at = ["03:20"]
+reselect_sync = true
+```
+
+Two nodes that serve the same users — a cloned pair behind one hostname, say —
+normally rotate independently: each seeds its own draw from the OS, so after
+the first slot they sit on different uplinks and their clients leave from
+different egress addresses. `reselect_sync` replaces the draw with a function
+of data both nodes already have: the group name, the uplink names, the local
+calendar day and the slot index, hashed (BLAKE3) into a seed and turned into a
+full preference order weighted by the configured `weight` alone. The active
+uplink becomes the first entry of that order which is healthy *on this node*.
+
+- **No coordination.** Nothing is exchanged between the nodes; a dead
+  neighbour changes nothing about this node's choice.
+- **Health stays local.** A node whose leg dies fails over immediately, on its
+  own. If only one node sees the failure, the two diverge until the next slot —
+  there is no intra-day re-convergence.
+- **Rotation is preserved** by excluding the previous slot's *deterministic*
+  winner (computed the same way, without health filtering, so every node
+  excludes the same uplink). The exclusion is dropped when honouring it would
+  leave nothing healthy — converging on the single working leg matters more.
+- **Local penalty state is deliberately ignored** in the order. It differs per
+  node, and weighting by it would defeat the shared seed; it still governs
+  ordinary failover, which this flag does not touch.
+- **Startup follows the slot, not the state store.** A restarted node lands
+  where a freshly started one does, instead of resuming the leg it happened to
+  be on when it stopped — that leg may be a failover leftover its twin never
+  followed. Startup probes first, then applies the slot decision.
+- **`POST /control/reselect` becomes idempotent within a slot**: it re-applies
+  the slot's decision (`outcome = "skipped"` when the node is already correct)
+  rather than drawing something new. Pressing it on both nodes is the fastest
+  way to converge them without waiting for the next slot.
+
+Requirements and caveats: `reselect_at` is mandatory — `reselect_interval`
+fires relative to each process's own start and cannot agree across nodes, so
+the loader rejects that combination. All nodes of one sync domain must share a
+timezone, since slots and the day key are local time. The uplink list is part
+of the seed, so adding a leg on one node only moves that node into a different
+sync domain instead of changing the pair's shared decision. Finally, the order
+is derived from configuration rather than from secrets: it is reproducible by
+anyone who knows the group and uplink names.
 
 Bypass on a fully-down group (`bypass_when_down`):
 

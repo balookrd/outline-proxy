@@ -254,3 +254,53 @@ fn loss_failover_ratio_accepts_the_boundary_values() {
         );
     }
 }
+
+#[test]
+fn reselect_sync_requires_reselect_at() {
+    let lb = section(
+        r#"
+        mode = "active_passive"
+        routing_scope = "global"
+        reselect_sync = true
+    "#,
+    );
+    let err = load_balancing_config(Some(&lb)).unwrap_err().to_string();
+    assert!(err.contains("reselect_sync requires load_balancing.reselect_at"), "{err}");
+}
+
+#[test]
+fn reselect_sync_rejects_interval_mode() {
+    // reselect_interval counts from each process's own start, so two nodes
+    // fire at different instants and no shared seed can reconcile them.
+    let lb = section(
+        r#"
+        mode = "active_passive"
+        routing_scope = "global"
+        reselect_interval = "10h"
+        reselect_sync = true
+    "#,
+    );
+    let err = load_balancing_config(Some(&lb)).unwrap_err().to_string();
+    assert!(err.contains("reselect_sync requires load_balancing.reselect_at"), "{err}");
+}
+
+#[test]
+fn reselect_sync_accepts_wall_clock_slots() {
+    let lb = section(
+        r#"
+        mode = "active_passive"
+        routing_scope = "global"
+        reselect_at = ["03:20"]
+        reselect_sync = true
+    "#,
+    );
+    let config = load_balancing_config(Some(&lb)).unwrap();
+    assert!(config.reselect_sync);
+    assert_eq!(config.reselect_at, vec![(3, 20)]);
+}
+
+#[test]
+fn reselect_sync_defaults_off() {
+    let config = load_balancing_config(None).unwrap();
+    assert!(!config.reselect_sync, "the flag must be opt-in");
+}

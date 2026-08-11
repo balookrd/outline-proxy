@@ -122,6 +122,7 @@ fn icmp_gate_manager_with_probes(
             bypass_when_down,
             reselect_at: Vec::new(),
             reselect_interval: None,
+            reselect_sync: false,
         },
     )
     .unwrap()

@@ -238,6 +238,7 @@ fn lb_for_wire_probe() -> LoadBalancingConfig {
         bypass_when_down: false,
         reselect_at: Vec::new(),
         reselect_interval: None,
+        reselect_sync: false,
     }
 }
 

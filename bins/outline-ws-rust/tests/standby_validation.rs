@@ -162,6 +162,7 @@ async fn build_manager(
             bypass_when_down: false,
             reselect_at: Vec::new(),
             reselect_interval: None,
+            reselect_sync: false,
         },
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     )

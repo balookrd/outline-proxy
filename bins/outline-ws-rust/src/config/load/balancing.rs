@@ -65,6 +65,14 @@ pub(crate) fn load_balancing_config(
              the strict active slot, which only exists there)"
         );
     }
+    let reselect_sync = lb.and_then(|l| l.reselect_sync).unwrap_or(false);
+    if reselect_sync && !has_reselect_at {
+        bail!(
+            "load_balancing.reselect_sync requires load_balancing.reselect_at: the shared \
+             (day, slot) key is what makes two nodes agree, and reselect_interval fires \
+             relative to each process's own start instead"
+        );
+    }
     Ok(LoadBalancingConfig {
         mode,
         routing_scope,
@@ -323,6 +331,7 @@ pub(crate) fn load_balancing_config(
                 Ok(d)
             })
             .transpose()?,
+        reselect_sync,
     })
 }
 
