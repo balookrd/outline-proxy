@@ -36,3 +36,7 @@ logs/
 /vendor/h3/Cargo.lock
 /vendor/h3/Cargo.toml.orig
 /vendor/h3/README.md
+
+# Python bytecode from the ops/ helper scripts
+__pycache__/
+*.py[cod]
