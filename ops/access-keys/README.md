@@ -49,20 +49,18 @@ sudo /opt/outline/access-keys/generate_keys.py
 `vless_id`. Кто знает путь — знает креды всех юзеров узла, перебрав имена.
 
 Поэтому путь задаётся на узле, ключом `[access_keys] write_dir` в
-`config.toml` — тем же, который читает бинарь в режиме
-`--write-access-keys-dir`, — и в репозиторий не попадает. Встроенного дефолта у
-генератора нет намеренно: он был бы публикацией секрета в исходниках. Без
-`write_dir` и без `--out-dir` генератор падает с явной ошибкой, ничего не
-записав.
+`config.toml` — и в репозиторий не попадает. Встроенного дефолта у генератора
+нет намеренно: он был бы публикацией секрета в исходниках. Без `write_dir` и
+без `--out-dir` генератор падает с явной ошибкой, ничего не записав.
 
 Тот же префикс нужен nginx-блоку подписок — там он остаётся плейсхолдером
 `__KEYS_PREFIX__` (см. [`nginx-subscription-headers.conf`](nginx-subscription-headers.conf)),
 как токен в [`ops/heartbeat/nginx-heartbeat.conf`](../heartbeat/nginx-heartbeat.conf).
 
-**`--file-extension` на узлах обязателен.** В боевых `config.toml` ключа
-`file_extension` нет — расширение `.conf` раньше передавалось бинарю флагом
-`--access-key-file-extension`. Без флага генератор возьмёт дефолт `.yaml`, и
-клиенты, ходящие за `<user>.conf`, получат 404.
+**Расширение задаётся в конфиге.** `file_extension = ".conf"` прописано в
+`[access_keys]` на всех узлах. Если его убрать, генератор возьмёт дефолт
+`.yaml`, и клиенты, ходящие за `<user>.conf`, получат 404 — флаг
+`--file-extension` остаётся на случай разовой генерации в сторону.
 
 **`--node` задаёт узлы балансера в `.json`.** На cloud-узлах это пара
 cloud1+cloud2 (дефолт). На `nuxt` / `nuxt2` передаётся собственный хост: там
@@ -158,15 +156,16 @@ python3 -m unittest discover -s ops/access-keys -p "test_*.py"
 пишут. Главный из них — `test_artifacts.py`: собирает все 32 артефакта и
 сверяет с golden побайтово.
 
-Переснять эталон (только вместе с осознанным изменением формата ссылок, и diff
-эталона обязан быть в том же коммите):
+**Переснять эталон больше нечем.** Команда, которой он снят, жила в бинаре
+(`--write-access-keys-dir`), а этот режим удалён на этапе 2 — корпус потому и
+снимали заранее. Он остаётся снимком того, что бинарь генерировал 2026-08-11,
+и менять его можно только руками, вместе с осознанным изменением формата
+ссылок и в том же коммите. Если понадобится сверка с бинарём, брать его из
+истории до этапа 2:
 
 ```bash
+git stash && git checkout <коммит до удаления> -- bins/outline-ss-rust
 cargo build -p outline-ss-rust
-./target/debug/outline-ss-rust \
-  --config ops/access-keys/golden/config.toml \
-  --write-access-keys-dir ops/access-keys/golden/expected \
-  > ops/access-keys/golden/expected-users.txt
 ```
 
 ## Раскатка
@@ -192,12 +191,12 @@ ssh sysadm@<node> 'sudo -n cp -a /tmp/access-keys/. /opt/outline/access-keys/ \
 # 1) прописать каталог в config.toml, в секцию [access_keys]
 #    write_dir = "/var/www/html/<keys-dir>"
 # 2) проверить, что генератор его видит — ничего не записывая
-sudo /opt/outline/access-keys/generate_keys.py --file-extension .conf --dry-run
+sudo /opt/outline/access-keys/generate_keys.py --dry-run
 ```
 
-Узлы, где `save-keys.sh` уже передаёт `--out-dir` явно, продолжают работать и
-без правки конфига: флаг бьёт `write_dir`. Прописать `write_dir` всё равно
-стоит — тогда каталог назван в одном месте, а не в двух.
+Флаги `--out-dir` и `--file-extension` бьют конфиг и нужны только для разовой
+генерации в сторону. На узлах `save-keys.sh` их не передаёт: каталог и
+расширение названы один раз, в `[access_keys]`.
 
 Раскатано 2026-08-11 на **девять узлов**:
 
@@ -237,9 +236,10 @@ Rust-генерация ещё доступна, это одна команда.
 вставляется в `server`-блок `sites-available/beerloga.su`. Покрывает и `.json`,
 и `.txt`.
 
-`ops/provision-node/collect-from-reference.sh` определяет каталог ключей,
-выпарсивая его из `save-keys.sh`, и понимает обе формы: старую
-(`--write-access-keys-dir`) и новую (`--out-dir`).
+`ops/provision-node/collect-from-reference.sh` определяет каталог ключей из
+`[access_keys] write_dir`, а если его нет — по старинке из `save-keys.sh`
+(`--out-dir`, затем `--write-access-keys-dir`). Все три формы за один день
+успели побывать актуальными, поэтому распознаются все.
 
 ## Известная слепая зона
 
