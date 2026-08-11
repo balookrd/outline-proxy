@@ -1,0 +1,159 @@
+user: ss-only
+written_file: ops/access-keys/golden/expected/ss-only.conf
+config_url: https://keys.example.com/SECRET/ss-only.conf
+access_key_url: ssconf://keys.example.com/SECRET/ss-only.conf
+
+user: ss-only
+written_file: ops/access-keys/golden/expected/ss-only-ss-ws.conf
+config_url: https://keys.example.com/SECRET/ss-only-ss-ws.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zcy1vbmx5@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#keys:ss-only-ss-ws
+
+user: ss-only
+written_file: ops/access-keys/golden/expected/ss-only-ss-xhttp-packet-up.conf
+config_url: https://keys.example.com/SECRET/ss-only-ss-xhttp-packet-up.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zcy1vbmx5@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fssx#keys:ss-only-ss-xhttp-packet-up
+
+user: ss-only
+written_file: ops/access-keys/golden/expected/ss-only-ss-xhttp-stream-one.conf
+config_url: https://keys.example.com/SECRET/ss-only-ss-xhttp-stream-one.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zcy1vbmx5@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#keys:ss-only-ss-xhttp-stream-one
+
+user: vless-only
+written_file: ops/access-keys/golden/expected/vless-only-vless-ws.conf
+config_url: https://keys.example.com/SECRET/vless-only-vless-ws.conf
+access_key_url: vless://11111111-1111-4111-8111-111111111111@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fvless&encryption=none#keys:vless-only-vless-ws
+
+user: vless-only
+written_file: ops/access-keys/golden/expected/vless-only-vless-xhttp-packet-up.conf
+config_url: https://keys.example.com/SECRET/vless-only-vless-xhttp-packet-up.conf
+access_key_url: vless://11111111-1111-4111-8111-111111111111@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fxhttp&encryption=none#keys:vless-only-vless-xhttp-packet-up
+
+user: vless-only
+written_file: ops/access-keys/golden/expected/vless-only-vless-xhttp-stream-one.conf
+config_url: https://keys.example.com/SECRET/vless-only-vless-xhttp-stream-one.conf
+access_key_url: vless://11111111-1111-4111-8111-111111111111@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fxhttp&encryption=none#keys:vless-only-vless-xhttp-stream-one
+
+user: both
+written_file: ops/access-keys/golden/expected/both.conf
+config_url: https://keys.example.com/SECRET/both.conf
+access_key_url: ssconf://keys.example.com/SECRET/both.conf
+
+user: both
+written_file: ops/access-keys/golden/expected/both-ss-ws.conf
+config_url: https://keys.example.com/SECRET/both-ss-ws.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1ib3Ro@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#keys:both-ss-ws
+
+user: both
+written_file: ops/access-keys/golden/expected/both-ss-xhttp-packet-up.conf
+config_url: https://keys.example.com/SECRET/both-ss-xhttp-packet-up.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1ib3Ro@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fssx#keys:both-ss-xhttp-packet-up
+
+user: both
+written_file: ops/access-keys/golden/expected/both-ss-xhttp-stream-one.conf
+config_url: https://keys.example.com/SECRET/both-ss-xhttp-stream-one.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1ib3Ro@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#keys:both-ss-xhttp-stream-one
+
+user: both
+written_file: ops/access-keys/golden/expected/both-vless-ws.conf
+config_url: https://keys.example.com/SECRET/both-vless-ws.conf
+access_key_url: vless://22222222-2222-4222-8222-222222222222@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fvless&encryption=none#keys:both-vless-ws
+
+user: both
+written_file: ops/access-keys/golden/expected/both-vless-xhttp-packet-up.conf
+config_url: https://keys.example.com/SECRET/both-vless-xhttp-packet-up.conf
+access_key_url: vless://22222222-2222-4222-8222-222222222222@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fxhttp&encryption=none#keys:both-vless-xhttp-packet-up
+
+user: both
+written_file: ops/access-keys/golden/expected/both-vless-xhttp-stream-one.conf
+config_url: https://keys.example.com/SECRET/both-vless-xhttp-stream-one.conf
+access_key_url: vless://22222222-2222-4222-8222-222222222222@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fxhttp&encryption=none#keys:both-vless-xhttp-stream-one
+
+user: own-paths
+written_file: ops/access-keys/golden/expected/own-paths.conf
+config_url: https://keys.example.com/SECRET/own-paths.conf
+access_key_url: ssconf://keys.example.com/SECRET/own-paths.conf
+
+user: own-paths
+written_file: ops/access-keys/golden/expected/own-paths-ss-ws.conf
+config_url: https://keys.example.com/SECRET/own-paths-ss-ws.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1vd24@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fss#keys:own-paths-ss-ws
+
+user: own-paths
+written_file: ops/access-keys/golden/expected/own-paths-ss-xhttp-packet-up.conf
+config_url: https://keys.example.com/SECRET/own-paths-ss-xhttp-packet-up.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1vd24@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fssx#keys:own-paths-ss-xhttp-packet-up
+
+user: own-paths
+written_file: ops/access-keys/golden/expected/own-paths-ss-xhttp-stream-one.conf
+config_url: https://keys.example.com/SECRET/own-paths-ss-xhttp-stream-one.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1vd24@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FOWN%2Fssx#keys:own-paths-ss-xhttp-stream-one
+
+user: own-paths
+written_file: ops/access-keys/golden/expected/own-paths-vless-ws.conf
+config_url: https://keys.example.com/SECRET/own-paths-vless-ws.conf
+access_key_url: vless://33333333-3333-4333-8333-333333333333@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fvless&encryption=none#keys:own-paths-vless-ws
+
+user: own-paths
+written_file: ops/access-keys/golden/expected/own-paths-vless-xhttp-packet-up.conf
+config_url: https://keys.example.com/SECRET/own-paths-vless-xhttp-packet-up.conf
+access_key_url: vless://33333333-3333-4333-8333-333333333333@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fxhttp&encryption=none#keys:own-paths-vless-xhttp-packet-up
+
+user: own-paths
+written_file: ops/access-keys/golden/expected/own-paths-vless-xhttp-stream-one.conf
+config_url: https://keys.example.com/SECRET/own-paths-vless-xhttp-stream-one.conf
+access_key_url: vless://33333333-3333-4333-8333-333333333333@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FOWN%2Fxhttp&encryption=none#keys:own-paths-vless-xhttp-stream-one
+
+user: own-method
+written_file: ops/access-keys/golden/expected/own-method.conf
+config_url: https://keys.example.com/SECRET/own-method.conf
+access_key_url: ssconf://keys.example.com/SECRET/own-method.conf
+
+user: own-method
+written_file: ops/access-keys/golden/expected/own-method-ss-ws.conf
+config_url: https://keys.example.com/SECRET/own-method-ss-ws.conf
+access_key_url: ss://MjAyMi1ibGFrZTMtY2hhY2hhMjAtcG9seTEzMDU6Y0dGemMzZHZjbVF0TXpJdFlubDBaWE10Wm05eUxUSXdNakl0YTJWNWN3PT0@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#keys:own-method-ss-ws
+
+user: own-method
+written_file: ops/access-keys/golden/expected/own-method-ss-xhttp-packet-up.conf
+config_url: https://keys.example.com/SECRET/own-method-ss-xhttp-packet-up.conf
+access_key_url: ss://MjAyMi1ibGFrZTMtY2hhY2hhMjAtcG9seTEzMDU6Y0dGemMzZHZjbVF0TXpJdFlubDBaWE10Wm05eUxUSXdNakl0YTJWNWN3PT0@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fssx#keys:own-method-ss-xhttp-packet-up
+
+user: own-method
+written_file: ops/access-keys/golden/expected/own-method-ss-xhttp-stream-one.conf
+config_url: https://keys.example.com/SECRET/own-method-ss-xhttp-stream-one.conf
+access_key_url: ss://MjAyMi1ibGFrZTMtY2hhY2hhMjAtcG9seTEzMDU6Y0dGemMzZHZjbVF0TXpJdFlubDBaWE10Wm05eUxUSXdNakl0YTJWNWN3PT0@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#keys:own-method-ss-xhttp-stream-one
+
+user: needs sanitising/1
+written_file: ops/access-keys/golden/expected/needs_sanitising_1.conf
+config_url: https://keys.example.com/SECRET/needs_sanitising_1.conf
+access_key_url: ssconf://keys.example.com/SECRET/needs_sanitising_1.conf
+
+user: needs sanitising/1
+written_file: ops/access-keys/golden/expected/needs_sanitising_1-ss-ws.conf
+config_url: https://keys.example.com/SECRET/needs_sanitising_1-ss-ws.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zYW5pdGlzZQ@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#keys:needs%20sanitising%2F1-ss-ws
+
+user: needs sanitising/1
+written_file: ops/access-keys/golden/expected/needs_sanitising_1-ss-xhttp-packet-up.conf
+config_url: https://keys.example.com/SECRET/needs_sanitising_1-ss-xhttp-packet-up.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zYW5pdGlzZQ@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fssx#keys:needs%20sanitising%2F1-ss-xhttp-packet-up
+
+user: needs sanitising/1
+written_file: ops/access-keys/golden/expected/needs_sanitising_1-ss-xhttp-stream-one.conf
+config_url: https://keys.example.com/SECRET/needs_sanitising_1-ss-xhttp-stream-one.conf
+access_key_url: ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zYW5pdGlzZQ@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#keys:needs%20sanitising%2F1-ss-xhttp-stream-one
+
+user: needs sanitising/1
+written_file: ops/access-keys/golden/expected/needs_sanitising_1-vless-ws.conf
+config_url: https://keys.example.com/SECRET/needs_sanitising_1-vless-ws.conf
+access_key_url: vless://55555555-5555-4555-8555-555555555555@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fvless&encryption=none#keys:needs%20sanitising%2F1-vless-ws
+
+user: needs sanitising/1
+written_file: ops/access-keys/golden/expected/needs_sanitising_1-vless-xhttp-packet-up.conf
+config_url: https://keys.example.com/SECRET/needs_sanitising_1-vless-xhttp-packet-up.conf
+access_key_url: vless://55555555-5555-4555-8555-555555555555@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fxhttp&encryption=none#keys:needs%20sanitising%2F1-vless-xhttp-packet-up
+
+user: needs sanitising/1
+written_file: ops/access-keys/golden/expected/needs_sanitising_1-vless-xhttp-stream-one.conf
+config_url: https://keys.example.com/SECRET/needs_sanitising_1-vless-xhttp-stream-one.conf
+access_key_url: vless://55555555-5555-4555-8555-555555555555@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fxhttp&encryption=none#keys:needs%20sanitising%2F1-vless-xhttp-stream-one

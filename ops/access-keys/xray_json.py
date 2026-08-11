@@ -1,76 +1,15 @@
 #!/usr/bin/env python3
 """Build Xray-JSON subscriptions that balance across the cloud entry nodes.
 
-Reads the authoritative outline-ss-rust config.toml on an entry node and emits
-one <user>.json per VLESS-capable user, next to the .conf access keys.
+Renders the document only. Config parsing lives in `config_model` and file
+writing in `generate_keys`, so this module stays free of I/O.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
-import os
-import sys
-import tomllib
 from collections.abc import Sequence
-from dataclasses import dataclass
-from pathlib import Path
 
-
-@dataclass(frozen=True)
-class User:
-    """A VLESS-capable user with its paths already resolved.
-
-    The paths are effective, not raw: a per-user `ws_path_vless` /
-    `xhttp_path_vless` wins over the global `[websocket]` one, mirroring
-    `UserEntry::effective_ws_path_vless` in outline-ss-rust. Production really
-    relies on this — the inter-node uplink accounts carry their own paths — and
-    reading only the global section silently produces subscriptions that dial a
-    path the server does not serve for that user.
-    """
-
-    name: str
-    vless_id: str
-    xhttp_path: str | None
-    ws_path: str | None
-
-
-def load_users(path: str | Path) -> tuple[User, ...]:
-    """Parse config.toml into the VLESS users the subscription needs.
-
-    Skipped with a warning: users without a `vless_id` (Shadowsocks-only) and
-    users left with no VLESS path at all, who have no reachable carrier. A user
-    with only one of the two paths keeps that transport and loses the other,
-    which is how the server treats them too.
-    """
-    with open(path, "rb") as handle:
-        raw = tomllib.load(handle)
-
-    websocket = raw.get("websocket", {})
-    global_xhttp = websocket.get("xhttp_path_vless")
-    global_ws = websocket.get("ws_path_vless")
-
-    users: list[User] = []
-    for entry in raw.get("users", []):
-        name = entry.get("id")
-        vless_id = entry.get("vless_id")
-        if not name:
-            continue
-        if not vless_id:
-            print(f"skip {name}: no vless_id", file=sys.stderr)
-            continue
-
-        xhttp_path = entry.get("xhttp_path_vless") or global_xhttp
-        ws_path = entry.get("ws_path_vless") or global_ws
-        if not xhttp_path and not ws_path:
-            print(f"skip {name}: no VLESS path, neither per-user nor global", file=sys.stderr)
-            continue
-
-        users.append(
-            User(name=name, vless_id=vless_id, xhttp_path=xhttp_path, ws_path=ws_path)
-        )
-
-    return tuple(users)
+from config_model import User
 
 
 DEFAULT_NODES: tuple[str, ...] = ("cloud1.beerloga.su", "cloud2.beerloga.su")
@@ -221,7 +160,7 @@ def build_config(user: User, nodes: Sequence[str]) -> dict:
             },
         ],
         "outbounds": build_outbounds(
-            user.vless_id, user.xhttp_path, user.ws_path, nodes
+            user.vless_id, user.xhttp_path_vless, user.ws_path_vless, nodes
         ),
         "routing": {
             "domainStrategy": "AsIs",
@@ -251,58 +190,3 @@ def build_config(user: User, nodes: Sequence[str]) -> dict:
     }
 
 
-DEFAULT_CONFIG = "/opt/outline/outline-ss-rust/config.toml"
-DEFAULT_OUT_DIR = "/var/www/html/<keys-prefix>"
-
-
-def write_subscription(out_dir: Path, user: User, document: dict) -> Path:
-    """Write <user>.json atomically so a client never reads a half file."""
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    target = out_dir / f"{user.name}.json"
-    tmp = out_dir / f".{user.name}.json.tmp"
-
-    payload = json.dumps([document], indent=2, ensure_ascii=False) + "\n"
-    tmp.write_text(payload, encoding="utf-8")
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, target)
-    return target
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Generate Xray-JSON subscriptions with a cloud balancer."
-    )
-    parser.add_argument(
-        "--config", default=DEFAULT_CONFIG, help="outline-ss-rust config.toml"
-    )
-    parser.add_argument(
-        "--out-dir", default=DEFAULT_OUT_DIR, help="where <user>.json is written"
-    )
-    parser.add_argument(
-        "--node",
-        action="append",
-        dest="nodes",
-        help="entry node hostname; repeat for each. Default: %s"
-        % ", ".join(DEFAULT_NODES),
-    )
-    args = parser.parse_args(argv)
-
-    nodes = tuple(args.nodes) if args.nodes else DEFAULT_NODES
-    users = load_users(args.config)
-    if not users:
-        raise SystemExit(f"{args.config}: no users with a vless_id and a VLESS path")
-
-    out_dir = Path(args.out_dir)
-    for user in users:
-        document = build_config(user, nodes)
-        target = write_subscription(out_dir, user, document)
-        # Never the vless_id: file names and counts only.
-        print(f"wrote {target}")
-
-    print(f"{len(users)} subscription(s) across {len(nodes)} node(s)")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

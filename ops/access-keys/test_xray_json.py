@@ -1,133 +1,38 @@
 #!/usr/bin/env python3
-"""Offline tests for generate_xray_json.py. Stdlib only; no network, no node access."""
+"""Offline tests for xray_json.py. Stdlib only; no network, no node access.
+
+Config parsing is covered by test_config_model.py and file writing by
+test_generate_keys.py — this module only checks the rendered document.
+"""
 
 import json
-import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import generate_xray_json as gen  # noqa: E402
-
-# Trimmed to the keys the generator reads. Values are fake, but the shape
-# mirrors production: some users ride the global paths, others carry their own.
-CONFIG_TOML = """
-[server]
-listen = "[::]:443"
-
-[websocket]
-ws_path_tcp = "/SECRET/tcp"
-ws_path_vless = "/SECRET/vless"
-xhttp_path_vless = "/OTHER/xhttp"
-
-[[users]]
-id = "alice"
-password = "pw1"
-vless_id = "11111111-1111-4111-8111-111111111111"
-
-[[users]]
-id = "bob"
-password = "pw2"
-vless_id = "22222222-2222-4222-8222-222222222222"
-
-[[users]]
-id = "nodeuser"
-password = "pw4"
-vless_id = "44444444-4444-4444-8444-444444444444"
-ws_path_vless = "/OWN/vless"
-xhttp_path_vless = "/OWN/xhttp"
-
-[[users]]
-id = "legacy-ss-only"
-password = "pw3"
-"""
+import xray_json as gen  # noqa: E402
+from config_model import User  # noqa: E402
 
 NODES = ("cloud1.beerloga.su", "cloud2.beerloga.su")
 UUID = "11111111-1111-4111-8111-111111111111"
 
 
-def write_config(tmpdir, text=CONFIG_TOML):
-    path = Path(tmpdir) / "config.toml"
-    path.write_text(text, encoding="utf-8")
-    return path
-
-
-def load(tmpdir, text=CONFIG_TOML):
-    return gen.load_users(write_config(tmpdir, text))
-
-
-def by_name(users, name):
-    return next(u for u in users if u.name == name)
-
-
-class LoadUsersTest(unittest.TestCase):
-    def test_reads_vless_users_with_the_global_paths(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            users = load(tmp)
-        alice = by_name(users, "alice")
-        self.assertEqual(alice.vless_id, UUID)
-        self.assertEqual(alice.xhttp_path, "/OTHER/xhttp")
-        self.assertEqual(alice.ws_path, "/SECRET/vless")
-
-    def test_per_user_paths_win_over_the_globals(self):
-        # outline-ss-rust resolves paths per user (`effective_ws_path_vless`),
-        # and production really uses this for the inter-node uplink accounts.
-        with tempfile.TemporaryDirectory() as tmp:
-            users = load(tmp)
-        node = by_name(users, "nodeuser")
-        self.assertEqual(node.xhttp_path, "/OWN/xhttp")
-        self.assertEqual(node.ws_path, "/OWN/vless")
-
-    def test_skips_user_without_vless_id(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            users = load(tmp)
-        self.assertNotIn("legacy-ss-only", [u.name for u in users])
-
-    def test_globals_may_be_absent_when_the_user_carries_its_own(self):
-        text = """
-[websocket]
-ws_path_tcp = "/SECRET/tcp"
-
-[[users]]
-id = "nodeuser"
-vless_id = "44444444-4444-4444-8444-444444444444"
-ws_path_vless = "/OWN/vless"
-xhttp_path_vless = "/OWN/xhttp"
-"""
-        with tempfile.TemporaryDirectory() as tmp:
-            users = load(tmp, text)
-        self.assertEqual([u.name for u in users], ["nodeuser"])
-        self.assertEqual(users[0].ws_path, "/OWN/vless")
-
-    def test_user_with_no_vless_path_at_all_is_skipped(self):
-        text = """
-[websocket]
-ws_path_tcp = "/SECRET/tcp"
-
-[[users]]
-id = "pathless"
-vless_id = "55555555-5555-4555-8555-555555555555"
-"""
-        with tempfile.TemporaryDirectory() as tmp:
-            users = load(tmp, text)
-        self.assertEqual(users, ())
-
-    def test_user_with_only_one_transport_keeps_it(self):
-        text = """
-[websocket]
-xhttp_path_vless = "/OTHER/xhttp"
-
-[[users]]
-id = "xhttponly"
-vless_id = "66666666-6666-4666-8666-666666666666"
-"""
-        with tempfile.TemporaryDirectory() as tmp:
-            users = load(tmp, text)
-        self.assertEqual(users[0].xhttp_path, "/OTHER/xhttp")
-        self.assertIsNone(users[0].ws_path)
+def make_user(name="alice", xhttp="/OTHER/xhttp", ws="/SECRET/vless"):
+    return User(
+        name=name,
+        filename=name,
+        password=None,
+        method="chacha20-ietf-poly1305",
+        vless_id=UUID,
+        ws_path_tcp="/t",
+        ws_path_udp="/u",
+        ws_path_vless=ws,
+        ws_path_ss=None,
+        xhttp_path_vless=xhttp,
+        xhttp_path_ss=None,
+    )
 
 
 def build(xhttp="/OTHER/xhttp", ws="/SECRET/vless"):
@@ -233,12 +138,7 @@ class BuildOutboundsTest(unittest.TestCase):
 
 class BuildConfigTest(unittest.TestCase):
     def setUp(self):
-        self.user = gen.User(
-            name="alice",
-            vless_id=UUID,
-            xhttp_path="/OTHER/xhttp",
-            ws_path="/SECRET/vless",
-        )
+        self.user = make_user()
         self.doc = gen.build_config(self.user, NODES)
 
     def test_remarks_name_the_user(self):
@@ -305,108 +205,13 @@ class BuildConfigTest(unittest.TestCase):
         self.assertNotIn("dns", self.doc)
 
     def test_uses_the_users_own_paths(self):
-        user = gen.User(
-            name="nodeuser",
-            vless_id=UUID,
-            xhttp_path="/OWN/xhttp",
-            ws_path="/OWN/vless",
-        )
+        user = make_user(name="nodeuser", xhttp="/OWN/xhttp", ws="/OWN/vless")
         doc = gen.build_config(user, NODES)
         paths = {
             o["streamSettings"].get("xhttpSettings", o["streamSettings"].get("wsSettings", {}))["path"]
             for o in doc["outbounds"][:6]
         }
         self.assertEqual(paths, {"/OWN/xhttp", "/OWN/vless"})
-
-
-class WriteAndMainTest(unittest.TestCase):
-    def user(self, name="alice"):
-        return gen.User(
-            name=name,
-            vless_id=UUID,
-            xhttp_path="/OTHER/xhttp",
-            ws_path="/SECRET/vless",
-        )
-
-    def test_document_on_disk_is_a_single_element_array(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "keys"
-            gen.write_subscription(out, self.user(), {"remarks": "alice cloud-balancer"})
-            payload = json.loads((out / "alice.json").read_text(encoding="utf-8"))
-        self.assertIsInstance(payload, list)
-        self.assertEqual(len(payload), 1)
-        self.assertEqual(payload[0]["remarks"], "alice cloud-balancer")
-
-    def test_written_file_is_world_readable_and_leaves_no_temp_behind(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp) / "keys"
-            gen.write_subscription(out, self.user(), {})
-            target = out / "alice.json"
-            self.assertEqual(os.stat(target).st_mode & 0o777, 0o644)
-            self.assertEqual([p.name for p in out.iterdir()], ["alice.json"])
-
-    def test_main_writes_one_file_per_vless_user(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config = write_config(tmp)
-            out = Path(tmp) / "keys"
-            rc = gen.main(["--config", str(config), "--out-dir", str(out)])
-            self.assertEqual(rc, 0)
-            self.assertEqual(
-                sorted(p.name for p in out.iterdir()),
-                ["alice.json", "bob.json", "nodeuser.json"],
-            )
-            payload = json.loads((out / "bob.json").read_text(encoding="utf-8"))
-        tags = [o["tag"] for o in payload[0]["outbounds"]]
-        self.assertEqual(tags[0], "cloud1-xhttp-h3")
-        self.assertEqual(tags[-2:], ["direct", "block"])
-
-    def test_main_writes_the_override_paths_for_the_user_that_has_them(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config = write_config(tmp)
-            out = Path(tmp) / "keys"
-            gen.main(["--config", str(config), "--out-dir", str(out)])
-            node = json.loads((out / "nodeuser.json").read_text(encoding="utf-8"))
-            alice = json.loads((out / "alice.json").read_text(encoding="utf-8"))
-        node_paths = {
-            o["streamSettings"].get("xhttpSettings", o["streamSettings"].get("wsSettings", {}))["path"]
-            for o in node[0]["outbounds"][:6]
-        }
-        alice_paths = {
-            o["streamSettings"].get("xhttpSettings", o["streamSettings"].get("wsSettings", {}))["path"]
-            for o in alice[0]["outbounds"][:6]
-        }
-        self.assertEqual(node_paths, {"/OWN/xhttp", "/OWN/vless"})
-        self.assertEqual(alice_paths, {"/OTHER/xhttp", "/SECRET/vless"})
-
-    def test_main_honours_custom_nodes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config = write_config(tmp)
-            out = Path(tmp) / "keys"
-            gen.main(
-                [
-                    "--config",
-                    str(config),
-                    "--out-dir",
-                    str(out),
-                    "--node",
-                    "edge9.example.com",
-                ]
-            )
-            payload = json.loads((out / "alice.json").read_text(encoding="utf-8"))
-        tags = [o["tag"] for o in payload[0]["outbounds"]]
-        self.assertEqual(
-            tags, ["edge9-xhttp-h3", "edge9-xhttp-h2", "edge9-ws", "direct", "block"]
-        )
-
-    def test_main_is_idempotent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config = write_config(tmp)
-            out = Path(tmp) / "keys"
-            gen.main(["--config", str(config), "--out-dir", str(out)])
-            first = (out / "alice.json").read_text(encoding="utf-8")
-            gen.main(["--config", str(config), "--out-dir", str(out)])
-            second = (out / "alice.json").read_text(encoding="utf-8")
-        self.assertEqual(first, second)
 
 
 if __name__ == "__main__":
