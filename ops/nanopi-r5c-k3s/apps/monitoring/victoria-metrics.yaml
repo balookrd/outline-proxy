@@ -34,6 +34,15 @@ spec:
           args:
             - -retentionPeriod=90d
             - -inmemoryDataFlushInterval=60s
+            # Cache ceiling, set explicitly instead of riding the default of 60%
+            # of the cgroup limit — that default puts it at 614Mi of the 1Gi
+            # below. Measured 2026-08-11: all caches together hold 182Mi at 28k
+            # active series and ~460 rows/s, so 320MB is roughly double the
+            # working set. It caps growth rather than shrinking today's usage:
+            # the pod's 590Mi RSS is mostly Go heap and mmap'd data files, which
+            # this flag does not govern. Raise it if query latency degrades and
+            # vm_cache_size_bytes sits at the ceiling.
+            - -memory.allowedBytes=320MB
             # The scrape config lives inside the data directory, exactly as on
             # the gateway node: it migrates together with the data.
             - -promscrape.config=/victoria-metrics-data/scrape.yaml

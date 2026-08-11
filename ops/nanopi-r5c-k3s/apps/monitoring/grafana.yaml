@@ -39,6 +39,14 @@ spec:
             - { containerPort: 3000, name: http }
           env:
             - { name: TZ, value: Europe/Moscow }
+            # Soft heap ceiling for the Go runtime. Without it GOGC=100 defers a
+            # collection until the heap doubles the live set: measured
+            # 2026-08-11 the live heap was 341Mi and next_gc sat at 595Mi, so
+            # the pod idled at ~600Mi RSS on a node that has the least headroom
+            # of the three. 512MiB keeps ~1.5x over the live set — close enough
+            # to collect earlier and return pages, far enough from it to avoid
+            # the GC death spiral that hugging the live set produces.
+            - { name: GOMEMLIMIT, value: "512MiB" }
             - { name: GF_DATABASE_WAL, value: "true" }
             # Grafana 13 preinstalls four app plugins (loki-explore, explore-
             # traces, metrics-drilldown, pyroscope) on first start — 47 MB into
