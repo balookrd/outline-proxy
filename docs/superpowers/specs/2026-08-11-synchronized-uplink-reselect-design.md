@@ -85,6 +85,11 @@ Replaces the OS-seeded draw when `reselect_sync` is on:
   `NoCandidate` (unchanged no-op semantics).
 - The commit path is untouched: slot move + sticky reseed, no
   `reset_all_uplink_statuses`, soft bit clamped by `shared_resume` as today.
+- **A pick equal to the current active is a no-op**, reported as outcome
+  `skipped` rather than moving the slot to itself. The unsynchronized path can
+  never hit this case (it excludes the current active by construction); the
+  synchronized one hits it on every re-application of an already-correct
+  decision.
 - The manual `POST /control/reselect` goes through the same order, which makes
   it **idempotent within a slot**: pressing it twice on one node does not move
   the leg again, and pressing it on both nodes converges them. That is a
@@ -99,6 +104,16 @@ instead of `initial_strict_order`. Without this, every binary rollout or VPS
 reboot re-splits the pair immediately. This places no live traffic — it is the
 first choice, not a mid-day migration — so it does not contradict the
 "wait for the next slot" decision above.
+
+Two consequences that the ordinary path does not have:
+
+- The **persisted active uplink is overridden**, not honoured. `UplinkManager`
+  restores the previous run's active leg from the state store
+  (`reason = "restored from state"`), which is exactly the mid-day leg a
+  restart must not resurrect. Under the flag the slot key decides.
+- The startup probe is **always** run before the choice. The ordinary path
+  skips `probe_all` when a selection was restored; here nothing is restored to
+  skip for, and picking from the daily order needs health to be known.
 
 ## Failover stays local
 
