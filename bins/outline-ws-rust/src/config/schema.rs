@@ -220,6 +220,13 @@ pub(super) struct DashboardSection {
     /// with `token_file`.
     pub(super) token: Option<String>,
     pub(super) token_file: Option<PathBuf>,
+    /// Extra host names accepted in the `Host` header (and as an `Origin`) on
+    /// top of the built-in set — loopback names/addresses plus the bound
+    /// address. Needed only behind a reverse proxy that serves the panel under
+    /// a DNS name. Entries are matched by host name; a port, if written, is
+    /// ignored. Names outside this set are refused with 403, which is what
+    /// closes DNS rebinding.
+    pub(super) allowed_hosts: Option<Vec<String>>,
     pub(super) instances: Option<Vec<DashboardInstanceSection>>,
 }
 

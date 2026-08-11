@@ -171,6 +171,11 @@ pub struct DashboardConfig {
     /// Optional shared secret required by the dashboard listener itself.
     /// `None` keeps the listener unauthenticated, as it has always been.
     pub token: Option<String>,
+    /// Host names accepted in addition to the built-in set (loopback and the
+    /// bound address). Set it when a reverse proxy serves the panel under a
+    /// DNS name; everything else is refused, which is what stops DNS
+    /// rebinding from reaching the loopback listener.
+    pub allowed_hosts: Vec<String>,
     pub instances: Vec<DashboardInstanceConfig>,
 }
 

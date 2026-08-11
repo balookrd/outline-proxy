@@ -386,6 +386,10 @@ listen = "[::1]:9090"
 # # username). Mutually exclusive with token_file.
 # token = "long-random-secret"
 # # token_file = "/etc/outline-ws/dashboard.token"
+# # Extra host names accepted in `Host` / `Origin`, on top of loopback and the
+# # bound address. Only needed behind a reverse proxy serving the panel under a
+# # DNS name. See "Dashboard origin checks" below.
+# allowed_hosts = ["panel.example.com"]
 #
 # [[dashboard.instances]]
 # name = "inst-01"
@@ -1462,6 +1466,52 @@ genuine request failures keep their `warn`.
 - HTTP/3 requires public UDP reachability on the selected port.
 - `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root; under a user-namespaced systemd sandbox it additionally requires `PrivateUsers=no` (`SO_MARK` is checked against the init user namespace).
 - TUN mode requires `/dev/net/tun` access on the host (`PrivateDevices=false`).
+- The dashboard listener refuses cross-origin and rebound requests before
+  routing them — see [Dashboard origin checks](#dashboard-origin-checks).
+
+#### Dashboard origin checks
+
+Binding the dashboard to loopback does not keep a web page away from it: the
+page runs in the operator's own browser, on the operator's own machine. And the
+dashboard parses request bodies by hand, so nothing forced a CORS preflight the
+way an `application/json` extractor does on the server plane — a
+`Content-Type: text/plain` POST is a *simple* request, sent without preflight,
+and `mode: "no-cors"` hides the response from the attacker but not the effect
+(the uplink still switches, the config still applies).
+
+Every request to the dashboard is therefore checked **before** it is routed, so
+a route added later cannot end up outside the checks:
+
+| Check | Applies to | On failure |
+| --- | --- | --- |
+| `Host` names this listener | every request | `403` |
+| `Origin`, when present, is this panel's own | every request | `403` |
+| `Content-Type: application/json` (parameters such as `; charset=utf-8` allowed) | every body-bearing method — anything but `GET`/`HEAD`/`OPTIONS` | `415`, body never parsed |
+
+- **`Host`** is accepted for loopback names and addresses (`localhost`,
+  `127.0.0.1`, `[::1]`), for the address the panel is bound to (any literal
+  address when bound to a wildcard like `0.0.0.0`), and for any name in
+  `allowed_hosts`. This is what closes DNS rebinding: the attacker's domain may
+  resolve to `127.0.0.1`, but the browser still puts the attacker's *name* in
+  `Host`. The **port is not checked** — reaching a loopback panel through
+  `ssh -L 8888:127.0.0.1:9092` or a container port mapping is routine, and the
+  port carries no protection anyway, since a rebinding attacker has to target
+  the panel's real port regardless.
+- **`Origin`** must equal `Host` verbatim — which a same-origin browser request
+  always does, through any port mapping — or name a host from `allowed_hosts`,
+  the case of a reverse proxy that rewrites `Host`. A different local port
+  (`http://127.0.0.1:3000`) is a different origin and is refused. A *missing*
+  `Origin` is allowed: `curl` and other non-browser clients never send one, and
+  a web page cannot suppress it, so refusing it would only break scripted
+  operators without closing anything.
+- **`allowed_hosts`** is additive: the built-in set stays valid, so a proxied
+  deployment keeps working over `ssh -L` as well. Entries are matched by host
+  name, case-insensitively; a port written into an entry is ignored.
+
+Nothing changes for the packaged UI (it already sends `application/json`) or
+for `curl`. A script that posted with some other content type now gets `415`,
+and a deployment that serves the panel under a DNS name needs that name in
+`[dashboard] allowed_hosts`.
 
 ## Testing
 

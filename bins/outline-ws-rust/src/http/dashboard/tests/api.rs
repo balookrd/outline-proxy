@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::http::body::MAX_REQUEST_BODY_BYTES;
+use crate::http::dashboard::guard::OriginPolicy;
 use crate::http::tests::streamed_request;
 
 fn test_state() -> DashboardState {
@@ -8,6 +9,7 @@ fn test_state() -> DashboardState {
         refresh_interval_secs: 5,
         request_timeout_secs: 5,
         token: None,
+        origin_policy: OriginPolicy::new("127.0.0.1:9092".parse().unwrap(), &[]),
         instances: Vec::new(),
     }
 }
