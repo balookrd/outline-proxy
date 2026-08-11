@@ -248,6 +248,11 @@ url_base = "https://keys.example.com/outline"
 # Set to true to print Outline YAML configs and ssconf:// URLs, then exit.
 print = false
 # Or write one generated YAML file per user into a directory, then exit.
+# The same key names the output directory for ops/access-keys/generate_keys.py,
+# which is what generates the artifacts on the nodes. Keep the real path here
+# and out of the repository: on a node that serves this directory over HTTP its
+# name is the only thing guarding files that carry every user's password and
+# vless_id.
 # write_dir = "./keys"
 
 [shadowsocks]
