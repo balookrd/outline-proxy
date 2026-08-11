@@ -14,6 +14,9 @@ fn state(allowed_hosts: &[&str]) -> DashboardState {
     DashboardState {
         refresh_interval_secs: 5,
         request_timeout_secs: 5,
+        // No listener credentials here: these tests cover the origin checks
+        // alone, and the credential gate runs ahead of them (see `mod`).
+        token: None,
         origin_policy: policy(allowed_hosts),
         instances: Vec::new(),
     }

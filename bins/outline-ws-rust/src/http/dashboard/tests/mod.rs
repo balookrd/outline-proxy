@@ -12,6 +12,10 @@ fn state_with_token(token: Option<&str>) -> DashboardState {
         refresh_interval_secs: 5,
         request_timeout_secs: 5,
         token: token.map(Arc::from),
+        // The requests below carry `Host: localhost`, which the built-in set
+        // admits, so the origin guard stays out of the way of what these tests
+        // are about: the credential gate.
+        origin_policy: OriginPolicy::new("127.0.0.1:9092".parse().unwrap(), &[]),
         instances: Vec::new(),
     }
 }
@@ -49,6 +53,7 @@ fn state_carries_the_configured_token() {
         refresh_interval_secs: 5,
         request_timeout_secs: 5,
         token: Some("secret".to_string()),
+        allowed_hosts: Vec::new(),
         instances: Vec::new(),
     };
 
