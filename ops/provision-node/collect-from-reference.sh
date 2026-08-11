@@ -303,7 +303,15 @@ chmod 600 "$OUT"/secrets/*
 log "writing manifest"
 SS_VERSION="$(REF_SSH '/usr/local/bin/outline-ss-rust --version 2>/dev/null' | head -1)" || SS_VERSION=""
 WS_VERSION="$(REF_SSH '/usr/local/bin/outline-ws-rust --version 2>/dev/null' | head -1)" || WS_VERSION=""
-KEYS_DIR="$(REF_SSH "sed -n 's#.*--write-access-keys-dir *##p' /opt/outline/outline-ss-rust/save-keys.sh 2>/dev/null" | tr -d ' \\' | head -1)" || KEYS_DIR=""
+# save-keys.sh used to pass the keys directory to the binary as
+# `--write-access-keys-dir`; since the generator moved to ops/access-keys
+# (2026-08-11) it is `--out-dir`. Accept both so a reference node on either side
+# still resolves — a reference that matches neither would hand the bundle an
+# empty ACCESS_KEYS_DIR and the clone would silently generate nothing.
+# Capture just the argument, not the rest of the line: save-keys.sh may keep the
+# whole invocation on one physical line, in which case a greedy match would drag
+# the following flags into KEYS_DIR.
+KEYS_DIR="$(REF_SSH "sed -n 's#.*--out-dir *\([^ ]*\).*#\1#p;s#.*--write-access-keys-dir *\([^ ]*\).*#\1#p' /opt/outline/outline-ss-rust/save-keys.sh 2>/dev/null" | tr -d ' \\' | head -1)" || KEYS_DIR=""
 
 # apt-mark showmanual, filtered by the profile: only packages someone installed
 # on purpose for this node family end up in the bundle.
