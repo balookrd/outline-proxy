@@ -470,6 +470,45 @@ ensure_nginx_locations() {
     done
 }
 
+# The service is started with `--config /etc/outline-ss-rust/config.toml`, and
+# /opt/outline/outline-ss-rust/config.toml is meant to be a symlink to it — that
+# is how five of the seven nodes look. On `sebek` and `nuxt2` it was a plain
+# copy instead (observed 2026-08-11), and the copy drifted: control-API writes
+# landed in /etc while the key generator, pointed at /opt, kept emitting
+# artifacts for paths the server no longer served. Nothing reported an error.
+#
+# A bundle collected from a reference that had the copy reproduces the copy, so
+# converge here rather than trusting the payload.
+ensure_ss_config_symlink() {
+    local opt=/opt/outline/outline-ss-rust/config.toml
+    local etc=/etc/outline-ss-rust/config.toml
+
+    [ -e "$opt" ] || [ -L "$opt" ] || return 0
+
+    if [ -L "$opt" ] && [ "$(readlink -f "$opt")" = "$etc" ]; then
+        dim "ss config: /opt already symlinks to $etc"
+        return 0
+    fi
+
+    if [ ! -f "$etc" ] && [ -f "$opt" ]; then
+        # No live config yet: the /opt copy is all we have, so promote it.
+        run install -d -o root -g root -m 0755 "$(dirname "$etc")"
+        run cp -a "$opt" "$etc"
+        ok "ss config: promoted the /opt copy to $etc"
+    fi
+
+    if [ -f "$etc" ]; then
+        if [ -f "$opt" ] && ! cmp -s "$opt" "$etc"; then
+            warn "ss config: /opt copy differs from $etc — keeping a backup before replacing it"
+            run cp -a "$opt" "$opt.stale-copy.$(date +%Y%m%d%H%M%S)"
+        fi
+        run ln -sfn "$etc" "$opt"
+        ok "ss config: /opt now symlinks to $etc"
+    else
+        warn "ss config: neither $etc nor a usable /opt copy — leaving as is"
+    fi
+}
+
 phase_files() {
     log "phase files"
     untar_payload opt.tar.gz
@@ -482,6 +521,8 @@ phase_files() {
     # After the payload, so a repo-owned file wins over the reference's copy of
     # the same path even when a stale bundle still carries one.
     install_asset_files
+
+    ensure_ss_config_symlink
 
     if [ -n "$NGINX_SITE" ]; then
         ensure_nginx_locations

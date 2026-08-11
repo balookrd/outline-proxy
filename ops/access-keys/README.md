@@ -147,6 +147,24 @@ ssh sysadm@<node> 'sudo -n cp -a /tmp/access-keys/. /opt/outline/access-keys/ \
 уже раздаёт с диска. Вызов прописывается в `save-keys.sh` вместо прежнего
 `outline-ss-rust --write-access-keys-dir`.
 
+Раскатано 2026-08-11 на **семь узлов**: `cloud1`, `cloud2` (балансер на пару
+cloud1+cloud2) и `nuxt`, `nuxt2`, `aeza`, `senko`, `sebek` (каждый передаёт
+`--node <свой хост>`). На `senko` нет `rsync` — туда заливать через
+`tar czf - … | ssh … tar xzf -`.
+
+Гетерогенность узлов, которую раскатка вскрыла и которую стоит ожидать снова:
+
+- на `nuxt2` и `sebek` `url_base` указывал на каталог, отличный от того, куда
+  писал `save-keys.sh`; раздавались устаревшие файлы, а актуальные лежали рядом.
+  Приведено к `<keys-prefix>` на обоих;
+- на `nuxt`, `senko`, `aeza` артефакты не обновлялись месяцами и разошлись с
+  конфигом (на `sebek` разошлись все 62 — там ротировали пути и креды);
+- в каталогах копились файлы старых схем именования (`<user>-vless.conf`) и
+  удалённых юзеров. Перед чисткой они архивировались в `/var/backups/`.
+
+Сверять «что есть» с «что сгенерировалось бы» стоит до переключения — пока
+Rust-генерация ещё доступна, это одна команда.
+
 Заголовки подписки (`profile-title`, `profile-update-interval`) добавляет nginx —
 блок в [`nginx-subscription-headers.conf`](nginx-subscription-headers.conf),
 вставляется в `server`-блок `sites-available/beerloga.su`. Покрывает и `.json`,
