@@ -75,6 +75,67 @@ class LoadTest(unittest.TestCase):
         self.assertTrue(self.server.alpn_has_h3)
 
 
+class UrlBaseDerivationTest(unittest.TestCase):
+    """`url_base` is `public_host` + the served directory, so it need not be said twice."""
+
+    def load_text(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(text, encoding="utf-8")
+            return cm.load(path)
+
+    USERS = """
+[[users]]
+id = "u"
+password = "p"
+"""
+
+    def test_derived_from_host_and_write_dir(self):
+        server = self.load_text(
+            '[access_keys]\npublic_host = "h.example.com"\n'
+            'write_dir = "/var/www/html/SECRET/"\n' + self.USERS
+        )
+        self.assertEqual(server.access_keys.url_base, "https://h.example.com/SECRET")
+
+    def test_explicit_url_base_wins(self):
+        server = self.load_text(
+            '[access_keys]\npublic_host = "h.example.com"\n'
+            'url_base = "https://other.example.com/ELSEWHERE"\n'
+            'write_dir = "/var/www/html/SECRET/"\n' + self.USERS
+        )
+        self.assertEqual(
+            server.access_keys.url_base, "https://other.example.com/ELSEWHERE"
+        )
+
+    def test_plain_ws_scheme_derives_http(self):
+        server = self.load_text(
+            '[access_keys]\npublic_host = "h.example.com"\npublic_scheme = "ws"\n'
+            'write_dir = "/var/www/html/SECRET/"\n' + self.USERS
+        )
+        self.assertEqual(server.access_keys.url_base, "http://h.example.com/SECRET")
+
+    def test_trailing_slash_does_not_leak_into_the_url(self):
+        without = self.load_text(
+            '[access_keys]\npublic_host = "h.example.com"\n'
+            'write_dir = "/var/www/html/SECRET"\n' + self.USERS
+        )
+        self.assertEqual(without.access_keys.url_base, "https://h.example.com/SECRET")
+
+    def test_no_write_dir_leaves_url_base_unset(self):
+        # Nothing to derive from: the user simply gets no ssconf/happ links.
+        server = self.load_text(
+            '[access_keys]\npublic_host = "h.example.com"\n' + self.USERS
+        )
+        self.assertIsNone(server.access_keys.url_base)
+
+    def test_scheme_defaults_to_wss_when_absent(self):
+        server = self.load_text(
+            '[access_keys]\npublic_host = "h.example.com"\n'
+            'write_dir = "/var/www/html/SECRET"\n' + self.USERS
+        )
+        self.assertEqual(server.access_keys.public_scheme, "wss")
+
+
 class SanitizeTest(unittest.TestCase):
     def test_keeps_safe_characters(self):
         self.assertEqual(cm.sanitize_filename("a.b_c-1"), "a.b_c-1")

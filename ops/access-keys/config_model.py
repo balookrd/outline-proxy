@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 DEFAULT_METHOD = "chacha20-ietf-poly1305"
 DEFAULT_SCHEME = "wss"
@@ -93,6 +93,24 @@ def _h3_in_alpn(server: dict) -> bool:
     return bool(certs)
 
 
+def _derive_url_base(public_host: str, public_scheme: str, write_dir: str | None) -> str | None:
+    """Where clients fetch the artifacts from, when the config does not say.
+
+    It is `public_host` plus the served directory's last segment — the same two
+    values spelled a second time, which is one more place to get wrong. The
+    URL scheme follows the transport one: `wss` is served over https, `ws` over
+    http. Without `write_dir` there is nothing to derive from, and the user
+    simply gets no ssconf/happ links.
+    """
+    if not write_dir:
+        return None
+    segment = PurePosixPath(write_dir.rstrip("/")).name
+    if not segment:
+        return None
+    scheme = "https" if public_scheme == "wss" else "http"
+    return f"{scheme}://{public_host}/{segment}"
+
+
 def load(path: str | Path) -> ServerConfig:
     with open(path, "rb") as handle:
         raw = tomllib.load(handle)
@@ -105,15 +123,18 @@ def load(path: str | Path) -> ServerConfig:
     if not public_host:
         raise SystemExit(f"{path}: [access_keys] public_host is required")
 
+    public_scheme = ak_section.get("public_scheme") or DEFAULT_SCHEME
+    if public_scheme not in ("ws", "wss"):
+        raise SystemExit(f'{path}: public_scheme must be either "ws" or "wss"')
+
+    write_dir = ak_section.get("write_dir")
     access_keys = AccessKeys(
         public_host=public_host,
-        public_scheme=ak_section.get("public_scheme") or DEFAULT_SCHEME,
-        url_base=ak_section.get("url_base"),
+        public_scheme=public_scheme,
+        url_base=ak_section.get("url_base") or _derive_url_base(public_host, public_scheme, write_dir),
         file_extension=ak_section.get("file_extension") or DEFAULT_EXTENSION,
-        write_dir=ak_section.get("write_dir"),
+        write_dir=write_dir,
     )
-    if access_keys.public_scheme not in ("ws", "wss"):
-        raise SystemExit(f'{path}: public_scheme must be either "ws" or "wss"')
 
     default_method = raw.get("shadowsocks", {}).get("method") or DEFAULT_METHOD
 
