@@ -91,6 +91,40 @@ password = "secret"
 /// field from the schema would refuse to load a deployed config that still sets
 /// it. It must keep parsing and resolve to exactly the config it would without
 /// the key — accepted and inert, never accepted and half-applied.
+/// Every deployed config carries `[access_keys]`, and the sections are
+/// `deny_unknown_fields`, so the section must keep parsing even though
+/// ops/access-keys owns it now. `write_dir` matters most: while the binary
+/// read it, its presence turned the process into a one-shot key generator
+/// that never served, so a node picking up a new binary with that key in its
+/// config would have died at the next restart.
+#[test]
+fn access_keys_section_is_accepted_and_never_switches_the_mode() {
+    let config: FileConfig = toml::from_str(
+        r#"
+[server]
+listen = "0.0.0.0:3000"
+
+[access_keys]
+public_host = "vpn.example.com"
+public_scheme = "wss"
+url_base = "https://vpn.example.com/secret"
+file_extension = ".conf"
+print = true
+write_dir = "/var/www/html/secret"
+
+[[users]]
+id = "alice"
+password = "secret"
+"#,
+    )
+    .expect("a deployed config carrying [access_keys] must still load");
+
+    let section = config.access_keys.expect("the section must be parsed, not rejected");
+    assert_eq!(section.public_host.as_deref(), Some("vpn.example.com"));
+    assert_eq!(section.write_dir.as_deref(), Some(std::path::Path::new("/var/www/html/secret")));
+    assert_eq!(section.print, Some(true));
+}
+
 #[test]
 fn retired_padding_throttle_edge_floor_is_accepted_and_ignored() {
     let with_key: FileConfig = toml::from_str(

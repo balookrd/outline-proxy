@@ -1032,12 +1032,10 @@
       renderStats();
       const rows = filtered();
       el.usersTable.innerHTML = rows.map(user => {
-        const transportButtons = [
-          statusChip(user.enabled),
-          user.has_password ? chipButton("Outline", "outline-url", user.id) : "",
-          user.has_password ? chipButton("SS", "ss-access-key-url", user.id) : "",
-          user.has_vless_id ? chipButton("VLESS", "vless-url", user.id) : ""
-        ].join("");
+        // Access links are no longer served by the control API: generation
+        // moved to ops/access-keys, which writes <user>.conf / .json / .txt
+        // into the published keys directory.
+        const transportButtons = [statusChip(user.enabled)].join("");
         const paths = [
           user.ws_path_tcp && "tcp " + user.ws_path_tcp,
           user.ws_path_udp && "udp " + user.ws_path_udp,
@@ -1170,22 +1168,6 @@
       if(!ok) throw new Error("Failed to copy the URL.");
     }
 
-    async function copyAccessUrl(id, action){
-      const field = { "outline-url":"ss_config_url", "ss-access-key-url":"ss_access_key_url", "vless-url":"vless_url" }[action];
-      const label = { "outline-url":"Outline config URL", "ss-access-key-url":"SS URL", "vless-url":"VLESS URL" }[action];
-      setBusy(true);
-      try {
-        const urls = await api("/dashboard/api/users/" + encodeURIComponent(id) + "/access-urls");
-        await copyText(urls && urls[field]);
-        el.lastAction.textContent = label;
-        showToast(label + " copied.");
-      } catch (error) {
-        setStatus(error.message, "error");
-        showToast(error.message);
-      } finally {
-        setBusy(false);
-      }
-    }
 
     async function mutate(id, action){
       if(action === "delete" && !confirm("Delete user " + id + "?")) return;
@@ -1287,7 +1269,6 @@
       const button = event.target.closest("button[data-action]");
       if(!button) return;
       if(button.dataset.action === "edit") openEditDrawer(button.dataset.id);
-      else if(button.dataset.action.endsWith("-url")) copyAccessUrl(button.dataset.id, button.dataset.action);
       else mutate(button.dataset.id, button.dataset.action);
     });
     el.searchInput.addEventListener("input", renderUsers);

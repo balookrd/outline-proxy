@@ -113,31 +113,6 @@ pub(super) struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_HTTP_ROOT_REALM")]
     pub http_root_realm: Option<String>,
 
-    #[arg(long, env = "OUTLINE_SS_PUBLIC_HOST")]
-    pub public_host: Option<String>,
-
-    #[arg(long, env = "OUTLINE_SS_PUBLIC_SCHEME")]
-    pub public_scheme: Option<String>,
-
-    #[arg(long, env = "OUTLINE_SS_ACCESS_KEY_URL_BASE")]
-    pub access_key_url_base: Option<String>,
-
-    #[arg(long, env = "OUTLINE_SS_ACCESS_KEY_FILE_EXTENSION")]
-    pub access_key_file_extension: Option<String>,
-
-    #[arg(
-        long,
-        env = "OUTLINE_SS_PRINT_ACCESS_KEYS",
-        action = ArgAction::Set,
-        num_args = 0..=1,
-        default_missing_value = "true",
-        require_equals = true
-    )]
-    pub print_access_keys: Option<bool>,
-
-    #[arg(long, env = "OUTLINE_SS_WRITE_ACCESS_KEYS_DIR")]
-    pub write_access_keys_dir: Option<PathBuf>,
-
     #[arg(
         long = "user",
         env = "OUTLINE_SS_USERS",

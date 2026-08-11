@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Result, bail};
 
-use super::{AccessKeyConfig, Config};
+use super::Config;
 use crate::server::MAX_USER_LEN;
 
 impl Config {
@@ -460,15 +460,6 @@ impl Config {
                     bail!("{label}[{idx}].sni {sni:?} is already claimed by an earlier entry");
                 }
             }
-        }
-        Ok(())
-    }
-}
-
-impl AccessKeyConfig {
-    pub(super) fn validate(&self) -> Result<()> {
-        if !matches!(self.public_scheme.as_str(), "ws" | "wss") {
-            bail!("public_scheme must be either \"ws\" or \"wss\"");
         }
         Ok(())
     }

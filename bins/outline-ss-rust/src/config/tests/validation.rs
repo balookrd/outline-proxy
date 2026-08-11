@@ -59,7 +59,6 @@ fn base_config() -> Config {
             aliases: None,
         }],
         method: CipherKind::Chacha20IetfPoly1305,
-        access_key: Default::default(),
         tuning: super::super::TuningProfile::LARGE,
         session_resumption: Default::default(),
         padding: Default::default(),

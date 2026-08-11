@@ -24,8 +24,8 @@ use crate::config::ControlConfig;
 
 use super::super::shutdown::ShutdownSignal;
 use super::handlers::{
-    ControlState, block_user, create_user, delete_user, get_user, get_user_access_urls, list_users,
-    unblock_user, update_user,
+    ControlState, block_user, create_user, delete_user, get_user, list_users, unblock_user,
+    update_user,
 };
 use super::manager::UserManager;
 
@@ -56,7 +56,6 @@ async fn run(
     let router = Router::new()
         .route("/control/users", get(list_users).post(create_user))
         .route("/control/users/{id}", get(get_user).patch(update_user).delete(delete_user))
-        .route("/control/users/{id}/access-urls", get(get_user_access_urls))
         .route("/control/users/{id}/block", post(block_user))
         .route("/control/users/{id}/unblock", post(unblock_user))
         .fallback(any(not_found))

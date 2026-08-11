@@ -12,10 +12,6 @@ use anyhow::Result;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::AppMode;
-use crate::config::access_key::{
-    build_access_key_artifacts, render_access_key_report, render_written_access_key_report,
-    write_access_key_artifacts,
-};
 
 #[cfg(target_os = "linux")]
 const DEFAULT_RUNTIME_THREAD_STACK_SIZE_BYTES: usize = 2 * 1024 * 1024;
@@ -40,27 +36,10 @@ fn configure_runtime_defaults(builder: &mut tokio::runtime::Builder) {
 fn configure_runtime_defaults(_builder: &mut tokio::runtime::Builder) {}
 
 async fn async_main() -> Result<()> {
-    match AppMode::load()? {
-        AppMode::Serve(config) => {
-            init_tracing();
-            spawn_mimalloc_maintenance();
-            server::run(config).await
-        },
-        AppMode::GenerateKeys { config, access_key, print, write_dir } => {
-            let artifacts = build_access_key_artifacts(&config, &access_key)?;
-            if print {
-                print!("{}", render_access_key_report(&artifacts));
-            }
-            if let Some(output_dir) = &write_dir {
-                let written = write_access_key_artifacts(&artifacts, output_dir)?;
-                if print {
-                    println!();
-                }
-                print!("{}", render_written_access_key_report(&written));
-            }
-            Ok(())
-        },
-    }
+    let AppMode::Serve(config) = AppMode::load()?;
+    init_tracing();
+    spawn_mimalloc_maintenance();
+    server::run(config).await
 }
 
 /// Period between forced mimalloc reclamation passes.

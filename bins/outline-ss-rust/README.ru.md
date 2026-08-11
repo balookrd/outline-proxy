@@ -753,54 +753,22 @@ listen = "0.0.0.0:443"
 
 ## Генерация клиентских конфигов
 
-Shadowsocks WebSocket-клиенты используют динамические ключи доступа, ссылающиеся на YAML-документ конфигурации вместо простого `ss://` URI. Для VLESS-пользователей генерируются импортируемые `vless://` ссылки.
+Клиентские артефакты этот бинарь **не** генерирует. Генерация переехала в
+`ops/access-keys` (2026-08-11): Python-пакет читает тот же `config.toml` и
+пишет три файла на юзера в каталог, который раздаёт узел — `<user>.conf`
+(Outline YAML), `<user>.json` (Xray-JSON подписка) и `<user>.txt` (все ссылки
+юзера, по одной в строке).
 
-Генерация:
+См. [`ops/access-keys/README.md`](../../ops/access-keys/README.md).
 
-```bash
-cargo run -- \
-  --print-access-keys \
-  --config ./config.toml
-```
-
-Или запись по одному конфигу на пару протокол/пользователь в каталог:
-
-```bash
-cargo run -- \
-  --write-access-keys-dir ./keys \
-  --config ./config.toml
-```
-
-Для каждого Shadowsocks-пользователя сервер выводит:
-
-- YAML-конфигурацию транспорта
-- предлагаемое имя файла, например `alice.yaml`
-- `config_url`
-- `ssconf://` URL ключа доступа
-
-Для каждого VLESS-пользователя сервер выводит:
-
-- `vless://` URI для Happ, v2rayNG и Hiddify
-- предлагаемое имя файла, например `alice-vless-ws.yaml`
-- опциональный `config_url`, если задан `access_key_url_base`
-
-Если задан `write_access_keys_dir`, сервер записывает конфиги в этот каталог и выводит полный путь к каждому сгенерированному клиентскому конфигу. Пользователь с `password` и `vless_id` получает два файла.
-
-Расширение файлов по умолчанию — `.yaml`, но его можно изменить через `access_key_file_extension`, например на `.txt` или `.conf`.
-
-Генерируемый Shadowsocks YAML автоматически отражает:
-
-- эффективный шифр пользователя
-- эффективный TCP-путь
-- эффективный UDP-путь
-- глобальный публичный хост и схему
-
-Генерируемый VLESS URI автоматически отражает:
-
-- `vless_id`
-- эффективный VLESS WebSocket-путь
-- глобальный публичный хост и схему
-- `security=tls` для `public_scheme = "wss"` и `security=none` для `ws`
+Секция `[access_keys]` остаётся в `config.toml` — её и читает генератор:
+`public_host`, `public_scheme`, `url_base`, `file_extension`, `write_dir`.
+Сервер секцию парсит ради совместимости (она есть в каждом боевом конфиге, а
+структуры помечены `deny_unknown_fields`), но ни одного ключа не использует.
+Флаги `--print-access-keys`, `--write-access-keys-dir`, `--public-host`,
+`--public-scheme`, `--access-key-url-base` и `--access-key-file-extension`
+удалены, как и control-эндпоинт `GET /control/users/{id}/access-urls` вместе с
+кнопками дашборда, которые его дёргали.
 
 ## Наблюдаемость
 

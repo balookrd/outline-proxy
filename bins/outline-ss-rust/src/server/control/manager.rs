@@ -8,15 +8,11 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Deserializer, Serialize};
-use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::{
-    config::{
-        CipherKind, Config, OneOrManyCidr, UserEntry,
-        access_key::build_access_key_artifacts_for_user,
-    },
+    config::{CipherKind, Config, OneOrManyCidr, UserEntry},
     crypto::UserKey,
     metrics::Transport,
     protocol::vless::VlessUser,
@@ -55,8 +51,6 @@ pub(in crate::server) struct UserManager {
     default_xhttp_path_tcp: Option<String>,
     default_xhttp_path_udp: Option<String>,
     default_xhttp_path_ss: Option<String>,
-    access_key_config: crate::config::AccessKeyConfig,
-    access_key_base_config: Config,
     // Paths that exist in the startup Axum/H3 routers. Mutations that
     // introduce a path outside this set are rejected — the routers cannot
     // dispatch requests to unknown paths until the next restart.
@@ -103,24 +97,6 @@ pub(super) struct UserView {
     pub aliases: Option<BTreeMap<String, OneOrManyCidr>>,
     pub has_password: bool,
     pub has_vless_id: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub(super) struct AccessUrlsView {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ss_config_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ss_access_key_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vless_url: Option<String>,
-}
-
-#[derive(Debug, Error)]
-pub(in crate::server) enum AccessUrlError {
-    #[error("user {0:?} not found")]
-    NotFound(String),
-    #[error(transparent)]
-    Build(anyhow::Error),
 }
 
 impl From<&UserEntry> for UserView {
@@ -188,8 +164,6 @@ impl UserManager {
             default_xhttp_path_tcp: config.xhttp_path_tcp.clone(),
             default_xhttp_path_udp: config.xhttp_path_udp.clone(),
             default_xhttp_path_ss: config.xhttp_path_ss.clone(),
-            access_key_config: config.access_key.clone(),
-            access_key_base_config: config.clone(),
             allowed_tcp_paths: allowed.tcp,
             allowed_udp_paths: allowed.udp,
             allowed_vless_paths: allowed.vless,
@@ -212,49 +186,6 @@ impl UserManager {
             .iter()
             .find(|u| u.id == id)
             .map(UserView::from)
-    }
-
-    pub(super) async fn access_urls(&self, id: &str) -> Result<AccessUrlsView, AccessUrlError> {
-        let user = self
-            .inner
-            .lock()
-            .await
-            .users
-            .iter()
-            .find(|u| u.id == id)
-            .cloned()
-            .ok_or_else(|| AccessUrlError::NotFound(id.to_string()))?;
-
-        let artifacts = build_access_key_artifacts_for_user(
-            &self.access_key_base_config,
-            &self.access_key_config,
-            &user,
-        )
-        .map_err(AccessUrlError::Build)?;
-        let mut view = AccessUrlsView {
-            ss_config_url: None,
-            ss_access_key_url: None,
-            vless_url: None,
-        };
-
-        for artifact in artifacts {
-            if artifact.yaml.starts_with("vless://") {
-                // `build_access_key_artifacts_for_user` may return
-                // multiple VLESS URIs per user (WS, plus XHTTP
-                // packet-up + stream-one). The view keeps a single
-                // representative; first wins so the carrier order
-                // (WS → XHTTP packet-up → XHTTP stream-one) decides
-                // which one surfaces here.
-                if view.vless_url.is_none() {
-                    view.vless_url = artifact.access_key_url;
-                }
-            } else {
-                view.ss_config_url = artifact.config_url;
-                view.ss_access_key_url = artifact.access_key_url;
-            }
-        }
-
-        Ok(view)
     }
 
     pub(super) async fn create(&self, entry: UserEntry) -> Result<UserView> {

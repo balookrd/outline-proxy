@@ -135,7 +135,6 @@ pub struct Config {
     pub users: Vec<UserEntry>,
     pub method: CipherKind,
     #[cfg_attr(not(feature = "control"), allow(dead_code))]
-    pub access_key: AccessKeyConfig,
     /// Resolved tuning knobs (H2/H3 resource limits plus session/NAT timeouts
     /// and global UDP relay cap). Derived from the `tuning_profile` preset
     /// with any per-field overrides from `[tuning]` applied on top. Validated
@@ -386,25 +385,6 @@ impl PaddingConfig {
             self.scheme()
         } else {
             outline_wire::padding::PaddingScheme::disabled()
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AccessKeyConfig {
-    pub public_host: Option<String>,
-    pub public_scheme: String,
-    pub access_key_url_base: Option<String>,
-    pub access_key_file_extension: String,
-}
-
-impl Default for AccessKeyConfig {
-    fn default() -> Self {
-        Self {
-            public_host: None,
-            public_scheme: "wss".to_owned(),
-            access_key_url_base: None,
-            access_key_file_extension: ".yaml".to_owned(),
         }
     }
 }
