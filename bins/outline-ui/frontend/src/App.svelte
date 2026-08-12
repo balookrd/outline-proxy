@@ -1,6 +1,7 @@
 <script lang="ts">
   import Topbar from './components/layout/Topbar.svelte';
   import Sidebar from './components/layout/Sidebar.svelte';
+  import Toasts from './components/layout/Toasts.svelte';
   import Landing from './features/landing/Landing.svelte';
   import Users from './features/ss/Users.svelte';
   import { route, section } from './lib/router.svelte';
@@ -30,3 +31,4 @@
     {/if}
   </main>
 </div>
+<Toasts />

@@ -89,7 +89,7 @@ button { font-family: inherit; }
 .brand .logo { width: 22px; height: 22px; display: grid; place-items: center;
   background: linear-gradient(135deg, var(--accent), var(--info)); border-radius: 6px; color: #04140a; }
 .brand small { color: var(--fg-dim); font-weight: 400; font-size: 12px; }
-.topbar .spacer { flex: 1; }
+.spacer { flex: 1; } /* generic flex-gap filler — topbar today, drawer header too (UserDrawer.svelte) */
 .env-pill { font-size: 12px; color: var(--fg-muted); padding: 3px 8px; border: 1px solid var(--border);
   border-radius: 999px; background: var(--muted); }
 
@@ -295,7 +295,9 @@ tr:hover .rowactions { opacity: 1; }
 .toast { background: var(--surface-3); border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; font-size: 13px;
   box-shadow: var(--shadow); display: flex; align-items: center; gap: 9px; animation: fade .2s ease; }
 .toast.ok { border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.toast.error { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
 .toast svg { width: 16px; height: 16px; color: var(--accent); }
+.toast.error svg { color: var(--danger); }
 
 .muted { color: var(--fg-muted); }
 .empty { padding: var(--sp-6); text-align: center; color: var(--fg-dim); }
