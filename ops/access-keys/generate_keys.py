@@ -44,10 +44,20 @@ _REPORT_FIELDS = (
 
 
 def write_atomic(path: Path, content: str) -> None:
-    """Write via a temp file so a client never reads a half-written artifact."""
+    """Write via a temp file so a client never reads a half-written artifact.
+
+    The artifacts carry every user's password and vless_id, so they must never
+    be world-readable — not even during the brief temp-file window. We create
+    the temp file directly at 0640 (root:www-data on the node: the serving
+    group reads, everyone else is shut out) instead of writing under the umask
+    and relaxing to 0644 afterwards. os.open with the mode plus fchmod pins it
+    to exactly 0640, independent of the caller's umask.
+    """
     tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(content, encoding="utf-8")
-    os.chmod(tmp, 0o644)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o640)
+        handle.write(content)
     os.replace(tmp, path)
 
 
@@ -110,7 +120,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     out_dir = Path(out_dir_raw)
     if not args.dry_run:
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # 0750, not 0755: only root and the serving group (www-data) may list
+        # or traverse the directory of credential-bearing artifacts. A
+        # pre-existing directory (the usual case on a node) keeps its own mode.
+        out_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
 
     ak = server.access_keys
     written: list[dict] = []

@@ -41,6 +41,16 @@ use crate::server::transport::proxy_protocol::{PpTransport, encode_proxy_protoco
 
 type H3Stream = RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
 
+/// Upper bound on the request body we buffer before forwarding to the
+/// backend. The h3 fallback is a catch-all that any unauthenticated
+/// probe can POST to, and unlike the h1 adapter (which streams the body
+/// straight into hyper) we hold the whole body in RAM to hand hyper a
+/// `Full<Bytes>`. Without a cap a single request could balloon memory,
+/// multiplied by `H3_MAX_CONCURRENT_STREAMS`. Mirrors XHTTP's
+/// `MAX_POST_BYTES`; fallback traffic is small by design, so 256 KiB is
+/// generous for the legitimate probe/GET workload this path serves.
+const MAX_FALLBACK_BODY_BYTES: usize = 256 * 1024;
+
 pub(in crate::server) async fn h3_fallback_handle(
     request: http::Request<()>,
     stream: H3Stream,
@@ -86,6 +96,16 @@ async fn proxy_h3_to_backend(
         // implementation that returns multiple slices per chunk.
         while chunk.has_remaining() {
             let slice = chunk.chunk();
+            if body_buf.len() + slice.len() > MAX_FALLBACK_BODY_BYTES {
+                // Reject before buffering the overflowing slice, and
+                // before dialing the backend at all. The borrow from
+                // `recv_data` has ended, so the stream can be moved.
+                warn!(
+                    cap = MAX_FALLBACK_BODY_BYTES,
+                    "h3 fallback request body exceeded cap; rejecting with 413"
+                );
+                return respond_with_status(stream, http::StatusCode::PAYLOAD_TOO_LARGE).await;
+            }
             body_buf.extend_from_slice(slice);
             let len = slice.len();
             chunk.advance(len);
@@ -238,5 +258,22 @@ async fn proxy_h3_to_backend(
         .finish()
         .await
         .context("failed to finalize HTTP/3 response stream")?;
+    Ok(())
+}
+
+/// Send a bodyless status response (e.g. 413) and finalize the stream.
+/// Used to reject requests before we dial the backend. A best-effort
+/// `finish()` closes the QUIC bidi cleanly; its error is not worth
+/// propagating once the status has already gone out.
+async fn respond_with_status(mut stream: H3Stream, status: http::StatusCode) -> Result<()> {
+    let response = http::Response::builder()
+        .status(status)
+        .body(())
+        .context("failed to build HTTP/3 fallback status response")?;
+    stream
+        .send_response(response)
+        .await
+        .context("failed to send HTTP/3 fallback status response")?;
+    let _ = stream.finish().await;
     Ok(())
 }

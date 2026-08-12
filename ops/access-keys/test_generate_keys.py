@@ -88,11 +88,15 @@ class MainTest(unittest.TestCase):
             actual = (out / "both.conf").read_text(encoding="utf-8")
         self.assertEqual(actual, golden)
 
-    def test_files_are_world_readable_with_no_temp_left_behind(self):
+    def test_files_are_group_readable_not_world_readable_with_no_temp_left_behind(self):
+        # The artifacts carry every user's password and vless_id, so they must
+        # never be world-readable — only root and the serving group (www-data
+        # on the node) may read them. 0640, pinned exactly regardless of umask,
+        # and never even briefly wider through the temp file.
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             run(out)
-            self.assertEqual(os.stat(out / "both.conf").st_mode & 0o777, 0o644)
+            self.assertEqual(os.stat(out / "both.conf").st_mode & 0o777, 0o640)
             self.assertFalse([p.name for p in out.iterdir() if p.name.startswith(".")])
 
     def test_dry_run_writes_nothing(self):

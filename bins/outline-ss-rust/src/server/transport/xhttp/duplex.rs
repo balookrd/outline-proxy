@@ -159,16 +159,21 @@ impl WsSocket for XhttpDuplex {
             // Keepalive tick from `run_vless_relay`. XHTTP has no
             // on-wire Ping frame, so we cannot reset the *client's*
             // datagram idle watchdog from here — but we can keep the
-            // *server* session alive: bump `last_activity` so the
+            // *server* session alive: bump the keepalive clock so the
             // registry janitor does not evict an idle-but-live relay
             // out from under us. Without this a UDP datagram channel
             // with a lull longer than `SESSION_IDLE_EVICTION` (DNS
             // between lookups, a quiet QUIC connection) is torn down
             // mid-session and the client sees a spurious `ws closed`.
-            // The lower transport (h2/h3 keepalive) keeps the carrier
-            // itself live, so the client side does not need a frame.
+            // Deliberately `touch_keepalive`, not `touch_progress`: a
+            // keepalive proves the carrier is alive but not that the
+            // downlink is draining, so a stuck GET consumer cannot ride
+            // keepalives past idle eviction (see
+            // `XhttpSession::is_evictable`). The lower transport (h2/h3
+            // keepalive) keeps the carrier itself live, so the client
+            // side does not need a frame.
             XhttpMsg::Noop => {
-                writer.session.touch();
+                writer.session.touch_keepalive();
                 Ok(())
             },
         }

@@ -1054,9 +1054,15 @@ async fn xhttp_get_drop_then_reconnect_resumes_downlink_ring() -> Result<()> {
     let client = http_client();
     let session_id = "drop-resume-session";
     let url = format!("http://{listen_addr}/xh/{session_id}");
-    let (session, created) = registry
-        .get_or_create(session_id, None, None)
-        .expect("registry has capacity");
+    let (session, created) = match registry.get_or_create(
+        session_id,
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        None,
+        None,
+    ) {
+        crate::server::transport::SessionSlot::Ready { session, created } => (session, created),
+        crate::server::transport::SessionSlot::Rejected(_) => panic!("registry has capacity"),
+    };
     assert!(created, "registry should mint a fresh session for a new id");
 
     // ── GET-A: read one downlink chunk, then drop the body ──────

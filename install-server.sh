@@ -123,6 +123,43 @@ fetch_stdout() {
   fi
 }
 
+# Вычисляет sha256 файла $1: печатает только hex-дайджест. Пусто, если в
+# системе нет ни sha256sum, ни shasum.
+sha256_of() {
+  local file="$1"
+  if have_cmd sha256sum; then
+    sha256sum "$file" | awk '{print $1}'
+  elif have_cmd shasum; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  fi
+}
+
+# Сверяет sha256 скачанного файла $1 с контрольной суммой ассета $2 из уже
+# скачанного SHA256SUMS.txt ($3) ДО установки — иначе root запустит
+# непроверенный бинарь. Формат строк — `sha256sum` (`<hex>  <name>`, в
+# binary-mode `<hex> *<name>`); имя ассета матчим по второму полю. Любое
+# расхождение либо отсутствие строки/утилиты — die.
+verify_sha256() {
+  local file="$1"
+  local asset_name="$2"
+  local sums_file="$3"
+  local expected actual
+
+  expected="$(awk -v n="$asset_name" '$2 == n || $2 == "*" n { print $1; exit }' "$sums_file")"
+  [[ -n "$expected" ]] \
+    || die "В SHA256SUMS.txt нет строки для ${asset_name} — установка прервана"
+
+  actual="$(sha256_of "$file")"
+  [[ -n "$actual" ]] \
+    || die "Не найден ни sha256sum, ни shasum — контрольную сумму проверить нечем"
+
+  if [[ "$actual" != "$expected" ]]; then
+    die "Контрольная сумма ${asset_name} не совпала: ожидалось ${expected}, получено ${actual}"
+  fi
+
+  log "Контрольная сумма совпала: ${asset_name}"
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -161,6 +198,10 @@ require_tools() {
   have_cmd getent || die "Не найден getent"
   have_cmd useradd || die "Не найден useradd"
   have_cmd groupadd || die "Не найден groupadd"
+
+  if ! have_cmd sha256sum && ! have_cmd shasum; then
+    die "Нужен sha256sum или shasum для проверки контрольной суммы"
+  fi
 
   if ! have_cmd systemd-analyze; then
     warn "systemd-analyze не найден, проверка unit будет пропущена"
@@ -404,6 +445,16 @@ install_binary() {
   if ! fetch "$RELEASE_ASSET_URL" "$archive"; then
     die "Не удалось скачать release-артефакт для ${TARGET_TRIPLE}. Текущий GitHub CI публикует только x86_64-unknown-linux-musl и aarch64-unknown-linux-musl."
   fi
+
+  local sums_url sums_file asset_name
+  asset_name="$(basename "$RELEASE_ASSET_URL")"
+  sums_url="$(dirname "$RELEASE_ASSET_URL")/SHA256SUMS.txt"
+  sums_file="${TMP_DIR}/SHA256SUMS.txt"
+
+  log "Скачиваю контрольные суммы ${sums_url}"
+  fetch "$sums_url" "$sums_file" \
+    || die "Не удалось скачать SHA256SUMS.txt для ${RELEASE_TAG} — установка прервана"
+  verify_sha256 "$archive" "$asset_name" "$sums_file"
 
   log "Распаковываю бинарь"
   extract_binary "$archive" "$tmp_bin"

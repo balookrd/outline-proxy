@@ -3,7 +3,6 @@ set -Eeuo pipefail
 
 REPO_OWNER="${REPO_OWNER:-balookrd}"
 REPO_NAME="${REPO_NAME:-outline-proxy}"
-REPO_REF="${REPO_REF:-main}"
 REPO="${REPO_OWNER}/${REPO_NAME}"
 TAG_PREFIX="ws-"
 
@@ -23,15 +22,16 @@ NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR}/nightly-commit}"
 GITHUB_API="${GITHUB_API:-https://api.github.com}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
-# Откуда качать unit-файлы
-RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_REF}}"
+# unit- и config-файлы тянем из среза дерева, соответствующего resolved
+# release-тегу (см. resolve_raw_urls), а не с изменяемого main — иначе они
+# отвязаны от релиз-бинаря. Заданные в окружении RAW_* сохраняют приоритет,
+# дефолты выводятся из тега уже после его резолва.
+RAW_BASE="${RAW_BASE:-}"
 BIN_SUBDIR="bins/outline-ws-rust"
-RAW_SERVICE_URL="${RAW_SERVICE_URL:-${RAW_BASE}/${BIN_SUBDIR}/systemd/outline-ws-rust.service}"
-RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-${RAW_BASE}/${BIN_SUBDIR}/systemd/outline-ws-rust@.service}"
-
-# Откуда качать config-файлы
-RAW_CONFIG_URL="${RAW_CONFIG_URL:-${RAW_BASE}/${BIN_SUBDIR}/config.toml}"
-RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/${BIN_SUBDIR}/config.toml}"
+RAW_SERVICE_URL="${RAW_SERVICE_URL:-}"
+RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-}"
+RAW_CONFIG_URL="${RAW_CONFIG_URL:-}"
+RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-}"
 
 SERVICE_NAME="outline-ws-rust.service"
 TEMPLATE_NAME="outline-ws-rust@.service"
@@ -58,6 +58,43 @@ need_cmd() {
 
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+# Вычисляет sha256 файла $1: печатает только hex-дайджест. Пусто, если в
+# системе нет ни sha256sum, ни shasum.
+sha256_of() {
+  local file="$1"
+  if have_cmd sha256sum; then
+    sha256sum "$file" | awk '{print $1}'
+  elif have_cmd shasum; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  fi
+}
+
+# Сверяет sha256 скачанного файла $1 с контрольной суммой ассета $2 из уже
+# скачанного SHA256SUMS.txt ($3) ДО установки — иначе root запустит
+# непроверенный бинарь. Формат строк — `sha256sum` (`<hex>  <name>`, в
+# binary-mode `<hex> *<name>`); имя ассета матчим по второму полю. Любое
+# расхождение либо отсутствие строки/утилиты — die.
+verify_sha256() {
+  local file="$1"
+  local asset_name="$2"
+  local sums_file="$3"
+  local expected actual
+
+  expected="$(awk -v n="$asset_name" '$2 == n || $2 == "*" n { print $1; exit }' "$sums_file")"
+  [[ -n "$expected" ]] \
+    || die "В SHA256SUMS.txt нет строки для ${asset_name} — установка прервана"
+
+  actual="$(sha256_of "$file")"
+  [[ -n "$actual" ]] \
+    || die "Не найден ни sha256sum, ни shasum — контрольную сумму проверить нечем"
+
+  if [[ "$actual" != "$expected" ]]; then
+    die "Контрольная сумма ${asset_name} не совпала: ожидалось ${expected}, получено ${actual}"
+  fi
+
+  log "Контрольная сумма совпала: ${asset_name}"
 }
 
 require_root() {
@@ -155,6 +192,19 @@ github_api_get() {
 github_api_url() {
   local path="$1"
   printf '%s/repos/%s/%s' "$GITHUB_API" "$REPO" "$path"
+}
+
+# Выводит RAW_BASE и URL'ы unit/config из resolved release-тега ($1), чтобы
+# vendored юниты и config тянулись из того же среза дерева, что и релиз-бинарь
+# (как в install-server.sh через tag_raw_url), а не с изменяемого main.
+# Заданные снаружи RAW_* имеют приоритет над выводом из тега.
+resolve_raw_urls() {
+  local tag="$1"
+  RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${tag}}"
+  RAW_SERVICE_URL="${RAW_SERVICE_URL:-${RAW_BASE}/${BIN_SUBDIR}/systemd/outline-ws-rust.service}"
+  RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-${RAW_BASE}/${BIN_SUBDIR}/systemd/outline-ws-rust@.service}"
+  RAW_CONFIG_URL="${RAW_CONFIG_URL:-${RAW_BASE}/${BIN_SUBDIR}/config.toml}"
+  RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/${BIN_SUBDIR}/config.toml}"
 }
 
 map_arch_to_target() {
@@ -585,6 +635,9 @@ main() {
   need_cmd groupadd
   need_cmd chown
   need_cmd getent
+  if ! have_cmd sha256sum && ! have_cmd shasum; then
+    die "Нужен sha256sum или shasum для проверки контрольной суммы"
+  fi
 
   local target release_json release_tag release_name asset_url archive_path workdir
   local svc_tmp tpl_tmp
@@ -604,8 +657,11 @@ main() {
 
   release_json="$(select_release_json)"
   release_tag="$(printf '%s' "$release_json" | release_field tag_name)"
+  [[ -n "$release_tag" ]] || die "Не удалось определить tag_name релиза"
+  resolve_raw_urls "$release_tag"
   release_name="$(printf '%s' "$release_json" | release_field name)"
   asset_url="$(printf '%s' "$release_json" | asset_url_from_release "$target")"
+  [[ -n "$asset_url" ]] || die "Не найден release-артефакт для ${target} в релизе ${release_tag}"
 
   log "Релиз: ${release_tag}${release_name:+ (${release_name})}"
 
@@ -652,6 +708,16 @@ main() {
   log "Скачивание бинарника: ${asset_url}"
 
   curl -fL --retry 3 --retry-delay 2 -o "$archive_path" "$asset_url"
+
+  local sums_url sums_file asset_name
+  asset_name="$(basename "$asset_url")"
+  sums_url="$(dirname "$asset_url")/SHA256SUMS.txt"
+  sums_file="${TMP_DIR}/SHA256SUMS.txt"
+  log "Скачивание контрольных сумм: ${sums_url}"
+  curl -fsSL -o "$sums_file" "$sums_url" \
+    || die "Не удалось скачать SHA256SUMS.txt для ${release_tag} — установка прервана"
+  verify_sha256 "$archive_path" "$asset_name" "$sums_file"
+
   install_binary "$archive_path" "$workdir"
   log "Бинарник установлен: ${INSTALL_PATH}"
 

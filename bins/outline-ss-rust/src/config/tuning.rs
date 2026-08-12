@@ -65,10 +65,11 @@ pub struct TuningProfile {
     /// tenants unable to open new targets until idle eviction catches up.
     /// Datagrams to *new* targets of a user already at its share are dropped
     /// (counted in `outline_ss_udp_nat_capacity_dropped_total`); its live
-    /// entries keep flowing. `0` — the default on every profile — disables it,
-    /// preserving the historical global-only behaviour; set it on
-    /// multi-tenant deployments, comfortably above the number of concurrent
-    /// destinations a legitimate client uses.
+    /// entries keep flowing. Defaults to a fraction of `udp_nat_max_entries`
+    /// per profile (1024 / 2048 / 4096) — comfortably above the number of
+    /// concurrent destinations a legitimate client uses, yet small enough that
+    /// one tenant can no longer claim the whole table. `0` disables it,
+    /// restoring the historical global-only behaviour.
     pub udp_nat_max_entries_per_user: usize,
     /// Process-wide ceiling on in-flight UDP relay tasks across all WebSocket
     /// sessions. `0` disables the global cap.
@@ -98,6 +99,23 @@ pub struct TuningProfile {
     /// session are rejected with HTTP 503; requests for an already-live id
     /// (resume / repeat) are always served. `0` disables the cap.
     pub xhttp_max_sessions: usize,
+    /// Per-source-IP ceiling on live XHTTP sessions, applied on top of
+    /// `xhttp_max_sessions`. Without it a single peer can spray unique session
+    /// ids and fill the whole global budget on its own (each session pins a
+    /// registry entry plus, once its relay spawns, buffered downlink/uplink
+    /// bytes — all *before* the relay authenticates the client). This caps the
+    /// pre-auth footprint one source IP can force. When a source is at its
+    /// share, requests that would create a *new* session are rejected with HTTP
+    /// 503 (counted with `reason="max_sessions_per_ip"`); an already-live id is
+    /// still served. `0` — the default on every profile — disables it,
+    /// preserving the global-only behaviour.
+    ///
+    /// Keyed on the *transport* peer address: behind a CDN or reverse proxy that
+    /// is the edge IP shared by every fronted client, so leave it `0` on
+    /// CDN-fronted deployments and set it only where clients connect the server
+    /// directly (mirrors `udp_nat_max_entries_per_user` as an opt-in per-source
+    /// share).
+    pub xhttp_max_sessions_per_ip: usize,
     /// Process-wide ceiling on in-flight XHTTP relay tasks across all sessions.
     /// Mirrors `udp_max_concurrent_relay_tasks`: a burst of session-creating
     /// requests cannot spawn an unbounded number of relay tasks. When the
@@ -144,11 +162,12 @@ impl TuningProfile {
         client_active_ttl_secs: 180,
         udp_nat_idle_timeout_secs: 120,
         udp_nat_max_entries: 4_096,
-        udp_nat_max_entries_per_user: 0,
+        udp_nat_max_entries_per_user: 1_024,
         udp_max_concurrent_relay_tasks: 1_024,
         udp_replay_max_sessions: 16_384,
         tcp_handshake_replay_max_salts: 16_384,
         xhttp_max_sessions: 16_384,
+        xhttp_max_sessions_per_ip: 0,
         xhttp_max_concurrent_relay_tasks: 1_024,
         dns_cache_max_entries: 16_384,
         // Memory-conscious deployments keep this small at the cost of a
@@ -172,11 +191,12 @@ impl TuningProfile {
         client_active_ttl_secs: 300,
         udp_nat_idle_timeout_secs: 240,
         udp_nat_max_entries: 16_384,
-        udp_nat_max_entries_per_user: 0,
+        udp_nat_max_entries_per_user: 2_048,
         udp_max_concurrent_relay_tasks: 2_048,
         udp_replay_max_sessions: 65_536,
         tcp_handshake_replay_max_salts: 65_536,
         xhttp_max_sessions: 65_536,
+        xhttp_max_sessions_per_ip: 0,
         xhttp_max_concurrent_relay_tasks: 2_048,
         dns_cache_max_entries: 65_536,
         // 64 chunks × 16 KiB ≈ 1 MiB worst-case per-session in-flight.
@@ -200,11 +220,12 @@ impl TuningProfile {
         client_active_ttl_secs: 300,
         udp_nat_idle_timeout_secs: 300,
         udp_nat_max_entries: 65_536,
-        udp_nat_max_entries_per_user: 0,
+        udp_nat_max_entries_per_user: 4_096,
         udp_max_concurrent_relay_tasks: 4_096,
         udp_replay_max_sessions: 262_144,
         tcp_handshake_replay_max_salts: 262_144,
         xhttp_max_sessions: 262_144,
+        xhttp_max_sessions_per_ip: 0,
         xhttp_max_concurrent_relay_tasks: 4_096,
         // ~262k entries × (~120 B + sockaddrs) ≈ 30-40 MiB worst case — the
         // ceiling only matters when a client sprays unique names at it.
@@ -297,6 +318,7 @@ impl TuningProfile {
         // `udp_nat_max_entries == 0` is a valid opt-out.
         // `udp_nat_max_entries_per_user == 0` is a valid opt-out (global cap only).
         // `xhttp_max_sessions == 0` is a valid opt-out.
+        // `xhttp_max_sessions_per_ip == 0` is a valid opt-out (global cap only).
         // `xhttp_max_concurrent_relay_tasks == 0` is a valid opt-out.
         // `dns_cache_max_entries == 0` is a valid opt-out (unbounded cache,
         // reclaimed only by the periodic stale-grace sweep).
@@ -363,6 +385,9 @@ impl TuningProfile {
         if let Some(v) = o.xhttp_max_sessions {
             self.xhttp_max_sessions = v;
         }
+        if let Some(v) = o.xhttp_max_sessions_per_ip {
+            self.xhttp_max_sessions_per_ip = v;
+        }
         if let Some(v) = o.xhttp_max_concurrent_relay_tasks {
             self.xhttp_max_concurrent_relay_tasks = v;
         }
@@ -423,6 +448,8 @@ pub struct TuningOverrides {
     pub tcp_handshake_replay_max_salts: Option<usize>,
     #[serde(default)]
     pub xhttp_max_sessions: Option<usize>,
+    #[serde(default)]
+    pub xhttp_max_sessions_per_ip: Option<usize>,
     #[serde(default)]
     pub xhttp_max_concurrent_relay_tasks: Option<usize>,
     #[serde(default)]

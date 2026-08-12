@@ -710,3 +710,94 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
     let _ = server_task.await;
     Ok(())
 }
+
+#[tokio::test]
+async fn h3_fallback_rejects_oversized_request_body() -> Result<()> {
+    use sockudo_ws::{
+        Config as H3WsConfig, Http3 as H3Transport, WebSocketServer as H3WebSocketServer,
+    };
+
+    // Upstream exists only so the fallback context is well-formed; an
+    // oversized body must be rejected before the proxy ever dials it,
+    // so this handler is never expected to fire.
+    let (upstream_addr, _rx) = spawn_h2c_echo_upstream(
+        StatusCode::OK,
+        vec![("content-type", "text/plain")],
+        "should-not-be-reached",
+    )
+    .await?;
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let config = sample_config(addr);
+    let user_routes = build_user_routes(&config)?;
+    let metrics = Metrics::new(&config);
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        user_routes,
+        metrics,
+        nat_table,
+        dns_cache,
+        false,
+        config.http_root_realm.clone(),
+    );
+
+    let h3_fallback = fallback_ctx_for_h3(upstream_addr, addr, BackendProto::H2);
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+                http_fallback: Some(h3_fallback),
+                cluster: None,
+            },
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri(format!("https://localhost:{}/upload", addr.port()))
+        .version(axum::http::Version::HTTP_3)
+        .body(())?;
+    let mut stream = send_request.send_request(request).await?;
+
+    // 512 KiB, comfortably over the 256 KiB fallback body cap, streamed
+    // in 64 KiB DATA frames so the server rejects mid-body. Once it
+    // answers 413 and closes its read side, further writes may be reset
+    // — that is expected, so we stop sending on the first error.
+    let chunk = Bytes::from(vec![b'x'; 64 * 1024]);
+    for _ in 0..8 {
+        if stream.send_data(chunk.clone()).await.is_err() {
+            break;
+        }
+    }
+    let _ = stream.finish().await;
+
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    driver_task.abort();
+    server_task.abort();
+    let _ = driver_task.await;
+    let _ = server_task.await;
+    Ok(())
+}

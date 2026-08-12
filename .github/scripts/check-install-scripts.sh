@@ -44,6 +44,8 @@ SHARED_FUNCS=(
   get_nightly_commit_sha
   prune_old_backups
   get_installed_version
+  sha256_of
+  verify_sha256
 )
 
 fail=0

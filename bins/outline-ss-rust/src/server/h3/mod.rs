@@ -82,6 +82,10 @@ pub(in crate::server) fn spawn_h3_cert_reloader(
 
 fn build_h3_ws_config(profile: &TuningProfile) -> H3WebSocketConfig {
     H3WebSocketConfig::builder()
+        // Same pre-auth message ceiling as the axum (h1/h2) upgrade paths: the
+        // vendored sockudo-ws default is also 64 MiB message / 16 MiB frame.
+        .max_message_size(super::transport::WS_MAX_MESSAGE_SIZE)
+        .max_frame_size(super::transport::WS_MAX_MESSAGE_SIZE)
         .idle_timeout(H3_QUIC_IDLE_TIMEOUT_SECS as u32)
         .ping_interval(H3_QUIC_PING_INTERVAL_SECS as u32)
         .max_backpressure(profile.h3_max_backpressure_bytes)

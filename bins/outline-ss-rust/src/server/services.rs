@@ -218,6 +218,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         config.tuning.ws_data_channel_capacity,
         XhttpRegistryLimits {
             max_sessions: config.tuning.xhttp_max_sessions,
+            max_sessions_per_ip: config.tuning.xhttp_max_sessions_per_ip,
             max_relay_tasks: config.tuning.xhttp_max_concurrent_relay_tasks,
         },
         salt_replay_store,

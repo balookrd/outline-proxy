@@ -17,12 +17,18 @@ fn overrides_apply_on_top_of_preset() {
 }
 
 #[test]
-fn per_user_nat_cap_defaults_to_disabled_and_takes_overrides() {
+fn per_user_nat_cap_defaults_per_profile_and_takes_overrides() {
+    // Non-zero on every profile so a single tenant can no longer claim the
+    // whole NAT table, yet each stays a fraction of that profile's global
+    // `udp_nat_max_entries` and comfortably above a legitimate client's fan-out.
+    assert_eq!(TuningProfile::SMALL.udp_nat_max_entries_per_user, 1_024);
+    assert_eq!(TuningProfile::MEDIUM.udp_nat_max_entries_per_user, 2_048);
+    assert_eq!(TuningProfile::LARGE.udp_nat_max_entries_per_user, 4_096);
     for preset in [TuningPreset::Small, TuningPreset::Medium, TuningPreset::Large] {
-        assert_eq!(
-            preset.preset().udp_nat_max_entries_per_user,
-            0,
-            "the per-user NAT cap must stay opt-in so existing deployments keep the global cap only",
+        let tuning = preset.preset();
+        assert!(
+            tuning.udp_nat_max_entries_per_user < tuning.udp_nat_max_entries,
+            "the per-user share must stay below the global cap it sits under",
         );
     }
 
@@ -33,6 +39,35 @@ fn per_user_nat_cap_defaults_to_disabled_and_takes_overrides() {
     });
     assert_eq!(tuning.udp_nat_max_entries_per_user, 512);
     assert_eq!(tuning.udp_nat_max_entries, TuningProfile::MEDIUM.udp_nat_max_entries);
+    tuning.validate().unwrap();
+
+    // `0` remains a valid opt-out back to global-cap-only behaviour.
+    tuning.apply_overrides(&TuningOverrides {
+        udp_nat_max_entries_per_user: Some(0),
+        ..TuningOverrides::default()
+    });
+    assert_eq!(tuning.udp_nat_max_entries_per_user, 0);
+    tuning.validate().unwrap();
+}
+
+#[test]
+fn per_source_ip_xhttp_cap_defaults_to_disabled_and_takes_overrides() {
+    for preset in [TuningPreset::Small, TuningPreset::Medium, TuningPreset::Large] {
+        assert_eq!(
+            preset.preset().xhttp_max_sessions_per_ip,
+            0,
+            "the per-source-IP XHTTP cap must stay opt-in (it keys on the transport peer, \
+             which is the CDN edge behind a fronting proxy)",
+        );
+    }
+
+    let mut tuning = TuningPreset::Medium.preset();
+    tuning.apply_overrides(&TuningOverrides {
+        xhttp_max_sessions_per_ip: Some(64),
+        ..TuningOverrides::default()
+    });
+    assert_eq!(tuning.xhttp_max_sessions_per_ip, 64);
+    assert_eq!(tuning.xhttp_max_sessions, TuningProfile::MEDIUM.xhttp_max_sessions);
     tuning.validate().unwrap();
 }
 

@@ -642,3 +642,45 @@ tcp_ws_url = "wss://old.example.com:8388/tcp"
         "patch must replace the existing fallbacks list:\n{rendered}",
     );
 }
+
+/// End-to-end proof that the config writer routes through the hardened atomic
+/// write: an admin-set restrictive mode on `config.toml` survives a mutation,
+/// and no world-readable temp file is left behind. Without it the plain
+/// `write` + `rename` decayed the target to the ambient umask on every write,
+/// exposing the SOCKS5/uplink passwords and control tokens to any local user.
+#[cfg(unix)]
+#[tokio::test]
+async fn write_document_atomic_preserves_mode_and_leaves_no_temp() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::mutate::write_document_atomic;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, sample_config()).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    // A real control-plane mutation: patch u1's password, then persist.
+    let mut doc = sample_config().parse::<DocumentMut>().unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let idx = find_outline_uplink_index(arr, "core", "u1").unwrap();
+    merge_patch_into_table(
+        arr.get_mut(idx).unwrap(),
+        &UplinkPayload {
+            password: Some("rotated-password".into()),
+            ..Default::default()
+        },
+    );
+
+    write_document_atomic(&path, &doc).await.expect("atomic write");
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "control mutation widened config mode to {mode:o}");
+
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("rotated-password"), "mutation not persisted:\n{written}");
+    written
+        .parse::<DocumentMut>()
+        .expect("persisted config must stay valid TOML");
+    assert!(!dir.path().join(".config.toml.tmp").exists(), "temp file left behind");
+}

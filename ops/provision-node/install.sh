@@ -681,7 +681,10 @@ phase_secrets() {
     fi
 
     if [ -f "$BUNDLE/secrets/users.txt" ]; then
-        run install -m 0644 -o root -g root "$BUNDLE/secrets/users.txt" \
+        # users.txt holds the access-key report, which can carry credentials —
+        # keep it off world-readable, alongside ocpasswd (0600). 0640 with the
+        # service group lets outline-ss-rust read it without opening it up.
+        run install -m 0640 -o root -g outline-ss-rust "$BUNDLE/secrets/users.txt" \
             /opt/outline/outline-ss-rust/users.txt
     fi
     if [ -f "$BUNDLE/secrets/ocserv-ocpasswd" ]; then

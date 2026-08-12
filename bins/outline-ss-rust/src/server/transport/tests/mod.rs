@@ -2,6 +2,7 @@ use super::*;
 
 mod proxy_protocol;
 mod sni_fallback;
+mod ws_limits;
 mod ws_writer;
 
 #[test]

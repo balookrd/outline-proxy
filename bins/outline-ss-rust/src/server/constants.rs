@@ -9,6 +9,29 @@ pub(super) const H2_KEEPALIVE_TIMEOUT_SECS: u64 = 20;
 // Cap on concurrent active TLS connections (handshake + established). Matches
 // the plain-TCP shadowsocks cap so a TLS listener cannot spawn unbounded tasks.
 pub(super) const TLS_MAX_CONCURRENT_CONNECTIONS: usize = 4_096;
+// Cap on concurrent active plain-HTTP (non-TLS) connections on the TCP
+// listener. The plain path terminates HTTP/1.1 and h2c directly: there is no
+// TLS handshake in front of it, so every accepted socket becomes a hyper
+// connection task immediately, before the peer has sent a single byte. Without
+// a cap a slowloris peer that connects and then dribbles request headers (or
+// never sends any) pins one task each, unbounded. Mirrors
+// `TLS_MAX_CONCURRENT_CONNECTIONS`, whose comment spells out the pre-auth DoS.
+pub(super) const PLAIN_HTTP_MAX_CONCURRENT_CONNECTIONS: usize = 4_096;
+// Wall-clock budget for the unauthenticated pre-request phase of a plain
+// (non-TLS) HTTP connection: a freshly accepted peer must send its first byte,
+// and an HTTP/1 peer must deliver a complete set of request headers, within
+// this window. The plain listener has no TLS handshake to bound the pre-auth
+// phase (contrast `TLS_HANDSHAKE_TIMEOUT_SECS`), so without it a peer can hold
+// a `PLAIN_HTTP_MAX_CONCURRENT_CONNECTIONS` permit and a hyper task forever by
+// sending headers one byte at a time — or none at all — a free pre-auth
+// slowloris. Enforced two ways because one does not cover the other: hyper's
+// HTTP/1 `header_read_timeout` bounds slow-but-nonzero header delivery but only
+// starts *after* the h1/h2 protocol sniff, which itself has no timeout; a
+// first-byte peek deadline in the accept loop covers the connect-then-silent
+// peer that never gets past the sniff. Several seconds is far above a real
+// client on a bad high-RTT mobile link yet turns the attack from "permanent"
+// into "reconnect every N seconds per slot".
+pub(super) const PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS: u64 = 15;
 // How long an HTTP listener (plain TCP, TLS, metrics) waits for in-flight
 // connections to finish after the shutdown signal fires before forcibly
 // aborting them. Required because hyper's graceful shutdown keeps the
