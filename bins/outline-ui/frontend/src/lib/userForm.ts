@@ -1,4 +1,4 @@
-import { parseAliases } from './format';
+import { parseAliases, aliasesToText } from './format';
 import type { NewUser, PatchUser, User } from './types';
 
 // Plain-string/number form state for UserDrawer.svelte, kept framework-free
@@ -54,7 +54,7 @@ export function fieldsFromUser(user: User): UserFormFields {
     wsPathTcp: user.ws_path_tcp ?? '',
     wsPathUdp: user.ws_path_udp ?? '',
     wsPathVless: user.ws_path_vless ?? '',
-    aliases: user.aliases ? user.aliases.join(', ') : '',
+    aliases: aliasesToText(user.aliases),
     enabled: user.enabled,
   };
 }
@@ -78,7 +78,8 @@ export function validateUserForm(fields: UserFormFields, editing: boolean): stri
 //     sense. Empty method/fwmark/ws_path_* are instead sent as an explicit
 //     `null`, which the server treats as "reset to default". `id` is never
 //     sent on edit (immutable once created).
-//   - aliases: non-empty text parses to a string[]; empty text resets to
+//   - aliases: non-empty text parses to a name->CIDRs map (`{ name: [cidr,
+//     ...] }`, see lib/format.ts's parseAliases); empty text resets to
 //     `null` on edit, is omitted on create (same reset-vs-omit split as the
 //     other optional fields).
 //   - `enabled` is always included, both create and edit.

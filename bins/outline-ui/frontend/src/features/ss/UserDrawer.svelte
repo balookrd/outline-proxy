@@ -155,8 +155,14 @@
     </div>
     <div class="fieldrow">
       <label for="user-aliases">Aliases</label>
-      <input id="user-aliases" type="text" bind:value={fields.aliases} placeholder="comma, separated" />
-      <span class="hint">Optional IP-alias accounting labels.</span>
+      <textarea
+        id="user-aliases"
+        class="field-mono"
+        rows="2"
+        bind:value={fields.aliases}
+        placeholder={"mobile = 10.0.0.0/8, 203.0.113.5\noffice = 192.0.2.0/24"}
+      ></textarea>
+      <span class="hint">One name = cidr, cidr per line. Relabels accounting (metrics/NAT/logs) by client source IP.</span>
     </div>
     <div class="switch">
       <input id="user-enabled" type="checkbox" bind:checked={fields.enabled} />

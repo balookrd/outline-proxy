@@ -56,7 +56,7 @@ describe('buildUserPayload — create', () => {
       wsPathTcp: '/tcp',
       wsPathUdp: '/udp',
       wsPathVless: '/vless',
-      aliases: 'a, b',
+      aliases: 'mobile = 10.0.0.0/8',
       enabled: false,
     };
     expect(buildUserPayload(fields, false)).toEqual({
@@ -68,7 +68,7 @@ describe('buildUserPayload — create', () => {
       ws_path_tcp: '/tcp',
       ws_path_udp: '/udp',
       ws_path_vless: '/vless',
-      aliases: ['a', 'b'],
+      aliases: { mobile: ['10.0.0.0/8'] },
       enabled: false,
     });
   });
@@ -100,9 +100,9 @@ describe('buildUserPayload — edit', () => {
   });
 
   it('non-empty resettable values overwrite normally instead of nulling', () => {
-    const fields = { ...emptyUserFields(), method: 'aes-128-gcm', fwmark: 3, aliases: 'x' };
+    const fields = { ...emptyUserFields(), method: 'aes-128-gcm', fwmark: 3, aliases: 'mobile = 10.0.0.0/8' };
     const out = buildUserPayload(fields, true);
-    expect(out).toMatchObject({ method: 'aes-128-gcm', fwmark: 3, aliases: ['x'] });
+    expect(out).toMatchObject({ method: 'aes-128-gcm', fwmark: 3, aliases: { mobile: ['10.0.0.0/8'] } });
   });
 
   it('provided password/vless_id are sent as a real change', () => {
@@ -127,7 +127,7 @@ describe('fieldsFromUser', () => {
       fwmark: 5,
       ws_path_tcp: '/tcp',
       ws_path_udp: null,
-      aliases: ['a', 'b'],
+      aliases: { mobile: '10.0.0.0/8', office: ['192.0.2.0/24', '203.0.113.5'] },
     };
     expect(fieldsFromUser(user)).toEqual({
       id: 'u1',
@@ -138,7 +138,7 @@ describe('fieldsFromUser', () => {
       wsPathTcp: '/tcp',
       wsPathUdp: '',
       wsPathVless: '',
-      aliases: 'a, b',
+      aliases: 'mobile = 10.0.0.0/8\noffice = 192.0.2.0/24, 203.0.113.5',
       enabled: true,
     });
   });
