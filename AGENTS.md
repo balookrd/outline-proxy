@@ -28,6 +28,10 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
   outbound, control/dashboard. Edition 2024.
 - `bins/outline-ws-rust/` — клиентский бинарь: SOCKS5/TUN ingress, uplink LB,
   routing, dial. Edition 2024.
+- `bins/outline-ui/` — web-UI обоих дашбордов одним сервисом (`/ws` и `/ss` на
+  одном порту), без data plane: только агрегация control API узлов. Живёт в k3s.
+  Дашборды пока остаются и в двух бинарях выше — их удаление отложено до обкатки
+  сервиса, см. `bins/outline-ui/README.ru.md`. Edition 2024.
 - `crates/` — общие крейты. Truly-shared (обе стороны): `outline-wire` —
   wire-protocol примитивы (`CipherKind` + master-key/subkey KDF, `TargetAddr`,
   SS2022-заголовки и UDP-раскладки обеих половин, VLESS/mux-кодек; чистая
@@ -72,7 +76,7 @@ cargo ws-release-musl-aarch64      # zigbuild client
 vendored-исключения, без которых локальный результат расходится с CI.
 
 ```bash
-cargo fmt --check -p outline-ss-rust -p outline-ws-rust \
+cargo fmt --check -p outline-ss-rust -p outline-ws-rust -p outline-ui \
   -p outline-metrics -p outline-net -p outline-routing -p outline-transport \
   -p outline-tun -p outline-uplink -p outline-wire \
   -p shadowsocks-crypto -p socks5-proto
