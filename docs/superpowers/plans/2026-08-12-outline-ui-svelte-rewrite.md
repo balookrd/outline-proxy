@@ -6,7 +6,7 @@
 
 **Architecture:** Единый Vite+Svelte 5 бандл монтируется под `/`, `/ss`, `/ws`; клиентский роутер на `location.pathname`. Backend не меняется по контракту — только `assets.rs` начинает отдавать embedded `frontend/dist` (через `rust-embed` за feature `embed-assets`) плюс SPA-fallback. Фронт разрабатывается против dev-proxy к живому Axum, поэтому старый UI работает до задачи cutover.
 
-**Tech Stack:** Svelte 5 (runes) · TypeScript · Vite · Tailwind CSS · Lucide · TanStack Table (только Users) · vitest · pnpm. UI-примитивы (дровер, чипы, таблица, тумблер, toast) — свои, по [прототипу](../specs/2026-08-12-outline-ui-svelte-rewrite-prototype.html) на Tailwind + CSS-токенах; `shadcn-svelte` НЕ тащим (прототип его не использует — YAGNI). Backend: Rust edition 2024, Axum, `rust-embed`.
+**Tech Stack:** Svelte 5 (runes) · TypeScript · Vite · Tailwind CSS (`^3`) · TanStack Table `^8` (только Users) · vitest · pnpm. UI-примитивы (дровер, чипы, таблица, тумблер, toast) и **иконки — свои inline SVG**, по [прототипу](../specs/2026-08-12-outline-ui-svelte-rewrite-prototype.html) на Tailwind + CSS-токенах; `shadcn-svelte` и `lucide-svelte` НЕ тащим (прототип их не использует — YAGNI). Backend: Rust edition 2024, Axum, `rust-embed`.
 
 ## Global Constraints
 
@@ -28,7 +28,8 @@
 - **Дизайн-токены** — из [спеки](../specs/2026-08-12-outline-ui-svelte-rewrite-design.md) и [прототипа](../specs/2026-08-12-outline-ui-svelte-rewrite-prototype.html). Тёмная тема по умолчанию; один акцент; Fira Sans/Code **вшиты** в бандл (woff2-subset, OFL) — не Google CDN.
 - **Документация EN/RU** обновляется в одном изменении; спеки/планы — по-русски.
 - **Коммиты/пуши — только по явной команде владельца.** Commit-шаги ниже исполнитель выполняет в рамках санкционированного прогона; `git push` — никогда без отдельной команды.
-- **Стек-версии:** `pnpm`, Svelte `^5`, Vite `^5`, Tailwind `^3`, TanStack Table `^8` (`@tanstack/svelte-table`), `rust-embed = "8"`.
+- **Стек-версии:** `pnpm`, Svelte `^5`, Vite `^5`, Tailwind `^3`, TanStack Table `^8` (`@tanstack/svelte-table`), `rust-embed = "8"`. Иконки — inline SVG (как прототип), без `lucide-svelte`/`shadcn-svelte`.
+- **Фронт-тесты** — vitest, co-located `*.test.ts` рядом с модулем (конвенция vitest; правило «тесты в `tests/`» — только для Rust-крейтов). UI-компоненты (Task 5–10) проверяются `svelte-check` + паритет-чеком против backend, без unit-тестов на разметку.
 
 ## Файловая структура
 
@@ -75,9 +76,10 @@ Run:
 cd bins/outline-ui
 pnpm create vite@latest frontend -- --template svelte-ts
 cd frontend && pnpm install
-pnpm add -D tailwindcss postcss autoprefixer @tanstack/svelte-table lucide-svelte
-pnpm dlx tailwindcss init -p
+pnpm add -D tailwindcss@^3 postcss autoprefixer
+pnpm dlx tailwindcss@^3 init -p
 ```
+(TanStack Table ставится в Task 6, где впервые нужен; иконки — inline SVG, без Lucide.)
 
 - [ ] **Step 2: `vite.config.ts` — base + dev-proxy**
 
@@ -438,7 +440,7 @@ git commit -m "feat(ui): design tokens, theme, router, shell, landing"
 - Produces: `Users.svelte` (выбранный инстанс + автолист юзеров).
 
 - [ ] **Step 1:** `InstanceSelector.svelte` — `<select>` из `listInstances('/ss'|'/ws')`, biнд выбранного имени; хранит `refresh_interval_secs`.
-- [ ] **Step 2:** `UsersTable.svelte` — TanStack Table (columns: id+avatar, status-chip `active/blocked`, method-chip, access (copy-кнопка), created, actions-slot). Включить `getSortedRowModel` + глобальный фильтр по `id`/`method`. Виртуализацию НЕ подключать.
+- [ ] **Step 2:** Установить таблицу: `pnpm add @tanstack/svelte-table` (если Svelte-адаптер несовместим с Svelte 5 — использовать `@tanstack/table-core` напрямую с runes; сообщить как DONE_WITH_CONCERNS). `UsersTable.svelte` — TanStack Table (columns: id+avatar, status-chip `active/blocked`, method-chip, access (copy-кнопка), created, actions-slot). Включить `getSortedRowModel` + глобальный фильтр по `id`/`method`. Виртуализацию НЕ подключать.
 - [ ] **Step 3:** `Users.svelte` — `createPoll(() => listUsers(instance), () => refreshMs)`; toolbar (InstanceSelector, search, «New user» slot); `ErrorBanner` при `poll.error`; empty-state.
 - [ ] **Step 4: Проверка** — `svelte-check` `0 errors`; против dev-proxy: список юзеров реального инстанса рисуется, сортировка/фильтр работают, «один мёртвый инстанс» показывает баннер, не пустую страницу.
 - [ ] **Step 5: Commit**
