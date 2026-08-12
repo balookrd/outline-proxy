@@ -10,7 +10,7 @@ use outline_wire::cluster::ShardId;
 
 use super::{
     cli::ConfigArgs,
-    dashboard::{resolve_control_config, resolve_dashboard_config},
+    control::resolve_control_config,
     fallback::HttpFallbackConfig,
     file::{
         ClusterSection, FileConfig, TlsCertSection, default_config_path_if_exists, load_file_config,
@@ -46,12 +46,7 @@ impl AppMode {
             tuning.apply_overrides(overrides);
         }
 
-        let config_dir = config_path
-            .as_deref()
-            .and_then(std::path::Path::parent)
-            .unwrap_or_else(|| std::path::Path::new("."));
         let control = resolve_control_config(&args, &file)?;
-        let dashboard = resolve_dashboard_config(&file, config_dir)?;
 
         let server = file.server.unwrap_or_default();
         let server_h3 = server.h3.unwrap_or_default();
@@ -92,7 +87,6 @@ impl AppMode {
         let config = Config {
             config_path: config_path.clone(),
             control,
-            dashboard,
             listen: args.listen.or(server.listen),
             tls_cert_path,
             tls_key_path,

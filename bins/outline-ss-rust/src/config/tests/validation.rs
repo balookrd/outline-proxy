@@ -11,7 +11,6 @@ fn base_config() -> Config {
     Config {
         config_path: None,
         control: None,
-        dashboard: None,
         listen: Some("127.0.0.1:3000".parse().unwrap()),
         tls_cert_path: None,
         tls_key_path: None,

@@ -34,20 +34,6 @@ impl Config {
         if self.listen.is_some() && self.listen == self.metrics_listen {
             bail!("listen must differ from metrics_listen");
         }
-        if let Some(dashboard) = &self.dashboard {
-            if self.listen.is_some_and(|listen| listen == dashboard.listen) {
-                bail!("dashboard.listen must differ from listen");
-            }
-            if self.metrics_listen.is_some_and(|listen| listen == dashboard.listen) {
-                bail!("dashboard.listen must differ from metrics_listen");
-            }
-            if self
-                .effective_h3_listen()
-                .is_some_and(|listen| listen == dashboard.listen)
-            {
-                bail!("dashboard.listen must differ from h3_listen");
-            }
-        }
         if self.padding.enabled && self.padding.paths.is_empty() {
             bail!(
                 "[padding] enabled requires a non-empty `paths` list — the carrier paths to \

@@ -10,8 +10,8 @@ use anyhow::Result;
 use outline_wire::cluster::ShardId;
 
 use super::{
-    CipherKind, ConfigError, ControlConfig, DashboardConfig, HttpFallbackConfig, SniFallbackConfig,
-    TlsCertEntry, TuningProfile, UserEntry,
+    CipherKind, ConfigError, ControlConfig, HttpFallbackConfig, SniFallbackConfig, TlsCertEntry,
+    TuningProfile, UserEntry,
     file::{PaddingSection, SessionResumptionSection},
 };
 
@@ -48,7 +48,6 @@ pub struct Config {
     #[cfg_attr(not(feature = "control"), allow(dead_code))]
     pub control: Option<ControlConfig>,
     #[cfg_attr(not(feature = "control"), allow(dead_code))]
-    pub dashboard: Option<DashboardConfig>,
     pub listen: Option<SocketAddr>,
     /// Default TLS cert/key for the TCP listener, used when no entry in
     /// [`Self::tls_certs`] matches the inbound SNI (or the client did

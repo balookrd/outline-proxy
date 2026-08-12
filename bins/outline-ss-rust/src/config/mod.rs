@@ -1,5 +1,5 @@
 mod cli;
-mod dashboard;
+mod control;
 mod fallback;
 mod file;
 mod loader;
@@ -10,8 +10,7 @@ mod user_entry;
 mod validation;
 
 #[cfg_attr(not(feature = "control"), allow(unused_imports))]
-pub use dashboard::DashboardInstanceConfig;
-pub use dashboard::{ControlConfig, DashboardConfig};
+pub use control::ControlConfig;
 pub use fallback::{BackendProto, HttpFallbackConfig, ProxyProtocolVersion};
 pub use loader::AppMode;
 #[cfg(test)]

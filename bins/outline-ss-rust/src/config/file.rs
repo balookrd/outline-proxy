@@ -34,8 +34,6 @@ pub(super) struct FileConfig {
     #[serde(default)]
     pub control: Option<ControlFileConfig>,
     #[serde(default)]
-    pub dashboard: Option<DashboardFileConfig>,
-    #[serde(default)]
     pub session_resumption: Option<SessionResumptionSection>,
     #[serde(default)]
     pub padding: Option<PaddingSection>,
@@ -253,36 +251,6 @@ pub(super) struct ShadowsocksSection {
 #[serde(deny_unknown_fields)]
 pub(super) struct ControlFileConfig {
     pub listen: Option<SocketAddr>,
-    pub token: Option<String>,
-    pub token_file: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct DashboardFileConfig {
-    pub enabled: Option<bool>,
-    pub listen: Option<SocketAddr>,
-    pub request_timeout_secs: Option<u64>,
-    pub refresh_interval_secs: Option<u64>,
-    /// Optional secret required by the dashboard listener itself, accepted as
-    /// `Authorization: Bearer <token>` or as the HTTP Basic password. Absent
-    /// leaves the listener unauthenticated (loopback deployments).
-    pub token: Option<String>,
-    pub token_file: Option<PathBuf>,
-    /// Extra host names the dashboard's origin guard accepts on top of the
-    /// built-in loopback/bind-address set. Only needed behind a reverse proxy
-    /// serving the panel under a DNS name.
-    #[serde(default)]
-    pub allowed_hosts: Option<Vec<String>>,
-    #[serde(default)]
-    pub instances: Option<Vec<DashboardInstanceFileConfig>>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct DashboardInstanceFileConfig {
-    pub name: Option<String>,
-    pub control_url: Option<String>,
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
 }
