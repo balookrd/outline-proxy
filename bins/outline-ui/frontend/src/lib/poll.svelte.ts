@@ -6,7 +6,14 @@ export function createPoll<T>(fn: () => Promise<T>, intervalMs: () => number) {
   let alive = false;
 
   async function tick() {
-    if (typeof document !== 'undefined' && document.hidden) return schedule();
+    if (typeof document !== 'undefined' && document.hidden) {
+      // Only reschedule if this poll is still meant to be running — otherwise
+      // a refresh() on a stopped, hidden poll would arm a timer here that
+      // keeps rearming itself (tick() sees the tab hidden again next time
+      // too) forever, resurrecting a poll that stop() already ended.
+      if (alive) schedule();
+      return;
+    }
     s.loading = true;
     try { s.data = await fn(); s.error = null; }
     catch (e) { s.error = e instanceof Error ? e.message : String(e); }

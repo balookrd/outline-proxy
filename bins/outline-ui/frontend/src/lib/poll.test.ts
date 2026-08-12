@@ -55,4 +55,41 @@ describe('poll', () => {
     expect(fn).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
+
+  it('refresh() on a stopped, hidden poll does not leave a self-perpetuating timer running', async () => {
+    // Regression test: tick()'s hidden-tab early return used to call
+    // schedule() unconditionally, so a refresh() on a stopped
+    // (`alive === false`) poll would arm a timer anyway. That timer's own
+    // tick() would still see the tab hidden and reschedule itself again —
+    // forever — even though stop() was supposed to have ended all polling.
+    // fn() is never called while hidden (tick() skips the actual fetch in
+    // that branch either way), so the leak is invisible until the tab comes
+    // back into view: the leftover timer chain then fires tick() for real
+    // and fetches on a poll that was never re-started.
+    const doc = { hidden: true };
+    vi.stubGlobal('document', doc);
+    try {
+      vi.useFakeTimers();
+      const fn = vi.fn(async () => 1);
+      const p = createPoll(fn, () => 5000);
+      // Never started.
+      await p.refresh();
+      expect(fn).toHaveBeenCalledTimes(0);
+
+      // Let any leftover hidden-branch timer chain run for a while, still hidden.
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(fn).toHaveBeenCalledTimes(0);
+
+      // Tab becomes visible again. A stopped poll must stay stopped: no
+      // leftover timer should be waiting to fire now that the hidden guard
+      // no longer short-circuits it.
+      doc.hidden = false;
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(fn).toHaveBeenCalledTimes(0);
+
+      vi.useRealTimers();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

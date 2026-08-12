@@ -182,14 +182,16 @@ jobs:
         run: .github/scripts/check-served-key-path.sh
 
   frontend:
-    name: frontend (svelte-check + vitest + build)
+    name: frontend (svelte-check + vitest + build) + embed-assets
     runs-on: ubuntu-latest
     # outline-ui's `embed-assets` Cargo feature (off by default) bakes this
     # directory's `pnpm build` output into the Rust binary, but that is the
     # only place the two touch. The three jobs above stay entirely node-less
     # — they never build with the feature on, so they never need
-    # `frontend/dist` to exist. This job is the frontend's own gate:
-    # typecheck, unit tests, and a production build, independent of Rust.
+    # `frontend/dist` to exist. This job is the frontend's own gate
+    # (typecheck, unit tests, production build) and, after that build, the
+    # only place in CI that compiles outline-ui with `embed-assets` — see the
+    # dedicated step below for why that matters.
     defaults:
       run:
         working-directory: bins/outline-ui/frontend
@@ -209,3 +211,20 @@ jobs:
       - run: pnpm exec svelte-check --tsconfig ./tsconfig.app.json
       - run: pnpm exec vitest run
       - run: pnpm build
+
+      # `embed-assets` is gated nowhere else: the rust-embed derive walks a
+      # real `dist` tree at compile time, and this is the only job that ever
+      # builds one (the three Rust jobs above stay node-less on purpose, see
+      # the job comment). Without this step the branch's core feature —
+      # shipping the SPA baked into the binary — could break silently, since
+      # every other `cargo build`/`check`/`test` in CI leaves it off.
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      # zig is required because .cargo/config.toml forces AR/RANLIB to zig for
+      # every build (see the lint job for details).
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: cargo build outline-ui --features embed-assets (needs the dist built above)
+        working-directory: ${{ github.workspace }}
+        run: cargo build -p outline-ui --features embed-assets

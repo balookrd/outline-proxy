@@ -57,7 +57,12 @@ async fn injects_the_instance_bearer_token() {
 }
 
 /// An unreachable instance must surface as an error naming that instance, not as
-/// a panic or a hang that takes the whole page down.
+/// a panic or a hang that takes the whole page down. It must NOT name the
+/// control host:port, though: that string reaches the browser verbatim as the
+/// JSON `error` field (ss/api.rs, ws/api.rs just `format!("{error:#}")` this),
+/// and `control_url` is otherwise deliberately never advertised to the
+/// browser (see ss/api.rs's `list_instances` doc comment) — a connect-failure
+/// message used to be the one place it leaked out anyway.
 #[tokio::test]
 async fn unreachable_instance_errors_and_names_itself() {
     let backend = Backend::new(1);
@@ -75,6 +80,10 @@ async fn unreachable_instance_errors_and_names_itself() {
 
     let rendered = format!("{error:#}");
     assert!(rendered.contains("dead"), "error should identify the instance, got: {rendered}");
+    assert!(
+        !rendered.contains("127.0.0.1:1"),
+        "error must not leak the control host:port to the browser, got: {rendered}"
+    );
 }
 
 /// An instance behind a reverse proxy keeps its base path: cloud nodes are
