@@ -176,8 +176,10 @@ pub(super) fn register_descriptions() {
     );
     describe_counter!(
         "outline_ss_udp_replay_store_full_dropped_total",
-        "UDP datagrams dropped because the SS-2022 anti-replay store was at capacity \
-         and could not admit a new sequence number. Shadowsocks-only."
+        "UDP datagrams dropped because the anti-replay store could not admit a new \
+         session id / salt, by cap hit (reason=\"max_sessions\" for the process-wide \
+         cap, \"max_sessions_per_user\" for a single tenant at its per-user share). \
+         Shadowsocks-only."
     );
     describe_counter!(
         "outline_ss_xhttp_sessions_rejected_total",

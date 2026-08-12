@@ -479,10 +479,15 @@ impl Metrics {
         });
     }
 
+    /// A UDP datagram dropped because the anti-replay store could not admit a
+    /// new session id / salt. `reason` distinguishes the process-wide
+    /// `max_sessions` cap from a single tenant hitting its
+    /// `max_sessions_per_user` share (the others keep flowing).
     pub fn record_udp_replay_store_full_dropped(
         &self,
         user: impl Into<Arc<str>>,
         protocol: Protocol,
+        reason: &'static str,
     ) {
         let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
@@ -490,7 +495,8 @@ impl Metrics {
                 "outline_ss_udp_replay_store_full_dropped_total",
                 "user"         => user,
                 "protocol"     => protocol.as_str(),
-                "app_protocol" => AppProtocol::Shadowsocks.as_str()
+                "app_protocol" => AppProtocol::Shadowsocks.as_str(),
+                "reason"       => reason
             )
             .increment(1);
         });

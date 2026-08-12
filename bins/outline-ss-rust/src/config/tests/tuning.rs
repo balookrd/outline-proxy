@@ -51,6 +51,40 @@ fn per_user_nat_cap_defaults_per_profile_and_takes_overrides() {
 }
 
 #[test]
+fn per_user_replay_cap_defaults_per_profile_and_takes_overrides() {
+    // Non-zero on every profile so one tenant spraying unique session ids / salts
+    // can no longer fill the global replay cap and starve the others, yet each
+    // stays a fraction of that profile's global `udp_replay_max_sessions`.
+    assert_eq!(TuningProfile::SMALL.udp_replay_max_sessions_per_user, 4_096);
+    assert_eq!(TuningProfile::MEDIUM.udp_replay_max_sessions_per_user, 8_192);
+    assert_eq!(TuningProfile::LARGE.udp_replay_max_sessions_per_user, 16_384);
+    for preset in [TuningPreset::Small, TuningPreset::Medium, TuningPreset::Large] {
+        let tuning = preset.preset();
+        assert!(
+            tuning.udp_replay_max_sessions_per_user < tuning.udp_replay_max_sessions,
+            "the per-user share must stay below the global replay cap it sits under",
+        );
+    }
+
+    let mut tuning = TuningPreset::Medium.preset();
+    tuning.apply_overrides(&TuningOverrides {
+        udp_replay_max_sessions_per_user: Some(512),
+        ..TuningOverrides::default()
+    });
+    assert_eq!(tuning.udp_replay_max_sessions_per_user, 512);
+    assert_eq!(tuning.udp_replay_max_sessions, TuningProfile::MEDIUM.udp_replay_max_sessions);
+    tuning.validate().unwrap();
+
+    // `0` remains a valid opt-out back to global-cap-only behaviour.
+    tuning.apply_overrides(&TuningOverrides {
+        udp_replay_max_sessions_per_user: Some(0),
+        ..TuningOverrides::default()
+    });
+    assert_eq!(tuning.udp_replay_max_sessions_per_user, 0);
+    tuning.validate().unwrap();
+}
+
+#[test]
 fn per_source_ip_xhttp_cap_defaults_to_disabled_and_takes_overrides() {
     for preset in [TuningPreset::Small, TuningPreset::Medium, TuningPreset::Large] {
         assert_eq!(

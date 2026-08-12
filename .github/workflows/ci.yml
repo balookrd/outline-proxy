@@ -24,8 +24,8 @@ jobs:
     name: rustfmt + clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: rustfmt, clippy
       # .cargo/config.toml forces AR/RANLIB to `zig ar`/`zig ranlib` for every
@@ -33,20 +33,23 @@ jobs:
       # needs zig on PATH even for a native host check.
       #
       # The runner's "node20 deprecated" annotation on this step is known and
-      # safe: setup-zig v2.2.1 (latest release; what @v2 resolves to) still
-      # declares node20, and upstream keeps it that way on purpose for ZSF's
-      # Debian-stable self-hosted runners (Codeberg mlugg/setup-zig PR #55;
-      # the GitHub repo is a read-only mirror). Verified 2026-06-12: the
-      # v2.2.1 JS runs the full fetch/extract/tool-cache/zig cycle cleanly
-      # under Node 24, so GitHub's 2026-06-16 forced-Node-24 switch is a
-      # no-op here. Keep @v2 — it will pick up the eventual node24 release
-      # automatically.
-      - uses: mlugg/setup-zig@v2
+      # safe: setup-zig v2.2.1 (the pinned release below) still declares node20,
+      # and upstream keeps it that way on purpose for ZSF's Debian-stable
+      # self-hosted runners (Codeberg mlugg/setup-zig PR #55; the GitHub repo is
+      # a read-only mirror). Verified 2026-06-12: the v2.2.1 JS runs the full
+      # fetch/extract/tool-cache/zig cycle cleanly under Node 24, so GitHub's
+      # 2026-06-16 forced-Node-24 switch is a no-op here.
+      #
+      # Pinned to a commit SHA (supply-chain hardening), so it no longer floats
+      # to newer @v2 releases: bump the SHA (and the trailing `# vX.Y.Z`) by
+      # hand to pick up the eventual node24 release. The other setup-zig pins in
+      # `_ss-release-build.yml` / `_ws-release-build.yml` must move together.
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.1
       # `android/rust` is a detached workspace with its own target dir, so it
       # needs its own cache entry — the default (`.`) never sees it.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
@@ -99,14 +102,14 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       # zig is required because .cargo/config.toml forces AR/RANLIB to zig for
       # every build (see the lint job for details).
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo test
         run: cargo test --workspace --exclude sockudo-ws
 
@@ -114,14 +117,14 @@ jobs:
     name: feature matrix + monorepo invariants
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       # zig is required because .cargo/config.toml forces AR/RANLIB to zig for
       # every build (see the lint job for details).
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: check default workspace
         run: cargo check --workspace --exclude sockudo-ws

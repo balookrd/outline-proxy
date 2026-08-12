@@ -13,6 +13,26 @@ fn reject_unknown_uuid() {
 }
 
 #[test]
+fn find_user_matches_only_the_exact_uuid() {
+    // Exercises the constant-time comparison at the byte boundaries most prone
+    // to a short-circuiting `==`: a candidate differing only in the first byte
+    // and one differing only in the last byte must both be rejected, while the
+    // exact UUID still matches.
+    let user = VlessUser::new(UUID.to_owned(), std::sync::Arc::from("u"), None, None).unwrap();
+    let exact = *user.id_bytes();
+
+    let mut first_off = exact;
+    first_off[0] ^= 0x01;
+    let mut last_off = exact;
+    last_off[15] ^= 0x01;
+
+    let users = std::slice::from_ref(&user);
+    assert!(find_user(users, &exact).is_some());
+    assert!(find_user(users, &first_off).is_none());
+    assert!(find_user(users, &last_off).is_none());
+}
+
+#[test]
 fn finds_user_by_uuid_and_keeps_label() {
     let user =
         VlessUser::new(UUID.to_owned(), std::sync::Arc::from("alice-mom"), Some(7), None).unwrap();

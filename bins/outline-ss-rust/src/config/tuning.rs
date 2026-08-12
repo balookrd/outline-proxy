@@ -80,6 +80,21 @@ pub struct TuningProfile {
     /// (legacy) on every packet to inflate memory between eviction sweeps. `0`
     /// disables both caps (and so the legacy salt-dedup filter as a whole).
     pub udp_replay_max_sessions: usize,
+    /// Per-user ceiling on live replay-store entries (SS-2022 windows + legacy
+    /// salts combined), applied on top of `udp_replay_max_sessions`. Without it
+    /// a single authenticated user spraying unique session ids (SS-2022) or
+    /// salts (legacy) can fill the global cap on its own, at which point *other*
+    /// tenants' new sessions are dropped — a cross-tenant availability DoS.
+    /// With it, a user at its share only drops its own new sessions; everyone
+    /// else keeps flowing (drops counted with `reason="max_sessions_per_user"`
+    /// in `outline_ss_udp_replay_store_full_dropped_total`). Defaults to a
+    /// fraction of `udp_replay_max_sessions` per profile (4096 / 8192 / 16384)
+    /// — far above the one-or-few `client_session_id`s a legitimate SS-2022
+    /// client uses. Legacy UDP mints a fresh salt per datagram, so a
+    /// high-throughput *legacy* tenant can legitimately approach its share;
+    /// raise or disable it (`0`) for such deployments. `0` restores the
+    /// historical global-only behaviour.
+    pub udp_replay_max_sessions_per_user: usize,
     /// Maximum number of recently-seen TCP-handshake request salts the
     /// anti-replay store will hold concurrently. A captured Shadowsocks TCP
     /// handshake can otherwise be replayed verbatim (the session key is derived
@@ -165,6 +180,7 @@ impl TuningProfile {
         udp_nat_max_entries_per_user: 1_024,
         udp_max_concurrent_relay_tasks: 1_024,
         udp_replay_max_sessions: 16_384,
+        udp_replay_max_sessions_per_user: 4_096,
         tcp_handshake_replay_max_salts: 16_384,
         xhttp_max_sessions: 16_384,
         xhttp_max_sessions_per_ip: 0,
@@ -194,6 +210,7 @@ impl TuningProfile {
         udp_nat_max_entries_per_user: 2_048,
         udp_max_concurrent_relay_tasks: 2_048,
         udp_replay_max_sessions: 65_536,
+        udp_replay_max_sessions_per_user: 8_192,
         tcp_handshake_replay_max_salts: 65_536,
         xhttp_max_sessions: 65_536,
         xhttp_max_sessions_per_ip: 0,
@@ -223,6 +240,7 @@ impl TuningProfile {
         udp_nat_max_entries_per_user: 4_096,
         udp_max_concurrent_relay_tasks: 4_096,
         udp_replay_max_sessions: 262_144,
+        udp_replay_max_sessions_per_user: 16_384,
         tcp_handshake_replay_max_salts: 262_144,
         xhttp_max_sessions: 262_144,
         xhttp_max_sessions_per_ip: 0,
@@ -314,6 +332,7 @@ impl TuningProfile {
         }
         // `udp_max_concurrent_relay_tasks == 0` is a valid opt-out.
         // `udp_replay_max_sessions == 0` is a valid opt-out.
+        // `udp_replay_max_sessions_per_user == 0` is a valid opt-out (global cap only).
         // `tcp_handshake_replay_max_salts == 0` is a valid opt-out.
         // `udp_nat_max_entries == 0` is a valid opt-out.
         // `udp_nat_max_entries_per_user == 0` is a valid opt-out (global cap only).
@@ -378,6 +397,9 @@ impl TuningProfile {
         }
         if let Some(v) = o.udp_replay_max_sessions {
             self.udp_replay_max_sessions = v;
+        }
+        if let Some(v) = o.udp_replay_max_sessions_per_user {
+            self.udp_replay_max_sessions_per_user = v;
         }
         if let Some(v) = o.tcp_handshake_replay_max_salts {
             self.tcp_handshake_replay_max_salts = v;
@@ -444,6 +466,8 @@ pub struct TuningOverrides {
     pub udp_max_concurrent_relay_tasks: Option<usize>,
     #[serde(default)]
     pub udp_replay_max_sessions: Option<usize>,
+    #[serde(default)]
+    pub udp_replay_max_sessions_per_user: Option<usize>,
     #[serde(default)]
     pub tcp_handshake_replay_max_salts: Option<usize>,
     #[serde(default)]

@@ -331,6 +331,34 @@ pub use carrier_padding::{
 // `UpstreamTransportGuard` to every connection it hands out.
 pub use guards::{UplinkConnectionBinding, UpstreamTransportGuard};
 
+/// Cap on the size of a single inbound WebSocket message, applied on every
+/// client carrier (HTTP/1, HTTP/2, HTTP/3).
+///
+/// Without it, tokio-tungstenite's default 64 MiB `max_message_size` (and
+/// sockudo-ws's identical default on the H3 carrier) let a broken or hostile
+/// upstream declare — and have the WS layer buffer — a single message far
+/// larger than any legitimate frame; the datagram downlink then parks up to a
+/// slot's worth of them. 1 MiB sits comfortably above the Shadowsocks / VLESS
+/// frame ceiling: the writers coalesce at most `FRAME_SOFT_CAP` (256 KiB) per
+/// message and a datagram is at most 65 KiB, so the cap never clips a real
+/// frame while cutting the ceiling 64×. Mirrors the server's
+/// `WS_MAX_MESSAGE_SIZE`, which already clamps every upgrade it accepts, and
+/// the peer is our own upstream, so no legitimate frame ever approaches it.
+pub(crate) const WS_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+
+/// tokio-tungstenite `WebSocketConfig` for the client WS dials that ride
+/// tungstenite directly (HTTP/1 and HTTP/2), capping inbound message and frame
+/// size to [`WS_MAX_MESSAGE_SIZE`]. The H3 carrier applies the equivalent cap
+/// on the sockudo-ws `Config` in `h3::vendored::client_ws_stream`. tungstenite
+/// rejects a frame whose declared length exceeds the cap at header-parse time,
+/// before its payload is read into a buffer, so an oversized message is refused
+/// rather than allocated whole.
+pub(crate) fn ws_client_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(WS_MAX_MESSAGE_SIZE))
+        .max_frame_size(Some(WS_MAX_MESSAGE_SIZE))
+}
+
 /// Sweep H2 (and H3 when enabled) shared-connection caches, removing entries
 /// whose underlying connection is no longer open.  Should be called
 /// periodically (e.g. every 15 s from the warm-standby maintenance loop) to

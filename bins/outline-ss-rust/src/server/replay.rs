@@ -30,7 +30,7 @@ use std::{
     time::Duration,
 };
 
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 use parking_lot::Mutex;
 
 use crate::clock;
@@ -154,16 +154,43 @@ impl ReplayWindow {
 struct ReplayEntry {
     window: Mutex<ReplayWindow>,
     last_seen_secs: AtomicU64,
+    /// The authenticated user that created this session window. Kept so idle
+    /// eviction can return the user's per-user slot without a second lookup.
+    owner: Arc<str>,
+}
+
+/// Which cap a [`ReplayCheck::StoreFull`] drop hit. Surfaced as a
+/// low-cardinality metric label so operators can tell a global-capacity drop
+/// (raise `udp_replay_max_sessions`) from a noisy single tenant hitting its
+/// per-user share (the others are unaffected).
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ReplayFull {
+    /// The process-wide `max_sessions` cap on this map was reached.
+    Global,
+    /// The caller's `max_sessions_per_user` share was reached; other users can
+    /// still register.
+    PerUser,
+}
+
+impl ReplayFull {
+    /// Static, low-cardinality label distinguishing the two caps. Mirrors the
+    /// XHTTP registry's `reason="max_sessions"` / `"max_sessions_per_ip"`.
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::Global => "max_sessions",
+            Self::PerUser => "max_sessions_per_user",
+        }
+    }
 }
 
 /// Outcome of [`ReplayStore::check_and_mark`]. `StoreFull` distinguishes a
-/// drop caused by the process-wide session cap from an actual replay — both
-/// drop the packet but they mean different things operationally.
+/// drop caused by a capacity cap from an actual replay — both drop the packet
+/// but they mean different things operationally — and carries which cap fired.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ReplayCheck {
     Fresh,
     Replay,
-    StoreFull,
+    StoreFull(ReplayFull),
 }
 
 /// The salt of a legacy datagram, zero-padded to the widest Shadowsocks salt
@@ -171,56 +198,103 @@ pub(crate) enum ReplayCheck {
 /// short salt with zeros cannot alias another user's salt in practice.
 pub(crate) type LegacySalt = [u8; 32];
 
+/// Legacy salt-dedup entry: which authenticated user first presented the salt
+/// (so idle eviction can return its per-user slot) and when it was first seen
+/// (for idle eviction). The salt itself carries no session id, so ownership is
+/// taken from the authenticated caller.
+struct LegacySaltEntry {
+    owner: Arc<str>,
+    first_seen: u64,
+}
+
 /// Process-wide store of replay windows, keyed by `client_session_id`, plus a
 /// salt-dedup set for legacy datagrams. Entries idle for longer than
 /// `idle_timeout` are reaped by `evict_idle`. A non-zero `max_sessions` caps
-/// each map independently, preventing an authenticated client from spraying
-/// unique session ids or salts and inflating memory between eviction sweeps.
+/// each map independently; a non-zero `max_sessions_per_user` additionally caps
+/// how many entries a single authenticated user may hold across *both* maps, so
+/// one tenant spraying unique session ids or salts cannot fill the global cap
+/// and starve the others (a cross-tenant availability DoS) — only its own new
+/// sessions are dropped once it is at its share.
 pub(crate) struct ReplayStore {
     entries: DashMap<[u8; 8], Arc<ReplayEntry>>,
-    /// Legacy request salt -> first-seen unix seconds (for idle eviction).
-    legacy_salts: DashMap<LegacySalt, u64>,
+    /// Legacy request salt -> who first presented it and when (for idle
+    /// eviction and per-user accounting).
+    legacy_salts: DashMap<LegacySalt, LegacySaltEntry>,
     idle_timeout: Duration,
     max_sessions: usize,
+    /// Per-user ceiling on live entries across both maps, applied on top of
+    /// `max_sessions`. `0` disables it (global cap only).
+    max_sessions_per_user: usize,
+    /// Live entry count per user (SS-2022 windows + legacy salts combined),
+    /// maintained alongside the maps so the per-user cap costs a shard lookup
+    /// instead of a full scan. A user's counter is removed once it drops to
+    /// zero, keeping the map proportional to the users that currently hold
+    /// entries.
+    per_user: DashMap<Arc<str>, usize>,
 }
 
 impl ReplayStore {
-    /// `max_sessions = 0` disables the cap on both maps.
-    pub(crate) fn new(idle_timeout: Duration, max_sessions: usize) -> Arc<Self> {
+    /// `max_sessions = 0` disables the global cap on both maps;
+    /// `max_sessions_per_user = 0` disables the per-user share.
+    pub(crate) fn new(
+        idle_timeout: Duration,
+        max_sessions: usize,
+        max_sessions_per_user: usize,
+    ) -> Arc<Self> {
         Arc::new(Self {
             entries: DashMap::new(),
             legacy_salts: DashMap::new(),
             idle_timeout,
             max_sessions,
+            max_sessions_per_user,
+            per_user: DashMap::new(),
         })
     }
 
-    /// Records a `(client_session_id, packet_id)` pair and reports whether it
-    /// is `Fresh`, a `Replay`, or dropped because the store is at capacity.
-    pub(crate) fn check_and_mark(&self, client_session_id: [u8; 8], packet_id: u64) -> ReplayCheck {
+    /// Records a `(client_session_id, packet_id)` pair for `user_id` and reports
+    /// whether it is `Fresh`, a `Replay`, or dropped because a cap is full
+    /// (`StoreFull`, carrying which cap fired).
+    pub(crate) fn check_and_mark(
+        &self,
+        user_id: &Arc<str>,
+        client_session_id: [u8; 8],
+        packet_id: u64,
+    ) -> ReplayCheck {
         let entry = if let Some(e) = self.entries.get(&client_session_id) {
             Arc::clone(e.value())
         } else {
-            // Check the cap before taking a shard lock in `entry(...)`.
+            // Check the global cap before taking a shard lock in `entry(...)`.
             // `len()` takes per-shard read locks; doing it while holding a
             // shard write lock could deadlock against a concurrent `len()`
             // call that already holds read locks elsewhere. The race between
             // the check and the insert is benign: the cap is a soft bound,
             // and we only allow one extra registration per racing caller.
             if self.max_sessions > 0 && self.entries.len() >= self.max_sessions {
-                return ReplayCheck::StoreFull;
+                return ReplayCheck::StoreFull(ReplayFull::Global);
             }
-            Arc::clone(
-                self.entries
-                    .entry(client_session_id)
-                    .or_insert_with(|| {
-                        Arc::new(ReplayEntry {
+            // Then the per-user share. The slot is reserved *before* the map
+            // insert so two concurrent creations for the same user cannot both
+            // pass the check, and handed back below if we lost the insert race.
+            // `per_user` is a distinct map, so this never nests with an
+            // `entries` shard lock.
+            if !self.reserve_user_slot(user_id) {
+                return ReplayCheck::StoreFull(ReplayFull::PerUser);
+            }
+            match self.entries.entry(client_session_id) {
+                Entry::Occupied(occupied) => {
+                    self.release_user_slot(user_id);
+                    Arc::clone(occupied.get())
+                },
+                Entry::Vacant(vacant) => Arc::clone(
+                    vacant
+                        .insert(Arc::new(ReplayEntry {
                             window: Mutex::new(ReplayWindow::new()),
                             last_seen_secs: AtomicU64::new(clock::current_unix_secs()),
-                        })
-                    })
-                    .value(),
-            )
+                            owner: Arc::clone(user_id),
+                        }))
+                        .value(),
+                ),
+            }
         };
         entry
             .last_seen_secs
@@ -232,29 +306,75 @@ impl ReplayStore {
         }
     }
 
-    /// Records a legacy request salt and reports whether it is `Fresh`, a
-    /// `Replay` (already seen within the idle window), or dropped because the
-    /// salt map is at capacity. The stored timestamp is *not* refreshed on a
-    /// replay hit, so a replayed salt cannot pin its own entry alive.
-    pub(crate) fn check_and_mark_legacy_salt(&self, salt: LegacySalt) -> ReplayCheck {
-        use dashmap::mapref::entry::Entry;
-
+    /// Records a legacy request salt for `user_id` and reports whether it is
+    /// `Fresh`, a `Replay` (already seen within the idle window), or dropped
+    /// because a cap is full (`StoreFull`, carrying which cap fired). The stored
+    /// timestamp is *not* refreshed on a replay hit, so a replayed salt cannot
+    /// pin its own entry alive.
+    pub(crate) fn check_and_mark_legacy_salt(
+        &self,
+        user_id: &Arc<str>,
+        salt: LegacySalt,
+    ) -> ReplayCheck {
         if let Some(existing) = self.legacy_salts.get(&salt) {
             drop(existing);
             return ReplayCheck::Replay;
         }
-        // Check the cap before taking a shard lock via `entry(...)`. Same benign
-        // race as `check_and_mark`: the bound is soft, so a handful of racing
-        // callers may each add one salt over the cap.
+        // Check the global cap before taking a shard lock via `entry(...)`. Same
+        // benign race as `check_and_mark`: the bound is soft, so a handful of
+        // racing callers may each add one salt over the cap.
         if self.max_sessions > 0 && self.legacy_salts.len() >= self.max_sessions {
-            return ReplayCheck::StoreFull;
+            return ReplayCheck::StoreFull(ReplayFull::Global);
+        }
+        // Then the per-user share, reserved before the insert (see
+        // `check_and_mark`), handed back if the salt raced in or we spilled.
+        if !self.reserve_user_slot(user_id) {
+            return ReplayCheck::StoreFull(ReplayFull::PerUser);
         }
         match self.legacy_salts.entry(salt) {
-            Entry::Occupied(_) => ReplayCheck::Replay,
+            Entry::Occupied(_) => {
+                self.release_user_slot(user_id);
+                ReplayCheck::Replay
+            },
             Entry::Vacant(slot) => {
-                slot.insert(clock::current_unix_secs());
+                slot.insert(LegacySaltEntry {
+                    owner: Arc::clone(user_id),
+                    first_seen: clock::current_unix_secs(),
+                });
                 ReplayCheck::Fresh
             },
+        }
+    }
+
+    /// Claims one per-user entry slot, returning `false` when the user is
+    /// already at `max_sessions_per_user`. A disabled cap always succeeds and
+    /// skips the bookkeeping entirely.
+    fn reserve_user_slot(&self, user: &Arc<str>) -> bool {
+        let cap = self.max_sessions_per_user;
+        if cap == 0 {
+            return true;
+        }
+        let mut count = self.per_user.entry(Arc::clone(user)).or_insert(0);
+        if *count >= cap {
+            return false;
+        }
+        *count += 1;
+        true
+    }
+
+    /// Returns a slot claimed by [`Self::reserve_user_slot`]. The counter is
+    /// dropped at zero so the map stays proportional to the users that
+    /// currently hold entries.
+    fn release_user_slot(&self, user: &Arc<str>) {
+        if self.max_sessions_per_user == 0 {
+            return;
+        }
+        if let Entry::Occupied(mut occupied) = self.per_user.entry(Arc::clone(user)) {
+            let count = occupied.get_mut();
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                occupied.remove();
+            }
         }
     }
 
@@ -268,22 +388,37 @@ impl ReplayStore {
     fn sweep(&self, now: u64) -> usize {
         let threshold = now.saturating_sub(self.idle_timeout.as_secs());
         let mut evicted = 0usize;
+        // Owners of evicted entries whose per-user slot must be handed back;
+        // skipped entirely when the per-user cap is disabled. Collected during
+        // the sweep and released after it, so we never take a `per_user` lock
+        // while `retain` holds an `entries`/`legacy_salts` shard.
+        let track_users = self.max_sessions_per_user > 0;
+        let mut released: Vec<Arc<str>> = Vec::new();
         self.entries.retain(|_, entry| {
             if entry.last_seen_secs.load(Ordering::Relaxed) < threshold {
                 evicted += 1;
+                if track_users {
+                    released.push(Arc::clone(&entry.owner));
+                }
                 false
             } else {
                 true
             }
         });
-        self.legacy_salts.retain(|_, first_seen| {
-            if *first_seen < threshold {
+        self.legacy_salts.retain(|_, entry| {
+            if entry.first_seen < threshold {
                 evicted += 1;
+                if track_users {
+                    released.push(Arc::clone(&entry.owner));
+                }
                 false
             } else {
                 true
             }
         });
+        for user in &released {
+            self.release_user_slot(user);
+        }
         evicted
     }
 }

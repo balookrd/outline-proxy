@@ -404,11 +404,11 @@ fn authenticate_udp_datagram(
     // store's cap and idle eviction; a datagram is one shape or the other.
     let replay_check =
         if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id) {
-            Some((server.replay_store.check_and_mark(csid, pid), Some(pid)))
+            Some((server.replay_store.check_and_mark(&user_id, csid, pid), Some(pid)))
         } else {
             packet
                 .legacy_replay_salt
-                .map(|salt| (server.replay_store.check_and_mark_legacy_salt(salt), None))
+                .map(|salt| (server.replay_store.check_and_mark_legacy_salt(&user_id, salt), None))
         };
     if let Some((check, pid)) = replay_check {
         match check {
@@ -425,14 +425,17 @@ fn authenticate_udp_datagram(
                 );
                 return Ok(None);
             },
-            ReplayCheck::StoreFull => {
-                server
-                    .metrics
-                    .record_udp_replay_store_full_dropped(Arc::clone(&user_id), route.protocol);
+            ReplayCheck::StoreFull(full) => {
+                server.metrics.record_udp_replay_store_full_dropped(
+                    Arc::clone(&user_id),
+                    route.protocol,
+                    full.reason(),
+                );
                 warn!(
                     user = packet.user.id(),
                     path = %route.path,
                     packet_id = ?pid,
+                    reason = full.reason(),
                     "dropping udp datagram: replay store at capacity"
                 );
                 return Ok(None);

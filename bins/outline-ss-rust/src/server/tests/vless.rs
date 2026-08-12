@@ -70,6 +70,7 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
                 0,
+                0,
             ),
             relay_semaphore: None,
         },
@@ -160,6 +161,7 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
+                0,
                 0,
             ),
             relay_semaphore: None,
@@ -259,6 +261,7 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
                 0,
+                0,
             ),
             relay_semaphore: None,
         },
@@ -350,6 +353,7 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
+                0,
                 0,
             ),
             relay_semaphore: None,
@@ -464,6 +468,7 @@ async fn vless_websocket_invalid_version_sinks_then_closes() -> Result<()> {
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
                 0,
+                0,
             ),
             relay_semaphore: None,
         },
@@ -560,6 +565,7 @@ async fn vless_websocket_probe_sink_byte_cap_short_circuits() -> Result<()> {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
+                0,
                 0,
             ),
             relay_semaphore: None,

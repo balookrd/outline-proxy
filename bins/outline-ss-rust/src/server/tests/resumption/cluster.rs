@@ -280,7 +280,7 @@ fn build_cluster_parts(
         None,
         UdpServices {
             nat_table,
-            replay_store: ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         Some(orphan_registry),

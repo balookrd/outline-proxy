@@ -107,7 +107,7 @@ async fn setup_vless_ws_server(
         None,
         UdpServices {
             nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         None,
@@ -280,7 +280,7 @@ async fn setup_vless_ws_h3_server(
         None,
         UdpServices {
             nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         None,
@@ -433,7 +433,7 @@ async fn setup_vless_ws_server_with_resumption_inner(
         None,
         UdpServices {
             nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         orphan_registry,
@@ -945,7 +945,7 @@ async fn setup_vless_ws_h3_server_with_resumption(
         None,
         UdpServices {
             nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         orphan_registry,
@@ -1125,7 +1125,7 @@ async fn setup_vless_ws_h2_tls_server_with_resumption(
         None,
         UdpServices {
             nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         orphan_registry,
@@ -1297,7 +1297,7 @@ async fn setup_vless_ws_h1_only_server_with_resumption(
         None,
         UdpServices {
             nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         orphan_registry,

@@ -284,7 +284,7 @@ fn test_server_ctx_with_resumption(resumption: bool) -> Arc<UdpServerCtx> {
     Arc::new(UdpServerCtx {
         metrics,
         nat_table: NatTable::new(Duration::from_secs(60)),
-        replay_store: ReplayStore::new(Duration::from_secs(60), 1024),
+        replay_store: ReplayStore::new(Duration::from_secs(60), 1024, 0),
         dns_cache: DnsCache::new(Duration::from_secs(60)),
         prefer_ipv4_upstream: true,
         relay_semaphore: None,
@@ -873,7 +873,7 @@ impl UdpEdgeHarness {
         let server = Arc::new(UdpServerCtx {
             metrics: Arc::clone(&metrics),
             nat_table: NatTable::new(Duration::from_secs(60)),
-            replay_store: ReplayStore::new(Duration::from_secs(60), 1024),
+            replay_store: ReplayStore::new(Duration::from_secs(60), 1024, 0),
             dns_cache: DnsCache::new(Duration::from_secs(60)),
             prefer_ipv4_upstream: true,
             relay_semaphore: None,
