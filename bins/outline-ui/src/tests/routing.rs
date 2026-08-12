@@ -25,28 +25,21 @@ fn authed(uri: &str) -> Request<Body> {
 }
 
 /// The whole point of the extraction: the two dashboards share a port without
-/// colliding, each seeing its own prefix.
+/// colliding, each answering its own API under its own prefix through the full
+/// app (nesting + both middleware layers), not just the bare per-tree router.
 #[tokio::test]
 async fn both_trees_are_reachable_and_distinct() {
     let app = build_app(&config());
 
-    let ws = app.clone().oneshot(authed("/ws/dashboard")).await.unwrap();
+    let ws = app
+        .clone()
+        .oneshot(authed("/ws/dashboard/api/instances"))
+        .await
+        .unwrap();
     assert_eq!(ws.status(), StatusCode::OK);
-    let ws_body = axum::body::to_bytes(ws.into_body(), usize::MAX).await.unwrap();
-    assert!(
-        String::from_utf8(ws_body.to_vec())
-            .unwrap()
-            .contains(r#"API_BASE = "/ws""#)
-    );
 
-    let ss = app.oneshot(authed("/ss/dashboard")).await.unwrap();
+    let ss = app.oneshot(authed("/ss/dashboard/api/instances")).await.unwrap();
     assert_eq!(ss.status(), StatusCode::OK);
-    let ss_body = axum::body::to_bytes(ss.into_body(), usize::MAX).await.unwrap();
-    assert!(
-        String::from_utf8(ss_body.to_vec())
-            .unwrap()
-            .contains(r#"API_BASE = "/ss""#)
-    );
 }
 
 /// `/` now serves the Svelte SPA shell rather than the old dashboard-listing
@@ -83,26 +76,6 @@ async fn every_tree_is_behind_the_credential_gate() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "unguarded route: {uri}");
     }
-}
-
-/// Each tree serves its own logo path; a shared handler must still be reachable
-/// under both prefixes.
-#[tokio::test]
-async fn both_logos_are_served() {
-    let app = build_app(&config());
-
-    let ws = app
-        .clone()
-        .oneshot(authed("/ws/dashboard/outline-logo.png"))
-        .await
-        .unwrap();
-    assert_eq!(ws.status(), StatusCode::OK);
-
-    let ss = app
-        .oneshot(authed("/ss/dashboard/assets/outline-logo.png"))
-        .await
-        .unwrap();
-    assert_eq!(ss.status(), StatusCode::OK);
 }
 
 /// Picks a real, currently-hashed asset name straight out of `frontend/dist`

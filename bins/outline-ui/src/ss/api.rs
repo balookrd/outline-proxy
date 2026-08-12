@@ -32,14 +32,6 @@ struct InstanceView {
     name: String,
 }
 
-pub async fn dashboard_page(State(state): State<SsState>) -> Response {
-    crate::assets::html(crate::assets::render(
-        super::DASHBOARD_TEMPLATE,
-        super::BASE,
-        state.refresh_ms,
-    ))
-}
-
 pub async fn list_instances(State(state): State<SsState>) -> Response {
     // Only the display name reaches the browser. `control_url` is a server-side
     // routing detail (and, with per-instance tokens, a target worth not

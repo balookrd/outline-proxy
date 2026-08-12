@@ -13,20 +13,6 @@ fn state() -> SsState {
 }
 
 #[tokio::test]
-async fn serves_the_dashboard_page_with_its_prefix() {
-    let response = router(state())
-        .oneshot(Request::get("/dashboard").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let body = String::from_utf8(body.to_vec()).unwrap();
-    assert!(body.contains(r#"const API_BASE = "/ss""#), "prefix not substituted");
-    assert!(!body.contains("__BASE__"), "placeholder survived into the response");
-}
-
-#[tokio::test]
 async fn lists_configured_instances() {
     let response = router(state())
         .oneshot(Request::get("/dashboard/api/instances").body(Body::empty()).unwrap())
