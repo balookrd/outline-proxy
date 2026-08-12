@@ -1,0 +1,127 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: outline-ui-config
+  namespace: monitoring
+data:
+  config.toml: |
+    [server]
+    listen = "0.0.0.0:9000"
+    token_file = "/etc/outline-ui/secrets/ui-token"
+    # Behind the ingress the browser's Host is the public name, not the pod's
+    # listen address. Without it here the origin policy 403s every request that
+    # arrives through the ingress.
+    # The public name plus the in-cluster Service DNS: without the latter every
+    # check from inside the cluster (a debug curl, a future health probe) gets a
+    # 403 from the origin policy rather than an answer.
+    allowed_hosts = [
+      "ui.k3s.beerloga.su",
+      "outline-ui.monitoring",
+      "outline-ui.monitoring.svc.cluster.local",
+    ]
+
+    [[ws.instances]]
+    name = "beelink102"
+    control_url = "http://198.18.1.102:9191"
+    token_file = "/etc/outline-ui/secrets/ws-beelink102"
+
+    [[ws.instances]]
+    name = "nanopi104"
+    control_url = "http://198.18.1.104:9191"
+    token_file = "/etc/outline-ui/secrets/ws-nanopi104"
+
+    [[ws.instances]]
+    name = "cloud1"
+    control_url = "https://cloud1.beerloga.su/rust-ws-exporter"
+    token_file = "/etc/outline-ui/secrets/ws-cloud1"
+
+    [[ws.instances]]
+    name = "cloud2"
+    control_url = "https://cloud2.beerloga.su/rust-ws-exporter"
+    token_file = "/etc/outline-ui/secrets/ws-cloud2"
+
+    [[ss.instances]]
+    name = "beerloga-1"
+    control_url = "http://198.18.1.104:9190"
+    token_file = "/etc/outline-ui/secrets/ss-beerloga-1"
+
+    [[ss.instances]]
+    name = "beerloga-2"
+    control_url = "http://198.18.1.102:9190"
+    token_file = "/etc/outline-ui/secrets/ss-beerloga-2"
+
+    [[ss.instances]]
+    name = "cloud1"
+    control_url = "https://cloud1.beerloga.su/rust-ss-exporter"
+    token_file = "/etc/outline-ui/secrets/ss-cloud1"
+
+    [[ss.instances]]
+    name = "cloud2"
+    control_url = "https://cloud2.beerloga.su/rust-ss-exporter"
+    token_file = "/etc/outline-ui/secrets/ss-cloud2"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outline-ui
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: outline-ui }
+  template:
+    metadata:
+      labels: { app: outline-ui }
+      annotations:
+        # Rolls the pod when the config changes: the service reads its TOML once
+        # at startup, so a ConfigMap edit alone would sit there unapplied.
+        checksum/config: "replace-me-on-config-change"
+    spec:
+      # The cluster registry sits behind basic auth; without these credentials
+      # the kubelet fails the pull with "no basic auth credentials".
+      imagePullSecrets:
+        - name: registry-creds
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+      containers:
+        - name: outline-ui
+          image: registry.k3s.beerloga.su/outline-ui:0.1.0
+          args: ["--config", "/etc/outline-ui/config.toml"]
+          ports:
+            - containerPort: 9000
+          volumeMounts:
+            - name: config
+              mountPath: /etc/outline-ui/config.toml
+              subPath: config.toml
+              readOnly: true
+            - name: secrets
+              mountPath: /etc/outline-ui/secrets
+              readOnly: true
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          # No liveness probe on purpose: every route sits behind the credential
+          # gate, so an unauthenticated probe would get a 401 and kubelet would
+          # restart a healthy pod in a loop. A probe needs an unauthenticated
+          # health route added deliberately first.
+      volumes:
+        - name: config
+          configMap: { name: outline-ui-config }
+        - name: secrets
+          secret: { secretName: outline-ui-tokens }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: outline-ui
+  namespace: monitoring
+spec:
+  selector: { app: outline-ui }
+  ports:
+    - { port: 9000, targetPort: 9000 }
