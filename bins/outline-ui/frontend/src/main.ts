@@ -12,8 +12,10 @@ import '@fontsource/fira-code/600.css'
 import App from './App.svelte'
 import { applyTheme } from './lib/theme.svelte'
 
-// Stamp data-theme before the first component mounts so the initial paint
-// already matches the persisted/default preference (see lib/theme.svelte.ts).
+// Apply the theme before the first component mounts so the initial paint is
+// correct with no flash: with a stored choice this stamps data-theme; with
+// none it removes the attribute so app.css's `@media (prefers-color-scheme)`
+// governs first paint (see lib/theme.svelte.ts).
 applyTheme()
 
 const app = mount(App, {
