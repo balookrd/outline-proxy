@@ -34,26 +34,37 @@ export interface ActivateBody { targets: ActivateTarget[]; transport?: 'tcp'|'ud
 // /ws/dashboard/api/uplinks (see ws/api.rs `uplinks_proxy` and
 // uplinks_crud/list.rs `UplinkListEntry`/`UplinkListResponse`). `config`
 // mirrors the on-disk TOML table for one [[outline.uplinks]] entry
-// (uplinks_crud/payload.rs `table_to_json`) and is absent when the config
-// file couldn't be read. Field set here matches ws/uplinks.html's FIELDS —
-// the backend's UplinkPayload additionally accepts newer fields
-// (tcp_xhttp_url/udp_xhttp_url/ss_*/link/fallbacks, see
-// uplinks_crud/payload.rs) that this legacy-parity form doesn't expose; see
-// task-8-report.md "Concerns". The index signature keeps those (and any
-// other server-side additions) from breaking the type.
+// (uplinks_crud/payload.rs `table_to_json`), rendered as literally-whatever
+// fields the create/PATCH payload wrote (e.g. an uplink created via `link`
+// has *only* `link` on disk — the share-link expansion into transport/
+// carrier fields happens at config-load time, not at rest), and is absent
+// when the config file couldn't be read. Field set here is the full
+// top-level `UplinkPayload` (uplinks_crud/payload.rs), minus `fallbacks`
+// (Task 8c's domain — the index signature keeps that field, and any other
+// server-side addition, from breaking the type).
 export interface UplinkConfig {
   name?: string;
   transport?: string;
-  method?: string;
-  password?: string;
-  vless_id?: string;
   tcp_ws_url?: string;
+  tcp_xhttp_url?: string;
   tcp_mode?: string;
   udp_ws_url?: string;
+  udp_xhttp_url?: string;
   udp_mode?: string;
   vless_ws_url?: string;
   vless_xhttp_url?: string;
   vless_mode?: string;
+  ss_ws_url?: string;
+  ss_xhttp_url?: string;
+  ss_mode?: string;
+  /// Share-link URI (`vless://…` / `ss://…`). Mutually exclusive on the wire
+  /// with `transport` and every explicit carrier/credential field above —
+  /// see `expand_share_link` in
+  /// bins/outline-ws-rust/src/config/load/uplinks/wire_shape.rs.
+  link?: string;
+  method?: string;
+  password?: string;
+  vless_id?: string;
   weight?: number;
   fwmark?: number;
   ipv6_first?: boolean;
