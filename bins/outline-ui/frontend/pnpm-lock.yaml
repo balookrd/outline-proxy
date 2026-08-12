@@ -14,6 +14,9 @@ importers:
       '@fontsource/fira-sans':
         specifier: ^5.3.0
         version: 5.3.0
+      '@tanstack/svelte-table':
+        specifier: ^9.1.2
+        version: 9.1.2(svelte@5.56.8)
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: ^7.2.0
@@ -203,6 +206,24 @@ packages:
     peerDependencies:
       svelte: ^5.46.4
       vite: ^8.0.0-beta.7 || ^8.0.0
+
+  '@tanstack/store@0.11.1':
+    resolution: {integrity: sha512-mzTOBhypOuDJAy/D8n2MfUZ1HFkXnmSETviRyhqEC8LUE7/IZQExOTxMANj3KjTofYTkFNpBY67qaVrT41YccA==}
+
+  '@tanstack/svelte-store@0.12.1':
+    resolution: {integrity: sha512-ZFj8gyIWHZRYLv8RHp5jhnMhvw15g86KinotrUp9RfY7ygjkU3CcaMUytIdMJ4Xzq/9GqVlAphV9gFIGKRXWSw==}
+    peerDependencies:
+      svelte: ^5.0.0
+
+  '@tanstack/svelte-table@9.1.2':
+    resolution: {integrity: sha512-0tDbl4PAu7Z4+VKaGnJlsfrMTVrnbgsxEQwpVRxnot30psP1GcqbVGOTwA5tf45hX3NYbW3e/9KZerKBrlHO0A==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      svelte: ^5.0.0
+
+  '@tanstack/table-core@9.1.2':
+    resolution: {integrity: sha512-ONpWQeass1sfg80CWF1NSwQ8r3GiqxA2lT/EdqIcrDEPZ0Z+0mM94eQoFYLPN0Kztzj8TQVb2+PrSZSItqA61g==}
+    engines: {node: '>=20'}
 
   '@tsconfig/svelte@5.0.8':
     resolution: {integrity: sha512-UkNnw1/oFEfecR8ypyHIQuWYdkPvHiwcQ78sh+ymIiYoF+uc5H1UBetbjyqT+vgGJ3qQN6nhucJviX6HesWtKQ==}
@@ -980,6 +1001,23 @@ snapshots:
       svelte: 5.56.8
       vite: 8.2.1(@types/node@24.13.3)(jiti@1.21.7)
       vitefu: 1.1.3(vite@8.2.1(@types/node@24.13.3)(jiti@1.21.7))
+
+  '@tanstack/store@0.11.1': {}
+
+  '@tanstack/svelte-store@0.12.1(svelte@5.56.8)':
+    dependencies:
+      '@tanstack/store': 0.11.1
+      svelte: 5.56.8
+
+  '@tanstack/svelte-table@9.1.2(svelte@5.56.8)':
+    dependencies:
+      '@tanstack/svelte-store': 0.12.1(svelte@5.56.8)
+      '@tanstack/table-core': 9.1.2
+      svelte: 5.56.8
+
+  '@tanstack/table-core@9.1.2':
+    dependencies:
+      '@tanstack/store': 0.11.1
 
   '@tsconfig/svelte@5.0.8': {}
 
