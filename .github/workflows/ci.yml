@@ -180,3 +180,32 @@ jobs:
       # history rewrite, textual rewriting having skipped the binary blob.
       - name: invariant — served access-key path stays out of the repo
         run: .github/scripts/check-served-key-path.sh
+
+  frontend:
+    name: frontend (svelte-check + vitest + build)
+    runs-on: ubuntu-latest
+    # outline-ui's `embed-assets` Cargo feature (off by default) bakes this
+    # directory's `pnpm build` output into the Rust binary, but that is the
+    # only place the two touch. The three jobs above stay entirely node-less
+    # — they never build with the feature on, so they never need
+    # `frontend/dist` to exist. This job is the frontend's own gate:
+    # typecheck, unit tests, and a production build, independent of Rust.
+    defaults:
+      run:
+        working-directory: bins/outline-ui/frontend
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9
+      # pnpm has to already be on PATH (the step above) before setup-node's
+      # built-in cache can hash pnpm-lock.yaml and wire up the pnpm store.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: bins/outline-ui/frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec svelte-check --tsconfig ./tsconfig.app.json
+      - run: pnpm exec vitest run
+      - run: pnpm build
