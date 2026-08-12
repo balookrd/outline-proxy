@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use outline_routing::RoutingTableConfig;
 use outline_uplink::UplinkGroupConfig;
 use socks5_proto::Socks5AuthConfig;
-use url::Url;
 
 use crate::proxy::TcpTimeouts;
 
@@ -24,10 +23,6 @@ pub struct AppConfig {
     /// Intentionally separate from `metrics` so observability access does
     /// not imply authority to flip active uplinks.
     pub control: Option<ControlConfig>,
-    /// Built-in multi-instance dashboard. It serves a browser UI and proxies
-    /// configured instance control APIs without exposing their bearer tokens
-    /// to the browser.
-    pub dashboard: Option<DashboardConfig>,
     #[cfg(feature = "tun")]
     pub tun: Option<outline_tun::TunConfig>,
     pub h2: H2Config,
@@ -161,27 +156,4 @@ pub struct ControlConfig {
     /// `None` when the binary was launched without a config file (e.g. pure
     /// CLI overrides), in which case CRUD endpoints return 409 Conflict.
     pub config_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DashboardConfig {
-    pub listen: SocketAddr,
-    pub refresh_interval_secs: u64,
-    pub request_timeout_secs: u64,
-    /// Optional shared secret required by the dashboard listener itself.
-    /// `None` keeps the listener unauthenticated, as it has always been.
-    pub token: Option<String>,
-    /// Host names accepted in addition to the built-in set (loopback and the
-    /// bound address). Set it when a reverse proxy serves the panel under a
-    /// DNS name; everything else is refused, which is what stops DNS
-    /// rebinding from reaching the loopback listener.
-    pub allowed_hosts: Vec<String>,
-    pub instances: Vec<DashboardInstanceConfig>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DashboardInstanceConfig {
-    pub name: String,
-    pub control_url: Url,
-    pub token: String,
 }

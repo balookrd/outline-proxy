@@ -5,23 +5,19 @@
 //! - [`control`] — mutating endpoints (e.g. manual uplink switch), bound on
 //!   a separate socket behind a mandatory bearer token (`feature = "control"`).
 
-#[cfg(any(feature = "control", feature = "dashboard"))]
+#[cfg(feature = "control")]
 pub(crate) mod body;
 #[cfg(feature = "control")]
 pub mod control;
-#[cfg(feature = "dashboard")]
-pub mod dashboard;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 
-#[cfg(any(feature = "control", feature = "dashboard", feature = "metrics"))]
+#[cfg(any(feature = "control", feature = "metrics"))]
 pub(crate) mod serve;
 
 /// Secret comparison that does not leak the matching prefix length through
-/// timing. Shared by the two credential gates — control's mandatory bearer
-/// token and the dashboard's optional one — so a build with either feature has
-/// exactly one implementation.
-#[cfg(any(feature = "control", feature = "dashboard"))]
+/// timing. Used by the control plane's mandatory bearer token gate.
+#[cfg(feature = "control")]
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -35,5 +31,5 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 // Raw-socket test harness for the two planes that read request bodies; a
 // metrics-only build has no consumer for it.
-#[cfg(all(test, any(feature = "control", feature = "dashboard")))]
+#[cfg(all(test, feature = "control"))]
 mod tests;

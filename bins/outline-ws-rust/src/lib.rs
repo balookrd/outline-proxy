@@ -14,7 +14,7 @@ pub(crate) mod error_class;
 // it unused under `-D warnings`.
 #[cfg(feature = "control")]
 pub(crate) mod fs_util;
-#[cfg(any(feature = "metrics", feature = "control", feature = "dashboard"))]
+#[cfg(any(feature = "metrics", feature = "control"))]
 pub mod http;
 pub mod memory;
 pub mod metrics;

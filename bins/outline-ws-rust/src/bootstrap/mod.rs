@@ -3,15 +3,13 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
-#[cfg(any(feature = "control", feature = "dashboard", feature = "metrics"))]
+#[cfg(any(feature = "control", feature = "metrics"))]
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::config::{AppConfig, Args};
 #[cfg(feature = "control")]
 use crate::http::control::{ApplyHandle, spawn_control_server};
-#[cfg(feature = "dashboard")]
-use crate::http::dashboard::spawn_dashboard_server;
 #[cfg(feature = "metrics")]
 use crate::http::metrics::spawn_metrics_server;
 use crate::proxy::ProxyConfig;
@@ -237,7 +235,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     // Collect handles for the embedded HTTP listeners so we can await their
     // graceful drain after the SOCKS accept loop returns. Each listener
     // observes `shutdown_rx` internally and bounds its drain window.
-    #[cfg(any(feature = "control", feature = "dashboard", feature = "metrics"))]
+    #[cfg(any(feature = "control", feature = "metrics"))]
     let mut http_servers: Vec<JoinHandle<()>> = Vec::new();
 
     #[cfg(feature = "metrics")]
@@ -265,11 +263,6 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     }
     #[cfg(not(feature = "control"))]
     let _ = args; // suppress unused-when-feature-disabled warning
-    #[cfg(feature = "dashboard")]
-    if let Some(dashboard) = config.dashboard.clone() {
-        http_servers.push(spawn_dashboard_server(dashboard, shutdown_rx.clone()));
-    }
-
     // Build the thin proxy-layer config slice from the fully-resolved AppConfig.
     // Each accepted connection clones only this Arc — not the full AppConfig —
     // so there is no unnecessary coupling to uplink/tun/metrics fields.
@@ -293,7 +286,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     // Wait for the embedded HTTP listeners to finish their own drain. Each
     // listener already bounds drain via its internal timeout, so just await
     // the JoinHandles — they return promptly once the watch flips.
-    #[cfg(any(feature = "control", feature = "dashboard", feature = "metrics"))]
+    #[cfg(any(feature = "control", feature = "metrics"))]
     for handle in http_servers {
         if let Err(error) = handle.await {
             warn!(error = %error, "HTTP listener join failed");
