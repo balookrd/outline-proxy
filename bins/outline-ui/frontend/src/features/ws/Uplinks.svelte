@@ -1,22 +1,13 @@
 <script lang="ts">
-  import { onDestroy, tick } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { uplinksList, uplinksMutate, apply } from '../../lib/api';
   import { createPoll } from '../../lib/poll.svelte';
   import { toast } from '../../lib/toast.svelte';
   import type { UplinkEntry, UplinksListResponse, UplinkConfig, ApplyResult } from '../../lib/types';
-  import {
-    emptyUplinkFields,
-    fieldsFromConfig,
-    validateUplinkForm,
-    buildUplinkPayload,
-    TRANSPORTS,
-    WS_MODES,
-    VLESS_MODES,
-    type UplinkFormFields,
-  } from '../../lib/uplinkForm';
   import InstanceSelector from '../../components/layout/InstanceSelector.svelte';
   import ErrorBanner from '../../components/layout/ErrorBanner.svelte';
+  import UplinkDrawer from './UplinkDrawer.svelte';
 
   let instance = $state('');
   let refreshSecs = $state(5);
@@ -79,65 +70,40 @@
     return e instanceof Error ? e.message : String(e);
   }
 
-  // Drawer (create/edit), always mounted so the backdrop/drawer CSS
-  // transitions actually animate — same rationale as
-  // features/ss/UserDrawer.svelte's top-of-file comment.
+  // Drawer (create/edit), split into its own component (Task 8 review Minor
+  // #4) — mirrors features/ss/Users.svelte + UserDrawer.svelte exactly.
+  // `editingEntry` is a snapshot taken at the moment "Edit" is clicked, not a
+  // live binding into `entries` — a background poll refresh while the
+  // drawer is open must not overwrite an in-progress edit.
   let drawerOpen = $state(false);
-  let drawerMode = $state<'create' | 'edit'>('create');
   let drawerGroup = $state('');
-  let drawerName = $state(''); // edit target's identity; blank on create
-  let fields = $state<UplinkFormFields>(emptyUplinkFields());
-  // $state (not a plain `let`, unlike UserDrawer.svelte's always-rendered
-  // idInput) because this element only exists while `drawerMode === 'create'`
-  // (uplinks.html hides the name field entirely on edit) — the binding target
-  // toggles to `undefined` on every mode switch, which is exactly what
-  // svelte's non_reactive_update check warns a plain `let` won't propagate.
-  let nameInput: HTMLInputElement | undefined = $state();
+  let editingEntry = $state<UplinkEntry | null>(null);
 
   function openCreate(group: string) {
-    drawerMode = 'create';
     drawerGroup = group;
-    drawerName = '';
-    fields = emptyUplinkFields();
+    editingEntry = null;
     drawerOpen = true;
-    tick().then(() => nameInput?.focus());
   }
   function openEdit(group: string, entry: UplinkEntry) {
-    drawerMode = 'edit';
     drawerGroup = group;
-    drawerName = entry.name;
-    fields = fieldsFromConfig(entry.config);
+    editingEntry = entry;
     drawerOpen = true;
   }
   function closeDrawer() {
     drawerOpen = false;
+    editingEntry = null;
   }
 
-  $effect(() => {
-    if (!drawerOpen) return;
-    const onKeydown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeDrawer();
-    };
-    window.addEventListener('keydown', onKeydown);
-    return () => window.removeEventListener('keydown', onKeydown);
-  });
-  function onBackdropClick(e: MouseEvent) {
-    if (e.target === e.currentTarget) closeDrawer();
-  }
-
-  async function submitDrawer(e: SubmitEvent) {
-    e.preventDefault();
-    const editing = drawerMode === 'edit';
-    const error = validateUplinkForm(fields, editing);
-    if (error) {
-      toast(error, 'error');
-      return;
-    }
-    const payload = buildUplinkPayload(fields, editing);
+  // Passed to UplinkDrawer as `onsave`. The drawer already validated and
+  // built the payload (lib/uplinkForm.ts); this does the actual API call,
+  // the success/error toast, the dirty-instance flag, and — on success —
+  // closes the drawer and refetches the list immediately instead of waiting
+  // for the next poll tick. Mirrors features/ss/Users.svelte's saveUser().
+  async function saveUplink(payload: Record<string, unknown>, editingName: string | null) {
     mutating = true;
     try {
-      if (editing) {
-        await uplinksMutate('PATCH', instance, { group: drawerGroup, name: drawerName, patch: payload });
+      if (editingName) {
+        await uplinksMutate('PATCH', instance, { group: drawerGroup, name: editingName, patch: payload });
       } else {
         await uplinksMutate('POST', instance, { group: drawerGroup, uplink: payload });
       }
@@ -181,25 +147,39 @@
     }
   }
 
-  // Row meta chips — mirrors uplinks.html's renderGroups() chip list exactly
-  // (same fields, same order, same `!= null` checks for weight/fwmark). The
-  // per-transport RTT EWMA chip uplinks.html also renders is deliberately
-  // dropped: that data comes from /control/topology (u.tcp_rtt_ewma_ms /
-  // u.udp_rtt_ewma_ms), which is out of scope here — see task-8-report.md.
+  // Row meta chips — mirrors uplinks.html's renderGroups() chip list (same
+  // fields, same order, same `!= null` checks for weight/fwmark), extended
+  // for the fields Task 8b adds to the drawer (tcp_xhttp_url/udp_xhttp_url/
+  // ss_*/link) so a row never claims "no on-disk config" for an uplink that
+  // actually has one — e.g. a share-link uplink's on-disk table has only
+  // `link` set (see lib/uplinkForm.ts's fieldsFromConfig doc comment), which
+  // the pre-8b chip list didn't recognize at all. `link`'s raw value is
+  // never rendered (it embeds credentials — a vless UUID or an ss method:
+  // password — same reason `password` itself isn't rendered as a chip).
+  // The per-transport RTT EWMA chip uplinks.html also renders is
+  // deliberately dropped: that data comes from /control/topology
+  // (u.tcp_rtt_ewma_ms/u.udp_rtt_ewma_ms), out of scope here — see
+  // task-8-report.md.
   interface Chip {
     text: string;
     tone?: 'info' | 'off';
   }
   function chipsFor(cfg: UplinkConfig | null | undefined): Chip[] {
     const chips: Chip[] = [];
+    if (cfg?.link) chips.push({ text: 'share-link', tone: 'info' });
     if (cfg?.transport) chips.push({ text: String(cfg.transport), tone: 'info' });
     if (cfg?.tcp_ws_url) chips.push({ text: `TCP WS ${cfg.tcp_ws_url}` });
+    if (cfg?.tcp_xhttp_url) chips.push({ text: `TCP XHTTP ${cfg.tcp_xhttp_url}` });
     if (cfg?.tcp_mode) chips.push({ text: `TCP mode ${cfg.tcp_mode}` });
     if (cfg?.udp_ws_url) chips.push({ text: `UDP WS ${cfg.udp_ws_url}` });
+    if (cfg?.udp_xhttp_url) chips.push({ text: `UDP XHTTP ${cfg.udp_xhttp_url}` });
     if (cfg?.udp_mode) chips.push({ text: `UDP mode ${cfg.udp_mode}` });
     if (cfg?.vless_ws_url) chips.push({ text: `VLESS WS ${cfg.vless_ws_url}` });
     if (cfg?.vless_xhttp_url) chips.push({ text: `VLESS XHTTP ${cfg.vless_xhttp_url}` });
     if (cfg?.vless_mode) chips.push({ text: `VLESS mode ${cfg.vless_mode}` });
+    if (cfg?.ss_ws_url) chips.push({ text: `SS WS ${cfg.ss_ws_url}` });
+    if (cfg?.ss_xhttp_url) chips.push({ text: `SS XHTTP ${cfg.ss_xhttp_url}` });
+    if (cfg?.ss_mode) chips.push({ text: `SS mode ${cfg.ss_mode}` });
     if (cfg?.method) chips.push({ text: String(cfg.method) });
     if (cfg?.weight != null) chips.push({ text: `w=${cfg.weight}` });
     if (cfg?.fwmark != null) chips.push({ text: `fwmark=${cfg.fwmark}` });
@@ -299,105 +279,4 @@
   {/if}
 </section>
 
-<div class="backdrop" class:open={drawerOpen} onclick={onBackdropClick} role="presentation"></div>
-<aside class="drawer" class:open={drawerOpen} aria-hidden={!drawerOpen}>
-  <header>
-    <h3>
-      {#if drawerMode === 'create'}
-        Add uplink to &quot;{drawerGroup}&quot;
-      {:else}
-        Edit &quot;{drawerName}&quot; in &quot;{drawerGroup}&quot;
-      {/if}
-    </h3>
-    <span class="spacer"></span>
-    <button class="iconbtn" type="button" aria-label="Close" onclick={closeDrawer}>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
-    </button>
-  </header>
-  <form class="body" id="uplink-drawer-form" onsubmit={submitDrawer}>
-    {#if drawerMode === 'create'}
-      <div class="fieldrow">
-        <label for="uplink-name">Name</label>
-        <input id="uplink-name" class="field-mono" type="text" bind:value={fields.name} bind:this={nameInput} required autocomplete="off" placeholder="cloud1" />
-        <span class="hint">Required for create.</span>
-      </div>
-    {/if}
-    <div class="fieldrow">
-      <label for="uplink-transport">Transport</label>
-      <select id="uplink-transport" class="field-mono" bind:value={fields.transport}>
-        {#each TRANSPORTS as t}<option value={t}>{t}</option>{/each}
-      </select>
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-method">Cipher</label>
-      <input id="uplink-method" class="field-mono" type="text" bind:value={fields.method} autocomplete="off" />
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-password">Password</label>
-      <input id="uplink-password" class="field-mono" type="text" bind:value={fields.password} autocomplete="off" />
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-vless-id">VLESS id</label>
-      <input id="uplink-vless-id" class="field-mono" type="text" bind:value={fields.vlessId} autocomplete="off" />
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-tcp-ws-url">TCP WS URL (transport=ws)</label>
-      <input id="uplink-tcp-ws-url" class="field-mono" type="text" bind:value={fields.tcpWsUrl} autocomplete="off" />
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-tcp-mode">TCP mode (transport=ws)</label>
-      <select id="uplink-tcp-mode" class="field-mono" bind:value={fields.tcpMode}>
-        {#each WS_MODES as m}<option value={m}>{m === '' ? '—' : m}</option>{/each}
-      </select>
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-udp-ws-url">UDP WS URL (transport=ws)</label>
-      <input id="uplink-udp-ws-url" class="field-mono" type="text" bind:value={fields.udpWsUrl} autocomplete="off" />
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-udp-mode">UDP mode (transport=ws)</label>
-      <select id="uplink-udp-mode" class="field-mono" bind:value={fields.udpMode}>
-        {#each WS_MODES as m}<option value={m}>{m === '' ? '—' : m}</option>{/each}
-      </select>
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-vless-ws-url">VLESS WS URL (vless_mode=ws_*)</label>
-      <input id="uplink-vless-ws-url" class="field-mono" type="text" bind:value={fields.vlessWsUrl} autocomplete="off" />
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-vless-xhttp-url">VLESS XHTTP URL (vless_mode=xhttp_*)</label>
-      <input id="uplink-vless-xhttp-url" class="field-mono" type="text" bind:value={fields.vlessXhttpUrl} autocomplete="off" />
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-vless-mode">VLESS mode</label>
-      <select id="uplink-vless-mode" class="field-mono" bind:value={fields.vlessMode}>
-        {#each VLESS_MODES as m}<option value={m}>{m === '' ? '—' : m}</option>{/each}
-      </select>
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-weight">Weight</label>
-      <input id="uplink-weight" class="field-mono" type="number" step="0.1" bind:value={fields.weight} placeholder="default" />
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-fwmark">fwmark</label>
-      <input id="uplink-fwmark" class="field-mono" type="number" step="1" bind:value={fields.fwmark} placeholder="default" />
-    </div>
-    <div class="fieldrow">
-      <label for="uplink-ipv6-first">IPv6 first</label>
-      <select id="uplink-ipv6-first" class="field-mono" bind:value={fields.ipv6First}>
-        <option value="">—</option>
-        <option value="true">true</option>
-        <option value="false">false</option>
-      </select>
-    </div>
-    {#if drawerMode === 'edit'}
-      <span class="hint">Every non-empty field above is sent, including unchanged ones — blank fields stay untouched on the server.</span>
-    {/if}
-  </form>
-  <div class="foot">
-    <button class="btn ghost" type="button" onclick={closeDrawer} disabled={mutating}>Cancel</button>
-    <button class="btn primary" type="submit" form="uplink-drawer-form" disabled={mutating}>
-      {drawerMode === 'create' ? 'Create' : 'Update'}
-    </button>
-  </div>
-</aside>
+<UplinkDrawer open={drawerOpen} group={drawerGroup} {editingEntry} onclose={closeDrawer} onsave={saveUplink} />
