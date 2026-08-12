@@ -29,9 +29,10 @@ that carry traffic:
   equivalent to holding every instance token it is configured with — the tokens
   are injected server-side on every proxied request. That authority sat on the
   same process as the data plane.
-- **UI changes cost a restart.** `dashboard.html` is `include_str!`-ed into the
-  binary, so a cosmetic fix meant rebuilding and redeploying the traffic-carrying
-  binary and restarting it — dropping every flow on that node.
+- **UI changes cost a restart.** The dashboard HTML used to be `include_str!`-ed
+  straight into `outline-ws-rust`/`outline-ss-rust`, so a cosmetic fix meant
+  rebuilding and redeploying the traffic-carrying binary and restarting it —
+  dropping every flow on that node.
 - **The UI could not move to the cluster**, where Grafana and VictoriaMetrics
   already live.
 
@@ -102,8 +103,53 @@ EOF
 cargo run -p outline-ui -- --config /tmp/ui/config.toml
 ```
 
-Then `curl -H 'Authorization: Bearer devtoken' http://127.0.0.1:9500/ws/dashboard`.
-Without the header the answer is 401.
+Then `curl -H 'Authorization: Bearer devtoken' http://127.0.0.1:9500/`. Without
+the header the answer is 401; with it, `/` serves the SPA shell — the "assets
+not embedded" stub unless the binary was built with `--features embed-assets`
+against a `pnpm build`-ed `frontend/dist` (see "Frontend development" below).
+The JSON APIs both dashboards use are reachable the same way, e.g.
+`/ws/dashboard/api/instances`.
+
+For live-reloading UI development against this backend, see "Frontend
+development" below.
+
+## Frontend development
+
+The dashboard UI is a Svelte 5 + TypeScript SPA in [`frontend/`](frontend),
+built with Vite and Tailwind and tested with `svelte-check`/Vitest.
+`frontend/README.md` is the generic Vite/Svelte template boilerplate;
+everything below is specific to how it plugs into this binary.
+
+Two processes, run side by side:
+
+```bash
+# terminal 1: the JSON APIs — "Running locally" above, listens on :9500
+cargo run -p outline-ui -- --config /tmp/ui/config.toml
+
+# terminal 2: the SPA with hot reload
+cd bins/outline-ui/frontend
+pnpm install
+pnpm dev   # http://localhost:5173
+```
+
+`vite.config.ts` proxies `/ss/dashboard/api` and `/ws/dashboard/api` to
+`127.0.0.1:9500`, so the dev server's own origin serves the SPA while its API
+calls reach the real backend process and, through it, whatever
+`control_url`s its `config.toml` points at. Requests still need the
+`Bearer`/`Basic` credentials the two gates require — the dev server does not
+exempt itself from `auth.rs`/`origin.rs`.
+
+`pnpm build` compiles the SPA to `frontend/dist/`: hashed `/ui-assets/*`
+filenames, `index.html` referencing them by absolute path
+(`vite.config.ts`'s `base: '/ui-assets/'`). Nothing in the Rust build reads
+that directory unless the `embed-assets` Cargo feature is on — plain
+`cargo build`/`cargo test` never need Node installed, which is why the
+default Rust CI jobs stay node-less. See "Deployment" below for the release
+build that turns the feature on.
+
+`.github/workflows/ci.yml`'s `frontend` job runs `svelte-check`, `vitest
+run`, and `pnpm build` on every PR and push to `main` — the frontend's own
+gate, independent of the Rust jobs.
 
 ## Deployment
 
@@ -112,15 +158,36 @@ Runs in k3s, namespace `monitoring`, behind `ui.k3s.beerloga.su`. Manifests:
 ingress entry in
 [`apps/ingress/ingress-routes.yaml`](../../ops/nanopi-r5c-k3s/apps/ingress/ingress-routes.yaml).
 
+The release binary embeds the built SPA, so the frontend is built *first*,
+and the Rust build has to ask for the result explicitly — plain `cargo
+build` never embeds it:
+
 ```bash
-cargo zigbuild --release -p outline-ui --target aarch64-unknown-linux-musl
+pnpm -C bins/outline-ui/frontend install
+pnpm -C bins/outline-ui/frontend build                        # → frontend/dist/
+cargo zigbuild --release -p outline-ui --features embed-assets \
+  --target aarch64-unknown-linux-musl
 docker build --platform linux/arm64 -f bins/outline-ui/Dockerfile \
-  -t registry.k3s.beerloga.su/outline-ui:0.1.0 .
-docker push registry.k3s.beerloga.su/outline-ui:0.1.0
+  -t registry.k3s.beerloga.su/outline-ui:0.2.0 .
+docker push registry.k3s.beerloga.su/outline-ui:0.2.0
 export KUBECONFIG=~/.kube/k3s-home.yaml
 kubectl apply -f ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml
 kubectl -n monitoring rollout restart deploy/outline-ui
 ```
+
+`Dockerfile` is a plain `COPY` into `scratch`, not a multi-stage build: the
+binary is cross-compiled outside Docker (`cargo zigbuild`, same as
+`outline-ss-rust`/`outline-ws-rust`), and Docker's only job is packaging the
+binary that build already produced — assets and all. Nothing checks at build
+time that `frontend/dist` is fresh or that `--features embed-assets` was
+passed; skip either step and the image still builds, it just serves the
+"assets not embedded" stub at `/` instead of the dashboard.
+
+`ops/deploy/deploy-binary.sh` does not cover this binary — it pushes to a
+systemd unit on a fleet node (`outline-ws-rust`/`outline-ss-rust` only) and
+restarts it in place, which doesn't match how `outline-ui` ships: no systemd
+unit, no fleet node, a container image rolled out to k3s instead. The five
+commands above are the whole release procedure.
 
 Cluster nodes are aarch64 (NanoPi R5C), hence the target and `--platform`.
 
@@ -142,27 +209,36 @@ take effect.
 
 ## Serving two UIs under one port
 
-Both dashboards address their APIs absolutely (`/dashboard/api/...`). Mounted
-under `/ws` and `/ss` those URLs would miss, and the two would collide on the
-same paths. Each page therefore declares
+One binary answers three kinds of request, all through the same `Router`
+(`main.rs`), gated identically before any of them is matched:
 
-```js
-const API_BASE = "__BASE__";
-```
+- `/ui-assets/*` — hashed JS/CSS/font files (`assets::asset`), the prefix
+  Vite is configured to emit (`base: '/ui-assets/'` in `vite.config.ts`)
+  precisely so it cannot collide with either dashboard's API tree.
+- `/ws/dashboard/api/...` and `/ss/dashboard/api/...` — the two dashboards'
+  JSON APIs, unchanged in shape, each `.nest`-ed under `/ws`/`/ss`
+  (`ws::router`/`ss::router`).
+- Everything else — `/`, a deep link like `/ws/uplinks`, a typo — serves the
+  same `index.html` shell (`assets::spa_index`), including the `.fallback`
+  inside the `/ws` and `/ss` nested routers themselves.
 
-and the handler substitutes `/ws` or `/ss` at response time (`assets::render`,
-the same mechanism the dashboards already used for the refresh interval). A test
-asserts no placeholder survives into a response.
-
-`<base href>` was rejected: it silently rewrites every relative URL and anchor on
-the page, fixing the fetches by changing things nobody audited.
+Once that shell has loaded,
+[`router.svelte.ts`](frontend/src/lib/router.svelte.ts) reads
+`location.pathname` client-side and picks the `ws`/`ss`/`landing` view — there
+is no more server-side templating to keep in sync with it: the same
+`index.html` is served for every route, and the two dashboards no longer have
+pages of their own to collide over.
 
 ## Current state
 
 The dashboards have been **removed from `outline-ws-rust` and `outline-ss-rust`**;
-this service is the only place they run now. The binaries expose only their
+this service is the only place they run now, and — as of `0.2.0` — as a
+Svelte SPA rather than server-rendered HTML. The binaries expose only their
 metrics and control listeners.
 
-Design and plan:
+Design and plan — extraction from the traffic binaries:
 [spec](../../docs/superpowers/specs/2026-08-12-outline-ui-dashboard-extraction-design.md),
-[plan](../../docs/superpowers/plans/2026-08-12-outline-ui.md).
+[plan](../../docs/superpowers/plans/2026-08-12-outline-ui.md); the Svelte
+rewrite:
+[spec](../../docs/superpowers/specs/2026-08-12-outline-ui-svelte-rewrite-design.md),
+[plan](../../docs/superpowers/plans/2026-08-12-outline-ui-svelte-rewrite.md).
