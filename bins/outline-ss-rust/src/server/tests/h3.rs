@@ -151,6 +151,7 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
                 0,
+                0,
             ),
             relay_semaphore: None,
         },
@@ -307,6 +308,7 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
+                0,
                 0,
             ),
             relay_semaphore: None,
@@ -594,6 +596,7 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
                 0,
+                0,
             ),
             relay_semaphore: None,
         },
@@ -737,6 +740,7 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
                 0,
+                0,
             ),
             relay_semaphore: None,
         },
@@ -873,6 +877,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
+                0,
                 0,
             ),
             relay_semaphore: None,
@@ -1036,6 +1041,7 @@ async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
             nat_table,
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
+                0,
                 0,
             ),
             relay_semaphore: None,

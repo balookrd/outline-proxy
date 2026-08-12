@@ -164,13 +164,22 @@ impl MuxSubConn {
         self,
     ) -> (SubConnKind, Option<JoinHandle<MuxReaderHarvest>>, Arc<Notify>) {
         let me = std::mem::ManuallyDrop::new(self);
-        // SAFETY: `me` is wrapped in ManuallyDrop so its `Drop` impl
-        // does not run; each field is therefore read out exactly once
-        // and then ownership transfers to the returned tuple.
+        // Borrow-destructure without `..` so that adding or removing a
+        // field on `MuxSubConn` breaks this line at compile time (E0027):
+        // the field list here can never silently drift from the struct
+        // definition, and a newly added field cannot be forgotten and
+        // leaked.
+        let MuxSubConn { kind, reader_task, cancel } = &*me;
+        // SAFETY: `me` is wrapped in ManuallyDrop, so `MuxSubConn::drop`
+        // never runs and no field is dropped in place. The pattern above
+        // borrows every field exactly once, and each `ptr::read` moves
+        // one of those fields out to the returned tuple exactly once, so
+        // ownership transfers cleanly with no double-read and no
+        // double-drop.
         unsafe {
-            let kind = std::ptr::read(&me.kind);
-            let task = std::ptr::read(&me.reader_task);
-            let cancel = std::ptr::read(&me.cancel);
+            let kind = std::ptr::read(kind);
+            let task = std::ptr::read(reader_task);
+            let cancel = std::ptr::read(cancel);
             (kind, task, cancel)
         }
     }

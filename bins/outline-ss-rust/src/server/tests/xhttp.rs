@@ -107,7 +107,7 @@ pub(super) async fn setup_xhttp_server_with_resumption_v2(
         None,
         UdpServices {
             nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         orphan_registry,

@@ -37,7 +37,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: zigbee2mqtt
-          image: koenkk/zigbee2mqtt:2.12.0
+          image: koenkk/zigbee2mqtt@sha256:1debff565ab6841417bd9f7ce8ad44f8c5f25a8b02a24ce3fd79e4779a4763a5 # 2.12.0
           ports:
             - { containerPort: 8080, name: frontend }
           volumeMounts:

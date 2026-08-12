@@ -71,7 +71,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: mosquitto
-          image: eclipse-mosquitto:2.1.2-alpine
+          image: eclipse-mosquitto@sha256:6f8d8a947c506f8a2290ec65cd4bd2bc7cb4d43fb5f6271f861cb013e2ef9797 # 2.1.2-alpine
           ports:
             - { containerPort: 1883, name: mqtt }
             - { containerPort: 1888, name: mqtt-spruthub }

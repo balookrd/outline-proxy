@@ -47,8 +47,13 @@ pub(super) fn client_ws_stream(
     SockudoWebSocketStream::from_raw(
         h3_stream,
         SockudoRole::Client,
+        // Cap a single inbound message the same way the tungstenite carriers do
+        // via `crate::ws_client_config` (sockudo defaults to 64 MiB otherwise);
+        // mirrors the server's `build_h3_ws_config`.
         SockudoConfig::builder()
             .http3_idle_timeout(http3_idle_timeout_ms)
+            .max_message_size(crate::WS_MAX_MESSAGE_SIZE)
+            .max_frame_size(crate::WS_MAX_MESSAGE_SIZE)
             .build(),
     )
 }

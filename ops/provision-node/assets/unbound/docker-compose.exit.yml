@@ -14,7 +14,7 @@
 
 services:
   unbound:
-    image: klutchell/unbound:latest
+    image: klutchell/unbound@sha256:5020cfe1218aeda38777f88279220162e602c3a44efc684550dbf46137106a16 # latest = v1.26.0 (pinned 2026-08-12)
     container_name: unbound
     restart: unless-stopped
     network_mode: host
@@ -24,7 +24,7 @@ services:
       - /opt/unbound/unbound.conf:/etc/unbound/unbound.conf:ro
 
   unbound-exporter:
-    image: saarphil/unbound_exporter:latest
+    image: saarphil/unbound_exporter@sha256:64882653fd86e1f68d6f34dd828b427637912d3272c6e117e0adf9b373b9375a # latest; no upstream version tag (pinned 2026-08-12)
     container_name: unbound-exporter
     restart: unless-stopped
     network_mode: host

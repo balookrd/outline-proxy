@@ -171,15 +171,35 @@ trap 'rm -f "$PEER_BODY_FILE"' EXIT
 
 peer_curl() {
     local target="$1" method="$2" path="$3" body="${4:-}"
+    local url="http://$PEER_LISTEN$path"
+
+    # Keep the bearer token out of the peer's process table. ssh runs the remote
+    # command as `sh -c <string>` and curl exposes its own argv, so anything on
+    # the command line is readable by any local user through ps /
+    # /proc/<pid>/cmdline for the duration of the call — and this token grants
+    # full CRUD on /control/users. So it never appears there: it travels on
+    # stdin as the first line, a ready-made Authorization header, which the
+    # remote shell copies into a private (mode 0600, from mktemp) temp file and
+    # hands to curl with `-H @file`. Any request body (itself secret — it
+    # carries the new password) follows on the same stdin and streams to curl
+    # via `-d @-` untouched, so arbitrary JSON needs no requoting. `read` stops
+    # at the first newline without consuming the body, so the split is exact.
+    #
+    # The prologue is a single-quoted literal — $h/$a/$(mktemp)/%s\n reach the
+    # peer shell verbatim; only the non-secret $method/$url interpolate here.
+    # shellcheck disable=SC2016  # deliberately unexpanded: these expand on the peer
+    local prologue='set -eu; h=$(mktemp); trap '\''rm -f "$h"'\'' EXIT; IFS= read -r a; printf '\''%s\n'\'' "$a" > "$h"; '
+
     if [ -n "$body" ]; then
-        printf '%s' "$body" | peer_ssh "$target" \
-            "curl -sS -o /dev/stderr -w '%{http_code}' -X $method 'http://$PEER_LISTEN$path' \
-             -H 'Authorization: Bearer $PEER_TOKEN' -H 'Content-Type: application/json' -d @-" \
-            2> "$PEER_BODY_FILE"
+        { printf 'Authorization: Bearer %s\n' "$PEER_TOKEN"; printf '%s' "$body"; } \
+            | peer_ssh "$target" \
+                "${prologue}curl -sS -o /dev/stderr -w '%{http_code}' -X $method '$url' -H @\$h -H 'Content-Type: application/json' -d @-" \
+                2> "$PEER_BODY_FILE"
     else
-        peer_ssh "$target" \
-            "curl -sS -o /dev/stderr -w '%{http_code}' -X $method 'http://$PEER_LISTEN$path' \
-             -H 'Authorization: Bearer $PEER_TOKEN'" 2> "$PEER_BODY_FILE"
+        printf 'Authorization: Bearer %s\n' "$PEER_TOKEN" \
+            | peer_ssh "$target" \
+                "${prologue}curl -sS -o /dev/stderr -w '%{http_code}' -X $method '$url' -H @\$h" \
+                2> "$PEER_BODY_FILE"
     fi
 }
 

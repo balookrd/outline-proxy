@@ -31,6 +31,7 @@ NEW_IPV4=""
 NEW_WAN_IF=""
 ONLY=""
 SKIP=""
+SKIP_INTEGRITY=0
 # Consumed by confirm() in lib/common.sh; exported so it is visibly in use.
 export ASSUME_YES=0
 
@@ -68,6 +69,10 @@ Usage: sudo install.sh --bundle <dir> --host <short-name> [options]
   --list-phases               print the phase list and exit
   --dry-run                   print what would run, change nothing
   --yes                       do not prompt
+  --skip-integrity            unpack the bundle WITHOUT verifying SHA256SUMS.
+                              Escape hatch only: every bundle from
+                              collect-from-reference.sh ships SHA256SUMS, so a
+                              missing file means a truncated or tampered bundle
 
 Phases: preflight identity packages users files secrets rehost uplinks network
         ddns certs cron services verify
@@ -95,6 +100,7 @@ while [ $# -gt 0 ]; do
         --list-phases) echo "$ALL_PHASES" | tr ' ' '\n'; exit 0 ;;
         --dry-run) DRY_RUN=1; shift ;;
         --yes) ASSUME_YES=1; shift ;;
+        --skip-integrity) SKIP_INTEGRITY=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage; die "unknown argument: $1" ;;
     esac
@@ -191,6 +197,30 @@ asset_path() {
     fi
 }
 
+# ------------------------------------------------------------- integrity gate
+#
+# Verified in main() before any phase runs — deliberately not a phase. The
+# payload is unpacked into / as root (phase_files, phase_secrets) and phases are
+# selectable with --only/--skip, so a check that lived inside preflight could be
+# stepped past (`--only files`) and unroll an unverified bundle into /.
+#
+# collect-from-reference.sh writes SHA256SUMS for every bundle, so a missing or
+# failing checksum means a truncated or tampered payload, not an old bundle
+# worth trusting — refuse rather than warn-and-continue. --skip-integrity is the
+# deliberate, loud escape hatch.
+verify_bundle_integrity() {
+    if [ "$SKIP_INTEGRITY" = "1" ]; then
+        warn "INTEGRITY CHECK DISABLED via --skip-integrity — unpacking $BUNDLE into / unverified"
+        return 0
+    fi
+    [ -f "$BUNDLE/SHA256SUMS" ] \
+        || die "$BUNDLE/SHA256SUMS missing — every bundle carries one, so this is a truncated or tampered bundle. Re-collect it, or pass --skip-integrity to override deliberately."
+    need_cmd sha256sum
+    ( cd "$BUNDLE" && sha256sum --quiet -c SHA256SUMS ) \
+        || die "bundle checksum verification failed"
+    ok "bundle checksums verified"
+}
+
 # ------------------------------------------------------------------ preflight
 
 phase_preflight() {
@@ -204,14 +234,6 @@ phase_preflight() {
     [ "$id" = "ubuntu" ] || warn "reference was Ubuntu, this host is $id"
     [ "$arch" = "$REF_ARCH" ] || die "arch mismatch: bundle is $REF_ARCH, host is $arch"
     ok "$id $version $arch, profile $PROFILE_NAME, bundle from $REF_HOST"
-
-    if [ -f "$BUNDLE/SHA256SUMS" ] && command -v sha256sum >/dev/null 2>&1; then
-        ( cd "$BUNDLE" && sha256sum --quiet -c SHA256SUMS ) \
-            || die "bundle checksum verification failed"
-        ok "bundle checksums verified"
-    else
-        warn "no SHA256SUMS in bundle — skipping integrity check"
-    fi
 
     # A node that does not own its own name will issue a certificate for
     # someone else's address and register the wrong DDNS record.
@@ -1527,6 +1549,11 @@ phase_verify() {
 # ----------------------------------------------------------------------- main
 
 log "provisioning $HOST ($DOMAIN) from a $REF_HOST bundle, profile $PROFILE_NAME"
+
+# Before anything reads or unrolls the payload, and regardless of --only/--skip:
+# an unverified bundle must never reach a phase that writes to /.
+verify_bundle_integrity
+
 if [ "$DRY_RUN" = "1" ]; then
     warn "dry-run: nothing will be changed"
 else

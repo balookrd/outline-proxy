@@ -328,7 +328,12 @@ impl SharedH2Connection {
                 )
             })?
             .context("failed to upgrade HTTP/2 websocket stream")?;
-        let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
+        let ws = WebSocketStream::from_raw_socket(
+            TokioIo::new(upgraded),
+            Role::Client,
+            Some(crate::ws_client_config()),
+        )
+        .await;
         let shared_connection: Arc<dyn SharedConnectionHealth> = self.clone();
         self.streams_opened.fetch_add(1, Ordering::Relaxed);
         Ok(TransportStream::H2 {

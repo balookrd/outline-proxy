@@ -158,6 +158,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     let replay_store = ReplayStore::new(
         Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),
         config.tuning.udp_replay_max_sessions,
+        config.tuning.udp_replay_max_sessions_per_user,
     );
     // TCP-handshake anti-replay. TTL is tied to the same NAT idle timeout as the
     // UDP replay store: it comfortably exceeds the ±30 s SS-2022 timestamp window

@@ -328,6 +328,12 @@ ws_path_udp = "/dave/udp"
                                          # claiming the whole table. 0 disables it.
 # udp_max_concurrent_relay_tasks = 4096  # process-wide cap; 0 disables
 # udp_replay_max_sessions = 262144       # anti-replay cap: SS-2022 session windows + legacy salts; 0 disables
+# udp_replay_max_sessions_per_user = 16384 # per-user share of the replay store
+                                         # (both maps combined), on top of
+                                         # udp_replay_max_sessions; profile default
+                                         # (4096/8192/16384) keeps one tenant from
+                                         # filling the global cap and starving the
+                                         # others. 0 disables it.
 # tcp_handshake_replay_max_salts = 262144 # TCP-handshake anti-replay salt cap; 0 disables
 # xhttp_max_sessions = 262144            # max live XHTTP sessions (pre-auth); 0 disables
 # xhttp_max_sessions_per_ip = 0          # per-source-IP share of live XHTTP sessions,

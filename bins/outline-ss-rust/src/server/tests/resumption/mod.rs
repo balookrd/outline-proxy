@@ -193,7 +193,7 @@ async fn spawn_test_server(
         None,
         UdpServices {
             nat_table,
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         Some(orphan_registry),

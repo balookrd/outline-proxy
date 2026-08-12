@@ -1021,3 +1021,72 @@ async fn symmetric_replay_flag_stays_false_when_v1_negotiation_collapsed() {
         "v1 collapsed → v2 must collapse too (gated on v1)",
     );
 }
+
+/// The client WS carriers must cap a single inbound message so a broken or
+/// hostile upstream cannot make the WS layer buffer a frame far larger than any
+/// legitimate one (and the datagram downlink park a slot's worth of them).
+mod ws_message_cap {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::WebSocketStream;
+    use tokio_tungstenite::tungstenite::Error as WsError;
+    use tokio_tungstenite::tungstenite::protocol::{Message, Role};
+
+    use crate::{WS_MAX_MESSAGE_SIZE, ws_client_config};
+
+    /// Drives one server→client Binary message of `payload_len` bytes through a
+    /// tungstenite client built with [`ws_client_config`] and returns what the
+    /// client's stream yields. The server half uses tungstenite's defaults (a
+    /// 64 MiB ceiling), so a message the client refuses is refused by the
+    /// client's own cap, not the server's.
+    async fn client_reads_server_binary(payload_len: usize) -> Result<Message, WsError> {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let mut client =
+            WebSocketStream::from_raw_socket(client_io, Role::Client, Some(ws_client_config()))
+                .await;
+        let server = tokio::spawn(async move {
+            let mut server = WebSocketStream::from_raw_socket(server_io, Role::Server, None).await;
+            // For an oversize payload the client rejects at frame-header parse
+            // and never drains the body, so this send may never complete —
+            // ignore it and hold the half open until the task is aborted.
+            let _ = server.send(Message::Binary(vec![0u8; payload_len].into())).await;
+            futures_util::future::pending::<()>().await;
+        });
+        let item = client.next().await.expect("client stream yielded no item");
+        server.abort();
+        item
+    }
+
+    #[test]
+    fn caps_message_and_frame_size_to_one_mib() {
+        let cfg = ws_client_config();
+        assert_eq!(WS_MAX_MESSAGE_SIZE, 1024 * 1024);
+        assert_eq!(cfg.max_message_size, Some(WS_MAX_MESSAGE_SIZE));
+        assert_eq!(cfg.max_frame_size, Some(WS_MAX_MESSAGE_SIZE));
+    }
+
+    #[tokio::test]
+    async fn rejects_inbound_message_larger_than_cap() {
+        // 2 MiB is under tungstenite's 64 MiB default but over our 1 MiB cap:
+        // with the cap absent this message is accepted, so a pass here is the
+        // signal the cap is missing. The client must reject it instead.
+        let result = client_reads_server_binary(2 * 1024 * 1024).await;
+        assert!(
+            result.is_err(),
+            "a message above WS_MAX_MESSAGE_SIZE must be rejected, got {result:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn accepts_inbound_message_within_cap() {
+        // A realistic datagram / coalesced frame sits far below the cap and must
+        // pass through untouched.
+        let payload = 512 * 1024;
+        let msg = client_reads_server_binary(payload)
+            .await
+            .expect("a message within WS_MAX_MESSAGE_SIZE must be accepted");
+        match msg {
+            Message::Binary(bytes) => assert_eq!(bytes.len(), payload),
+            other => panic!("expected a Binary message, got {other:?}"),
+        }
+    }
+}

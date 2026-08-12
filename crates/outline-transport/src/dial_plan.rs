@@ -598,10 +598,14 @@ async fn connect_websocket_http1(
         } else {
             Connector::Plain
         };
-        let (ws_stream, response) =
-            client_async_tls_with_config(request, tcp, None, Some(connector))
-                .await
-                .context("HTTP/1 websocket handshake failed")?;
+        let (ws_stream, response) = client_async_tls_with_config(
+            request,
+            tcp,
+            Some(crate::ws_client_config()),
+            Some(connector),
+        )
+        .await
+        .context("HTTP/1 websocket handshake failed")?;
         let negotiated =
             crate::resumption::parse_resume_response_echo(&options.resume, response.headers());
         Ok::<_, anyhow::Error>((

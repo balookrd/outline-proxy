@@ -253,7 +253,10 @@ NGINX_LOCATIONS=( "/unbound-exporter/metrics:http://127.0.0.1:9167/metrics" )
 MANIFEST            профиль, хост/ОС/архитектура/адреса/machine-id эталона, версии бинарей, каталог access-ключей
 profile.conf        профиль, с которым собран этот бандл
 assets/             перечисленные выше файлы репозитория, скопированы внутрь — бандл остаётся самодостаточным
-SHA256SUMS          проверяется фазой preflight
+SHA256SUMS          проверяется до запуска любой фазы (это не фаза, поэтому
+                    --only/--skip её не обойдут); отсутствие или провал —
+                    фатально (бандл распаковывается в / как root).
+                    --skip-integrity отключает проверку, с громким warn
 packages.list       осознанно установленные пакеты (набор docker-ce, nginx, jq, ipset, …)
 docker-images.list  образы для pull
 crontab.root        root-crontab эталона

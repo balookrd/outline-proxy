@@ -30,7 +30,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: victoria-metrics
-          image: victoriametrics/victoria-metrics:v1.149.0
+          image: victoriametrics/victoria-metrics@sha256:13b8951e35bb3589626816538483127785a9d8b53f9f5123769db0fcab1d961f # v1.149.0
           args:
             - -retentionPeriod=90d
             - -inmemoryDataFlushInterval=60s

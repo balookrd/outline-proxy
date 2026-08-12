@@ -465,6 +465,19 @@ cargo release-musl-aarch64
   / cross-shape reject на `Parked::VlessUdpSingle`). Клиент не кодирует shard
   (это делает сервер через cluster-PSK); он лишь переиспользует server-issued,
   shard-несущие id'ы дольше жизни одного mux.
+- WS message-size cap (клиент): каждый клиентский WS-диал ограничивает одно
+  входящее сообщение `crate::WS_MAX_MESSAGE_SIZE` (1 MiB) — h1/h2 через
+  `crate::ws_client_config()` (`WebSocketConfig`), h3 через
+  `max_message_size`/`max_frame_size` на sockudo `Config` в
+  `h3::vendored::client_ws_stream`. Без капа tungstenite/sockudo дефолтят на
+  64 MiB, и битый/враждебный upstream мог заставить WS-слой буферизовать один
+  фрейм много больше любого легитимного (датаграммный downlink паркует до слота
+  таких). tungstenite отбраковывает фрейм с завышенной заявленной длиной на
+  разборе заголовка, до чтения тела. Зеркалит серверный `WS_MAX_MESSAGE_SIZE`
+  (`apply_ws_limits` / `build_h3_ws_config`); 1 MiB с запасом над потолком
+  SS/VLESS-фрейма (`FRAME_SOFT_CAP` 256 KiB, датаграмма ≤ 65 KiB). НЕ передавай
+  `None`/дефолтный конфиг на новом WS-диале — заводи его через `ws_client_config`
+  (tungstenite) или те же два сеттера (sockudo).
 
 ## Форматирование
 

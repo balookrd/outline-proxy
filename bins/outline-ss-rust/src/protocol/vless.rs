@@ -6,6 +6,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use outline_net::IpAliasTable;
+use subtle::ConstantTimeEq;
 
 #[cfg(test)]
 pub use outline_wire::vless::{COMMAND_MUX, COMMAND_TCP, COMMAND_UDP};
@@ -76,7 +77,15 @@ impl VlessUser {
 }
 
 pub fn find_user<'a>(users: &'a [VlessUser], user_id: &[u8; 16]) -> Option<&'a VlessUser> {
-    users.iter().find(|user| user.id_bytes() == user_id)
+    // Constant-time compare of the 16-byte VLESS UUID (a credential): a plain
+    // `==` short-circuits on the first differing byte and leaks a per-byte
+    // timing side-channel. Mirrors the SS master-key path in
+    // `crypto::user_key::UserKey::matches_password` (subtle::ConstantTimeEq).
+    // The per-user iteration itself still short-circuits — that only reveals
+    // which configured slot matched, never the secret bytes.
+    users
+        .iter()
+        .find(|user| user.id_bytes().as_slice().ct_eq(user_id.as_slice()).into())
 }
 
 #[cfg(test)]

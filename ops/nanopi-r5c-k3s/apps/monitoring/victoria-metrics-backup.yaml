@@ -32,7 +32,7 @@ spec:
             fsGroup: 1000
           containers:
             - name: vmbackup
-              image: victoriametrics/vmbackup:v1.149.0
+              image: victoriametrics/vmbackup@sha256:70f186d153364ac7d395be64a636cbf0587926f73446e1ef3ecdfb8fc1435f0a # v1.149.0
               args:
                 - -storageDataPath=/victoria-metrics-data
                 - -snapshot.createURL=http://victoria-metrics.monitoring:8428/snapshot/create

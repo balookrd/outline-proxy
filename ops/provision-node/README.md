@@ -250,7 +250,10 @@ being provisioned. See "Deliberately not automated" below.
 MANIFEST            profile, reference host/os/arch/addresses/machine-id, binary versions, access-keys dir
 profile.conf        the profile this bundle was collected with
 assets/             the repo-owned files above, copied in so the bundle stays self-describing
-SHA256SUMS          verified by install.sh --only preflight
+SHA256SUMS          verified before any phase runs (not a phase, so --only/--skip
+                    cannot step past it); missing or failing is fatal — the
+                    bundle unpacks into / as root. --skip-integrity overrides,
+                    loudly
 packages.list       deliberately installed packages (docker-ce set, nginx, jq, ipset, …)
 docker-images.list  images to pull
 crontab.root        root crontab of the reference

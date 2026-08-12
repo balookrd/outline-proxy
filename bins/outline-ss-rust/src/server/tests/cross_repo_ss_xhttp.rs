@@ -81,7 +81,7 @@ async fn setup_ss_xhttp_server(
         None,
         UdpServices {
             nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         None,
@@ -343,7 +343,7 @@ async fn setup_ss_combined_xhttp_server(
         None,
         UdpServices {
             nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0, 0),
             relay_semaphore: None,
         },
         None,
