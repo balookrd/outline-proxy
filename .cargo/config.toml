@@ -17,3 +17,7 @@ ss-release-musl-armv7 = "zigbuild --release -p outline-ss-rust --target armv7-un
 # --- outline-ws-rust (client) cross builds ---
 ws-release-musl-x86_64 = "zigbuild --release -p outline-ws-rust --target x86_64-unknown-linux-musl"
 ws-release-musl-aarch64 = "zigbuild --release -p outline-ws-rust --target aarch64-unknown-linux-musl"
+
+# --- outline-ui (dashboard aggregator) cross builds ---
+ui-release-musl-x86_64 = "zigbuild --release -p outline-ui --target x86_64-unknown-linux-musl"
+ui-release-musl-aarch64 = "zigbuild --release -p outline-ui --target aarch64-unknown-linux-musl"

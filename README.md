@@ -116,6 +116,7 @@ cargo build --release -p outline-ws-rust
 # musl cross-builds via cargo-zigbuild aliases (need cargo-zigbuild + zig)
 cargo ss-release-musl-x86_64
 cargo ws-release-musl-aarch64
+cargo ui-release-musl-aarch64
 ```
 
 `rustls` uses the `aws-lc-rs` provider across the workspace, and the HTTP/3
@@ -128,10 +129,11 @@ Each binary versions and releases independently via prefixed tags:
 
 - `ss-v<x.y.z>` → builds and publishes the **server** (workflow *Tag Release (server)*)
 - `ws-v<x.y.z>` → builds and publishes the **client** (workflow *Tag Release (client)*)
+- `ui-v<x.y.z>` → builds and publishes the **dashboard UI** (workflow *Tag Release (ui)*)
 
-Pushes to `main` publish rolling `ss-nightly` / `ws-nightly` prereleases
-(path-filtered, so only the affected binary rebuilds). The manual
-*Release (server|client)* workflows bump the corresponding `bins/*/Cargo.toml`
+Pushes to `main` publish rolling `ss-nightly` / `ws-nightly` / `ui-nightly`
+prereleases (path-filtered, so only the affected binary rebuilds). The manual
+*Release (server|client|ui)* workflows bump the corresponding `bins/*/Cargo.toml`
 version and open the tagging flow.
 
 ## License

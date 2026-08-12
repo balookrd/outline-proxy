@@ -1,0 +1,36 @@
+name: Nightly Release (ui)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "bins/outline-ui/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - ".github/workflows/ui-nightly-release.yml"
+      - ".github/workflows/_ui-release-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ui-nightly-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      !startsWith(github.event.head_commit.message, 'release: cut ')
+    uses: ./.github/workflows/_ui-release-build.yml
+    with:
+      tag: ui-nightly
+      checkout_ref: ${{ github.sha }}
+      prerelease: true
+      make_latest: "false"
+      release_name: UI Nightly
+      artifact_version: nightly-${{ github.sha }}
+      rolling_tag: true

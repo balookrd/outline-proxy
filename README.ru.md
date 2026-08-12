@@ -118,6 +118,7 @@ cargo build --release -p outline-ws-rust
 # musl cross-сборки через алиасы cargo-zigbuild (нужны cargo-zigbuild + zig)
 cargo ss-release-musl-x86_64
 cargo ws-release-musl-aarch64
+cargo ui-release-musl-aarch64
 ```
 
 `rustls` во всём workspace использует провайдер `aws-lc-rs`, а HTTP/3 WebSocket
@@ -130,11 +131,12 @@ path зависит от пропатченных `vendor/h3` и `vendor/sockudo
 
 - `ss-v<x.y.z>` → собирает и публикует **сервер** (workflow *Tag Release (server)*)
 - `ws-v<x.y.z>` → собирает и публикует **клиент** (workflow *Tag Release (client)*)
+- `ui-v<x.y.z>` → собирает и публикует **dashboard UI** (workflow *Tag Release (ui)*)
 
-Push'и в `main` публикуют rolling-предрелизы `ss-nightly` / `ws-nightly`
-(с path-фильтром — пересобирается только затронутый бинарь). Ручные workflow
-*Release (server|client)* поднимают версию в соответствующем `bins/*/Cargo.toml`
-и запускают процесс тегирования.
+Push'и в `main` публикуют rolling-предрелизы `ss-nightly` / `ws-nightly` /
+`ui-nightly` (с path-фильтром — пересобирается только затронутый бинарь). Ручные
+workflow *Release (server|client|ui)* поднимают версию в соответствующем
+`bins/*/Cargo.toml` и запускают процесс тегирования.
 
 ## Лицензия
 
