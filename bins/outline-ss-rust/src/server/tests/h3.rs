@@ -157,6 +157,7 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
         Some(orphan_registry),
         16,
         crate::server::transport::XhttpRegistryLimits::unbounded(),
+        crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
     let auth = std::sync::Arc::new(AuthPolicy {
         users: std::sync::Arc::new(ArcSwap::from_pointee(users)),
@@ -313,6 +314,7 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
         None,
         16,
         crate::server::transport::XhttpRegistryLimits::unbounded(),
+        crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -598,6 +600,7 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
         None,
         16,
         crate::server::transport::XhttpRegistryLimits::unbounded(),
+        crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -740,6 +743,7 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
         None,
         16,
         crate::server::transport::XhttpRegistryLimits::unbounded(),
+        crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -876,6 +880,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
         None,
         16,
         crate::server::transport::XhttpRegistryLimits::unbounded(),
+        crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -1038,6 +1043,7 @@ async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
         None,
         16,
         crate::server::transport::XhttpRegistryLimits::unbounded(),
+        crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(user_keys(user_routes.as_ref())))),

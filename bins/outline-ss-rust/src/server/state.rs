@@ -17,6 +17,7 @@ use super::nat::NatTable;
 use super::peer_user_cache::PeerUserCache;
 use super::replay::ReplayStore;
 use super::resumption::OrphanRegistry;
+use super::salt_replay::SaltReplayStore;
 use super::transport::{
     HttpFallbackContext, UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx, XhttpRegistry,
     XhttpRegistryLimits,
@@ -103,6 +104,7 @@ impl Services {
         orphan_registry: Option<Arc<OrphanRegistry>>,
         ws_data_channel_capacity: usize,
         xhttp_limits: XhttpRegistryLimits,
+        salt_replay_store: Arc<SaltReplayStore>,
     ) -> Self {
         let orphan_registry = orphan_registry
             .unwrap_or_else(|| Arc::new(OrphanRegistry::new_disabled(Arc::clone(&metrics))));
@@ -113,6 +115,7 @@ impl Services {
             outbound_ipv6: outbound_ipv6.clone(),
             orphan_registry: Arc::clone(&orphan_registry),
             ws_data_channel_capacity,
+            salt_replay_store,
         });
         let udp_server = Arc::new(UdpServerCtx {
             metrics: Arc::clone(&metrics),

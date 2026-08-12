@@ -517,7 +517,7 @@ async fn xhttp_post(
                 state.registry.remove(&session_id);
                 return short_status(StatusCode::CONFLICT);
             },
-            UplinkIngestError::BufferFull => {
+            UplinkIngestError::BufferFull | UplinkIngestError::ReadyFull => {
                 return short_status(StatusCode::SERVICE_UNAVAILABLE);
             },
         }
@@ -662,7 +662,10 @@ async fn xhttp_stream_one(
                         if data.is_empty() {
                             continue;
                         }
-                        if session_for_uplink.ingest_uplink_inorder(data).is_err() {
+                        // Awaits when `ready` is full: the pump stops pulling
+                        // body frames, so the h2 flow-control window brakes the
+                        // client instead of `ready` growing without bound.
+                        if session_for_uplink.ingest_uplink_inorder(data).await.is_err() {
                             break;
                         }
                     }

@@ -83,6 +83,7 @@ fn home_runtime(
         Some(registry),
         16,
         XhttpRegistryLimits::unbounded(),
+        crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
     (cluster, services)
 }

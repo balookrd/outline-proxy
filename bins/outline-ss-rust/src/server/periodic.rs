@@ -48,6 +48,7 @@ pub(super) fn spawn_maintenance(
     {
         let nat_table = Arc::clone(&built.services.udp_server.nat_table);
         let replay = Arc::clone(&built.services.udp_server.replay_store);
+        let salt_replay = Arc::clone(&built.services.tcp_server.salt_replay_store);
         let metrics = Arc::clone(&built.services.udp_server.metrics);
         let mut sd = shutdown.clone();
         spawn_supervised(
@@ -68,6 +69,10 @@ pub(super) fn spawn_maintenance(
                             let purged = replay.evict_idle();
                             if purged > 0 {
                                 debug!(purged, "swept idle udp replay-filter sessions");
+                            }
+                            let salt_purged = salt_replay.evict_idle();
+                            if salt_purged > 0 {
+                                debug!(salt_purged, "swept idle tcp handshake replay salts");
                             }
                         }
                     }

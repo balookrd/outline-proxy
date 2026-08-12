@@ -51,6 +51,10 @@ struct ActiveStream {
 
 enum ActiveStreamMode {
     Legacy {
+        /// The authenticated request salt. Unlike SS-2022 the legacy responder
+        /// does not need it to build its reply; it is retained only so the
+        /// server can feed it to the TCP handshake anti-replay filter.
+        request_salt: Arc<[u8]>,
         pending_chunk_len: Option<usize>,
     },
     Ss2022 {
@@ -120,6 +124,16 @@ impl AeadStreamDecryptor {
         self.active.as_ref().map(|active| &active.user)
     }
 
+    /// The authenticated request salt, exposed for anti-replay bookkeeping.
+    /// `None` until the handshake completes. Available for both SS-2022 and
+    /// legacy AEAD streams.
+    pub fn request_salt(&self) -> Option<&Arc<[u8]>> {
+        match &self.active.as_ref()?.mode {
+            ActiveStreamMode::Legacy { request_salt, .. }
+            | ActiveStreamMode::Ss2022 { request_salt, .. } => Some(request_salt),
+        }
+    }
+
     pub fn response_context(&self) -> Option<StreamResponseContext> {
         match self.active.as_ref()?.mode {
             ActiveStreamMode::Legacy { .. } => None,
@@ -138,7 +152,7 @@ impl AeadStreamDecryptor {
 
         while let Some(active) = &mut self.active {
             match &mut active.mode {
-                ActiveStreamMode::Legacy { pending_chunk_len } => {
+                ActiveStreamMode::Legacy { pending_chunk_len, .. } => {
                     if !drain_payload(
                         &mut self.buffer,
                         &active.key,
@@ -294,13 +308,16 @@ impl AeadStreamDecryptor {
             {
                 let chunk_len = u16::from_be_bytes([plaintext_len[0], plaintext_len[1]]) as usize;
                 if chunk_len <= LEGACY_MAX_CHUNK_SIZE {
+                    // Capture the salt before advancing past it — the anti-replay
+                    // filter keys on it. One allocation per successful handshake.
+                    let request_salt: Arc<[u8]> = Arc::from(&buffer[..salt_len]);
                     buffer.advance(salt_len);
                     *active = Some(ActiveStream {
                         user: user.clone(),
                         user_index,
                         key: less_safe,
                         nonce_counter: 0,
-                        mode: ActiveStreamMode::Legacy { pending_chunk_len: None },
+                        mode: ActiveStreamMode::Legacy { request_salt, pending_chunk_len: None },
                     });
                     return Ok(CandidateOutcome::Authenticated);
                 }

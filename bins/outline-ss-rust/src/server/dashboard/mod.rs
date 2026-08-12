@@ -5,6 +5,7 @@
 
 mod auth;
 mod control_pool;
+mod guard;
 mod handlers;
 mod proxy;
 mod tls;
@@ -25,6 +26,7 @@ use crate::config::{DashboardConfig, DashboardInstanceConfig};
 
 use super::shutdown::ShutdownSignal;
 use control_pool::ControlPool;
+use guard::OriginPolicy;
 
 /// Idle control-API connections parked per instance. Two covers the browser's
 /// parallel fetches on a dashboard refresh without holding sockets open for a
@@ -44,6 +46,10 @@ pub(super) struct DashboardState {
     /// Optional shared secret guarding the whole listener. `None` keeps the
     /// historical unauthenticated behaviour for loopback deployments.
     pub(super) token: Option<Arc<str>>,
+    /// Host/Origin/Content-Type checks applied to every request before routing,
+    /// independently of `token`. See [`guard`]. Dashboard-internal, like
+    /// `control_pool`: nothing outside this module constructs the policy.
+    pub(in crate::server::dashboard) origin_policy: OriginPolicy,
     /// Keep-alive connections to the control APIs, reused across requests.
     /// Dashboard-internal: nothing outside this module drives the proxy path.
     pub(in crate::server::dashboard) control_pool: Arc<ControlPool>,
@@ -72,6 +78,7 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
     let state = DashboardState {
         request_timeout_secs: config.request_timeout_secs,
         refresh_interval_secs: config.refresh_interval_secs,
+        origin_policy: OriginPolicy::new(config.listen, &config.allowed_hosts),
         instances: Arc::from(config.instances),
         tls_connector: tls::connector(),
         token: config.token.map(Arc::from),
@@ -102,6 +109,12 @@ fn build_router(state: DashboardState) -> Router {
         .route("/dashboard/api/users/{id}/unblock", post(handlers::unblock_user))
         .fallback(handlers::not_found);
 
+    // The origin guard runs on every request, whether or not a token is set;
+    // the credential gate, when present, is layered *after* it so it sits
+    // outermost and answers first — an unauthorised caller gets a plain 401
+    // rather than a 403 describing what this listener expects.
+    let router =
+        router.layer(middleware::from_fn_with_state(state.clone(), guard::enforce_origin_policy));
     let router = if state.token.is_some() {
         router.layer(middleware::from_fn_with_state(state.clone(), auth::require_dashboard_auth))
     } else {

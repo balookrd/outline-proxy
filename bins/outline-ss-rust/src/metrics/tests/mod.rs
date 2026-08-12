@@ -445,6 +445,22 @@ fn renders_mesh_traffic_metrics() {
 }
 
 #[test]
+fn tcp_handshake_replay_metrics_render_with_labels() {
+    let metrics = Metrics::new(&test_config());
+    metrics.record_tcp_handshake_replay_dropped("alice", Protocol::Http1);
+    metrics.record_tcp_handshake_replay_dropped("alice", Protocol::Http1);
+    metrics.record_tcp_handshake_replay_store_full("bob", Protocol::Http1);
+
+    let rendered = metrics.render_prometheus();
+    assert!(rendered.contains(
+        "outline_ss_tcp_handshake_replay_dropped_total{user=\"alice\",protocol=\"http1\",app_protocol=\"shadowsocks\"} 2"
+    ));
+    assert!(rendered.contains(
+        "outline_ss_tcp_handshake_replay_store_full_total{user=\"bob\",protocol=\"http1\",app_protocol=\"shadowsocks\"} 1"
+    ));
+}
+
+#[test]
 fn no_cert_chain_metric_records_sni_label() {
     let metrics = Metrics::new(&test_config());
     metrics.record_tls_handshake_no_cert_chain(Some("foo.example"));

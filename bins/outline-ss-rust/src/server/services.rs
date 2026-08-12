@@ -23,6 +23,7 @@ use super::{
     nat::{NatLimits, NatTable},
     replay::ReplayStore,
     resumption::{OrphanRegistry, ResumptionConfig},
+    salt_replay::SaltReplayStore,
     setup::{
         SsXhttpUserRoute, UserRoute, VlessUserRoute, VlessXhttpUserRoute,
         build_ss_xhttp_udp_user_routes, build_ss_xhttp_user_routes, build_transport_route_map,
@@ -158,6 +159,14 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),
         config.tuning.udp_replay_max_sessions,
     );
+    // TCP-handshake anti-replay. TTL is tied to the same NAT idle timeout as the
+    // UDP replay store: it comfortably exceeds the ±30 s SS-2022 timestamp window
+    // a captured handshake could replay within, and for legacy AEAD (no
+    // timestamp) it is the sole bound on the replay window.
+    let salt_replay_store = SaltReplayStore::new(
+        Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),
+        config.tuning.tcp_handshake_replay_max_salts,
+    );
     // Bounded: the cache key carries the client-supplied destination host, so
     // an unbounded map would grow for the whole TTL + stale-grace window on a
     // client that resolves unique names. `0` opts out (unbounded, sweep-only).
@@ -211,6 +220,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
             max_sessions: config.tuning.xhttp_max_sessions,
             max_relay_tasks: config.tuning.xhttp_max_concurrent_relay_tasks,
         },
+        salt_replay_store,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::clone(&auth_users),

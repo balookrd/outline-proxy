@@ -39,6 +39,7 @@ mod periodic;
 mod relay;
 mod replay;
 mod resumption;
+mod salt_replay;
 mod scratch;
 mod services;
 mod setup;

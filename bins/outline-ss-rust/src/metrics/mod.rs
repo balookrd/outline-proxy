@@ -495,6 +495,48 @@ impl Metrics {
         });
     }
 
+    /// TCP-handshake anti-replay drop: a captured Shadowsocks handshake was
+    /// re-presented and rejected. Shadowsocks-only, tagged
+    /// `app_protocol="shadowsocks"` for query symmetry with the rest of the
+    /// payload-level metrics.
+    pub fn record_tcp_handshake_replay_dropped(
+        &self,
+        user: impl Into<Arc<str>>,
+        protocol: Protocol,
+    ) {
+        let user: Arc<str> = user.into();
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_tcp_handshake_replay_dropped_total",
+                "user"         => user,
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => AppProtocol::Shadowsocks.as_str()
+            )
+            .increment(1);
+        });
+    }
+
+    /// A TCP handshake whose salt could not be recorded because the anti-replay
+    /// store was at capacity. The handshake is allowed through (fail-open), so
+    /// this counter surfaces the capacity pressure that a fail-open decision
+    /// hides.
+    pub fn record_tcp_handshake_replay_store_full(
+        &self,
+        user: impl Into<Arc<str>>,
+        protocol: Protocol,
+    ) {
+        let user: Arc<str> = user.into();
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_tcp_handshake_replay_store_full_total",
+                "user"         => user,
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => AppProtocol::Shadowsocks.as_str()
+            )
+            .increment(1);
+        });
+    }
+
     pub fn record_udp_nat_response_dropped(&self) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_udp_nat_responses_dropped_total").increment(1);
@@ -755,6 +797,9 @@ impl Metrics {
     /// - `io_error` — anything else surfaced as `io::Error` from the
     ///   acceptor (filesystem-style errors are not expected here, but
     ///   we keep the bucket so unknown variants still get counted).
+    /// - `timeout` — the peer did not finish the handshake within the
+    ///   pre-auth budget (`TLS_HANDSHAKE_TIMEOUT_SECS`); the connection
+    ///   was dropped to free its concurrency permit (slowloris defence).
     pub fn record_tls_handshake_failed(&self, reason: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_tls_handshake_failed_total", "reason" => reason).increment(1);
@@ -771,6 +816,9 @@ impl Metrics {
     /// - `oversized` — bytes kept arriving without forming a ClientHello
     ///   within `max_client_hello_bytes`.
     /// - `malformed` — rustls rejected the bytes as a TLS handshake.
+    /// - `timeout` — no complete ClientHello arrived within the pre-auth
+    ///   budget (`TLS_HANDSHAKE_TIMEOUT_SECS`); the connection was dropped
+    ///   to free its concurrency permit (slowloris defence).
     ///
     /// A rising `peer_closed` rate is noise-shaped and usually means a
     /// prober somewhere got more frequent; a rising `malformed` rate is

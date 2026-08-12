@@ -286,6 +286,7 @@ fn build_cluster_parts(
         Some(orphan_registry),
         16,
         crate::server::transport::XhttpRegistryLimits::unbounded(),
+        crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),

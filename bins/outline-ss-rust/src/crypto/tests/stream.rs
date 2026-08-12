@@ -326,6 +326,82 @@ fn stream_user_hint_hit_on_ss2022() {
     assert_eq!(decryptor.user_index(), Some(1));
 }
 
+#[test]
+fn request_salt_is_none_before_handshake() {
+    let users = users(CipherKind::Aes256Gcm, "secret-a", "secret-b");
+    let decryptor = AeadStreamDecryptor::new(users);
+    assert!(decryptor.request_salt().is_none());
+}
+
+#[test]
+fn request_salt_exposed_after_legacy_handshake() {
+    let users = users(CipherKind::Aes256Gcm, "secret-a", "secret-b");
+    let mut encryptor = AeadStreamEncryptor::new(&users[0], None).unwrap();
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(b"legacy salt", &mut buf).unwrap();
+    let ciphertext = buf.freeze();
+    // The encryptor prepends the raw request salt as the first `salt_len` bytes.
+    let salt_len = users[0].cipher().salt_len();
+    let expected_salt = ciphertext[..salt_len].to_vec();
+
+    let mut decryptor = AeadStreamDecryptor::new(users);
+    decryptor.feed_ciphertext(&ciphertext);
+    let mut plaintext = Vec::new();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
+
+    assert_eq!(decryptor.request_salt().map(|s| s.as_ref()), Some(expected_salt.as_slice()));
+}
+
+#[test]
+fn request_salt_exposed_after_ss2022_handshake() {
+    let psk = "MDEyMzQ1Njc4OWFiY2RlZg==";
+    let users = users(CipherKind::Aes128Gcm2022, psk, psk);
+    let request_salt = [7_u8; 16];
+    let target = TargetAddr::from(SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 443)));
+    let target_bytes = target.to_wire_bytes().unwrap();
+    let mut request = Vec::new();
+    request.extend_from_slice(&request_salt);
+
+    let key = primitives::build_session_key(
+        CipherKind::Aes128Gcm2022,
+        users[0].master_key(),
+        &request_salt,
+    )
+    .unwrap();
+    let mut nonce_counter = 0;
+
+    let mut fixed_header = Vec::from([ss2022_header::SS2022_TCP_REQUEST_TYPE]);
+    fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
+    fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
+    let mut fixed_ct = fixed_header.clone();
+    key.seal_in_place_append_tag(
+        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
+        Aad::empty(),
+        &mut fixed_ct,
+    )
+    .unwrap();
+    request.extend_from_slice(&fixed_ct);
+
+    let mut var_header = target_bytes.clone();
+    var_header.extend_from_slice(&1_u16.to_be_bytes());
+    var_header.push(0xaa);
+    let mut var_ct = var_header.clone();
+    key.seal_in_place_append_tag(
+        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
+        Aad::empty(),
+        &mut var_ct,
+    )
+    .unwrap();
+    request.extend_from_slice(&var_ct);
+
+    let mut decryptor = AeadStreamDecryptor::new(users);
+    decryptor.feed_ciphertext(&request);
+    let mut plaintext = Vec::new();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
+
+    assert_eq!(decryptor.request_salt().map(|s| s.as_ref()), Some(&request_salt[..]));
+}
+
 proptest::proptest! {
     // Feeding arbitrary bytes to the AEAD decryptor must never panic —
     // it must always either buffer silently or return Err.

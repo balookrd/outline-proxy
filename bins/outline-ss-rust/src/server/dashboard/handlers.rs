@@ -30,7 +30,6 @@ struct InstancesResponse {
 #[derive(Debug, Serialize)]
 struct InstanceView {
     name: String,
-    control_url: String,
 }
 
 pub(super) async fn dashboard_page() -> impl IntoResponse {
@@ -45,14 +44,14 @@ pub(super) async fn dashboard_logo() -> impl IntoResponse {
 }
 
 pub(super) async fn list_instances(State(state): State<DashboardState>) -> impl IntoResponse {
+    // Only the display name reaches the browser. `control_url` is a server-side
+    // routing detail (and, with per-instance tokens, a target worth not
+    // advertising); the UI selects instances by name.
     Json(InstancesResponse {
         instances: state
             .instances
             .iter()
-            .map(|server| InstanceView {
-                name: server.name.clone(),
-                control_url: server.control_url.clone(),
-            })
+            .map(|server| InstanceView { name: server.name.clone() })
             .collect(),
         refresh_interval_secs: state.refresh_interval_secs,
     })

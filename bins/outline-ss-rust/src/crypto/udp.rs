@@ -49,6 +49,10 @@ pub struct UdpPacket {
     /// SS-2022 per-session monotonic packet counter; `None` for legacy cipher.
     /// Used by the replay filter to reject duplicates within a sliding window.
     pub packet_id: Option<u64>,
+    /// Legacy request salt, zero-padded to 32 bytes; `None` for SS-2022 (which
+    /// the `packet_id` window covers). Legacy datagrams carry no counter, so the
+    /// salt is the only anchor the replay filter can de-duplicate them by.
+    pub legacy_replay_salt: Option<[u8; 32]>,
 }
 
 #[cfg(test)]
@@ -133,6 +137,7 @@ fn try_decrypt_udp_packet_for_user(
                 payload,
                 session: UdpCipherMode::Chacha2022 { client_session_id },
                 packet_id: Some(packet_id),
+                legacy_replay_salt: None,
             }));
         }
         return Ok(None);
@@ -171,6 +176,7 @@ fn try_decrypt_udp_packet_for_user(
                 payload,
                 session: UdpCipherMode::Aes2022 { client_session_id },
                 packet_id: Some(packet_id),
+                legacy_replay_salt: None,
             }));
         }
         return Ok(None);
@@ -197,11 +203,17 @@ fn try_decrypt_udp_packet_for_user(
         if !from_cache && let Some(cache) = cache {
             cache.insert(user_index, salt, Arc::clone(&less_safe));
         }
+        // Zero-pad the salt (16 or 32 bytes) to the widest width for a fixed-size
+        // replay-filter key. `salt_len <= 32` for every legacy cipher.
+        let mut replay_salt = [0_u8; 32];
+        let copy_len = salt_len.min(replay_salt.len());
+        replay_salt[..copy_len].copy_from_slice(&salt[..copy_len]);
         return Ok(Some(UdpPacket {
             user: user.clone(),
             payload: plaintext,
             session: UdpCipherMode::Legacy,
             packet_id: None,
+            legacy_replay_salt: Some(replay_salt),
         }));
     }
 

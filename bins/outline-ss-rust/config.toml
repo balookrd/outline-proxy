@@ -67,6 +67,12 @@ path = "/metrics"
 # request_timeout_secs = 15
 # refresh_interval_secs = 10
 # token_file = "/etc/outline-ss-rust/dashboard.token"
+# # Host names accepted on top of the built-in set (loopback names/addresses and
+# # the bound address). Needed only behind a reverse proxy that serves the panel
+# # under a DNS name — any other Host is answered with 403, which is what stops
+# # DNS rebinding from reaching a loopback listener. Matched by host name; a
+# # port, if written, is ignored.
+# allowed_hosts = ["panel.example.com"]
 #
 # [[dashboard.instances]]
 # name = "local"
@@ -321,7 +327,8 @@ ws_path_udp = "/dave/udp"
                                          # (default). Set it on multi-tenant hosts so
                                          # one user cannot claim the whole table.
 # udp_max_concurrent_relay_tasks = 4096  # process-wide cap; 0 disables
-# udp_replay_max_sessions = 262144       # SS-2022 anti-replay session cap; 0 disables
+# udp_replay_max_sessions = 262144       # anti-replay cap: SS-2022 session windows + legacy salts; 0 disables
+# tcp_handshake_replay_max_salts = 262144 # TCP-handshake anti-replay salt cap; 0 disables
 # xhttp_max_sessions = 262144            # max live XHTTP sessions (pre-auth); 0 disables
 # xhttp_max_concurrent_relay_tasks = 4096 # process-wide XHTTP relay-task cap; 0 disables
 # dns_cache_max_entries = 262144         # max upstream DNS-cache entries (LRU-evicted);
