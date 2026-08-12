@@ -219,6 +219,12 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .cert-chip { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; border: 1px solid; }
 .cert-chip.warn { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .45); }
 .cert-chip.bad { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); }
+/* Carrier packet-loss tag on the RTT line. amber 2–5%, red ≥5% — the same
+ * thresholds the UplinkCarrierLossHigh alert uses, so a red tag here means the
+ * alert would fire if this leg were the active one. */
+.loss-tag { display: inline-flex; align-items: center; margin-left: 6px; padding: 0 5px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: .04em; border: 1px solid; white-space: nowrap; }
+.loss-tag.warn { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .45); }
+.loss-tag.bad { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); }
 /* DNS-resolution-failure chip. Shown in the Status cell when an uplink's
  * `last_error` is a name-resolution failure (getaddrinfo/EAI_NONAME or an
  * empty answer) — the operator-facing signal for a missing/typo'd DNS record
@@ -535,7 +541,12 @@ function statusTone(ok, groups) {
   if (uplinks.length === 0) return "warn";
   const healthyCount = uplinks.filter(healthy).length;
   const activeCount = uplinks.filter(isActive).length;
-  if (healthyCount === uplinks.length && activeCount > 0) return "good";
+  // A fast-but-lossy uplink is not "Healthy". Health flags read green off the
+  // probe RTT while the carrier drops packets, so an active leg above the loss
+  // threshold pulls the headline down to Degraded even when everything is
+  // nominally healthy — that mismatch is exactly what this surfaces.
+  const activeLossy = uplinks.some(u => activeLegLossy(u, LOSS_BAD));
+  if (healthyCount === uplinks.length && activeCount > 0) return activeLossy ? "warn" : "good";
   if (healthyCount > 0) return "warn";
   return "bad";
 }
@@ -1086,6 +1097,35 @@ function dnsChip(u) {
     : `Upstream host does not resolve — check this uplink's DNS record / local resolver`;
   return `<span class="dns-chip" data-tip="${escapeHtml(tip)}" data-tip-wrap>⚠ DNS</span>`;
 }
+// Carrier packet-loss ratio (0.0–1.0) on the wire currently carrying `leg`,
+// or null when the backend has no verdict yet. Null is "not measured", never
+// "0% loss" — an idle leg simply shows nothing.
+function legLossRatio(u, leg) {
+  const v = leg === 'tcp' ? u.tcp_carrier_loss_ratio : u.udp_carrier_loss_ratio;
+  return typeof v === 'number' ? v : null;
+}
+// Loss thresholds shared with the UplinkCarrierLossHigh alert: amber from 2%,
+// red from 5%. Below 2% the leg is treated as clean and shows no tag.
+const LOSS_WARN = 0.02, LOSS_BAD = 0.05;
+// A coloured "N% loss" tag for the RTT line. Returns HTML (safe: only a number
+// goes in) or "" when the ratio is missing or under the amber floor.
+function lossTag(ratio, leg) {
+  if (ratio == null || ratio < LOSS_WARN) return "";
+  const cls = ratio >= LOSS_BAD ? "bad" : "warn";
+  const pct = ratio < 0.1 ? (ratio * 100).toFixed(1) : String(Math.round(ratio * 100));
+  return ` <span class="loss-tag ${cls}" data-tip="${leg.toUpperCase()} carrier packet loss on the wire carrying traffic">${pct}% loss</span>`;
+}
+// True when a leg that is actually carrying traffic (active for its transport,
+// or the whole uplink is active) is losing at or above `threshold`. Loss on a
+// standby leg is shown on the row but deliberately does not degrade the
+// headline status — the same active-only rule the carrier-loss alert uses.
+function activeLegLossy(u, threshold) {
+  const tcpL = legLossRatio(u, 'tcp'), udpL = legLossRatio(u, 'udp');
+  const tcpActive = Boolean(u.active_global || u.active_tcp);
+  const udpActive = Boolean(u.active_global || u.active_udp);
+  return (tcpActive && tcpL != null && tcpL >= threshold)
+      || (udpActive && udpL != null && udpL >= threshold);
+}
 function weightCell(u) {
   const w = typeof u.weight === 'number' ? u.weight : '—';
   // Show smoothed per-transport probe RTT (operator-facing). The
@@ -1105,8 +1145,13 @@ function weightCell(u) {
   const udpRtt = u.udp_active_wire_rtt_ewma_ms ?? u.udp_rtt_ewma_ms;
   if (tcpRtt != null) parts.push(`tcp: ${tcpRtt}ms${rttAgeSuffix(u.tcp_active_wire_rtt_age_ms)}`);
   if (udpRtt != null) parts.push(`udp: ${udpRtt}ms${rttAgeSuffix(u.udp_active_wire_rtt_age_ms)}`);
-  const rtt = parts.length
-    ? `<span class="switch-reason">${escapeHtml(parts.join(' · '))}</span>`
+  // Loss tags ride outside escapeHtml (they are HTML), so the RTT text is
+  // escaped on its own and the coloured tags are appended after it. A leg with
+  // a loss verdict but no RTT reading still surfaces its loss.
+  const rttText = parts.length ? escapeHtml(parts.join(' · ')) : '';
+  const lossHtml = lossTag(legLossRatio(u, 'tcp'), 'tcp') + lossTag(legLossRatio(u, 'udp'), 'udp');
+  const rtt = (rttText || lossHtml)
+    ? `<span class="switch-reason">${rttText}${lossHtml}</span>`
     : '';
   return `<div class="role-cell"><span>${escapeHtml(String(w))}</span>${rtt}</div>`;
 }
