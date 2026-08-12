@@ -6,6 +6,7 @@ resolver = "2"
 members = [
     "bins/outline-ss-rust",
     "bins/outline-ws-rust",
+    "bins/outline-ui",
     "crates/outline-metrics",
     "crates/outline-net",
     "crates/outline-routing",

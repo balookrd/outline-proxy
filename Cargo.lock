@@ -1878,6 +1878,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "outline-ui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "bytes",
+ "clap",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "webpki-roots 1.0.7",
+]
+
+[[package]]
 name = "outline-uplink"
 version = "0.1.0"
 dependencies = [

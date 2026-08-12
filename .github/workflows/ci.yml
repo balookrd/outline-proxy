@@ -61,7 +61,7 @@ jobs:
       - name: rustfmt (our crates only; vendored kept in upstream style)
         run: >
           cargo fmt --check
-          -p outline-ss-rust -p outline-ws-rust
+          -p outline-ss-rust -p outline-ws-rust -p outline-ui
           -p outline-metrics -p outline-net -p outline-routing
           -p outline-transport -p outline-tun
           -p outline-uplink -p outline-wire -p shadowsocks-crypto -p socks5-proto
