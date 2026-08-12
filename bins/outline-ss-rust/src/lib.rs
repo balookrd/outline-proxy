@@ -1,6 +1,10 @@
 mod clock;
 mod config;
 mod crypto;
+// Hardened atomic config writer. Only the control plane rewrites config.toml,
+// so it shares that feature's gate — otherwise a non-`control` build would flag
+// it unused under `-D warnings`.
+#[cfg(feature = "control")]
 mod fs_util;
 mod fwmark;
 mod metrics;
