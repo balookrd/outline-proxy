@@ -31,3 +31,12 @@ export const reselect  = (b: { instance: string; group: string; soft: boolean })
 export const setEnabled = (b: { instance: string; group: string; uplink: string; enabled: boolean }) =>
   json<{ ok: boolean }>(`/ws/dashboard/api/set_enabled`, post(b));
 export const apply = (instance: string) => json<unknown>(`/ws/dashboard/api/apply`, post({ instance }));
+
+// WS uplinks CRUD — proxied to /control/uplinks (ws/api.rs `uplinks_proxy`).
+// GET carries `instance` + any extra filters (e.g. `group`/`name`, see
+// uplinks_crud/list.rs) in the query string; POST/PATCH/DELETE carry an
+// `{instance, body}` envelope, same shape ws/uplinks.html's callProxy() used.
+export const uplinksList = (i: string, filters: Record<string, string> = {}) =>
+  json<any>(`/ws/dashboard/api/uplinks?${new URLSearchParams({ instance: i, ...filters })}`);
+export const uplinksMutate = (method: 'POST' | 'PATCH' | 'DELETE', i: string, body: unknown) =>
+  json<any>(`/ws/dashboard/api/uplinks`, { ...post({ instance: i, body }), method });
