@@ -1,14 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use super::groups::merge_probe_section;
-use super::load_dashboard_config;
 use super::routing::resolve_config_path;
 
 mod groups;
 mod uplinks;
 use super::super::schema::{
-    DashboardInstanceSection, DashboardSection, DnsProbeSection, HttpProbeSection, ProbeSection,
-    TcpProbeSection, WsProbeSection,
+    DnsProbeSection, HttpProbeSection, ProbeSection, TcpProbeSection, WsProbeSection,
 };
 
 fn probe(interval: Option<u64>, timeout: Option<u64>) -> ProbeSection {
@@ -158,120 +156,4 @@ fn resolve_config_path_keeps_absolute() {
 fn resolve_config_path_joins_relative_with_config_dir() {
     let p = resolve_config_path(Path::new("lists/ru.lst"), Path::new("/etc/outline")).unwrap();
     assert_eq!(p, PathBuf::from("/etc/outline/lists/ru.lst"));
-}
-
-// ── load_dashboard_config: listener credentials ───────────────────────────
-
-/// A minimal enabled `[dashboard]` with one usable instance, so every test
-/// below only varies the listener's own credentials.
-fn dashboard_section(token: Option<&str>, token_file: Option<&Path>) -> DashboardSection {
-    DashboardSection {
-        enabled: None,
-        listen: Some("127.0.0.1:9092".parse().unwrap()),
-        refresh_interval_secs: None,
-        request_timeout_secs: None,
-        token: token.map(str::to_owned),
-        token_file: token_file.map(Path::to_path_buf),
-        allowed_hosts: None,
-        instances: Some(vec![DashboardInstanceSection {
-            name: Some("inst-01".to_string()),
-            control_url: Some("http://127.0.0.1:9091".parse().unwrap()),
-            token: Some("instance-secret".to_string()),
-            token_file: None,
-        }]),
-    }
-}
-
-/// `[dashboard]` is `deny_unknown_fields`, so a key the schema does not know
-/// is a startup error rather than a silently ignored line: the two credential
-/// keys must be spelled exactly as the README and `config.toml` document them.
-#[test]
-fn dashboard_section_accepts_the_documented_credential_keys() {
-    let inline: DashboardSection =
-        toml::from_str("listen = \"127.0.0.1:9092\"\ntoken = \"secret\"\n")
-            .expect("`token` must be a known key");
-    let from_file: DashboardSection =
-        toml::from_str("listen = \"127.0.0.1:9092\"\ntoken_file = \"dashboard.token\"\n")
-            .expect("`token_file` must be a known key");
-
-    assert_eq!(inline.token.as_deref(), Some("secret"));
-    assert_eq!(from_file.token_file.as_deref(), Some(Path::new("dashboard.token")));
-}
-
-#[tokio::test]
-async fn dashboard_without_credentials_stays_unauthenticated() {
-    let config = load_dashboard_config(Some(&dashboard_section(None, None)), Path::new("/etc"))
-        .await
-        .unwrap()
-        .expect("dashboard is enabled");
-
-    assert!(config.token.is_none(), "no token configured must keep the listener open");
-}
-
-#[tokio::test]
-async fn dashboard_reads_inline_token() {
-    let config =
-        load_dashboard_config(Some(&dashboard_section(Some("secret"), None)), Path::new("/etc"))
-            .await
-            .unwrap()
-            .expect("dashboard is enabled");
-
-    assert_eq!(config.token.as_deref(), Some("secret"));
-}
-
-/// An empty inline token is a config typo, not a credential: treat it as unset
-/// rather than as a secret every request can guess.
-#[tokio::test]
-async fn dashboard_ignores_empty_inline_token() {
-    let config = load_dashboard_config(Some(&dashboard_section(Some(""), None)), Path::new("/etc"))
-        .await
-        .unwrap()
-        .expect("dashboard is enabled");
-
-    assert!(config.token.is_none(), "empty token must not authenticate anything");
-}
-
-#[tokio::test]
-async fn dashboard_reads_token_file_relative_to_the_config_dir() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("dashboard.token"), "  file-secret\n").unwrap();
-
-    let config = load_dashboard_config(
-        Some(&dashboard_section(None, Some(Path::new("dashboard.token")))),
-        dir.path(),
-    )
-    .await
-    .unwrap()
-    .expect("dashboard is enabled");
-
-    assert_eq!(config.token.as_deref(), Some("file-secret"), "token file must be trimmed");
-}
-
-#[tokio::test]
-async fn dashboard_rejects_token_and_token_file_together() {
-    let error = load_dashboard_config(
-        Some(&dashboard_section(Some("secret"), Some(Path::new("dashboard.token")))),
-        Path::new("/etc"),
-    )
-    .await
-    .unwrap_err()
-    .to_string();
-
-    assert!(error.contains("not both"), "got: {error}");
-}
-
-#[tokio::test]
-async fn dashboard_rejects_empty_token_file() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("dashboard.token"), "   \n").unwrap();
-
-    let error = load_dashboard_config(
-        Some(&dashboard_section(None, Some(Path::new("dashboard.token")))),
-        dir.path(),
-    )
-    .await
-    .unwrap_err()
-    .to_string();
-
-    assert!(error.contains("is empty"), "got: {error}");
 }

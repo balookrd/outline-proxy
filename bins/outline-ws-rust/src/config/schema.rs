@@ -53,7 +53,6 @@ pub(crate) struct ConfigFile {
     pub(super) outline: Option<OutlineSection>,
     pub(super) metrics: Option<MetricsSection>,
     pub(super) control: Option<ControlSection>,
-    pub(super) dashboard: Option<DashboardSection>,
     #[cfg(feature = "tun")]
     pub(super) tun: Option<TunSection>,
     /// Accepted-and-ignored in builds without the `tun` feature: keeps the
@@ -202,39 +201,6 @@ pub(super) struct MetricsSection {
 #[serde(deny_unknown_fields)]
 pub(super) struct ControlSection {
     pub(super) listen: Option<SocketAddr>,
-    pub(super) token: Option<String>,
-    pub(super) token_file: Option<PathBuf>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct DashboardSection {
-    /// Presence of [dashboard] enables the dashboard by default. Set
-    /// `enabled = false` to keep the config block around without binding.
-    pub(super) enabled: Option<bool>,
-    pub(super) listen: Option<SocketAddr>,
-    pub(super) refresh_interval_secs: Option<u64>,
-    pub(super) request_timeout_secs: Option<u64>,
-    /// Optional shared secret guarding the dashboard listener itself. Unset
-    /// leaves it unauthenticated, as it has always been. Mutually exclusive
-    /// with `token_file`.
-    pub(super) token: Option<String>,
-    pub(super) token_file: Option<PathBuf>,
-    /// Extra host names accepted in the `Host` header (and as an `Origin`) on
-    /// top of the built-in set — loopback names/addresses plus the bound
-    /// address. Needed only behind a reverse proxy that serves the panel under
-    /// a DNS name. Entries are matched by host name; a port, if written, is
-    /// ignored. Names outside this set are refused with 403, which is what
-    /// closes DNS rebinding.
-    pub(super) allowed_hosts: Option<Vec<String>>,
-    pub(super) instances: Option<Vec<DashboardInstanceSection>>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct DashboardInstanceSection {
-    pub(super) name: Option<String>,
-    pub(super) control_url: Option<Url>,
     pub(super) token: Option<String>,
     pub(super) token_file: Option<PathBuf>,
 }

@@ -12,18 +12,13 @@ edition = "2024"
 workspace = true
 
 [features]
-default = ["h3", "metrics", "control", "dashboard", "env-filter", "multi-thread", "mimalloc", "tun"]
+default = ["h3", "metrics", "control", "env-filter", "multi-thread", "mimalloc", "tun"]
 tun = ["dep:outline-tun", "outline-tun/metrics", "outline-metrics/tun"]   # TUN device support (transparent proxy)
 h3 = ["outline-transport/h3", "outline-tun?/quic", "outline-uplink/quic"]
 metrics = ["outline-metrics/prometheus", "outline-transport/metrics", "outline-uplink/metrics", "dep:serde_json", "hyper/server"]
 # control: authenticated mutating HTTP plane (manual uplink switch etc.).
 # Independent of `metrics`; both planes bind separate sockets but share hyper's server stack.
 control = ["hyper/server", "dep:serde_json", "dep:toml_edit"]
-# dashboard: built-in multi-instance monitor/activation UI. On by default; opt
-# out via `--no-default-features` to save binary size. Pulls
-# `outline-uplink/cert-check` so the cert-expiry chip has data even in a
-# dashboard build that omits Prometheus `metrics`.
-dashboard = ["hyper/server", "dep:base64", "dep:serde_json", "outline-uplink/cert-check"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).
 # Opt out via `--no-default-features` — log level falls back to WARN instead.
 env-filter = ["tracing-subscriber/env-filter"]
@@ -41,9 +36,6 @@ test-tls = ["outline-transport/test-tls"]
 [dependencies]
 anyhow = "1.0"
 arc-swap = "1.7"
-# base64: decodes the dashboard's HTTP Basic credentials (browser-friendly
-# alternative to `Authorization: Bearer`). Pulled in by the `dashboard` feature.
-base64 = { version = "0.22", optional = true }
 bytes = "1.10"
 clap = { version = "4.5", features = ["derive", "env"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
