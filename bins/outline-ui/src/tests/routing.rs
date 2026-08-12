@@ -49,14 +49,20 @@ async fn both_trees_are_reachable_and_distinct() {
     );
 }
 
+/// `/` now serves the Svelte SPA shell rather than the old dashboard-listing
+/// index (see `spa_index_without_feature_serves_stub_ok` and
+/// `serves_spa_index_and_assets_with_feature` below); both dashboards remain
+/// reachable directly, which `both_trees_are_reachable_and_distinct` already
+/// covers.
+///
+/// Without `embed-assets` that shell degrades to a stub instead of panicking
+/// — the default, node-less build (and its Rust CI gate) must stay green even
+/// though nothing was ever `pnpm build`t.
 #[tokio::test]
-async fn the_index_lists_both() {
+async fn spa_index_without_feature_serves_stub_ok() {
     let response = build_app(&config()).oneshot(authed("/")).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let body = String::from_utf8(body.to_vec()).unwrap();
-    assert!(body.contains("/ws/dashboard") && body.contains("/ss/dashboard"));
 }
 
 /// The gate must cover both trees, not just the root.
@@ -97,4 +103,43 @@ async fn both_logos_are_served() {
         .await
         .unwrap();
     assert_eq!(ss.status(), StatusCode::OK);
+}
+
+/// Picks a real, currently-hashed asset name straight out of `frontend/dist`
+/// — the same tree rust-embed indexed at compile time — instead of hardcoding
+/// a content hash that changes on every frontend rebuild.
+#[cfg(feature = "embed-assets")]
+fn a_real_asset_name() -> String {
+    let dist = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("frontend/dist");
+    std::fs::read_dir(&dist)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dist.display()))
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .find(|name| name.ends_with(".js") || name.ends_with(".css"))
+        .expect("frontend/dist must contain a hashed JS or CSS bundle")
+}
+
+/// With `embed-assets`, `/` and `/ui-assets/*` serve the real `frontend/dist`
+/// compiled into the binary; a path outside that embedded tree still 404s.
+#[cfg(feature = "embed-assets")]
+#[tokio::test]
+async fn serves_spa_index_and_assets_with_feature() {
+    let app = build_app(&config());
+
+    let index = app.clone().oneshot(authed("/")).await.unwrap();
+    assert_eq!(index.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(index.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body.contains("<!doctype"), "expected the real dist index.html: {body}");
+
+    let asset_name = a_real_asset_name();
+    let asset = app
+        .clone()
+        .oneshot(authed(&format!("/ui-assets/{asset_name}")))
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), StatusCode::OK, "missing embedded asset: {asset_name}");
+
+    let missing = app.oneshot(authed("/ui-assets/definitely-missing.js")).await.unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }

@@ -48,11 +48,20 @@ fn build_app(config: &UiConfig) -> Router {
         refresh_ms,
     };
 
-    let router = Router::new()
-        .route("/", get(|| async { assets::index() }))
-        .nest("/ws", ws::router(ws_state))
-        .nest("/ss", ss::router(ss_state))
-        .fallback(|| async { assets::not_found() });
+    let router =
+        Router::new()
+            .route(
+                "/ui-assets/{*path}",
+                get(|axum::extract::Path(p): axum::extract::Path<String>| async move {
+                    assets::asset(&p)
+                }),
+            )
+            .route("/", get(|| async { assets::spa_index() }))
+            .nest("/ws", ws::router(ws_state))
+            .nest("/ss", ss::router(ss_state))
+            // Client-side routes deep-linked at the top level (and any other
+            // unmatched path) still get the SPA shell, which then routes itself.
+            .fallback(|| async { assets::spa_index() });
 
     // Origin inner, credentials outermost: an unauthorised caller gets a plain
     // 401 rather than a 403 describing what this listener expects.
