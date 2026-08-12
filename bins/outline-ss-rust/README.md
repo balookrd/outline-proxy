@@ -283,7 +283,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `control.listen` | Socket address for the control listener, e.g. `127.0.0.1:7001`. Bound on its own socket — keep it off the public internet |
 | `control.token` | Bearer token required on every request. Prefer `control.token_file` for secrets management |
 | `control.token_file` | Path to a file containing the bearer token; mutually exclusive with `control.token` |
-| `[dashboard]` | Optional browser UI on a separate listener; proxies to configured control instances without exposing tokens to the browser |
+| `[dashboard]` | Optional browser UI on a separate listener; proxies to configured control instances without exposing tokens to the browser. Also served from k3s by `outline-ui` at `https://ui.k3s.beerloga.su/ss` — see [`bins/outline-ui/README.md`](../outline-ui/README.md) |
 | `dashboard.listen` | Socket address for the dashboard listener, e.g. `127.0.0.1:7002` |
 | `dashboard.request_timeout_secs` | Timeout for dashboard-to-control requests. Default: `15` |
 | `dashboard.refresh_interval_secs` | Auto-refresh interval for the dashboard UI, in seconds. Default: `10` |

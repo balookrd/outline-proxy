@@ -1023,6 +1023,13 @@ Requirements:
 
 ## Metrics and Dashboards
 
+> **The dashboard also runs outside this binary now.** `outline-ui` serves both
+> dashboards from k3s at `https://ui.k3s.beerloga.su` (`/ws` here, `/ss` for the
+> server), aggregating every instance's control API instead of living on the
+> node. The built-in one below still works and is unchanged; removing it is
+> deferred until the new service has been used in practice. See
+> [`bins/outline-ui/README.md`](../outline-ui/README.md).
+
 If `[metrics]` is configured the process serves the read-only Prometheus
 endpoint:
 

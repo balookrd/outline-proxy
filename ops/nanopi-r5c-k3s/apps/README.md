@@ -136,13 +136,41 @@ API, инкрементально).
 `nfs-client`: их данные перенесены руками и лежат в каталогах с осмысленными
 именами, тогда как провижнер называет каталоги по uid тома.
 
+## outline-ui
+
+Web-UI парка: оба дашборда одним сервисом — `/ws` (аплинки, топология, потери) и
+`/ss` (управление юзерами). Манифесты — [`monitoring/outline-ui.yaml`](monitoring/outline-ui.yaml),
+вход — `https://ui.k3s.beerloga.su`.
+
+**Secret `outline-ui-tokens` держит control-токены всего парка** — девять ключей
+(токен самого UI плюс восемь per-node). Достать токен для входа в панель:
+
+```bash
+KUBECONFIG=~/.kube/k3s-home.yaml kubectl -n monitoring \
+  get secret outline-ui-tokens -o jsonpath='{.data.ui-token}' | base64 -d; echo
+```
+
+В браузере это форма входа: имя пользователя любое, пароль — токен.
+
+Три вещи, на которых спотыкается раскатка:
+
+- Реестр за basic-auth, поэтому поду нужен `imagePullSecrets: registry-creds`;
+  секрет должен существовать в namespace `monitoring` (копируется из `smarthome`).
+- `allowed_hosts` в конфиге обязан включать и публичное имя, и Service-DNS
+  (`outline-ui.monitoring`) — иначе запрос изнутри кластера с валидным токеном
+  получает 403 от origin policy.
+- Конфиг читается один раз при старте: правка ConfigMap применяется только
+  `kubectl -n monitoring rollout restart deploy/outline-ui`.
+
+Подробности — [`bins/outline-ui/README.ru.md`](../../../bins/outline-ui/README.ru.md).
+
 ## Вход трафика
 
 Три класса, три пути — детали в [`ingress/README.md`](ingress/README.md):
 
 | Класс | Путь | Адрес |
 |---|---|---|
-| HTTP (Grafana, z2m frontend) | Traefik Ingress | `198.18.1.200` (VIP MetalLB) |
+| HTTP (Grafana, outline-ui, z2m frontend) | Traefik Ingress | `198.18.1.200` (VIP MetalLB) |
 | MQTT L4 (внешние клиенты) | LoadBalancer мимо Traefik | `198.18.1.201` |
 | VictoriaMetrics | ClusterIP, наружу нет | — |
 | outline-ss/ws, ocserv | hostNetwork, свои порты | IP прибитой ноды |

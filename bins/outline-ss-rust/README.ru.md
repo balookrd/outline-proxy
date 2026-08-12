@@ -285,7 +285,7 @@ cargo release-musl-armv7
 | `control.listen` | Адрес сокета управляющего слушателя, например `127.0.0.1:7001`. Отдельный сокет — не выставляйте в публичную сеть |
 | `control.token` | Bearer-токен, обязательный в каждом запросе. Для секретов предпочтительнее `control.token_file` |
 | `control.token_file` | Путь к файлу с bearer-токеном; взаимоисключим с `control.token` |
-| `[dashboard]` | Опциональный браузерный UI на отдельном listener; проксирует запросы к настроенным control-серверам и не отдаёт токены браузеру |
+| `[dashboard]` | Опциональный браузерный UI на отдельном listener; проксирует запросы к настроенным control-серверам и не отдаёт токены браузеру. Также отдаётся из k3s сервисом `outline-ui` по адресу `https://ui.k3s.beerloga.su/ss` — см. [`bins/outline-ui/README.ru.md`](../outline-ui/README.ru.md) |
 | `dashboard.listen` | Адрес сокета dashboard listener, например `127.0.0.1:7002` |
 | `dashboard.request_timeout_secs` | Таймаут dashboard-to-control запросов. По умолчанию `15` |
 | `dashboard.refresh_interval_secs` | Интервал автообновления dashboard UI в секундах. По умолчанию `10` |
