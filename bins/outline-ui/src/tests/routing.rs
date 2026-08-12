@@ -78,6 +78,54 @@ async fn every_tree_is_behind_the_credential_gate() {
     }
 }
 
+/// Regression test for the origin-gate/DELETE seam: `origin.rs`'s
+/// `method_carries_body` treats every non-GET/HEAD/OPTIONS method as
+/// body-bearing, so a `DELETE` needs `Content-Type: application/json` to clear
+/// the gate — same as any other mutation. The frontend's `deleteUser` used to
+/// hand-roll `{ method: 'DELETE' }` with no headers at all, so it never made
+/// it past this middleware to `delete_user`; every caller saw a bare "HTTP
+/// 415" toast instead of whatever `/control/users/{id}` actually answered.
+///
+/// With the header present, this DELETE clears the gate and reaches routing:
+/// the response is 404 "unknown instance" (not 415) because the test config
+/// carries no `ss` instances, which is exactly the point — the instance
+/// lookup failing is incidental, reaching `ss::api::forward` at all is what's
+/// under test.
+#[tokio::test]
+async fn delete_with_json_content_type_clears_the_origin_gate() {
+    let app = build_app(&config());
+
+    let request = Request::delete("/ss/dashboard/api/users/someid?instance=nope")
+        .header(header::HOST, "127.0.0.1:9000")
+        .header(header::AUTHORIZATION, "Bearer s3cr3t")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// The mirror of the test above: the identical DELETE, minus the JSON
+/// content type, is still rejected 415 at the origin gate — before routing
+/// ever sees it. This documents the gate contract that the fix above (routing
+/// every frontend mutation through one header-setting helper) satisfies: it
+/// is the gate's job to demand the header, not routing's job to tolerate its
+/// absence.
+#[tokio::test]
+async fn delete_without_content_type_is_rejected_by_the_origin_gate() {
+    let app = build_app(&config());
+
+    let request = Request::delete("/ss/dashboard/api/users/someid?instance=nope")
+        .header(header::HOST, "127.0.0.1:9000")
+        .header(header::AUTHORIZATION, "Bearer s3cr3t")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
 /// Picks a real, currently-hashed asset name straight out of `frontend/dist`
 /// — the same tree rust-embed indexed at compile time — instead of hardcoding
 /// a content hash that changes on every frontend rebuild.
