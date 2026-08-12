@@ -36,7 +36,7 @@ sudo /opt/outline/access-keys/generate_keys.py
 
 | Флаг | Значение по умолчанию |
 |---|---|
-| `--config` | `/opt/outline/outline-ss-rust/config.toml` |
+| `--config` | `/etc/outline-ss-rust/config.toml` |
 | `--out-dir` | из `[access_keys] write_dir`; своего дефолта нет |
 | `--file-extension` | из `[access_keys] file_extension`, иначе `.yaml` |
 | `--node` | `cloud1.beerloga.su`, `cloud2.beerloga.su`; повторяется на каждый узел |

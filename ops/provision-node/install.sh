@@ -492,42 +492,33 @@ ensure_nginx_locations() {
     done
 }
 
-# The service is started with `--config /etc/outline-ss-rust/config.toml`, and
-# /opt/outline/outline-ss-rust/config.toml is meant to be a symlink to it — that
-# is how five of the seven nodes look. On `sebek` and `nuxt2` it was a plain
-# copy instead (observed 2026-08-11), and the copy drifted: control-API writes
-# landed in /etc while the key generator, pointed at /opt, kept emitting
-# artifacts for paths the server no longer served. Nothing reported an error.
-#
-# A bundle collected from a reference that had the copy reproduces the copy, so
-# converge here rather than trusting the payload.
-ensure_ss_config_symlink() {
+# The service runs with `--config /etc/outline-ss-rust/config.toml`, and every
+# on-node caller (save-keys.sh, the key generator) now passes that same /etc
+# path explicitly. The historical /opt/outline/outline-ss-rust/config.toml — a
+# symlink on five nodes, a drifting plain copy on `sebek`/`nuxt2` (2026-08-11) —
+# bought nothing but the copy-vs-symlink drift that silently desynced the key
+# generator. Consolidate on /etc: rescue an /opt-only copy if /etc is somehow
+# empty, then drop the /opt path entirely so there is one source of truth.
+remove_ss_config_opt() {
     local opt=/opt/outline/outline-ss-rust/config.toml
     local etc=/etc/outline-ss-rust/config.toml
 
     [ -e "$opt" ] || [ -L "$opt" ] || return 0
 
-    if [ -L "$opt" ] && [ "$(readlink -f "$opt")" = "$etc" ]; then
-        dim "ss config: /opt already symlinks to $etc"
-        return 0
-    fi
-
-    if [ ! -f "$etc" ] && [ -f "$opt" ]; then
-        # No live config yet: the /opt copy is all we have, so promote it.
+    # A plain /opt copy while /etc is missing is the only live config — promote
+    # it before deleting anything. A dangling symlink is not a file, so `-f`
+    # skips it: there is nothing to rescue there.
+    if [ ! -f "$etc" ] && [ -f "$opt" ] && [ ! -L "$opt" ]; then
         run install -d -o root -g root -m 0755 "$(dirname "$etc")"
         run cp -a "$opt" "$etc"
         ok "ss config: promoted the /opt copy to $etc"
     fi
 
     if [ -f "$etc" ]; then
-        if [ -f "$opt" ] && ! cmp -s "$opt" "$etc"; then
-            warn "ss config: /opt copy differs from $etc — keeping a backup before replacing it"
-            run cp -a "$opt" "$opt.stale-copy.$(date +%Y%m%d%H%M%S)"
-        fi
-        run ln -sfn "$etc" "$opt"
-        ok "ss config: /opt now symlinks to $etc"
+        run rm -f "$opt"
+        ok "ss config: removed the legacy /opt path (canonical is $etc)"
     else
-        warn "ss config: neither $etc nor a usable /opt copy — leaving as is"
+        warn "ss config: $etc missing and no usable /opt copy — leaving /opt as is"
     fi
 }
 
@@ -544,7 +535,7 @@ phase_files() {
     # the same path even when a stale bundle still carries one.
     install_asset_files
 
-    ensure_ss_config_symlink
+    remove_ss_config_opt
 
     if [ -n "$NGINX_SITE" ]; then
         ensure_nginx_locations

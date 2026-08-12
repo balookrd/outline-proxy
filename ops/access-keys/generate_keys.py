@@ -22,7 +22,7 @@ import artifacts  # noqa: E402
 import config_model  # noqa: E402
 import xray_json  # noqa: E402
 
-DEFAULT_CONFIG = "/opt/outline/outline-ss-rust/config.toml"
+DEFAULT_CONFIG = "/etc/outline-ss-rust/config.toml"
 
 # There is deliberately no default output directory. The served directory's
 # name is a secret — it is the only thing guarding the artifacts, which carry
