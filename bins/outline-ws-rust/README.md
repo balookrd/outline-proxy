@@ -14,7 +14,7 @@ It supports:
 - WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`), and RFC 9220 (`ws-over-h3`)
 - VLESS-over-WebSocket uplinks (UUID auth, shared WSS dial path, per-destination UDP session-mux)
 - one-line VLESS uplink config via `vless://UUID@HOST:PORT?...#NAME` share-link URIs (TOML `link = "..."`, CLI `--vless-link`, control-plane `link` payload field)
-- Prometheus metrics, built-in multi-instance dashboard, and packaged Grafana dashboards
+- Prometheus metrics and packaged Grafana dashboards (the multi-instance operator UI now lives in `outline-ui`)
 - existing TUN device integration for `tun2udp`
 - stateful `tun2tcp` relay with production-oriented guardrails
 
@@ -80,13 +80,11 @@ tun2udp + tun2tcp"]
 
     subgraph Observability["Observability"]
         PR["Prometheus"]
-        DASH["Built-in dashboard"]
         GD["Grafana dashboards"]
         AL["Alert rules"]
     end
 
     M --> PR
-    P --> DASH
     PR --> GD
     PR --> AL
 ```
@@ -174,7 +172,6 @@ tun2udp + tun2tcp"]
 ### Operations
 
 - Prometheus metrics
-- built-in multi-instance dashboard
 - packaged Grafana dashboards
 - proactive uplink TLS certificate-expiry monitoring (dashboard chip + Prometheus gauge `outline_ws_uplink_cert_expiry_timestamp_seconds`)
 - hardened systemd unit
@@ -372,35 +369,9 @@ listen = "[::1]:9090"
 # # config). Use this when secrets must not live in the config itself.
 # # token_file = "/etc/outline-ws/control.token"
 
-# Built-in multi-instance dashboard. Open http://LISTEN/dashboard.
-# Secrets stay in the dashboard process config and are never sent to the
-# browser. Each instance must expose its own [control] listener.
-# [dashboard]
-# listen = "127.0.0.1:9092"
-# refresh_interval_secs = 5
-# # Per-instance control HTTP request timeout (default 5s).
-# request_timeout_secs = 5
-# # Optional secret guarding this listener itself. Unset leaves it open —
-# # reaching it is equivalent to holding every instance token below. Accepted
-# # as `Authorization: Bearer <token>` or as the HTTP Basic password (any
-# # username). Mutually exclusive with token_file.
-# token = "long-random-secret"
-# # token_file = "/etc/outline-ws/dashboard.token"
-# # Extra host names accepted in `Host` / `Origin`, on top of loopback and the
-# # bound address. Only needed behind a reverse proxy serving the panel under a
-# # DNS name. See "Dashboard origin checks" below.
-# allowed_hosts = ["panel.example.com"]
-#
-# [[dashboard.instances]]
-# name = "inst-01"
-# # http:// or https:// — TLS control endpoints are supported.
-# control_url = "http://127.0.0.1:9091"
-# token_file = "/etc/outline-ws/inst-01.control.token"
-#
-# [[dashboard.instances]]
-# name = "inst-02"
-# control_url = "https://10.0.0.12:9091"
-# token = "long-random-secret"
+# The multi-instance dashboard has moved to the outline-ui service
+# (see bins/outline-ui/README.md). This binary serves only [metrics]
+# and [control] below.
 
 [tun]
 # Existing TUN device path. Creation, IP addresses and routes stay outside the app.
@@ -1023,12 +994,11 @@ Requirements:
 
 ## Metrics and Dashboards
 
-> **The dashboard also runs outside this binary now.** `outline-ui` serves both
-> dashboards from k3s at `https://ui.k3s.beerloga.su` (`/ws` here, `/ss` for the
-> server), aggregating every instance's control API instead of living on the
-> node. The built-in one below still works and is unchanged; removing it is
-> deferred until the new service has been used in practice. See
-> [`bins/outline-ui/README.md`](../outline-ui/README.md).
+> **The dashboard has moved out of this binary.** It is served from k3s by
+> `outline-ui` at `https://ui.k3s.beerloga.su/ws`, aggregating every instance's
+> control API instead of living on the node. This binary now exposes only the
+> read-only metrics endpoint and the authenticated control plane the UI proxies
+> to. See [`bins/outline-ui/README.md`](../outline-ui/README.md).
 
 If `[metrics]` is configured the process serves the read-only Prometheus
 endpoint:
@@ -1116,7 +1086,7 @@ higher-priority uplink once it stabilises.
 
 `GET /control/topology` returns JSON with groups and uplinks (including
 `active_global`, `active_tcp`, `active_udp` booleans per uplink) for the
-built-in dashboard or external control clients.
+outline-ui dashboard or external control clients.
 
 `GET /control/summary` returns compact counters:
 `groups_total`, `uplinks_total`, healthy/unhealthy TCP/UDP counts, and active
@@ -1235,7 +1205,7 @@ The descriptor snapshot includes total open FDs plus a breakdown for sockets, pi
 
 `outline_ws_selection_mode_info{mode}`, `outline_ws_routing_scope_info{scope}`, `outline_ws_global_active_uplink_info{uplink}`, and `outline_ws_sticky_routes` expose selector configuration and active-uplink state.
 
-`outline_ws_group_bypass_active{group, transport}` reports the live `bypass_when_down` state: `1` while new flows of that transport are being dispatched direct (tunnel bypass) because the group has no healthy uplink, `0` while traffic tunnels normally. The series exists only for groups with `bypass_when_down = true`; the built-in dashboard renders the same signal as a group-header chip (grey `Bypass: armed` / amber `Bypass: DIRECT`), and the Grafana dashboard carries a matching stat + timeline in the Routing Policy section.
+`outline_ws_group_bypass_active{group, transport}` reports the live `bypass_when_down` state: `1` while new flows of that transport are being dispatched direct (tunnel bypass) because the group has no healthy uplink, `0` while traffic tunnels normally. The series exists only for groups with `bypass_when_down = true`; the outline-ui dashboard renders the same signal as a group-header chip (grey `Bypass: armed` / amber `Bypass: DIRECT`), and the Grafana dashboard carries a matching stat + timeline in the Routing Policy section.
 
 Per-uplink open-connection accounting (used to detect connections leaking
 into a non-active uplink after a `Global` / `PerUplink` switchover) is
@@ -1279,7 +1249,7 @@ Grafana dashboards:
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
 - [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json)
 
-The experimental uplinks/control-plane Grafana dashboard is intentionally not packaged; use the built-in `/dashboard` UI for multi-instance uplink activation.
+The experimental uplinks/control-plane Grafana dashboard is intentionally not packaged; use the outline-ui service for multi-instance uplink activation.
 
 ## Production Operations
 
@@ -1441,7 +1411,7 @@ Two other routine events are deliberately kept off `warn`, since neither says
 anything about this process: a WS writer task stopping because its carrier was
 already closed (counted instead by
 `outline_ws_carrier_writer_terminations_total{reason="peer_closed"}`), and an
-HTTP client hanging up on the metrics / control / dashboard listener before its
+HTTP client hanging up on the metrics / control listener before its
 request completed (`request aborted by client`). Genuine write failures and
 genuine request failures keep their `warn`.
 
@@ -1452,16 +1422,6 @@ genuine request failures keep their `warn`.
   management network, treat the bearer token as a credential (rotate, store
   out of band), and never re-use the metrics port for it. The control listener
   is the only path that can mutate active-uplink selection.
-- Protect `dashboard.listen` as strictly as `control.listen`. The dashboard
-  proxies to every configured instance with that instance's bearer token
-  injected server-side, so reaching the dashboard socket is equivalent to
-  holding all of those tokens — including uplink activation, operator on/off,
-  and `POST /control/apply`. Keep it on loopback, or set `dashboard.token` /
-  `dashboard.token_file` when it must be reachable from elsewhere. With a
-  secret set, every request must carry `Authorization: Bearer <token>`;
-  browsers can instead answer the `Basic` challenge with any username and the
-  token as the password. Refusals are `401` with `Cache-Control: no-store`. A
-  non-loopback listener without a secret logs a warning on startup.
 - Listener hardening against slowloris / idle-connection DoS is built in:
   the SOCKS5 accept loop caps in-flight connections at 4096 and enforces a
   10 s handshake timeout on `negotiate`; the `/metrics` listener caps
@@ -1473,52 +1433,6 @@ genuine request failures keep their `warn`.
 - HTTP/3 requires public UDP reachability on the selected port.
 - `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root; under a user-namespaced systemd sandbox it additionally requires `PrivateUsers=no` (`SO_MARK` is checked against the init user namespace).
 - TUN mode requires `/dev/net/tun` access on the host (`PrivateDevices=false`).
-- The dashboard listener refuses cross-origin and rebound requests before
-  routing them — see [Dashboard origin checks](#dashboard-origin-checks).
-
-#### Dashboard origin checks
-
-Binding the dashboard to loopback does not keep a web page away from it: the
-page runs in the operator's own browser, on the operator's own machine. And the
-dashboard parses request bodies by hand, so nothing forced a CORS preflight the
-way an `application/json` extractor does on the server plane — a
-`Content-Type: text/plain` POST is a *simple* request, sent without preflight,
-and `mode: "no-cors"` hides the response from the attacker but not the effect
-(the uplink still switches, the config still applies).
-
-Every request to the dashboard is therefore checked **before** it is routed, so
-a route added later cannot end up outside the checks:
-
-| Check | Applies to | On failure |
-| --- | --- | --- |
-| `Host` names this listener | every request | `403` |
-| `Origin`, when present, is this panel's own | every request | `403` |
-| `Content-Type: application/json` (parameters such as `; charset=utf-8` allowed) | every body-bearing method — anything but `GET`/`HEAD`/`OPTIONS` | `415`, body never parsed |
-
-- **`Host`** is accepted for loopback names and addresses (`localhost`,
-  `127.0.0.1`, `[::1]`), for the address the panel is bound to (any literal
-  address when bound to a wildcard like `0.0.0.0`), and for any name in
-  `allowed_hosts`. This is what closes DNS rebinding: the attacker's domain may
-  resolve to `127.0.0.1`, but the browser still puts the attacker's *name* in
-  `Host`. The **port is not checked** — reaching a loopback panel through
-  `ssh -L 8888:127.0.0.1:9092` or a container port mapping is routine, and the
-  port carries no protection anyway, since a rebinding attacker has to target
-  the panel's real port regardless.
-- **`Origin`** must equal `Host` verbatim — which a same-origin browser request
-  always does, through any port mapping — or name a host from `allowed_hosts`,
-  the case of a reverse proxy that rewrites `Host`. A different local port
-  (`http://127.0.0.1:3000`) is a different origin and is refused. A *missing*
-  `Origin` is allowed: `curl` and other non-browser clients never send one, and
-  a web page cannot suppress it, so refusing it would only break scripted
-  operators without closing anything.
-- **`allowed_hosts`** is additive: the built-in set stays valid, so a proxied
-  deployment keeps working over `ssh -L` as well. Entries are matched by host
-  name, case-insensitively; a port written into an entry is ignored.
-
-Nothing changes for the packaged UI (it already sends `application/json`) or
-for `curl`. A script that posted with some other content type now gets `415`,
-and a deployment that serves the panel under a DNS name needs that name in
-`[dashboard] allowed_hosts`.
 
 ## Testing
 

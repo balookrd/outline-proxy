@@ -283,15 +283,6 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `control.listen` | Socket address for the control listener, e.g. `127.0.0.1:7001`. Bound on its own socket — keep it off the public internet |
 | `control.token` | Bearer token required on every request. Prefer `control.token_file` for secrets management |
 | `control.token_file` | Path to a file containing the bearer token; mutually exclusive with `control.token` |
-| `[dashboard]` | Optional browser UI on a separate listener; proxies to configured control instances without exposing tokens to the browser. Also served from k3s by `outline-ui` at `https://ui.k3s.beerloga.su/ss` — see [`bins/outline-ui/README.md`](../outline-ui/README.md) |
-| `dashboard.listen` | Socket address for the dashboard listener, e.g. `127.0.0.1:7002` |
-| `dashboard.request_timeout_secs` | Timeout for dashboard-to-control requests. Default: `15` |
-| `dashboard.refresh_interval_secs` | Auto-refresh interval for the dashboard UI, in seconds. Default: `10` |
-| `dashboard.token` / `token_file` | Optional secret guarding the dashboard listener itself, accepted as `Authorization: Bearer <token>` or as the HTTP Basic password (any username). Unset by default, which leaves the listener unauthenticated |
-| `dashboard.allowed_hosts` | Host names the origin guard accepts on top of the built-in loopback/bind-address set. Needed only behind a reverse proxy serving the panel under a DNS name; matched by host name, case-insensitively, port ignored. Empty by default |
-| `dashboard.instances[].name` | Display name for a managed instance |
-| `dashboard.instances[].control_url` | Base `http://` or `https://` URL of that instance's control listener |
-| `dashboard.instances[].token` / `token_file` | Bearer token used server-side when proxying to that control listener |
 
 ### Per-User Settings
 
@@ -414,50 +405,7 @@ token_file = "/etc/outline-ss-rust/control.token"
 
 Every request must carry `Authorization: Bearer <token>` — bind the listener to loopback or a management network only. Equivalent CLI flags exist: `--control-listen`, `--control-token`, `--control-token-file` (and `OUTLINE_SS_CONTROL_*` env vars). Build with `--no-default-features` to drop the control module entirely.
 
-The same feature can also serve a browser dashboard on a separate listener. The dashboard keeps per-server control tokens in the process config and proxies browser actions to the configured `/control` endpoints.
-
-```toml
-[dashboard]
-listen = "127.0.0.1:7002"
-request_timeout_secs = 15
-refresh_interval_secs = 10
-
-[[dashboard.instances]]
-name = "local"
-control_url = "http://127.0.0.1:7001"
-token_file = "/etc/outline-ss-rust/control.token"
-
-[[dashboard.instances]]
-name = "edge-02"
-control_url = "https://10.0.0.12:7001"
-token_file = "/etc/outline-ss-rust/edge-02.control.token"
-```
-
-Open `http://127.0.0.1:7002/dashboard`.
-
-Reaching the dashboard is equivalent to holding every instance token it was configured with: it proxies user CRUD to all of them with those tokens injected server-side, and by default the listener itself has no authentication. Keep it on loopback (as above), or, when it must be reachable from elsewhere, put it behind an authenticating reverse proxy and/or set a secret of its own:
-
-```toml
-[dashboard]
-listen = "10.0.0.7:7002"
-token_file = "/etc/outline-ss-rust/dashboard.token"
-```
-
-With `dashboard.token` (or `dashboard.token_file`) set, every request must carry `Authorization: Bearer <token>`; browsers can instead answer the `Basic` challenge with any username and the token as the password. A non-loopback listener without such a secret logs a warning on startup.
-
-Reaching this listener is equivalent to holding every managed instance's control token, so a token alone is not enough: a token guards *who* may drive the panel, but a browser reattaches cached Basic credentials to a cross-site request on its own, and binding to loopback does not stop a page on the operator's own machine. The dashboard therefore checks every request **before** it is routed — so a route added later cannot end up outside the checks — and independently of whether a token is set:
-
-| Check | Applies to | On failure |
-| --- | --- | --- |
-| `Host` names this listener | every request | `403` |
-| `Origin`, when present, is this panel's own | every request | `403` |
-| `Content-Type: application/json` (parameters such as `; charset=utf-8` allowed) | every body-bearing method — anything but `GET`/`HEAD`/`OPTIONS` | `415`, body never parsed |
-
-- **`Host`** is accepted for loopback names and addresses (`localhost`, `127.0.0.1`, `[::1]`), for the address the panel is bound to (any literal address when bound to a wildcard like `0.0.0.0`), and for any name in `allowed_hosts`. This is what closes DNS rebinding: the attacker's domain may resolve to `127.0.0.1`, but the browser still puts the attacker's *name* in `Host`. The **port is not checked** — reaching a loopback panel through `ssh -L 8888:127.0.0.1:7002` or a container port mapping is routine, and the port carries no protection anyway, since a rebinding attacker has to target the panel's real port regardless.
-- **`Origin`** must equal `Host` verbatim — which a same-origin browser request always does, through any port mapping — or name a host from `allowed_hosts`, the case of a reverse proxy that rewrites `Host`. A different local port (`http://127.0.0.1:3000`) is a different origin and is refused. A *missing* `Origin` is allowed: `curl` and other non-browser clients never send one, and a web page cannot suppress it, so refusing it would only break scripted operators without closing anything.
-- **`allowed_hosts`** is additive: the built-in set stays valid, so a loopback deployment keeps working over `ssh -L` as well. Entries are matched by host name, case-insensitively; a port written into an entry is ignored.
-
-Nothing changes for the packaged UI (it already sends `application/json`) or for `curl`. A deployment that serves the panel under a DNS name needs that name in `dashboard.allowed_hosts`.
+The multi-instance browser dashboard that used to run on a separate listener here has moved to the **outline-ui** service in k3s (`https://ui.k3s.beerloga.su/ss`), which aggregates every server's `/control` API instead of running on the node — see [`bins/outline-ui/README.md`](../outline-ui/README.md). This binary now exposes only the control plane below.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
