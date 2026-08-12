@@ -5,6 +5,7 @@
   import Landing from './features/landing/Landing.svelte';
   import Users from './features/ss/Users.svelte';
   import Uplinks from './features/ws/Uplinks.svelte';
+  import Topology from './features/ws/Topology.svelte';
   import { route, section } from './lib/router.svelte';
 
   const view = $derived(section(route.path));
@@ -22,10 +23,7 @@
     {:else if isUplinks}
       <Uplinks />
     {:else}
-      <!-- TEMPORARY: real Topology view arrives in Task 9 (swap this section for <Topology />) -->
-      <section class="view active">
-        <div class="empty">Topology — Task 9</div>
-      </section>
+      <Topology />
     {/if}
   </main>
 </div>

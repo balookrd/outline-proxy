@@ -22,10 +22,91 @@ export interface TopologyResponse {
   name: string; ok: boolean; error?: string | null;
   topology?: { instance?: { groups?: Group[] } } | null;
 }
-export interface Group { name: string; uplinks?: Uplink[]; [k: string]: unknown; }
+// Mirrors ControlGroupTopology (bins/outline-ws-rust/src/http/control/topology.rs).
+// The four `bypass_*`/`cluster_resume_enabled` fields are `skip_serializing_if`
+// on the wire (absent, not `false`, when off) — hence `?: boolean` rather than
+// a required field defaulting to false.
+export interface Group {
+  name: string;
+  uplinks?: Uplink[];
+  load_balancing_mode?: string;
+  routing_scope?: string;
+  auto_failback?: boolean;
+  cluster_resume_enabled?: boolean;
+  bypass_when_down?: boolean;
+  bypass_active_tcp?: boolean;
+  bypass_active_udp?: boolean;
+  global_active_uplink?: string | null;
+  tcp_active_uplink?: string | null;
+  udp_active_uplink?: string | null;
+  [k: string]: unknown;
+}
+// One wire (primary at index 0, then each `[[outline.uplinks.fallbacks]]`) in
+// an uplink's `configured_wire_chain[]` — mirrors `WireChainEntry`
+// (bins/outline-ws-rust/src/http/control/topology.rs:13-39). Every
+// `*_mode`/`*_mode_effective` field is individually `skip_serializing_if`
+// absent (only `transport` is unconditional), and Shadowsocks wires carry
+// neither — their TCP/UDP shape is fixed by the address fields, not a mode
+// enum.
+export interface WireChainEntry {
+  transport: string;
+  tcp_mode?: string | null;
+  tcp_mode_effective?: string | null;
+  udp_mode?: string | null;
+  udp_mode_effective?: string | null;
+  [k: string]: unknown;
+}
+// Mirrors ControlUplinkTopology (bins/outline-ws-rust/src/http/control/topology.rs,
+// built by build_uplink_topology() from outline-metrics's UplinkSnapshot) — the
+// per-uplink entry inside `Group.uplinks[]`. Only the fields Task 9's topology
+// read-view actually consumes are modeled here (the index signature covers the
+// rest — submode/downgrade/cert/throttle/fingerprint/pin-timer/shuffle detail
+// dashboard.html also renders but this simplified read-view does not).
+//
+// Fields marked `?:` without `| null` are genuinely `skip_serializing_if`
+// absent-able (never present-but-null); every other `Option<T>` Rust field on
+// this struct has NO `skip_serializing_if` — it is always present as a JSON
+// key and simply reads `null` for `None` — hence `field: T | null` (present,
+// required key) rather than `field?: T | null` for those.
 export interface Uplink {
-  name: string; admin_disabled?: boolean; last_error?: string | null;
-  [k: string]: unknown; // wire chains / rtt / loss / weight / role — see ws/dashboard.html renderer
+  name: string;
+  index?: number;
+  transport: string;
+  tcp_mode: string | null;
+  udp_mode: string | null;
+  tcp_mode_effective: string | null;
+  udp_mode_effective: string | null;
+  weight: number;
+  tcp_healthy: boolean | null;
+  udp_healthy: boolean | null;
+  tcp_health_effective: boolean | null;
+  udp_health_effective: boolean | null;
+  tcp_rtt_ewma_ms: number | null;
+  udp_rtt_ewma_ms: number | null;
+  // skip_serializing_if Option::is_none — absent, not null, until a wire flip
+  // has produced its own measurement.
+  tcp_active_wire_rtt_ewma_ms?: number | null;
+  udp_active_wire_rtt_ewma_ms?: number | null;
+  tcp_carrier_loss_ratio: number | null;
+  udp_carrier_loss_ratio: number | null;
+  last_error: string | null;
+  active_global: boolean;
+  active_global_reason: string | null;
+  active_tcp: boolean;
+  active_tcp_reason: string | null;
+  active_udp: boolean;
+  active_udp_reason: string | null;
+  // Always present (`[]` when no fallbacks) — unlike configured_wire_chain
+  // just below, `ControlUplinkTopology.configured_fallbacks` carries no
+  // `skip_serializing_if`.
+  configured_fallbacks: string[];
+  // skip_serializing_if Vec::is_empty — absent (not `[]`) for a single-wire
+  // uplink.
+  configured_wire_chain?: WireChainEntry[];
+  tcp_active_wire: number;
+  udp_active_wire: number;
+  admin_disabled: boolean;
+  [k: string]: unknown; // submode/downgrade/cert/throttle/fingerprint/etc. — see ws/dashboard.html renderer
 }
 export interface ActivateTarget { instance: string; group: string; uplink: string; }
 export interface ActivateBody { targets: ActivateTarget[]; transport?: 'tcp'|'udp'|'both'; soft?: boolean; }
