@@ -269,6 +269,11 @@ pub(super) struct DashboardFileConfig {
     /// leaves the listener unauthenticated (loopback deployments).
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
+    /// Extra host names the dashboard's origin guard accepts on top of the
+    /// built-in loopback/bind-address set. Only needed behind a reverse proxy
+    /// serving the panel under a DNS name.
+    #[serde(default)]
+    pub allowed_hosts: Option<Vec<String>>,
     #[serde(default)]
     pub instances: Option<Vec<DashboardInstanceFileConfig>>,
 }

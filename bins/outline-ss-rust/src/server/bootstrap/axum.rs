@@ -8,7 +8,12 @@ use hyper_util::{
     server::conn::auto::Builder as HyperBuilder,
     service::TowerToHyperService,
 };
-use tokio::{net::TcpListener, sync::Semaphore, task::JoinSet, time::Duration};
+use tokio::{
+    net::TcpListener,
+    sync::Semaphore,
+    task::JoinSet,
+    time::{Duration, Instant, timeout_at},
+};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, warn};
 
@@ -22,7 +27,8 @@ use super::super::{
     connect::configure_tcp_stream,
     constants::{
         CERT_RELOAD_POLL_INTERVAL_SECS, H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS,
-        HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS, TLS_MAX_CONCURRENT_CONNECTIONS,
+        HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS, TLS_HANDSHAKE_TIMEOUT_SECS,
+        TLS_MAX_CONCURRENT_CONNECTIONS,
     },
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
@@ -288,6 +294,55 @@ fn spawn_tcp_cert_reloader(
     );
 }
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Test-only override for the pre-auth TLS timeout, in milliseconds. `0`
+/// means "use the production default". Tests set this to a small value so
+/// the slowloris regression coverage runs in ~1 s rather than
+/// `TLS_HANDSHAKE_TIMEOUT_SECS`. Shipping code never touches it — there is
+/// no setter outside `cfg(test)`.
+#[cfg(test)]
+static TEST_TLS_HANDSHAKE_TIMEOUT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Acquire-and-set guard for the pre-auth-timeout override. Locks a single
+/// process-wide mutex so listener tests do not race on the atomic, and
+/// clears the override on drop. Mirrors `transport::sink::TestTimeoutOverride`.
+#[cfg(test)]
+pub(in crate::server) struct TestTlsHandshakeTimeout {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl TestTlsHandshakeTimeout {
+    pub(in crate::server) fn set(d: Duration) -> Self {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let lock = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        TEST_TLS_HANDSHAKE_TIMEOUT_MS.store(d.as_millis() as u64, Ordering::Relaxed);
+        Self { _lock: lock }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestTlsHandshakeTimeout {
+    fn drop(&mut self) {
+        TEST_TLS_HANDSHAKE_TIMEOUT_MS.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Wall-clock budget for the unauthenticated pre-handshake phase of a TLS
+/// connection. See [`TLS_HANDSHAKE_TIMEOUT_SECS`] for the rationale.
+fn tls_handshake_timeout() -> Duration {
+    #[cfg(test)]
+    {
+        let ms = TEST_TLS_HANDSHAKE_TIMEOUT_MS.load(Ordering::Relaxed);
+        if ms > 0 {
+            return Duration::from_millis(ms);
+        }
+    }
+    Duration::from_secs(TLS_HANDSHAKE_TIMEOUT_SECS)
+}
+
 async fn serve_tls_listener(
     listener: TcpListener,
     app: Router,
@@ -347,6 +402,16 @@ async fn serve_tls_listener(
         tasks.spawn(async move {
             let _permit = permit;
 
+            // A single deadline covers the whole unauthenticated pre-handshake
+            // phase — the optional SNI peek *and* the rustls handshake. Sharing
+            // one budget (rather than one timeout per phase) denies a slowloris
+            // peer the trick of being slow in both phases to consume twice the
+            // allowance; the permit this task holds is released the moment it
+            // returns for any reason, so timing out here is what keeps the
+            // `TLS_MAX_CONCURRENT_CONNECTIONS` semaphore from being pinned by
+            // peers that never finish authenticating.
+            let preauth_deadline = Instant::now() + tls_handshake_timeout();
+
             // SNI dispatch: when [sni_fallback] is configured, peek
             // the ClientHello before handshake. Foreign SNIs (or no
             // SNI when `allow_no_sni = false`) are spliced as raw
@@ -369,24 +434,55 @@ async fn serve_tls_listener(
                         debug!(%peer_addr, "aborting SNI peek on shutdown");
                         return;
                     }
-                    res = sni_fallback::dispatch_sni(ctx, &metrics, stream, peer_addr) => res,
+                    res = timeout_at(
+                        preauth_deadline,
+                        sni_fallback::dispatch_sni(ctx, &metrics, stream, peer_addr),
+                    ) => res,
                 };
                 match dispatch {
-                    Ok(Some(accepted)) => (accepted.stream, accepted.sni),
-                    Ok(None) => return,
-                    Err(_) => return,
+                    Ok(Ok(Some(accepted))) => (accepted.stream, accepted.sni),
+                    Ok(Ok(None)) => return,
+                    Ok(Err(_)) => return,
+                    Err(_elapsed) => {
+                        // Pre-auth budget spent before a complete ClientHello
+                        // arrived: a peer that connected and then went silent
+                        // or dribbled bytes (slowloris). Count it under the
+                        // SNI-peek failure series and drop the connection,
+                        // freeing the permit `_permit` holds.
+                        metrics.record_sni_peek_failed("timeout");
+                        debug!(
+                            %peer_addr,
+                            "sni_fallback peek exceeded pre-auth timeout; dropping connection",
+                        );
+                        return;
+                    },
                 }
             } else {
                 (sni_fallback::PrependStream::new(Vec::new(), stream), None)
             };
 
-            let tls_stream = tokio::select! {
+            let handshake = tokio::select! {
                 biased;
                 _ = task_shutdown.cancelled() => {
                     debug!(%peer_addr, "aborting TLS handshake on shutdown");
                     return;
                 }
-                res = acceptor.accept(stream_for_handshake) => match res {
+                res = timeout_at(preauth_deadline, acceptor.accept(stream_for_handshake)) => res,
+            };
+            let tls_stream = match handshake {
+                Err(_elapsed) => {
+                    // Pre-auth budget spent inside the rustls handshake: a peer
+                    // that got past the peek but then stalled the key exchange.
+                    // Count it under the TLS-handshake failure series and drop
+                    // the connection, freeing the permit `_permit` holds.
+                    metrics.record_tls_handshake_failed("timeout");
+                    debug!(
+                        %peer_addr,
+                        "tls handshake exceeded pre-auth timeout; dropping connection",
+                    );
+                    return;
+                },
+                Ok(res) => match res {
                     Ok(s) => s,
                     Err(error) => {
                         let reason = classify_tls_handshake_error(&error);

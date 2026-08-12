@@ -37,6 +37,23 @@ fn per_user_nat_cap_defaults_to_disabled_and_takes_overrides() {
 }
 
 #[test]
+fn tcp_handshake_replay_cap_defaults_mirror_udp_and_take_overrides() {
+    // The TCP handshake salt cap mirrors the UDP replay session cap per profile.
+    assert_eq!(TuningProfile::SMALL.tcp_handshake_replay_max_salts, 16_384);
+    assert_eq!(TuningProfile::MEDIUM.tcp_handshake_replay_max_salts, 65_536);
+    assert_eq!(TuningProfile::LARGE.tcp_handshake_replay_max_salts, 262_144);
+
+    let mut tuning = TuningPreset::Medium.preset();
+    tuning.apply_overrides(&TuningOverrides {
+        tcp_handshake_replay_max_salts: Some(0),
+        ..TuningOverrides::default()
+    });
+    // `0` is a valid opt-out, just like the UDP replay cap.
+    assert_eq!(tuning.tcp_handshake_replay_max_salts, 0);
+    tuning.validate().unwrap();
+}
+
+#[test]
 fn rejects_stream_window_above_connection_window() {
     let mut tuning = TuningProfile::LARGE;
     tuning.h3_stream_window_bytes = tuning.h3_connection_window_bytes + 1;

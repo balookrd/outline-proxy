@@ -4,6 +4,8 @@ mod cert_reload;
 mod tls;
 
 #[cfg(test)]
+pub(in crate::server) use axum::TestTlsHandshakeTimeout;
+#[cfg(test)]
 pub(super) use axum::serve_listener;
 pub(super) use axum::{build_app, build_metrics_app, serve_metrics_listener, serve_tcp_listener};
 pub(in crate::server) use cert_pin::{CERT_PIN_LEN, cert_fingerprint};

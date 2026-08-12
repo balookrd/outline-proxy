@@ -43,6 +43,23 @@ pub(super) const H3_MAX_CONCURRENT_STREAMS: usize = 65_536;
 
 pub(super) const TCP_CONNECT_TIMEOUT_SECS: u64 = 5;
 pub(super) const SS_TCP_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
+// Wall-clock budget for the whole pre-authentication phase of a TLS
+// connection on the TCP listener: the optional `[sni_fallback]` ClientHello
+// peek plus the rustls handshake itself. Every accepted connection holds a
+// `TLS_MAX_CONCURRENT_CONNECTIONS` permit from the instant it is accepted —
+// i.e. *before* it has proven itself a real TLS client. Without a bound a peer
+// that connects and then sends nothing (or dribbles one byte at a time — a
+// classic slowloris) keeps its permit indefinitely; 4 096 such peers exhaust
+// the semaphore, `acquire_owned()` in the accept loop blocks, and the entire
+// TLS ingress (VLESS-over-WS, SS-over-TLS) stops accepting — a free, fully
+// pre-auth denial of service. Timing out the pre-auth phase frees the permit
+// so the listener keeps making progress. Ten seconds is an order of magnitude
+// above a real handshake even on a bad high-RTT mobile link, yet turns the
+// attack from "free and permanent" into "must reconnect every 10 s per slot".
+// Deliberately far shorter than `SS_TCP_HANDSHAKE_TIMEOUT_SECS` (30 s): that
+// one bounds the post-TLS Shadowsocks AEAD handshake, a different and later
+// phase, whereas this bounds unauthenticated work that must not linger.
+pub(super) const TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 // Interval at which the server sends WebSocket Ping frames to clients on active
 // TCP relay sessions.  The client's WsReadTransport resets its WS_READ_IDLE_TIMEOUT
 // on every received frame, including Ping.  Without these Pings the client times

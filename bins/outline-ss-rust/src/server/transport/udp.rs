@@ -399,8 +399,19 @@ fn authenticate_udp_datagram(
     // hit the lock-free `OnceLock::get_or_init` fast path: a single
     // atomic acquire load with no Arc clone when already populated.
     session.authenticated_user_id.get_or_init(|| Arc::clone(&user_id));
-    if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id) {
-        match server.replay_store.check_and_mark(csid, pid) {
+    // Reject replays: SS-2022 by its per-session `packet_id` sliding window,
+    // legacy by salt-dedup (it carries no counter). Both share the bounded
+    // store's cap and idle eviction; a datagram is one shape or the other.
+    let replay_check =
+        if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id) {
+            Some((server.replay_store.check_and_mark(csid, pid), Some(pid)))
+        } else {
+            packet
+                .legacy_replay_salt
+                .map(|salt| (server.replay_store.check_and_mark_legacy_salt(salt), None))
+        };
+    if let Some((check, pid)) = replay_check {
+        match check {
             ReplayCheck::Fresh => {},
             ReplayCheck::Replay => {
                 server
@@ -409,8 +420,8 @@ fn authenticate_udp_datagram(
                 warn!(
                     user = packet.user.id(),
                     path = %route.path,
-                    packet_id = pid,
-                    "dropping replayed ss-2022 udp datagram"
+                    packet_id = ?pid,
+                    "dropping replayed udp datagram"
                 );
                 return Ok(None);
             },
@@ -421,8 +432,8 @@ fn authenticate_udp_datagram(
                 warn!(
                     user = packet.user.id(),
                     path = %route.path,
-                    packet_id = pid,
-                    "dropping ss-2022 udp datagram: replay store at capacity"
+                    packet_id = ?pid,
+                    "dropping udp datagram: replay store at capacity"
                 );
                 return Ok(None);
             },

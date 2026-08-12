@@ -82,6 +82,23 @@ const UPLINK_REORDER_BUFFER_BYTES_CAP: usize = 256 * 1024;
 /// seq before we give up. Bounds memory and prevents a malicious
 /// client from forcing unbounded buffering by skipping seq numbers.
 const UPLINK_REORDER_MAX_GAP: u64 = 64;
+/// Soft cap on the bytes the per-session in-order uplink queue
+/// (`UplinkState::ready`) may hold. The downlink half already parks
+/// its writer on [`DOWNLINK_BUFFER_BYTES_CAP`] and the reorder buffer
+/// is bounded by [`UPLINK_REORDER_BUFFER_BYTES_CAP`]; without this the
+/// in-order queue was the one unbounded producer path — a valid client
+/// on a slow/stuck upstream keeps the relay from draining `ready`
+/// while it POSTs (packet-up) or the stream-up pump keeps vacuuming
+/// the h2/h3 flow-control window into it, growing `ready` until OOM
+/// (fatal under `panic = abort`). At the cap the producer is throttled
+/// so the carrier's own flow control brakes the client: the stream-up
+/// pump parks (see [`XhttpSession::ingest_uplink_inorder`]), and a
+/// packet-up POST is rejected with HTTP 503 ([`UplinkIngestError::ReadyFull`],
+/// idempotent — the seq is not consumed, the client retries). Sized to
+/// match the downlink and reorder caps: total resident uplink memory
+/// per session stays under `ready` + `reorder` = 512 KiB. Modeled on
+/// the byte-budget in `outline_transport::carrier_queue`.
+const UPLINK_READY_BYTES_CAP: usize = 256 * 1024;
 /// Time a session may sit with no I/O before the registry janitor
 /// evicts it. Must stay comfortably above the relay's keepalive
 /// cadence (`WS_TCP_KEEPALIVE_PING_INTERVAL_SECS`, 60 s): on an
@@ -265,6 +282,13 @@ pub(in crate::server) struct XhttpSession {
     pub(in crate::server) id: Arc<str>,
     pub(in crate::server) uplink: Mutex<UplinkState>,
     pub(in crate::server) uplink_notify: Notify,
+    /// Wakes any [`ingest_uplink_inorder`](XhttpSession::ingest_uplink_inorder)
+    /// task parked because `ready` is at or above [`UPLINK_READY_BYTES_CAP`].
+    /// Fired by [`pop_uplink_ready`](XhttpSession::pop_uplink_ready) after the
+    /// relay pulls a chunk out of `ready`, and by [`close`](XhttpSession::close)
+    /// so a parked producer wakes and observes the closed state. Mirrors
+    /// `downlink_drain_notify` for the opposite direction.
+    pub(in crate::server) uplink_drain_notify: Notify,
     pub(in crate::server) downlink: Mutex<DownlinkState>,
     pub(in crate::server) downlink_notify: Notify,
     /// Wakes any [`push_downlink`](XhttpSession::push_downlink) task
@@ -314,6 +338,10 @@ pub(in crate::server) struct XhttpSession {
 pub(in crate::server) struct UplinkState {
     pub(in crate::server) expected_seq: u64,
     pub(in crate::server) ready: VecDeque<Bytes>,
+    /// Bytes currently resident in `ready`, kept in step with pushes and
+    /// [`pop_uplink_ready`](XhttpSession::pop_uplink_ready) so the byte cap
+    /// ([`UPLINK_READY_BYTES_CAP`]) can be enforced without walking the deque.
+    pub(in crate::server) ready_bytes: usize,
     pub(in crate::server) reorder: BTreeMap<u64, Bytes>,
     pub(in crate::server) reorder_bytes: usize,
     pub(in crate::server) closed: bool,
@@ -337,11 +365,13 @@ impl XhttpSession {
             uplink: Mutex::new(UplinkState {
                 expected_seq: 0,
                 ready: VecDeque::new(),
+                ready_bytes: 0,
                 reorder: BTreeMap::new(),
                 reorder_bytes: 0,
                 closed: false,
             }),
             uplink_notify: Notify::new(),
+            uplink_drain_notify: Notify::new(),
             downlink: Mutex::new(DownlinkState {
                 pending: VecDeque::new(),
                 pending_bytes: 0,
@@ -386,13 +416,15 @@ impl XhttpSession {
     }
 
     /// Marks the session torn down. Idempotent. Wakes every notifier
-    /// so any pending POST/GET handler, the relay task, and any
-    /// `push_downlink` waiter observe the close and exit.
+    /// so any pending POST/GET handler, the relay task, and any parked
+    /// `push_downlink` / `ingest_uplink_inorder` waiter observe the
+    /// close and exit.
     pub(in crate::server) fn close(&self) {
         if !self.closed.swap(true, Ordering::AcqRel) {
             self.uplink.lock().closed = true;
             self.downlink.lock().closed = true;
             self.uplink_notify.notify_waiters();
+            self.uplink_drain_notify.notify_waiters();
             self.downlink_notify.notify_waiters();
             self.downlink_drain_notify.notify_waiters();
         }
@@ -421,12 +453,34 @@ impl XhttpSession {
             return Ok(());
         }
         if seq == state.expected_seq {
+            // Refuse to grow `ready` past its byte cap: a stuck relay that
+            // stopped draining must not let a client keep enqueuing in-order
+            // packets unbounded. Rejecting is idempotent — `expected_seq` is
+            // not advanced, so the client retries the same seq once the relay
+            // frees room (HTTP 503, mirroring the reorder `BufferFull` path).
+            // The very first frame is always admitted (`ready` empty) so a
+            // frame larger than the whole cap cannot wedge the session.
+            if !state.ready.is_empty()
+                && state.ready_bytes.saturating_add(data.len()) > UPLINK_READY_BYTES_CAP
+            {
+                return Err(UplinkIngestError::ReadyFull);
+            }
+            state.ready_bytes = state.ready_bytes.saturating_add(data.len());
             state.ready.push_back(data);
             state.expected_seq = state.expected_seq.saturating_add(1);
             loop {
                 let key = state.expected_seq;
-                let Some(next) = state.reorder.remove(&key) else { break };
-                state.reorder_bytes = state.reorder_bytes.saturating_sub(next.len());
+                // Peek the next in-order frame's length before removing it: only
+                // promote it into `ready` if there is room. Otherwise leave it
+                // parked in `reorder` (separately bounded) so the in-order queue
+                // stays under its byte cap.
+                let Some(next_len) = state.reorder.get(&key).map(Bytes::len) else { break };
+                if state.ready_bytes.saturating_add(next_len) > UPLINK_READY_BYTES_CAP {
+                    break;
+                }
+                let next = state.reorder.remove(&key).expect("checked present above");
+                state.reorder_bytes = state.reorder_bytes.saturating_sub(next_len);
+                state.ready_bytes = state.ready_bytes.saturating_add(next_len);
                 state.ready.push_back(next);
                 state.expected_seq = state.expected_seq.saturating_add(1);
             }
@@ -458,35 +512,69 @@ impl XhttpSession {
         self.uplink_notify.notify_waiters();
     }
 
-    /// Stream-one variant of [`Self::ingest_uplink`]: the carrier
-    /// is a single bidirectional request, so chunks are already in
-    /// order and never need the seq/reorder dance — push them
-    /// straight into the ready queue. Used by the server-side
-    /// stream-one handler (selected by `?mode=stream-one`).
-    pub(in crate::server) fn ingest_uplink_inorder(
+    /// Stream-one / stream-up variant of [`Self::ingest_uplink`]: the
+    /// carrier is a single long-lived request, so chunks are already in
+    /// order and never need the seq/reorder dance — push them straight
+    /// into the ready queue. Used by the server-side stream-one / stream-up
+    /// pump (`handlers`/`h3`), which vacuums the request body frame by frame.
+    ///
+    /// Awaits when `ready` is at or above [`UPLINK_READY_BYTES_CAP`] until
+    /// either (a) [`Self::pop_uplink_ready`] frees room, or (b) the session
+    /// closes (returns `Closed`). Parking the pump here is the whole point:
+    /// it stops the pump from reading further body frames, so the h2/h3
+    /// flow-control window stops draining and the client is throttled at the
+    /// carrier instead of `ready` growing without bound. Mirrors
+    /// [`Self::push_downlink`] for the opposite direction. The first frame is
+    /// always admitted (`ready` empty) so a frame larger than the whole cap
+    /// cannot wedge the session.
+    pub(in crate::server) async fn ingest_uplink_inorder(
         &self,
         data: Bytes,
     ) -> Result<(), UplinkIngestError> {
         if data.is_empty() {
             return Ok(());
         }
-        let mut state = self.uplink.lock();
-        if state.closed {
-            return Err(UplinkIngestError::Closed);
+        let len = data.len();
+        let mut data = Some(data);
+        loop {
+            // Subscribe before checking so a drain between the room-check and
+            // the await cannot lose its wake-up (same guard as `push_downlink`).
+            let notified = self.uplink_drain_notify.notified();
+            {
+                let mut state = self.uplink.lock();
+                if state.closed {
+                    return Err(UplinkIngestError::Closed);
+                }
+                if state.ready.is_empty()
+                    || state.ready_bytes.saturating_add(len) <= UPLINK_READY_BYTES_CAP
+                {
+                    let bytes = data.take().expect("ingest_uplink_inorder: data taken twice");
+                    state.ready_bytes = state.ready_bytes.saturating_add(len);
+                    state.ready.push_back(bytes);
+                    // expected_seq stays 0 forever — packet-up reorder is not
+                    // exercised on this carrier, but keeping the field around
+                    // means a session that was created in stream-one mode does
+                    // not reject seq=0 packets if anything ever bridges across.
+                    drop(state);
+                    self.uplink_notify.notify_waiters();
+                    self.touch();
+                    return Ok(());
+                }
+            }
+            notified.await;
         }
-        state.ready.push_back(data);
-        // expected_seq stays 0 forever — packet-up reorder is not
-        // exercised on this carrier, but keeping the field around
-        // means a session that was created in stream-one mode does
-        // not reject seq=0 packets if anything ever bridges across.
-        drop(state);
-        self.uplink_notify.notify_waiters();
-        self.touch();
-        Ok(())
     }
 
     pub(in crate::server) fn pop_uplink_ready(&self) -> Option<Bytes> {
-        self.uplink.lock().ready.pop_front()
+        let mut state = self.uplink.lock();
+        let chunk = state.ready.pop_front()?;
+        state.ready_bytes = state.ready_bytes.saturating_sub(chunk.len());
+        drop(state);
+        // The relay is the only reader, so one permit suffices; `notify_one`
+        // stores a permit when no producer is parked yet, so a push that
+        // arrives between drain and its own subscribe still wakes up.
+        self.uplink_drain_notify.notify_one();
+        Some(chunk)
     }
 
     pub(in crate::server) fn uplink_eof(&self) -> bool {
@@ -603,8 +691,18 @@ pub(in crate::server) enum AttachOutcome {
 #[derive(Debug)]
 pub(in crate::server) enum UplinkIngestError {
     Closed,
-    GapTooLarge { expected: u64, got: u64 },
+    GapTooLarge {
+        expected: u64,
+        got: u64,
+    },
+    /// The reorder buffer is full (a too-far-ahead seq would push it past
+    /// [`UPLINK_REORDER_BUFFER_BYTES_CAP`]).
     BufferFull,
+    /// The in-order `ready` queue is full (an in-order packet would push it
+    /// past [`UPLINK_READY_BYTES_CAP`]): the relay is not draining fast enough.
+    /// Non-fatal and idempotent — the seq is not consumed, so the client
+    /// retries once room frees. Answered with HTTP 503, like [`Self::BufferFull`].
+    ReadyFull,
 }
 
 #[derive(Debug)]

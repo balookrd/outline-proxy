@@ -12,7 +12,7 @@ use tracing_subscriber::fmt::MakeWriter;
 
 use crate::server::dashboard::{
     CONTROL_POOL_IDLE_TTL_SECS, CONTROL_POOL_MAX_IDLE_PER_TARGET, ControlPool, DashboardState,
-    build_router, tls,
+    build_router, guard::OriginPolicy, tls,
 };
 
 use super::*;
@@ -131,6 +131,7 @@ fn state_with_token(token: Option<&str>) -> DashboardState {
         instances: Arc::from(Vec::new()),
         tls_connector: tls::connector(),
         token: token.map(Arc::from),
+        origin_policy: OriginPolicy::new("127.0.0.1:0".parse().unwrap(), &[]),
         control_pool: Arc::new(ControlPool::new(
             CONTROL_POOL_MAX_IDLE_PER_TARGET,
             std::time::Duration::from_secs(CONTROL_POOL_IDLE_TTL_SECS),

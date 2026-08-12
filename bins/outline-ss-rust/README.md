@@ -241,7 +241,8 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `tuning.udp_nat_max_entries` | Process-wide cap on live UDP NAT entries (one per distinct `(user, fwmark, target)`; default depends on profile, `65536` on `large`). Each entry pins an upstream socket and reader task until idle-evicted, so this bounds the file-descriptor/task footprint an authenticated client can force by fanning out to many destinations. Datagrams to new targets are dropped (and counted in `outline_ss_udp_nat_capacity_dropped_total`) once the cap is reached; live entries are never evicted by this path. `0` disables the cap |
 | `tuning.udp_nat_max_entries_per_user` | Per-user cap on live UDP NAT entries, applied on top of `udp_nat_max_entries` (default `0` on every profile — disabled). Without it a single authenticated user fanning out to many destinations can fill the whole table and keep the other tenants from opening new targets until idle eviction catches up. Datagrams to new targets of a user already at its share are dropped (also counted in `outline_ss_udp_nat_capacity_dropped_total`); its live entries keep flowing, and a slot returns as soon as one of its entries is idle-evicted. Set it on multi-tenant deployments, comfortably above the number of concurrent destinations a legitimate client uses |
 | `tuning.udp_max_concurrent_relay_tasks` | Process-wide cap on in-flight UDP relay tasks across all WebSocket sessions. `0` disables the global cap |
-| `tuning.udp_replay_max_sessions` | Maximum concurrent SS-2022 anti-replay session windows (default depends on profile; `262144` on `large`). Packets bearing a new `client_session_id` are dropped once the cap is reached, bounding memory against a client that rotates session IDs to inflate the store. `0` disables the cap |
+| `tuning.udp_replay_max_sessions` | Caps, independently, the two anti-replay maps: SS-2022 session windows and legacy request-salt entries (default depends on profile; `262144` on `large`). A new `client_session_id` (SS-2022) or salt (legacy) is dropped once its map hits the cap, bounding memory against a client that rotates them to inflate the store. `0` disables both caps, and with them the legacy salt-dedup filter |
+| `tuning.tcp_handshake_replay_max_salts` | Maximum recently-seen Shadowsocks TCP-handshake request salts retained for anti-replay (default mirrors `udp_replay_max_sessions`; `262144` on `large`). A captured handshake re-sent verbatim derives the same session key and re-opens under AEAD, so the salt is remembered and a repeat is rejected. Entries expire after `udp_nat_idle_timeout_secs`. When the cap is reached a fresh salt is not recorded and the handshake is allowed through (fail-open), counted in `outline_ss_tcp_handshake_replay_store_full_total`. `0` disables the filter |
 | `tuning.xhttp_max_sessions` | Process-wide cap on live XHTTP sessions in the registry (default depends on profile; `262144` on `large`). A session is created on the first request bearing a fresh, well-formed session id — *before* Shadowsocks/VLESS authentication runs inside the relay — so this bounds the pre-auth session/buffer footprint an attacker with a valid base path can force by spraying unique ids. When full, requests that would create a **new** session get HTTP 503 (counted in `outline_ss_xhttp_sessions_rejected_total{reason="max_sessions"}`); requests for an already-live id (resume / repeat) are always served. `0` disables the cap |
 | `tuning.xhttp_max_concurrent_relay_tasks` | Process-wide cap on in-flight XHTTP relay tasks across all sessions (mirrors `udp_max_concurrent_relay_tasks`; default depends on profile, `4096` on `large`). When reached, the session-creating request gets HTTP 503 and no task is spawned (counted in `outline_ss_xhttp_sessions_rejected_total{reason="max_relay_tasks"}`). `0` disables the cap |
 | `tuning.dns_cache_max_entries` | Process-wide cap on entries in the upstream DNS cache (default depends on profile; `262144` on `large`, ~30-40 MiB worst case at ~120 bytes plus the resolved addresses per entry). The cache key is `(port, prefer_ipv4_upstream, host)` and the host is the client-supplied destination, so without a cap a client resolving unique names grows the map for the whole TTL + stale-fallback window (an hour) — reclaim would only happen on the 5-minute janitor sweep. When full, inserts evict by approximate LRU (expired entries first), so the hot working set survives a flood of one-shot names. `0` disables the cap, restoring the unbounded sweep-only cache |
@@ -285,6 +286,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `dashboard.request_timeout_secs` | Timeout for dashboard-to-control requests. Default: `15` |
 | `dashboard.refresh_interval_secs` | Auto-refresh interval for the dashboard UI, in seconds. Default: `10` |
 | `dashboard.token` / `token_file` | Optional secret guarding the dashboard listener itself, accepted as `Authorization: Bearer <token>` or as the HTTP Basic password (any username). Unset by default, which leaves the listener unauthenticated |
+| `dashboard.allowed_hosts` | Host names the origin guard accepts on top of the built-in loopback/bind-address set. Needed only behind a reverse proxy serving the panel under a DNS name; matched by host name, case-insensitively, port ignored. Empty by default |
 | `dashboard.instances[].name` | Display name for a managed instance |
 | `dashboard.instances[].control_url` | Base `http://` or `https://` URL of that instance's control listener |
 | `dashboard.instances[].token` / `token_file` | Bearer token used server-side when proxying to that control listener |
@@ -440,6 +442,20 @@ token_file = "/etc/outline-ss-rust/dashboard.token"
 ```
 
 With `dashboard.token` (or `dashboard.token_file`) set, every request must carry `Authorization: Bearer <token>`; browsers can instead answer the `Basic` challenge with any username and the token as the password. A non-loopback listener without such a secret logs a warning on startup.
+
+Reaching this listener is equivalent to holding every managed instance's control token, so a token alone is not enough: a token guards *who* may drive the panel, but a browser reattaches cached Basic credentials to a cross-site request on its own, and binding to loopback does not stop a page on the operator's own machine. The dashboard therefore checks every request **before** it is routed — so a route added later cannot end up outside the checks — and independently of whether a token is set:
+
+| Check | Applies to | On failure |
+| --- | --- | --- |
+| `Host` names this listener | every request | `403` |
+| `Origin`, when present, is this panel's own | every request | `403` |
+| `Content-Type: application/json` (parameters such as `; charset=utf-8` allowed) | every body-bearing method — anything but `GET`/`HEAD`/`OPTIONS` | `415`, body never parsed |
+
+- **`Host`** is accepted for loopback names and addresses (`localhost`, `127.0.0.1`, `[::1]`), for the address the panel is bound to (any literal address when bound to a wildcard like `0.0.0.0`), and for any name in `allowed_hosts`. This is what closes DNS rebinding: the attacker's domain may resolve to `127.0.0.1`, but the browser still puts the attacker's *name* in `Host`. The **port is not checked** — reaching a loopback panel through `ssh -L 8888:127.0.0.1:7002` or a container port mapping is routine, and the port carries no protection anyway, since a rebinding attacker has to target the panel's real port regardless.
+- **`Origin`** must equal `Host` verbatim — which a same-origin browser request always does, through any port mapping — or name a host from `allowed_hosts`, the case of a reverse proxy that rewrites `Host`. A different local port (`http://127.0.0.1:3000`) is a different origin and is refused. A *missing* `Origin` is allowed: `curl` and other non-browser clients never send one, and a web page cannot suppress it, so refusing it would only break scripted operators without closing anything.
+- **`allowed_hosts`** is additive: the built-in set stays valid, so a loopback deployment keeps working over `ssh -L` as well. Entries are matched by host name, case-insensitively; a port written into an entry is ignored.
+
+Nothing changes for the packaged UI (it already sends `application/json`) or for `curl`. A deployment that serves the panel under a DNS name needs that name in `dashboard.allowed_hosts`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -692,7 +708,7 @@ How dispatch decides:
 
 PROXY-protocol on this layer is much more useful than on `[http_fallback]`: we forward raw TCP bytes, so without it the backend sees `127.0.0.1` as the peer for every spliced connection — log/ACL/rate-limit blind. As with `[http_fallback]`, the destination address in the header is the inbound listener's bind address (degrades to UNKNOWN / UNSPEC for `0.0.0.0` / `[::]`).
 
-**Observability of failed peeks.** A stream that never yields a ClientHello is counted in `outline_ss_sni_peek_failed_total{reason=...}` with four buckets:
+**Observability of failed peeks.** A stream that never yields a ClientHello is counted in `outline_ss_sni_peek_failed_total{reason=...}` with five buckets:
 
 | `reason` | What it is | Log level |
 | --- | --- | --- |
@@ -700,8 +716,11 @@ PROXY-protocol on this layer is much more useful than on `[http_fallback]`: we f
 | `read_failed` | The inbound read failed for another reason | `warn` |
 | `oversized` | Bytes kept arriving without forming a ClientHello within `max_client_hello_bytes` | `warn` |
 | `malformed` | rustls rejected the bytes as a TLS handshake | `warn` |
+| `timeout` | No complete ClientHello arrived within the pre-auth handshake budget (see below) | `debug` |
 
 `peer_closed` is background noise on any public port — TCP liveness probes, port scanners, clients that changed their mind — and a listener sees a continuous stream of it with nothing an operator can act on, so it is deliberately kept off `warn` and observed through the counter instead. A jump in `malformed` is the bucket worth chasing: something is speaking not-quite-TLS at the listener.
+
+**Pre-auth handshake timeout.** Every accepted TLS connection holds one of the `TLS_MAX_CONCURRENT_CONNECTIONS` (4 096) concurrency permits from the moment it is accepted — before it has proven itself a real TLS client. To stop a peer that connects and then stays silent (or dribbles one byte at a time — a classic slowloris) from pinning a permit indefinitely, the whole unauthenticated pre-handshake phase (the optional SNI peek *plus* the rustls handshake) shares a single ~10 s deadline. On expiry the connection is dropped and the permit freed; the timeout is counted as `sni_peek_failed{reason="timeout"}` when it fires during the peek and `outline_ss_tls_handshake_failed_total{reason="timeout"}` when it fires during the handshake. Without this bound, 4 096 silent connections would exhaust the semaphore and stall the accept loop — a free, fully pre-auth denial of service of the TLS ingress.
 
 Limitations:
 
@@ -1000,6 +1019,8 @@ Use `debug` only during troubleshooting because WebSocket connection lifecycle l
 - `fwmark` works only on Linux and requires sufficient privileges, typically `CAP_NET_ADMIN` or root.
 - Keep TCP and UDP WebSocket paths distinct. The server validates this at startup.
 - Shadowsocks-2022 UDP traffic is protected by a sliding-window anti-replay filter keyed on the per-session ID; duplicate `packet_id`s are dropped and counted in `outline_ss_udp_replay_dropped_total`. The store holds at most `tuning.udp_replay_max_sessions` distinct sessions — packets with new session IDs beyond that cap are dropped and counted in `outline_ss_udp_replay_store_full_dropped_total`, bounding memory against a client that rotates session IDs to inflate the store.
+- Shadowsocks TCP handshakes are protected by a request-salt anti-replay filter. A captured handshake (`salt || AEAD(header) || …`) re-sent verbatim derives the same session key and re-opens under AEAD — for SS-2022 the ±30 s timestamp window still passes, and legacy AEAD has no timestamp at all — so authentication alone does not stop the replayed request from being re-executed. The server remembers request salts across every carrier (WebSocket / HTTP-3 / XHTTP) and rejects a repeat before any upstream is dialled, counted in `outline_ss_tcp_handshake_replay_dropped_total`. The store holds at most `tuning.tcp_handshake_replay_max_salts` salts with a TTL of `udp_nat_idle_timeout_secs`; when full it fails open (allows the handshake) and counts `outline_ss_tcp_handshake_replay_store_full_total`. This matters most on plaintext SS ingress; behind a TLS carrier the outer layer already de-duplicates, making it defense-in-depth.
+- Legacy (pre-2022) UDP has no packet counter or timestamp, so it is de-duplicated by request salt in a second bounded set that shares the same cap, eviction and counters. Because there is no timestamp to bound retention, protection is a memory-bounded window rather than complete: once a salt is evicted the same datagram reads fresh again. Full replay protection requires a `2022-*` cipher; migrate UDP users to SS-2022 where replay resistance matters.
 - Root HTTP authentication compares passwords in constant time.
 
 ## Compatibility Notes

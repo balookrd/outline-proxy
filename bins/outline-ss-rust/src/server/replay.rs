@@ -1,4 +1,4 @@
-//! Anti-replay filter for SS-2022 UDP.
+//! Anti-replay filter for SS-2022 and legacy Shadowsocks UDP.
 //!
 //! SS-2022 carries a per-session monotonic `packet_id` in the UDP header.
 //! AEAD alone does not prevent a passive attacker from re-submitting a
@@ -11,6 +11,16 @@
 //! address many upstream targets, and a replay to a *new* target would
 //! otherwise spawn a fresh NAT entry with an empty bitmap and bypass the
 //! filter entirely.
+//!
+//! Legacy (pre-2022) UDP has no session id, packet counter or timestamp — a
+//! captured datagram re-decrypts and re-forwards forever otherwise. The only
+//! per-datagram anchor is its random request salt, so legacy datagrams are
+//! de-duplicated by salt in a second bounded set that shares this store's cap
+//! and idle-eviction. Without a timestamp the window is memory-bounded rather
+//! than complete: once a salt is evicted the same datagram reads fresh again.
+//! Remembering every salt forever would be the only complete defence, and that
+//! is unbounded memory — so this trades completeness for a bounded footprint,
+//! and SS-2022 remains the cipher suite with full replay protection.
 
 use std::{
     sync::{
@@ -156,22 +166,30 @@ pub(crate) enum ReplayCheck {
     StoreFull,
 }
 
-/// Process-wide store of replay windows, keyed by `client_session_id`.
-/// Entries idle for longer than `idle_timeout` are reaped by `evict_idle`.
-/// A non-zero `max_sessions` caps the number of concurrent session windows
-/// to prevent an authenticated client from spraying unique `client_session_id`
-/// values and inflating memory between eviction sweeps.
+/// The salt of a legacy datagram, zero-padded to the widest Shadowsocks salt
+/// (32 bytes; aes-128-gcm uses 16). A user runs a single cipher, so padding a
+/// short salt with zeros cannot alias another user's salt in practice.
+pub(crate) type LegacySalt = [u8; 32];
+
+/// Process-wide store of replay windows, keyed by `client_session_id`, plus a
+/// salt-dedup set for legacy datagrams. Entries idle for longer than
+/// `idle_timeout` are reaped by `evict_idle`. A non-zero `max_sessions` caps
+/// each map independently, preventing an authenticated client from spraying
+/// unique session ids or salts and inflating memory between eviction sweeps.
 pub(crate) struct ReplayStore {
     entries: DashMap<[u8; 8], Arc<ReplayEntry>>,
+    /// Legacy request salt -> first-seen unix seconds (for idle eviction).
+    legacy_salts: DashMap<LegacySalt, u64>,
     idle_timeout: Duration,
     max_sessions: usize,
 }
 
 impl ReplayStore {
-    /// `max_sessions = 0` disables the cap.
+    /// `max_sessions = 0` disables the cap on both maps.
     pub(crate) fn new(idle_timeout: Duration, max_sessions: usize) -> Arc<Self> {
         Arc::new(Self {
             entries: DashMap::new(),
+            legacy_salts: DashMap::new(),
             idle_timeout,
             max_sessions,
         })
@@ -214,12 +232,52 @@ impl ReplayStore {
         }
     }
 
+    /// Records a legacy request salt and reports whether it is `Fresh`, a
+    /// `Replay` (already seen within the idle window), or dropped because the
+    /// salt map is at capacity. The stored timestamp is *not* refreshed on a
+    /// replay hit, so a replayed salt cannot pin its own entry alive.
+    pub(crate) fn check_and_mark_legacy_salt(&self, salt: LegacySalt) -> ReplayCheck {
+        use dashmap::mapref::entry::Entry;
+
+        if let Some(existing) = self.legacy_salts.get(&salt) {
+            drop(existing);
+            return ReplayCheck::Replay;
+        }
+        // Check the cap before taking a shard lock via `entry(...)`. Same benign
+        // race as `check_and_mark`: the bound is soft, so a handful of racing
+        // callers may each add one salt over the cap.
+        if self.max_sessions > 0 && self.legacy_salts.len() >= self.max_sessions {
+            return ReplayCheck::StoreFull;
+        }
+        match self.legacy_salts.entry(salt) {
+            Entry::Occupied(_) => ReplayCheck::Replay,
+            Entry::Vacant(slot) => {
+                slot.insert(clock::current_unix_secs());
+                ReplayCheck::Fresh
+            },
+        }
+    }
+
     /// Drop entries idle for longer than `idle_timeout`.
     pub(crate) fn evict_idle(&self) -> usize {
-        let threshold = clock::current_unix_secs().saturating_sub(self.idle_timeout.as_secs());
+        self.sweep(clock::current_unix_secs())
+    }
+
+    /// [`evict_idle`](Self::evict_idle) with an explicit `now`, so eviction can
+    /// be exercised deterministically without moving the shared process clock.
+    fn sweep(&self, now: u64) -> usize {
+        let threshold = now.saturating_sub(self.idle_timeout.as_secs());
         let mut evicted = 0usize;
         self.entries.retain(|_, entry| {
             if entry.last_seen_secs.load(Ordering::Relaxed) < threshold {
+                evicted += 1;
+                false
+            } else {
+                true
+            }
+        });
+        self.legacy_salts.retain(|_, first_seen| {
+            if *first_seen < threshold {
                 evicted += 1;
                 false
             } else {

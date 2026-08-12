@@ -73,11 +73,20 @@ pub struct TuningProfile {
     /// Process-wide ceiling on in-flight UDP relay tasks across all WebSocket
     /// sessions. `0` disables the global cap.
     pub udp_max_concurrent_relay_tasks: usize,
-    /// Maximum number of distinct SS-2022 client-session windows the replay
-    /// store will hold concurrently. Guards against an authenticated client
-    /// rotating `client_session_id` on every packet to inflate memory between
-    /// eviction sweeps. `0` disables the cap.
+    /// Caps, independently, the replay store's two maps: SS-2022
+    /// client-session windows and legacy request-salt entries. Guards against
+    /// an authenticated client rotating `client_session_id` (SS-2022) or salts
+    /// (legacy) on every packet to inflate memory between eviction sweeps. `0`
+    /// disables both caps (and so the legacy salt-dedup filter as a whole).
     pub udp_replay_max_sessions: usize,
+    /// Maximum number of recently-seen TCP-handshake request salts the
+    /// anti-replay store will hold concurrently. A captured Shadowsocks TCP
+    /// handshake can otherwise be replayed verbatim (the session key is derived
+    /// from the salt, so the AEAD re-opens); retaining seen salts and rejecting
+    /// repeats closes that window. Guards memory the same way
+    /// `udp_replay_max_sessions` does for UDP: a flood of unique handshakes
+    /// cannot inflate the store between eviction sweeps. `0` disables the cap.
+    pub tcp_handshake_replay_max_salts: usize,
     /// Process-wide ceiling on the number of live XHTTP sessions the registry
     /// will hold concurrently. Each session pins a `DashMap` entry plus (once
     /// its relay spawns) up to `DOWNLINK_BUFFER_BYTES_CAP` +
@@ -138,6 +147,7 @@ impl TuningProfile {
         udp_nat_max_entries_per_user: 0,
         udp_max_concurrent_relay_tasks: 1_024,
         udp_replay_max_sessions: 16_384,
+        tcp_handshake_replay_max_salts: 16_384,
         xhttp_max_sessions: 16_384,
         xhttp_max_concurrent_relay_tasks: 1_024,
         dns_cache_max_entries: 16_384,
@@ -165,6 +175,7 @@ impl TuningProfile {
         udp_nat_max_entries_per_user: 0,
         udp_max_concurrent_relay_tasks: 2_048,
         udp_replay_max_sessions: 65_536,
+        tcp_handshake_replay_max_salts: 65_536,
         xhttp_max_sessions: 65_536,
         xhttp_max_concurrent_relay_tasks: 2_048,
         dns_cache_max_entries: 65_536,
@@ -192,6 +203,7 @@ impl TuningProfile {
         udp_nat_max_entries_per_user: 0,
         udp_max_concurrent_relay_tasks: 4_096,
         udp_replay_max_sessions: 262_144,
+        tcp_handshake_replay_max_salts: 262_144,
         xhttp_max_sessions: 262_144,
         xhttp_max_concurrent_relay_tasks: 4_096,
         // ~262k entries × (~120 B + sockaddrs) ≈ 30-40 MiB worst case — the
@@ -281,6 +293,7 @@ impl TuningProfile {
         }
         // `udp_max_concurrent_relay_tasks == 0` is a valid opt-out.
         // `udp_replay_max_sessions == 0` is a valid opt-out.
+        // `tcp_handshake_replay_max_salts == 0` is a valid opt-out.
         // `udp_nat_max_entries == 0` is a valid opt-out.
         // `udp_nat_max_entries_per_user == 0` is a valid opt-out (global cap only).
         // `xhttp_max_sessions == 0` is a valid opt-out.
@@ -344,6 +357,9 @@ impl TuningProfile {
         if let Some(v) = o.udp_replay_max_sessions {
             self.udp_replay_max_sessions = v;
         }
+        if let Some(v) = o.tcp_handshake_replay_max_salts {
+            self.tcp_handshake_replay_max_salts = v;
+        }
         if let Some(v) = o.xhttp_max_sessions {
             self.xhttp_max_sessions = v;
         }
@@ -403,6 +419,8 @@ pub struct TuningOverrides {
     pub udp_max_concurrent_relay_tasks: Option<usize>,
     #[serde(default)]
     pub udp_replay_max_sessions: Option<usize>,
+    #[serde(default)]
+    pub tcp_handshake_replay_max_salts: Option<usize>,
     #[serde(default)]
     pub xhttp_max_sessions: Option<usize>,
     #[serde(default)]

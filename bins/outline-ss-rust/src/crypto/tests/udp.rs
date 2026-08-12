@@ -66,6 +66,33 @@ fn encrypts_ss2022_chacha_udp_response() {
 }
 
 #[test]
+fn legacy_decrypt_exposes_request_salt_for_replay_filter() {
+    let users = users(CipherKind::Aes256Gcm, "secret-a", "secret-b");
+    let ciphertext = encrypt_udp_packet(&users[0], b"udp payload").unwrap();
+    let packet = decrypt_udp_packet(users.as_ref(), &ciphertext).unwrap();
+
+    assert_eq!(packet.session, UdpCipherMode::Legacy);
+    let salt = packet
+        .legacy_replay_salt
+        .expect("legacy datagram must expose its salt for the replay filter");
+    // Aes256Gcm uses a 32-byte salt: the whole padded array and the leading
+    // bytes of the datagram on the wire.
+    assert_eq!(&salt[..], &ciphertext[..32]);
+}
+
+#[test]
+fn legacy_decrypt_pads_short_salt_with_zeros() {
+    let users = users(CipherKind::Aes128Gcm, "secret-a", "secret-b");
+    let ciphertext = encrypt_udp_packet(&users[0], b"udp payload").unwrap();
+    let packet = decrypt_udp_packet(users.as_ref(), &ciphertext).unwrap();
+
+    let salt = packet.legacy_replay_salt.expect("legacy salt");
+    // Aes128Gcm uses a 16-byte salt; the tail is zero-padded to the 32-byte key.
+    assert_eq!(&salt[..16], &ciphertext[..16]);
+    assert_eq!(&salt[16..], &[0_u8; 16]);
+}
+
+#[test]
 fn legacy_decrypt_leaves_the_scratch_buffer_in_the_thread_local() {
     // Runs on a fresh thread so the thread-local scratch starts empty and the
     // assertion cannot be satisfied by an unrelated test that ran before us.

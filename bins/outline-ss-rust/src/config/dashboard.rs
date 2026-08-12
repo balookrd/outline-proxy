@@ -20,6 +20,11 @@ pub struct DashboardConfig {
     /// Optional shared secret required by the dashboard listener itself.
     /// `None` keeps the listener unauthenticated, as it has always been.
     pub token: Option<String>,
+    /// Host names accepted on top of the built-in set (loopback names/addresses
+    /// and the bound address). Needed only behind a reverse proxy that serves
+    /// the panel under a DNS name; anything else is answered with 403, which is
+    /// what stops DNS rebinding from reaching a loopback listener.
+    pub allowed_hosts: Vec<String>,
     pub instances: Vec<DashboardInstanceConfig>,
 }
 
@@ -45,6 +50,13 @@ pub(super) fn resolve_dashboard_config(
     let listen = dashboard
         .listen
         .ok_or_else(|| anyhow::anyhow!("dashboard enabled but dashboard.listen is not set"))?;
+    let allowed_hosts: Vec<String> = dashboard
+        .allowed_hosts
+        .iter()
+        .flatten()
+        .map(|host| host.trim().to_owned())
+        .filter(|host| !host.is_empty())
+        .collect();
     let instances = dashboard
         .instances
         .as_ref()
@@ -98,6 +110,7 @@ pub(super) fn resolve_dashboard_config(
         request_timeout_secs: dashboard.request_timeout_secs.unwrap_or(15).max(1),
         refresh_interval_secs: dashboard.refresh_interval_secs.unwrap_or(10).max(1),
         token,
+        allowed_hosts,
         instances: loaded,
     }))
 }

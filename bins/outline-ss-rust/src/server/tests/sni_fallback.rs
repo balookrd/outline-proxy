@@ -310,6 +310,128 @@ async fn foreign_sni_splices_to_backend_with_clienthello() -> Result<()> {
     Ok(())
 }
 
+/// A peer that opens the TLS listener socket and then never completes the
+/// rustls handshake (sends nothing) must not pin its concurrency permit:
+/// the pre-auth timeout has to drop the connection. Without the timeout
+/// the task would sit in `acceptor.accept` forever, the `_permit` would
+/// stay held, and 4 096 such peers would starve the accept loop — a free,
+/// fully pre-auth denial of service of the TLS ingress.
+///
+/// The observable proxy for "permit released" is that the server closes
+/// the socket: the spawned task drops `_permit` the instant it returns,
+/// and returning is exactly what closes our end (client `read` sees EOF).
+#[tokio::test]
+async fn silent_peer_during_handshake_hits_preauth_timeout() -> Result<()> {
+    let _serial = test_lock().lock().await;
+    // Shrink the pre-auth budget so the regression runs in ~1 s instead of
+    // the production `TLS_HANDSHAKE_TIMEOUT_SECS`. 1 s is still two orders of
+    // magnitude above a real localhost handshake, so no legitimate parallel
+    // test trips it.
+    let _timeout_override =
+        super::super::bootstrap::TestTlsHandshakeTimeout::set(Duration::from_millis(1000));
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    let (config, _cert_path, _key_path) = make_sample_config_with_tls(addr)?;
+    let user_routes = build_user_routes(&config)?;
+    let nat_table = NatTable::new(Duration::from_secs(300));
+    let dns_cache = DnsCache::new(Duration::from_secs(30));
+    let metrics = Metrics::new(&config);
+    let (routes, services_state, auth) = build_test_state(
+        user_routes,
+        Arc::clone(&metrics),
+        nat_table,
+        dns_cache,
+        false,
+        config.http_root_realm.clone(),
+    );
+    let app = build_app(routes, services_state, auth, None, None);
+    // No `[sni_fallback]` — the stream goes straight into the rustls
+    // handshake, so this exercises the `acceptor.accept` timeout branch.
+    let sni_fallback = None;
+    let server_config = Arc::new(config);
+    let shutdown = ShutdownSignal::never();
+    let metrics_probe = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        serve_tcp_listener(listener, app, server_config, sni_fallback, metrics, shutdown).await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Connect and stay silent. The server must close our end within the
+    // pre-auth budget; `read` then returns 0 (EOF). Cap the wait well above
+    // the 1 s budget but far below any "hangs forever" regression.
+    let mut silent = TcpStream::connect(addr).await?;
+    let mut buf = [0u8; 1];
+    let n = tokio::time::timeout(Duration::from_secs(5), silent.read(&mut buf))
+        .await
+        .context("server did not drop the silent pre-auth connection in time")??;
+    assert_eq!(n, 0, "expected server-side EOF after the pre-auth timeout, got {n} bytes");
+
+    let rendered = metrics_probe.render_prometheus();
+    assert!(
+        rendered.contains(r#"outline_ss_tls_handshake_failed_total{reason="timeout"}"#),
+        "pre-auth handshake timeout was not recorded on the metric; render:\n{rendered}",
+    );
+
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}
+
+/// Same slowloris shape, but with `[sni_fallback]` configured: the silent
+/// peer stalls inside the ClientHello peek instead of the rustls handshake.
+/// The shared pre-auth deadline must still fire, drop the connection, and
+/// count the failure under the SNI-peek series.
+#[tokio::test]
+async fn silent_peer_during_sni_peek_hits_preauth_timeout() -> Result<()> {
+    let _serial = test_lock().lock().await;
+    let _timeout_override =
+        super::super::bootstrap::TestTlsHandshakeTimeout::set(Duration::from_millis(1000));
+    let (backend_addr, _backend_rx) = spawn_capture_backend().await?;
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    let (config, _cert_path, _key_path) = make_sample_config_with_tls(addr)?;
+    let user_routes = build_user_routes(&config)?;
+    let nat_table = NatTable::new(Duration::from_secs(300));
+    let dns_cache = DnsCache::new(Duration::from_secs(30));
+    let metrics = Metrics::new(&config);
+    let (routes, services_state, auth) = build_test_state(
+        user_routes,
+        Arc::clone(&metrics),
+        nat_table,
+        dns_cache,
+        false,
+        config.http_root_realm.clone(),
+    );
+    let app = build_app(routes, services_state, auth, None, None);
+    let sni_fallback = Some(sni_ctx(backend_addr, addr, None, false));
+    let server_config = Arc::new(config);
+    let shutdown = ShutdownSignal::never();
+    let metrics_probe = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        serve_tcp_listener(listener, app, server_config, sni_fallback, metrics, shutdown).await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let mut silent = TcpStream::connect(addr).await?;
+    let mut buf = [0u8; 1];
+    let n = tokio::time::timeout(Duration::from_secs(5), silent.read(&mut buf))
+        .await
+        .context("server did not drop the silent SNI-peek connection in time")??;
+    assert_eq!(n, 0, "expected server-side EOF after the pre-auth timeout, got {n} bytes");
+
+    let rendered = metrics_probe.render_prometheus();
+    assert!(
+        rendered.contains(r#"outline_ss_sni_peek_failed_total{reason="timeout"}"#),
+        "pre-auth SNI-peek timeout was not recorded on the metric; render:\n{rendered}",
+    );
+
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn foreign_sni_with_proxy_protocol_v2_prefixes_header() -> Result<()> {
     let _serial = test_lock().lock().await;

@@ -79,12 +79,15 @@ async fn recv_recovers_datagram_boundaries_from_arbitrary_chunks() {
     let cuts = [20usize, 30usize];
     session
         .ingest_uplink_inorder(Bytes::copy_from_slice(&wire[..cuts[0]]))
+        .await
         .unwrap();
     session
         .ingest_uplink_inorder(Bytes::copy_from_slice(&wire[cuts[0]..cuts[1]]))
+        .await
         .unwrap();
     session
         .ingest_uplink_inorder(Bytes::copy_from_slice(&wire[cuts[1]..]))
+        .await
         .unwrap();
     session.close_uplink();
 
@@ -140,6 +143,7 @@ async fn unnegotiated_session_keeps_the_plain_wire() {
     let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
     session
         .ingest_uplink_inorder(Bytes::from_static(b"raw chunk"))
+        .await
         .unwrap();
     session.close_uplink();
 

@@ -356,7 +356,7 @@ async fn xhttp_h3_post(
                 ctx.registry.remove(&session_id);
                 return finish_with_status(stream, StatusCode::CONFLICT).await;
             },
-            UplinkIngestError::BufferFull => {
+            UplinkIngestError::BufferFull | UplinkIngestError::ReadyFull => {
                 return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
             },
         }
@@ -503,7 +503,11 @@ async fn xhttp_h3_stream_one(
                     let mut chunk = chunk;
                     let remaining = chunk.remaining();
                     let bytes = chunk.copy_to_bytes(remaining);
-                    if !bytes.is_empty() && session_for_uplink.ingest_uplink_inorder(bytes).is_err()
+                    // Awaits when `ready` is full: the pump stops pulling body
+                    // frames, so the h3 flow-control window brakes the client
+                    // instead of `ready` growing without bound.
+                    if !bytes.is_empty()
+                        && session_for_uplink.ingest_uplink_inorder(bytes).await.is_err()
                     {
                         break;
                     }

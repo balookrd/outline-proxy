@@ -109,3 +109,24 @@ fn rejects_empty_dashboard_token_file() {
 
     assert!(error.contains("empty"), "unexpected error: {error}");
 }
+
+#[test]
+fn defaults_allowed_hosts_to_empty() {
+    let config = resolve_dashboard_config(&file_config(""), Path::new("."))
+        .unwrap()
+        .unwrap();
+
+    assert!(config.allowed_hosts.is_empty());
+}
+
+#[test]
+fn trims_and_drops_blank_allowed_hosts() {
+    let config = resolve_dashboard_config(
+        &file_config(r#"allowed_hosts = ["panel.example.com", "  ", " proxy.example.com "]"#),
+        Path::new("."),
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(config.allowed_hosts, vec!["panel.example.com", "proxy.example.com"]);
+}

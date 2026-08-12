@@ -1074,7 +1074,7 @@
       if(Number.isFinite(data.refresh_interval_secs) && data.refresh_interval_secs > 0){
         state.refreshIntervalSecs = data.refresh_interval_secs;
       }
-      el.instanceSelect.innerHTML = state.instances.map(server => `<option value="${esc(server.name)}">${esc(server.name)} · ${esc(server.control_url)}</option>`).join("");
+      el.instanceSelect.innerHTML = state.instances.map(server => `<option value="${esc(server.name)}">${esc(server.name)}</option>`).join("");
       el.instanceLabel.textContent = state.instances[0] ? state.instances[0].name : "users";
       if(!state.instances.length) setStatus("No instances in dashboard.instances.", "error");
       scheduleAutoRefresh();

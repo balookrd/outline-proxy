@@ -50,6 +50,7 @@ use super::super::constants::{
 };
 use super::super::dns_cache::DnsCache;
 use super::super::relay::UpstreamRelayOutcome;
+use super::super::salt_replay::{SaltReplayCheck, SaltReplayStore};
 use outline_wire::resume::build_v1_payload;
 
 use super::super::resumption::{
@@ -81,6 +82,10 @@ pub(in crate::server) struct WsTcpServerCtx {
     /// so deployments can trade memory for video throughput headroom
     /// without code changes.
     pub(in crate::server) ws_data_channel_capacity: usize,
+    /// Process-wide anti-replay filter for Shadowsocks TCP handshakes. Shared
+    /// across every carrier (WS / H3 / XHTTP) so a handshake captured on one is
+    /// rejected when replayed on any of them.
+    pub(in crate::server) salt_replay_store: Arc<SaltReplayStore>,
 }
 
 /// Per-path state for a single TCP WebSocket session.
@@ -147,6 +152,10 @@ struct WsTcpRelayState {
     /// the cache write to avoid hammering the LRU mutex on every binary
     /// frame of an established session.
     peer_user_cache_recorded: bool,
+    /// Becomes true after the first authenticated frame has run the request
+    /// salt through the anti-replay filter. The salt is fixed for the whole
+    /// connection, so the check runs exactly once per session.
+    salt_replay_checked: bool,
     /// Whether the client advertised the Ack-Prefix Protocol capability
     /// in its upgrade request. Mirrored from
     /// [`ResumeContext::ack_prefix_requested`] so the relay loop can
@@ -227,6 +236,7 @@ impl WsTcpRelayState {
             issued_session_id: resume.issued_session_id,
             pending_resume_request: resume.requested_resume,
             peer_user_cache_recorded: false,
+            salt_replay_checked: false,
             ack_prefix_requested: resume.ack_prefix_requested,
             symmetric_replay_requested: resume.symmetric_replay_requested,
             client_acked_offset_request: resume.client_acked_offset,
@@ -910,6 +920,49 @@ where
     {
         route.peer_user_cache.record(addr, idx);
         state.peer_user_cache_recorded = true;
+    }
+
+    // Anti-replay: a captured Shadowsocks handshake re-sent verbatim derives the
+    // same session key and re-opens under AEAD, so authentication alone does not
+    // stop it. Reject a request salt we have already seen before any upstream is
+    // dialled, so the replayed request is never re-executed. Runs once per
+    // session — the salt is fixed for the connection's lifetime.
+    if !state.salt_replay_checked
+        && let Some(salt) = decryptor.request_salt()
+    {
+        state.salt_replay_checked = true;
+        match server.salt_replay_store.check_and_mark(Arc::clone(salt)) {
+            SaltReplayCheck::Fresh => {},
+            SaltReplayCheck::Replay => {
+                let user_id = decryptor
+                    .user()
+                    .map(UserKey::id_arc)
+                    .unwrap_or_else(|| Arc::from("unknown"));
+                server
+                    .metrics
+                    .record_tcp_handshake_replay_dropped(user_id, route.protocol);
+                warn!(path = %route.path, "rejecting replayed shadowsocks tcp handshake");
+                return Err(FrameError::Fatal(anyhow!(
+                    "replayed shadowsocks tcp handshake on path {}",
+                    route.path,
+                )));
+            },
+            SaltReplayCheck::StoreFull => {
+                // Fail-open: allow the handshake through but surface the capacity
+                // pressure the decision hides.
+                let user_id = decryptor
+                    .user()
+                    .map(UserKey::id_arc)
+                    .unwrap_or_else(|| Arc::from("unknown"));
+                server
+                    .metrics
+                    .record_tcp_handshake_replay_store_full(user_id, route.protocol);
+                warn!(
+                    path = %route.path,
+                    "shadowsocks tcp handshake salt not recorded: replay store at capacity"
+                );
+            },
+        }
     }
 
     if state.upstream_writer.is_none() {

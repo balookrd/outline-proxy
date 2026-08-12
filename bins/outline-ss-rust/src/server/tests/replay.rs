@@ -96,3 +96,70 @@ fn replay_across_word_boundary() {
     assert!(w.check_and_mark(100 + 65)); // spans across word boundary on shift
     assert!(!w.check_and_mark(100)); // must still be detected
 }
+
+#[test]
+fn legacy_salt_fresh_then_replay() {
+    let store = ReplayStore::new(Duration::from_secs(60), 0);
+    let salt = [7_u8; 32];
+    assert_eq!(store.check_and_mark_legacy_salt(salt), ReplayCheck::Fresh);
+    assert_eq!(store.check_and_mark_legacy_salt(salt), ReplayCheck::Replay);
+}
+
+#[test]
+fn legacy_salt_distinct_salts_are_independent() {
+    let store = ReplayStore::new(Duration::from_secs(60), 0);
+    let a = [1_u8; 32];
+    let mut b = [1_u8; 32];
+    b[0] = 2;
+    assert_eq!(store.check_and_mark_legacy_salt(a), ReplayCheck::Fresh);
+    assert_eq!(store.check_and_mark_legacy_salt(b), ReplayCheck::Fresh);
+    assert_eq!(store.check_and_mark_legacy_salt(a), ReplayCheck::Replay);
+}
+
+#[test]
+fn legacy_salt_rejects_new_salts_at_cap() {
+    let store = ReplayStore::new(Duration::from_secs(60), 2);
+    let a = [1_u8; 32];
+    let b = [2_u8; 32];
+    let c = [3_u8; 32];
+    assert_eq!(store.check_and_mark_legacy_salt(a), ReplayCheck::Fresh);
+    assert_eq!(store.check_and_mark_legacy_salt(b), ReplayCheck::Fresh);
+    // A third distinct salt spills over the cap and is dropped.
+    assert_eq!(store.check_and_mark_legacy_salt(c), ReplayCheck::StoreFull);
+    // An already-known salt is still detected as a replay at the cap.
+    assert_eq!(store.check_and_mark_legacy_salt(a), ReplayCheck::Replay);
+}
+
+#[test]
+fn legacy_salt_cap_zero_disables_limit() {
+    let store = ReplayStore::new(Duration::from_secs(60), 0);
+    for i in 0..1_000_u16 {
+        let mut salt = [0_u8; 32];
+        salt[..2].copy_from_slice(&i.to_be_bytes());
+        assert_eq!(store.check_and_mark_legacy_salt(salt), ReplayCheck::Fresh);
+    }
+}
+
+#[test]
+fn legacy_salt_cap_is_independent_of_session_windows() {
+    // The legacy salt map and the SS-2022 session map each carry their own cap;
+    // filling one must not lock out the other.
+    let store = ReplayStore::new(Duration::from_secs(60), 1);
+    assert_eq!(store.check_and_mark([1_u8; 8], 1), ReplayCheck::Fresh);
+    // SS-2022 map is now at its cap, but a legacy salt still registers.
+    assert_eq!(store.check_and_mark_legacy_salt([9_u8; 32]), ReplayCheck::Fresh);
+}
+
+#[test]
+fn legacy_salt_forgotten_after_idle_eviction() {
+    let store = ReplayStore::new(Duration::from_secs(60), 0);
+    let salt = [9_u8; 32];
+    let t = crate::clock::current_unix_secs();
+    assert_eq!(store.check_and_mark_legacy_salt(salt), ReplayCheck::Fresh);
+    assert_eq!(store.check_and_mark_legacy_salt(salt), ReplayCheck::Replay);
+    // Past the idle window the salt is dropped, so a later datagram reusing it
+    // reads fresh again — the documented leaky-window limit of legacy UDP,
+    // which has no counter or timestamp to bound the memory otherwise.
+    store.sweep(t + 61);
+    assert_eq!(store.check_and_mark_legacy_salt(salt), ReplayCheck::Fresh);
+}

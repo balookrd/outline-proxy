@@ -1,8 +1,17 @@
 //! Unit tests for the bounded [`XhttpRegistry`]: the `max_sessions` cap gates
 //! creation only (never an existing id), and the relay-task semaphore bounds
-//! concurrent `spawn_relay` reservations.
+//! concurrent `spawn_relay` reservations. Plus the uplink `ready` byte cap:
+//! a slow/stuck relay must not let a client grow the in-order queue unbounded.
 
-use super::{RelayPermit, XhttpRegistry, XhttpRegistryLimits};
+use std::sync::Arc;
+use std::time::Duration;
+
+use bytes::Bytes;
+
+use super::{
+    RelayPermit, UPLINK_READY_BYTES_CAP, UplinkIngestError, XhttpRegistry, XhttpRegistryLimits,
+    XhttpSession,
+};
 
 fn limits(max_sessions: usize, max_relay_tasks: usize) -> XhttpRegistryLimits {
     XhttpRegistryLimits { max_sessions, max_relay_tasks }
@@ -89,4 +98,129 @@ fn zero_relay_cap_never_blocks() {
             "unbounded relay cap always admits with no permit"
         );
     }
+}
+
+/// 64 KiB — a quarter of `UPLINK_READY_BYTES_CAP`, so four frames fill the
+/// queue exactly and the fifth crosses the cap.
+const CHUNK_BYTES: usize = 64 * 1024;
+
+fn ready_bytes(session: &XhttpSession) -> usize {
+    session.uplink.lock().ready_bytes
+}
+
+/// Packet-up path: a relay that stops draining must not let a client grow the
+/// in-order `ready` queue past its byte cap. Once full, further in-order POSTs
+/// are refused with `ReadyFull` (HTTP 503) instead of buffering unbounded, and
+/// the refusal is idempotent — the seq is not consumed, so a retry after the
+/// relay frees room succeeds.
+#[test]
+fn packet_up_ready_rejects_when_full_and_stays_bounded() {
+    let session = XhttpSession::new(Arc::from("test-session"), None, None);
+    let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
+
+    // Simulate a stuck relay (nothing ever calls `pop_uplink_ready`) while a
+    // valid client keeps POSTing in-order packets.
+    let mut accepted = 0u64;
+    loop {
+        match session.ingest_uplink(accepted, chunk.clone()) {
+            Ok(()) => {
+                accepted += 1;
+                assert!(accepted < 1_000, "ready grew without ever hitting the cap");
+            },
+            Err(UplinkIngestError::ReadyFull) => break,
+            Err(other) => panic!("unexpected uplink error: {other:?}"),
+        }
+    }
+
+    // The queue is bounded regardless of how long the client kept POSTing.
+    assert!(
+        ready_bytes(&session) <= UPLINK_READY_BYTES_CAP,
+        "ready must stay within the byte cap"
+    );
+    // `accepted` is the stalled seq: it was refused, so `expected_seq` did not
+    // advance past it. Draining one frame frees room, and the retry now fits.
+    assert!(session.pop_uplink_ready().is_some(), "a drain must yield the head frame");
+    assert!(
+        session.ingest_uplink(accepted, chunk.clone()).is_ok(),
+        "the refused seq is retryable once the relay frees room"
+    );
+}
+
+/// Stream-up path: the pump feeds `ingest_uplink_inorder`, which must *park*
+/// (not error, not grow the queue) once `ready` is full, so the h2/h3 flow
+/// control window stops draining and the client is throttled. The parked push
+/// completes as soon as the relay drains a frame.
+#[tokio::test]
+async fn stream_up_pump_parks_when_ready_full_until_drained() {
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
+    let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
+
+    // Fill `ready` to exactly the cap (empty-queue admits the first frame, the
+    // rest fit up to the cap).
+    for _ in 0..(UPLINK_READY_BYTES_CAP / CHUNK_BYTES) {
+        session
+            .ingest_uplink_inorder(chunk.clone())
+            .await
+            .expect("fits under the cap");
+    }
+    assert_eq!(ready_bytes(&session), UPLINK_READY_BYTES_CAP, "ready filled to the cap");
+
+    // The next push must park: `ready` is full and non-empty.
+    let parked = tokio::spawn({
+        let session = Arc::clone(&session);
+        let chunk = chunk.clone();
+        async move { session.ingest_uplink_inorder(chunk).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !parked.is_finished(),
+        "the pump must park while ready is full, applying back-pressure instead of growing the queue"
+    );
+    assert!(
+        ready_bytes(&session) <= UPLINK_READY_BYTES_CAP,
+        "parked push must not grow ready"
+    );
+
+    // The relay drains one frame → room frees → the parked push wakes and
+    // completes, and the queue is still bounded.
+    assert!(session.pop_uplink_ready().is_some(), "drain yields the head frame");
+    tokio::time::timeout(Duration::from_secs(1), parked)
+        .await
+        .expect("parked push must wake within the timeout after a drain")
+        .expect("join the push task")
+        .expect("the woken push must succeed");
+    assert!(ready_bytes(&session) <= UPLINK_READY_BYTES_CAP, "ready stays within the cap");
+}
+
+/// Closing the session must wake a parked `ingest_uplink_inorder` so a stuck
+/// pump does not leak its task; the woken push observes the close and returns
+/// `Closed` rather than hanging forever.
+#[tokio::test]
+async fn close_wakes_parked_uplink_producer() {
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
+    let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
+    for _ in 0..(UPLINK_READY_BYTES_CAP / CHUNK_BYTES) {
+        session
+            .ingest_uplink_inorder(chunk.clone())
+            .await
+            .expect("fits under the cap");
+    }
+
+    let parked = tokio::spawn({
+        let session = Arc::clone(&session);
+        let chunk = chunk.clone();
+        async move { session.ingest_uplink_inorder(chunk).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!parked.is_finished(), "push parks while ready is full");
+
+    session.close();
+    let result = tokio::time::timeout(Duration::from_secs(1), parked)
+        .await
+        .expect("close must wake the parked push")
+        .expect("join the push task");
+    assert!(
+        matches!(result, Err(UplinkIngestError::Closed)),
+        "a push woken by close must report Closed, got {result:?}"
+    );
 }

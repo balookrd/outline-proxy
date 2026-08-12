@@ -8,6 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use super::super::control_pool::ControlPool;
+use super::super::guard::OriginPolicy;
 use super::*;
 
 #[test]
@@ -84,6 +85,7 @@ fn test_state(instance: &DashboardInstanceConfig) -> DashboardState {
         instances: Arc::from(vec![instance.clone()]),
         tls_connector: crate::server::dashboard::tls::connector(),
         token: None,
+        origin_policy: OriginPolicy::new("127.0.0.1:0".parse().unwrap(), &[]),
         control_pool: Arc::new(ControlPool::new(2, Duration::from_secs(30))),
     }
 }

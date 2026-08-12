@@ -209,6 +209,15 @@ fn test_user() -> Result<UserKey> {
 /// Session-resumption is left disabled so `try_park_on_drop` bails out
 /// immediately and the teardown takes the non-park branch.
 fn test_contexts(user: &UserKey) -> (WsTcpServerCtx, WsTcpRouteCtx) {
+    test_contexts_with_salt_store(user, SaltReplayStore::new(Duration::from_secs(60), 0))
+}
+
+/// Like [`test_contexts`] but with a caller-supplied salt-replay store, so a
+/// test can drive two sessions through the *same* process-wide filter.
+fn test_contexts_with_salt_store(
+    user: &UserKey,
+    salt_replay_store: Arc<SaltReplayStore>,
+) -> (WsTcpServerCtx, WsTcpRouteCtx) {
     let metrics = Metrics::new(&sample_config((Ipv4Addr::LOCALHOST, 3000).into()));
     let server = WsTcpServerCtx {
         metrics: Arc::clone(&metrics),
@@ -217,6 +226,7 @@ fn test_contexts(user: &UserKey) -> (WsTcpServerCtx, WsTcpRouteCtx) {
         outbound_ipv6: None,
         orphan_registry: Arc::new(OrphanRegistry::new_disabled(metrics)),
         ws_data_channel_capacity: 8,
+        salt_replay_store,
     };
     let route = WsTcpRouteCtx {
         users: Arc::from(vec![user.clone()]),
@@ -366,6 +376,7 @@ impl EdgeHarness {
             outbound_ipv6: None,
             orphan_registry: Arc::clone(&registry),
             ws_data_channel_capacity: 8,
+            salt_replay_store: SaltReplayStore::new(Duration::from_secs(60), 0),
         };
         let route = WsTcpRouteCtx {
             users: Arc::from(vec![user.clone()]),
@@ -1014,5 +1025,78 @@ async fn client_eof_without_close_does_not_hang_teardown() -> Result<()> {
     )
     .await
     .map_err(|_| anyhow!("teardown hung joining the upstream→client relay task"))??;
+    Ok(())
+}
+
+/// A captured Shadowsocks TCP handshake re-sent verbatim must be rejected: the
+/// salt-replay filter remembers the request salt from the first session and
+/// aborts the second before it can re-execute the request against upstream.
+/// Both sessions share one process-wide filter, mirroring how every carrier on
+/// a server shares `WsTcpServerCtx::salt_replay_store`.
+#[tokio::test]
+async fn replayed_tcp_handshake_is_rejected() -> Result<()> {
+    let (upstream_addr, _upstream) = spawn_silent_upstream().await?;
+    let user = test_user()?;
+    let store = SaltReplayStore::new(Duration::from_secs(60), 0);
+    // Identical bytes → identical salt → a verbatim replay.
+    let handshake = ss_handshake_frame(&user, upstream_addr)?;
+
+    // Session 1: the fresh salt authenticates and the session runs to EOF.
+    {
+        let (server, route) = test_contexts_with_salt_store(&user, Arc::clone(&store));
+        let (writer_alive, _gone) = oneshot::channel();
+        let socket =
+            MockWs::new(VecDeque::from_iter([Step::Binary(handshake.clone())]), writer_alive);
+        let resume =
+            ResumeContext::from_request_headers(&HeaderMap::new(), &server.orphan_registry);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, UpstreamSource::Direct),
+        )
+        .await
+        .map_err(|_| anyhow!("session 1 hung"))??;
+    }
+
+    // Session 2: the very same handshake bytes replayed must surface as an error.
+    {
+        let (server, route) = test_contexts_with_salt_store(&user, Arc::clone(&store));
+        let (writer_alive, _gone) = oneshot::channel();
+        let socket =
+            MockWs::new(VecDeque::from_iter([Step::Binary(handshake.clone())]), writer_alive);
+        let resume =
+            ResumeContext::from_request_headers(&HeaderMap::new(), &server.orphan_registry);
+        run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, UpstreamSource::Direct)
+            .await
+            .expect_err("a replayed handshake must be rejected");
+    }
+    Ok(())
+}
+
+/// Two genuinely distinct handshakes (fresh random salt each) must both be
+/// accepted: the filter rejects replays without penalising legitimate new
+/// connections from the same user.
+#[tokio::test]
+async fn distinct_tcp_handshakes_are_both_accepted() -> Result<()> {
+    let (upstream_addr, _upstream) = spawn_silent_upstream().await?;
+    let user = test_user()?;
+    let store = SaltReplayStore::new(Duration::from_secs(60), 0);
+
+    for _ in 0..2 {
+        let (server, route) = test_contexts_with_salt_store(&user, Arc::clone(&store));
+        let (writer_alive, _gone) = oneshot::channel();
+        // A fresh encryptor each iteration mints a new random salt.
+        let socket = MockWs::new(
+            VecDeque::from_iter([Step::Binary(ss_handshake_frame(&user, upstream_addr)?)]),
+            writer_alive,
+        );
+        let resume =
+            ResumeContext::from_request_headers(&HeaderMap::new(), &server.orphan_registry);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, UpstreamSource::Direct),
+        )
+        .await
+        .map_err(|_| anyhow!("a distinct handshake hung"))??;
+    }
     Ok(())
 }

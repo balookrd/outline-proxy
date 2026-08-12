@@ -143,7 +143,7 @@ fn adopted_resume_keys_are_tracked() {
 /// `make_udp_response_sender` is a static trait fn, so the count cannot live on
 /// the carrier instance; the `SLOT` const parameter gives every test its own
 /// counter instead, so tests running concurrently never share one.
-static RESPONSE_SENDERS_BUILT: [AtomicUsize; 8] = [const { AtomicUsize::new(0) }; 8];
+static RESPONSE_SENDERS_BUILT: [AtomicUsize; 9] = [const { AtomicUsize::new(0) }; 9];
 
 enum CountingMsg {
     Binary(Bytes),
@@ -369,6 +369,49 @@ async fn response_sender_is_built_once_per_stream() -> Result<()> {
         1,
         "the relay must build one response sender per stream, not one per datagram"
     );
+
+    relay.abort();
+    Ok(())
+}
+
+/// A byte-for-byte replay of a legacy (non-2022) datagram must be dropped, not
+/// re-forwarded upstream. Legacy UDP carries no packet counter, so the salt is
+/// the replay filter's only anchor; `client_datagram` randomises the salt per
+/// call, so a genuine replay is the *same* ciphertext sent twice.
+#[tokio::test]
+async fn replayed_legacy_udp_datagram_is_dropped() -> Result<()> {
+    const SLOT: usize = 8;
+
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    // Aes256Gcm is a legacy cipher, so this exercises the salt-dedup path.
+    let user = UserKey::new("alice", "secret", None, CipherKind::Aes256Gcm, None)?;
+
+    let (inbound_tx, inbound_rx) = mpsc::channel::<Bytes>(4);
+    let (downlink_tx, _downlink_rx) = mpsc::unbounded_channel::<Bytes>();
+    let relay = tokio::spawn(run_udp_relay::<CountingCarrier<SLOT>>(
+        CountingCarrier {
+            inbound: inbound_rx,
+            downlink: downlink_tx,
+        },
+        test_server_ctx(),
+        test_route_ctx(&user),
+        ResumeContext::default(),
+        UpstreamSource::Direct,
+    ));
+
+    let datagram = client_datagram(&user, upstream_addr, b"once")?;
+    inbound_tx.send(datagram.clone()).await?;
+    inbound_tx.send(datagram.clone()).await?;
+
+    // The first datagram reaches upstream.
+    let mut buf = [0_u8; 64];
+    let (n, _) = timeout(Duration::from_secs(5), upstream.recv_from(&mut buf)).await??;
+    assert_eq!(&buf[..n], b"once");
+
+    // The replay is dropped: nothing else arrives.
+    let second = timeout(Duration::from_millis(300), upstream.recv_from(&mut buf)).await;
+    assert!(second.is_err(), "replayed legacy datagram must not be forwarded upstream");
 
     relay.abort();
     Ok(())
