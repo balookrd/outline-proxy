@@ -185,8 +185,8 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_active_wire_rtt_ewma_ms: None,
                 tcp_active_wire_rtt_age_ms: None,
                 udp_active_wire_rtt_age_ms: None,
-                tcp_carrier_loss_ratio: None,
-                udp_carrier_loss_ratio: None,
+                tcp_carrier_loss_ratio: Some(0.44),
+                udp_carrier_loss_ratio: Some(0.006),
                 tcp_carrier_loss_packets: None,
                 udp_carrier_loss_packets: None,
                 tcp_loss_elevated_ms: None,
@@ -416,9 +416,15 @@ fn topology_serialization_shape_has_active_flags() {
     assert_eq!(u1["udp_active_wire"], 0);
     assert_eq!(u1["tcp_active_wire_pin_remaining_ms"], 7_500);
     assert!(u1["udp_active_wire_pin_remaining_ms"].is_null());
+    // Carrier loss must reach the dashboard: without it a fast-but-lossy uplink
+    // renders green. The active TCP leg here is losing 44%.
+    assert_eq!(u1["tcp_carrier_loss_ratio"], 0.44);
+    assert_eq!(u1["udp_carrier_loss_ratio"], 0.006);
     let u0 = &json["instance"]["groups"][0]["uplinks"][0];
     assert_eq!(u0["configured_fallbacks"], serde_json::json!([]));
     assert_eq!(u0["tcp_active_wire"], 0);
+    // A leg with no verdict yet stays absent rather than reading as 0% loss.
+    assert!(u0["tcp_carrier_loss_ratio"].is_null());
 }
 
 #[test]

@@ -168,6 +168,15 @@ struct ControlUplinkTopology {
     /// primary wire's probe verdict.
     tcp_health_effective: Option<bool>,
     udp_health_effective: Option<bool>,
+    /// Smoothed carrier packet-loss ratio (0.0–1.0) on the wire currently
+    /// carrying this transport. `None` — not `0` — when the leg has not sent
+    /// enough packets in a sampling window to produce a verdict; a missing
+    /// value is "not measured", never "no loss". This is the signal the health
+    /// flags are blind to: a leg answers probes fast and reads `healthy` while
+    /// dropping packets, so the dashboard shows this next to the RTT and drops
+    /// the row out of "Healthy" when the *active* leg is above threshold.
+    tcp_carrier_loss_ratio: Option<f64>,
+    udp_carrier_loss_ratio: Option<f64>,
     last_error: Option<String>,
     /// `notAfter` of the soonest-expiring TLS certificate among this uplink's
     /// endpoints (Unix milliseconds), or `None` until the first cert check
@@ -391,6 +400,8 @@ fn build_uplink_topology(
         tcp_healthy: uplink.tcp_healthy,
         tcp_health_effective: uplink.tcp_health_effective,
         udp_health_effective: uplink.udp_health_effective,
+        tcp_carrier_loss_ratio: uplink.tcp_carrier_loss_ratio,
+        udp_carrier_loss_ratio: uplink.udp_carrier_loss_ratio,
         udp_healthy: uplink.udp_healthy,
         last_error: uplink.last_error.clone(),
         cert_not_after_unix_ms: uplink.cert_not_after_unix_ms,
