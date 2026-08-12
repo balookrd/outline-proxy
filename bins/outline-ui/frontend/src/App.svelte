@@ -4,6 +4,7 @@
   import Toasts from './components/layout/Toasts.svelte';
   import Landing from './features/landing/Landing.svelte';
   import Users from './features/ss/Users.svelte';
+  import Uplinks from './features/ws/Uplinks.svelte';
   import { route, section } from './lib/router.svelte';
 
   const view = $derived(section(route.path));
@@ -19,10 +20,7 @@
     {:else if view === 'ss'}
       <Users />
     {:else if isUplinks}
-      <!-- TEMPORARY: real Uplinks CRUD arrives in Task 8 (swap this section for <Uplinks />) -->
-      <section class="view active">
-        <div class="empty">Uplinks — Task 8</div>
-      </section>
+      <Uplinks />
     {:else}
       <!-- TEMPORARY: real Topology view arrives in Task 9 (swap this section for <Topology />) -->
       <section class="view active">

@@ -29,3 +29,49 @@ export interface Uplink {
 }
 export interface ActivateTarget { instance: string; group: string; uplink: string; }
 export interface ActivateBody { targets: ActivateTarget[]; transport?: 'tcp'|'udp'|'both'; soft?: boolean; }
+
+// WS uplinks CRUD — GET /control/uplinks entries, proxied verbatim through
+// /ws/dashboard/api/uplinks (see ws/api.rs `uplinks_proxy` and
+// uplinks_crud/list.rs `UplinkListEntry`/`UplinkListResponse`). `config`
+// mirrors the on-disk TOML table for one [[outline.uplinks]] entry
+// (uplinks_crud/payload.rs `table_to_json`) and is absent when the config
+// file couldn't be read. Field set here matches ws/uplinks.html's FIELDS —
+// the backend's UplinkPayload additionally accepts newer fields
+// (tcp_xhttp_url/udp_xhttp_url/ss_*/link/fallbacks, see
+// uplinks_crud/payload.rs) that this legacy-parity form doesn't expose; see
+// task-8-report.md "Concerns". The index signature keeps those (and any
+// other server-side additions) from breaking the type.
+export interface UplinkConfig {
+  name?: string;
+  transport?: string;
+  method?: string;
+  password?: string;
+  vless_id?: string;
+  tcp_ws_url?: string;
+  tcp_mode?: string;
+  udp_ws_url?: string;
+  udp_mode?: string;
+  vless_ws_url?: string;
+  vless_xhttp_url?: string;
+  vless_mode?: string;
+  weight?: number;
+  fwmark?: number;
+  ipv6_first?: boolean;
+  [k: string]: unknown;
+}
+export interface UplinkEntry {
+  group: string;
+  name: string;
+  index: number;
+  config?: UplinkConfig | null;
+}
+export interface UplinksListResponse { uplinks: UplinkEntry[]; }
+// POST /control/apply response (bins/outline-ws-rust/src/http/control/apply.rs
+// `ApplyResponse`), proxied verbatim by /ws/dashboard/api/apply.
+export interface ApplyResult {
+  applied?: boolean;
+  groups?: number;
+  total_uplinks?: number;
+  default_group?: string;
+  error?: string;
+}
