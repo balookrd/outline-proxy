@@ -159,10 +159,10 @@ the page, fixing the fetches by changing things nobody audited.
 
 ## Current state
 
-The dashboards **still ship inside `outline-ws-rust` and `outline-ss-rust`**.
-Removing them there is deliberately deferred until this service has been used in
-practice; until then the same UI is reachable both on a node and in the cluster.
+The dashboards have been **removed from `outline-ws-rust` and `outline-ss-rust`**;
+this service is the only place they run now. The binaries expose only their
+metrics and control listeners.
 
 Design and plan:
 [spec](../../docs/superpowers/specs/2026-08-12-outline-ui-dashboard-extraction-design.md),
-[plan](../../docs/superpowers/plans/2026-08-12-outline-ui.md) (tasks 9-10 pending).
+[plan](../../docs/superpowers/plans/2026-08-12-outline-ui.md).
