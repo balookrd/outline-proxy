@@ -7870,7 +7870,7 @@
               "mode": "none"
             },
             "thresholdsStyle": {
-              "mode": "off"
+              "mode": "line"
             }
           },
           "mappings": [],
@@ -7878,8 +7878,12 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "transparent",
                 "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.05
               }
             ]
           },
@@ -8198,7 +8202,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "One row per uplink and plane. Loss is what the carrier socket reports for the wire currently carrying traffic; the sample column is how many packets that verdict rests on \u2014 tens of thousands is evidence, a few hundred is a hint. A row that is absent entirely means the uplink was not measured (usually idle), never that it is clean. Compare the loss column across uplinks before choosing loss_latency_penalty_k: the spread between them is what a coefficient acts on.\n\n\"Plane\" is misleading whenever an uplink's tcp and udp rows land on the same wire: they are then one carrier measured twice, not independent evidence. On senko, rows with matching wire index (tcp=3/udp=3) carried identical sample counts every interval observed; rows with different wire indices (tcp=0/udp=1, tcp=1/udp=2) diverged. Check active_wire_index before reading two rows as corroborating each other.",
+      "description": "One row per uplink and plane, sorted by loss. The Loss cell is filled green/yellow/red; red starts at 5%, the same threshold the UplinkCarrierLossHigh alert uses. Active marks the leg currently carrying traffic \u2014 and only that leg raises the alert. A red Loss on a 'standby' row (senko sitting at 44% while nuxt2 carries the traffic) is visible here but sends no mail, by design.\n\nA row absent entirely means the uplink was not measured (usually idle), never that it is clean. \"Plane\" is misleading when an uplink's tcp and udp rows share a wire: they are then one carrier measured twice \u2014 check active_wire_index before reading two rows as corroborating each other.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -8237,7 +8241,8 @@
               {
                 "id": "custom.cellOptions",
                 "value": {
-                  "type": "color-text"
+                  "type": "color-background",
+                  "mode": "gradient"
                 }
               },
               {
@@ -8251,14 +8256,18 @@
                     },
                     {
                       "color": "yellow",
-                      "value": 0.005
+                      "value": 0.02
                     },
                     {
                       "color": "red",
-                      "value": 0.02
+                      "value": 0.05
                     }
                   ]
                 }
+              },
+              {
+                "id": "noValue",
+                "value": "n/d"
               }
             ]
           },
@@ -8323,6 +8332,56 @@
                 "value": 90
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Active"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "\u25cf carrying",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "0": {
+                        "text": "standby",
+                        "color": "text",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
           }
         ]
       },
@@ -8365,6 +8424,13 @@
           "instant": true,
           "legendFormat": "__auto",
           "refId": "B"
+        },
+        {
+          "expr": "max by (uplink, transport) (outline_ws_uplink_health{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} * 0 + on(instance,uplink) group_left outline_ws_global_active_uplink_info)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "C"
         }
       ],
       "title": "Uplink Comparison: loss per plane, and the evidence behind it",
@@ -8383,14 +8449,16 @@
             "indexByName": {
               "uplink": 0,
               "transport": 1,
-              "Value #A": 2,
-              "Value #B": 3
+              "Value #C": 2,
+              "Value #A": 3,
+              "Value #B": 4
             },
             "renameByName": {
               "uplink": "Uplink",
               "transport": "Plane",
               "Value #A": "Loss",
-              "Value #B": "Sample"
+              "Value #B": "Sample",
+              "Value #C": "Active"
             }
           }
         }
@@ -8608,11 +8676,14 @@
       }
     ]
   },
-  "time": { "from": "now-24h", "to": "now" },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "browser",
   "title": "outline-ws-rust",
   "uid": "outline-ws-rust",
-  "version": 88,
+  "version": 90,
   "weekStart": ""
 }
