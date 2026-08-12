@@ -110,6 +110,27 @@ export interface Uplink {
 }
 export interface ActivateTarget { instance: string; group: string; uplink: string; }
 export interface ActivateBody { targets: ActivateTarget[]; transport?: 'tcp'|'udp'|'both'; soft?: boolean; }
+// POST /ws/dashboard/api/activate response (ws/api.rs `activate()`/`ActivateResult`)
+// — one entry per requested target, in request order. `status`/`body` are the
+// proxied instance's own HTTP status/JSON body (null when the instance was
+// unreachable, in which case `error` carries the transport failure instead).
+export interface ActivateResult {
+  target: ActivateTarget;
+  ok: boolean;
+  status: number | null;
+  body: unknown | null;
+  error: string | null;
+}
+export interface ActivateResponse { results: ActivateResult[]; }
+
+// POST /ws/dashboard/api/reselect and /set_enabled share this envelope
+// (ws/api.rs `proxy_json()`): `body` is the proxied instance's JSON reply on
+// success. In practice `ok:false` never reaches a resolved promise today —
+// proxy_json() mirrors the instance's own HTTP status onto its response, so a
+// semantic failure surfaces as a thrown Error via lib/api.ts's json() helper
+// instead — but the field is typed here so callers can handle it defensively
+// if that proxying behaviour ever changes.
+export interface ProxyOpResult { ok: boolean; body?: unknown; error?: string; }
 
 // WS uplinks CRUD — GET /control/uplinks entries, proxied verbatim through
 // /ws/dashboard/api/uplinks (see ws/api.rs `uplinks_proxy` and

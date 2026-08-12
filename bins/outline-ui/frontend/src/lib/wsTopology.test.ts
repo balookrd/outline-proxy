@@ -16,6 +16,8 @@ import {
   primaryRttMs,
   primaryLossRatio,
   lossTone,
+  activateButtonState,
+  softButtonState,
 } from './wsTopology';
 import type { Uplink, Group, WireChainEntry } from './types';
 
@@ -260,5 +262,27 @@ describe('primaryLossRatio / lossTone — combined single-column loss (worse of 
     expect(lossTone(0.03)).toBe('warn');
     expect(lossTone(LOSS_BAD)).toBe('bad');
     expect(lossTone(0.2)).toBe('bad');
+  });
+});
+
+describe('activateButtonState — dashboard.html activateBtn gating (:1338-1344)', () => {
+  it('warn (healthy but passive) is live', () => expect(activateButtonState('warn')).toBe('live'));
+  it('good (already active) is shown-disabled as "active"', () => expect(activateButtonState('good')).toBe('active'));
+  it('bad (down — every wire unreachable) is shown-disabled as "down"', () => expect(activateButtonState('bad')).toBe('down'));
+  it('off (admin_disabled) is hidden', () => expect(activateButtonState('off')).toBe('hidden'));
+});
+
+describe('softButtonState — dashboard.html softBtn gating (:1351-1357)', () => {
+  it('cluster + warn is live', () => expect(softButtonState('warn', true)).toBe('live'));
+  it('cluster + good (already active) is shown-disabled as "active"', () => {
+    expect(softButtonState('good', true)).toBe('active');
+  });
+  it('cluster + bad (down) is hidden — no soft-switching a dead uplink', () => {
+    expect(softButtonState('bad', true)).toBe('hidden');
+  });
+  it('cluster + off (admin_disabled) is hidden', () => expect(softButtonState('off', true)).toBe('hidden'));
+  it('non-cluster group hides soft regardless of tone', () => {
+    expect(softButtonState('warn', false)).toBe('hidden');
+    expect(softButtonState('good', false)).toBe('hidden');
   });
 });

@@ -14,9 +14,10 @@
   // *writes* the reactive `polls`/`updatedAt` maps — never both on the same
   // collection, which would make the effect its own dependency.
   import { onMount, onDestroy } from 'svelte';
-  import { SvelteMap } from 'svelte/reactivity';
-  import { listInstances, topology } from '../../lib/api';
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+  import { listInstances, topology, activate, reselect, setEnabled } from '../../lib/api';
   import { createPoll } from '../../lib/poll.svelte';
+  import { toast } from '../../lib/toast.svelte';
   import type { TopologyResponse } from '../../lib/types';
   import { instanceStatusTone, instanceStatusLabel } from '../../lib/wsTopology';
   import StatusDot from '../../components/layout/StatusDot.svelte';
@@ -83,6 +84,93 @@
     const ts = updatedAt.get(name);
     return ts ? new Date(ts).toLocaleTimeString() : '—';
   }
+
+  // ── Operations (Task 10) ──────────────────────────────────────────────────
+  // Topology owns the per-instance polls, so it's also the natural owner of
+  // the mutation handlers GroupTable's callback props invoke: it's the only
+  // place that can call the right instance's poll.refresh() after an op
+  // completes. GroupTable stays presentational — see its own header comment.
+
+  // Double-submit guard, scoped per-instance rather than globally: this view
+  // (unlike features/ss/Users.svelte or features/ws/Uplinks.svelte) renders
+  // every instance at once, so a single page-wide lock would grey out
+  // instance B's buttons while instance A's request is still in flight. A
+  // second op on the SAME instance (even a different group/uplink) is still
+  // blocked until the first resolves — coarser than per-row, but matches the
+  // granularity polls already use (one poll, one refresh, per instance).
+  const mutatingInstances = new SvelteSet<string>();
+
+  function errorMessage(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+  }
+
+  async function runOp(instanceName: string, fn: () => Promise<void>) {
+    if (mutatingInstances.has(instanceName)) return;
+    mutatingInstances.add(instanceName);
+    try {
+      await fn();
+    } finally {
+      mutatingInstances.delete(instanceName);
+    }
+  }
+
+  // Hard activate (soft=false) or soft-switch (soft=true) one uplink — both
+  // ride POST /activate, `soft` is the only difference (dashboard.html
+  // activateEntries(), :1492-1501). Always a single-target request (this
+  // button always targets exactly one uplink), so `results` always has
+  // exactly one entry; a structural failure (bad request, unreachable
+  // outline-ui itself) throws instead of resolving — see lib/api.ts's json().
+  async function handleActivate(instanceName: string, groupName: string, uplinkName: string, soft: boolean) {
+    await runOp(instanceName, async () => {
+      const label = `${instanceName}: ${uplinkName}`;
+      try {
+        const res = await activate({
+          targets: [{ instance: instanceName, group: groupName, uplink: uplinkName }],
+          soft,
+        });
+        const result = res.results[0];
+        if (result?.ok) {
+          toast(`${label} ${soft ? 'soft-switched' : 'activated'}.`);
+        } else {
+          toast(`${label} ${soft ? 'soft switch' : 'activate'} failed: ${result?.error ?? 'unknown error'}`, 'error');
+        }
+        await polls.get(instanceName)?.refresh();
+      } catch (e) {
+        toast(errorMessage(e), 'error');
+      }
+    });
+  }
+
+  // Reselect now (group header ⟳) — always requests soft:true; the instance
+  // clamps it to a hard switch off-cluster (dashboard.html reselectGroup(),
+  // :1507-1514).
+  async function handleReselect(instanceName: string, groupName: string) {
+    await runOp(instanceName, async () => {
+      try {
+        const res = await reselect({ instance: instanceName, group: groupName, soft: true });
+        if (res.ok) toast(`${instanceName}: ${groupName} reselected.`);
+        else toast(`${instanceName}: ${groupName} reselect failed.`, 'error');
+        await polls.get(instanceName)?.refresh();
+      } catch (e) {
+        toast(errorMessage(e), 'error');
+      }
+    });
+  }
+
+  // Operator on/off toggle (dashboard.html setUplinkEnabled(), :1519-1526).
+  async function handleSetEnabled(instanceName: string, groupName: string, uplinkName: string, enabled: boolean) {
+    await runOp(instanceName, async () => {
+      const label = `${instanceName}: ${uplinkName}`;
+      try {
+        const res = await setEnabled({ instance: instanceName, group: groupName, uplink: uplinkName, enabled });
+        if (res.ok) toast(`${label} ${enabled ? 'enabled' : 'disabled'}.`);
+        else toast(`${label} ${enabled ? 'enable' : 'disable'} failed.`, 'error');
+        await polls.get(instanceName)?.refresh();
+      } catch (e) {
+        toast(errorMessage(e), 'error');
+      }
+    });
+  }
 </script>
 
 <section class="view active">
@@ -122,7 +210,13 @@
         {:else if data}
           {#if groups.length}
             {#each groups as group (group.name)}
-              <GroupTable {group} />
+              <GroupTable
+                {group}
+                mutating={mutatingInstances.has(inst.name)}
+                onActivate={(uplinkName, soft) => handleActivate(inst.name, group.name, uplinkName, soft)}
+                onEnable={(uplinkName, enabled) => handleSetEnabled(inst.name, group.name, uplinkName, enabled)}
+                onReselect={() => handleReselect(inst.name, group.name)}
+              />
             {/each}
           {:else}
             <div class="empty">No uplink groups configured.</div>
