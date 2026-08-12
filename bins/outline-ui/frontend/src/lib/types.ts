@@ -38,13 +38,24 @@ export interface ActivateBody { targets: ActivateTarget[]; transport?: 'tcp'|'ud
 // fields the create/PATCH payload wrote (e.g. an uplink created via `link`
 // has *only* `link` on disk — the share-link expansion into transport/
 // carrier fields happens at config-load time, not at rest), and is absent
-// when the config file couldn't be read. Field set here is the full
-// top-level `UplinkPayload` (uplinks_crud/payload.rs), minus `fallbacks`
-// (Task 8c's domain — the index signature keeps that field, and any other
-// server-side addition, from breaking the type).
-export interface UplinkConfig {
-  name?: string;
+// when the config file couldn't be read.
+//
+// `WireConfig` is the field set shared by the top-level config AND one
+// `[[outline.uplinks.fallbacks]]` entry's own config — every field
+// `FallbackPayload` accepts (uplinks_crud/payload.rs), which is
+// `UplinkPayload`'s full field set minus `name`/`weight`/`fallbacks` (those
+// are parent-uplink-only, see `FallbackPayload`'s doc comment). `UplinkConfig`
+// adds those three back; `FallbackConfig` needs nothing on top, so it's a
+// plain alias.
+export interface WireConfig {
   transport?: string;
+  /// Share-link URI (`vless://…` / `ss://…`). Mutually exclusive on the wire
+  /// with `transport` and every explicit carrier/credential field below —
+  /// see `expand_share_link` in
+  /// bins/outline-ws-rust/src/config/load/uplinks/wire_shape.rs (shared by
+  /// both the primary wire and the fallback pre-pass — see `apply_link` in
+  /// config/load/uplinks/fallback_resolution.rs).
+  link?: string;
   tcp_ws_url?: string;
   tcp_xhttp_url?: string;
   tcp_mode?: string;
@@ -54,21 +65,24 @@ export interface UplinkConfig {
   vless_ws_url?: string;
   vless_xhttp_url?: string;
   vless_mode?: string;
+  vless_id?: string;
   ss_ws_url?: string;
   ss_xhttp_url?: string;
   ss_mode?: string;
-  /// Share-link URI (`vless://…` / `ss://…`). Mutually exclusive on the wire
-  /// with `transport` and every explicit carrier/credential field above —
-  /// see `expand_share_link` in
-  /// bins/outline-ws-rust/src/config/load/uplinks/wire_shape.rs.
-  link?: string;
   method?: string;
   password?: string;
-  vless_id?: string;
-  weight?: number;
   fwmark?: number;
   ipv6_first?: boolean;
   [k: string]: unknown;
+}
+export type FallbackConfig = WireConfig;
+export interface UplinkConfig extends WireConfig {
+  name?: string;
+  weight?: number;
+  /// `[[outline.uplinks.fallbacks]]`, in on-disk/priority order. Absent on
+  /// an uplink with no fallbacks configured (not present in the TOML table
+  /// at all — `table_to_json` only emits keys that exist on disk).
+  fallbacks?: FallbackConfig[];
 }
 export interface UplinkEntry {
   group: string;
