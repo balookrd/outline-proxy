@@ -71,7 +71,6 @@ fn test_config() -> Config {
         cluster: None,
         config_path: None,
         control: None,
-        dashboard: None,
     }
 }
 

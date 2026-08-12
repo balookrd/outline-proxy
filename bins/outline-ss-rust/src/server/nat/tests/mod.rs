@@ -83,7 +83,6 @@ async fn drops_oversized_socket_udp_response_and_records_metric() -> Result<()> 
         cluster: None,
         config_path: None,
         control: None,
-        dashboard: None,
     };
     let metrics = Metrics::new(&config);
     let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305, None)?;
@@ -146,7 +145,6 @@ fn ignores_non_socket_or_in_range_udp_response_sizes() -> Result<()> {
         cluster: None,
         config_path: None,
         control: None,
-        dashboard: None,
     };
     let metrics = Metrics::new(&config);
     let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305, None)?;
@@ -211,7 +209,6 @@ async fn deduplicates_concurrent_nat_entry_creation() -> Result<()> {
         cluster: None,
         config_path: None,
         control: None,
-        dashboard: None,
     };
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(Duration::from_secs(300));
@@ -291,7 +288,6 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
         cluster: None,
         config_path: None,
         control: None,
-        dashboard: None,
     };
     let metrics = Metrics::new(&config);
     // Cap of 2 live entries; `0` would disable the cap.
