@@ -5,9 +5,11 @@ Grafana OSS 13.0.2 живёт **в k3s-кластере** (`monitoring/grafana`)
 `198.18.1.102`; там всё оставлено как путь отката: `/opt/grafana` нетронут,
 контейнер остановлен и снят с автозапуска (`docker update --restart=no`).
 
-VictoriaMetrics осталась на `.102` (`:8428`) — датасорс `prometheus`
-(uid `adnsc1wi03doga`) ходит туда по сети. **UID менять нельзя:** дашборды
-ссылаются на датасорс именно по нему, и с чужим UID все панели окажутся пустыми.
+Датасорс `prometheus` (uid `adnsc1wi03doga`) указывает на **кластерную**
+VictoriaMetrics — `http://victoria-metrics.monitoring:8428`, а не на `.102`
+(проверено 2026-08-12 в `provisioning/datasources/datasources.yaml`). По этому же
+источнику считаются и алерты. **UID менять нельзя:** дашборды ссылаются на
+датасорс именно по нему, и с чужим UID все панели окажутся пустыми.
 
 Состояние — SQLite на `local-path` (NVMe ноды). Кроме провижиненных, в ней живут
 семь дашбордов, заведённых руками и отсутствующих в git (`Power`, `Temperature`,
@@ -221,7 +223,7 @@ deleteRules:
 |---------|-------|-------|
 | `TargetDown` | нет скрейпа 5 мин | critical |
 | `AllUplinksDown` | сумма `health_effective` = 0, 3 мин | critical |
-| `UplinkCarrierLossHigh` | потери > 5% в течение 10 мин | warning |
+| `UplinkCarrierLossHigh` | потери > 5% в течение 10 мин **на активном плече** | warning |
 | `UplinkFailoverStorm` | > 30 failover за 15 мин | warning |
 | `UplinkCertExpiringSoon` | сертификат < 14 дней | info |
 | `ClientRestarted` | сброс счётчика `selected_total` | info |
@@ -229,6 +231,19 @@ deleteRules:
 
 Пороги выбраны прогоном семи суток истории, а не на глаз; обоснование каждого
 числа — в [спеке](../../docs/superpowers/specs/2026-08-07-uplink-email-alerting-design.md).
+
+**`UplinkCarrierLossHigh` алертит только по несущему плечу.** Условие сужено
+до `... and on (instance, uplink) outline_ws_global_active_uplink_info == 1`.
+Причина: резервная нога может часами терять пакеты, никого не задевая (senko
+держал 44% на 2026-08-11, пока трафик спокойно шёл через nuxt2), и письма о ней
+— шум. `carrier_loss_ratio` публикуется для ВСЕХ сконфигурированных плеч, поэтому
+без этого фильтра правило будило почту из-за резерва при исправном рабочем
+пути — ровно тот случай, когда «на дашборде линк в порядке, а письма идут».
+Фильтр по `active` заодно снимает прежний костыль `uplink_enabled == 1`:
+отключённое плечо не активно, а его замёрзший на последнем значении gauge больше
+не держит алерт (было на 2026-08-10, когда nuxt2 выключили на ~50%). Потери
+резервных плеч при этом видны на дашборде ws-rust — таблица «Uplink Comparison»
+красит их красным, но с пометкой `standby`, и письма не шлёт.
 
 `DeadMansSwitch` уходит не в почту, а webhook'ами на `cloud1` и `cloud2` —
 см. [`ops/heartbeat/README.md`](../heartbeat/README.md).

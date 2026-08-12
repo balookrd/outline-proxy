@@ -115,9 +115,11 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: '{{ $labels.uplink }}/{{ $labels.transport }} on {{ $labels.instance }} is losing packets'
+          summary: 'active uplink {{ $labels.uplink }}/{{ $labels.transport }} on {{ $labels.instance }} is losing packets'
           description: >-
-            Carrier loss above 5% for ten minutes. The threshold matches the
+            Carrier loss above 5% for ten minutes on the uplink currently
+            carrying traffic — a standby leg losing packets does not fire this,
+            it only shows on the dashboard. The threshold matches the
             loss-failover threshold already calibrated on .102 and .104; the
             ten-minute sustain is what separates this from the spikes that reach
             42% for a single sample. It stays firing for 30 minutes past the
@@ -132,15 +134,21 @@ groups:
               refId: A
               editorMode: code
               instant: true
-              # `and on(...) uplink_enabled == 1` — an uplink an operator has
-              # switched off must stop alerting. It does not on its own: unlike
-              # `uplink_health`, which disappears when the uplink leaves the
-              # probe loop, `carrier_loss_ratio` keeps being published with its
-              # last measured value. On 2026-08-10 nuxt2 was disabled on three
-              # nodes at ~50% loss and the gauge simply froze there, so turning
-              # the bad uplink off — the correct operator response — left the
-              # alert firing forever instead of clearing it.
-              expr: 'outline_ws_uplink_carrier_loss_ratio > bool 0.05 and on (instance, uplink) outline_ws_uplink_enabled == 1'
+              # `and on(...) global_active_uplink_info == 1` restricts the alert
+              # to the uplink actually carrying traffic. A standby leg can sit
+              # lossy for hours with nobody affected — senko was at 44% on
+              # 2026-08-11 while nuxt2 carried the traffic cleanly — and mailing
+              # about it is noise the operator learns to ignore. The lossy
+              # standby stays visible on the ws-rust dashboard (Uplink
+              # Comparison table), it just no longer wakes anyone.
+              #
+              # This also subsumes the older `uplink_enabled == 1` guard. That
+              # one existed because `carrier_loss_ratio` keeps publishing its
+              # last value after an uplink is switched off (nuxt2 froze at ~50%
+              # on 2026-08-10, and turning the bad uplink off left the alert
+              # firing forever). A disabled leg is not active either, so it
+              # drops out here just the same — `enabled` is not needed on top.
+              expr: 'outline_ws_uplink_carrier_loss_ratio > bool 0.05 and on (instance, uplink) outline_ws_global_active_uplink_info == 1'
           - refId: C
             datasourceUid: __expr__
             model:
