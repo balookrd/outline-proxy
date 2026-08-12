@@ -4,6 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Context;
 use http::{Request, StatusCode};
 use hyper::body::Incoming;
 use tokio::fs;
@@ -264,16 +265,20 @@ where
     Ok(())
 }
 
-async fn write_document_atomic(path: &Path, doc: &DocumentMut) -> anyhow::Result<()> {
+/// Persist the mutated document over `path` through the shared hardened writer
+/// ([`crate::fs_util::atomic_write`]): a private 0600 temp file, the target's
+/// mode and owner carried across the rename, and both file and parent directory
+/// fsynced. `config.toml` holds SOCKS5/per-user passwords, uplink PSK and
+/// control/dashboard tokens, so a plain `write` + `rename` would let each
+/// mutation both widen the target's mode to the ambient umask and expose the
+/// credentials through a world-readable temp window. The blocking write runs on
+/// a dedicated thread so it does not stall the async control-plane runtime.
+pub(super) async fn write_document_atomic(path: &Path, doc: &DocumentMut) -> anyhow::Result<()> {
     let contents = doc.to_string();
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let tmp = dir.join(format!(
-        ".{}.tmp",
-        path.file_name().and_then(|s| s.to_str()).unwrap_or("config.toml")
-    ));
-    fs::write(&tmp, contents.as_bytes()).await?;
-    fs::rename(&tmp, path).await?;
-    Ok(())
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::fs_util::atomic_write(&path, contents.as_bytes()))
+        .await
+        .context("config write task panicked")?
 }
 
 /// Find `[[uplink_group]]` table where `name == group`.

@@ -9,6 +9,11 @@ pub(crate) mod accept;
 pub(crate) mod client_io;
 pub mod config;
 pub(crate) mod error_class;
+// Hardened atomic config writer. Only the control plane rewrites config.toml,
+// so it shares that feature's gate — otherwise a non-`control` build would flag
+// it unused under `-D warnings`.
+#[cfg(feature = "control")]
+pub(crate) mod fs_util;
 #[cfg(any(feature = "metrics", feature = "control", feature = "dashboard"))]
 pub mod http;
 pub mod memory;

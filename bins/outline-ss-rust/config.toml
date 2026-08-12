@@ -323,13 +323,19 @@ ws_path_udp = "/dave/udp"
 # client_active_ttl_secs = 300           # used by client_active / client_up metrics
 # udp_nat_idle_timeout_secs = 300        # NAT entry idle timeout (seconds)
 # udp_nat_max_entries = 65536            # max live UDP NAT entries; 0 disables
-# udp_nat_max_entries_per_user = 0       # per-user share of the NAT table; 0 disables
-                                         # (default). Set it on multi-tenant hosts so
-                                         # one user cannot claim the whole table.
+# udp_nat_max_entries_per_user = 4096    # per-user share of the NAT table; profile
+                                         # default (1024/2048/4096) keeps one user from
+                                         # claiming the whole table. 0 disables it.
 # udp_max_concurrent_relay_tasks = 4096  # process-wide cap; 0 disables
 # udp_replay_max_sessions = 262144       # anti-replay cap: SS-2022 session windows + legacy salts; 0 disables
 # tcp_handshake_replay_max_salts = 262144 # TCP-handshake anti-replay salt cap; 0 disables
 # xhttp_max_sessions = 262144            # max live XHTTP sessions (pre-auth); 0 disables
+# xhttp_max_sessions_per_ip = 0          # per-source-IP share of live XHTTP sessions,
+                                         # on top of xhttp_max_sessions; 0 disables
+                                         # (default). Keyed on the transport peer IP,
+                                         # so leave 0 behind a CDN (that IP is the edge
+                                         # shared by all clients) and set it only where
+                                         # clients connect the server directly.
 # xhttp_max_concurrent_relay_tasks = 4096 # process-wide XHTTP relay-task cap; 0 disables
 # dns_cache_max_entries = 262144         # max upstream DNS-cache entries (LRU-evicted);
                                          # the key holds the client-supplied host, so

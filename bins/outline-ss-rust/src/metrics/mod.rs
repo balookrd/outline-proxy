@@ -413,9 +413,10 @@ impl Metrics {
         });
     }
 
-    /// Count an XHTTP session-creating request rejected by a process-wide cap.
-    /// `reason` is a low-cardinality static label (`"max_sessions"` or
-    /// `"max_relay_tasks"`); no session id or client-supplied path is recorded.
+    /// Count an XHTTP session-creating request rejected by a cap. `reason` is a
+    /// low-cardinality static label (`"max_sessions"`, `"max_sessions_per_ip"`
+    /// or `"max_relay_tasks"`); no session id or client-supplied path is
+    /// recorded.
     pub fn record_xhttp_session_rejected(&self, protocol: Protocol, reason: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!(

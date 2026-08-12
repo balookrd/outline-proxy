@@ -57,6 +57,41 @@ pub(in crate::server) use xhttp::{
     generate_anonymous_xhttp_session_id, handle_xhttp_h3_request, xhttp_handler,
     xhttp_handler_no_session, xhttp_handler_with_path_seq,
 };
+// Only the integration test in `server/tests/xhttp.rs` names this enum by path;
+// production handlers reach it directly through the `xhttp` module.
+#[cfg(test)]
+pub(in crate::server) use xhttp::SessionSlot;
+
+/// Upper bound on a single client→server WebSocket message accepted on the
+/// SS/VLESS upgrade paths, replacing the axum/tungstenite defaults (64 MiB
+/// message / 16 MiB frame). Those defaults let an unauthenticated peer force a
+/// large transient allocation before the UUID/key check runs (the VLESS header
+/// path buffers a whole binary frame before its 512-byte guard); on a node with
+/// a ~2 GiB memory guard a fistful of parallel 64 MiB frames is enough to trip
+/// it.
+///
+/// The largest message our own client legitimately emits is an SS-over-TUN
+/// carrier frame: the writer coalesces AEAD records up to `FRAME_SOFT_CAP`
+/// (256 KiB) and flushes *after* appending a record, so one message can
+/// overshoot to ~320 KiB (256 KiB + one ≤64 KiB AEAD record), plus optional
+/// carrier-padding overhead. The cluster relay path additionally supports a
+/// single ~512 KiB SS handshake frame end-to-end (see
+/// `cluster_relay_preserves_large_payload`). 1 MiB clears both with headroom
+/// while still cutting the default ceiling by 64× (message) / 16× (frame), which
+/// is what closes the pre-auth allocation exposure. Our client never splits one
+/// binary message across WebSocket frames, so the frame cap equals the message
+/// cap.
+pub(in crate::server) const WS_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+
+/// Clamp the message/frame ceilings on an axum WebSocket upgrade to
+/// [`WS_MAX_MESSAGE_SIZE`]. tungstenite rejects a frame whose declared length
+/// exceeds `max_frame_size` at header-parse time, before the payload is read
+/// into a buffer, so an oversized pre-auth message is refused rather than
+/// allocated whole.
+fn apply_ws_limits(ws: WebSocketUpgrade) -> WebSocketUpgrade {
+    ws.max_message_size(WS_MAX_MESSAGE_SIZE)
+        .max_frame_size(WS_MAX_MESSAGE_SIZE)
+}
 
 pub(super) async fn tcp_websocket_upgrade(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -150,7 +185,7 @@ async fn tcp_upgrade_for_path(
         Some(edge) => (edge.resume, edge.source),
         None => (local, UpstreamSource::Direct),
     };
-    let mut response = ws.on_upgrade(move |socket| async move {
+    let mut response = apply_ws_limits(ws).on_upgrade(move |socket| async move {
         let padding = carrier_padding::scheme_for_path(&path);
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
@@ -248,7 +283,7 @@ pub(super) async fn vless_websocket_upgrade(
     };
     // Resolve the carrier-padding scheme before `path` moves into the closure.
     let padding = carrier_padding::scheme_for_path(&path);
-    let mut response = ws.on_upgrade(move |socket| async move {
+    let mut response = apply_ws_limits(ws).on_upgrade(move |socket| async move {
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
@@ -406,7 +441,7 @@ async fn udp_upgrade_for_path(
         Some(edge) => (edge.resume, edge.source),
         None => (local, UpstreamSource::Direct),
     };
-    let mut response = ws.on_upgrade(move |socket| async move {
+    let mut response = apply_ws_limits(ws).on_upgrade(move |socket| async move {
         // Resolve the per-path padding scheme before `path` is moved into the
         // ctx. For a combined-SS base this is the base path (the combined UDP
         // leg reaches here via `udp_upgrade_for_path(base_path)`), so it pads

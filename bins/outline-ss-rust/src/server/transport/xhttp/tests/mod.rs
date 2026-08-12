@@ -1,20 +1,46 @@
-//! Unit tests for the bounded [`XhttpRegistry`]: the `max_sessions` cap gates
-//! creation only (never an existing id), and the relay-task semaphore bounds
-//! concurrent `spawn_relay` reservations. Plus the uplink `ready` byte cap:
-//! a slow/stuck relay must not let a client grow the in-order queue unbounded.
+//! Unit tests for the bounded [`XhttpRegistry`]: the global `max_sessions` and
+//! per-source-IP caps gate creation only (never an existing id), and the
+//! relay-task semaphore bounds concurrent `spawn_relay` reservations. Plus the
+//! uplink `ready` byte cap and the idle-eviction predicate that reaps a
+//! downlink-stalled session even while keepalives keep ticking.
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
 use super::{
-    RelayPermit, UPLINK_READY_BYTES_CAP, UplinkIngestError, XhttpRegistry, XhttpRegistryLimits,
-    XhttpSession,
+    RelayPermit, SessionSlot, UPLINK_READY_BYTES_CAP, UplinkIngestError, XhttpRegistry,
+    XhttpRegistryLimits, XhttpSession,
 };
 
+const IP_A: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+const IP_B: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+
 fn limits(max_sessions: usize, max_relay_tasks: usize) -> XhttpRegistryLimits {
-    XhttpRegistryLimits { max_sessions, max_relay_tasks }
+    XhttpRegistryLimits {
+        max_sessions,
+        max_sessions_per_ip: 0,
+        max_relay_tasks,
+    }
+}
+
+fn limits_per_ip(max_sessions: usize, max_sessions_per_ip: usize) -> XhttpRegistryLimits {
+    XhttpRegistryLimits {
+        max_sessions,
+        max_sessions_per_ip,
+        max_relay_tasks: 0,
+    }
+}
+
+/// Adapts the [`SessionSlot`] result to the `Option<(session, created)>` shape
+/// the cap tests want; `None` on any rejection.
+fn create(registry: &XhttpRegistry, id: &str, ip: IpAddr) -> Option<(Arc<XhttpSession>, bool)> {
+    match registry.get_or_create(id, ip, None, None) {
+        SessionSlot::Ready { session, created } => Some((session, created)),
+        SessionSlot::Rejected(_) => None,
+    }
 }
 
 #[test]
@@ -22,16 +48,16 @@ fn session_cap_rejects_new_but_serves_existing() {
     let registry = XhttpRegistry::with_limits(limits(2, 0));
 
     // Two fresh ids fill the registry to the cap.
-    let (_a, created_a) = registry.get_or_create("id-aaaa", None, None).expect("first fits");
+    let (_a, created_a) = create(&registry, "id-aaaa", IP_A).expect("first fits");
     assert!(created_a, "first id is newly created");
-    let (_b, created_b) = registry.get_or_create("id-bbbb", None, None).expect("second fits");
+    let (_b, created_b) = create(&registry, "id-bbbb", IP_A).expect("second fits");
     assert!(created_b, "second id is newly created");
 
-    // A third *new* id is rejected — and left uninserted.
-    assert!(
-        registry.get_or_create("id-cccc", None, None).is_none(),
-        "new id past the cap is rejected"
-    );
+    // A third *new* id is rejected — and left uninserted — with the global reason.
+    match registry.get_or_create("id-cccc", IP_A, None, None) {
+        SessionSlot::Rejected(reason) => assert_eq!(reason, "max_sessions"),
+        SessionSlot::Ready { .. } => panic!("new id past the cap must be rejected"),
+    }
     assert!(
         registry.get("id-cccc").is_none(),
         "rejected id must not be inserted into the registry"
@@ -39,16 +65,13 @@ fn session_cap_rejects_new_but_serves_existing() {
 
     // An already-live id is still served while the registry is full: the cap
     // gates creation only, so a resume / repeat request never 503s.
-    let (_a_again, created_again) = registry
-        .get_or_create("id-aaaa", None, None)
-        .expect("existing id is served when full");
+    let (_a_again, created_again) =
+        create(&registry, "id-aaaa", IP_A).expect("existing id is served when full");
     assert!(!created_again, "existing id reports created = false");
 
     // Freeing a slot lets a new id in again.
     registry.remove("id-aaaa");
-    let (_c, created_c) = registry
-        .get_or_create("id-cccc", None, None)
-        .expect("slot freed, new id fits");
+    let (_c, created_c) = create(&registry, "id-cccc", IP_A).expect("slot freed, new id fits");
     assert!(created_c, "new id created after a slot was freed");
 }
 
@@ -58,8 +81,66 @@ fn zero_session_cap_is_unbounded() {
     for i in 0..1_000 {
         let id = format!("id-{i:04}");
         assert!(
-            registry.get_or_create(&id, None, None).is_some(),
+            create(&registry, &id, IP_A).is_some(),
             "unbounded registry admits every fresh id"
+        );
+    }
+}
+
+#[test]
+fn per_source_ip_cap_rejects_new_but_serves_existing() {
+    // Global unbounded, per-source-IP share of 2.
+    let registry = XhttpRegistry::with_limits(limits_per_ip(0, 2));
+
+    // Two sessions from IP_A fill its share.
+    assert!(create(&registry, "a1", IP_A).expect("first fits").1, "a1 created");
+    assert!(create(&registry, "a2", IP_A).expect("second fits").1, "a2 created");
+
+    // A third fresh id from IP_A is rejected with the per-source reason and left
+    // uninserted.
+    match registry.get_or_create("a3", IP_A, None, None) {
+        SessionSlot::Rejected(reason) => assert_eq!(reason, "max_sessions_per_ip"),
+        SessionSlot::Ready { .. } => panic!("IP_A past its per-source share must be rejected"),
+    }
+    assert!(registry.get("a3").is_none(), "rejected id must not be inserted");
+
+    // A different source IP has its own share, unaffected by IP_A.
+    assert!(create(&registry, "b1", IP_B).expect("other IP fits").1, "b1 created");
+
+    // An already-live id from IP_A is still served while it is at its share —
+    // the per-source cap gates creation only.
+    let (_a1, created_again) = create(&registry, "a1", IP_A).expect("existing id served when full");
+    assert!(!created_again, "existing id served regardless of the per-source cap");
+}
+
+#[test]
+fn per_source_ip_slot_released_on_session_drop() {
+    // Per-source share of 1.
+    let registry = XhttpRegistry::with_limits(limits_per_ip(0, 1));
+    let (session, _) = create(&registry, "a1", IP_A).expect("first fits");
+
+    // At the share: a second fresh id from IP_A is refused.
+    assert!(create(&registry, "a2", IP_A).is_none(), "IP_A is at its share of 1");
+
+    // Dropping the last `Arc<XhttpSession>` (after the registry lets go)
+    // releases the per-source slot — no manual decrement on the teardown path.
+    registry.remove("a1");
+    drop(session);
+    assert!(
+        create(&registry, "a2", IP_A).expect("slot freed").1,
+        "the per-source slot frees once the session drops"
+    );
+}
+
+#[test]
+fn zero_per_source_ip_cap_is_unbounded() {
+    // Both caps disabled: one IP can hold arbitrarily many sessions.
+    let registry = XhttpRegistry::with_limits(limits_per_ip(0, 0));
+    for i in 0..1_000 {
+        let id = format!("id-{i:04}");
+        assert!(
+            create(&registry, &id, IP_A).is_some(),
+            "disabled per-source cap admits every id from one IP"
         );
     }
 }
@@ -115,7 +196,7 @@ fn ready_bytes(session: &XhttpSession) -> usize {
 /// relay frees room succeeds.
 #[test]
 fn packet_up_ready_rejects_when_full_and_stays_bounded() {
-    let session = XhttpSession::new(Arc::from("test-session"), None, None);
+    let session = XhttpSession::new(Arc::from("test-session"), None, None, None);
     let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
 
     // Simulate a stuck relay (nothing ever calls `pop_uplink_ready`) while a
@@ -152,7 +233,7 @@ fn packet_up_ready_rejects_when_full_and_stays_bounded() {
 /// completes as soon as the relay drains a frame.
 #[tokio::test]
 async fn stream_up_pump_parks_when_ready_full_until_drained() {
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None, None));
     let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
 
     // Fill `ready` to exactly the cap (empty-queue admits the first frame, the
@@ -197,7 +278,7 @@ async fn stream_up_pump_parks_when_ready_full_until_drained() {
 /// `Closed` rather than hanging forever.
 #[tokio::test]
 async fn close_wakes_parked_uplink_producer() {
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None, None));
     let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
     for _ in 0..(UPLINK_READY_BYTES_CAP / CHUNK_BYTES) {
         session
@@ -223,4 +304,58 @@ async fn close_wakes_parked_uplink_producer() {
         matches!(result, Err(UplinkIngestError::Closed)),
         "a push woken by close must report Closed, got {result:?}"
     );
+}
+
+/// A downlink-stalled session — bytes queued for a GET consumer that never
+/// reads — must age out through the `progress` clock even while the relay's
+/// keepalive keeps ticking. Otherwise a stuck client rides keepalives past idle
+/// eviction and pins its ring until the process dies.
+#[tokio::test]
+async fn stalled_downlink_evicted_despite_fresh_keepalive() {
+    let session = XhttpSession::new(Arc::from("stuck"), None, None, None);
+    // Relay produced downlink bytes; the GET consumer never drains them, so
+    // `progress` is stamped here and then goes stale.
+    session
+        .push_downlink(Bytes::from_static(b"queued"))
+        .await
+        .expect("first push fits");
+
+    // A keepalive lands ~40 ms later — newer than the cutoff below, i.e. fresh.
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    session.touch_keepalive();
+
+    // Cutoff sits between the (stale) progress stamp and the (fresh) keepalive:
+    // the stall clause still fires because no drain advanced `progress`.
+    let cutoff = Instant::now() - Duration::from_millis(20);
+    assert!(
+        session.is_evictable(cutoff),
+        "a downlink-stalled session must be evictable even with a fresh keepalive"
+    );
+}
+
+/// A genuinely quiet-but-live session — nothing pending in either direction —
+/// is kept alive by its keepalive and must NOT be evicted.
+#[tokio::test]
+async fn quiet_session_kept_alive_by_keepalive() {
+    let session = XhttpSession::new(Arc::from("quiet"), None, None, None);
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    session.touch_keepalive();
+
+    // Cutoff just before the keepalive stamp: liveness is fresh and nothing is
+    // pending, so the session survives.
+    let cutoff = Instant::now() - Duration::from_millis(20);
+    assert!(
+        !session.is_evictable(cutoff),
+        "a quiet keepalive-fresh session with nothing pending must survive"
+    );
+}
+
+/// With neither real progress nor a keepalive within the window, an abandoned
+/// empty session is still reaped (the historical fully-idle behaviour).
+#[tokio::test]
+async fn fully_idle_session_is_evicted() {
+    let session = XhttpSession::new(Arc::from("idle"), None, None, None);
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    let cutoff = Instant::now() - Duration::from_millis(20);
+    assert!(session.is_evictable(cutoff), "an abandoned empty session ages out");
 }

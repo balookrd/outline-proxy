@@ -20,8 +20,9 @@ use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
-use crate::config::ControlConfig;
+use crate::config::{ControlConfig, TuningProfile};
 
+use super::super::bootstrap::serve_plain_listener;
 use super::super::shutdown::ShutdownSignal;
 use super::handlers::{
     ControlState, block_user, create_user, delete_user, get_user, list_users, unblock_user,
@@ -44,7 +45,7 @@ pub(in crate::server) fn spawn_control_server(
 async fn run(
     config: ControlConfig,
     manager: Arc<UserManager>,
-    mut shutdown: ShutdownSignal,
+    shutdown: ShutdownSignal,
 ) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
@@ -62,10 +63,22 @@ async fn run(
         .layer(middleware::from_fn_with_state(state.clone(), require_bearer_token))
         .with_state(state);
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await
-        .context("control server exited unexpectedly")
+    serve_control_router(listener, router, shutdown).await
+}
+
+/// Serve the control API router under the shared plain-HTTP accept loop, giving
+/// the control listener the same pre-auth slowloris bounds as the data-plane
+/// listeners (connection cap + first-byte / header-read timeout) instead of the
+/// unbounded `axum::serve` it used to run on. The bearer-token middleware is an
+/// application-layer gate that only runs *after* headers are read, so it does
+/// not bound an unauthenticated peer that connects and dribbles. Split out from
+/// `run` so a regression test can drive it with an arbitrary listener/router.
+async fn serve_control_router(
+    listener: TcpListener,
+    router: Router,
+    shutdown: ShutdownSignal,
+) -> Result<()> {
+    serve_plain_listener(listener, router, TuningProfile::default(), "control", shutdown).await
 }
 
 async fn not_found() -> Response {

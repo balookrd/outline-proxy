@@ -1,8 +1,8 @@
-use std::{collections::BTreeSet, net::SocketAddr, sync::Arc};
+use std::{collections::BTreeSet, sync::Arc};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use arc_swap::ArcSwap;
-use axum::{Router, routing::any, serve::ListenerExt};
+use axum::{Router, routing::any};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo, TokioTimer},
     server::conn::auto::Builder as HyperBuilder,
@@ -12,7 +12,7 @@ use tokio::{
     net::TcpListener,
     sync::Semaphore,
     task::JoinSet,
-    time::{Duration, Instant, timeout_at},
+    time::{Duration, Instant, timeout, timeout_at},
 };
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, warn};
@@ -27,7 +27,8 @@ use super::super::{
     connect::configure_tcp_stream,
     constants::{
         CERT_RELOAD_POLL_INTERVAL_SECS, H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS,
-        HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS, TLS_HANDSHAKE_TIMEOUT_SECS,
+        HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS, PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS,
+        PLAIN_HTTP_MAX_CONCURRENT_CONNECTIONS, TLS_HANDSHAKE_TIMEOUT_SECS,
         TLS_MAX_CONCURRENT_CONNECTIONS,
     },
     shutdown::ShutdownSignal,
@@ -206,70 +207,185 @@ pub(in crate::server) async fn serve_tcp_listener(
         // `Some(_)` branch is unreachable here in practice; assert
         // it explicitly to catch future drift.
         debug_assert!(sni_fallback.is_none(), "sni_fallback requires TLS");
-        serve_listener(listener, app, shutdown).await
+        serve_plain_listener(listener, app, config.tuning, "plain HTTP", shutdown).await
     }
 }
 
+/// Serve the plain (non-TLS) HTTP listener. Kept as a thin wrapper over
+/// [`serve_plain_listener`] with a default tuning profile so the many
+/// integration tests that drive `serve_listener(listener, app, shutdown)`
+/// directly keep their signature; the production non-TLS path
+/// ([`serve_tcp_listener`]) calls `serve_plain_listener` with the real
+/// `config.tuning`, so this wrapper is test-only.
+#[cfg(test)]
 pub(in crate::server) async fn serve_listener(
     listener: TcpListener,
     app: Router,
     shutdown: ShutdownSignal,
 ) -> Result<()> {
-    let listener = listener.tap_io(|stream| {
-        if let Err(error) = configure_tcp_stream(stream) {
-            warn!(?error, "failed to configure accepted http connection");
-        }
-    });
-    let mut shutdown_for_graceful = shutdown.clone();
-    // `into_make_service_with_connect_info::<SocketAddr>()` injects a
-    // `ConnectInfo<SocketAddr>` extension into every request so the
-    // TCP-WS upgrade handler can key the per-route peer-user hint cache.
-    let serve = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(async move { shutdown_for_graceful.cancelled().await });
-    drain_axum_serve(async move { serve.await }, shutdown, "plain tcp").await
+    serve_plain_listener(listener, app, TuningProfile::default(), "plain HTTP", shutdown).await
 }
 
+/// Accept loop for a plain (non-TLS) HTTP listener — used for both the main
+/// TCP ingress and the metrics endpoint (`label` distinguishes them in logs).
+///
+/// Unlike the TLS path there is no handshake to bound the unauthenticated
+/// phase, so a freshly accepted socket becomes a hyper connection task
+/// immediately — before the peer has proven itself by sending a request. Two
+/// bounds keep that from being a free pre-auth slowloris, mirroring
+/// [`serve_tls_listener`]:
+///
+/// - A `PLAIN_HTTP_MAX_CONCURRENT_CONNECTIONS` semaphore caps the number of
+///   in-flight connection tasks; the permit is held for the whole connection
+///   and released the instant its task returns.
+/// - A `PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS` first-byte peek deadline drops a
+///   peer that connects and then stays silent (hyper's h1/h2 protocol sniff
+///   has no timeout of its own), and the same budget is wired into the builder
+///   as HTTP/1 `header_read_timeout` to bound slow-but-nonzero header delivery
+///   after the sniff resolves.
+pub(in crate::server) async fn serve_plain_listener(
+    listener: TcpListener,
+    app: Router,
+    profile: TuningProfile,
+    label: &'static str,
+    mut shutdown: ShutdownSignal,
+) -> Result<()> {
+    let connection_limit = Arc::new(Semaphore::new(PLAIN_HTTP_MAX_CONCURRENT_CONNECTIONS));
+    let mut tasks: JoinSet<()> = JoinSet::new();
+
+    loop {
+        // Reap already-finished tasks so JoinSet storage stays bounded under
+        // long-lived listeners with high connection churn.
+        while tasks.try_join_next().is_some() {}
+
+        let permit = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                debug!(listener = label, "plain HTTP listener stopping on shutdown signal");
+                break;
+            }
+            permit = connection_limit.clone().acquire_owned() => {
+                // The semaphore is never closed while the listener is running.
+                permit.expect("plain HTTP connection semaphore unexpectedly closed")
+            }
+        };
+
+        let (stream, peer_addr) = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                debug!(listener = label, "plain HTTP listener stopping on shutdown signal");
+                break;
+            }
+            res = listener.accept() => match res {
+                Ok(v) => v,
+                Err(error) => {
+                    warn!(listener = label, ?error, "failed to accept plain tcp connection");
+                    continue;
+                },
+            },
+        };
+        if let Err(error) = configure_tcp_stream(&stream) {
+            warn!(listener = label, %peer_addr, ?error, "failed to configure plain tcp connection");
+            continue;
+        }
+
+        let app = app.clone();
+        let mut task_shutdown = shutdown.clone();
+
+        tasks.spawn(async move {
+            let _permit = permit;
+
+            // Pre-auth budget: a freshly accepted plain-HTTP peer has sent
+            // nothing yet but already holds a permit and a task. hyper's
+            // protocol sniff (h1 vs h2c) reads the first bytes with no timeout,
+            // and its HTTP/1 `header_read_timeout` only starts once that sniff
+            // resolves — so a peer that connects and stays silent would pin
+            // both forever. Peek for the first byte under the pre-auth budget;
+            // a peer that sends nothing in time is dropped, freeing the permit.
+            // Slow-but-nonzero header dribbling past this point is then bounded
+            // by the builder's `header_read_timeout`.
+            let mut probe = [0u8; 1];
+            let peeked = tokio::select! {
+                biased;
+                _ = task_shutdown.cancelled() => {
+                    debug!(listener = label, %peer_addr, "aborting plain http peek on shutdown");
+                    return;
+                }
+                res = timeout(http_header_read_timeout(), stream.peek(&mut probe)) => res,
+            };
+            match peeked {
+                Ok(Ok(0)) => return, // peer closed before sending anything
+                Ok(Ok(_)) => {},     // first byte arrived; hand off to hyper
+                Ok(Err(error)) => {
+                    debug!(listener = label, %peer_addr, ?error, "plain tcp peek failed");
+                    return;
+                },
+                Err(_elapsed) => {
+                    debug!(
+                        listener = label,
+                        %peer_addr,
+                        "plain http peer sent no bytes before pre-auth timeout; dropping connection",
+                    );
+                    return;
+                },
+            }
+
+            let io = TokioIo::new(stream);
+            // Inject `ConnectInfo<SocketAddr>` so the TCP-WS upgrade handler can
+            // key the per-route peer-user hint cache, matching what the TLS path
+            // (and the former `into_make_service_with_connect_info`) did.
+            let app_with_addr = app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
+            let service = TowerToHyperService::new(app_with_addr);
+            let builder =
+                build_http_server_builder(&profile, Some(http_header_read_timeout()));
+            let conn = builder.serve_connection_with_upgrades(io, service);
+            tokio::pin!(conn);
+
+            let result = tokio::select! {
+                biased;
+                res = conn.as_mut() => res,
+                _ = task_shutdown.cancelled() => {
+                    conn.as_mut().graceful_shutdown();
+                    conn.as_mut().await
+                }
+            };
+            if let Err(error) = result
+                && !is_benign_http_serve_error(error.as_ref())
+            {
+                warn!(listener = label, ?error, %peer_addr, "plain http server connection terminated with error");
+            }
+        });
+    }
+
+    let drain_timeout = Duration::from_secs(HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
+    let drain =
+        tokio::time::timeout(drain_timeout, async { while tasks.join_next().await.is_some() {} })
+            .await;
+    if drain.is_err() {
+        warn!(
+            listener = label,
+            remaining = tasks.len(),
+            timeout_secs = HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
+            "plain HTTP connections did not drain within shutdown timeout; aborting"
+        );
+        tasks.shutdown().await;
+    } else {
+        debug!(listener = label, "plain HTTP listener drained all connections");
+    }
+    Ok(())
+}
+
+/// Serve the Prometheus metrics endpoint. Shares the plain-HTTP accept loop so
+/// the metrics listener gets the same pre-auth slowloris bounds (connection cap
+/// plus first-byte and header-read timeouts) as the main plain ingress; a bound
+/// tuning profile is fine here since the endpoint serves only small metric
+/// scrapes and never upgrades to WebSocket.
 pub(in crate::server) async fn serve_metrics_listener(
     listener: TcpListener,
     app: Router,
     shutdown: ShutdownSignal,
 ) -> Result<()> {
-    let mut shutdown_for_graceful = shutdown.clone();
-    let serve = axum::serve(listener, app)
-        .with_graceful_shutdown(async move { shutdown_for_graceful.cancelled().await });
-    drain_axum_serve(async move { serve.await }, shutdown, "metrics").await
-}
-
-// hyper's graceful_shutdown holds the per-connection task open for the full
-// lifetime of any upgraded WebSocket stream, so without a cap the listener
-// future never resolves on SIGTERM. After `shutdown` fires we wait at most
-// `HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS` for in-flight connections to finish,
-// then drop the serve future to abort remaining hyper connection tasks.
-async fn drain_axum_serve<F>(
-    serve: F,
-    mut shutdown: ShutdownSignal,
-    label: &'static str,
-) -> Result<()>
-where
-    F: std::future::Future<Output = std::io::Result<()>>,
-{
-    let drain_timeout = Duration::from_secs(HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
-    let drain_deadline = async move {
-        shutdown.cancelled().await;
-        tokio::time::sleep(drain_timeout).await;
-    };
-    tokio::select! {
-        biased;
-        result = serve => result.with_context(|| format!("{label} server exited unexpectedly")),
-        _ = drain_deadline => {
-            warn!(
-                listener = label,
-                timeout_secs = HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
-                "connections did not drain within shutdown timeout; aborting"
-            );
-            Ok(())
-        }
-    }
+    serve_plain_listener(listener, app, TuningProfile::default(), "metrics", shutdown).await
 }
 
 /// Watches the TCP listener's cert/key files and atomically swaps in a
@@ -341,6 +457,51 @@ fn tls_handshake_timeout() -> Duration {
         }
     }
     Duration::from_secs(TLS_HANDSHAKE_TIMEOUT_SECS)
+}
+
+/// Test-only override for the plain-HTTP pre-auth timeout, in milliseconds.
+/// `0` means "use the production default". The slowloris regression tests set
+/// a small value so they run in well under a second rather than
+/// `PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS`. Shipping code never touches it.
+#[cfg(test)]
+static TEST_HTTP_HEADER_READ_TIMEOUT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Acquire-and-set guard for the plain-HTTP pre-auth-timeout override. Locks a
+/// single process-wide mutex so listener tests do not race on the atomic, and
+/// clears the override on drop. Mirrors [`TestTlsHandshakeTimeout`].
+#[cfg(test)]
+pub(in crate::server) struct TestHttpHeaderReadTimeout {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl TestHttpHeaderReadTimeout {
+    pub(in crate::server) fn set(d: Duration) -> Self {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let lock = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        TEST_HTTP_HEADER_READ_TIMEOUT_MS.store(d.as_millis() as u64, Ordering::Relaxed);
+        Self { _lock: lock }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestHttpHeaderReadTimeout {
+    fn drop(&mut self) {
+        TEST_HTTP_HEADER_READ_TIMEOUT_MS.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Wall-clock budget for the plain (non-TLS) HTTP pre-auth phase: first-byte
+/// peek plus HTTP/1 header read. See [`PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS`].
+fn http_header_read_timeout() -> Duration {
+    #[cfg(test)]
+    {
+        let ms = TEST_HTTP_HEADER_READ_TIMEOUT_MS.load(Ordering::Relaxed);
+        if ms > 0 {
+            return Duration::from_millis(ms);
+        }
+    }
+    Duration::from_secs(PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS)
 }
 
 async fn serve_tls_listener(
@@ -536,7 +697,7 @@ async fn serve_tls_listener(
             // same way the plain (non-TLS) path does.
             let app_with_addr = app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
             let service = TowerToHyperService::new(app_with_addr);
-            let builder = build_http_server_builder(&profile);
+            let builder = build_http_server_builder(&profile, None);
             let conn = builder.serve_connection_with_upgrades(io, service);
             tokio::pin!(conn);
 
@@ -573,8 +734,21 @@ async fn serve_tls_listener(
     Ok(())
 }
 
-fn build_http_server_builder(profile: &TuningProfile) -> HyperBuilder<TokioExecutor> {
+fn build_http_server_builder(
+    profile: &TuningProfile,
+    header_read_timeout: Option<Duration>,
+) -> HyperBuilder<TokioExecutor> {
     let mut builder = HyperBuilder::new(TokioExecutor::new());
+    if let Some(read_timeout) = header_read_timeout {
+        // `header_read_timeout` panics without an HTTP/1 timer, so set one on
+        // the same sub-builder. The plain listener wires this to bound slow
+        // header delivery; the TLS path passes `None` (its pre-auth handshake
+        // budget already covers the unauthenticated phase).
+        builder
+            .http1()
+            .timer(TokioTimer::new())
+            .header_read_timeout(Some(read_timeout));
+    }
     builder
         .http2()
         .timer(TokioTimer::new())

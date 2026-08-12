@@ -26,8 +26,9 @@ use super::handlers::{
 };
 use super::padding::post_response_headers;
 use super::{
-    AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpRegistry, XhttpSession,
-    XhttpSubmode, generate_padding_header, is_valid_session_id, masquerade_response_headers,
+    AttachOutcome, FIN_HEADER, SEQ_HEADER, SessionSlot, UplinkIngestError, XhttpRegistry,
+    XhttpSession, XhttpSubmode, generate_padding_header, is_valid_session_id,
+    masquerade_response_headers,
 };
 
 const MAX_POST_BYTES: usize = 256 * 1024;
@@ -146,15 +147,16 @@ async fn xhttp_h3_get(
     // below, and is dropped unused when this request did not create the session.
     let (session, created) = match ctx.registry.get_or_create(
         &session_id,
+        peer_addr.ip(),
         edge.issued_id(&resume_for_create),
         edge.relayed_echo(),
     ) {
-        Some(pair) => pair,
-        None => {
+        SessionSlot::Ready { session, created } => (session, created),
+        SessionSlot::Rejected(reason) => {
             ctx.services
                 .tcp_server
                 .metrics
-                .record_xhttp_session_rejected(protocol, "max_sessions");
+                .record_xhttp_session_rejected(protocol, reason);
             warn!(base = %ctx.base_path, "xhttp session registry at capacity; rejecting session");
             return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
         },
@@ -263,15 +265,16 @@ async fn xhttp_h3_post(
     let (session, created) = if seq == 0 {
         match ctx.registry.get_or_create(
             &session_id,
+            peer_addr.ip(),
             edge.issued_id(&resume_for_create),
             edge.relayed_echo(),
         ) {
-            Some(pair) => pair,
-            None => {
+            SessionSlot::Ready { session, created } => (session, created),
+            SessionSlot::Rejected(reason) => {
                 ctx.services
                     .tcp_server
                     .metrics
-                    .record_xhttp_session_rejected(protocol, "max_sessions");
+                    .record_xhttp_session_rejected(protocol, reason);
                 warn!(base = %ctx.base_path, "xhttp session registry at capacity; rejecting session");
                 return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
             },
@@ -425,15 +428,16 @@ async fn xhttp_h3_stream_one(
     // The edge decision is recorded on the session; see `xhttp_h3_get`.
     let (session, created) = match ctx.registry.get_or_create(
         &session_id,
+        peer_addr.ip(),
         edge.issued_id(&resume_for_create),
         edge.relayed_echo(),
     ) {
-        Some(pair) => pair,
-        None => {
+        SessionSlot::Ready { session, created } => (session, created),
+        SessionSlot::Rejected(reason) => {
             ctx.services
                 .tcp_server
                 .metrics
-                .record_xhttp_session_rejected(protocol, "max_sessions");
+                .record_xhttp_session_rejected(protocol, reason);
             warn!(base = %ctx.base_path, "xhttp session registry at capacity; rejecting session");
             return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
         },

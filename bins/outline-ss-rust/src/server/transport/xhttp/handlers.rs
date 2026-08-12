@@ -9,6 +9,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     body::Body,
@@ -38,8 +39,8 @@ use super::super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::padding::post_response_headers;
 use super::{
-    AttachOutcome, FIN_HEADER, RelayPermit, SEQ_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER,
-    UplinkIngestError, XhttpDuplex, XhttpRegistry, XhttpSession, XhttpSubmode,
+    AttachOutcome, FIN_HEADER, RelayPermit, SEQ_HEADER, SessionSlot, UDP_RECORDS_ENABLED,
+    UDP_RECORDS_HEADER, UplinkIngestError, XhttpDuplex, XhttpRegistry, XhttpSession, XhttpSubmode,
     generate_anonymous_session_id, generate_padding_header, is_valid_session_id,
     masquerade_response_headers,
 };
@@ -49,6 +50,24 @@ use super::{
 /// upper end and is well above a single TCP MSS, so per-request
 /// overhead stays small at typical chunk sizes.
 const MAX_POST_BYTES: usize = 256 * 1024;
+
+/// Wall-clock ceiling on reading a single packet-up POST body. A packet-up POST
+/// carries one small packet (≤ [`MAX_POST_BYTES`]), so it must arrive promptly;
+/// a client that opens the request and then dribbles or stalls the body would
+/// otherwise pin the request task indefinitely — a slowloris the byte cap alone
+/// does not catch (it bounds size, not time). Generous enough for one packet on
+/// a poor link, far below indefinite.
+const POST_BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Idle poll interval for the stream-up uplink pump. Unlike a packet-up POST,
+/// the stream-up request body is the connection's whole uplink and may sit
+/// legitimately silent for a long time (a pure download sends almost nothing
+/// upward), so a fixed inter-frame timeout would wrongly tear down a healthy
+/// session. Instead the pump wakes on this interval only to re-check whether the
+/// session has been closed (by idle eviction or the relay exiting) and exits
+/// promptly if so — bounding how long a stalled body outlives its session
+/// without ever cutting a live one.
+const STREAM_UP_IDLE_POLL: Duration = Duration::from_secs(30);
 
 /// Which application protocol a given XHTTP base path carries. Fixed at
 /// route-registration time — one base path serves exactly one protocol —
@@ -319,17 +338,18 @@ async fn xhttp_get(
     // below, and is dropped unused when this request did not create the session.
     let (session, created) = match state.registry.get_or_create(
         &session_id,
+        peer_addr.ip(),
         edge.issued_id(&resume_for_create),
         edge.relayed_echo(),
     ) {
-        Some(pair) => pair,
-        None => {
+        SessionSlot::Ready { session, created } => (session, created),
+        SessionSlot::Rejected(reason) => {
             state
                 .parent
                 .services
                 .tcp_server
                 .metrics
-                .record_xhttp_session_rejected(protocol, "max_sessions");
+                .record_xhttp_session_rejected(protocol, reason);
             warn!(base = %state.base_path, "xhttp session registry at capacity; rejecting session");
             return short_status(StatusCode::SERVICE_UNAVAILABLE);
         },
@@ -450,17 +470,18 @@ async fn xhttp_post(
     let (session, created) = if seq == 0 {
         match state.registry.get_or_create(
             &session_id,
+            peer_addr.ip(),
             edge.issued_id(&resume_for_create),
             edge.relayed_echo(),
         ) {
-            Some(pair) => pair,
-            None => {
+            SessionSlot::Ready { session, created } => (session, created),
+            SessionSlot::Rejected(reason) => {
                 state
                     .parent
                     .services
                     .tcp_server
                     .metrics
-                    .record_xhttp_session_rejected(protocol, "max_sessions");
+                    .record_xhttp_session_rejected(protocol, reason);
                 warn!(base = %state.base_path, "xhttp session registry at capacity; rejecting session");
                 return short_status(StatusCode::SERVICE_UNAVAILABLE);
             },
@@ -494,11 +515,15 @@ async fn xhttp_post(
         return short_status(StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    let bytes = match axum::body::to_bytes(body, MAX_POST_BYTES).await {
+    let bytes = match read_post_body(body, POST_BODY_READ_TIMEOUT).await {
         Ok(bytes) => bytes,
-        Err(error) => {
-            debug!(?error, session = %session_id, "xhttp POST body too large or aborted");
+        Err(PostBodyError::TooLarge) => {
+            debug!(session = %session_id, "xhttp POST body too large or aborted");
             return short_status(StatusCode::PAYLOAD_TOO_LARGE);
+        },
+        Err(PostBodyError::TimedOut) => {
+            debug!(session = %session_id, "xhttp POST body read timed out");
+            return short_status(StatusCode::REQUEST_TIMEOUT);
         },
     };
 
@@ -599,17 +624,18 @@ async fn xhttp_stream_one(
     // The edge decision is recorded on the session; see `xhttp_get`.
     let (session, created) = match state.registry.get_or_create(
         &session_id,
+        peer_addr.ip(),
         edge.issued_id(&resume_for_create),
         edge.relayed_echo(),
     ) {
-        Some(pair) => pair,
-        None => {
+        SessionSlot::Ready { session, created } => (session, created),
+        SessionSlot::Rejected(reason) => {
             state
                 .parent
                 .services
                 .tcp_server
                 .metrics
-                .record_xhttp_session_rejected(protocol, "max_sessions");
+                .record_xhttp_session_rejected(protocol, reason);
             warn!(base = %state.base_path, "xhttp session registry at capacity; rejecting session");
             return short_status(StatusCode::SERVICE_UNAVAILABLE);
         },
@@ -651,33 +677,7 @@ async fn xhttp_stream_one(
     // and push each chunk into the session ring in order. The pump
     // closes the uplink half when the body ends so the relay sees
     // EOF and can decide whether to park or tear down.
-    let session_for_uplink = Arc::clone(&session);
-    tokio::spawn(async move {
-        use http_body_util::BodyExt;
-        let mut body = body;
-        while let Some(frame) = body.frame().await {
-            match frame {
-                Ok(frame) => {
-                    if let Ok(data) = frame.into_data() {
-                        if data.is_empty() {
-                            continue;
-                        }
-                        // Awaits when `ready` is full: the pump stops pulling
-                        // body frames, so the h2 flow-control window brakes the
-                        // client instead of `ready` growing without bound.
-                        if session_for_uplink.ingest_uplink_inorder(data).await.is_err() {
-                            break;
-                        }
-                    }
-                },
-                Err(error) => {
-                    debug!(?error, "xhttp stream-one request body errored");
-                    break;
-                },
-            }
-        }
-        session_for_uplink.close_uplink();
-    });
+    tokio::spawn(drain_stream_up_body(Arc::clone(&session), body, STREAM_UP_IDLE_POLL));
 
     let echo = session.relayed_echo.unwrap_or(ResumeResponseEcho {
         session_id: session.issued_resume_id,
@@ -690,6 +690,72 @@ async fn xhttp_stream_one(
     echo.apply(response.headers_mut());
     apply_udp_records_echo(response.headers_mut(), udp_records);
     response
+}
+
+/// Why a packet-up POST body could not be read in full.
+#[derive(Debug)]
+enum PostBodyError {
+    /// Exceeded [`MAX_POST_BYTES`] (or the body aborted mid-read).
+    TooLarge,
+    /// Did not complete within [`POST_BODY_READ_TIMEOUT`].
+    TimedOut,
+}
+
+/// Reads a packet-up POST body under both a byte cap ([`MAX_POST_BYTES`]) and a
+/// wall-clock timeout ([`POST_BODY_READ_TIMEOUT`]), so a stalled or dribbled
+/// body cannot pin the request task indefinitely.
+async fn read_post_body(body: Body, timeout: Duration) -> Result<Bytes, PostBodyError> {
+    match tokio::time::timeout(timeout, axum::body::to_bytes(body, MAX_POST_BYTES)).await {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(_)) => Err(PostBodyError::TooLarge),
+        Err(_elapsed) => Err(PostBodyError::TimedOut),
+    }
+}
+
+/// Uplink pump for a stream-up / stream-one carrier: drains the request body
+/// frame by frame and ingests each chunk into the session ring in order, then
+/// closes the uplink half when the body ends so the relay sees EOF.
+///
+/// Each `frame()` read is bounded by `idle_poll` so the pump cannot park forever
+/// on a body that has gone silent: on timeout it re-checks
+/// [`XhttpSession::is_closed`] and exits if the session is gone (idle-evicted or
+/// relay-terminated), otherwise it keeps waiting. A healthy quiet uplink (the
+/// client just is not sending — e.g. a pure download) is never torn down, only a
+/// stalled one that outlived its session.
+async fn drain_stream_up_body(session: Arc<XhttpSession>, body: Body, idle_poll: Duration) {
+    use http_body_util::BodyExt;
+    let mut body = body;
+    loop {
+        match tokio::time::timeout(idle_poll, body.frame()).await {
+            Ok(Some(Ok(frame))) => {
+                if let Ok(data) = frame.into_data() {
+                    if data.is_empty() {
+                        continue;
+                    }
+                    // Awaits when `ready` is full: the pump stops pulling body
+                    // frames, so the h2 flow-control window brakes the client
+                    // instead of `ready` growing without bound.
+                    if session.ingest_uplink_inorder(data).await.is_err() {
+                        break;
+                    }
+                }
+            },
+            Ok(Some(Err(error))) => {
+                debug!(?error, "xhttp stream-one request body errored");
+                break;
+            },
+            // Body ended cleanly.
+            Ok(None) => break,
+            // No frame within `idle_poll`: keep waiting on a live session, but
+            // stop promptly once it has been closed out from under us.
+            Err(_elapsed) => {
+                if session.is_closed() {
+                    break;
+                }
+            },
+        }
+    }
+    session.close_uplink();
 }
 
 fn build_downlink_body(session: Arc<XhttpSession>) -> Body {
@@ -1167,3 +1233,7 @@ fn short_status(status: StatusCode) -> Response {
     }
     response
 }
+
+#[cfg(test)]
+#[path = "tests/handlers.rs"]
+mod tests;

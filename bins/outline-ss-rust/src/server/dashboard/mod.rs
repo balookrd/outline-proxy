@@ -10,6 +10,9 @@ mod handlers;
 mod proxy;
 mod tls;
 
+#[cfg(test)]
+mod tests;
+
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
@@ -22,8 +25,9 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsConnector;
 use tracing::{info, warn};
 
-use crate::config::{DashboardConfig, DashboardInstanceConfig};
+use crate::config::{DashboardConfig, DashboardInstanceConfig, TuningProfile};
 
+use super::bootstrap::serve_plain_listener;
 use super::shutdown::ShutdownSignal;
 use control_pool::ControlPool;
 use guard::OriginPolicy;
@@ -63,7 +67,7 @@ pub(in crate::server) fn spawn_dashboard_server(config: DashboardConfig, shutdow
     });
 }
 
-async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()> {
+async fn run(config: DashboardConfig, shutdown: ShutdownSignal) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("failed to bind dashboard listener {}", config.listen))?;
@@ -88,10 +92,23 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
         )),
     };
 
-    axum::serve(listener, build_router(state))
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await
-        .context("dashboard server exited unexpectedly")
+    serve_dashboard_router(listener, build_router(state), shutdown).await
+}
+
+/// Serve the dashboard router under the shared plain-HTTP accept loop, giving
+/// the dashboard listener the same pre-auth slowloris bounds as the data-plane
+/// listeners (connection cap + first-byte / header-read timeout) instead of the
+/// unbounded `axum::serve` it used to run on. The origin guard and optional
+/// token are application-layer gates that only run *after* headers are read, so
+/// they do not bound an unauthenticated peer that connects and dribbles. Split
+/// out from `run` so a regression test can drive it with an arbitrary
+/// listener/router.
+async fn serve_dashboard_router(
+    listener: TcpListener,
+    router: Router,
+    shutdown: ShutdownSignal,
+) -> Result<()> {
+    serve_plain_listener(listener, router, TuningProfile::default(), "dashboard", shutdown).await
 }
 
 fn build_router(state: DashboardState) -> Router {

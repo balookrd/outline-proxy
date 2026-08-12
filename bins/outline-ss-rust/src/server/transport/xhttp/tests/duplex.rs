@@ -3,26 +3,29 @@ use super::*;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The relay's keepalive tick reaches the XHTTP carrier as
-/// `XhttpMsg::Noop`. It must `touch()` the session so the registry
-/// janitor does not evict an idle-but-live UDP datagram relay — an
-/// eviction the client observes as a spurious `ws closed`.
+/// The relay's keepalive tick reaches the XHTTP carrier as `XhttpMsg::Noop`.
+/// It must bump the keepalive clock so the registry janitor spares a
+/// quiet-but-live UDP datagram relay — an eviction the client observes as a
+/// spurious `ws closed`. It maps to `touch_keepalive`, not `touch_progress`:
+/// a keepalive keeps a *healthy quiet* session alive but does not, on its own,
+/// rescue a downlink-stalled one (that distinction is covered by the
+/// `is_evictable` tests in `tests/mod.rs`).
 #[tokio::test]
-async fn noop_keepalive_touches_session() {
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
+async fn noop_keepalive_spares_quiet_session() {
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None, None));
 
     // Let real wall-clock advance so a cutoff can sit strictly between
-    // session creation and the keepalive touch. `touch`/`is_idle_since`
-    // read `std::time::Instant`, which tokio's paused clock does not
-    // move — a short real sleep is the simplest reliable lever.
+    // session creation and the keepalive touch. `touch_keepalive`/`is_evictable`
+    // read `std::time::Instant`, which tokio's (unpaused) clock does move under
+    // a short real sleep.
     tokio::time::sleep(Duration::from_millis(40)).await;
 
-    // Never touched: last activity == creation (~40 ms ago), older than
-    // a 20-ms-ago cutoff → reads as idle.
+    // Never touched, nothing pending: liveness == creation (~40 ms ago), older
+    // than a 20-ms-ago cutoff → evictable.
     let cutoff_before = Instant::now() - Duration::from_millis(20);
     assert!(
-        session.is_idle_since(cutoff_before),
-        "a never-touched session should read as idle past the cutoff"
+        session.is_evictable(cutoff_before),
+        "a never-touched empty session should be evictable past the cutoff"
     );
 
     let duplex = XhttpDuplex {
@@ -34,13 +37,12 @@ async fn noop_keepalive_touches_session() {
         .await
         .expect("Noop keepalive send must succeed");
 
-    // Touched: last activity is now ~now, newer than a 20-ms-ago cutoff
-    // → no longer idle. This is what keeps the janitor off a live relay
-    // during a lull between datagrams.
+    // Keepalive stamped ~now, still nothing pending → no longer evictable. This
+    // is what keeps the janitor off a live relay during a lull between datagrams.
     let cutoff_after = Instant::now() - Duration::from_millis(20);
     assert!(
-        !session.is_idle_since(cutoff_after),
-        "Noop keepalive must touch the session so the janitor spares a live relay"
+        !session.is_evictable(cutoff_after),
+        "Noop keepalive must spare a quiet-but-live session from eviction"
     );
 }
 
@@ -48,7 +50,7 @@ async fn noop_keepalive_touches_session() {
 /// keepalive change must not blunt the close path.
 #[tokio::test]
 async fn close_still_closes_session() {
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None, None));
     let duplex = XhttpDuplex {
         session: Arc::clone(&session),
         udp_records: false,
@@ -73,7 +75,7 @@ async fn recv_recovers_datagram_boundaries_from_arbitrary_chunks() {
         encode_record_into(payload, &mut wire).expect("test payloads fit a record");
     }
 
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None, None));
     // Chunk 1 holds datagram one plus the head of datagram two; chunk 2 the
     // rest of two and the head of three; chunk 3 the tail.
     let cuts = [20usize, 30usize];
@@ -115,7 +117,7 @@ async fn recv_recovers_datagram_boundaries_from_arbitrary_chunks() {
 async fn send_frames_each_downlink_datagram() {
     use outline_wire::udp_records::encode_record_into;
 
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None, None));
     let duplex = XhttpDuplex::with_udp_records(Arc::clone(&session), true);
     let (_reader, mut writer) = duplex.split_io();
 
@@ -140,7 +142,7 @@ async fn send_frames_each_downlink_datagram() {
 /// SS-UDP path) keeps the historical wire byte-for-byte.
 #[tokio::test]
 async fn unnegotiated_session_keeps_the_plain_wire() {
-    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None));
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None, None));
     session
         .ingest_uplink_inorder(Bytes::from_static(b"raw chunk"))
         .await

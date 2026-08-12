@@ -25,6 +25,7 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
+    net::IpAddr,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicI64, Ordering},
@@ -99,28 +100,33 @@ const UPLINK_REORDER_MAX_GAP: u64 = 64;
 /// per session stays under `ready` + `reorder` = 512 KiB. Modeled on
 /// the byte-budget in `outline_transport::carrier_queue`.
 const UPLINK_READY_BYTES_CAP: usize = 256 * 1024;
-/// Time a session may sit with no I/O before the registry janitor
-/// evicts it. Must stay comfortably above the relay's keepalive
-/// cadence (`WS_TCP_KEEPALIVE_PING_INTERVAL_SECS`, 60 s): on an
-/// idle-but-live UDP datagram channel the relay's keepalive tick
-/// `touch()`es the session every 60 s (see `XhttpDuplex::send`), so
-/// the eviction window has to tolerate a missed keepalive or two
-/// before declaring a live relay dead — otherwise the janitor races
-/// the keepalive and tears down quiet-but-healthy UDP sessions (DNS
-/// between lookups, an idle QUIC connection), surfacing as a
-/// spurious `ws closed` on the client. 180 s = 3× keepalive mirrors
-/// the `WS_PONG_DEADLINE_MULTIPLIER` budget while still being
-/// generous enough that a CDN reconnect (10–20 s gap while the
-/// client picks a new edge) is not yet eviction-eligible.
+/// Time a session may sit idle before the registry janitor evicts it (see
+/// [`XhttpSession::is_evictable`] for the two ways a session counts as idle).
+/// Must stay comfortably above the relay's keepalive cadence
+/// (`WS_TCP_KEEPALIVE_PING_INTERVAL_SECS`, 60 s): on an idle-but-live UDP
+/// datagram channel the relay's keepalive tick `touch_keepalive()`s the session
+/// every 60 s (see `XhttpDuplex::send`), so the eviction window has to tolerate
+/// a missed keepalive or two before declaring a live relay dead — otherwise the
+/// janitor races the keepalive and tears down quiet-but-healthy UDP sessions
+/// (DNS between lookups, an idle QUIC connection), surfacing as a spurious `ws
+/// closed` on the client. 180 s = 3× keepalive mirrors the
+/// `WS_PONG_DEADLINE_MULTIPLIER` budget while still being generous enough that a
+/// CDN reconnect (10–20 s gap while the client picks a new edge) is not yet
+/// eviction-eligible. The same window also bounds how long a downlink-stalled
+/// session lingers before the `progress`-clock check reaps it despite ongoing
+/// keepalives.
 pub(in crate::server) const SESSION_IDLE_EVICTION: Duration = Duration::from_secs(180);
 
 /// Process-wide caps for [`XhttpRegistry`]. Sourced from `[tuning]`
-/// (`xhttp_max_sessions` / `xhttp_max_concurrent_relay_tasks`); `0` on either
-/// field disables that cap.
+/// (`xhttp_max_sessions` / `xhttp_max_sessions_per_ip` /
+/// `xhttp_max_concurrent_relay_tasks`); `0` on any field disables that cap.
 #[derive(Clone, Copy, Debug)]
 pub(in crate::server) struct XhttpRegistryLimits {
     /// Max concurrent sessions the registry may hold; `0` = unbounded.
     pub(in crate::server) max_sessions: usize,
+    /// Max concurrent sessions a single source IP may hold, on top of
+    /// `max_sessions`; `0` = unbounded (global cap only).
+    pub(in crate::server) max_sessions_per_ip: usize,
     /// Max concurrent relay tasks (global semaphore permits); `0` = unbounded.
     pub(in crate::server) max_relay_tasks: usize,
 }
@@ -129,7 +135,11 @@ impl XhttpRegistryLimits {
     /// No caps — used by tests that do not exercise the bounds.
     #[cfg(test)]
     pub(in crate::server) fn unbounded() -> Self {
-        Self { max_sessions: 0, max_relay_tasks: 0 }
+        Self {
+            max_sessions: 0,
+            max_sessions_per_ip: 0,
+            max_relay_tasks: 0,
+        }
     }
 }
 
@@ -144,21 +154,73 @@ pub(in crate::server) enum RelayPermit {
     AtCapacity,
 }
 
+/// Live per-source-IP session count, held by value on the map so the guard
+/// released when the last `Arc<XhttpSession>` drops can decrement it without
+/// the registry threading the count onto every teardown path.
+type PerIpCounts = DashMap<IpAddr, usize>;
+
+/// RAII slot against the per-source-IP session cap. Reserved in
+/// [`XhttpRegistry::get_or_create`] and moved into the [`XhttpSession`] it
+/// admits, so the count follows the session's own lifetime: dropping the last
+/// `Arc<XhttpSession>` (relay-task exit, idle eviction, a seq-gap `close`, any
+/// in-flight handler — whichever is last) releases the slot exactly once. This
+/// is why the per-IP counter needs no manual decrement on the individual
+/// teardown paths.
+struct PerIpGuard {
+    counts: Arc<PerIpCounts>,
+    ip: IpAddr,
+}
+
+impl Drop for PerIpGuard {
+    fn drop(&mut self) {
+        // Decrement under the shard lock, then release it before removing the
+        // now-zero entry: `remove_if` re-locks the same shard, so holding the
+        // `get_mut` guard across it would deadlock. Removing at zero keeps the
+        // map from growing one entry per source IP ever seen.
+        let now_zero = match self.counts.get_mut(&self.ip) {
+            Some(mut slot) => {
+                *slot = slot.saturating_sub(1);
+                *slot == 0
+            },
+            None => false,
+        };
+        if now_zero {
+            self.counts.remove_if(&self.ip, |_, count| *count == 0);
+        }
+    }
+}
+
+/// Outcome of [`XhttpRegistry::get_or_create`]: either a session to serve
+/// (with `created` telling the caller whether to spawn the relay) or a
+/// rejection carrying the low-cardinality metric reason the caller records
+/// before answering 503.
+pub(in crate::server) enum SessionSlot {
+    /// Serve this session; `created` is true for the caller that must spawn the
+    /// relay task.
+    Ready {
+        session: Arc<XhttpSession>,
+        created: bool,
+    },
+    /// A new session was refused by a process-wide cap. Holds the static
+    /// `reason` label for `record_xhttp_session_rejected`
+    /// (`"max_sessions"` or `"max_sessions_per_ip"`).
+    Rejected(&'static str),
+}
+
 /// Process-wide store of live XHTTP sessions, keyed by client-
 /// chosen opaque id. Cheap to clone (`Arc`).
-///
-// TODO(bounded): add an optional per-source-IP session cap so a single peer
-// cannot consume the whole `max_sessions` budget. Deferred because a session's
-// source IP would have to be threaded onto `XhttpSession` and the per-IP
-// counter decremented on *every* teardown path (relay-task exit, idle
-// eviction's `retain`, the seq-gap `close`), which is easy to leak; the global
-// `max_sessions` cap plus the relay-task semaphore already bound the aggregate
-// footprint, so per-IP fairness is a separate, self-contained follow-up.
 pub(in crate::server) struct XhttpRegistry {
     sessions: DashMap<Arc<str>, Arc<XhttpSession>>,
     /// Ceiling on concurrent sessions; `0` = unbounded. Enforced only on
     /// creation of a *new* session — an existing id is always served.
     max_sessions: usize,
+    /// Per-source-IP ceiling on concurrent sessions; `0` = unbounded. Enforced
+    /// on creation only, on top of `max_sessions`.
+    max_sessions_per_ip: usize,
+    /// Live session count per source IP; empty and unused when the per-IP cap
+    /// is disabled. Kept in a separate map from `sessions` so its shard locks
+    /// never nest with the session shard locks.
+    per_ip: Arc<PerIpCounts>,
     /// Global relay-task semaphore; `None` = unbounded. Reserved in
     /// `spawn_relay` and held for the relay task's lifetime.
     relay_semaphore: Option<Arc<Semaphore>>,
@@ -171,19 +233,47 @@ impl XhttpRegistry {
         Arc::new(Self {
             sessions: DashMap::new(),
             max_sessions: limits.max_sessions,
+            max_sessions_per_ip: limits.max_sessions_per_ip,
+            per_ip: Arc::new(DashMap::new()),
             relay_semaphore,
         })
     }
 
-    /// Returns `Some((session, created))` — the bool tells the caller
-    /// whether they are the side that should spawn the relay task.
-    /// Atomic: two concurrent requests with the same id race once,
-    /// the loser sees `created = false` and just attaches.
+    /// Reserves a slot against the per-source-IP cap, returning `None` when the
+    /// source is already at its share. `Some(None)` means the cap is disabled
+    /// (no accounting); `Some(Some(guard))` reserved a slot the caller must
+    /// keep alive for the session's lifetime.
+    fn reserve_source_slot(&self, ip: IpAddr) -> Option<Option<PerIpGuard>> {
+        if self.max_sessions_per_ip == 0 {
+            return Some(None);
+        }
+        // `entry` takes the shard write-lock once; increment in place only when
+        // still under the cap. A refused reservation leaves the existing
+        // (non-zero) entry untouched — no leak, and the entry is reclaimed by
+        // `PerIpGuard::drop` when the source's live sessions reach zero.
+        let mut slot = self.per_ip.entry(ip).or_insert(0);
+        if *slot >= self.max_sessions_per_ip {
+            return None;
+        }
+        *slot += 1;
+        drop(slot);
+        Some(Some(PerIpGuard { counts: Arc::clone(&self.per_ip), ip }))
+    }
+
+    /// Returns [`SessionSlot::Ready`] with the session and a `created` flag —
+    /// the flag tells the caller whether they are the side that should spawn
+    /// the relay task. Atomic: two concurrent requests with the same id race
+    /// once, the loser sees `created = false` and just attaches.
     ///
-    /// Returns `None` when the registry is at `max_sessions` and the id is not
-    /// already live: the caller rejects with HTTP 503 without inserting an
-    /// entry or spawning a task. An already-live id (resume / repeat request)
-    /// is served regardless of the cap — the cap gates creation only.
+    /// Returns [`SessionSlot::Rejected`] when a *new* session is refused by the
+    /// global `max_sessions` cap (`"max_sessions"`) or the per-source-IP cap
+    /// (`"max_sessions_per_ip"`): the caller rejects with HTTP 503 without
+    /// inserting an entry or spawning a task, recording the carried reason. An
+    /// already-live id (resume / repeat request) is served regardless of either
+    /// cap — the caps gate creation only.
+    ///
+    /// `source_ip` is the transport peer address, charged against the per-IP
+    /// cap for the session's whole lifetime via a guard moved onto the session.
     ///
     /// `issued_resume_id` and `relayed_echo` are the edge decision this request
     /// committed to; both are recorded on the session and read back by every
@@ -194,34 +284,52 @@ impl XhttpRegistry {
     pub(in crate::server) fn get_or_create(
         &self,
         session_id: &str,
+        source_ip: IpAddr,
         issued_resume_id: Option<SessionId>,
         relayed_echo: Option<ResumeResponseEcho>,
-    ) -> Option<(Arc<XhttpSession>, bool)> {
+    ) -> SessionSlot {
         let key: Arc<str> = Arc::from(session_id);
         // Fast path: an existing session is always served, never rejected by
-        // the cap. The read guard is released before the `len()` check below.
+        // the caps. The read guard is released before the `len()` check below.
         if let Some(existing) = self.sessions.get(&key) {
-            return Some((Arc::clone(existing.value()), false));
+            return SessionSlot::Ready {
+                session: Arc::clone(existing.value()),
+                created: false,
+            };
         }
-        // New session: enforce the cap before taking the shard write-lock in
-        // `entry()`. `len()` acquires per-shard read locks, so reading it while
-        // holding a shard write-lock could deadlock a concurrent `len()`
-        // (mirrors `ReplayStore`). The check/insert race is benign for a soft
-        // bound — at most a few racing callers slip past the cap.
+        // New session: enforce the global cap before taking the shard
+        // write-lock in `entry()`. `len()` acquires per-shard read locks, so
+        // reading it while holding a shard write-lock could deadlock a
+        // concurrent `len()` (mirrors `ReplayStore`). The check/insert race is
+        // benign for a soft bound — at most a few racing callers slip past the
+        // cap.
         if self.max_sessions > 0 && self.sessions.len() >= self.max_sessions {
-            return None;
+            return SessionSlot::Rejected("max_sessions");
         }
+        // Reserve the per-source-IP slot before inserting. Held in `ip_guard`
+        // and moved into the session by `or_insert_with` on the creating call;
+        // if this call loses the create race, the guard is never taken and
+        // dropping it here returns the slot.
+        let mut ip_guard = match self.reserve_source_slot(source_ip) {
+            Some(guard) => guard,
+            None => return SessionSlot::Rejected("max_sessions_per_ip"),
+        };
         let mut created = false;
         let session = self
             .sessions
             .entry(Arc::clone(&key))
             .or_insert_with(|| {
                 created = true;
-                Arc::new(XhttpSession::new(Arc::clone(&key), issued_resume_id, relayed_echo))
+                Arc::new(XhttpSession::new(
+                    Arc::clone(&key),
+                    issued_resume_id,
+                    relayed_echo,
+                    ip_guard.take(),
+                ))
             })
             .value()
             .clone();
-        Some((session, created))
+        SessionSlot::Ready { session, created }
     }
 
     /// Reserve a slot against the global relay-task ceiling. `AtCapacity` means
@@ -257,7 +365,7 @@ impl XhttpRegistry {
             if session.is_closed() {
                 return false;
             }
-            if session.is_idle_since(cutoff) {
+            if session.is_evictable(cutoff) {
                 session.close();
                 return false;
             }
@@ -299,8 +407,23 @@ pub(in crate::server) struct XhttpSession {
     /// and observes the closed state.
     pub(in crate::server) downlink_drain_notify: Notify,
     closed: AtomicBool,
-    last_activity_nanos: AtomicI64,
+    /// Last real data movement (uplink ingested/drained, downlink pushed/drained),
+    /// as nanos since `created_at`. Bumped by [`Self::touch_progress`] only — the
+    /// relay's keepalive tick deliberately does *not* touch it, so a session that
+    /// is being kept warm by keepalives while its downlink is stuck (a GET
+    /// consumer that never reads) still ages out through `progress`.
+    last_progress_nanos: AtomicI64,
+    /// Last keepalive tick from the relay ([`Self::touch_keepalive`]), as nanos
+    /// since `created_at`. Proves the carrier/relay is alive on an otherwise
+    /// quiet channel, but — unlike `progress` — does not by itself spare a
+    /// downlink-stalled session from eviction (see [`Self::is_evictable`]).
+    last_keepalive_nanos: AtomicI64,
     created_at: Instant,
+    /// Charges this session against the per-source-IP cap for its whole
+    /// lifetime; the slot is released when the last `Arc<XhttpSession>` drops.
+    /// `None` when the per-IP cap is disabled. Never read — only its `Drop`
+    /// matters.
+    _source_ip_guard: Option<PerIpGuard>,
     /// Server-issued cross-transport resumption id, minted on the
     /// first request that creates the session (when the client
     /// advertised `X-Outline-Resume-Capable` or supplied
@@ -359,6 +482,7 @@ impl XhttpSession {
         id: Arc<str>,
         issued_resume_id: Option<SessionId>,
         relayed_echo: Option<ResumeResponseEcho>,
+        source_ip_guard: Option<PerIpGuard>,
     ) -> Self {
         Self {
             id,
@@ -381,8 +505,10 @@ impl XhttpSession {
             downlink_notify: Notify::new(),
             downlink_drain_notify: Notify::new(),
             closed: AtomicBool::new(false),
-            last_activity_nanos: AtomicI64::new(0),
+            last_progress_nanos: AtomicI64::new(0),
+            last_keepalive_nanos: AtomicI64::new(0),
             created_at: Instant::now(),
+            _source_ip_guard: source_ip_guard,
             issued_resume_id,
             relayed_echo,
             udp_records: AtomicBool::new(false),
@@ -403,16 +529,57 @@ impl XhttpSession {
         self.udp_records.load(Ordering::Acquire)
     }
 
-    pub(in crate::server) fn touch(&self) {
-        let elapsed = self.created_at.elapsed().as_nanos();
-        let stamp = i64::try_from(elapsed).unwrap_or(i64::MAX);
-        self.last_activity_nanos.store(stamp, Ordering::Relaxed);
+    /// Records real data movement — uplink ingested/drained, downlink
+    /// pushed/drained. This is the clock the idle-eviction backstop ages a
+    /// stalled session against; the keepalive tick must *not* call it.
+    fn touch_progress(&self) {
+        self.stamp(&self.last_progress_nanos);
     }
 
-    pub(in crate::server) fn is_idle_since(&self, cutoff: Instant) -> bool {
-        let elapsed = self.last_activity_nanos.load(Ordering::Relaxed).max(0) as u64;
-        let last = self.created_at + Duration::from_nanos(elapsed);
-        last < cutoff
+    /// Records a relay keepalive tick. Keeps a genuinely quiet-but-live session
+    /// (an idle UDP datagram channel, a quiet QUIC connection) off the eviction
+    /// backstop, without refreshing the `progress` clock — so a downlink-stalled
+    /// session that only *looks* alive through keepalives still ages out.
+    pub(in crate::server) fn touch_keepalive(&self) {
+        self.stamp(&self.last_keepalive_nanos);
+    }
+
+    fn stamp(&self, field: &AtomicI64) {
+        let elapsed = self.created_at.elapsed().as_nanos();
+        let stamp = i64::try_from(elapsed).unwrap_or(i64::MAX);
+        field.store(stamp, Ordering::Relaxed);
+    }
+
+    fn instant_of(&self, field: &AtomicI64) -> Instant {
+        let elapsed = field.load(Ordering::Relaxed).max(0) as u64;
+        self.created_at + Duration::from_nanos(elapsed)
+    }
+
+    fn downlink_pending_bytes(&self) -> usize {
+        self.downlink.lock().pending_bytes
+    }
+
+    /// Whether the registry janitor should evict this session at `cutoff`
+    /// (= `now - SESSION_IDLE_EVICTION`).
+    ///
+    /// Two independent reasons, either sufficient:
+    /// * **Downlink-stalled.** Bytes are queued for a GET consumer that has not
+    ///   drained any within the window (`progress` older than `cutoff`). This
+    ///   fires even while the relay's keepalive keeps ticking — the whole point,
+    ///   since a stuck downlink (a client that attaches a GET but never reads)
+    ///   otherwise looks alive forever through keepalives and pins its ring
+    ///   until the process dies.
+    /// * **Fully idle.** Neither real progress nor a keepalive landed within the
+    ///   window. This preserves the historical behaviour for an abandoned,
+    ///   empty session; a healthy quiet session stays alive because its
+    ///   keepalive keeps `keepalive` fresh and it has nothing pending.
+    pub(in crate::server) fn is_evictable(&self, cutoff: Instant) -> bool {
+        let progress = self.instant_of(&self.last_progress_nanos);
+        if self.downlink_pending_bytes() > 0 && progress < cutoff {
+            return true;
+        }
+        let keepalive = self.instant_of(&self.last_keepalive_nanos);
+        progress.max(keepalive) < cutoff
     }
 
     /// Marks the session torn down. Idempotent. Wakes every notifier
@@ -486,7 +653,7 @@ impl XhttpSession {
             }
             drop(state);
             self.uplink_notify.notify_waiters();
-            self.touch();
+            self.touch_progress();
             return Ok(());
         }
         let gap = seq - state.expected_seq;
@@ -501,7 +668,7 @@ impl XhttpSession {
             state.reorder_bytes = state.reorder_bytes.saturating_add(len);
         }
         drop(state);
-        self.touch();
+        self.touch_progress();
         Ok(())
     }
 
@@ -557,7 +724,7 @@ impl XhttpSession {
                     // not reject seq=0 packets if anything ever bridges across.
                     drop(state);
                     self.uplink_notify.notify_waiters();
-                    self.touch();
+                    self.touch_progress();
                     return Ok(());
                 }
             }
@@ -618,7 +785,7 @@ impl XhttpSession {
         let closed = state.closed;
         drop(state);
         if !dst.is_empty() {
-            self.touch();
+            self.touch_progress();
         }
         if drained_any {
             // The relay is the only writer (one VLESS pipe per XHTTP
@@ -669,7 +836,7 @@ impl XhttpSession {
                     state.pending_bytes = state.pending_bytes.saturating_add(len);
                     drop(state);
                     self.downlink_notify.notify_one();
-                    self.touch();
+                    self.touch_progress();
                     return Ok(());
                 }
             }
