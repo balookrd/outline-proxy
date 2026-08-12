@@ -224,3 +224,36 @@ export function lossTone(ratio: number | null): MetricTone {
   if (ratio < LOSS_WARN) return 'good';
   return ratio < LOSS_BAD ? 'warn' : 'bad';
 }
+
+// ── Row action-button gating (Task 10) ──────────────────────────────────────
+// Mirrors dashboard.html renderInstanceBody's activateBtn/softBtn construction
+// (:1338-1357) as pure predicates over the row's already-computed `RowTone`,
+// so the gating rules are unit-testable without a running backend or DOM —
+// see wsTopology.test.ts. GroupTable.svelte turns each state into the actual
+// button markup (icon/title/aria-label/disabled).
+
+// Activate (hard switch) button state for one row. A disabled uplink
+// (`admin_disabled`, tone 'off') never reaches this at all in the caller —
+// GroupTable hides the whole activate/soft button group for those rows and
+// renders only the power toggle — so 'hidden' here is defensive, not the
+// primary path.
+export type ActivateButtonState = 'live' | 'active' | 'down' | 'hidden';
+export function activateButtonState(tone: RowTone): ActivateButtonState {
+  if (tone === 'off') return 'hidden';
+  if (tone === 'good') return 'active'; // already active — shown, disabled
+  if (tone === 'bad') return 'down'; // every wire unreachable — shown, disabled
+  return 'live'; // warn: healthy but passive
+}
+
+// Soft switch (cluster resume) button state. Live only on a cluster group's
+// healthy-but-passive row; shown-but-disabled on the already-active row (so
+// the action column doesn't reflow the instant a row becomes active); hidden
+// off-cluster or on a down row. Mirrors dashboard.html's softBtn construction
+// (:1351-1357).
+export type SoftButtonState = 'live' | 'active' | 'hidden';
+export function softButtonState(tone: RowTone, clusterResumeEnabled: boolean): SoftButtonState {
+  if (tone === 'off' || !clusterResumeEnabled) return 'hidden';
+  if (tone === 'good') return 'active';
+  if (tone === 'warn') return 'live';
+  return 'hidden'; // bad (down)
+}

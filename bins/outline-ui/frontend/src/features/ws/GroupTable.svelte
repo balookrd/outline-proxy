@@ -8,9 +8,15 @@
   // — isActive/healthy/admin_disabled/last_error and the activateBtn/softBtn/
   // powerBtn presence rules — via lib/wsTopology.ts.
   //
-  // READ-ONLY (Task 9): every action button below is rendered `disabled`.
-  // Task 10 wires Activate/Soft/Power/Reselect to the real API calls; this
-  // component intentionally does not import activate/reselect/setEnabled.
+  // Task 10: action buttons are wired, but only via callback props
+  // (onActivate/onEnable/onReselect) — this component still intentionally
+  // does not import activate/reselect/setEnabled itself, nor lib/poll.svelte
+  // or lib/toast.svelte. Topology.svelte owns the per-instance polls and is
+  // the one place that knows which instance a given group belongs to (it's
+  // the one iterating `listPoll.data.instances`), so it defines the actual
+  // handlers (api call + toast + poll.refresh()) and passes bound closures
+  // down; this component stays presentational, same division of labour as
+  // features/ss/Users.svelte owning mutation state for UsersTable's rows.
   import type { Group, Uplink } from '../../lib/types';
   import { formatRtt, formatLossPct } from '../../lib/format';
   import {
@@ -22,11 +28,35 @@
     primaryRttMs,
     primaryLossRatio,
     lossTone,
+    activateButtonState,
+    softButtonState,
     type RowTone,
+    type ActivateButtonState,
+    type SoftButtonState,
   } from '../../lib/wsTopology';
   import WireChain from './WireChain.svelte';
 
-  let { group }: { group: Group } = $props();
+  let {
+    group,
+    mutating = false,
+    onActivate,
+    onEnable,
+    onReselect,
+  }: {
+    group: Group;
+    // True while an operation Topology.svelte dispatched for this group's
+    // instance is in flight — disables every button below so a slow request
+    // can't be raced by a second click (mirrors features/ss/Users.svelte's
+    // page-wide `mutating` lock, scoped to the instance instead of the whole
+    // app since Topology shows every instance at once).
+    mutating?: boolean;
+    // soft=false is a hard Activate, soft=true is the soft-switch (⇄) button
+    // — both ride POST /activate (dashboard.html activateEntries()), so one
+    // callback covers both buttons.
+    onActivate: (uplinkName: string, soft: boolean) => void;
+    onEnable: (uplinkName: string, enabled: boolean) => void;
+    onReselect: () => void;
+  } = $props();
 
   const uplinks = $derived(group.uplinks ?? []);
   const activeCount = $derived(uplinks.filter(isUplinkActive).length);
@@ -72,11 +102,19 @@
     return tone === 'good' ? 'ok' : tone;
   }
 
-  // dashboard.html's softBtn gating (:1351-1357): cluster groups only, and
-  // only on an enabled row that isn't already active (rendered
-  // present-but-disabled on the already-active row, absent on Down/Disabled).
-  function showSoft(u: Uplink, tone: RowTone): boolean {
-    return !u.admin_disabled && Boolean(group.cluster_resume_enabled) && (tone === 'good' || tone === 'warn');
+  // Action-cell button copy for each activateButtonState()/softButtonState()
+  // outcome — the long descriptive text lives in `title` (desktop tooltip,
+  // mirrors dashboard.html's `data-tip`), `aria-label` stays the short
+  // per-uplink form the rest of this app's icon buttons use (e.g.
+  // features/ss/UsersTable.svelte's `Delete ${user.id}`).
+  function activateCopy(uplink: Uplink, state: ActivateButtonState): { title: string; label: string } {
+    if (state === 'active') return { title: 'Already active', label: `${uplink.name} is already active` };
+    if (state === 'down') return { title: 'Down — every wire unreachable', label: `${uplink.name} is down` };
+    return { title: 'Activate (hard switch)', label: `Activate ${uplink.name}` };
+  }
+  function softCopy(uplink: Uplink, state: SoftButtonState): { title: string; label: string } {
+    if (state === 'active') return { title: 'Already active', label: `${uplink.name} is already active` };
+    return { title: 'Soft switch (cluster resume)', label: `Soft switch to ${uplink.name}` };
   }
 </script>
 
@@ -93,9 +131,10 @@
       <span class="chip ok"><span class="d"></span>{activeCount} active</span>
       <button
         class="btn ghost sm"
-        disabled
+        disabled={mutating}
         title="Reselect active uplink (weighted)"
         aria-label={`Reselect the active uplink for ${group.name}`}
+        onclick={onReselect}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></svg> Reselect
       </button>
@@ -141,20 +180,37 @@
         </div>
         <div class="actioncell">
           {#if !uplink.admin_disabled}
-            <button class="iconbtn" disabled title="Activate" aria-label={`Activate ${uplink.name}`}>
+            {@const activateState = activateButtonState(tone)}
+            {@const activate = activateCopy(uplink, activateState)}
+            <button
+              class="iconbtn"
+              disabled={activateState !== 'live' || mutating}
+              title={activate.title}
+              aria-label={activate.label}
+              onclick={() => onActivate(uplink.name, false)}
+            >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 4 14 8-14 8Z"/></svg>
             </button>
-            {#if showSoft(uplink, tone)}
-              <button class="iconbtn" disabled title="Soft switch (cluster resume)" aria-label={`Soft switch to ${uplink.name}`}>
+            {@const softState = softButtonState(tone, Boolean(group.cluster_resume_enabled))}
+            {#if softState !== 'hidden'}
+              {@const soft = softCopy(uplink, softState)}
+              <button
+                class="iconbtn"
+                disabled={softState !== 'live' || mutating}
+                title={soft.title}
+                aria-label={soft.label}
+                onclick={() => onActivate(uplink.name, true)}
+              >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 7h11l-3-3M17 17H6l3 3"/></svg>
               </button>
             {/if}
           {/if}
           <button
             class="iconbtn"
-            disabled
+            disabled={mutating}
             title={uplink.admin_disabled ? 'Enable' : 'Disable'}
             aria-label={`${uplink.admin_disabled ? 'Enable' : 'Disable'} ${uplink.name}`}
+            onclick={() => onEnable(uplink.name, uplink.admin_disabled)}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v9M6.4 6.4a8 8 0 1 0 11.2 0"/></svg>
           </button>
