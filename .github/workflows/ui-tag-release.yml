@@ -1,0 +1,21 @@
+name: Tag Release (ui)
+
+on:
+  push:
+    tags:
+      - "ui-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ui-tag-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: ./.github/workflows/_ui-release-build.yml
+    with:
+      tag: ${{ github.ref_name }}
+      prerelease: false
+      make_latest: "true"

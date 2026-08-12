@@ -66,8 +66,10 @@ cargo fmt --all          # затрагивает и vendor/* — откатыв
 ```bash
 cargo check -p outline-ss-rust
 cargo check -p outline-ws-rust
+cargo check -p outline-ui
 cargo ss-release-musl-x86_64       # zigbuild server, нужен cargo-zigbuild + zig
 cargo ws-release-musl-aarch64      # zigbuild client
+cargo ui-release-musl-aarch64      # zigbuild dashboard UI
 ```
 
 ### CI-гейт — гнать локально перед коммитом
