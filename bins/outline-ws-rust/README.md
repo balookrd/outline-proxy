@@ -654,6 +654,10 @@ Declarative routing by destination CIDR, evaluated first-match-wins with an expl
 
 IP targets are matched against each rule's CIDR prefixes. Domain-name targets (e.g. a SOCKS5 client that hands over a hostname for remote resolution) can never match a CIDR prefix — they are matched against each rule's `domains` suffixes instead, and fall through to the default when no rule lists them. The proxy deliberately does not resolve a domain locally just to route it: that would leak DNS outside the tunnel and break the remote-resolve contract.
 
+Rules can be edited at runtime through `/control/routes` and reordered
+through `/control/routes/reorder` — see "Control plane" below for the
+endpoints and the hot-apply caveat.
+
 ### Route config
 
 ```toml
@@ -1025,7 +1029,9 @@ If `[control]` is configured the process serves mutating endpoints on a
 - `POST /control/reselect` - force a weighted-random re-selection of a group's strict active uplink ("reselect now"), the same rotation the scheduled `reselect_at`/`reselect_interval` loops perform. JSON body `{"group":"main","soft":true}` (`soft` defaults to `true`)
 - `POST /control/uplink_enabled` - administratively enable/disable an uplink (operator on/off). JSON body `{"group":"main","uplink":"backup","enabled":false}`. A disabled uplink is removed from **all** automatic machinery — probing, candidate selection, failover, and warm-standby refill — until re-enabled; if it was the active uplink, traffic fails over to an enabled standby immediately. Runtime-only: the override is **not** persisted, so a process restart starts every uplink enabled. Exposed in the dashboard as the per-uplink On/Off button.
 - `GET`/`POST`/`PATCH`/`DELETE /control/uplinks` - stage `[[outline.uplinks]]` edits in the config file
-- `POST /control/apply` - hot-apply staged uplink edits without a process restart
+- `GET`/`POST`/`PATCH`/`DELETE /control/routes` - stage `[[route]]` edits in the config file
+- `POST /control/routes/reorder` - move a rule to a new position in the first-match-wins list
+- `POST /control/apply` - hot-apply staged uplink edits, and staged route edits when routing was already configured at startup, without a process restart
 - `POST /switch` - manual active-uplink override
 
 There is no anonymous access path. Requests without a matching
@@ -1142,6 +1148,18 @@ of `cluster_resume_enabled`.
 on-disk TOML. Mutation responses include `apply_required: true` when
 `/control/apply` can activate the staged change; `restart_required` is reserved
 for control states that cannot hot-apply.
+
+`/control/routes` mutates the canonical `[[route]]` array the same way, but by
+array index rather than name — a rule has no identity key — guarded by an
+optimistic-concurrency `revision` so a stale index from a concurrent edit is
+rejected instead of moving the wrong rule. `POST /control/routes/reorder`
+moves one rule to a new index in that same array, since ordering is what
+first-match-wins evaluation depends on. `POST /control/apply` hot-applies a
+staged route edit exactly like a staged uplink edit, **but only when
+`[[route]]` was already present at process startup**: turning policy routing
+on for the first time on a node that started without it (routing everything
+through the first group) still needs a restart, since there is no live
+routing table yet to swap into.
 
 Examples:
 
