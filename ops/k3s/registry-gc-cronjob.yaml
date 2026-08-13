@@ -1,0 +1,61 @@
+# Weekly garbage-collect for the private registry (registry.k3s.beerloga.su).
+#
+# The registry runs with REGISTRY_STORAGE_DELETE_ENABLED=true, so tags get
+# DELETEd over time (e.g. retiring old image versions). A manifest DELETE only
+# unlinks the manifest — the underlying blobs stay on the NFS backend until
+# `registry garbage-collect` sweeps them, so without this they accumulate.
+#
+# This job reuses the registry:2.8.3 image and mounts the SAME NFS export the
+# registry Deployment mounts (RWX, so a parallel mount alongside the running
+# registry is fine). It runs GC against the image's default config, whose
+# storage.filesystem.rootdirectory is /var/lib/registry; GC reads the storage
+# backend directly and does not itself require delete.enabled. --delete-untagged
+# additionally drops manifests left with no tag.
+#
+# GC is NOT run with the registry in read-only mode, so a push landing in the
+# same instant as the sweep could in theory lose a just-uploaded, not-yet-linked
+# blob. Scheduled for Sunday 04:00 UTC (07:00 MSK) when the registry is idle;
+# for a small private registry this is an acceptable trade against the
+# complexity of toggling the Deployment read-only around the job.
+#
+# Storage backend: NFS 198.18.1.125:/mnt/HD/HD_a2/k8s/registry — keep this in
+# sync with the registry Deployment's `data` volume if the export ever moves.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: registry-gc
+  namespace: registry
+spec:
+  schedule: "0 4 * * 0"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: gc
+              image: registry:2.8.3
+              command:
+                - registry
+                - garbage-collect
+                - /etc/docker/registry/config.yml
+                - --delete-untagged
+              env:
+                - name: REGISTRY_STORAGE_DELETE_ENABLED
+                  value: "true"
+              volumeMounts:
+                - name: data
+                  mountPath: /var/lib/registry
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 256Mi }
+          volumes:
+            - name: data
+              nfs:
+                server: 198.18.1.125
+                path: /mnt/HD/HD_a2/k8s/registry
