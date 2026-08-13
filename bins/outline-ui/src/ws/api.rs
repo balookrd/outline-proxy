@@ -319,6 +319,46 @@ pub async fn uplinks_proxy(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
+    proxy_crud(&state, method, query, body, "/control/uplinks").await
+}
+
+/// `GET|POST|PATCH|DELETE /dashboard/api/routes` — CRUD passthrough to
+/// `/control/routes`. GET carries `instance` in the query; mutating methods
+/// carry an `{instance, body}` envelope, same as uplinks.
+pub async fn routes_proxy(
+    State(state): State<WsState>,
+    method: Method,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
+    proxy_crud(&state, method, query, body, "/control/routes").await
+}
+
+/// `POST /dashboard/api/apply` — asks the instance to hot-apply pending uplink
+/// (and routing) changes. Carries an `{instance}` envelope; its callers omit
+/// `body`, which `/control/apply` ignores regardless of content.
+pub async fn apply_proxy(State(state): State<WsState>, body: Bytes) -> Response {
+    proxy_envelope_post(&state, body, "/control/apply").await
+}
+
+/// `POST /dashboard/api/routes/reorder` — `{instance, body}` envelope to
+/// `/control/routes/reorder`; `body` carries `{from, to, revision}` and is
+/// forwarded verbatim, unlike `/control/apply` which never reads its body.
+pub async fn routes_reorder_proxy(State(state): State<WsState>, body: Bytes) -> Response {
+    proxy_envelope_post(&state, body, "/control/routes/reorder").await
+}
+
+/// Shared CRUD passthrough behind `uplinks_proxy`/`routes_proxy`: GET forwards
+/// `instance` and any other filters as a query string; the mutating methods
+/// carry an `{instance, body}` envelope. Verbatim behaviour of the original
+/// `uplinks_proxy`, parameterized by the control `path`.
+async fn proxy_crud(
+    state: &WsState,
+    method: Method,
+    query: Option<String>,
+    body: Bytes,
+    path: &str,
+) -> Response {
     let (name, forward_body, forward_query) = if method == Method::GET {
         let raw = query.unwrap_or_default();
         let mut name = None;
@@ -360,15 +400,19 @@ pub async fn uplinks_proxy(
         (envelope.instance, Some(inner), query)
     };
 
-    let Some(instance) = find(&state, &name) else {
+    let Some(instance) = find(state, &name) else {
         return json_error(StatusCode::NOT_FOUND, "unknown instance");
     };
 
-    let path = match forward_query {
-        Some(q) => format!("/control/uplinks?{q}"),
-        None => "/control/uplinks".to_string(),
+    let full_path = match forward_query {
+        Some(q) => format!("{path}?{q}"),
+        None => path.to_string(),
     };
-    match state.backend.request(instance, method, &path, forward_body).await {
+    match state
+        .backend
+        .request(instance, method, &full_path, forward_body)
+        .await
+    {
         Ok(response) => json_response(response.status, &parse_or_raw(&response.body)),
         Err(error) => json_response(
             StatusCode::BAD_GATEWAY,
@@ -377,9 +421,17 @@ pub async fn uplinks_proxy(
     }
 }
 
-/// `POST /dashboard/api/apply` — asks the instance to hot-apply pending uplink
-/// changes. Carries an `{instance}` envelope and an empty control body.
-pub async fn apply_proxy(State(state): State<WsState>, body: Bytes) -> Response {
+/// Shared `{instance, body}` POST passthrough behind `apply_proxy`/
+/// `routes_reorder_proxy`: parses the envelope, resolves the instance, and
+/// forwards `body` (JSON-serialized, defaulting to `null` when the caller
+/// omits it — every current `apply_proxy` caller does) to `path`.
+///
+/// `/control/apply` never reads its request body, so `apply_proxy` sending
+/// `null` instead of the zero-byte body it used to hardcode is unobservable
+/// there. `/control/routes/reorder` DOES read its body (`{from, to,
+/// revision}`), so unlike that old apply-only shape this must forward the
+/// envelope's `body` rather than discard it.
+async fn proxy_envelope_post(state: &WsState, body: Bytes, path: &str) -> Response {
     if body.is_empty() {
         return json_error(StatusCode::BAD_REQUEST, "missing instance");
     }
@@ -392,14 +444,11 @@ pub async fn apply_proxy(State(state): State<WsState>, body: Bytes) -> Response 
     if envelope.instance.is_empty() {
         return json_error(StatusCode::BAD_REQUEST, "instance must not be empty");
     }
-    let Some(instance) = find(&state, &envelope.instance) else {
+    let Some(instance) = find(state, &envelope.instance) else {
         return json_error(StatusCode::NOT_FOUND, "unknown instance");
     };
-    match state
-        .backend
-        .request(instance, Method::POST, "/control/apply", Some(Bytes::new()))
-        .await
-    {
+    let inner = Bytes::from(serde_json::to_vec(&envelope.body).unwrap_or_default());
+    match state.backend.request(instance, Method::POST, path, Some(inner)).await {
         Ok(response) => json_response(response.status, &parse_or_raw(&response.body)),
         Err(error) => json_response(
             StatusCode::BAD_GATEWAY,
