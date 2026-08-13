@@ -6,7 +6,10 @@ export interface User {
   id: string; enabled: boolean;
   password?: string | null; vless_id?: string | null; method?: string | null;
   fwmark?: number | null; ws_path_tcp?: string | null; ws_path_udp?: string | null;
-  ws_path_vless?: string | null; aliases?: Record<string, string | string[]> | null;
+  ws_path_ss?: string | null; ws_path_vless?: string | null;
+  xhttp_path_tcp?: string | null; xhttp_path_udp?: string | null;
+  xhttp_path_ss?: string | null; xhttp_path_vless?: string | null;
+  aliases?: Record<string, string | string[]> | null;
   // Always present on UserView (server/control/manager.rs) — never the raw
   // secret, just whether one is set. Drives the drawer's edit-mode
   // placeholder ("keep current password" vs "add Shadowsocks password").
