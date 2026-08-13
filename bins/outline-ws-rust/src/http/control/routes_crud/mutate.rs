@@ -174,10 +174,6 @@ pub(super) fn validate_route_array(
 }
 
 /// Method dispatch for `/control/routes`.
-// TODO(task-7): not yet reachable from `server.rs`'s request dispatch — wiring
-// `/control/routes` in is the next task. Remove this `allow` once that lands;
-// it also covers everything these two functions call (mutate/apply_*/list).
-#[allow(dead_code)]
 pub(crate) async fn handle_routes(
     request: Request<Incoming>,
     state: Arc<ControlState>,
@@ -191,7 +187,6 @@ pub(crate) async fn handle_routes(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) async fn handle_routes_reorder(
     request: Request<Incoming>,
     state: Arc<ControlState>,
