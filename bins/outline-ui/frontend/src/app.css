@@ -54,6 +54,16 @@
     --muted: #f1f5f9; --border: #dbe2ee; --border-soft: #e7ecf4;
     --fg: #0f172a; --fg-muted: #55627a; --fg-dim: #94a3b8;
     --shadow: 0 1px 2px rgba(15,23,42,.06), 0 10px 24px -16px rgba(15,23,42,.25);
+    /* Contrast tokens for chips/metrics/badges: dark 700-level text, a denser
+       opaque-ish tint, and a hairline border (same recipe as the wire-chain
+       fix below) — consumed by the "Light theme: chips/metrics/badges" rules
+       further down instead of the raw --accent/--warn/--danger/--info, which
+       wash out on a white background. */
+    --chip-ok-text: #15803d; --chip-ok-bg: color-mix(in srgb, #16a34a 16%, #fff); --chip-ok-border: color-mix(in srgb, #16a34a 42%, #fff);
+    --chip-warn-text: #b45309; --chip-warn-bg: color-mix(in srgb, #d97706 16%, #fff); --chip-warn-border: color-mix(in srgb, #d97706 42%, #fff);
+    --chip-bad-text: #b91c1c; --chip-bad-bg: color-mix(in srgb, #dc2626 16%, #fff); --chip-bad-border: color-mix(in srgb, #dc2626 42%, #fff);
+    --chip-info-text: #0369a1; --chip-info-bg: color-mix(in srgb, #0284c7 16%, #fff); --chip-info-border: color-mix(in srgb, #0284c7 42%, #fff);
+    --chip-off-text: #334155;
   }
 }
 
@@ -63,6 +73,11 @@
   --muted: #f1f5f9; --border: #dbe2ee; --border-soft: #e7ecf4;
   --fg: #0f172a; --fg-muted: #55627a; --fg-dim: #94a3b8;
   --shadow: 0 1px 2px rgba(15,23,42,.06), 0 10px 24px -16px rgba(15,23,42,.25);
+  --chip-ok-text: #15803d; --chip-ok-bg: color-mix(in srgb, #16a34a 16%, #fff); --chip-ok-border: color-mix(in srgb, #16a34a 42%, #fff);
+  --chip-warn-text: #b45309; --chip-warn-bg: color-mix(in srgb, #d97706 16%, #fff); --chip-warn-border: color-mix(in srgb, #d97706 42%, #fff);
+  --chip-bad-text: #b91c1c; --chip-bad-bg: color-mix(in srgb, #dc2626 16%, #fff); --chip-bad-border: color-mix(in srgb, #dc2626 42%, #fff);
+  --chip-info-text: #0369a1; --chip-info-bg: color-mix(in srgb, #0284c7 16%, #fff); --chip-info-border: color-mix(in srgb, #0284c7 42%, #fff);
+  --chip-off-text: #334155;
 }
 
 * { box-sizing: border-box; }
@@ -269,6 +284,69 @@ tr:hover .rowactions { opacity: 1; }
 :root:not([data-theme="dark"]) .seg.h2 { color: #b45309; background: color-mix(in srgb, #d97706 16%, #fff); border-color: color-mix(in srgb, #d97706 42%, #fff); }
 :root[data-theme="light"] .seg.h1,
 :root:not([data-theme="dark"]) .seg.h1 { color: #b91c1c; background: color-mix(in srgb, #dc2626 16%, #fff); border-color: color-mix(in srgb, #dc2626 42%, #fff); }
+
+/* ---- Light theme: chips/metrics/badges wash out on white for the same
+   reason the wire-chain pills above did — swap the raw --accent/--warn/
+   --danger/--info text+tint for the --chip-* tokens defined in the
+   light-theme root blocks (dark 700-level text, denser opaque-ish tint,
+   hairline border). This one set of rules covers every chip tone, which is
+   also every "group-header chip" (status pills in Topology, Users
+   active/blocked, method/role chips, config chips, the reason/fingerprint/
+   auto-failback/cluster/bypass chips, the "N active" count) since they all
+   render through .chip.ok/.warn/.bad/.info/.off — plus the RTT/loss
+   .metric text, the user-avatar initials badge, toast and error-banner
+   icons, the apply-bar pill, and the topology row action buttons, which
+   share the same washed-out-on-white construction. Status dots are left
+   alone: a solid-fill dot already reads fine on white. Dark theme is
+   untouched. */
+:root[data-theme="light"] .chip.ok,
+:root:not([data-theme="dark"]) .chip.ok { color: var(--chip-ok-text); background: var(--chip-ok-bg); border-color: var(--chip-ok-border); }
+:root[data-theme="light"] .chip.warn,
+:root:not([data-theme="dark"]) .chip.warn { color: var(--chip-warn-text); background: var(--chip-warn-bg); border-color: var(--chip-warn-border); }
+:root[data-theme="light"] .chip.bad,
+:root:not([data-theme="dark"]) .chip.bad { color: var(--chip-bad-text); background: var(--chip-bad-bg); border-color: var(--chip-bad-border); }
+:root[data-theme="light"] .chip.info,
+:root:not([data-theme="dark"]) .chip.info { color: var(--chip-info-text); background: var(--chip-info-bg); border-color: var(--chip-info-border); }
+:root[data-theme="light"] .chip.off,
+:root:not([data-theme="dark"]) .chip.off { color: var(--chip-off-text); }
+
+:root[data-theme="light"] .metric.good,
+:root:not([data-theme="dark"]) .metric.good { color: var(--chip-ok-text); }
+:root[data-theme="light"] .metric.warn,
+:root:not([data-theme="dark"]) .metric.warn { color: var(--chip-warn-text); }
+:root[data-theme="light"] .metric.bad,
+:root:not([data-theme="dark"]) .metric.bad { color: var(--chip-bad-text); }
+
+:root[data-theme="light"] .avatar,
+:root:not([data-theme="dark"]) .avatar { color: var(--chip-info-text); background: var(--chip-info-bg); }
+
+:root[data-theme="light"] .toast.ok svg,
+:root:not([data-theme="dark"]) .toast.ok svg { color: var(--chip-ok-text); }
+:root[data-theme="light"] .toast.error svg,
+:root:not([data-theme="dark"]) .toast.error svg { color: var(--chip-bad-text); }
+
+:root[data-theme="light"] .error-banner svg,
+:root:not([data-theme="dark"]) .error-banner svg { color: var(--chip-bad-text); }
+
+:root[data-theme="light"] .applybar .pill,
+:root:not([data-theme="dark"]) .applybar .pill { color: var(--chip-warn-text); }
+
+/* Topology row action buttons: same color-on-tint construction as the chips
+   above, just on .iconbtn. act-power keeps dark theme's subtler no-tint
+   resting state (icon+border only) — amber-700 already clears AA against
+   the plain --muted background, so it doesn't need one. */
+:root[data-theme="light"] .iconbtn.act-activate,
+:root:not([data-theme="dark"]) .iconbtn.act-activate { color: var(--chip-ok-text); border-color: var(--chip-ok-border); background: var(--chip-ok-bg); }
+:root[data-theme="light"] .iconbtn.act-activate:hover,
+:root:not([data-theme="dark"]) .iconbtn.act-activate:hover { background: color-mix(in srgb, #16a34a 28%, #fff); }
+:root[data-theme="light"] .iconbtn.act-soft,
+:root:not([data-theme="dark"]) .iconbtn.act-soft { color: var(--chip-info-text); border-color: var(--chip-info-border); background: var(--chip-info-bg); }
+:root[data-theme="light"] .iconbtn.act-soft:hover,
+:root:not([data-theme="dark"]) .iconbtn.act-soft:hover { background: color-mix(in srgb, #0284c7 28%, #fff); }
+:root[data-theme="light"] .iconbtn.act-power,
+:root:not([data-theme="dark"]) .iconbtn.act-power { color: var(--chip-warn-text); border-color: var(--chip-warn-border); }
+:root[data-theme="light"] .iconbtn.act-power:hover,
+:root:not([data-theme="dark"]) .iconbtn.act-power:hover { background: color-mix(in srgb, #d97706 18%, #fff); }
 
 /* ---- Wire-chain legend (proxy/tunnel/carrier layer key), above the topology ---- */
 .wire-legend { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-4); margin: -6px 0 var(--sp-4); font-size: 12px; color: var(--fg-muted); }
