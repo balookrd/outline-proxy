@@ -44,7 +44,7 @@
   --font-mono: 'Fira Code', ui-monospace, 'SF Mono', Menlo, monospace;
   --shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px -12px rgba(0,0,0,.6);
   /* single source of truth for the topology grid so header and rows stay locked */
-  --topo-cols: minmax(120px,1.3fr) 92px 104px minmax(150px,1.7fr) minmax(120px,1.4fr) 64px 104px 112px;
+  --topo-cols: minmax(104px,.72fr) 88px 104px minmax(210px,2.1fr) minmax(210px,2.1fr) 66px 104px 120px;
 }
 
 /* No explicit data-theme yet (first paint / never toggled) — follow the OS. */
@@ -250,6 +250,25 @@ tr:hover .rowactions { opacity: 1; }
 .seg.h2 { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .seg.h1 { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .arrow { color: var(--fg-dim); font-size: 10px; }
+
+/* Light theme: the transparent-tint pills wash out on white. Give every layer
+   a dark (700-level) text, a hairline border, and a denser opaque-ish tint so
+   proxy/tunnel/carrier all stay legible (WCAG AA) on a white background, and
+   lift inactive links out of near-invisibility. Dark theme is untouched. */
+:root[data-theme="light"] .wlink.inactive,
+:root:not([data-theme="dark"]) .wlink.inactive { opacity: .68; }
+:root[data-theme="light"] .wtag, :root[data-theme="light"] .seg,
+:root:not([data-theme="dark"]) .wtag, :root:not([data-theme="dark"]) .seg { border: 1px solid transparent; }
+:root[data-theme="light"] .wtag.proxy,
+:root:not([data-theme="dark"]) .wtag.proxy { color: #6d28d9; background: color-mix(in srgb, #7c3aed 16%, #fff); border-color: color-mix(in srgb, #7c3aed 42%, #fff); }
+:root[data-theme="light"] .wtag.tunnel,
+:root:not([data-theme="dark"]) .wtag.tunnel { color: #0369a1; background: color-mix(in srgb, #0284c7 16%, #fff); border-color: color-mix(in srgb, #0284c7 42%, #fff); }
+:root[data-theme="light"] .seg.h3,
+:root:not([data-theme="dark"]) .seg.h3 { color: #15803d; background: color-mix(in srgb, #16a34a 16%, #fff); border-color: color-mix(in srgb, #16a34a 42%, #fff); }
+:root[data-theme="light"] .seg.h2,
+:root:not([data-theme="dark"]) .seg.h2 { color: #b45309; background: color-mix(in srgb, #d97706 16%, #fff); border-color: color-mix(in srgb, #d97706 42%, #fff); }
+:root[data-theme="light"] .seg.h1,
+:root:not([data-theme="dark"]) .seg.h1 { color: #b91c1c; background: color-mix(in srgb, #dc2626 16%, #fff); border-color: color-mix(in srgb, #dc2626 42%, #fff); }
 
 /* ---- Wire-chain legend (proxy/tunnel/carrier layer key), above the topology ---- */
 .wire-legend { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-4); margin: -6px 0 var(--sp-4); font-size: 12px; color: var(--fg-muted); }
