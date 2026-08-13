@@ -3,9 +3,14 @@
 //! shared by the create/update handlers.
 
 use serde::{Deserialize, Serialize};
-use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
+use toml_edit::{ArrayOfTables, Item, Table, Value};
 
 use crate::config::UplinkSection;
+use crate::http::control::config_edit::render_table_with_arrays;
+// Re-exported (not just imported): `list.rs` and the uplinks tests reach this
+// through `super::payload::table_to_json`, matching the original `pub(super)
+// fn` visibility now that the implementation lives in `config_edit`.
+pub(super) use crate::http::control::config_edit::table_to_json;
 
 /// JSON payload accepted by the CRUD endpoints. Intentionally mirrors
 /// `UplinkSection` so users can round-trip config fields. Field semantics
@@ -151,31 +156,6 @@ pub(super) struct UplinkListEntry {
 #[derive(Debug, Serialize)]
 pub(super) struct UplinkListResponse {
     pub(super) uplinks: Vec<UplinkListEntry>,
-}
-
-/// Convert a `toml_edit` table into a `serde_json::Value` by round-tripping
-/// through a TOML string. Returns `None` if the round-trip fails (which
-/// would be a surprising bug, not a normal user error).
-///
-/// `Table::to_string()` alone doesn't render nested
-/// `ArrayOfTables` items (the `[[fallbacks]]` arrays under an uplink's
-/// inline table) because the array headers need a parent path to render
-/// — the table doesn't know its own path until it's part of a document.
-/// Wrap in a one-shot synthetic `DocumentMut` so the nested array
-/// surfaces in the rendered TOML.
-pub(super) fn table_to_json(tbl: &Table) -> Option<serde_json::Value> {
-    let text = render_table_with_arrays(tbl);
-    let value: toml::Value = toml::from_str(&text).ok()?;
-    serde_json::to_value(value).ok()
-}
-
-fn render_table_with_arrays(tbl: &Table) -> String {
-    let mut doc = DocumentMut::new();
-    let root = doc.as_table_mut();
-    for (key, item) in tbl.iter() {
-        root.insert(key, item.clone());
-    }
-    doc.to_string()
 }
 
 pub(super) fn payload_to_table(payload: &UplinkPayload) -> Table {

@@ -4,7 +4,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Context;
 use http::{Request, StatusCode};
 use hyper::body::Incoming;
 use tokio::fs;
@@ -12,14 +11,19 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 use tracing::{info, warn};
 
 use crate::config::validate_uplink_section;
+use crate::http::control::config_edit::{json_error_owned, read_json, status_for_mutator_error};
 use crate::http::control::server::ControlState;
 use crate::http::control::{ControlResponse, json_error, json_response};
 
-use super::io::{json_error_owned, read_json};
 use super::payload::{
     CreateBody, DeleteBody, MutationResponse, UpdateBody, merge_patch_into_table,
     payload_to_section, payload_to_table, table_to_section,
 };
+
+// Re-exported (not just imported): the uplinks tests reach this through
+// `super::mutate::write_document_atomic`, matching the original `pub(super)
+// fn` visibility now that the implementation lives in `config_edit`.
+pub(super) use crate::http::control::config_edit::write_document_atomic;
 
 pub(super) async fn handle_create(
     request: Request<Incoming>,
@@ -32,7 +36,7 @@ pub(super) async fn handle_create(
         );
     };
     let hot_apply_available = state.apply.is_some();
-    let body: CreateBody = match read_json(request).await {
+    let body: CreateBody = match read_json(request, "/control/uplinks").await {
         Ok(v) => v,
         Err(err) => return err,
     };
@@ -108,7 +112,7 @@ pub(super) async fn handle_update(
         );
     };
     let hot_apply_available = state.apply.is_some();
-    let body: UpdateBody = match read_json(request).await {
+    let body: UpdateBody = match read_json(request, "/control/uplinks").await {
         Ok(v) => v,
         Err(err) => return err,
     };
@@ -194,7 +198,7 @@ pub(super) async fn handle_delete(
         );
     };
     let hot_apply_available = state.apply.is_some();
-    let body: DeleteBody = match read_json(request).await {
+    let body: DeleteBody = match read_json(request, "/control/uplinks").await {
         Ok(v) => v,
         Err(err) => return err,
     };
@@ -250,35 +254,14 @@ where
         // Message-level errors map to 400 by default; callers needing a
         // specific status (e.g. 404) can set it via json_error_owned directly
         // before invoking mutate_config_file.
-        if msg.contains("not found") {
-            (StatusCode::NOT_FOUND, msg)
-        } else if msg.contains("already exists") {
-            (StatusCode::CONFLICT, msg)
-        } else {
-            (StatusCode::BAD_REQUEST, msg)
-        }
+        let status = status_for_mutator_error(&msg);
+        (status, msg)
     })?;
 
     write_document_atomic(path, &doc)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
     Ok(())
-}
-
-/// Persist the mutated document over `path` through the shared hardened writer
-/// ([`crate::fs_util::atomic_write`]): a private 0600 temp file, the target's
-/// mode and owner carried across the rename, and both file and parent directory
-/// fsynced. `config.toml` holds SOCKS5/per-user passwords, uplink PSK and
-/// control/dashboard tokens, so a plain `write` + `rename` would let each
-/// mutation both widen the target's mode to the ambient umask and expose the
-/// credentials through a world-readable temp window. The blocking write runs on
-/// a dedicated thread so it does not stall the async control-plane runtime.
-pub(super) async fn write_document_atomic(path: &Path, doc: &DocumentMut) -> anyhow::Result<()> {
-    let contents = doc.to_string();
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || crate::fs_util::atomic_write(&path, contents.as_bytes()))
-        .await
-        .context("config write task panicked")?
 }
 
 /// Find `[[uplink_group]]` table where `name == group`.

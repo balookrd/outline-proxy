@@ -6,6 +6,7 @@
 //! access path.
 
 mod apply;
+mod config_edit;
 mod handlers;
 mod server;
 mod topology;
