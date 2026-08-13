@@ -18,7 +18,12 @@ export interface UserFormFields {
   fwmark: number | null;
   wsPathTcp: string;
   wsPathUdp: string;
+  wsPathSs: string;
   wsPathVless: string;
+  xhttpPathTcp: string;
+  xhttpPathUdp: string;
+  xhttpPathSs: string;
+  xhttpPathVless: string;
   aliases: string;
   enabled: boolean;
 }
@@ -34,7 +39,12 @@ export function emptyUserFields(): UserFormFields {
     fwmark: null,
     wsPathTcp: '',
     wsPathUdp: '',
+    wsPathSs: '',
     wsPathVless: '',
+    xhttpPathTcp: '',
+    xhttpPathUdp: '',
+    xhttpPathSs: '',
+    xhttpPathVless: '',
     aliases: '',
     enabled: true,
   };
@@ -53,7 +63,12 @@ export function fieldsFromUser(user: User): UserFormFields {
     fwmark: user.fwmark ?? null,
     wsPathTcp: user.ws_path_tcp ?? '',
     wsPathUdp: user.ws_path_udp ?? '',
+    wsPathSs: user.ws_path_ss ?? '',
     wsPathVless: user.ws_path_vless ?? '',
+    xhttpPathTcp: user.xhttp_path_tcp ?? '',
+    xhttpPathUdp: user.xhttp_path_udp ?? '',
+    xhttpPathSs: user.xhttp_path_ss ?? '',
+    xhttpPathVless: user.xhttp_path_vless ?? '',
     aliases: aliasesToText(user.aliases),
     enabled: user.enabled,
   };
@@ -102,7 +117,12 @@ export function buildUserPayload(fields: UserFormFields, editing: boolean): NewU
   resettable('method', fields.method);
   resettable('ws_path_tcp', fields.wsPathTcp);
   resettable('ws_path_udp', fields.wsPathUdp);
+  resettable('ws_path_ss', fields.wsPathSs);
   resettable('ws_path_vless', fields.wsPathVless);
+  resettable('xhttp_path_tcp', fields.xhttpPathTcp);
+  resettable('xhttp_path_udp', fields.xhttpPathUdp);
+  resettable('xhttp_path_ss', fields.xhttpPathSs);
+  resettable('xhttp_path_vless', fields.xhttpPathVless);
 
   if (fields.fwmark !== null) out.fwmark = fields.fwmark;
   else if (editing) out.fwmark = null;

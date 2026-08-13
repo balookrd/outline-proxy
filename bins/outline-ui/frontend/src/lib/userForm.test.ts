@@ -4,6 +4,10 @@ import type { User } from './types';
 
 // Mirrors ss/dashboard.html's payload(form, editing) / saveUser() exactly —
 // see that file's lines ~1105-1152 for the behavior these tests pin down.
+// The eight per-transport path fields (ws_path_{tcp,udp,ss,vless} +
+// xhttp_path_{tcp,udp,ss,vless}) all share the "resettable" semantics of
+// ws_path_tcp: a non-empty value is sent as-is, an empty one is omitted on
+// create and sent as explicit null (reset to default) on edit.
 
 describe('validateUserForm', () => {
   it('create requires password or vless_id', () => {
@@ -38,6 +42,9 @@ describe('buildUserPayload — create', () => {
     expect(out).not.toHaveProperty('method');
     expect(out).not.toHaveProperty('fwmark');
     expect(out).not.toHaveProperty('ws_path_tcp');
+    expect(out).not.toHaveProperty('ws_path_ss');
+    expect(out).not.toHaveProperty('xhttp_path_tcp');
+    expect(out).not.toHaveProperty('xhttp_path_vless');
     expect(out).not.toHaveProperty('aliases');
   });
 
@@ -55,7 +62,12 @@ describe('buildUserPayload — create', () => {
       fwmark: 7,
       wsPathTcp: '/tcp',
       wsPathUdp: '/udp',
+      wsPathSs: '/pss',
       wsPathVless: '/vless',
+      xhttpPathTcp: '/pxtcp',
+      xhttpPathUdp: '/pxudp',
+      xhttpPathSs: '/pssx',
+      xhttpPathVless: '/pxhttp',
       aliases: 'mobile = 10.0.0.0/8',
       enabled: false,
     };
@@ -67,7 +79,12 @@ describe('buildUserPayload — create', () => {
       fwmark: 7,
       ws_path_tcp: '/tcp',
       ws_path_udp: '/udp',
+      ws_path_ss: '/pss',
       ws_path_vless: '/vless',
+      xhttp_path_tcp: '/pxtcp',
+      xhttp_path_udp: '/pxudp',
+      xhttp_path_ss: '/pssx',
+      xhttp_path_vless: '/pxhttp',
       aliases: { mobile: ['10.0.0.0/8'] },
       enabled: false,
     });
@@ -86,23 +103,41 @@ describe('buildUserPayload — edit', () => {
     expect(out).not.toHaveProperty('vless_id');
   });
 
-  it('empty method/fwmark/ws_path_*/aliases reset to explicit null', () => {
+  it('empty method/fwmark/ws_path_*/xhttp_path_*/aliases reset to explicit null', () => {
     const out = buildUserPayload(emptyUserFields(), true);
     expect(out).toEqual({
       method: null,
       fwmark: null,
       ws_path_tcp: null,
       ws_path_udp: null,
+      ws_path_ss: null,
       ws_path_vless: null,
+      xhttp_path_tcp: null,
+      xhttp_path_udp: null,
+      xhttp_path_ss: null,
+      xhttp_path_vless: null,
       aliases: null,
       enabled: true,
     });
   });
 
   it('non-empty resettable values overwrite normally instead of nulling', () => {
-    const fields = { ...emptyUserFields(), method: 'aes-128-gcm', fwmark: 3, aliases: 'mobile = 10.0.0.0/8' };
+    const fields = {
+      ...emptyUserFields(),
+      method: 'aes-128-gcm',
+      fwmark: 3,
+      wsPathSs: '/pss',
+      xhttpPathVless: '/pxhttp',
+      aliases: 'mobile = 10.0.0.0/8',
+    };
     const out = buildUserPayload(fields, true);
-    expect(out).toMatchObject({ method: 'aes-128-gcm', fwmark: 3, aliases: { mobile: ['10.0.0.0/8'] } });
+    expect(out).toMatchObject({
+      method: 'aes-128-gcm',
+      fwmark: 3,
+      ws_path_ss: '/pss',
+      xhttp_path_vless: '/pxhttp',
+      aliases: { mobile: ['10.0.0.0/8'] },
+    });
   });
 
   it('provided password/vless_id are sent as a real change', () => {
@@ -127,6 +162,9 @@ describe('fieldsFromUser', () => {
       fwmark: 5,
       ws_path_tcp: '/tcp',
       ws_path_udp: null,
+      ws_path_ss: '/pss',
+      xhttp_path_ss: '/pssx',
+      xhttp_path_vless: '/pxhttp',
       aliases: { mobile: '10.0.0.0/8', office: ['192.0.2.0/24', '203.0.113.5'] },
     };
     expect(fieldsFromUser(user)).toEqual({
@@ -137,7 +175,12 @@ describe('fieldsFromUser', () => {
       fwmark: 5,
       wsPathTcp: '/tcp',
       wsPathUdp: '',
+      wsPathSs: '/pss',
       wsPathVless: '',
+      xhttpPathTcp: '',
+      xhttpPathUdp: '',
+      xhttpPathSs: '/pssx',
+      xhttpPathVless: '/pxhttp',
       aliases: 'mobile = 10.0.0.0/8\noffice = 192.0.2.0/24, 203.0.113.5',
       enabled: true,
     });
@@ -153,7 +196,12 @@ describe('fieldsFromUser', () => {
       fwmark: null,
       wsPathTcp: '',
       wsPathUdp: '',
+      wsPathSs: '',
       wsPathVless: '',
+      xhttpPathTcp: '',
+      xhttpPathUdp: '',
+      xhttpPathSs: '',
+      xhttpPathVless: '',
       aliases: '',
       enabled: false,
     });
@@ -170,7 +218,12 @@ describe('emptyUserFields', () => {
       fwmark: null,
       wsPathTcp: '',
       wsPathUdp: '',
+      wsPathSs: '',
       wsPathVless: '',
+      xhttpPathTcp: '',
+      xhttpPathUdp: '',
+      xhttpPathSs: '',
+      xhttpPathVless: '',
       aliases: '',
       enabled: true,
     });
