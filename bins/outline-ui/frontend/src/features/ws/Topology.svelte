@@ -181,17 +181,15 @@
     </div>
   </div>
 
-  <!-- Wire-chain layer key: proxy (vless/ss) over tunnel (ws/xhttp) over
-       carrier (h3/h2/h1) — see WireChain.svelte / lib/wsTopology.ts's
-       legWireChain(). Sits above the per-instance topology so the 3-layer
-       pill in every TCP/UDP wire-chain cell below reads as proxy › tunnel ›
-       carrier without a per-cell legend. -->
+  <!-- Wire-chain layer key: one chip per link, coloured by proxy transport,
+       accented by tunnel, carrier shown as muted text — see
+       WireChain.svelte / lib/wsTopology.ts's legWireChain(). Sits above the
+       per-instance topology so every TCP/UDP wire-chain cell below reads
+       without a per-cell legend. -->
   <div class="wire-legend">
-    <span><span class="wl-swatch proxy"></span><b>proxy</b> <span class="muted">vless/ss</span></span>
-    <span><span class="wl-swatch tunnel"></span><b>tunnel</b> <span class="muted">ws/xhttp</span></span>
-    <span class="seg h3">h3</span>
-    <span class="seg h2">h2</span>
-    <span class="seg h1">h1</span>
+    <span class="wl-group"><span class="wl-swatch vless"></span><b>vless</b><span class="wl-swatch ss"></span><b>ss</b> <span class="muted">— proxy colour</span></span>
+    <span class="wl-group"><span class="wl-edge tun-ws"></span><b>ws</b><span class="wl-edge tun-xhttp"></span><b>xhttp</b> <span class="muted">— tunnel accent (left edge)</span></span>
+    <span class="muted">carrier (h3/h2/h1) shown as muted text, not colour</span>
     <span class="muted">outline = active link</span>
   </div>
 
