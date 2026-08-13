@@ -3,7 +3,10 @@ use std::path::Path;
 use toml_edit::DocumentMut;
 
 use super::super::payload::RoutePayload;
-use super::{apply_create, apply_delete, apply_reorder, group_names_in_doc, validate_route_array};
+use super::{
+    apply_create, apply_delete, apply_reorder, apply_update, group_names_in_doc,
+    validate_route_array,
+};
 
 const BASE: &str = "\
 [[uplink_group]]
@@ -43,6 +46,26 @@ fn delete_default_is_refused() {
     let mut d = doc();
     let err = apply_delete(&mut d, 1).expect_err("default index");
     assert!(err.contains("default"), "got: {err}");
+}
+
+#[test]
+fn update_clears_default_is_refused() {
+    let mut d = doc();
+    // Index 1 is the default rule; a payload without `default` would clear it.
+    let err = apply_update(&mut d, 1, &payload(r#"{"via":"main"}"#)).expect_err("clearing default");
+    assert!(err.contains("default"), "got: {err}");
+}
+
+#[test]
+fn update_adds_matcher_to_default_is_refused() {
+    let mut d = doc();
+    let err = apply_update(
+        &mut d,
+        1,
+        &payload(r#"{"default":true,"via":"main","prefixes":["1.2.3.0/24"]}"#),
+    )
+    .expect_err("matcher on default");
+    assert!(err.contains("matcher"), "got: {err}");
 }
 
 #[test]
