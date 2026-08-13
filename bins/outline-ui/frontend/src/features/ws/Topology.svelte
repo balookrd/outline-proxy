@@ -179,10 +179,20 @@
       <h1>Topology</h1>
       <p>Uplink groups and wire chains. Green = active &amp; healthy, amber = ready/degraded, red = down.</p>
     </div>
-    <div class="toolbar">
-      <span class="chip"><span class="d"></span> TCP wire</span>
-      <span class="chip"><span class="seg h3" style="padding:0 5px">h3</span><span class="seg h2" style="padding:0 5px">h2</span><span class="seg ws" style="padding:0 5px">ws</span></span>
-    </div>
+  </div>
+
+  <!-- Wire-chain layer key: proxy (vless/ss) over tunnel (ws/xhttp) over
+       carrier (h3/h2/h1) — see WireChain.svelte / lib/wsTopology.ts's
+       legWireChain(). Sits above the per-instance topology so the 3-layer
+       pill in every TCP/UDP wire-chain cell below reads as proxy › tunnel ›
+       carrier without a per-cell legend. -->
+  <div class="wire-legend">
+    <span><span class="wl-swatch proxy"></span><b>proxy</b> <span class="muted">vless/ss</span></span>
+    <span><span class="wl-swatch tunnel"></span><b>tunnel</b> <span class="muted">ws/xhttp</span></span>
+    <span class="seg h3">h3</span>
+    <span class="seg h2">h2</span>
+    <span class="seg h1">h1</span>
+    <span class="muted">outline = active link</span>
   </div>
 
   <ErrorBanner message={listPoll.error} />

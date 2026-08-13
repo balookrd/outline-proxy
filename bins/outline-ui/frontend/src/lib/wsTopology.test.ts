@@ -12,12 +12,20 @@ import {
   uplinkRowTone,
   uplinkRowLabel,
   uplinkRole,
-  legWireSegments,
+  parseWireMode,
+  proxyLabel,
+  legWireChain,
   primaryRttMs,
   primaryLossRatio,
   lossTone,
   activateButtonState,
   softButtonState,
+  prettyProfileName,
+  uplinkFingerprintChip,
+  groupFingerprintIsHomogeneous,
+  groupFingerprintChip,
+  rttAgeSuffix,
+  rttTooltip,
 } from './wsTopology';
 import type { Uplink, Group, WireChainEntry } from './types';
 
@@ -55,6 +63,16 @@ function baseUplink(overrides: Partial<Uplink> = {}): Uplink {
     tcp_active_wire: 0,
     udp_active_wire: 0,
     admin_disabled: false,
+    ...overrides,
+  };
+}
+
+function baseGroup(overrides: Partial<Group> = {}): Group {
+  return {
+    name: 'main',
+    load_balancing_mode: 'active_passive',
+    routing_scope: 'global',
+    auto_failback: true,
     ...overrides,
   };
 }
@@ -114,33 +132,30 @@ describe('legLossRatio / activeLegLossy — dashboard.html :1104-1129', () => {
 
 describe('instanceStatusTone / instanceStatusLabel — dashboard.html statusTone() (:539-554)', () => {
   it('unreachable instance is always bad, regardless of stale group data', () => {
-    const groups: Group[] = [{ name: 'main', uplinks: [baseUplink({ active_global: true })] }];
+    const groups: Group[] = [baseGroup({ uplinks: [baseUplink({ active_global: true })] })];
     expect(instanceStatusTone(false, groups)).toBe('bad');
   });
   it('reachable instance with zero uplinks is warn', () => {
-    expect(instanceStatusTone(true, [{ name: 'main', uplinks: [] }])).toBe('warn');
+    expect(instanceStatusTone(true, [baseGroup({ uplinks: [] })])).toBe('warn');
   });
   it('all healthy + at least one active + no active loss is good', () => {
-    const groups: Group[] = [{ name: 'main', uplinks: [baseUplink({ active_global: true })] }];
+    const groups: Group[] = [baseGroup({ uplinks: [baseUplink({ active_global: true })] })];
     expect(instanceStatusTone(true, groups)).toBe('good');
   });
   it('all healthy + active but the active leg is lossy above LOSS_BAD degrades to warn', () => {
-    const groups: Group[] = [
-      { name: 'main', uplinks: [baseUplink({ active_global: true, tcp_carrier_loss_ratio: 0.2 })] },
-    ];
+    const groups: Group[] = [baseGroup({ uplinks: [baseUplink({ active_global: true, tcp_carrier_loss_ratio: 0.2 })] })];
     expect(instanceStatusTone(true, groups)).toBe('warn');
   });
   it('some but not all healthy is warn', () => {
     const groups: Group[] = [
-      {
-        name: 'main',
+      baseGroup({
         uplinks: [baseUplink({ active_global: true }), baseUplink({ name: 'cloud2', tcp_healthy: false, udp_healthy: false })],
-      },
+      }),
     ];
     expect(instanceStatusTone(true, groups)).toBe('warn');
   });
   it('none healthy is bad', () => {
-    const groups: Group[] = [{ name: 'main', uplinks: [baseUplink({ tcp_healthy: false, udp_healthy: false })] }];
+    const groups: Group[] = [baseGroup({ uplinks: [baseUplink({ tcp_healthy: false, udp_healthy: false })] })];
     expect(instanceStatusTone(true, groups)).toBe('bad');
   });
   it('label mapping', () => {
@@ -181,34 +196,93 @@ describe('uplinkRole — dashboard.html uplinkRole() (:1020-1026)', () => {
   it('nothing active is standby', () => expect(uplinkRole(baseUplink())).toBe('standby'));
 });
 
-describe('legWireSegments — dashboard.html legWireChainCell()/wireAt() (:837-950), simplified vocabulary', () => {
-  it('single-wire uplink (no chain, no fallbacks) reads the top-level effective mode', () => {
-    const u = baseUplink({ tcp_mode_effective: 'ws_h3', configured_wire_chain: undefined });
-    expect(legWireSegments(u, 'tcp')).toEqual({ segments: ['h3'], activeIdx: 0 });
+describe('parseWireMode — Variant B tunnel/carrier split', () => {
+  it('parses every ws_* tier', () => {
+    expect(parseWireMode('ws_h3')).toEqual({ tunnel: 'ws', carrier: 'h3' });
+    expect(parseWireMode('ws_h2')).toEqual({ tunnel: 'ws', carrier: 'h2' });
+    expect(parseWireMode('ws_h1')).toEqual({ tunnel: 'ws', carrier: 'h1' });
+  });
+  it('parses every xhttp_* tier', () => {
+    expect(parseWireMode('xhttp_h3')).toEqual({ tunnel: 'xhttp', carrier: 'h3' });
+    expect(parseWireMode('xhttp_h2')).toEqual({ tunnel: 'xhttp', carrier: 'h2' });
+    expect(parseWireMode('xhttp_h1')).toEqual({ tunnel: 'xhttp', carrier: 'h1' });
+  });
+  it('is case-insensitive and accepts the http1/bare h2/h3 synonyms', () => {
+    expect(parseWireMode('WS_H3')).toEqual({ tunnel: 'ws', carrier: 'h3' });
+    expect(parseWireMode('http1')).toEqual({ tunnel: 'ws', carrier: 'h1' });
+    expect(parseWireMode('h3')).toEqual({ tunnel: null, carrier: 'h3' });
+    expect(parseWireMode('h2')).toEqual({ tunnel: null, carrier: 'h2' });
+  });
+  it('tolerates a missing mode (Shadowsocks wire with no *_mode field)', () => {
+    expect(parseWireMode(null)).toEqual({ tunnel: null, carrier: null });
+    expect(parseWireMode(undefined)).toEqual({ tunnel: null, carrier: null });
+  });
+  it('an unrecognised token returns all-null instead of guessing', () => {
+    expect(parseWireMode('quic')).toEqual({ tunnel: null, carrier: null });
+  });
+});
+
+describe('proxyLabel — owner: "vless=vl not V, ss=ss not SS"', () => {
+  it('vless → vl, lowercase', () => expect(proxyLabel('vless')).toBe('vl'));
+  it('VLESS (any case) → vl', () => expect(proxyLabel('VLESS')).toBe('vl'));
+  it('ss → ss, lowercase', () => expect(proxyLabel('ss')).toBe('ss'));
+  it('falls back to the raw lowercased transport for anything else', () => expect(proxyLabel('mystery')).toBe('mystery'));
+  it('missing transport renders an em dash rather than an empty badge', () => {
+    expect(proxyLabel(null)).toBe('—');
+    expect(proxyLabel(undefined)).toBe('—');
+  });
+});
+
+describe('legWireChain — dashboard.html legWireChainCell()/wireAt() (:837-950) ordering/active-index, Variant B shape', () => {
+  it('single-wire uplink (no chain, no fallbacks) reads the top-level effective mode and its own transport', () => {
+    const u = baseUplink({ transport: 'vless', tcp_mode_effective: 'ws_h3', configured_wire_chain: undefined });
+    expect(legWireChain(u, 'tcp')).toEqual({
+      links: [{ transport: 'vless', tunnel: 'ws', carrier: 'h3' }],
+      activeIdx: 0,
+    });
   });
   it('falls back to the configured mode when no downgrade is active (effective unset)', () => {
     const u = baseUplink({ tcp_mode: 'xhttp_h1', tcp_mode_effective: null, configured_wire_chain: undefined });
-    expect(legWireSegments(u, 'tcp')).toEqual({ segments: ['xhttp'], activeIdx: 0 });
+    expect(legWireChain(u, 'tcp').links).toEqual([{ transport: 'vless', tunnel: 'xhttp', carrier: 'h1' }]);
   });
-  it('multi-wire chain: h3 primary, h2 fallback, ws_h1 fallback — active on the middle wire', () => {
+  it('multi-wire chain: h3 primary, h2 fallback, ws_h1 fallback — active on the middle wire, h1 distinct from h2/h3', () => {
     const chain: WireChainEntry[] = [
       { transport: 'vless', tcp_mode: 'ws_h3', tcp_mode_effective: 'ws_h3' },
       { transport: 'vless', tcp_mode: 'ws_h2', tcp_mode_effective: 'ws_h2' },
       { transport: 'vless', tcp_mode: 'ws_h1', tcp_mode_effective: 'ws_h1' },
     ];
     const u = baseUplink({ configured_fallbacks: ['vless', 'vless'], configured_wire_chain: chain, tcp_active_wire: 1 });
-    expect(legWireSegments(u, 'tcp')).toEqual({ segments: ['h3', 'h2', 'ws'], activeIdx: 1 });
+    expect(legWireChain(u, 'tcp')).toEqual({
+      links: [
+        { transport: 'vless', tunnel: 'ws', carrier: 'h3' },
+        { transport: 'vless', tunnel: 'ws', carrier: 'h2' },
+        { transport: 'vless', tunnel: 'ws', carrier: 'h1' },
+      ],
+      activeIdx: 1,
+    });
   });
-  it('a Shadowsocks wire (no mode fields at all) falls back to the cross-leg mode, else the ws bucket', () => {
+  it('a Shadowsocks wire with a real mode reads its own transport (ss), not the vless bucket', () => {
     const chain: WireChainEntry[] = [{ transport: 'ss', udp_mode: 'ws_h2', udp_mode_effective: 'ws_h2' }];
     const u = baseUplink({ transport: 'ss', configured_wire_chain: chain, tcp_mode: null, tcp_mode_effective: null });
     // tcp leg on a wire with no tcp_mode/tcp_mode_effective borrows the wire's udp_mode (mirrors dashboard.html's
     // `w.tcp_mode_effective || w.tcp_mode || w.tcp_mode || w.udp_mode` chain) before ever reaching "no info at all".
-    expect(legWireSegments(u, 'tcp')).toEqual({ segments: ['h2'], activeIdx: 0 });
+    expect(legWireChain(u, 'tcp').links).toEqual([{ transport: 'ss', tunnel: 'ws', carrier: 'h2' }]);
+  });
+  it('a Shadowsocks wire with genuinely no mode fields renders transport-only (null tunnel/carrier)', () => {
+    const chain: WireChainEntry[] = [{ transport: 'ss' }];
+    const u = baseUplink({ transport: 'ss', configured_wire_chain: chain, tcp_mode: null, tcp_mode_effective: null });
+    expect(legWireChain(u, 'tcp').links).toEqual([{ transport: 'ss', tunnel: null, carrier: null }]);
+  });
+  it('a name-only fallback (configured_fallbacks entry, no matching wire-chain entry) still reports its own transport', () => {
+    const u = baseUplink({ transport: 'vless', configured_fallbacks: ['ss'], configured_wire_chain: undefined });
+    expect(legWireChain(u, 'tcp').links).toEqual([
+      { transport: 'vless', tunnel: 'ws', carrier: 'h3' },
+      { transport: 'ss', tunnel: null, carrier: null },
+    ]);
   });
   it('clamps an out-of-range active-wire index instead of returning undefined', () => {
     const u = baseUplink({ tcp_active_wire: 7 });
-    expect(legWireSegments(u, 'tcp').activeIdx).toBe(0);
+    expect(legWireChain(u, 'tcp').activeIdx).toBe(0);
   });
   it('tcp and udp legs read their own independent active-wire index', () => {
     const chain: WireChainEntry[] = [
@@ -221,8 +295,8 @@ describe('legWireSegments — dashboard.html legWireChainCell()/wireAt() (:837-9
       tcp_active_wire: 0,
       udp_active_wire: 1,
     });
-    expect(legWireSegments(u, 'tcp').activeIdx).toBe(0);
-    expect(legWireSegments(u, 'udp').activeIdx).toBe(1);
+    expect(legWireChain(u, 'tcp').activeIdx).toBe(0);
+    expect(legWireChain(u, 'udp').activeIdx).toBe(1);
   });
 });
 
@@ -284,5 +358,109 @@ describe('softButtonState — dashboard.html softBtn gating (:1351-1357)', () =>
   it('non-cluster group hides soft regardless of tone', () => {
     expect(softButtonState('warn', false)).toBe('hidden');
     expect(softButtonState('good', false)).toBe('hidden');
+  });
+});
+
+describe('prettyProfileName — dashboard.html prettyProfileName() (~:610-626)', () => {
+  it('formats a <family>-<version>-<os> pool id', () => {
+    expect(prettyProfileName('chrome-151-macos')).toBe('Chrome 151 macOS');
+  });
+  it('special-cases windows/linux os labels', () => {
+    expect(prettyProfileName('firefox-152-windows')).toBe('Firefox 152 Windows');
+    expect(prettyProfileName('edge-150-linux')).toBe('Edge 150 Linux');
+  });
+  it('capitalises an unrecognised os token verbatim', () => {
+    expect(prettyProfileName('safari-26-bsd')).toBe('Safari 26 Bsd');
+  });
+  it('"random" gets its own label, not the 3-part parser', () => {
+    expect(prettyProfileName('random')).toBe('Random');
+  });
+  it('a name that is not 3 hyphen-separated parts is shown verbatim', () => {
+    expect(prettyProfileName('custom-profile')).toBe('custom-profile');
+  });
+  it('empty name is empty', () => expect(prettyProfileName('')).toBe(''));
+});
+
+describe('uplinkFingerprintChip — dashboard.html fingerprintChip() (~:640-644)', () => {
+  it('builds a chip with strategy in the title when both fields are present', () => {
+    const u = baseUplink({ fingerprint_profile_name: 'chrome-151-macos', fingerprint_profile_strategy: 'per_host_stable' });
+    expect(uplinkFingerprintChip(u)).toEqual({
+      label: 'Chrome 151 macOS',
+      title: 'fingerprint_profile_name = chrome-151-macos · strategy = per_host_stable',
+    });
+  });
+  it('omits the strategy clause from the title when strategy is absent', () => {
+    const u = baseUplink({ fingerprint_profile_name: 'random', fingerprint_profile_strategy: undefined });
+    expect(uplinkFingerprintChip(u)).toEqual({ label: 'Random', title: 'fingerprint_profile_name = random' });
+  });
+  it('null when the uplink has no fingerprint identity', () => {
+    expect(uplinkFingerprintChip(baseUplink({ fingerprint_profile_name: null }))).toBeNull();
+    expect(uplinkFingerprintChip(baseUplink({ fingerprint_profile_name: undefined }))).toBeNull();
+  });
+});
+
+describe('groupFingerprintIsHomogeneous / groupFingerprintChip — dashboard.html groupFingerprintIsHomogeneous()/groupFingerprintChip() (~:697-714)', () => {
+  it('homogeneous when every uplink shares the same fingerprint_profile_name', () => {
+    const uplinks = [
+      baseUplink({ name: 'a', fingerprint_profile_name: 'random', fingerprint_profile_strategy: 'random' }),
+      baseUplink({ name: 'b', fingerprint_profile_name: 'random', fingerprint_profile_strategy: 'random' }),
+    ];
+    expect(groupFingerprintIsHomogeneous(uplinks)).toBe(true);
+    expect(groupFingerprintChip(uplinks)).toEqual({
+      label: 'Random',
+      title: 'fingerprint_profile_name = random · strategy = random',
+    });
+  });
+  it('homogeneous-but-all-absent is still homogeneous, with no chip to show', () => {
+    const uplinks = [baseUplink({ name: 'a', fingerprint_profile_name: null }), baseUplink({ name: 'b', fingerprint_profile_name: null })];
+    expect(groupFingerprintIsHomogeneous(uplinks)).toBe(true);
+    expect(groupFingerprintChip(uplinks)).toBeNull();
+  });
+  it('heterogeneous (per_host_stable — each uplink its own identity) hides the group chip', () => {
+    const uplinks = [
+      baseUplink({ name: 'a', fingerprint_profile_name: 'chrome-151-macos', fingerprint_profile_strategy: 'per_host_stable' }),
+      baseUplink({ name: 'b', fingerprint_profile_name: 'firefox-152-windows', fingerprint_profile_strategy: 'per_host_stable' }),
+    ];
+    expect(groupFingerprintIsHomogeneous(uplinks)).toBe(false);
+    expect(groupFingerprintChip(uplinks)).toBeNull();
+  });
+  it('empty group is not homogeneous (no uplinks to agree on anything)', () => {
+    expect(groupFingerprintIsHomogeneous([])).toBe(false);
+    expect(groupFingerprintChip([])).toBeNull();
+  });
+});
+
+describe('rttAgeSuffix — dashboard.html rttAgeSuffix() (~:1164-1168), no seconds branch', () => {
+  it('a fresh/never-refreshed reading (null age) has no suffix', () => expect(rttAgeSuffix(null)).toBe(''));
+  it('under a minute has no suffix (normal probe cadence)', () => expect(rttAgeSuffix(59_999)).toBe(''));
+  it('exactly a minute rounds to "1m old"', () => expect(rttAgeSuffix(60_000)).toBe(' (1m old)'));
+  it('minutes format below the hour mark', () => expect(rttAgeSuffix(125_000)).toBe(' (2m old)'));
+  it('hours format once minutes reach 60', () => expect(rttAgeSuffix(2 * 3_600_000)).toBe(' (2h old)'));
+});
+
+describe('rttTooltip — dashboard.html weightCell() RTT portion (~:1139-1148)', () => {
+  it('formats both legs exactly as the owner specified: "tcp: Xms (Ym old) · udp: Xms (Ym old)"', () => {
+    const u = baseUplink({
+      tcp_active_wire_rtt_ewma_ms: 228,
+      tcp_active_wire_rtt_age_ms: 125_000,
+      udp_active_wire_rtt_ewma_ms: 94,
+      udp_active_wire_rtt_age_ms: 130_000,
+    });
+    expect(rttTooltip(u)).toBe('tcp: 228ms (2m old) · udp: 94ms (2m old)');
+  });
+  it('prefers the active-wire EWMA over the primary EWMA, per leg', () => {
+    const u = baseUplink({ tcp_active_wire_rtt_ewma_ms: 15, tcp_rtt_ewma_ms: 99, udp_active_wire_rtt_ewma_ms: null, udp_rtt_ewma_ms: 40 });
+    expect(rttTooltip(u)).toBe('tcp: 15ms · udp: 40ms');
+  });
+  it('a fresh reading (age under a minute) carries no age suffix', () => {
+    const u = baseUplink({ tcp_rtt_ewma_ms: 42, tcp_active_wire_rtt_age_ms: 500, udp_rtt_ewma_ms: null });
+    expect(rttTooltip(u)).toBe('tcp: 42ms');
+  });
+  it('a leg with no reading at all is skipped, not rendered as blank', () => {
+    const u = baseUplink({ tcp_rtt_ewma_ms: null, udp_rtt_ewma_ms: 40 });
+    expect(rttTooltip(u)).toBe('udp: 40ms');
+  });
+  it('empty string when neither leg has a reading', () => {
+    expect(rttTooltip(baseUplink({ tcp_rtt_ewma_ms: null, udp_rtt_ewma_ms: null }))).toBe('');
   });
 });

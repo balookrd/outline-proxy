@@ -214,17 +214,35 @@ tr:hover .rowactions { opacity: 1; }
 .chip.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .chip.off { color: var(--fg-dim); }
 .chip.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); background: color-mix(in srgb, var(--info) 12%, transparent); }
+/* Group-header switch-reason chip (global_active_reason) — same pill, just
+   clipped so one long reason string can't blow out the header row; the full
+   text always rides along in the element's `title` tooltip. */
+.chip.reason { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 
-/* ---- Wire chain ---- */
-.wire { display: inline-flex; align-items: center; gap: 3px; }
+/* ---- Wire chain (3 layers: proxy › tunnel › carrier, "Variant B") ----
+   carrier (.seg) is the main colour-coded pill (h3/h2/h1); proxy/tunnel
+   (.wtag) are small badges in front of it inside the same outlined .wlink
+   pill — outlined/dimmed by active state, same idea the old single-tier
+   `.active-seg` outline used, now applied to the whole 3-layer link. */
+.wire { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.wlink { display: inline-flex; align-items: center; gap: 3px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 999px; }
+.wlink.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.wlink.inactive { opacity: .5; }
+.wtag { font-family: var(--font-mono); font-size: 9.5px; font-weight: 600; padding: 1px 4px; border-radius: 4px; letter-spacing: .02em; }
+.wtag.proxy { color: var(--violet); background: color-mix(in srgb, var(--violet) 18%, transparent); }
+.wtag.tunnel { color: var(--info); background: color-mix(in srgb, var(--info) 18%, transparent); }
 .seg { font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border-radius: 5px; font-weight: 500; }
 .seg.h3 { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .seg.h2 { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
-.seg.ws { color: var(--info); background: color-mix(in srgb, var(--info) 14%, transparent); }
-.seg.xh { color: var(--violet); background: color-mix(in srgb, var(--violet) 16%, transparent); }
-.seg.dim { color: var(--fg-dim); background: var(--muted); }
+.seg.h1 { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .arrow { color: var(--fg-dim); font-size: 10px; }
-.seg.active-seg { outline: 1.5px solid currentColor; }
+
+/* ---- Wire-chain legend (proxy/tunnel/carrier layer key), above the topology ---- */
+.wire-legend { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-4); margin: -6px 0 var(--sp-4); font-size: 12px; color: var(--fg-muted); }
+.wire-legend b { color: var(--fg); font-weight: 600; }
+.wl-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.wl-swatch.proxy { background: var(--violet); }
+.wl-swatch.tunnel { background: var(--info); }
 
 /* ---- Topology ---- */
 .inst { margin-bottom: var(--sp-4); }
@@ -256,6 +274,19 @@ tr:hover .rowactions { opacity: 1; }
 .colhead-row { display: grid; grid-template-columns: var(--topo-cols); gap: var(--sp-3);
   padding: 7px var(--sp-4); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-dim); border-bottom: 1px solid var(--border-soft); }
 .actioncell { display: flex; gap: 4px; justify-content: flex-end; }
+/* Per-row action buttons (Activate/Soft/Enable-Disable): icon-only, same
+   32px .iconbtn footprint, but full-contrast (no opacity-fade-until-hover)
+   with a clear border+bg affordance and a semantic colour accent — scoped
+   via a second class so the plain .iconbtn used elsewhere (Users/Uplinks/
+   drawers/Topbar) is untouched. */
+.iconbtn.act-activate { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, var(--muted)); }
+.iconbtn.act-activate:hover { background: color-mix(in srgb, var(--accent) 26%, var(--muted)); }
+.iconbtn.act-soft { color: var(--info); border-color: color-mix(in srgb, var(--info) 50%, var(--border));
+  background: color-mix(in srgb, var(--info) 14%, var(--muted)); }
+.iconbtn.act-soft:hover { background: color-mix(in srgb, var(--info) 26%, var(--muted)); }
+.iconbtn.act-power { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.iconbtn.act-power:hover { background: color-mix(in srgb, var(--warn) 16%, var(--muted)); }
 
 /* ---- Apply bar (uplinks) ---- */
 .applybar { display: flex; align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); margin-bottom: var(--sp-4);

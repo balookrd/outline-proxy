@@ -25,20 +25,35 @@ export interface TopologyResponse {
 // Mirrors ControlGroupTopology (bins/outline-ws-rust/src/http/control/topology.rs).
 // The four `bypass_*`/`cluster_resume_enabled` fields are `skip_serializing_if`
 // on the wire (absent, not `false`, when off) — hence `?: boolean` rather than
-// a required field defaulting to false.
+// a required field defaulting to false. `load_balancing_mode`/`routing_scope`
+// (topology.rs:63-64) and `auto_failback` (topology.rs:65) carry no such
+// attribute — always a present, concrete value — hence required (no `?`)
+// rather than optional, unlike the bypass/cluster group.
+//
+// `*_active_reason` is the group-level switch reason ("why is this uplink the
+// active one") — named `global_active_reason`/`tcp_active_reason`/
+// `udp_active_reason` on the wire (topology.rs:89,91,93 on
+// `ControlGroupTopology`), NOT `active_global_reason`/etc. Those latter names
+// belong to a *different*, per-uplink field on `Uplink` below
+// (`ControlUplinkTopology`, topology.rs:188,190,192) — same reason string,
+// but only populated on the one uplink row that is actually active for that
+// leg.
 export interface Group {
   name: string;
   uplinks?: Uplink[];
-  load_balancing_mode?: string;
-  routing_scope?: string;
-  auto_failback?: boolean;
+  load_balancing_mode: string;
+  routing_scope: string;
+  auto_failback: boolean;
   cluster_resume_enabled?: boolean;
   bypass_when_down?: boolean;
   bypass_active_tcp?: boolean;
   bypass_active_udp?: boolean;
   global_active_uplink?: string | null;
+  global_active_reason?: string | null;
   tcp_active_uplink?: string | null;
+  tcp_active_reason?: string | null;
   udp_active_uplink?: string | null;
+  udp_active_reason?: string | null;
   [k: string]: unknown;
 }
 // One wire (primary at index 0, then each `[[outline.uplinks.fallbacks]]`) in
@@ -87,6 +102,12 @@ export interface Uplink {
   // has produced its own measurement.
   tcp_active_wire_rtt_ewma_ms?: number | null;
   udp_active_wire_rtt_ewma_ms?: number | null;
+  // Age (ms) of the reading behind *_active_wire_rtt_ewma_ms — also
+  // skip_serializing_if Option::is_none, absent until that wire has been
+  // measured. Drives the RTT cell's tooltip age suffix (rttTooltip() in
+  // wsTopology.ts), not the visible cell text.
+  tcp_active_wire_rtt_age_ms?: number | null;
+  udp_active_wire_rtt_age_ms?: number | null;
   tcp_carrier_loss_ratio: number | null;
   udp_carrier_loss_ratio: number | null;
   last_error: string | null;
@@ -106,7 +127,17 @@ export interface Uplink {
   tcp_active_wire: number;
   udp_active_wire: number;
   admin_disabled: boolean;
-  [k: string]: unknown; // submode/downgrade/cert/throttle/fingerprint/etc. — see ws/dashboard.html renderer
+  // Browser-fingerprint diversification identity for this uplink's primary
+  // dial URL (topology.rs:230-247 on ControlUplinkTopology). `_name` is
+  // skip_serializing_if Option::is_none (absent for `none` strategy or an
+  // uplink with no URL-based dial path — never present-but-null);
+  // `_strategy` is a plain String skipped when it equals the literal
+  // "none" (is_none_strategy), so its absence also means "none" rather than
+  // an unknown state. Drives the group-header/per-uplink fingerprint chip —
+  // see wsTopology.ts's groupFingerprintChip()/uplinkFingerprintChip().
+  fingerprint_profile_name?: string | null;
+  fingerprint_profile_strategy?: string;
+  [k: string]: unknown; // submode/downgrade/cert/throttle/etc. — see ws/dashboard.html renderer
 }
 export interface ActivateTarget { instance: string; group: string; uplink: string; }
 export interface ActivateBody { targets: ActivateTarget[]; transport?: 'tcp'|'udp'|'both'; soft?: boolean; }
