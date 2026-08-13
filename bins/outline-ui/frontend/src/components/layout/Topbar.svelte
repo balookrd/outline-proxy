@@ -1,5 +1,6 @@
 <script lang="ts">
   import { toggleTheme } from '../../lib/theme.svelte';
+  import logo from '../../assets/outline-logo.png';
 
   // The prototype hardcodes an example prod hostname here ("ui.k3s.beerloga.su");
   // the real app shows wherever it is actually being served from (dev proxy,
@@ -10,7 +11,7 @@
 <div class="topbar">
   <div class="brand">
     <span class="logo" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 12h16M12 4v16"/></svg>
+      <img src={logo} alt="outline" width="22" height="22" />
     </span>
     outline <small>fleet UI</small>
   </div>
