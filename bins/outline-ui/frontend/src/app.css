@@ -142,10 +142,14 @@ button { font-family: inherit; }
 @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent);} 70%{ box-shadow:0 0 0 6px transparent;} 100%{box-shadow:0 0 0 0 transparent;} }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
-.iconbtn { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px;
+.iconbtn { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--muted); color: var(--fg-muted); cursor: pointer;
   transition: background .18s, color .18s, border-color .18s; }
 .iconbtn:hover { background: var(--surface-3); color: var(--fg); }
+/* Constrain the glyph: these SVGs carry a 24px viewBox and render at that
+   intrinsic size with no width set, which is what made the row action
+   buttons look oversized. Match .btn's 15px glyph. */
+.iconbtn svg { width: 15px; height: 15px; }
 .iconbtn:focus-visible, a:focus-visible, button:focus-visible, .navlink:focus-visible, select:focus-visible {
   outline: 2px solid var(--info); outline-offset: 2px; }
 
@@ -455,6 +459,13 @@ tbody tr:hover { background: color-mix(in srgb, var(--surface-3) 30%, transparen
    the shared .chip base (used elsewhere, e.g. the SS panel) is untouched. */
 .group-head .cfgchips { display: flex; gap: 4px; margin-left: 4px; flex-wrap: wrap; }
 .group-head .cfgchips .chip { font-size: 10.5px; padding: 1px 7px; }
+/* Header chips share the rows' 22px pill height too, so the whole panel sits
+   on ONE vertical rhythm — the .uprow fix above was scoped to the rows and
+   left the instance/group header chips stair-stepping (cfgchips ~20px vs the
+   .right status chips ~23px). Owner: "шапку забыл". cfgchips keep their
+   smaller font — hierarchy stays in the type weight, not in differing
+   heights — they just no longer sit lower than the chips beside them. */
+.inst-head .chip, .group-head .chip { height: 22px; padding-top: 0; padding-bottom: 0; }
 .group-head .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .uprow { display: grid; grid-template-columns: var(--topo-cols);
   align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); border-bottom: 1px solid var(--border-soft); font-size: 13px; }
@@ -467,6 +478,14 @@ tbody tr:hover { background: color-mix(in srgb, var(--surface-3) 30%, transparen
 .up-endpoint { color: var(--fg-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .metric { font-family: var(--font-mono); font-size: 12px; }
 .metric.good { color: var(--accent); } .metric.warn { color: var(--warn); } .metric.bad { color: var(--danger); }
+/* One shared pill height across the row so the Status/Role chips and the
+   active wire chip sit on a single baseline instead of stair-stepping — the
+   wire chip's mono font + 3px vertical padding made it read taller than the
+   status pills next to it (owner: "разная высота чипов"). Scoped to .uprow:
+   the shared .chip base (SS panel, header cfgchips) keeps its own sizing,
+   and the fallback squares stay their deliberate 16px marker size. */
+.uprow .chip, .uprow .wchip-full { height: 22px; padding-top: 0; padding-bottom: 0; }
+.uprow .wchip-full { display: inline-flex; align-items: center; }
 /* right-align the numeric + action columns in both header and rows */
 .uprow > div:nth-child(6), .uprow > div:nth-child(7),
 .colhead-row > div:nth-child(6), .colhead-row > div:nth-child(7), .colhead-row > div:nth-child(8) { text-align: right; }
