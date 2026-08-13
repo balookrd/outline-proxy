@@ -228,7 +228,16 @@ async fn mutate(
             "config file path unknown; CRUD needs on-disk config",
         );
     };
-    let hot_apply_available = state.apply.is_some();
+    // Unlike uplinks_crud (where any apply-handle means hot-apply works),
+    // routing hot-apply also needs a live table to swap into — which only
+    // exists when `[[route]]` was already configured at process startup (see
+    // `ApplyHandle::shared_routing`). A node that started with no routing
+    // section has `apply: Some(_)` but `shared_routing: None`, so checking
+    // handle existence alone would wrongly promise a hot-apply that
+    // `/control/apply` cannot perform; report `restart_required: true` for it
+    // instead.
+    let hot_apply_available =
+        state.apply.as_ref().and_then(|h| h.shared_routing.as_ref()).is_some();
     let config_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
 
     // Deserialize the kind-specific body.

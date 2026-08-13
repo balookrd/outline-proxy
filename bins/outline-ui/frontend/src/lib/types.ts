@@ -231,6 +231,12 @@ export interface ApplyResult {
   groups?: number;
   total_uplinks?: number;
   default_group?: string;
+  // Non-default rule count of the newly-applied routing table; absent
+  // (not 0) when routing was NOT hot-applied — not configured at startup
+  // (`shared_routing: None` on the node's `ApplyHandle`), or the reloaded
+  // config has no `[[route]]`. Callers must branch on presence, not truthiness,
+  // to tell "0 rules hot-applied" apart from "hot-apply skipped".
+  routes_applied?: number;
   error?: string;
 }
 
