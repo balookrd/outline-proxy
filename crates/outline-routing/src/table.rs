@@ -52,9 +52,12 @@ pub struct RoutingTable {
     pub default_target: RouteTarget,
     pub default_fallback: Option<RouteTarget>,
     /// Bumped by [`spawn_route_watchers`] after every successful rule
-    /// reload. Downstream consumers (e.g. the UDP per-association route
-    /// cache) compare this against the version snapshot taken when the
-    /// entry was inserted: a mismatch invalidates the cached decision.
+    /// reload, and also carried forward (not reset to 0) by
+    /// [`crate::SharedRoutingTable::swap_preserving_version`] when a freshly
+    /// compiled table replaces the live one on a `/control/apply` hot-apply.
+    /// Downstream consumers (e.g. the UDP per-association route cache)
+    /// compare this against the version snapshot taken when the entry was
+    /// inserted: a mismatch invalidates the cached decision.
     pub version: AtomicU64,
 }
 
