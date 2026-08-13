@@ -33,8 +33,16 @@
 
   let drawerOpen = $state(false);
   let editingEntry = $state<RouteEntry | null>(null);
-  function openCreate() { editingEntry = null; drawerOpen = true; }
-  function openEdit(entry: RouteEntry) { editingEntry = entry; drawerOpen = true; }
+  // Snapshot of `revision` taken when the drawer opens. `revision` itself is
+  // poll-derived and keeps advancing (~every 5s) while the drawer sits open,
+  // so a mutation fired on close must not pick up whatever the poll last saw
+  // — it has to carry the revision that was current when the user started
+  // editing, or a stale-snapshot edit could silently pass the 409 guard and
+  // land on the wrong rule. `move`/`removeRoute` are inline actions with no
+  // dwell time, so they keep reading the live `revision` directly.
+  let drawerRevision = $state('');
+  function openCreate() { editingEntry = null; drawerRevision = revision; drawerOpen = true; }
+  function openEdit(entry: RouteEntry) { editingEntry = entry; drawerRevision = revision; drawerOpen = true; }
   function closeDrawer() { drawerOpen = false; editingEntry = null; }
 
   // Drawer hands back a validated payload; parent owns the API call.
@@ -42,9 +50,9 @@
     mutating = true;
     try {
       if (editingIndex !== null) {
-        await routesMutate('PATCH', instance, { index: editingIndex, rule: payload, revision });
+        await routesMutate('PATCH', instance, { index: editingIndex, rule: payload, revision: drawerRevision });
       } else {
-        await routesMutate('POST', instance, { rule: payload, revision });
+        await routesMutate('POST', instance, { rule: payload, revision: drawerRevision });
       }
       dirtyInstances.add(instance);
       toast('Saved to config (not yet applied).');
@@ -167,12 +175,12 @@
                 <td>{targetText(e.config)}</td>
                 <td>
                   <div class="rowactions">
-                    <button class="iconbtn" title="Move up" disabled={mutating || e.index === 0} aria-label="Move up" onclick={() => move(e, -1)}>↑</button>
-                    <button class="iconbtn" title="Move down" disabled={mutating || e.index === entries.length - 1} aria-label="Move down" onclick={() => move(e, 1)}>↓</button>
-                    <button class="iconbtn act-soft" title="Edit" disabled={mutating} aria-label="Edit" onclick={() => openEdit(e)}>
+                    <button class="iconbtn" title="Move up" disabled={mutating || e.index === 0} aria-label={`Move rule #${e.index} up`} onclick={() => move(e, -1)}>↑</button>
+                    <button class="iconbtn" title="Move down" disabled={mutating || e.index === entries.length - 1} aria-label={`Move rule #${e.index} down`} onclick={() => move(e, 1)}>↓</button>
+                    <button class="iconbtn act-soft" title="Edit" disabled={mutating} aria-label={`Edit rule #${e.index}`} onclick={() => openEdit(e)}>
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                     </button>
-                    <button class="iconbtn act-danger" title="Delete" disabled={mutating || e.is_default} aria-label="Delete" onclick={() => removeRoute(e)}>
+                    <button class="iconbtn act-danger" title="Delete" disabled={mutating || e.is_default} aria-label={`Delete rule #${e.index}`} onclick={() => removeRoute(e)}>
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
                     </button>
                   </div>
