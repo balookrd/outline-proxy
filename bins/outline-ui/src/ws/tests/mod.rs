@@ -51,6 +51,7 @@ async fn topology_for_an_unknown_instance_is_reported() {
 struct Recorded {
     method: String,
     path: String,
+    query: String,
     auth: String,
     body: String,
 }
@@ -72,6 +73,7 @@ async fn record(
     records.lock().unwrap().push(Recorded {
         method: method.to_string(),
         path: uri.path().to_string(),
+        query: uri.query().unwrap_or("").to_string(),
         auth,
         body: String::from_utf8_lossy(&body).into_owned(),
     });
@@ -118,14 +120,15 @@ fn state_with(instance: InstanceConfig) -> WsState {
 
 /// Mirrors the uplinks CRUD proxy: GET on `/dashboard/api/routes?instance=X`
 /// must reach `/control/routes` on that instance's control API with its
-/// bearer token injected server-side.
+/// bearer token injected server-side, and any OTHER query params (filters)
+/// must be forwarded too — only `instance` itself is stripped.
 #[tokio::test]
 async fn routes_proxy_forwards_get_with_token() {
     let (addr, records) = spawn_recorder().await;
 
     let response = router(state_with(instance(addr)))
         .oneshot(
-            Request::get("/dashboard/api/routes?instance=probe")
+            Request::get("/dashboard/api/routes?instance=probe&group=main")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -137,6 +140,7 @@ async fn routes_proxy_forwards_get_with_token() {
     assert_eq!(recorded.len(), 1, "expected exactly one upstream request");
     assert_eq!(recorded[0].method, "GET");
     assert_eq!(recorded[0].path, "/control/routes");
+    assert_eq!(recorded[0].query, "group=main", "filters besides `instance` must be forwarded");
     assert_eq!(
         recorded[0].auth, "Bearer inst-tok",
         "control token must be injected server-side"
