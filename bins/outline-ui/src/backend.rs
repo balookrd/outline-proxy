@@ -27,6 +27,7 @@ use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
+use tracing::warn;
 use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
@@ -130,9 +131,22 @@ impl Backend {
             .body(Full::new(body.unwrap_or_default()))
             .context("failed to build control request")?;
 
-        let tcp = TcpStream::connect((host.as_str(), port))
-            .await
-            .with_context(|| format!("failed to connect to {host}:{port}"))?;
+        // The browser-facing error (ss/api.rs, ws/api.rs just `format!("{error:#}")`
+        // this whole chain into the JSON `error` field) must not name the control
+        // host:port: `control_url` is otherwise deliberately never advertised to
+        // the browser (see ss/api.rs's `list_instances` doc comment). The instance
+        // NAME is still fine to surface — `request()` wraps this in one below —
+        // and the host:port is not lost, just moved to the server-side log.
+        let tcp = TcpStream::connect((host.as_str(), port)).await.map_err(|error| {
+            warn!(
+                instance = %instance.name,
+                host = %host,
+                port,
+                %error,
+                "failed to connect to control API"
+            );
+            anyhow::anyhow!("instance unreachable")
+        })?;
 
         if url.scheme() == "https" {
             let server_name =

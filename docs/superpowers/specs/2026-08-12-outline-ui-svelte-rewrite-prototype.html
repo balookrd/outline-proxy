@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>outline-ui — prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* ---- Design tokens (from ui-ux-pro-max: dark ops palette) ---- */
+  :root {
+    --bg: #020617;
+    --surface: #0b1220;
+    --surface-2: #0f172a;
+    --surface-3: #1e293b;
+    --muted: #131a2b;
+    --border: #26324a;
+    --border-soft: #1c2740;
+    --fg: #f8fafc;
+    --fg-muted: #94a3b8;
+    --fg-dim: #64748b;
+    --accent: #22c55e;
+    --accent-dim: #16a34a;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    --info: #38bdf8;
+    --violet: #a78bfa;
+
+    --radius: 10px;
+    --radius-sm: 7px;
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+    --font-ui: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+    --font-mono: "Fira Code", ui-monospace, "SF Mono", Menlo, monospace;
+    --shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px -12px rgba(0,0,0,.6);
+    /* single source of truth for the topology grid so header and rows stay locked */
+    --topo-cols: minmax(120px,1.3fr) 92px 104px minmax(150px,1.7fr) minmax(120px,1.4fr) 64px 104px 112px;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f6fb; --surface: #ffffff; --surface-2: #ffffff; --surface-3: #eef2f8;
+    --muted: #f1f5f9; --border: #dbe2ee; --border-soft: #e7ecf4;
+    --fg: #0f172a; --fg-muted: #55627a; --fg-dim: #94a3b8;
+    --shadow: 0 1px 2px rgba(15,23,42,.06), 0 10px 24px -16px rgba(15,23,42,.25);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--font-ui); font-size: 14px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+  a { color: inherit; }
+  button { font-family: inherit; }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  /* ---- App shell ---- */
+  .app { display: grid; grid-template-columns: 232px 1fr; grid-template-rows: 56px 1fr; height: 100vh; }
+  .topbar {
+    grid-column: 1 / -1; display: flex; align-items: center; gap: var(--sp-4);
+    padding: 0 var(--sp-5); border-bottom: 1px solid var(--border-soft);
+    background: color-mix(in srgb, var(--surface) 70%, var(--bg)); backdrop-filter: blur(6px);
+    position: sticky; top: 0; z-index: 20;
+  }
+  .brand { display: flex; align-items: center; gap: var(--sp-2); font-weight: 600; letter-spacing: -.01em; }
+  .brand .logo { width: 22px; height: 22px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), var(--info)); border-radius: 6px; color: #04140a; }
+  .brand small { color: var(--fg-dim); font-weight: 400; font-size: 12px; }
+  .topbar .spacer { flex: 1; }
+  .env-pill { font-size: 12px; color: var(--fg-muted); padding: 3px 8px; border: 1px solid var(--border);
+    border-radius: 999px; background: var(--muted); }
+
+  .refresh { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); font-size: 12.5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-dim); box-shadow: 0 0 0 0 currentColor; }
+  .dot.good { background: var(--accent); color: var(--accent); animation: pulse 2.4s infinite; }
+  .dot.warn { background: var(--warn); color: var(--warn); }
+  .dot.bad { background: var(--danger); color: var(--danger); }
+  .dot.off { background: var(--fg-dim); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent);} 70%{ box-shadow:0 0 0 6px transparent;} 100%{box-shadow:0 0 0 0 transparent;} }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+  .iconbtn { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--muted); color: var(--fg-muted); cursor: pointer;
+    transition: background .18s, color .18s, border-color .18s; }
+  .iconbtn:hover { background: var(--surface-3); color: var(--fg); }
+  .iconbtn:focus-visible, a:focus-visible, button:focus-visible, .navlink:focus-visible, select:focus-visible {
+    outline: 2px solid var(--info); outline-offset: 2px; }
+
+  /* ---- Sidebar ---- */
+  .sidebar { border-right: 1px solid var(--border-soft); padding: var(--sp-4) var(--sp-3);
+    display: flex; flex-direction: column; gap: 2px; background: color-mix(in srgb, var(--surface) 55%, var(--bg)); }
+  .nav-group { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--fg-dim);
+    padding: var(--sp-3) var(--sp-3) var(--sp-2); }
+  .navlink { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px;
+    color: var(--fg-muted); cursor: pointer; border: 1px solid transparent; transition: background .16s, color .16s; font-size: 13.5px; }
+  .navlink svg { width: 16px; height: 16px; flex: none; }
+  .navlink:hover { background: var(--muted); color: var(--fg); }
+  .navlink.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--fg);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .navlink.active svg { color: var(--accent); }
+  .navlink .count { margin-left: auto; font-size: 11px; color: var(--fg-dim); background: var(--muted);
+    padding: 1px 7px; border-radius: 999px; }
+  .sidebar .foot { margin-top: auto; padding: var(--sp-3); color: var(--fg-dim); font-size: 11.5px; }
+
+  /* ---- Main ---- */
+  .main { overflow: auto; padding: var(--sp-5) var(--sp-6); }
+  .view { display: none; animation: fade .2s ease; }
+  .view.active { display: block; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .page-head { display: flex; align-items: flex-end; gap: var(--sp-4); margin-bottom: var(--sp-5); flex-wrap: wrap; }
+  .page-head h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+  .page-head p { margin: 2px 0 0; color: var(--fg-muted); font-size: 13px; }
+  .toolbar { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; flex-wrap: wrap; }
+
+  select, input[type=text], input[type=search] {
+    background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 10px; font-family: inherit; font-size: 13px; outline: none; }
+  input::placeholder { color: var(--fg-dim); }
+  .field-mono { font-family: var(--font-mono); }
+
+  .btn { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface-3); color: var(--fg); font-size: 13px; font-weight: 500;
+    transition: background .16s, border-color .16s, transform .05s; }
+  .btn:hover { background: color-mix(in srgb, var(--surface-3) 70%, var(--fg) 4%); }
+  .btn:active { transform: translateY(1px); }
+  .btn svg { width: 15px; height: 15px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent-dim); color: #04140a; font-weight: 600; }
+  .btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #fff); }
+  .btn.ghost { background: transparent; }
+  .btn.sm { padding: 4px 8px; font-size: 12px; }
+
+  /* ---- Cards / panels ---- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sp-4); }
+  .card { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius);
+    padding: var(--sp-5); box-shadow: var(--shadow); transition: border-color .18s, transform .18s; }
+  .card.link { cursor: pointer; }
+  .card.link:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); transform: translateY(-2px); }
+  .card h3 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .card h3 svg { width: 18px; height: 18px; color: var(--accent); }
+  .card .desc { color: var(--fg-muted); font-size: 13px; }
+  .card .kpis { display: flex; gap: var(--sp-5); margin-top: var(--sp-4); }
+  .kpi .n { font-size: 22px; font-weight: 600; font-family: var(--font-mono); }
+  .kpi .l { font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .05em; }
+
+  /* ---- Table ---- */
+  .panel { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-dim);
+    font-weight: 500; padding: 10px var(--sp-4); border-bottom: 1px solid var(--border-soft); background: color-mix(in srgb, var(--muted) 60%, transparent); white-space: nowrap; }
+  thead th.sortable { cursor: pointer; }
+  thead th.sortable:hover { color: var(--fg-muted); }
+  tbody td { padding: 11px var(--sp-4); border-bottom: 1px solid var(--border-soft); font-size: 13px; vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background .14s; }
+  tbody tr:hover { background: color-mix(in srgb, var(--surface-3) 30%, transparent); }
+  .id-cell { display: flex; align-items: center; gap: 9px; }
+  .avatar { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 11px; font-weight: 600;
+    background: color-mix(in srgb, var(--info) 20%, var(--muted)); color: var(--info); font-family: var(--font-mono); }
+  .rowactions { display: flex; gap: 4px; justify-content: flex-end; opacity: .55; transition: opacity .15s; }
+  tr:hover .rowactions { opacity: 1; }
+
+  /* ---- Chips / badges ---- */
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--muted); color: var(--fg-muted); white-space: nowrap; }
+  .chip .d { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .chip.ok { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+  .chip.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+  .chip.off { color: var(--fg-dim); }
+  .chip.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); background: color-mix(in srgb, var(--info) 12%, transparent); }
+
+  /* ---- Wire chain ---- */
+  .wire { display: inline-flex; align-items: center; gap: 3px; }
+  .seg { font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border-radius: 5px; font-weight: 500; }
+  .seg.h3 { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .seg.h2 { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  .seg.ws { color: var(--info); background: color-mix(in srgb, var(--info) 14%, transparent); }
+  .seg.xh { color: var(--violet); background: color-mix(in srgb, var(--violet) 16%, transparent); }
+  .seg.dim { color: var(--fg-dim); background: var(--muted); }
+  .arrow { color: var(--fg-dim); font-size: 10px; }
+  .seg.active-seg { outline: 1.5px solid currentColor; }
+
+  /* ---- Topology ---- */
+  .inst { margin-bottom: var(--sp-4); }
+  .inst-head { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4);
+    background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius) var(--radius) 0 0; cursor: pointer; }
+  .inst-head .title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .inst-head .sub { color: var(--fg-dim); font-size: 12px; }
+  .group { border: 1px solid var(--border-soft); border-top: none; background: color-mix(in srgb, var(--surface) 55%, var(--bg)); }
+  .group:last-child { border-radius: 0 0 var(--radius) var(--radius); }
+  .group-head { display: flex; align-items: center; gap: var(--sp-3); padding: 9px var(--sp-4); border-bottom: 1px solid var(--border-soft); }
+  .group-head .gname { font-weight: 600; font-size: 13px; }
+  .group-head .gcount { color: var(--fg-dim); font-size: 12px; }
+  .group-head .cfgchips { display: flex; gap: 5px; margin-left: 4px; }
+  .group-head .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .uprow { display: grid; grid-template-columns: var(--topo-cols);
+    align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); border-bottom: 1px solid var(--border-soft); font-size: 13px; }
+  .uprow > * { min-width: 0; }
+  .uprow:last-child { border-bottom: none; }
+  .uprow:hover { background: color-mix(in srgb, var(--surface-3) 26%, transparent); }
+  .uprow .col-label { display: flex; flex-direction: column; }
+  .uprow .rowhead { display: none; }
+  .up-name { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+  .up-endpoint { color: var(--fg-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .metric { font-family: var(--font-mono); font-size: 12px; }
+  .metric.good { color: var(--accent); } .metric.warn { color: var(--warn); } .metric.bad { color: var(--danger); }
+  /* right-align the numeric + action columns in both header and rows */
+  .uprow > div:nth-child(6), .uprow > div:nth-child(7),
+  .colhead-row > div:nth-child(6), .colhead-row > div:nth-child(7), .colhead-row > div:nth-child(8) { text-align: right; }
+  .colhead-row { display: grid; grid-template-columns: var(--topo-cols); gap: var(--sp-3);
+    padding: 7px var(--sp-4); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-dim); border-bottom: 1px solid var(--border-soft); }
+  .actioncell { display: flex; gap: 4px; justify-content: flex-end; }
+
+  /* ---- Apply bar (uplinks) ---- */
+  .applybar { display: flex; align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); margin-bottom: var(--sp-4);
+    border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border)); background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+    border-radius: var(--radius); font-size: 13px; }
+  .applybar .pill { font-family: var(--font-mono); font-size: 12px; color: var(--warn); }
+
+  /* ---- Drawer ---- */
+  .backdrop { position: fixed; inset: 0; background: rgba(2,6,23,.6); backdrop-filter: blur(2px); opacity: 0; pointer-events: none;
+    transition: opacity .2s; z-index: 40; }
+  .backdrop.open { opacity: 1; pointer-events: auto; }
+  .drawer { position: fixed; top: 0; right: 0; height: 100vh; width: 380px; max-width: 92vw; background: var(--surface);
+    border-left: 1px solid var(--border); transform: translateX(100%); transition: transform .24s cubic-bezier(.4,0,.2,1);
+    z-index: 41; display: flex; flex-direction: column; box-shadow: -20px 0 40px -20px rgba(0,0,0,.6); }
+  .drawer.open { transform: none; }
+  .drawer header { display: flex; align-items: center; padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--border-soft); }
+  .drawer header h3 { margin: 0; font-size: 15px; }
+  .drawer .body { padding: var(--sp-5); overflow: auto; display: flex; flex-direction: column; gap: var(--sp-4); }
+  .drawer .foot { margin-top: auto; padding: var(--sp-4) var(--sp-5); border-top: 1px solid var(--border-soft); display: flex; gap: var(--sp-2); justify-content: flex-end; }
+  .fieldrow { display: flex; flex-direction: column; gap: 5px; }
+  .fieldrow label { font-size: 12px; color: var(--fg-muted); }
+  .fieldrow .hint { font-size: 11px; color: var(--fg-dim); }
+  .fieldrow input, .fieldrow select { width: 100%; }
+  .switch { display: flex; align-items: center; gap: 9px; }
+  .switch input { width: 34px; height: 20px; appearance: none; background: var(--surface-3); border-radius: 999px; position: relative; cursor: pointer; transition: background .18s; border: 1px solid var(--border); }
+  .switch input:checked { background: var(--accent); border-color: var(--accent-dim); }
+  .switch input::after { content: ""; position: absolute; width: 15px; height: 15px; border-radius: 50%; background: #fff; top: 1.5px; left: 2px; transition: left .18s; }
+  .switch input:checked::after { left: 16px; }
+
+  /* ---- Toast ---- */
+  .toasts { position: fixed; bottom: var(--sp-5); right: var(--sp-5); display: flex; flex-direction: column; gap: 8px; z-index: 60; }
+  .toast { background: var(--surface-3); border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; font-size: 13px;
+    box-shadow: var(--shadow); display: flex; align-items: center; gap: 9px; animation: fade .2s ease; }
+  .toast.ok { border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+  .toast svg { width: 16px; height: 16px; color: var(--accent); }
+
+  .muted { color: var(--fg-muted); }
+  .empty { padding: var(--sp-6); text-align: center; color: var(--fg-dim); }
+  @media (max-width: 900px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: 56px auto 1fr; }
+    .sidebar { flex-direction: row; overflow-x: auto; }
+    .sidebar .foot, .nav-group { display: none; }
+    .uprow, .colhead-row { grid-template-columns: 1fr 1fr; }
+    .colhead-row { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Topbar -->
+  <div class="topbar">
+    <div class="brand"><span class="logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 12h16M12 4v16"/></svg>
+    </span> outline <small>fleet UI</small></div>
+    <span class="env-pill">ui.k3s.beerloga.su</span>
+    <div class="spacer"></div>
+    <div class="refresh"><span class="dot good"></span> live · auto-refresh <span class="mono">5s</span></div>
+    <button class="iconbtn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+    </button>
+  </div>
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="nav-group">Panels</div>
+    <div class="navlink active" data-view="landing" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      Overview
+    </div>
+    <div class="nav-group">Server · SS</div>
+    <div class="navlink" data-view="users" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg>
+      Users <span class="count">4</span>
+    </div>
+    <div class="nav-group">Client · WS</div>
+    <div class="navlink" data-view="topology" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v4M12 11l-6 6M12 11l6 6"/></svg>
+      Topology
+    </div>
+    <div class="navlink" data-view="uplinks" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M4 12l4-4M4 12l4 4M20 12l-4-4M20 12l-4 4"/></svg>
+      Uplinks
+    </div>
+    <div class="foot">outline-ui · v0.2.0<br>2 SS · 2 WS instances</div>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+
+    <!-- LANDING -->
+    <section class="view active" id="view-landing">
+      <div class="page-head"><div><h1>Overview</h1><p>Two dashboards, one aggregating service. Pick a panel.</p></div></div>
+      <div class="cards">
+        <div class="card link" data-goto="users">
+          <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg> Server dashboard</h3>
+          <div class="desc">Shadowsocks user management — create, edit, block access keys across server instances.</div>
+          <div class="kpis">
+            <div class="kpi"><div class="n">2</div><div class="l">Instances</div></div>
+            <div class="kpi"><div class="n">4</div><div class="l">Users</div></div>
+            <div class="kpi"><div class="n mono" style="color:var(--accent)">3</div><div class="l">Active</div></div>
+          </div>
+        </div>
+        <div class="card link" data-goto="topology">
+          <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v4M12 11l-6 6M12 11l6 6"/></svg> Client dashboard</h3>
+          <div class="desc">Uplink groups, wire chains, carrier loss and live switch operations across client instances.</div>
+          <div class="kpis">
+            <div class="kpi"><div class="n">2</div><div class="l">Instances</div></div>
+            <div class="kpi"><div class="n">3</div><div class="l">Uplinks</div></div>
+            <div class="kpi"><div class="n mono" style="color:var(--warn)">1</div><div class="l">Degraded</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- USERS (SS) -->
+    <section class="view" id="view-users">
+      <div class="page-head">
+        <div><h1>Users</h1><p>Shadowsocks access keys on the selected server.</p></div>
+        <div class="toolbar">
+          <select id="ssInstance" aria-label="Server instance" class="field-mono">
+            <option>beelink102</option><option>cloud1</option>
+          </select>
+          <input type="search" placeholder="Search id / method…" style="width:180px">
+          <button class="btn primary" id="newUserBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> New user</button>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr>
+            <th class="sortable">User ↕</th><th>Status</th><th>Method</th><th>Access</th><th class="sortable">Created ↕</th><th style="text-align:right">Actions</th>
+          </tr></thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- TOPOLOGY (WS) -->
+    <section class="view" id="view-topology">
+      <div class="page-head">
+        <div><h1>Topology</h1><p>Uplink groups and wire chains. Green = active &amp; healthy, amber = ready/degraded, red = down.</p></div>
+        <div class="toolbar">
+          <span class="chip"><span class="d"></span> TCP wire</span>
+          <span class="chip"><span class="seg h3" style="padding:0 5px">h3</span><span class="seg h2" style="padding:0 5px">h2</span><span class="seg ws" style="padding:0 5px">ws</span></span>
+        </div>
+      </div>
+      <div id="topoRoot"></div>
+    </section>
+
+    <!-- UPLINKS (WS CRUD) -->
+    <section class="view" id="view-uplinks">
+      <div class="page-head">
+        <div><h1>Uplinks</h1><p>Edit uplink definitions, then hot-apply to the running instance.</p></div>
+        <div class="toolbar">
+          <select class="field-mono" aria-label="Client instance"><option>nanopi104</option><option>beelink102</option></select>
+          <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> Add uplink</button>
+        </div>
+      </div>
+      <div class="applybar">
+        <span class="dot warn"></span>
+        <strong>2 pending changes</strong>
+        <span class="pill">cloud2: weight 10→14 · cloud1: probe.tls edited</span>
+        <div style="margin-left:auto; display:flex; gap:8px">
+          <button class="btn ghost sm">Discard</button>
+          <button class="btn primary sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg> Apply now</button>
+        </div>
+      </div>
+      <div class="panel">
+        <table>
+          <thead><tr><th>Uplink</th><th>Endpoint</th><th>Carrier</th><th>Weight</th><th>Probe</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody id="uplinksBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- Drawer (new/edit user) -->
+<div class="backdrop" id="backdrop"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <header><h3 id="drawerTitle">New user</h3><div class="spacer" style="flex:1"></div><button class="iconbtn" id="drawerClose" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button></header>
+  <div class="body">
+    <div class="fieldrow"><label>User id</label><input type="text" class="field-mono" placeholder="iphone-13" value=""><span class="hint">Unique key id on this server.</span></div>
+    <div class="fieldrow"><label>Password</label><input type="text" class="field-mono" placeholder="base64 secret"><span class="hint">password or vless_id is required.</span></div>
+    <div class="fieldrow"><label>Method</label><select class="field-mono"><option>2022-blake3-aes-256-gcm</option><option>chacha20-ietf-poly1305</option><option>aes-128-gcm</option></select></div>
+    <div class="fieldrow"><label>Aliases</label><input type="text" placeholder="comma, separated"><span class="hint">Optional IP-alias accounting labels.</span></div>
+    <div class="switch"><input type="checkbox" id="enabledSwitch" checked><label for="enabledSwitch">Enabled</label></div>
+  </div>
+  <div class="foot"><button class="btn ghost" id="drawerCancel">Cancel</button><button class="btn primary" id="drawerSave">Create user</button></div>
+</aside>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+/* ---------- Mock data (realistic to the fleet) ---------- */
+const users = [
+  { id: "max",        enabled: true,  method: "2022-blake3-aes-256-gcm", access: "ss://…@beelink102:443", created: "2025-11-02" },
+  { id: "iphone",     enabled: true,  method: "2022-blake3-aes-256-gcm", access: "ss://…@beelink102:443", created: "2026-04-18" },
+  { id: "nuxt-relay", enabled: true,  method: "chacha20-ietf-poly1305",  access: "ss://…@beelink102:443", created: "2026-06-01" },
+  { id: "test",       enabled: false, method: "aes-128-gcm",             access: "ss://…@beelink102:443", created: "2026-08-09" },
+];
+
+/* uplink: name, endpoint, role, state(active/ready/down/disabled), tcp[], udp[], activeTcpIdx, activeUdpIdx, rtt, loss, weight */
+const topology = [
+  { name: "nanopi104", ok: true, updated: "11:32:07", groups: [
+    { name: "main", cfg: ["cluster", "padding"], uplinks: [
+      { name: "cloud1", endpoint: "cloud1.beerloga.su", role: "active",  state: "active", tcp: ["h3","h2","ws"], udp: ["h3"], atcp: 0, audp: 0, rtt: 42, loss: 0,   weight: 12 },
+      { name: "cloud2", endpoint: "cloud2.beerloga.su", role: "standby", state: "ready",  tcp: ["h3","h2","ws"], udp: ["h3"], atcp: 1, audp: 0, rtt: 78, loss: 2.4, weight: 10 },
+      { name: "direct", endpoint: "—",                  role: "bypass",  state: "disabled", tcp: ["dim"], udp: ["dim"], atcp: 0, audp: 0, rtt: null, loss: null, weight: 0 },
+    ]},
+  ]},
+  { name: "beelink102", ok: true, updated: "11:32:06", groups: [
+    { name: "main", cfg: ["padding"], uplinks: [
+      { name: "cloud1", endpoint: "cloud1.beerloga.su", role: "active", state: "active", tcp: ["h3","h2"], udp: ["h3"], atcp: 0, audp: 0, rtt: 39, loss: 0, weight: 1 },
+    ]},
+  ]},
+];
+
+const uplinks = [
+  { name: "cloud1", endpoint: "cloud1.beerloga.su:443", carrier: ["h3","h2","ws"], weight: 12, probe: "tls · 5s" },
+  { name: "cloud2", endpoint: "cloud2.beerloga.su:443", carrier: ["h3","h2","ws"], weight: 14, probe: "tls · 5s", pending: true },
+  { name: "direct", endpoint: "bypass",                 carrier: ["dim"],          weight: 0,  probe: "—" },
+];
+
+/* ---------- Icons ---------- */
+const I = {
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+  block:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 4 14 8-14 8Z"/></svg>',
+  soft: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 7h11l-3-3M17 17H6l3 3"/></svg>',
+  power:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v9M6.4 6.4a8 8 0 1 0 11.2 0"/></svg>',
+  reselect:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/></svg>',
+  trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>',
+};
+
+/* ---------- Render: users ---------- */
+function statusChip(enabled){ return enabled ? '<span class="chip ok"><span class="d"></span>active</span>' : '<span class="chip bad"><span class="d"></span>blocked</span>'; }
+function renderUsers(){
+  document.getElementById("usersBody").innerHTML = users.map(u => `
+    <tr>
+      <td><div class="id-cell"><span class="avatar">${u.id.slice(0,2).toUpperCase()}</span><span class="mono">${u.id}</span></div></td>
+      <td>${statusChip(u.enabled)}</td>
+      <td><span class="chip info">${u.method.replace("2022-blake3-","2022-")}</span></td>
+      <td><button class="btn ghost sm" title="Copy access URL">${I.copy} <span class="mono muted">ss://…</span></button></td>
+      <td class="mono muted">${u.created}</td>
+      <td><div class="rowactions">
+        <button class="iconbtn" title="Edit" onclick="openDrawer('${u.id}')">${I.edit}</button>
+        <button class="iconbtn" title="${u.enabled ? "Block" : "Unblock"}">${I.block}</button>
+        <button class="iconbtn" title="Delete" style="color:var(--danger)">${I.trash}</button>
+      </div></td>
+    </tr>`).join("");
+}
+
+/* ---------- Render: topology ---------- */
+function wireChain(list, activeIdx){
+  return '<span class="wire">' + list.map((t,i) => {
+    const cls = t; const label = t === "dim" ? "direct" : t;
+    const act = i === activeIdx ? " active-seg" : "";
+    return (i? '<span class="arrow">›</span>':'') + `<span class="seg ${cls}${act}">${label}</span>`;
+  }).join("") + '</span>';
+}
+function stateChip(s){
+  if (s === "active")   return '<span class="chip ok"><span class="d"></span>Active</span>';
+  if (s === "ready")    return '<span class="chip warn"><span class="d"></span>Ready</span>';
+  if (s === "disabled") return '<span class="chip off"><span class="d"></span>Disabled</span>';
+  return '<span class="chip bad"><span class="d"></span>Down</span>';
+}
+function lossChip(loss){
+  if (loss === null) return '<span class="muted mono">—</span>';
+  if (loss === 0)    return '<span class="metric good">0%</span>';
+  if (loss < 5)      return '<span class="metric warn">'+loss.toFixed(1)+'%</span>';
+  return '<span class="metric bad">'+loss.toFixed(1)+'%</span>';
+}
+function roleChip(r){
+  const map = { active:"info", standby:"", bypass:"off" };
+  return `<span class="chip ${map[r]||''}">${r}</span>`;
+}
+function renderTopology(){
+  document.getElementById("topoRoot").innerHTML = topology.map(inst => `
+    <div class="inst">
+      <div class="inst-head">
+        <span class="dot ${inst.ok ? 'good':'bad'}"></span>
+        <span class="title">${inst.name}</span>
+        <span class="sub">↻ ${inst.updated}</span>
+      </div>
+      ${inst.groups.map(g => `
+        <div class="group">
+          <div class="group-head">
+            <span class="gname">${g.name}</span>
+            <span class="gcount">${g.uplinks.length} uplinks</span>
+            <span class="cfgchips">${g.cfg.map(c=>`<span class="chip">${c}</span>`).join("")}</span>
+            <div class="right">
+              <span class="chip ok"><span class="d"></span>${g.uplinks.filter(u=>u.state==='active').length} active</span>
+              <button class="btn ghost sm" title="Reselect active uplink (weighted)">${I.reselect} Reselect</button>
+            </div>
+          </div>
+          <div class="colhead-row"><div>Uplink</div><div>Role</div><div>Status</div><div>TCP wire chain</div><div>UDP wire chain</div><div>RTT</div><div>Loss · Wt</div><div style="text-align:right">Action</div></div>
+          ${g.uplinks.map(u => `
+            <div class="uprow">
+              <div class="col-label"><span class="up-name">${u.name}</span><span class="up-endpoint mono">${u.endpoint}</span></div>
+              <div>${roleChip(u.role)}</div>
+              <div>${stateChip(u.state)}</div>
+              <div>${wireChain(u.tcp, u.atcp)}</div>
+              <div>${wireChain(u.udp, u.audp)}</div>
+              <div class="metric ${u.rtt==null?'':(u.rtt<60?'good':'warn')}">${u.rtt==null?'—':u.rtt+'ms'}</div>
+              <div>${lossChip(u.loss)} <span class="muted mono">· ${u.weight}</span></div>
+              <div class="actioncell">
+                ${u.state==='active'
+                  ? `<button class="iconbtn" title="Reselect">${I.reselect}</button>`
+                  : (u.state==='disabled'
+                      ? `<button class="iconbtn" title="Enable">${I.power}</button>`
+                      : `<button class="iconbtn" title="Activate (hard switch)">${I.play}</button><button class="iconbtn" title="Soft switch (cluster resume)">${I.soft}</button>`)}
+                ${u.state!=='disabled' ? `<button class="iconbtn" title="Disable" style="color:var(--fg-dim)">${I.power}</button>`:''}
+              </div>
+            </div>`).join("")}
+        </div>`).join("")}
+    </div>`).join("");
+}
+
+/* ---------- Render: uplinks CRUD ---------- */
+function renderUplinks(){
+  document.getElementById("uplinksBody").innerHTML = uplinks.map(u => `
+    <tr>
+      <td><span class="mono" style="font-weight:500">${u.name}</span> ${u.pending?'<span class="chip warn" style="margin-left:6px">edited</span>':''}</td>
+      <td class="mono muted">${u.endpoint}</td>
+      <td>${wireChain(u.carrier, -1)}</td>
+      <td class="mono">${u.weight}</td>
+      <td class="mono muted">${u.probe}</td>
+      <td><div class="rowactions">
+        <button class="iconbtn" title="Edit">${I.edit}</button>
+        <button class="iconbtn" title="Delete" style="color:var(--danger)">${I.trash}</button>
+      </div></td>
+    </tr>`).join("");
+}
+
+/* ---------- Nav / interactions ---------- */
+function show(view){
+  document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+  document.getElementById("view-"+view).classList.add("active");
+  document.querySelectorAll(".navlink").forEach(n => n.classList.toggle("active", n.dataset.view === view));
+}
+document.querySelectorAll(".navlink").forEach(n => {
+  n.addEventListener("click", () => show(n.dataset.view));
+  n.addEventListener("keydown", e => { if(e.key==="Enter"||e.key===" "){ e.preventDefault(); show(n.dataset.view); } });
+});
+document.querySelectorAll("[data-goto]").forEach(c => c.addEventListener("click", () => show(c.dataset.goto)));
+
+/* Drawer */
+const backdrop = document.getElementById("backdrop"), drawer = document.getElementById("drawer");
+function openDrawer(id){
+  document.getElementById("drawerTitle").textContent = id ? "Edit user" : "New user";
+  document.getElementById("drawerSave").textContent = id ? "Save changes" : "Create user";
+  backdrop.classList.add("open"); drawer.classList.add("open"); drawer.setAttribute("aria-hidden","false");
+}
+function closeDrawer(){ backdrop.classList.remove("open"); drawer.classList.remove("open"); drawer.setAttribute("aria-hidden","true"); }
+document.getElementById("newUserBtn").addEventListener("click", () => openDrawer());
+document.getElementById("drawerClose").addEventListener("click", closeDrawer);
+document.getElementById("drawerCancel").addEventListener("click", closeDrawer);
+backdrop.addEventListener("click", closeDrawer);
+document.getElementById("drawerSave").addEventListener("click", () => { closeDrawer(); toast("User saved"); });
+document.addEventListener("keydown", e => { if(e.key==="Escape") closeDrawer(); });
+
+/* Theme */
+document.getElementById("themeBtn").addEventListener("click", () => {
+  const r = document.documentElement;
+  r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+});
+
+/* Toast */
+function toast(msg){
+  const t = document.createElement("div");
+  t.className = "toast ok";
+  t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>' + msg;
+  document.getElementById("toasts").appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+renderUsers(); renderTopology(); renderUplinks();
+</script>
+</body>
+</html>

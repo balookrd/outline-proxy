@@ -29,9 +29,10 @@ English version: [README.md](README.md).
   равносильно владению всеми токенами инстансов, с которыми он настроен, — токены
   подставляются на стороне сервера при каждом проксируемом запросе. Эти
   полномочия висели на том же процессе, что и data plane.
-- **Правка UI стоила рестарта.** `dashboard.html` попадает в бинарь через
-  `include_str!`, поэтому косметическая правка означала пересборку и раскатку
-  боевого бинаря с рестартом — а это все флоу узла.
+- **Правка UI стоила рестарта.** Раньше HTML дашборда попадал прямо в
+  `outline-ws-rust`/`outline-ss-rust` через `include_str!`, поэтому
+  косметическая правка означала пересборку и раскатку боевого бинаря с
+  рестартом — а это все флоу узла.
 - **UI не мог переехать в кластер**, где уже живут Grafana и VictoriaMetrics.
 
 ## Два гейта, оба до маршрутизации
@@ -101,8 +102,52 @@ EOF
 cargo run -p outline-ui -- --config /tmp/ui/config.toml
 ```
 
-Дальше `curl -H 'Authorization: Bearer devtoken' http://127.0.0.1:9500/ws/dashboard`.
-Без заголовка ответ — 401.
+Дальше `curl -H 'Authorization: Bearer devtoken' http://127.0.0.1:9500/`. Без
+заголовка ответ — 401; с ним `/` отдаёт оболочку SPA — заглушку «assets not
+embedded», если бинарь не собран с `--features embed-assets` поверх
+`pnpm build`-нутого `frontend/dist` (см. «Разработка фронтенда» ниже). Те же
+JSON API, которыми пользуются оба дашборда, доступны так же, например
+`/ws/dashboard/api/instances`.
+
+Для разработки UI с горячей перезагрузкой против этого бэкенда — см.
+«Разработка фронтенда» ниже.
+
+## Разработка фронтенда
+
+UI дашборда — SPA на Svelte 5 + TypeScript в [`frontend/`](frontend), собран
+на Vite и Tailwind, тестируется `svelte-check`/Vitest. `frontend/README.md` —
+типовой шаблон Vite/Svelte без правок; всё ниже специфично именно для
+встраивания в этот бинарь.
+
+Два процесса рядом:
+
+```bash
+# терминал 1: JSON API — «Запуск локально» выше, слушает :9500
+cargo run -p outline-ui -- --config /tmp/ui/config.toml
+
+# терминал 2: SPA с горячей перезагрузкой
+cd bins/outline-ui/frontend
+pnpm install
+pnpm dev   # http://localhost:5173
+```
+
+`vite.config.ts` проксирует `/ss/dashboard/api` и `/ws/dashboard/api` на
+`127.0.0.1:9500` — dev-сервер отдаёт SPA со своего origin, а её запросы к API
+уходят в настоящий бэкенд-процесс и дальше — туда, куда указывают
+`control_url` в его `config.toml`. Запросы всё так же требуют
+`Bearer`/`Basic` credentials — их требуют оба гейта: dev-сервер не
+освобождён от `auth.rs`/`origin.rs`.
+
+`pnpm build` собирает SPA в `frontend/dist/`: хэшированные имена под
+`/ui-assets/*`, `index.html` ссылается на них абсолютным путём (`base:
+'/ui-assets/'` в `vite.config.ts`). Rust-сборка не читает этот каталог, пока
+не включена cargo-фича `embed-assets` — обычным `cargo build`/`cargo test`
+Node вообще не нужен, поэтому дефолтные Rust-джобы остаются без Node. Про
+релизную сборку с включённой фичей — «Раскатка» ниже.
+
+Джоб `frontend` в `.github/workflows/ci.yml` гоняет `svelte-check`, `vitest
+run` и `pnpm build` на каждый PR и пуш в `main` — отдельный гейт фронтенда,
+независимый от Rust-джобов.
 
 ## Раскатка
 
@@ -111,15 +156,37 @@ cargo run -p outline-ui -- --config /tmp/ui/config.toml
 запись ingress — в
 [`apps/ingress/ingress-routes.yaml`](../../ops/nanopi-r5c-k3s/apps/ingress/ingress-routes.yaml).
 
+Релизный бинарь несёт собранный SPA внутри, поэтому фронтенд собирается
+*первым*, а Rust-сборка должна явно попросить встроить результат — простой
+`cargo build` его не встраивает:
+
 ```bash
-cargo zigbuild --release -p outline-ui --target aarch64-unknown-linux-musl
+pnpm -C bins/outline-ui/frontend install
+pnpm -C bins/outline-ui/frontend build                        # → frontend/dist/
+cargo zigbuild --release -p outline-ui --features embed-assets \
+  --target aarch64-unknown-linux-musl
 docker build --platform linux/arm64 -f bins/outline-ui/Dockerfile \
-  -t registry.k3s.beerloga.su/outline-ui:0.1.0 .
-docker push registry.k3s.beerloga.su/outline-ui:0.1.0
+  -t registry.k3s.beerloga.su/outline-ui:0.2.0 .
+docker push registry.k3s.beerloga.su/outline-ui:0.2.0
 export KUBECONFIG=~/.kube/k3s-home.yaml
 kubectl apply -f ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml
 kubectl -n monitoring rollout restart deploy/outline-ui
 ```
+
+`Dockerfile` — простой `COPY` в `scratch`, не multi-stage: бинарь
+кросс-компилируется вне Docker (`cargo zigbuild`, как и
+`outline-ss-rust`/`outline-ws-rust`), и единственная задача Docker —
+упаковать уже готовый бинарь, вместе со встроенными assets. Ничего не
+проверяет на этапе сборки, что `frontend/dist` свежий или что был передан
+`--features embed-assets`, поэтому пропущенный шаг не мешает сборке образа:
+`/` в этом случае просто отдаёт заглушку «assets not embedded» вместо
+дашборда.
+
+`ops/deploy/deploy-binary.sh` этот бинарь не покрывает: скрипт пушит в
+systemd-юнит на узле парка (только `outline-ws-rust`/`outline-ss-rust`) и
+рестартует его на месте — а `outline-ui` раскатывается иначе: без
+systemd-юнита, без узла парка, образом контейнера в k3s. Пять команд выше —
+вся процедура раскатки целиком.
 
 Ноды кластера — aarch64 (NanoPi R5C), отсюда таргет и `--platform`.
 
@@ -140,27 +207,37 @@ kubectl -n monitoring rollout restart deploy/outline-ui
 
 ## Как два UI уживаются на одном порту
 
-Оба дашборда обращаются к своим API абсолютно (`/dashboard/api/...`). Под
-префиксами `/ws` и `/ss` такие URL промахнулись бы, а сами дашборды столкнулись
-бы на общих путях. Поэтому каждая страница объявляет
+Один бинарь отвечает на три вида запросов, все через один `Router`
+(`main.rs`), за одним и тем же гейтом ещё до матчинга маршрута:
 
-```js
-const API_BASE = "__BASE__";
-```
+- `/ui-assets/*` — хэшированные JS/CSS/шрифты (`assets::asset`), префикс,
+  который Vite настроен отдавать (`base: '/ui-assets/'` в `vite.config.ts`)
+  именно для того, чтобы он не мог столкнуться ни с одним API-деревом
+  дашбордов.
+- `/ws/dashboard/api/...` и `/ss/dashboard/api/...` — JSON API обоих
+  дашбордов, форма не изменилась, каждое `.nest`-ится под `/ws`/`/ss`
+  (`ws::router`/`ss::router`).
+- Всё остальное — `/`, глубокая ссылка вроде `/ws/uplinks`, опечатка — отдаёт
+  ту же оболочку `index.html` (`assets::spa_index`), включая `.fallback`
+  внутри самих вложенных роутеров `/ws` и `/ss`.
 
-а хендлер подставляет `/ws` или `/ss` в момент ответа (`assets::render` — тот же
-механизм, которым дашборды уже подменяли интервал обновления). Тест проверяет,
-что ни один плейсхолдер не доживает до ответа.
-
-`<base href>` отвергнут: он молча переписывает все относительные URL и якоря на
-странице, то есть чинит fetch ценой того, чего никто не проверял.
+После загрузки оболочки
+[`router.svelte.ts`](frontend/src/lib/router.svelte.ts) сам читает
+`location.pathname` на клиенте и выбирает вид `ws`/`ss`/`landing` —
+подстановки на стороне сервера больше нет и синхронизировать с ней нечего:
+один и тот же `index.html` отдаётся на любой маршрут, а своих отдельных
+страниц у дашбордов, которые могли бы столкнуться, больше нет.
 
 ## Текущее состояние
 
-Дашборды **удалены из `outline-ws-rust` и `outline-ss-rust`** — теперь этот
-сервис единственное место, где они работают. Бинари отдают только свои
-листенеры метрик и control-плоскости.
+Дашборды **удалены из `outline-ws-rust` и `outline-ss-rust`**. Теперь этот
+сервис — единственное место, где они работают, и с версии `0.2.0` — как SPA
+на Svelte, а не серверный HTML. Бинари отдают только свои листенеры метрик и
+control-плоскости.
 
-Дизайн и план:
+Дизайн и план вынесения из боевых бинарей:
 [спека](../../docs/superpowers/specs/2026-08-12-outline-ui-dashboard-extraction-design.md),
-[план](../../docs/superpowers/plans/2026-08-12-outline-ui.md).
+[план](../../docs/superpowers/plans/2026-08-12-outline-ui.md); переписывание
+на Svelte:
+[спека](../../docs/superpowers/specs/2026-08-12-outline-ui-svelte-rewrite-design.md),
+[план](../../docs/superpowers/plans/2026-08-12-outline-ui-svelte-rewrite.md).

@@ -1,0 +1,611 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- Self-hosted fonts (fontsource) ----
+   Embedded in the bundle so dist stays self-contained (no fonts.googleapis.com,
+   no runtime CDN dependency, works behind the same CSP as the rest of the app).
+   Loaded from main.ts, not a CSS `@import` here: CSS requires `@import` to
+   precede every other statement (besides `@charset`/empty `@layer`), which
+   `@tailwind base` above does not qualify as — an `@import` placed after it is
+   invalid and gets silently dropped by the build (verified: 0 emitted
+   `@font-face` rules, no woff2 in dist). Weights imported: 400/500/600 (Fira
+   Sans body/UI text) + 700 (headings render bold via the browser's default
+   h-tag weight where not explicitly overridden) and 400/500/600 (Fira Code —
+   600 is used by `.kpi .n`, the landing KPI numbers). */
+
+/* ---- Design tokens ----
+   Ported from docs/superpowers/specs/2026-08-12-outline-ui-svelte-rewrite-prototype.html
+   (ui-ux-pro-max dark-ops palette). Dark is the default (`:root`); light is an
+   explicit opt-in (`:root[data-theme="light"]`, toggled by lib/theme.svelte.ts)
+   or the OS preference before any explicit choice has been made/persisted. */
+:root {
+  --bg: #020617;
+  --surface: #0b1220;
+  --surface-2: #0f172a;
+  --surface-3: #1e293b;
+  --muted: #131a2b;
+  --border: #26324a;
+  --border-soft: #1c2740;
+  --fg: #f8fafc;
+  --fg-muted: #94a3b8;
+  --fg-dim: #64748b;
+  --accent: #22c55e;
+  --accent-dim: #16a34a;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+  --info: #38bdf8;
+  --violet: #a78bfa;
+  /* Wire-chain combo palette (owner-approved mockup wire-active-full.html,
+     reviewed 2026-08-13): one background per (transport, tunnel) pair,
+     mirrored exactly from the mockup's own tokens — vless+ws violet,
+     vless+xhttp fuchsia, ss+ws teal, ss+xhttp blue — plus a separate
+     carrier-tier accent (h3/h2/h1) used only as a chip/square's left edge,
+     never as text colour (see app.css's `.wcombo-*`/`.wcarrier-*` and
+     lib/wsTopology.ts's wireComboKey()). Dedicated tokens rather than
+     reusing --accent/--warn/--danger/--info or the --chip-* status tokens,
+     so the wire palette can move independently of chip-tone semantics (same
+     reasoning the single-chip design's --wire-* tokens used — this replaces
+     those, see cabc01c0). Values here are the DARK-theme ones (this file's
+     default); light-theme values are redefined below, same split as
+     --chip-*. */
+  --vlws: #a78bfa;
+  --vlxh: #e879f9;
+  --ssws: #2dd4bf;
+  --ssxh: #38bdf8;
+  --h3: #22c55e;
+  --h2: #f59e0b;
+  --h1: #ef4444;
+
+  --radius: 10px;
+  --radius-sm: 7px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+  --font-ui: 'Fira Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Fira Code', ui-monospace, 'SF Mono', Menlo, monospace;
+  --shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px -12px rgba(0,0,0,.6);
+  /* single source of truth for the topology grid so header and rows stay locked */
+  --topo-cols: minmax(104px,.72fr) 88px 104px minmax(210px,2.1fr) minmax(210px,2.1fr) 66px 104px 120px;
+}
+
+/* No explicit data-theme yet (first paint / never toggled) — follow the OS. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f4f6fb; --surface: #ffffff; --surface-2: #ffffff; --surface-3: #eef2f8;
+    --muted: #f1f5f9; --border: #dbe2ee; --border-soft: #e7ecf4;
+    --fg: #0f172a; --fg-muted: #55627a; --fg-dim: #94a3b8;
+    --shadow: 0 1px 2px rgba(15,23,42,.06), 0 10px 24px -16px rgba(15,23,42,.25);
+    /* Contrast tokens for chips/metrics/badges: dark 700-level text, a denser
+       opaque-ish tint, and a hairline border (same recipe as the wire-chain
+       fix below) — consumed by the "Light theme: chips/metrics/badges" rules
+       further down instead of the raw --accent/--warn/--danger/--info, which
+       wash out on a white background. */
+    --chip-ok-text: #15803d; --chip-ok-bg: color-mix(in srgb, #16a34a 16%, #fff); --chip-ok-border: color-mix(in srgb, #16a34a 42%, #fff);
+    --chip-warn-text: #b45309; --chip-warn-bg: color-mix(in srgb, #d97706 16%, #fff); --chip-warn-border: color-mix(in srgb, #d97706 42%, #fff);
+    --chip-bad-text: #b91c1c; --chip-bad-bg: color-mix(in srgb, #dc2626 16%, #fff); --chip-bad-border: color-mix(in srgb, #dc2626 42%, #fff);
+    --chip-info-text: #0369a1; --chip-info-bg: color-mix(in srgb, #0284c7 16%, #fff); --chip-info-border: color-mix(in srgb, #0284c7 42%, #fff);
+    --chip-off-text: #334155;
+    --vlws: #7c3aed; --vlxh: #c026d3; --ssws: #0d9488; --ssxh: #0369a1; --h3: #16a34a; --h2: #d97706; --h1: #dc2626;
+  }
+}
+
+/* Explicit choice (persisted in localStorage) always wins over the OS preference. */
+:root[data-theme="light"] {
+  --bg: #f4f6fb; --surface: #ffffff; --surface-2: #ffffff; --surface-3: #eef2f8;
+  --muted: #f1f5f9; --border: #dbe2ee; --border-soft: #e7ecf4;
+  --fg: #0f172a; --fg-muted: #55627a; --fg-dim: #94a3b8;
+  --shadow: 0 1px 2px rgba(15,23,42,.06), 0 10px 24px -16px rgba(15,23,42,.25);
+  --chip-ok-text: #15803d; --chip-ok-bg: color-mix(in srgb, #16a34a 16%, #fff); --chip-ok-border: color-mix(in srgb, #16a34a 42%, #fff);
+  --chip-warn-text: #b45309; --chip-warn-bg: color-mix(in srgb, #d97706 16%, #fff); --chip-warn-border: color-mix(in srgb, #d97706 42%, #fff);
+  --chip-bad-text: #b91c1c; --chip-bad-bg: color-mix(in srgb, #dc2626 16%, #fff); --chip-bad-border: color-mix(in srgb, #dc2626 42%, #fff);
+  --chip-info-text: #0369a1; --chip-info-bg: color-mix(in srgb, #0284c7 16%, #fff); --chip-info-border: color-mix(in srgb, #0284c7 42%, #fff);
+  --chip-off-text: #334155;
+  --vlws: #7c3aed; --vlxh: #c026d3; --ssws: #0d9488; --ssxh: #0369a1; --h3: #16a34a; --h2: #d97706; --h1: #dc2626;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font-family: var(--font-ui); font-size: 14px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+a { color: inherit; }
+button { font-family: inherit; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ---- App shell ---- */
+.app { display: grid; grid-template-columns: 232px 1fr; grid-template-rows: 56px 1fr; height: 100vh; }
+.topbar {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: var(--sp-4);
+  padding: 0 var(--sp-5); border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--surface) 70%, var(--bg)); backdrop-filter: blur(6px);
+  position: sticky; top: 0; z-index: 20;
+}
+.brand { display: flex; align-items: center; gap: var(--sp-2); font-weight: 600; letter-spacing: -.01em; }
+/* outline-logo.png is a self-contained rounded-square badge (own dark
+   background baked in, transparent PNG margin) — no extra badge background
+   needed here, just fit it into the fixed brand slot. */
+.brand .logo { width: 22px; height: 22px; display: grid; place-items: center; flex: none; }
+.brand .logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.brand small { color: var(--fg-dim); font-weight: 400; font-size: 12px; }
+.spacer { flex: 1; } /* generic flex-gap filler — topbar today, drawer header too (UserDrawer.svelte) */
+.env-pill { font-size: 12px; color: var(--fg-muted); padding: 3px 8px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--muted); }
+
+.refresh { display: flex; align-items: center; gap: 6px; color: var(--fg-muted); font-size: 12.5px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-dim); box-shadow: 0 0 0 0 currentColor; }
+.dot.good { background: var(--accent); color: var(--accent); animation: pulse 2.4s infinite; }
+.dot.warn { background: var(--warn); color: var(--warn); }
+.dot.bad { background: var(--danger); color: var(--danger); }
+.dot.off { background: var(--fg-dim); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent);} 70%{ box-shadow:0 0 0 6px transparent;} 100%{box-shadow:0 0 0 0 transparent;} }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+.iconbtn { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--muted); color: var(--fg-muted); cursor: pointer;
+  transition: background .18s, color .18s, border-color .18s; }
+.iconbtn:hover { background: var(--surface-3); color: var(--fg); }
+/* Constrain the glyph: these SVGs carry a 24px viewBox and render at that
+   intrinsic size with no width set, which is what made the row action
+   buttons look oversized. Match .btn's 15px glyph. */
+.iconbtn svg { width: 15px; height: 15px; }
+.iconbtn:focus-visible, a:focus-visible, button:focus-visible, .navlink:focus-visible, select:focus-visible {
+  outline: 2px solid var(--info); outline-offset: 2px; }
+
+/* ---- Sidebar ---- */
+.sidebar { border-right: 1px solid var(--border-soft); padding: var(--sp-4) var(--sp-3);
+  display: flex; flex-direction: column; gap: 2px; background: color-mix(in srgb, var(--surface) 55%, var(--bg)); }
+.nav-group { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--fg-dim);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2); }
+.navlink { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px;
+  color: var(--fg-muted); cursor: pointer; border: 1px solid transparent; transition: background .16s, color .16s; font-size: 13.5px; }
+.navlink svg { width: 16px; height: 16px; flex: none; }
+.navlink:hover { background: var(--muted); color: var(--fg); }
+.navlink.active { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.navlink.active svg { color: var(--accent); }
+.navlink .count { margin-left: auto; font-size: 11px; color: var(--fg-dim); background: var(--muted);
+  padding: 1px 7px; border-radius: 999px; }
+.sidebar .foot { margin-top: auto; padding: var(--sp-3); color: var(--fg-dim); font-size: 11.5px; }
+
+/* ---- Main ---- */
+.main { overflow: auto; padding: var(--sp-5) var(--sp-6); }
+.view { display: none; animation: fade .2s ease; }
+.view.active { display: block; }
+@keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.page-head { display: flex; align-items: flex-end; gap: var(--sp-4); margin-bottom: var(--sp-5); flex-wrap: wrap; }
+.page-head h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+.page-head p { margin: 2px 0 0; color: var(--fg-muted); font-size: 13px; }
+.toolbar { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; flex-wrap: wrap; }
+
+/* input[type=number] included alongside text/search: UserDrawer's fwmark
+   field and Uplinks' weight/fwmark fields are all type=number and were
+   otherwise falling through to the unstyled browser default. */
+select, input[type=text], input[type=search], input[type=number], textarea {
+  background: var(--muted); color: var(--fg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 10px; font-family: inherit; font-size: 13px; outline: none; }
+input::placeholder, textarea::placeholder { color: var(--fg-dim); }
+textarea { resize: vertical; }
+.field-mono { font-family: var(--font-mono); }
+select:disabled { opacity: .6; cursor: not-allowed; }
+/* the one search box a toolbar carries (users list, later uplinks) stays
+   compact instead of stretching with the rest of the toolbar */
+.toolbar input[type=search] { width: 180px; }
+
+.btn { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-3); color: var(--fg); font-size: 13px; font-weight: 500;
+  transition: background .16s, border-color .16s, transform .05s; }
+.btn:hover { background: color-mix(in srgb, var(--surface-3) 70%, var(--fg) 4%); }
+.btn:active { transform: translateY(1px); }
+.btn svg { width: 15px; height: 15px; }
+.btn.primary { background: var(--accent); border-color: var(--accent-dim); color: #04140a; font-weight: 600; }
+.btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #fff); }
+.btn.ghost { background: transparent; }
+.btn.sm { padding: 4px 8px; font-size: 12px; }
+.btn:disabled, .iconbtn:disabled { opacity: .5; cursor: not-allowed; }
+.btn:disabled:hover { background: var(--surface-3); }
+.btn.primary:disabled:hover { background: var(--accent); }
+.btn.ghost:disabled:hover { background: transparent; }
+.iconbtn:disabled:hover { background: var(--muted); color: var(--fg-muted); }
+/* .iconbtn.act-* (activate/soft/power/danger) — the full-contrast, colour-
+   coded icon-button family, defined together further down (search
+   "Per-row action buttons") and shared by Topology, Users and Uplinks. */
+
+/* ---- Landing hero logo ----
+   logo.png (docs/logo.png, same asset as the README) is a transparent-bg
+   PNG, but its wordmark text renders in near-black — legible on the light
+   theme's pale background, but it would nearly vanish on dark (the default
+   theme, see the tokens above). A fixed white card behind it keeps the
+   logo readable in both themes instead of reaching for filters that would
+   also wreck its orange/blue brand colors. */
+.landing-hero { display: flex; justify-content: center; margin-bottom: var(--sp-5); }
+.landing-hero img { width: 300px; max-width: 60%; height: auto; display: block;
+  background: #fff; border-radius: var(--radius); padding: var(--sp-4); box-shadow: var(--shadow); }
+
+/* ---- Cards / panels ---- */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sp-4); }
+.card { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius);
+  padding: var(--sp-5); box-shadow: var(--shadow); transition: border-color .18s, transform .18s; }
+.card.link { cursor: pointer; }
+.card.link:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); transform: translateY(-2px); }
+/* explicit weight: Tailwind's preflight resets h1-h6 to font-weight: inherit,
+   so h3 no longer gets a free bold from the UA stylesheet like it did in the
+   plain-HTML prototype — restate the design system's semibold here. */
+.card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.card h3 svg { width: 18px; height: 18px; color: var(--accent); }
+.card .desc { color: var(--fg-muted); font-size: 13px; }
+.card .kpis { display: flex; gap: var(--sp-5); margin-top: var(--sp-4); }
+.kpi .n { font-size: 22px; font-weight: 600; font-family: var(--font-mono); }
+.kpi .l { font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .05em; }
+
+/* ---- Table ---- */
+.panel { background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+table { width: 100%; border-collapse: collapse; }
+thead th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-dim);
+  font-weight: 500; padding: 10px var(--sp-4); border-bottom: 1px solid var(--border-soft); background: color-mix(in srgb, var(--muted) 60%, transparent); white-space: nowrap; }
+thead th.sortable { cursor: pointer; }
+thead th.sortable:hover { color: var(--fg-muted); }
+/* every panel table (users, later uplinks) ends in a right-aligned Actions
+   column; the row-level buttons already right-align via .rowactions below,
+   this just lines the header label up with them */
+.panel table th:last-child { text-align: right; }
+tbody td { padding: 11px var(--sp-4); border-bottom: 1px solid var(--border-soft); font-size: 13px; vertical-align: middle; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr { transition: background .14s; }
+tbody tr:hover { background: color-mix(in srgb, var(--surface-3) 30%, transparent); }
+.id-cell { display: flex; align-items: center; gap: 9px; }
+.avatar { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 11px; font-weight: 600;
+  background: color-mix(in srgb, var(--info) 20%, var(--muted)); color: var(--info); font-family: var(--font-mono); }
+/* Full contrast at rest, same as Topology's .actioncell — was opacity-faded
+   until row hover; unified onto the same always-visible, colour-coded
+   .iconbtn.act-* buttons Topology uses (see that section further down), so
+   dropped the fade entirely rather than just re-tuning it. */
+.rowactions { display: flex; gap: 4px; justify-content: flex-end; }
+.access-url { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: inline-block; vertical-align: middle; }
+
+/* ---- Chips / badges ---- */
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--muted); color: var(--fg-muted); white-space: nowrap; }
+.chip .d { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip.ok { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.chip.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.chip.off { color: var(--fg-dim); }
+.chip.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); background: color-mix(in srgb, var(--info) 12%, transparent); }
+/* Group-header declutter: "auto-failback: on" is still a static config
+   toggle, not a live signal, but reads better with a hint of colour than the
+   fully neutral mode/scope/cluster/fingerprint chips beside it — a FAINT
+   positive tint, same readable green text as .chip.ok (the live "N active"
+   count) but a lighter fill/border, so .chip.ok stays the header's one truly
+   loud signal. "off" uses the already-muted .chip.off. */
+.chip.pos { color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); border-color: color-mix(in srgb, var(--accent) 20%, transparent); }
+/* Group-header switch-reason chip (global_active_reason) — same pill, just
+   clipped so one long reason string can't blow out the header row; the full
+   text always rides along in the element's `title` tooltip. */
+.chip.reason { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- Wire chain (active = full text, fallback = colour square) ----
+   Owner-approved mockup (wire-active-full.html, reviewed 2026-08-13)
+   replaces cabc01c0's single-chip-per-link design (transport-hue text +
+   tunnel-accent edge + de-emphasised carrier text) with one shared visual
+   grammar for every link in the chain:
+     - COMBO background — the (transport, tunnel) pair (vless+ws, vless+
+       xhttp, ss+ws, ss+xhttp — lib/wsTopology.ts's wireComboKey(), custom
+       property `--wcc`) drives both the chip/square's tint and its border.
+       'neutral' (the fallback wireComboKey() returns for a wire whose
+       tunnel never resolved) renders as a plain grey tint — it never
+       fabricates one of the 4 real hues.
+     - CARRIER left-accent edge — h3/h2/h1 (custom property `--wce`), 3px,
+       resolved independently of whether the combo did: a bare "h3"/"h2"
+       mode token can resolve carrier with no tunnel at all (see
+       lib/wsTopology.ts's parseWireMode()). Carrier never colours text.
+   The ACTIVE link (`.wchip-full`) renders its full slash-joined text
+   ("vless/xhttp/h3", lib/wsTopology.ts's wireFullText()) in ONE flat text
+   colour — no outline; the text itself is what marks it active. Every
+   FALLBACK link (`.wchip-sq`) renders as a small ~16px colour-only square,
+   no text, full detail in its `title` tooltip only (WireChain.svelte).
+   `--wcc`/`--wce` fall back to a neutral grey/the plain border colour via
+   the var()-with-default below when no `.wcombo-*`/`.wcarrier-*` modifier
+   is present, so a stray unstyled link degrades instead of losing its box
+   entirely. Formulas mix toward `var(--surface)`/`var(--fg)` (not
+   `transparent`) so both themes read correctly straight from the `--vlws`/
+   `--vlxh`/`--ssws`/`--ssxh`/`--h3`/`--h2`/`--h1` token values alone — no
+   separate light-theme override block needed here (contrast: chip text
+   mixes 80% combo hue into `--fg`, background only 15% combo hue into
+   `--surface`, same recipe the light-theme `--chip-ok-bg` etc. tokens use
+   elsewhere in this file). */
+.wire { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.arrow { color: var(--fg-dim); font-size: 10px; }
+
+.wchip-full {
+  display: inline-block; font-family: var(--font-mono); font-size: 11.5px; font-weight: 600;
+  padding: 3px 9px 3px 8px; border-radius: var(--radius-sm); white-space: nowrap;
+  border: 1px solid; border-left-width: 3px;
+  color: color-mix(in srgb, var(--wcc, var(--fg-dim)) 80%, var(--fg));
+  background: color-mix(in srgb, var(--wcc, var(--fg-dim)) 15%, var(--surface));
+  border-color: color-mix(in srgb, var(--wcc, var(--fg-dim)) 40%, var(--surface));
+  border-left-color: var(--wce, var(--border));
+}
+.wchip-sq {
+  display: inline-block; width: 16px; height: 16px; border-radius: 4px; flex: none; cursor: default;
+  border: 1px solid; border-left-width: 3px;
+  background: color-mix(in srgb, var(--wcc, var(--fg-dim)) 22%, var(--surface));
+  border-color: color-mix(in srgb, var(--wcc, var(--fg-dim)) 45%, var(--surface));
+  border-left-color: var(--wce, var(--border));
+}
+.wcombo-vlws { --wcc: var(--vlws); }
+.wcombo-vlxh { --wcc: var(--vlxh); }
+.wcombo-ssws { --wcc: var(--ssws); }
+.wcombo-ssxh { --wcc: var(--ssxh); }
+.wcombo-neutral { --wcc: var(--fg-dim); }
+.wcarrier-h3 { --wce: var(--h3); }
+.wcarrier-h2 { --wce: var(--h2); }
+.wcarrier-h1 { --wce: var(--h1); }
+
+/* ---- Light theme: chips/metrics/badges wash out on white for the same
+   reason the wire-chain pills above did — swap the raw --accent/--warn/
+   --danger/--info text+tint for the --chip-* tokens defined in the
+   light-theme root blocks (dark 700-level text, denser opaque-ish tint,
+   hairline border). This one set of rules covers every chip tone, which is
+   also every "group-header chip" that still carries a tone (status pills in
+   Topology, Users active/blocked, method/role chips, the active-bypass
+   chip, the "N active" count, auto-failback:on's .chip.pos just above) since
+   they all render through .chip.ok/.warn/.bad/.info/.off/.pos — the plain
+   config chips (mode/scope/cluster/fingerprint/auto-failback:off/bypass
+   armed) carry no tone at all and use bare .chip, already neutral in both
+   themes without an override here — plus the RTT/loss .metric text, the
+   user-avatar initials badge, toast and error-banner icons, the apply-bar
+   pill, and the topology row action buttons, which share the same
+   washed-out-on-white construction. Status dots are left alone: a
+   solid-fill dot already reads fine on white. Dark theme is untouched. */
+:root[data-theme="light"] .chip.ok,
+:root:not([data-theme="dark"]) .chip.ok { color: var(--chip-ok-text); background: var(--chip-ok-bg); border-color: var(--chip-ok-border); }
+:root[data-theme="light"] .chip.warn,
+:root:not([data-theme="dark"]) .chip.warn { color: var(--chip-warn-text); background: var(--chip-warn-bg); border-color: var(--chip-warn-border); }
+:root[data-theme="light"] .chip.bad,
+:root:not([data-theme="dark"]) .chip.bad { color: var(--chip-bad-text); background: var(--chip-bad-bg); border-color: var(--chip-bad-border); }
+:root[data-theme="light"] .chip.info,
+:root:not([data-theme="dark"]) .chip.info { color: var(--chip-info-text); background: var(--chip-info-bg); border-color: var(--chip-info-border); }
+:root[data-theme="light"] .chip.off,
+:root:not([data-theme="dark"]) .chip.off { color: var(--chip-off-text); }
+:root[data-theme="light"] .chip.pos,
+:root:not([data-theme="dark"]) .chip.pos { color: var(--chip-ok-text); background: color-mix(in srgb, #16a34a 9%, #fff); border-color: color-mix(in srgb, #16a34a 22%, #fff); }
+
+:root[data-theme="light"] .metric.good,
+:root:not([data-theme="dark"]) .metric.good { color: var(--chip-ok-text); }
+:root[data-theme="light"] .metric.warn,
+:root:not([data-theme="dark"]) .metric.warn { color: var(--chip-warn-text); }
+:root[data-theme="light"] .metric.bad,
+:root:not([data-theme="dark"]) .metric.bad { color: var(--chip-bad-text); }
+
+:root[data-theme="light"] .avatar,
+:root:not([data-theme="dark"]) .avatar { color: var(--chip-info-text); background: var(--chip-info-bg); }
+
+:root[data-theme="light"] .toast.ok svg,
+:root:not([data-theme="dark"]) .toast.ok svg { color: var(--chip-ok-text); }
+:root[data-theme="light"] .toast.error svg,
+:root:not([data-theme="dark"]) .toast.error svg { color: var(--chip-bad-text); }
+
+:root[data-theme="light"] .error-banner svg,
+:root:not([data-theme="dark"]) .error-banner svg { color: var(--chip-bad-text); }
+
+:root[data-theme="light"] .applybar .pill,
+:root:not([data-theme="dark"]) .applybar .pill { color: var(--chip-warn-text); }
+
+/* Full-contrast action-button family (.iconbtn.act-activate/soft/power/
+   danger): same color-on-tint construction as the chips above, just on
+   .iconbtn. Originally Topology-only (activate/soft/power); Users'
+   edit/block/delete row actions and Uplinks' edit/delete uplink actions now
+   reuse the same classes/tokens instead of forking a parallel style — see
+   UsersTable.svelte/Users.svelte and Uplinks.svelte. act-danger (delete) is
+   the one member Topology itself has no use for. act-power keeps dark
+   theme's subtler no-tint resting state (icon+border only) — amber-700
+   already clears AA against the plain --muted background, so it doesn't
+   need one. */
+:root[data-theme="light"] .iconbtn.act-activate,
+:root:not([data-theme="dark"]) .iconbtn.act-activate { color: var(--chip-ok-text); border-color: var(--chip-ok-border); background: var(--chip-ok-bg); }
+:root[data-theme="light"] .iconbtn.act-activate:hover,
+:root:not([data-theme="dark"]) .iconbtn.act-activate:hover { background: color-mix(in srgb, #16a34a 28%, #fff); }
+:root[data-theme="light"] .iconbtn.act-soft,
+:root:not([data-theme="dark"]) .iconbtn.act-soft { color: var(--chip-info-text); border-color: var(--chip-info-border); background: var(--chip-info-bg); }
+:root[data-theme="light"] .iconbtn.act-soft:hover,
+:root:not([data-theme="dark"]) .iconbtn.act-soft:hover { background: color-mix(in srgb, #0284c7 28%, #fff); }
+:root[data-theme="light"] .iconbtn.act-power,
+:root:not([data-theme="dark"]) .iconbtn.act-power { color: var(--chip-warn-text); border-color: var(--chip-warn-border); }
+:root[data-theme="light"] .iconbtn.act-power:hover,
+:root:not([data-theme="dark"]) .iconbtn.act-power:hover { background: color-mix(in srgb, #d97706 18%, #fff); }
+:root[data-theme="light"] .iconbtn.act-danger,
+:root:not([data-theme="dark"]) .iconbtn.act-danger { color: var(--chip-bad-text); border-color: var(--chip-bad-border); background: var(--chip-bad-bg); }
+:root[data-theme="light"] .iconbtn.act-danger:hover,
+:root:not([data-theme="dark"]) .iconbtn.act-danger:hover { background: color-mix(in srgb, #dc2626 28%, #fff); }
+
+/* ---- Wire-chain legend (combo colour / carrier edge key), above the topology ----
+   Full-name pairs only (vless/ws, not "vl"+edge) — owner: the legend must
+   spell out every combo, not abbreviate it. */
+.wire-legend { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-4); margin: -6px 0 var(--sp-4); font-size: 12px; color: var(--fg-muted); }
+.wire-legend b { color: var(--fg); font-weight: 600; }
+.wl-group { display: inline-flex; align-items: center; gap: 6px; }
+.wl-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 3px; vertical-align: -1px; }
+.wl-swatch.vlws { background: var(--vlws); }
+.wl-swatch.vlxh { background: var(--vlxh); }
+.wl-swatch.ssws { background: var(--ssws); }
+.wl-swatch.ssxh { background: var(--ssxh); }
+/* Mirrors the chip's own carrier accent (a coloured left edge on a neutral
+   swatch), rather than a plain filled dot, so the legend teaches the actual
+   visual cue instead of a different one. */
+.wl-edge { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: -1px;
+  background: var(--muted); border: 1px solid var(--border); border-left: 3px solid; }
+.wl-edge.h3 { border-left-color: var(--h3); }
+.wl-edge.h2 { border-left-color: var(--h2); }
+.wl-edge.h1 { border-left-color: var(--h1); }
+
+/* ---- Topology ---- */
+.inst { margin-bottom: var(--sp-4); }
+.inst-head { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4);
+  background: var(--surface); border: 1px solid var(--border-soft); border-radius: var(--radius) var(--radius) 0 0; cursor: pointer; }
+.inst-head .title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.inst-head .sub { color: var(--fg-dim); font-size: 12px; }
+.group { border: 1px solid var(--border-soft); border-top: none; background: color-mix(in srgb, var(--surface) 55%, var(--bg)); }
+.group:last-child { border-radius: 0 0 var(--radius) var(--radius); }
+.group-head { display: flex; align-items: center; gap: var(--sp-3); padding: 9px var(--sp-4); border-bottom: 1px solid var(--border-soft); }
+.group-head .gname { font-weight: 600; font-size: 13px; }
+.group-head .gcount { color: var(--fg-dim); font-size: 12px; }
+/* Config/metadata chips (mode, scope, cluster, fingerprint, auto-failback) —
+   grouped tight and a touch smaller than the live-signal chips in .right
+   (reason / "N active"), so the header's visual weight sits on status and
+   wire, not on this row of static facts. Scoped to this container only —
+   the shared .chip base (used elsewhere, e.g. the SS panel) is untouched. */
+.group-head .cfgchips { display: flex; gap: 4px; margin-left: 4px; flex-wrap: wrap; }
+.group-head .cfgchips .chip { font-size: 10.5px; padding: 1px 7px; }
+/* Header chips share the rows' 22px pill height too, so the whole panel sits
+   on ONE vertical rhythm — the .uprow fix above was scoped to the rows and
+   left the instance/group header chips stair-stepping (cfgchips ~20px vs the
+   .right status chips ~23px). Owner: "шапку забыл". cfgchips keep their
+   smaller font — hierarchy stays in the type weight, not in differing
+   heights — they just no longer sit lower than the chips beside them. */
+.inst-head .chip, .group-head .chip { height: 22px; padding-top: 0; padding-bottom: 0; }
+.group-head .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.uprow { display: grid; grid-template-columns: var(--topo-cols);
+  align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); border-bottom: 1px solid var(--border-soft); font-size: 13px; }
+.uprow > * { min-width: 0; }
+.uprow:last-child { border-bottom: none; }
+.uprow:hover { background: color-mix(in srgb, var(--surface-3) 26%, transparent); }
+.uprow .col-label { display: flex; flex-direction: column; }
+.uprow .rowhead { display: none; }
+.up-name { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.up-endpoint { color: var(--fg-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.metric { font-family: var(--font-mono); font-size: 12px; }
+.metric.good { color: var(--accent); } .metric.warn { color: var(--warn); } .metric.bad { color: var(--danger); }
+/* One shared pill height across the row so the Status/Role chips and the
+   active wire chip sit on a single baseline instead of stair-stepping — the
+   wire chip's mono font + 3px vertical padding made it read taller than the
+   status pills next to it (owner: "разная высота чипов"). Scoped to .uprow:
+   the shared .chip base (SS panel, header cfgchips) keeps its own sizing,
+   and the fallback squares stay their deliberate 16px marker size. */
+.uprow .chip, .uprow .wchip-full { height: 22px; padding-top: 0; padding-bottom: 0; }
+.uprow .wchip-full { display: inline-flex; align-items: center; }
+/* right-align the numeric + action columns in both header and rows */
+.uprow > div:nth-child(6), .uprow > div:nth-child(7),
+.colhead-row > div:nth-child(6), .colhead-row > div:nth-child(7), .colhead-row > div:nth-child(8) { text-align: right; }
+.colhead-row { display: grid; grid-template-columns: var(--topo-cols); gap: var(--sp-3);
+  padding: 7px var(--sp-4); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-dim); border-bottom: 1px solid var(--border-soft); }
+.actioncell { display: flex; gap: 4px; justify-content: flex-end; }
+/* Per-row action buttons (Activate/Soft/Enable-Disable, Task 10; Edit/Block/
+   Delete on Users, Edit/Delete on Uplinks): icon-only, same 32px .iconbtn
+   footprint, but full-contrast (no opacity-fade-until-hover) with a clear
+   border+bg affordance and a semantic colour accent — scoped via a second
+   class so the plain neutral .iconbtn used elsewhere (drawers' close
+   button, Topbar's theme toggle) is untouched. One shared family across
+   Topology/Users/Uplinks: act-activate (accent/green — Topology's hard
+   activate), act-soft (info/blue — Topology's soft switch; reused for the
+   Edit pencil on Users/Uplinks, a non-destructive "open for editing" action
+   in the same informational register), act-power (warn/amber — Topology's
+   enable/disable toggle; reused verbatim for Users' Block/Unblock, the same
+   toggle semantics), act-danger (danger/red — the one member Topology has
+   no use for; Users'/Uplinks' Delete). */
+.iconbtn.act-activate { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, var(--muted)); }
+.iconbtn.act-activate:hover { background: color-mix(in srgb, var(--accent) 26%, var(--muted)); }
+.iconbtn.act-soft { color: var(--info); border-color: color-mix(in srgb, var(--info) 50%, var(--border));
+  background: color-mix(in srgb, var(--info) 14%, var(--muted)); }
+.iconbtn.act-soft:hover { background: color-mix(in srgb, var(--info) 26%, var(--muted)); }
+.iconbtn.act-power { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.iconbtn.act-power:hover { background: color-mix(in srgb, var(--warn) 16%, var(--muted)); }
+.iconbtn.act-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+  background: color-mix(in srgb, var(--danger) 14%, var(--muted)); }
+.iconbtn.act-danger:hover { background: color-mix(in srgb, var(--danger) 26%, var(--muted)); }
+
+/* ---- Apply bar (uplinks) ---- */
+.applybar { display: flex; align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); margin-bottom: var(--sp-4);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border)); background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+  border-radius: var(--radius); font-size: 13px; }
+.applybar .pill { font-family: var(--font-mono); font-size: 12px; color: var(--warn); }
+
+/* ---- Inline error banner ---- */
+/* Same shape as .applybar, danger-toned: surfaces a poll failure (e.g. one
+   dead instance) inline above still-rendered (possibly stale) data, instead
+   of blanking the page. */
+.error-banner { display: flex; align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); margin-bottom: var(--sp-4);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border)); background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  border-radius: var(--radius); font-size: 13px; color: var(--fg); }
+.error-banner svg { width: 16px; height: 16px; color: var(--danger); flex: none; }
+
+/* ---- Drawer ---- */
+.backdrop { position: fixed; inset: 0; background: rgba(2,6,23,.6); backdrop-filter: blur(2px); opacity: 0; pointer-events: none;
+  transition: opacity .2s; z-index: 40; }
+.backdrop.open { opacity: 1; pointer-events: auto; }
+.drawer { position: fixed; top: 0; right: 0; height: 100vh; width: 380px; max-width: 92vw; background: var(--surface);
+  border-left: 1px solid var(--border); transform: translateX(100%); transition: transform .24s cubic-bezier(.4,0,.2,1);
+  z-index: 41; display: flex; flex-direction: column; box-shadow: -20px 0 40px -20px rgba(0,0,0,.6); }
+.drawer.open { transform: none; }
+.drawer header { display: flex; align-items: center; padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--border-soft); }
+.drawer header h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.drawer .body { padding: var(--sp-5); overflow: auto; display: flex; flex-direction: column; gap: var(--sp-4); }
+.drawer .foot { margin-top: auto; padding: var(--sp-4) var(--sp-5); border-top: 1px solid var(--border-soft); display: flex; gap: var(--sp-2); justify-content: flex-end; }
+.fieldrow { display: flex; flex-direction: column; gap: 5px; }
+.fieldrow label { font-size: 12px; color: var(--fg-muted); }
+/* Generic — hints also sit outside .fieldrow (e.g. under a .switch toggle,
+   or standalone in .fallbacks-section), not just under a label+input pair. */
+.hint { font-size: 11px; color: var(--fg-dim); }
+.fieldrow input, .fieldrow select, .fieldrow textarea { width: 100%; }
+
+/* Per-transport field grouping inside a drawer body (UplinkDrawer.svelte's
+   TCP/UDP/SS/VLESS sections) — a plain <fieldset> with the default UA
+   border/padding/legend replaced by the same tokens the rest of the drawer
+   uses, nesting .fieldrow as normal. */
+fieldset.fieldset { border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+  padding: var(--sp-3); margin: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
+fieldset.fieldset legend { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--fg-dim); font-weight: 600; padding: 0 4px; }
+.switch { display: flex; align-items: center; gap: 9px; }
+.switch input { width: 34px; height: 20px; appearance: none; background: var(--surface-3); border-radius: 999px; position: relative; cursor: pointer; transition: background .18s; border: 1px solid var(--border); }
+.switch input:checked { background: var(--accent); border-color: var(--accent-dim); }
+.switch input::after { content: ""; position: absolute; width: 15px; height: 15px; border-radius: 50%; background: #fff; top: 1.5px; left: 2px; transition: left .18s; }
+.switch input:checked::after { left: 16px; }
+.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.btn.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+
+/* Fallbacks repeatable sub-form (UplinkDrawer.svelte, Task 8c) — one
+   collapsible `<details>` per [[outline.uplinks.fallbacks]] row, reusing
+   fieldset.fieldset above for its own TCP/UDP/SS/VLESS grouping. */
+.fallbacks-section { display: flex; flex-direction: column; gap: var(--sp-3);
+  border-top: 1px solid var(--border-soft); padding-top: var(--sp-4); }
+.fallbacks-header { display: flex; align-items: center; justify-content: space-between; }
+.fallbacks-header h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.fallback-entry { border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--surface-2); }
+.fallback-entry summary { padding: var(--sp-3); cursor: pointer; font-size: 13px; font-weight: 500;
+  display: flex; align-items: center; gap: 8px; list-style: none; }
+.fallback-entry summary::-webkit-details-marker { display: none; }
+.fallback-entry summary::before { content: '▸'; color: var(--fg-dim); font-size: 10px; transition: transform .16s; }
+.fallback-entry[open] summary::before { transform: rotate(90deg); }
+.fallback-entry .fallback-body { padding: 0 var(--sp-3) var(--sp-3); margin-top: var(--sp-3);
+  display: flex; flex-direction: column; gap: var(--sp-3); border-top: 1px solid var(--border-soft); padding-top: var(--sp-3); }
+.fallback-actions { display: flex; gap: 6px; justify-content: flex-end; }
+/* Drag-to-reorder affordance: the grip only, not the whole summary — the
+   row stays "cursor: pointer" (native open/close toggle) since that's still
+   its primary click behaviour, dragging is scoped to this handle. */
+.fallback-entry .drag-handle { cursor: grab; color: var(--fg-dim); font-size: 13px; line-height: 1; }
+.fallback-entry .drag-handle:active { cursor: grabbing; }
+.fallback-entry.dragging { opacity: .45; }
+.fallback-entry.drag-over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
+
+/* ---- Toast ---- */
+.toasts { position: fixed; bottom: var(--sp-5); right: var(--sp-5); display: flex; flex-direction: column; gap: 8px; z-index: 60; }
+.toast { background: var(--surface-3); border: 1px solid var(--border); border-radius: 9px; padding: 10px 14px; font-size: 13px;
+  box-shadow: var(--shadow); display: flex; align-items: center; gap: 9px; animation: fade .2s ease; }
+.toast.ok { border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.toast.error { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.toast svg { width: 16px; height: 16px; color: var(--accent); }
+.toast.error svg { color: var(--danger); }
+
+.muted { color: var(--fg-muted); }
+.empty { padding: var(--sp-6); text-align: center; color: var(--fg-dim); }
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: 56px auto 1fr; }
+  .sidebar { flex-direction: row; overflow-x: auto; }
+  .sidebar .foot, .nav-group { display: none; }
+  .uprow, .colhead-row { grid-template-columns: 1fr 1fr; }
+  .colhead-row { display: none; }
+}

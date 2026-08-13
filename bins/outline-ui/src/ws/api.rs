@@ -36,22 +36,6 @@ struct InstanceView {
     error: Option<String>,
 }
 
-pub async fn dashboard_page(State(state): State<WsState>) -> Response {
-    crate::assets::html(crate::assets::render(
-        super::DASHBOARD_TEMPLATE,
-        super::BASE,
-        state.refresh_ms,
-    ))
-}
-
-pub async fn uplinks_page(State(state): State<WsState>) -> Response {
-    crate::assets::html(crate::assets::render(
-        super::UPLINKS_TEMPLATE,
-        super::BASE,
-        state.refresh_ms,
-    ))
-}
-
 pub async fn list_instances(State(state): State<WsState>) -> Response {
     let instances = state
         .instances
