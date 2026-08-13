@@ -24,12 +24,16 @@
     uplinkRowTone,
     uplinkRowLabel,
     uplinkRole,
-    legWireSegments,
+    legWireChain,
     primaryRttMs,
     primaryLossRatio,
     lossTone,
     activateButtonState,
     softButtonState,
+    groupFingerprintIsHomogeneous,
+    groupFingerprintChip,
+    uplinkFingerprintChip,
+    rttTooltip,
     type RowTone,
     type ActivateButtonState,
     type SoftButtonState,
@@ -60,6 +64,11 @@
 
   const uplinks = $derived(group.uplinks ?? []);
   const activeCount = $derived(uplinks.filter(isUplinkActive).length);
+  // `process_stable`/`random` fingerprint strategies give every uplink in
+  // the group the same identity — one chip in the header (cfgChips below)
+  // instead of repeating it on every row. `per_host_stable` (heterogeneous)
+  // keeps the per-row chip instead — see each uprow's `fp` below.
+  const fpHomogeneous = $derived(groupFingerprintIsHomogeneous(uplinks));
 
   // dashboard.html prettyMode()/prettyScope() (:555-567).
   function prettyMode(mode?: string): string {
@@ -84,14 +93,30 @@
   interface Chip {
     text: string;
     tone?: string;
+    title?: string;
   }
   const cfgChips = $derived.by((): Chip[] => {
-    const chips: Chip[] = [{ text: prettyMode(group.load_balancing_mode) }, { text: prettyScope(group.routing_scope) }];
+    // Mode/Scope/auto-failback are all required, always-present fields
+    // (topology.rs :63-65, no skip_serializing_if) — shown unconditionally,
+    // auto-failback as an explicit on/off state rather than presence-only
+    // like the skip_serializing_if fields below (cluster/bypass are absent,
+    // not `false`, when off, so "not shown" already means off for those).
+    const chips: Chip[] = [
+      { text: prettyMode(group.load_balancing_mode) },
+      { text: prettyScope(group.routing_scope) },
+      { text: `auto-failback: ${group.auto_failback ? 'on' : 'off'}`, tone: group.auto_failback ? 'info' : 'off' },
+    ];
     if (group.cluster_resume_enabled) chips.push({ text: 'cluster', tone: 'info' });
-    if (group.auto_failback) chips.push({ text: 'auto-failback', tone: 'info' });
     if (group.bypass_when_down) {
       const active = group.bypass_active_tcp || group.bypass_active_udp;
       chips.push({ text: active ? 'bypass: direct' : 'bypass armed', tone: active ? 'warn' : undefined });
+    }
+    // Homogeneous fingerprint identity (process_stable/random) — the
+    // heterogeneous (per_host_stable) case renders per-row chips instead,
+    // see the uprow loop below.
+    if (fpHomogeneous) {
+      const fp = groupFingerprintChip(uplinks);
+      if (fp) chips.push({ text: fp.label, tone: 'info', title: fp.title });
     }
     return chips;
   });
@@ -124,10 +149,13 @@
     <span class="gcount">{uplinks.length} uplink{uplinks.length === 1 ? '' : 's'}</span>
     <span class="cfgchips">
       {#each cfgChips as c}
-        <span class="chip {c.tone ?? ''}">{c.text}</span>
+        <span class="chip {c.tone ?? ''}" title={c.title}>{c.text}</span>
       {/each}
     </span>
     <div class="right">
+      {#if group.global_active_reason}
+        <span class="chip reason" title={group.global_active_reason}>{group.global_active_reason}</span>
+      {/if}
       <span class="chip ok"><span class="d"></span>{activeCount} active</span>
       <button
         class="btn ghost sm"
@@ -154,10 +182,12 @@
     </div>
     {#each uplinks as uplink (uplink.name)}
       {@const tone = uplinkRowTone(uplink)}
-      {@const tcp = legWireSegments(uplink, 'tcp')}
-      {@const udp = legWireSegments(uplink, 'udp')}
+      {@const tcp = legWireChain(uplink, 'tcp')}
+      {@const udp = legWireChain(uplink, 'udp')}
       {@const ratio = primaryLossRatio(uplink)}
       {@const rtt = primaryRttMs(uplink)}
+      {@const rttTip = rttTooltip(uplink)}
+      {@const fp = fpHomogeneous ? null : uplinkFingerprintChip(uplink)}
       <div class="uprow">
         <div class="col-label"><span class="up-name">{uplink.name}</span></div>
         <div><span class="chip {isUplinkActive(uplink) ? 'info' : ''}">{uplinkRole(uplink)}</span></div>
@@ -166,10 +196,13 @@
           {#if uplink.last_error}
             <span class="chip bad" title={uplink.last_error} aria-label={`Error on ${uplink.name}: ${uplink.last_error}`}>⚠</span>
           {/if}
+          {#if fp}
+            <span class="chip info" title={fp.title}>{fp.label}</span>
+          {/if}
         </div>
-        <div><WireChain segments={tcp.segments} activeIdx={tcp.activeIdx} /></div>
-        <div><WireChain segments={udp.segments} activeIdx={udp.activeIdx} /></div>
-        <div class="metric">{formatRtt(rtt)}</div>
+        <div title={uplink.active_tcp_reason ?? undefined}><WireChain links={tcp.links} activeIdx={tcp.activeIdx} /></div>
+        <div title={uplink.active_udp_reason ?? undefined}><WireChain links={udp.links} activeIdx={udp.activeIdx} /></div>
+        <div class="metric" title={rttTip || undefined}>{formatRtt(rtt)}</div>
         <div>
           {#if ratio == null}
             <span class="muted mono">—</span>
@@ -183,7 +216,7 @@
             {@const activateState = activateButtonState(tone)}
             {@const activate = activateCopy(uplink, activateState)}
             <button
-              class="iconbtn"
+              class="iconbtn act-activate"
               disabled={activateState !== 'live' || mutating}
               title={activate.title}
               aria-label={activate.label}
@@ -195,7 +228,7 @@
             {#if softState !== 'hidden'}
               {@const soft = softCopy(uplink, softState)}
               <button
-                class="iconbtn"
+                class="iconbtn act-soft"
                 disabled={softState !== 'live' || mutating}
                 title={soft.title}
                 aria-label={soft.label}
@@ -206,7 +239,7 @@
             {/if}
           {/if}
           <button
-            class="iconbtn"
+            class="iconbtn act-power"
             disabled={mutating}
             title={uplink.admin_disabled ? 'Enable' : 'Disable'}
             aria-label={`${uplink.admin_disabled ? 'Enable' : 'Disable'} ${uplink.name}`}

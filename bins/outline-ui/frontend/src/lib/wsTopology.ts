@@ -114,30 +114,65 @@ export function uplinkRole(u: Uplink): string {
   return parts.length ? parts.join(', ') : 'standby';
 }
 
-// ── Wire-chain segment extraction ───────────────────────────────────────────
+// ── Wire-chain extraction (3 layers: proxy › tunnel › carrier) ─────────────
 // Mirrors dashboard.html legWireChainCell()'s wireAt()/totalWires/activeIdx
-// (:837-950), simplified to the prototype's terse pill vocabulary — no
-// downgrade arrow, submode badge, pin timer, or per-dot DOWN marker; just the
-// ordered carrier-tier list and which entry is active. WireChain.svelte
-// renders the result.
+// (:837-950) for the ordering/active-index math, but resolves each wire to
+// the full "Variant B" shape (proxy badge, tunnel badge, carrier pill)
+// instead of the old single terse pill. WireChain.svelte renders the result
+// and builds the hover tooltip; this module only resolves the data.
 
-// (transport, mode) → a terse carrier-tier code for the wire-chain pill. Mode
-// tokens per the backend (ws_h1/ws_h2/ws_h3/xhttp_h1/xhttp_h2/xhttp_h3, plus
-// bare h2/h3 dashboard.html's transportLabel() also accepts as synonyms): the
-// h3/h2 tiers collapse WS and XHTTP into one pill — the prototype doesn't
-// distinguish carrier family at that tier — while XHTTP's own H1 floor gets
-// its own "xhttp" pill. Everything else (ws_h1/http1, an unresolved/
-// never-probed mode, or a stray legacy "quic" token) buckets to "ws", the
-// same default-to-ws-family dashboard.html's wireFamilyClass() falls back to
-// for a mode that doesn't start with "xhttp".
-export type Segment = 'h3' | 'h2' | 'ws' | 'xhttp';
+// The tunnel a wire's mode token names — the WS/XHTTP framing carrying the
+// proxy protocol. `null` when the mode is missing (e.g. a Shadowsocks wire
+// with no *_mode field at all) or unrecognised.
+export type Tunnel = 'ws' | 'xhttp' | null;
+// The HTTP version actually carrying the tunnel. `null` under the same
+// missing/unrecognised conditions as `Tunnel`.
+export type Carrier = 'h3' | 'h2' | 'h1' | null;
 
-function segmentFor(mode: string | null | undefined): Segment {
+export interface ParsedMode {
+  tunnel: Tunnel;
+  carrier: Carrier;
+}
+
+// Parses one wire's mode token (ws_h1/ws_h2/ws_h3/xhttp_h1/xhttp_h2/xhttp_h3,
+// plus the bare h2/h3 synonyms dashboard.html's transportLabel() also
+// accepted) into its tunnel and carrier layers. Tolerates a missing mode —
+// returns all-null rather than guessing — which is the normal shape for a
+// Shadowsocks wire carrying no *_mode field, and for a mode that hasn't
+// resolved yet.
+export function parseWireMode(mode: string | null | undefined): ParsedMode {
   const v = (mode ?? '').toLowerCase();
-  if (v === 'ws_h3' || v === 'h3' || v === 'xhttp_h3') return 'h3';
-  if (v === 'ws_h2' || v === 'h2' || v === 'xhttp_h2') return 'h2';
-  if (v === 'xhttp_h1') return 'xhttp';
-  return 'ws';
+  switch (v) {
+    case 'ws_h3':
+      return { tunnel: 'ws', carrier: 'h3' };
+    case 'ws_h2':
+      return { tunnel: 'ws', carrier: 'h2' };
+    case 'ws_h1':
+    case 'http1':
+      return { tunnel: 'ws', carrier: 'h1' };
+    case 'xhttp_h3':
+      return { tunnel: 'xhttp', carrier: 'h3' };
+    case 'xhttp_h2':
+      return { tunnel: 'xhttp', carrier: 'h2' };
+    case 'xhttp_h1':
+      return { tunnel: 'xhttp', carrier: 'h1' };
+    case 'h3':
+      return { tunnel: null, carrier: 'h3' };
+    case 'h2':
+      return { tunnel: null, carrier: 'h2' };
+    default:
+      return { tunnel: null, carrier: null };
+  }
+}
+
+// Proxy-layer badge label — lowercase, exactly `vl`/`ss` (owner: "vless=vl
+// not V, ss=ss not SS"). Falls back to the raw (lowercased) transport string
+// for anything else so an unrecognised transport doesn't silently vanish.
+export function proxyLabel(transport: string | null | undefined): string {
+  const v = (transport ?? '').toLowerCase();
+  if (v === 'vless') return 'vl';
+  if (v === 'ss') return 'ss';
+  return v || '—';
 }
 
 // dashboard.html wireAt(i)'s chain-entry branch: `w[leg_mode_effective] ||
@@ -161,12 +196,30 @@ function uplinkModeAt0(u: Uplink, leg: Leg): string | null {
   return legEffective ?? legMode ?? null;
 }
 
-export interface WireSegments {
-  segments: Segment[];
+// The proxy transport carrying wire index `i` — chain[i].transport when
+// shipped, else the uplink's own transport for the primary wire (index 0,
+// the same no-chain case uplinkModeAt0 covers), else the name-only fallback
+// entry in configured_fallbacks (always transport names, one per configured
+// fallback — see its doc comment on Uplink in types.ts).
+function transportAt(u: Uplink, i: number): string {
+  const w = (u.configured_wire_chain ?? [])[i];
+  if (w) return w.transport;
+  if (i === 0) return u.transport;
+  return (u.configured_fallbacks ?? [])[i - 1] ?? u.transport;
+}
+
+export interface WireLink {
+  transport: string;
+  tunnel: Tunnel;
+  carrier: Carrier;
+}
+
+export interface WireChainView {
+  links: WireLink[];
   activeIdx: number;
 }
 
-export function legWireSegments(u: Uplink, leg: Leg): WireSegments {
+export function legWireChain(u: Uplink, leg: Leg): WireChainView {
   const fallbacks = u.configured_fallbacks ?? [];
   const chain = u.configured_wire_chain ?? [];
   // dashboard.html :841 — chain length when shipped, else 1 (primary) + every
@@ -183,11 +236,14 @@ export function legWireSegments(u: Uplink, leg: Leg): WireSegments {
     // the two ship in lockstep on every current build.
     return null;
   };
-  const segments: Segment[] = [];
-  for (let i = 0; i < totalWires; i += 1) segments.push(segmentFor(modeAt(i)));
+  const links: WireLink[] = [];
+  for (let i = 0; i < totalWires; i += 1) {
+    const { tunnel, carrier } = parseWireMode(modeAt(i));
+    links.push({ transport: transportAt(u, i), tunnel, carrier });
+  }
   const rawActive = (leg === 'tcp' ? u.tcp_active_wire : u.udp_active_wire) ?? 0;
-  const activeIdx = Math.min(Math.max(rawActive, 0), Math.max(segments.length - 1, 0));
-  return { segments, activeIdx };
+  const activeIdx = Math.min(Math.max(rawActive, 0), Math.max(links.length - 1, 0));
+  return { links, activeIdx };
 }
 
 // ── Single-column RTT / loss (the prototype collapses dashboard.html's
@@ -256,4 +312,104 @@ export function softButtonState(tone: RowTone, clusterResumeEnabled: boolean): S
   if (tone === 'good') return 'active';
   if (tone === 'warn') return 'live';
   return 'hidden'; // bad (down)
+}
+
+// ── Fingerprint chip (group header / per-uplink) ────────────────────────────
+// Ported from the pre-Svelte-rewrite bins/outline-ui/src/ws/dashboard.html's
+// prettyProfileName()/renderFingerprintChip()/fingerprintChip()/
+// groupFingerprintIsHomogeneous()/groupFingerprintChip() (git history, that
+// file's ~:610-714 as of c9db9a36~1 — removed when the html dashboard was
+// replaced by this app and never ported). `process_stable`/`random`
+// strategies resolve to one identity for the whole process, so every uplink
+// in a group reports the same fingerprint_profile_name — in that case
+// GroupTable shows a single chip in the group header instead of repeating it
+// on every row; `per_host_stable` (and any future heterogeneous case) keeps
+// the per-uplink chip since each uplink resolves to its own identity.
+
+export interface FingerprintChip {
+  label: string;
+  title: string;
+}
+
+// dashboard.html prettyProfileName() (~:610-626). Pool ids are
+// `<family>-<version>-<os>`; anything else (including "random") is shown
+// verbatim/specially rather than turning into a blank chip.
+export function prettyProfileName(name: string): string {
+  if (!name) return '';
+  if (name === 'random') return 'Random';
+  const parts = name.split('-');
+  if (parts.length !== 3) return name;
+  const [family, version, os] = parts;
+  const familyLabel = family.charAt(0).toUpperCase() + family.slice(1);
+  const osLabel =
+    os === 'macos' ? 'macOS' : os === 'windows' ? 'Windows' : os === 'linux' ? 'Linux' : os.charAt(0).toUpperCase() + os.slice(1);
+  return `${familyLabel} ${version} ${osLabel}`;
+}
+
+// dashboard.html renderFingerprintChip() (~:631-638) — shared chip shape for
+// both the per-uplink chip (heterogeneous case) and the group-header chip
+// (homogeneous case).
+function fingerprintChipFor(name: string, strategy: string): FingerprintChip {
+  const title = strategy ? `fingerprint_profile_name = ${name} · strategy = ${strategy}` : `fingerprint_profile_name = ${name}`;
+  return { label: prettyProfileName(name), title };
+}
+
+// dashboard.html fingerprintChip() (~:640-644). `null` when the uplink has
+// no identity to show (strategy `none`, or no dial URL — fingerprint_profile_name
+// is absent on the wire in both cases).
+export function uplinkFingerprintChip(u: Uplink): FingerprintChip | null {
+  const name = u.fingerprint_profile_name;
+  return name ? fingerprintChipFor(name, u.fingerprint_profile_strategy || '') : null;
+}
+
+// dashboard.html groupFingerprintIsHomogeneous() (~:697-701). `false` for an
+// empty group — render mode falls back to per-uplink, which renders nothing
+// for an empty list anyway.
+export function groupFingerprintIsHomogeneous(uplinks: Uplink[]): boolean {
+  if (uplinks.length === 0) return false;
+  const first = uplinks[0]?.fingerprint_profile_name ?? undefined;
+  return uplinks.every((u) => (u.fingerprint_profile_name ?? undefined) === first);
+}
+
+// dashboard.html groupFingerprintChip() (~:707-714). `null` both when the
+// group is heterogeneous (caller falls back to per-uplink chips) and when it
+// is homogeneous-but-all-`none` (nothing to show anywhere).
+export function groupFingerprintChip(uplinks: Uplink[]): FingerprintChip | null {
+  if (!groupFingerprintIsHomogeneous(uplinks)) return null;
+  const name = uplinks[0]?.fingerprint_profile_name;
+  return name ? fingerprintChipFor(name, uplinks[0]?.fingerprint_profile_strategy || '') : null;
+}
+
+// ── RTT tooltip (full tcp+udp breakdown; visible cell text stays primaryRttMs()) ──
+// Ported from dashboard.html's weightCell() RTT portion and rttAgeSuffix()
+// (git history, ~:1139-1168 as of c9db9a36~1). The visible RTT cell keeps
+// showing primaryRttMs()'s single collapsed figure; this is the hover detail
+// with both legs and how stale each reading is.
+
+// Age marker for an RTT reading the operator is about to trust: selection
+// weights a measurement by 0.5^(age / rtt_ewma_halflife), so a number
+// nothing has refreshed in minutes is not what ranking is really using.
+// Ported verbatim from dashboard.html's rttAgeSuffix() (~:1164-1168),
+// *including* the lack of a seconds branch — it jumps straight from "" to
+// minutes at the 60_000ms mark (under a minute is normal probe cadence and
+// stays unannotated), then to hours past 60 minutes.
+export function rttAgeSuffix(ageMs: number | null | undefined): string {
+  if (ageMs == null || ageMs < 60_000) return '';
+  const minutes = Math.round(ageMs / 60_000);
+  return minutes < 60 ? ` (${minutes}m old)` : ` (${Math.round(minutes / 60)}h old)`;
+}
+
+// dashboard.html weightCell()'s RTT-parts construction (~:1139-1148):
+// active-wire EWMA preferred over the primary EWMA (same preference as
+// primaryRttMs(), applied independently per leg here), each present leg
+// rendered as `<leg>: <ms>ms<age suffix>`, joined with " · ". Empty string
+// when neither leg has a reading — callers should treat that as "no
+// tooltip" (e.g. omit the `title` attribute rather than show a blank one).
+export function rttTooltip(u: Uplink): string {
+  const tcpRtt = u.tcp_active_wire_rtt_ewma_ms ?? u.tcp_rtt_ewma_ms;
+  const udpRtt = u.udp_active_wire_rtt_ewma_ms ?? u.udp_rtt_ewma_ms;
+  const parts: string[] = [];
+  if (tcpRtt != null) parts.push(`tcp: ${tcpRtt}ms${rttAgeSuffix(u.tcp_active_wire_rtt_age_ms)}`);
+  if (udpRtt != null) parts.push(`udp: ${udpRtt}ms${rttAgeSuffix(u.udp_active_wire_rtt_age_ms)}`);
+  return parts.join(' · ');
 }
