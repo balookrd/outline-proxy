@@ -152,6 +152,7 @@ pub(crate) async fn handle_apply(
             match rebuild_routing(shared, routing_cfg, &handle.route_watchers).await {
                 Ok(n) => Some(n),
                 Err(e) => {
+                    warn!(error = %format!("{e:#}"), "apply aborted: routing rebuild failed");
                     return json_error_owned(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("routing apply failed: {e:#}"),

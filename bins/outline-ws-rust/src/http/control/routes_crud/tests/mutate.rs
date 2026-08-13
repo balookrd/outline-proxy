@@ -77,16 +77,41 @@ fn reorder_moves_rule() {
     assert!(arr.get(0).unwrap().get("default").unwrap().as_bool().unwrap());
 }
 
-#[test]
-fn validate_rejects_via_to_unknown_group() {
+#[tokio::test]
+async fn validate_rejects_via_to_unknown_group() {
     let mut d = doc();
     apply_create(&mut d, &payload(r#"{"prefixes":["1.2.3.0/24"],"via":"ghost"}"#), Some(0))
         .expect("staged");
     let groups = group_names_in_doc(&d);
     let names: Vec<&str> = groups.iter().map(String::as_str).collect();
-    let err = validate_route_array(&d, &names, Path::new("/tmp")).expect_err("bad via");
+    let err = validate_route_array(&d, &names, Path::new("/tmp"))
+        .await
+        .expect_err("bad via");
     assert!(
         format!("{err:#}").contains("ghost") || format!("{err:#}").contains("group"),
+        "got: {err:#}"
+    );
+}
+
+/// `load_routing_config` alone only checks structure (has prefixes, `via`
+/// resolves) — it never parses a CIDR string. This rule is structurally
+/// valid (non-empty `prefixes`, `via = "direct"` needs no group at all), so
+/// only `RoutingTable::compile` — run inside `validate_route_array` since the
+/// boot-safety fix — catches the unparseable prefix. Guards against the CRUD
+/// endpoint staging a rule that passes validation but panics/errors
+/// `RoutingTable::compile` at the next boot.
+#[tokio::test]
+async fn validate_rejects_route_that_fails_to_compile() {
+    let mut d = doc();
+    apply_create(&mut d, &payload(r#"{"prefixes":["garbage"],"via":"direct"}"#), Some(0))
+        .expect("staged");
+    let groups = group_names_in_doc(&d);
+    let names: Vec<&str> = groups.iter().map(String::as_str).collect();
+    let err = validate_route_array(&d, &names, Path::new("/tmp"))
+        .await
+        .expect_err("garbage prefix must not validate");
+    assert!(
+        format!("{err:#}").contains("garbage") || format!("{err:#}").contains("invalid IP"),
         "got: {err:#}"
     );
 }
