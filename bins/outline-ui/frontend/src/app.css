@@ -36,15 +36,26 @@
   --danger: #ef4444;
   --info: #38bdf8;
   --violet: #a78bfa;
-  /* Wire-chain single-chip colours (COMBO design: transport = primary hue,
-     tunnel = secondary accent). Dedicated tokens rather than reusing
-     --violet/--info or the --chip-* status tokens, so the wire palette can
-     move independently of chip-tone semantics. Light-theme values are
-     redefined below, same split as --chip-*. */
-  --wire-vless: #a78bfa;
-  --wire-ss: #60a5fa;
-  --wire-ws: #22d3ee;
-  --wire-xhttp: #e879f9;
+  /* Wire-chain combo palette (owner-approved mockup wire-active-full.html,
+     reviewed 2026-08-13): one background per (transport, tunnel) pair,
+     mirrored exactly from the mockup's own tokens — vless+ws violet,
+     vless+xhttp fuchsia, ss+ws teal, ss+xhttp blue — plus a separate
+     carrier-tier accent (h3/h2/h1) used only as a chip/square's left edge,
+     never as text colour (see app.css's `.wcombo-*`/`.wcarrier-*` and
+     lib/wsTopology.ts's wireComboKey()). Dedicated tokens rather than
+     reusing --accent/--warn/--danger/--info or the --chip-* status tokens,
+     so the wire palette can move independently of chip-tone semantics (same
+     reasoning the single-chip design's --wire-* tokens used — this replaces
+     those, see cabc01c0). Values here are the DARK-theme ones (this file's
+     default); light-theme values are redefined below, same split as
+     --chip-*. */
+  --vlws: #a78bfa;
+  --vlxh: #e879f9;
+  --ssws: #2dd4bf;
+  --ssxh: #38bdf8;
+  --h3: #22c55e;
+  --h2: #f59e0b;
+  --h1: #ef4444;
 
   --radius: 10px;
   --radius-sm: 7px;
@@ -73,7 +84,7 @@
     --chip-bad-text: #b91c1c; --chip-bad-bg: color-mix(in srgb, #dc2626 16%, #fff); --chip-bad-border: color-mix(in srgb, #dc2626 42%, #fff);
     --chip-info-text: #0369a1; --chip-info-bg: color-mix(in srgb, #0284c7 16%, #fff); --chip-info-border: color-mix(in srgb, #0284c7 42%, #fff);
     --chip-off-text: #334155;
-    --wire-vless: #6d28d9; --wire-ss: #1d4ed8; --wire-ws: #0e7490; --wire-xhttp: #a21caf;
+    --vlws: #7c3aed; --vlxh: #c026d3; --ssws: #0d9488; --ssxh: #0369a1; --h3: #16a34a; --h2: #d97706; --h1: #dc2626;
   }
 }
 
@@ -88,7 +99,7 @@
   --chip-bad-text: #b91c1c; --chip-bad-bg: color-mix(in srgb, #dc2626 16%, #fff); --chip-bad-border: color-mix(in srgb, #dc2626 42%, #fff);
   --chip-info-text: #0369a1; --chip-info-bg: color-mix(in srgb, #0284c7 16%, #fff); --chip-info-border: color-mix(in srgb, #0284c7 42%, #fff);
   --chip-off-text: #334155;
-  --wire-vless: #6d28d9; --wire-ss: #1d4ed8; --wire-ws: #0e7490; --wire-xhttp: #a21caf;
+  --vlws: #7c3aed; --vlxh: #c026d3; --ssws: #0d9488; --ssxh: #0369a1; --h3: #16a34a; --h2: #d97706; --h1: #dc2626;
 }
 
 * { box-sizing: border-box; }
@@ -193,7 +204,9 @@ select:disabled { opacity: .6; cursor: not-allowed; }
 .btn.primary:disabled:hover { background: var(--accent); }
 .btn.ghost:disabled:hover { background: transparent; }
 .iconbtn:disabled:hover { background: var(--muted); color: var(--fg-muted); }
-.iconbtn.danger { color: var(--danger); }
+/* .iconbtn.act-* (activate/soft/power/danger) — the full-contrast, colour-
+   coded icon-button family, defined together further down (search
+   "Per-row action buttons") and shared by Topology, Users and Uplinks. */
 
 /* ---- Landing hero logo ----
    logo.png (docs/logo.png, same asset as the README) is a transparent-bg
@@ -240,8 +253,11 @@ tbody tr:hover { background: color-mix(in srgb, var(--surface-3) 30%, transparen
 .id-cell { display: flex; align-items: center; gap: 9px; }
 .avatar { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 11px; font-weight: 600;
   background: color-mix(in srgb, var(--info) 20%, var(--muted)); color: var(--info); font-family: var(--font-mono); }
-.rowactions { display: flex; gap: 4px; justify-content: flex-end; opacity: .55; transition: opacity .15s; }
-tr:hover .rowactions { opacity: 1; }
+/* Full contrast at rest, same as Topology's .actioncell — was opacity-faded
+   until row hover; unified onto the same always-visible, colour-coded
+   .iconbtn.act-* buttons Topology uses (see that section further down), so
+   dropped the fade entirely rather than just re-tuning it. */
+.rowactions { display: flex; gap: 4px; justify-content: flex-end; }
 .access-url { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   display: inline-block; vertical-align: middle; }
 
@@ -266,55 +282,63 @@ tr:hover .rowactions { opacity: 1; }
    text always rides along in the element's `title` tooltip. */
 .chip.reason { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 
-/* ---- Wire chain (single chip per link) ----
-   Owner feedback on the old 3-badge layout ("vl" + "xh" + "h3" as three glued
-   sub-badges inside one outlined pill): too busy, the table read as
-   "overloaded with chips". Replaced by ONE chip per link showing "vl xh h3"
-   together — COMBO coloring:
-     - transport (proxy) is the PRIMARY hue — the chip's text/tint/border
-       (.wchip.vless / .wchip.ss / .wchip.other) — "what protocol is
-       running".
-     - tunnel (ws/xhttp) is a SECONDARY accent on the same chip — a coloured
-       left edge (.tun-ws / .tun-xhttp) — not a second colored badge.
-     - carrier (h3/h2/h1) stays as visible text but de-emphasised
-       (.wc-carrier — lower opacity/weight): the fallback-degradation
-       detail, not the headline.
-   Active link keeps the accent outline, same idea the old design used. */
+/* ---- Wire chain (active = full text, fallback = colour square) ----
+   Owner-approved mockup (wire-active-full.html, reviewed 2026-08-13)
+   replaces cabc01c0's single-chip-per-link design (transport-hue text +
+   tunnel-accent edge + de-emphasised carrier text) with one shared visual
+   grammar for every link in the chain:
+     - COMBO background — the (transport, tunnel) pair (vless+ws, vless+
+       xhttp, ss+ws, ss+xhttp — lib/wsTopology.ts's wireComboKey(), custom
+       property `--wcc`) drives both the chip/square's tint and its border.
+       'neutral' (the fallback wireComboKey() returns for a wire whose
+       tunnel never resolved) renders as a plain grey tint — it never
+       fabricates one of the 4 real hues.
+     - CARRIER left-accent edge — h3/h2/h1 (custom property `--wce`), 3px,
+       resolved independently of whether the combo did: a bare "h3"/"h2"
+       mode token can resolve carrier with no tunnel at all (see
+       lib/wsTopology.ts's parseWireMode()). Carrier never colours text.
+   The ACTIVE link (`.wchip-full`) renders its full slash-joined text
+   ("vless/xhttp/h3", lib/wsTopology.ts's wireFullText()) in ONE flat text
+   colour — no outline; the text itself is what marks it active. Every
+   FALLBACK link (`.wchip-sq`) renders as a small ~16px colour-only square,
+   no text, full detail in its `title` tooltip only (WireChain.svelte).
+   `--wcc`/`--wce` fall back to a neutral grey/the plain border colour via
+   the var()-with-default below when no `.wcombo-*`/`.wcarrier-*` modifier
+   is present, so a stray unstyled link degrades instead of losing its box
+   entirely. Formulas mix toward `var(--surface)`/`var(--fg)` (not
+   `transparent`) so both themes read correctly straight from the `--vlws`/
+   `--vlxh`/`--ssws`/`--ssxh`/`--h3`/`--h2`/`--h1` token values alone — no
+   separate light-theme override block needed here (contrast: chip text
+   mixes 80% combo hue into `--fg`, background only 15% combo hue into
+   `--surface`, same recipe the light-theme `--chip-ok-bg` etc. tokens use
+   elsewhere in this file). */
 .wire { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .arrow { color: var(--fg-dim); font-size: 10px; }
 
-.wchip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono);
-  font-size: 11px; font-weight: 600; letter-spacing: .01em; white-space: nowrap;
-  padding: 2px 8px; border: 1px solid; border-radius: var(--radius-sm); }
-.wchip.inactive { opacity: .5; }
-.wchip.active { outline: 2px solid var(--accent); outline-offset: 1px; }
-.wc-carrier { opacity: .68; font-weight: 500; }
-
-.wchip.vless { color: var(--wire-vless); background: color-mix(in srgb, var(--wire-vless) 16%, transparent);
-  border-color: color-mix(in srgb, var(--wire-vless) 42%, transparent); }
-.wchip.ss { color: var(--wire-ss); background: color-mix(in srgb, var(--wire-ss) 16%, transparent);
-  border-color: color-mix(in srgb, var(--wire-ss) 42%, transparent); }
-.wchip.other { color: var(--fg-muted); background: var(--muted); border-color: var(--border); }
-/* Tunnel accent: a 3px coloured left edge on top of the transport border. */
-.wchip.tun-ws { border-left-width: 3px; border-left-color: var(--wire-ws); }
-.wchip.tun-xhttp { border-left-width: 3px; border-left-color: var(--wire-xhttp); }
-
-/* Light theme: transparent-tint pills wash out on white. Give the chip a
-   dark (700-level) text, a hairline border, and a denser opaque-ish tint —
-   same recipe the chip/metric contrast pass uses elsewhere in this file —
-   and lift inactive links out of near-invisibility. Dark theme untouched. */
-:root[data-theme="light"] .wchip.inactive,
-:root:not([data-theme="dark"]) .wchip.inactive { opacity: .68; }
-:root[data-theme="light"] .wchip.vless,
-:root:not([data-theme="dark"]) .wchip.vless { color: var(--wire-vless); background: color-mix(in srgb, var(--wire-vless) 14%, #fff); border-color: color-mix(in srgb, var(--wire-vless) 38%, #fff); }
-:root[data-theme="light"] .wchip.ss,
-:root:not([data-theme="dark"]) .wchip.ss { color: var(--wire-ss); background: color-mix(in srgb, var(--wire-ss) 12%, #fff); border-color: color-mix(in srgb, var(--wire-ss) 38%, #fff); }
-:root[data-theme="light"] .wchip.other,
-:root:not([data-theme="dark"]) .wchip.other { color: var(--chip-off-text); background: var(--muted); border-color: var(--border); }
-:root[data-theme="light"] .wchip.tun-ws,
-:root:not([data-theme="dark"]) .wchip.tun-ws { border-left-color: var(--wire-ws); }
-:root[data-theme="light"] .wchip.tun-xhttp,
-:root:not([data-theme="dark"]) .wchip.tun-xhttp { border-left-color: var(--wire-xhttp); }
+.wchip-full {
+  display: inline-block; font-family: var(--font-mono); font-size: 11.5px; font-weight: 600;
+  padding: 3px 9px 3px 8px; border-radius: var(--radius-sm); white-space: nowrap;
+  border: 1px solid; border-left-width: 3px;
+  color: color-mix(in srgb, var(--wcc, var(--fg-dim)) 80%, var(--fg));
+  background: color-mix(in srgb, var(--wcc, var(--fg-dim)) 15%, var(--surface));
+  border-color: color-mix(in srgb, var(--wcc, var(--fg-dim)) 40%, var(--surface));
+  border-left-color: var(--wce, var(--border));
+}
+.wchip-sq {
+  display: inline-block; width: 16px; height: 16px; border-radius: 4px; flex: none; cursor: default;
+  border: 1px solid; border-left-width: 3px;
+  background: color-mix(in srgb, var(--wcc, var(--fg-dim)) 22%, var(--surface));
+  border-color: color-mix(in srgb, var(--wcc, var(--fg-dim)) 45%, var(--surface));
+  border-left-color: var(--wce, var(--border));
+}
+.wcombo-vlws { --wcc: var(--vlws); }
+.wcombo-vlxh { --wcc: var(--vlxh); }
+.wcombo-ssws { --wcc: var(--ssws); }
+.wcombo-ssxh { --wcc: var(--ssxh); }
+.wcombo-neutral { --wcc: var(--fg-dim); }
+.wcarrier-h3 { --wce: var(--h3); }
+.wcarrier-h2 { --wce: var(--h2); }
+.wcarrier-h1 { --wce: var(--h1); }
 
 /* ---- Light theme: chips/metrics/badges wash out on white for the same
    reason the wire-chain pills above did — swap the raw --accent/--warn/
@@ -366,10 +390,16 @@ tr:hover .rowactions { opacity: 1; }
 :root[data-theme="light"] .applybar .pill,
 :root:not([data-theme="dark"]) .applybar .pill { color: var(--chip-warn-text); }
 
-/* Topology row action buttons: same color-on-tint construction as the chips
-   above, just on .iconbtn. act-power keeps dark theme's subtler no-tint
-   resting state (icon+border only) — amber-700 already clears AA against
-   the plain --muted background, so it doesn't need one. */
+/* Full-contrast action-button family (.iconbtn.act-activate/soft/power/
+   danger): same color-on-tint construction as the chips above, just on
+   .iconbtn. Originally Topology-only (activate/soft/power); Users'
+   edit/block/delete row actions and Uplinks' edit/delete uplink actions now
+   reuse the same classes/tokens instead of forking a parallel style — see
+   UsersTable.svelte/Users.svelte and Uplinks.svelte. act-danger (delete) is
+   the one member Topology itself has no use for. act-power keeps dark
+   theme's subtler no-tint resting state (icon+border only) — amber-700
+   already clears AA against the plain --muted background, so it doesn't
+   need one. */
 :root[data-theme="light"] .iconbtn.act-activate,
 :root:not([data-theme="dark"]) .iconbtn.act-activate { color: var(--chip-ok-text); border-color: var(--chip-ok-border); background: var(--chip-ok-bg); }
 :root[data-theme="light"] .iconbtn.act-activate:hover,
@@ -382,21 +412,30 @@ tr:hover .rowactions { opacity: 1; }
 :root:not([data-theme="dark"]) .iconbtn.act-power { color: var(--chip-warn-text); border-color: var(--chip-warn-border); }
 :root[data-theme="light"] .iconbtn.act-power:hover,
 :root:not([data-theme="dark"]) .iconbtn.act-power:hover { background: color-mix(in srgb, #d97706 18%, #fff); }
+:root[data-theme="light"] .iconbtn.act-danger,
+:root:not([data-theme="dark"]) .iconbtn.act-danger { color: var(--chip-bad-text); border-color: var(--chip-bad-border); background: var(--chip-bad-bg); }
+:root[data-theme="light"] .iconbtn.act-danger:hover,
+:root:not([data-theme="dark"]) .iconbtn.act-danger:hover { background: color-mix(in srgb, #dc2626 28%, #fff); }
 
-/* ---- Wire-chain legend (proxy colour / tunnel accent key), above the topology ---- */
+/* ---- Wire-chain legend (combo colour / carrier edge key), above the topology ----
+   Full-name pairs only (vless/ws, not "vl"+edge) — owner: the legend must
+   spell out every combo, not abbreviate it. */
 .wire-legend { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-4); margin: -6px 0 var(--sp-4); font-size: 12px; color: var(--fg-muted); }
 .wire-legend b { color: var(--fg); font-weight: 600; }
 .wl-group { display: inline-flex; align-items: center; gap: 6px; }
 .wl-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 3px; vertical-align: -1px; }
-.wl-swatch.vless { background: var(--wire-vless); }
-.wl-swatch.ss { background: var(--wire-ss); }
-/* Mirrors the chip's own tunnel accent (a coloured left edge on a neutral
+.wl-swatch.vlws { background: var(--vlws); }
+.wl-swatch.vlxh { background: var(--vlxh); }
+.wl-swatch.ssws { background: var(--ssws); }
+.wl-swatch.ssxh { background: var(--ssxh); }
+/* Mirrors the chip's own carrier accent (a coloured left edge on a neutral
    swatch), rather than a plain filled dot, so the legend teaches the actual
    visual cue instead of a different one. */
 .wl-edge { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: -1px;
   background: var(--muted); border: 1px solid var(--border); border-left: 3px solid; }
-.wl-edge.tun-ws { border-left-color: var(--wire-ws); }
-.wl-edge.tun-xhttp { border-left-color: var(--wire-xhttp); }
+.wl-edge.h3 { border-left-color: var(--h3); }
+.wl-edge.h2 { border-left-color: var(--h2); }
+.wl-edge.h1 { border-left-color: var(--h1); }
 
 /* ---- Topology ---- */
 .inst { margin-bottom: var(--sp-4); }
@@ -434,11 +473,19 @@ tr:hover .rowactions { opacity: 1; }
 .colhead-row { display: grid; grid-template-columns: var(--topo-cols); gap: var(--sp-3);
   padding: 7px var(--sp-4); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-dim); border-bottom: 1px solid var(--border-soft); }
 .actioncell { display: flex; gap: 4px; justify-content: flex-end; }
-/* Per-row action buttons (Activate/Soft/Enable-Disable): icon-only, same
-   32px .iconbtn footprint, but full-contrast (no opacity-fade-until-hover)
-   with a clear border+bg affordance and a semantic colour accent — scoped
-   via a second class so the plain .iconbtn used elsewhere (Users/Uplinks/
-   drawers/Topbar) is untouched. */
+/* Per-row action buttons (Activate/Soft/Enable-Disable, Task 10; Edit/Block/
+   Delete on Users, Edit/Delete on Uplinks): icon-only, same 32px .iconbtn
+   footprint, but full-contrast (no opacity-fade-until-hover) with a clear
+   border+bg affordance and a semantic colour accent — scoped via a second
+   class so the plain neutral .iconbtn used elsewhere (drawers' close
+   button, Topbar's theme toggle) is untouched. One shared family across
+   Topology/Users/Uplinks: act-activate (accent/green — Topology's hard
+   activate), act-soft (info/blue — Topology's soft switch; reused for the
+   Edit pencil on Users/Uplinks, a non-destructive "open for editing" action
+   in the same informational register), act-power (warn/amber — Topology's
+   enable/disable toggle; reused verbatim for Users' Block/Unblock, the same
+   toggle semantics), act-danger (danger/red — the one member Topology has
+   no use for; Users'/Uplinks' Delete). */
 .iconbtn.act-activate { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
   background: color-mix(in srgb, var(--accent) 14%, var(--muted)); }
 .iconbtn.act-activate:hover { background: color-mix(in srgb, var(--accent) 26%, var(--muted)); }
@@ -447,6 +494,9 @@ tr:hover .rowactions { opacity: 1; }
 .iconbtn.act-soft:hover { background: color-mix(in srgb, var(--info) 26%, var(--muted)); }
 .iconbtn.act-power { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 .iconbtn.act-power:hover { background: color-mix(in srgb, var(--warn) 16%, var(--muted)); }
+.iconbtn.act-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+  background: color-mix(in srgb, var(--danger) 14%, var(--muted)); }
+.iconbtn.act-danger:hover { background: color-mix(in srgb, var(--danger) 26%, var(--muted)); }
 
 /* ---- Apply bar (uplinks) ---- */
 .applybar { display: flex; align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); margin-bottom: var(--sp-4);
