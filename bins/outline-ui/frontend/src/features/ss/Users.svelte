@@ -120,8 +120,8 @@
     <div class="toolbar">
       <InstanceSelector base="/ss" bind:selected={instance} bind:refreshSecs={refreshSecs} />
       <input type="search" placeholder="Search id / method…" bind:value={search} aria-label="Search users" />
-      <button class="btn primary" disabled={!instance || mutating} onclick={openCreateDrawer}>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> New user
+      <button class="btn sm" disabled={!instance || mutating} onclick={openCreateDrawer}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> Add user
       </button>
     </div>
   </div>

@@ -80,7 +80,7 @@
 <div class="backdrop" class:open onclick={onBackdropClick} role="presentation"></div>
 <aside class="drawer" class:open aria-hidden={!open}>
   <header>
-    <h3>{editing ? 'Edit user' : 'New user'}</h3>
+    <h3>{editing ? 'Edit user' : 'Add user'}</h3>
     <span class="spacer"></span>
     <button class="iconbtn" type="button" aria-label="Close" onclick={onclose}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
