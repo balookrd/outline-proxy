@@ -9,7 +9,9 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item};
 use tracing::info;
 
 use crate::config::{RouteSection, load_routing_config};
-use crate::http::control::config_edit::{json_error_owned, read_json, write_document_atomic};
+use crate::http::control::config_edit::{
+    json_error_owned, read_json, status_for_mutator_error, write_document_atomic,
+};
 use crate::http::control::server::ControlState;
 use crate::http::control::{ControlResponse, json_error, json_response};
 
@@ -290,15 +292,15 @@ async fn mutate(
         },
         Parsed::Update(b) => match apply_update(&mut doc, b.index, &b.rule) {
             Ok(()) => ("updated", b.index),
-            Err(msg) => return json_error_owned(status_for(&msg), msg),
+            Err(msg) => return json_error_owned(status_for_mutator_error(&msg), msg),
         },
         Parsed::Delete(b) => match apply_delete(&mut doc, b.index) {
             Ok(()) => ("deleted", b.index),
-            Err(msg) => return json_error_owned(status_for(&msg), msg),
+            Err(msg) => return json_error_owned(status_for_mutator_error(&msg), msg),
         },
         Parsed::Reorder(b) => match apply_reorder(&mut doc, b.from, b.to) {
             Ok(()) => ("reordered", b.to),
-            Err(msg) => return json_error_owned(status_for(&msg), msg),
+            Err(msg) => return json_error_owned(status_for_mutator_error(&msg), msg),
         },
     };
 
@@ -319,16 +321,6 @@ async fn mutate(
         StatusCode::ACCEPTED,
         &MutationResponse::staged(action, index, hot_apply_available, new_revision),
     )
-}
-
-/// Route index/range errors map to 404; everything else (business rules like
-/// "cannot delete the default rule") to 400.
-fn status_for(msg: &str) -> StatusCode {
-    if msg.contains("not found") {
-        StatusCode::NOT_FOUND
-    } else {
-        StatusCode::BAD_REQUEST
-    }
 }
 
 #[cfg(test)]
