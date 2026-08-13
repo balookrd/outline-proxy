@@ -233,3 +233,42 @@ export interface ApplyResult {
   default_group?: string;
   error?: string;
 }
+
+// WS routing — GET /control/routes entries, proxied verbatim through
+// /ws/dashboard/api/routes (routes_crud/list.rs RouteListEntry/RoutesListResponse).
+// `config` mirrors the on-disk `[[route]]` table (route_table_to_json), absent
+// when the config couldn't be read.
+export interface RouteConfig {
+  prefixes?: string[];
+  file?: string;
+  files?: string[];
+  domains?: string[];
+  domain_file?: string;
+  domain_files?: string[];
+  file_poll_secs?: number;
+  default?: boolean;
+  via?: string;
+  fallback_via?: string;
+  fallback_direct?: boolean;
+  fallback_drop?: boolean;
+  invert?: boolean;
+  [k: string]: unknown;
+}
+export interface RouteEntry {
+  index: number;
+  is_default: boolean;
+  config?: RouteConfig | null;
+}
+export interface RoutesListResponse {
+  routes: RouteEntry[];
+  groups: string[];
+  revision: string;
+}
+// POST/PATCH/DELETE /control/routes response (routes_crud MutationResponse).
+export interface RouteMutationResponse {
+  action: string;
+  index: number;
+  apply_required?: boolean;
+  restart_required?: boolean;
+  revision: string;
+}
