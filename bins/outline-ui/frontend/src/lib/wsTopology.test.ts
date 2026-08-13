@@ -15,6 +15,9 @@ import {
   parseWireMode,
   proxyLabel,
   legWireChain,
+  wireComboKey,
+  transportFullLabel,
+  wireFullText,
   primaryRttMs,
   primaryLossRatio,
   lossTone,
@@ -297,6 +300,54 @@ describe('legWireChain — dashboard.html legWireChainCell()/wireAt() (:837-950)
     });
     expect(legWireChain(u, 'tcp').activeIdx).toBe(0);
     expect(legWireChain(u, 'udp').activeIdx).toBe(1);
+  });
+});
+
+describe('wireComboKey — 4 owner-approved transport+tunnel combos + neutral fallback (wire-active-full.html)', () => {
+  it('vless+ws → vlws', () => expect(wireComboKey({ transport: 'vless', tunnel: 'ws' })).toBe('vlws'));
+  it('vless+xhttp → vlxh', () => expect(wireComboKey({ transport: 'vless', tunnel: 'xhttp' })).toBe('vlxh'));
+  it('ss+ws → ssws', () => expect(wireComboKey({ transport: 'ss', tunnel: 'ws' })).toBe('ssws'));
+  it('ss+xhttp → ssxh', () => expect(wireComboKey({ transport: 'ss', tunnel: 'xhttp' })).toBe('ssxh'));
+  it('is case-insensitive on transport', () => expect(wireComboKey({ transport: 'VLESS', tunnel: 'ws' })).toBe('vlws'));
+  it('unresolved tunnel (null) degrades to neutral instead of guessing a combo', () => {
+    expect(wireComboKey({ transport: 'vless', tunnel: null })).toBe('neutral');
+    expect(wireComboKey({ transport: 'ss', tunnel: null })).toBe('neutral');
+  });
+  it('unrecognised transport degrades to neutral even with a resolved tunnel', () => {
+    expect(wireComboKey({ transport: 'mystery', tunnel: 'ws' })).toBe('neutral');
+  });
+  it('missing transport degrades to neutral', () => {
+    expect(wireComboKey({ transport: null, tunnel: 'ws' })).toBe('neutral');
+    expect(wireComboKey({ transport: undefined, tunnel: 'xhttp' })).toBe('neutral');
+  });
+});
+
+describe('transportFullLabel — unabbreviated proxy name for the active chip\'s full text', () => {
+  it('vless → vless', () => expect(transportFullLabel('vless')).toBe('vless'));
+  it('VLESS (any case) → vless', () => expect(transportFullLabel('VLESS')).toBe('vless'));
+  it('ss → ss (already its own full form)', () => expect(transportFullLabel('ss')).toBe('ss'));
+  it('falls back to the raw lowercased transport for anything else', () => expect(transportFullLabel('mystery')).toBe('mystery'));
+  it('missing transport renders an em dash rather than an empty label', () => {
+    expect(transportFullLabel(null)).toBe('—');
+    expect(transportFullLabel(undefined)).toBe('—');
+  });
+});
+
+describe('wireFullText — slash-joined full text, degrading layer by layer instead of fabricating', () => {
+  it('all 3 layers resolved: "vless/xhttp/h3"', () => {
+    expect(wireFullText({ transport: 'vless', tunnel: 'xhttp', carrier: 'h3' })).toBe('vless/xhttp/h3');
+  });
+  it('ss + ws + h1: "ss/ws/h1"', () => {
+    expect(wireFullText({ transport: 'ss', tunnel: 'ws', carrier: 'h1' })).toBe('ss/ws/h1');
+  });
+  it('a bare carrier token with no tunnel degrades to "vless/h3", not "vless//h3"', () => {
+    expect(wireFullText({ transport: 'vless', tunnel: null, carrier: 'h3' })).toBe('vless/h3');
+  });
+  it('a wire with no mode info at all degrades to the transport alone', () => {
+    expect(wireFullText({ transport: 'ss', tunnel: null, carrier: null })).toBe('ss');
+  });
+  it('an unrecognised transport still renders (raw lowercased), never an empty string', () => {
+    expect(wireFullText({ transport: 'mystery', tunnel: null, carrier: null })).toBe('mystery');
   });
 });
 

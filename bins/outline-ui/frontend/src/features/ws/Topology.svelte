@@ -181,16 +181,20 @@
     </div>
   </div>
 
-  <!-- Wire-chain layer key: one chip per link, coloured by proxy transport,
-       accented by tunnel, carrier shown as muted text — see
-       WireChain.svelte / lib/wsTopology.ts's legWireChain(). Sits above the
+  <!-- Wire-chain layer key: every link is coloured by its (transport, tunnel)
+       combo and edge-accented by carrier — see WireChain.svelte /
+       lib/wsTopology.ts's legWireChain()/wireComboKey(). Sits above the
        per-instance topology so every TCP/UDP wire-chain cell below reads
        without a per-cell legend. -->
   <div class="wire-legend">
-    <span class="wl-group"><span class="wl-swatch vless"></span><b>vless</b><span class="wl-swatch ss"></span><b>ss</b> <span class="muted">— proxy colour</span></span>
-    <span class="wl-group"><span class="wl-edge tun-ws"></span><b>ws</b><span class="wl-edge tun-xhttp"></span><b>xhttp</b> <span class="muted">— tunnel accent (left edge)</span></span>
-    <span class="muted">carrier (h3/h2/h1) shown as muted text, not colour</span>
-    <span class="muted">outline = active link</span>
+    <span class="wl-group"><span class="wl-swatch vlws"></span><b>vless/ws</b></span>
+    <span class="wl-group"><span class="wl-swatch vlxh"></span><b>vless/xhttp</b></span>
+    <span class="wl-group"><span class="wl-swatch ssws"></span><b>ss/ws</b></span>
+    <span class="wl-group"><span class="wl-swatch ssxh"></span><b>ss/xhttp</b></span>
+    <span class="muted">— combo colour</span>
+    <span class="wl-group"><span class="wl-edge h3"></span><b>h3</b><span class="wl-edge h2"></span><b>h2</b><span class="wl-edge h1"></span><b>h1</b></span>
+    <span class="muted">— carrier (left edge)</span>
+    <span class="muted">active = full text · fallback = square</span>
   </div>
 
   <ErrorBanner message={listPoll.error} />

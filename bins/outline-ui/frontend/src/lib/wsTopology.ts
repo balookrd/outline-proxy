@@ -246,6 +246,68 @@ export function legWireChain(u: Uplink, leg: Leg): WireChainView {
   return { links, activeIdx };
 }
 
+// ── Wire-chain combo palette (active=full-text / fallback=square redesign) ─
+// Owner-approved mockup (wire-active-full.html, reviewed 2026-08-13) replaces
+// cabc01c0's single-chip-per-link design (transport-hue text + tunnel-accent
+// edge + de-emphasised carrier text) with one shared visual grammar for
+// every link: a COMBO background keyed by the (transport, tunnel) pair, plus
+// a carrier left-accent edge resolved independently (WireChain.svelte reads
+// `link.carrier` directly for that part — it's already exactly 'h3'/'h2'/
+// 'h1'/null, no mapping needed). The active link shows this on a chip with
+// its full text; every fallback link shows it on a same-coloured square with
+// no text at all — see WireChain.svelte and app.css's `.wcombo-*`/
+// `.wcarrier-*`.
+
+// The 4 owner-approved transport+tunnel combos, plus 'neutral' — the
+// deliberate don't-fabricate fallback for a wire whose tunnel didn't resolve
+// (a Shadowsocks wire with no *_mode field, or a bare h3/h2 token with no
+// ws_/xhttp_ prefix — see parseWireMode()) or whose transport isn't one of
+// the two known proxies. There is no correct combo hue to guess at in either
+// case, so 'neutral' renders as a plain muted square/chip (app.css's
+// `.wcombo-neutral`) instead of picking one of the 4 real combos at random.
+export type ComboKey = 'vlws' | 'vlxh' | 'ssws' | 'ssxh' | 'neutral';
+
+// (transport, tunnel) → combo key. `transport` is nullable here — unlike
+// WireLink's own always-a-string field — so call sites can pass a WireLink
+// straight through (`wireComboKey(link)`) while the function stays as
+// defensive about its input as its siblings (proxyLabel()/
+// transportFullLabel()/parseWireMode()) about data that ultimately comes off
+// an untyped API boundary. Case-insensitive on transport, same as those.
+export function wireComboKey(link: { transport: string | null | undefined; tunnel: Tunnel }): ComboKey {
+  const t = (link.transport ?? '').toLowerCase();
+  if (link.tunnel === 'ws') {
+    if (t === 'vless') return 'vlws';
+    if (t === 'ss') return 'ssws';
+  } else if (link.tunnel === 'xhttp') {
+    if (t === 'vless') return 'vlxh';
+    if (t === 'ss') return 'ssxh';
+  }
+  return 'neutral';
+}
+
+// Full (unabbreviated) proxy-layer name for the active chip's full text —
+// 'vless'/'ss', distinct from proxyLabel()'s deliberately-abbreviated 'vl'/
+// 'ss' badge text used elsewhere ('ss' has no longer form to begin with —
+// owner: "ss=ss not SS" — so it is already its own full label too). Falls
+// back to the raw lowercased transport for anything else, same "don't
+// silently vanish" rule as proxyLabel().
+export function transportFullLabel(transport: string | null | undefined): string {
+  const v = (transport ?? '').toLowerCase();
+  if (v === 'vless') return 'vless';
+  if (v === 'ss') return 'ss';
+  return v || '—';
+}
+
+// Full slash-joined text for one wire link — "vless/xhttp/h3" — the active
+// chip's visible text (WireChain.svelte) and the basis for a fallback
+// square's tooltip ("vless/xhttp/h3 (fallback)"). Degrades by omitting
+// whichever layers didn't resolve rather than fabricating them: "vless/h3"
+// for a bare carrier token with no tunnel, "vless" alone for a wire with no
+// mode info at all — mirrors legWireChain()'s own graceful-degradation shape.
+export function wireFullText(link: WireLink): string {
+  return [transportFullLabel(link.transport), link.tunnel, link.carrier].filter((part): part is string => Boolean(part)).join('/');
+}
+
 // ── Single-column RTT / loss (the prototype collapses dashboard.html's
 // separate "tcp: Xms · udp: Yms" weightCell text into one figure per column)
 // ────────────────────────────────────────────────────────────────────────────
