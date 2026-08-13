@@ -715,7 +715,7 @@ pub(super) struct UplinkGroupSection {
 /// additional paths in `files` all contribute to the same CIDR set.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RouteSection {
+pub(crate) struct RouteSection {
     pub(super) prefixes: Option<Vec<String>>,
     pub(super) file: Option<PathBuf>,
     pub(super) files: Option<Vec<PathBuf>>,
