@@ -150,14 +150,13 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     // the end of `run_with_config` so the watcher tasks live for the whole
     // process lifetime; on a future routing reload it would be dropped to
     // cancel the old watchers before installing the replacement table.
-    let (routing_table, _route_watchers) = if let Some(routing_cfg) = config.routing.clone() {
-        let table = Arc::new(
-            outline_routing::RoutingTable::compile(&routing_cfg)
-                .await
-                .context("failed to compile routing table")?,
-        );
-        let guard = outline_routing::spawn_route_watchers(Arc::clone(&table));
-        (Some(table), Some(guard))
+    let (shared_routing, _route_watchers) = if let Some(routing_cfg) = config.routing.clone() {
+        let table = outline_routing::RoutingTable::compile(&routing_cfg)
+            .await
+            .context("failed to compile routing table")?;
+        let shared = outline_routing::SharedRoutingTable::new(table);
+        let guard = outline_routing::spawn_route_watchers(shared.load_full());
+        (Some(shared), Some(guard))
     } else {
         (None, None)
     };
@@ -198,7 +197,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
         }
         let tun_routing = outline_tun::TunRouting::new(
             registry.clone(),
-            routing_table.clone(),
+            shared_routing.clone(),
             config.direct_fwmark,
             ipsec_bypass,
         );
@@ -269,7 +268,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     let proxy_config = Arc::new(ProxyConfig {
         socks5_auth: config.socks5_auth.clone(),
         dns_cache: dns_cache.clone(),
-        router: routing_table.clone().map(|t| t as Arc<dyn crate::proxy::Router>),
+        router: shared_routing.clone().map(|t| t as Arc<dyn crate::proxy::Router>),
         direct_fwmark: config.direct_fwmark,
         tcp_timeouts: config.tcp_timeouts,
     });

@@ -2,7 +2,9 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use outline_routing::{RouteRule, RouteTarget, RoutingTable, RoutingTableConfig};
+use outline_routing::{
+    RouteRule, RouteTarget, RoutingTable, RoutingTableConfig, SharedRoutingTable,
+};
 use outline_transport::TransportMode;
 use outline_uplink::{
     LoadBalancingConfig, ProbeConfig, TransportKind, UplinkConfig, UplinkGroupConfig,
@@ -136,8 +138,8 @@ fn group_config(name: &str, bypass_when_down: bool) -> UplinkGroupConfig {
     }
 }
 
-async fn table(default: RouteTarget, fallback: Option<RouteTarget>) -> Arc<RoutingTable> {
-    Arc::new(
+async fn table(default: RouteTarget, fallback: Option<RouteTarget>) -> Arc<SharedRoutingTable> {
+    SharedRoutingTable::new(
         RoutingTable::compile(&RoutingTableConfig {
             rules: vec![],
             default_target: default,
@@ -334,7 +336,7 @@ fn domain_rule(domains: &[&str], target: RouteTarget) -> RouteRule {
 
 /// Table exercising both passes: two domain rules (Direct / Group), a CIDR
 /// rule (Drop for 10/8), and a Group default.
-async fn sni_table() -> Arc<RoutingTable> {
+async fn sni_table() -> Arc<SharedRoutingTable> {
     let cidr_drop = RouteRule {
         inline_prefixes: vec!["10.0.0.0/8".into()],
         files: Vec::new(),
@@ -345,7 +347,7 @@ async fn sni_table() -> Arc<RoutingTable> {
         fallback: None,
         invert: false,
     };
-    Arc::new(
+    SharedRoutingTable::new(
         RoutingTable::compile(&RoutingTableConfig {
             rules: vec![
                 domain_rule(&["bypass.example"], RouteTarget::Direct),

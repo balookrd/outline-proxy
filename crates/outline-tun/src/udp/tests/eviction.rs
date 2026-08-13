@@ -312,7 +312,7 @@ async fn build_engine_with_carrier_cap(max_flows: usize, max_carrier_flows: usiz
 /// land in `direct_flows` and never dial a carrier.
 async fn build_direct_engine(max_flows: usize, max_carrier_flows: usize) -> TunUdpEngine {
     let manager = build_test_manager_with_urls(None, Some(spawn_idle_udp_upstream().await)).await;
-    let table = Arc::new(
+    let table = outline_routing::SharedRoutingTable::new(
         outline_routing::RoutingTable::compile(&outline_routing::RoutingTableConfig {
             rules: Vec::new(),
             default_target: outline_routing::RouteTarget::Direct,
