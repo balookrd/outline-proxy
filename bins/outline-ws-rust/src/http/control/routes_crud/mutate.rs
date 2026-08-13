@@ -8,6 +8,8 @@ use hyper::body::Incoming;
 use toml_edit::{ArrayOfTables, DocumentMut, Item};
 use tracing::info;
 
+use outline_routing::RoutingTable;
+
 use crate::config::{RouteSection, load_routing_config};
 use crate::http::control::config_edit::{
     json_error_owned, read_json, status_for_mutator_error, write_document_atomic,
@@ -144,11 +146,18 @@ pub(super) fn apply_reorder(doc: &mut DocumentMut, from: usize, to: usize) -> Re
     Ok(())
 }
 
-/// Whole-list semantic validation: render the `route` array back to sections
-/// and run the same validator the config loader uses. Guarantees a staged
-/// config still boots (exactly one default, `via`→known group, invert⊕domains,
-/// ≤1 fallback).
-pub(super) fn validate_route_array(
+/// Whole-list semantic validation: render the `route` array back to sections,
+/// run the same validator the config loader uses, and then compile it exactly
+/// as boot does. Guarantees a staged config still boots: exactly one default,
+/// `via`→known group, invert⊕domains, ≤1 fallback (all from
+/// `load_routing_config`) — AND every CIDR/domain actually parses and every
+/// `file`/`domain_file` is readable (from [`RoutingTable::compile`]).
+/// `load_routing_config` alone only validates structure and resolves paths;
+/// it never parses a prefix string or opens a file, so without the compile
+/// step here a rule like `prefixes = ["garbage"]` would pass validation, get
+/// written to disk, and then fail `RoutingTable::compile` at the next boot —
+/// this closes that gap.
+pub(super) async fn validate_route_array(
     doc: &DocumentMut,
     group_names: &[&str],
     config_dir: &Path,
@@ -169,7 +178,11 @@ pub(super) fn validate_route_array(
     let sections = toml::from_str::<Wrapper>(&wrap_doc.to_string())
         .map_err(|e| anyhow::anyhow!("route rule is invalid: {e}"))?
         .route;
-    load_routing_config(Some(&sections), group_names, config_dir)?;
+    if let Some(cfg) = load_routing_config(Some(&sections), group_names, config_dir)? {
+        RoutingTable::compile(&cfg)
+            .await
+            .map_err(|e| anyhow::anyhow!("route rule would fail to compile: {e:#}"))?;
+    }
     Ok(())
 }
 
@@ -302,7 +315,7 @@ async fn mutate(
     // Whole-list validation before writing: never stage a config that won't boot.
     let groups = group_names_in_doc(&doc);
     let group_refs: Vec<&str> = groups.iter().map(String::as_str).collect();
-    if let Err(e) = validate_route_array(&doc, &group_refs, &config_dir) {
+    if let Err(e) = validate_route_array(&doc, &group_refs, &config_dir).await {
         return json_error_owned(StatusCode::BAD_REQUEST, format!("{e:#}"));
     }
 
