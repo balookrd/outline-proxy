@@ -89,9 +89,21 @@
   async function applyNow() {
     applying = true;
     try {
-      await apply(instance) as ApplyResult;
+      const result = (await apply(instance)) as ApplyResult;
       dirtyInstances.delete(instance);
-      toast('Applied to the running instance.');
+      // `routes_applied` is absent (not 0) when routing hot-apply was
+      // skipped — e.g. this instance never had `[[route]]` at startup, so
+      // there is no live table to swap into (see ApplyHandle::shared_routing
+      // server-side). Reporting a blanket "Applied" in that case would be a
+      // false positive: the uplinks did apply, but a staged routing change
+      // is still sitting unapplied on disk until a restart.
+      if (result.routes_applied != null) {
+        toast(`Applied — ${result.routes_applied} route(s) live.`);
+      } else {
+        toast(
+          'Applied uplinks; routing changes need a node restart (routing not hot-applyable on this instance).',
+        );
+      }
       await routesPoll.refresh();
     } catch (e) { toast(`Apply failed: ${errMsg(e)}`, 'error'); }
     finally { applying = false; }
