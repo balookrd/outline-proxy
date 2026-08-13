@@ -146,20 +146,30 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     drop(registry.spawn_shared_connection_gc_loop());
 
     // Compile the policy routing table (if user declared [[route]]) and
-    // spawn per-rule file watchers for hot-reload. The guard is held until
-    // the end of `run_with_config` so the watcher tasks live for the whole
-    // process lifetime; on a future routing reload it would be dropped to
-    // cancel the old watchers before installing the replacement table.
-    let (shared_routing, _route_watchers) = if let Some(routing_cfg) = config.routing.clone() {
+    // spawn per-rule file watchers for hot-reload. The watchers live behind
+    // a shared `Mutex<Option<RouteWatchersGuard>>` slot rather than a plain
+    // guard variable: `ApplyHandle` holds a clone of the same `Arc`, so
+    // `/control/apply` can replace the guard in place — stopping the old
+    // watchers and starting new ones on the freshly-swapped table — without
+    // this function being involved in a routing reload.
+    let route_watchers = Arc::new(tokio::sync::Mutex::new(
+        // Seeded below when routing is configured.
+        None::<outline_routing::RouteWatchersGuard>,
+    ));
+    let shared_routing = if let Some(routing_cfg) = config.routing.clone() {
         let table = outline_routing::RoutingTable::compile(&routing_cfg)
             .await
             .context("failed to compile routing table")?;
         let shared = outline_routing::SharedRoutingTable::new(table);
-        let guard = outline_routing::spawn_route_watchers(shared.load_full());
-        (Some(shared), Some(guard))
+        *route_watchers.lock().await =
+            Some(outline_routing::spawn_route_watchers(shared.load_full()));
+        Some(shared)
     } else {
-        (None, None)
+        None
     };
+    // Keep the watcher slot alive for the whole process; ApplyHandle holds a
+    // clone and swaps its contents on each routing apply.
+    let _route_watchers_holder = Arc::clone(&route_watchers);
 
     // TUN dispatches through the policy routing table, falling back to the
     // default group when no [[route]] is configured.
@@ -250,6 +260,8 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
                 dns_cache: Arc::clone(&dns_cache),
                 state_store: state_store_for_apply.clone(),
                 registry: registry.clone(),
+                shared_routing: shared_routing.clone(),
+                route_watchers: Arc::clone(&route_watchers),
                 lock: tokio::sync::Mutex::new(()),
             })
         });
