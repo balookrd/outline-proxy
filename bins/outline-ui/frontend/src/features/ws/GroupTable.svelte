@@ -39,6 +39,7 @@
     type SoftButtonState,
   } from '../../lib/wsTopology';
   import WireChain from './WireChain.svelte';
+  import StatusDot from '../../components/layout/StatusDot.svelte';
 
   let {
     group,
@@ -101,12 +102,24 @@
     // auto-failback as an explicit on/off state rather than presence-only
     // like the skip_serializing_if fields below (cluster/bypass are absent,
     // not `false`, when off, so "not shown" already means off for those).
+    // Tone assignment follows one rule: colour is reserved for a *live*
+    // signal, everything else (a static config fact — mode/scope/cluster/
+    // fingerprint identity) renders through the bare, already-neutral
+    // `.chip` (owner: the header was "перегружена чипами" — too many
+    // equally-loud colored pills competing with the actual status/wire
+    // signal). Mode/Scope never had a tone to begin with; cluster and the
+    // homogeneous fingerprint chip previously carried `tone: 'info'` (blue)
+    // for no signal reason and are flattened to neutral here too.
+    // auto-failback keeps a hint of colour since it's a live on/off toggle:
+    // "on" gets app.css's `.chip.pos` (a faint positive tint, deliberately
+    // fainter than the header's one real live count, `.chip.ok` on "N
+    // active"); "off" was already muted via `.chip.off`.
     const chips: Chip[] = [
       { text: prettyMode(group.load_balancing_mode) },
       { text: prettyScope(group.routing_scope) },
-      { text: `auto-failback: ${group.auto_failback ? 'on' : 'off'}`, tone: group.auto_failback ? 'info' : 'off' },
+      { text: `auto-failback: ${group.auto_failback ? 'on' : 'off'}`, tone: group.auto_failback ? 'pos' : 'off' },
     ];
-    if (group.cluster_resume_enabled) chips.push({ text: 'cluster', tone: 'info' });
+    if (group.cluster_resume_enabled) chips.push({ text: 'cluster' });
     if (group.bypass_when_down) {
       const active = group.bypass_active_tcp || group.bypass_active_udp;
       chips.push({ text: active ? 'bypass: direct' : 'bypass armed', tone: active ? 'warn' : undefined });
@@ -116,7 +129,7 @@
     // see the uprow loop below.
     if (fpHomogeneous) {
       const fp = groupFingerprintChip(uplinks);
-      if (fp) chips.push({ text: fp.label, tone: 'info', title: fp.title });
+      if (fp) chips.push({ text: fp.label, title: fp.title });
     }
     return chips;
   });
@@ -189,7 +202,11 @@
       {@const rttTip = rttTooltip(uplink)}
       {@const fp = fpHomogeneous ? null : uplinkFingerprintChip(uplink)}
       <div class="uprow">
-        <div class="col-label"><span class="up-name">{uplink.name}</span></div>
+        <!-- Quick visual echo of the Status column: reuses the same
+             uplinkRowTone()/StatusDot pairing the instance header uses
+             (Topology.svelte) so the dot never drifts out of sync with the
+             Status chip text just to the right. -->
+        <div class="col-label"><span class="up-name"><StatusDot {tone} />{uplink.name}</span></div>
         <div><span class="chip {isUplinkActive(uplink) ? 'info' : ''}">{uplinkRole(uplink)}</span></div>
         <div>
           <span class="chip {chipTone(tone)}"><span class="d"></span>{uplinkRowLabel(tone)}</span>

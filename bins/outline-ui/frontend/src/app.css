@@ -36,6 +36,15 @@
   --danger: #ef4444;
   --info: #38bdf8;
   --violet: #a78bfa;
+  /* Wire-chain single-chip colours (COMBO design: transport = primary hue,
+     tunnel = secondary accent). Dedicated tokens rather than reusing
+     --violet/--info or the --chip-* status tokens, so the wire palette can
+     move independently of chip-tone semantics. Light-theme values are
+     redefined below, same split as --chip-*. */
+  --wire-vless: #a78bfa;
+  --wire-ss: #60a5fa;
+  --wire-ws: #22d3ee;
+  --wire-xhttp: #e879f9;
 
   --radius: 10px;
   --radius-sm: 7px;
@@ -64,6 +73,7 @@
     --chip-bad-text: #b91c1c; --chip-bad-bg: color-mix(in srgb, #dc2626 16%, #fff); --chip-bad-border: color-mix(in srgb, #dc2626 42%, #fff);
     --chip-info-text: #0369a1; --chip-info-bg: color-mix(in srgb, #0284c7 16%, #fff); --chip-info-border: color-mix(in srgb, #0284c7 42%, #fff);
     --chip-off-text: #334155;
+    --wire-vless: #6d28d9; --wire-ss: #1d4ed8; --wire-ws: #0e7490; --wire-xhttp: #a21caf;
   }
 }
 
@@ -78,6 +88,7 @@
   --chip-bad-text: #b91c1c; --chip-bad-bg: color-mix(in srgb, #dc2626 16%, #fff); --chip-bad-border: color-mix(in srgb, #dc2626 42%, #fff);
   --chip-info-text: #0369a1; --chip-info-bg: color-mix(in srgb, #0284c7 16%, #fff); --chip-info-border: color-mix(in srgb, #0284c7 42%, #fff);
   --chip-off-text: #334155;
+  --wire-vless: #6d28d9; --wire-ss: #1d4ed8; --wire-ws: #0e7490; --wire-xhttp: #a21caf;
 }
 
 * { box-sizing: border-box; }
@@ -243,62 +254,84 @@ tr:hover .rowactions { opacity: 1; }
 .chip.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .chip.off { color: var(--fg-dim); }
 .chip.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 35%, transparent); background: color-mix(in srgb, var(--info) 12%, transparent); }
+/* Group-header declutter: "auto-failback: on" is still a static config
+   toggle, not a live signal, but reads better with a hint of colour than the
+   fully neutral mode/scope/cluster/fingerprint chips beside it — a FAINT
+   positive tint, same readable green text as .chip.ok (the live "N active"
+   count) but a lighter fill/border, so .chip.ok stays the header's one truly
+   loud signal. "off" uses the already-muted .chip.off. */
+.chip.pos { color: var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); border-color: color-mix(in srgb, var(--accent) 20%, transparent); }
 /* Group-header switch-reason chip (global_active_reason) — same pill, just
    clipped so one long reason string can't blow out the header row; the full
    text always rides along in the element's `title` tooltip. */
 .chip.reason { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 
-/* ---- Wire chain (3 layers: proxy › tunnel › carrier, "Variant B") ----
-   carrier (.seg) is the main colour-coded pill (h3/h2/h1); proxy/tunnel
-   (.wtag) are small badges in front of it inside the same outlined .wlink
-   pill — outlined/dimmed by active state, same idea the old single-tier
-   `.active-seg` outline used, now applied to the whole 3-layer link. */
+/* ---- Wire chain (single chip per link) ----
+   Owner feedback on the old 3-badge layout ("vl" + "xh" + "h3" as three glued
+   sub-badges inside one outlined pill): too busy, the table read as
+   "overloaded with chips". Replaced by ONE chip per link showing "vl xh h3"
+   together — COMBO coloring:
+     - transport (proxy) is the PRIMARY hue — the chip's text/tint/border
+       (.wchip.vless / .wchip.ss / .wchip.other) — "what protocol is
+       running".
+     - tunnel (ws/xhttp) is a SECONDARY accent on the same chip — a coloured
+       left edge (.tun-ws / .tun-xhttp) — not a second colored badge.
+     - carrier (h3/h2/h1) stays as visible text but de-emphasised
+       (.wc-carrier — lower opacity/weight): the fallback-degradation
+       detail, not the headline.
+   Active link keeps the accent outline, same idea the old design used. */
 .wire { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-.wlink { display: inline-flex; align-items: center; gap: 3px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 999px; }
-.wlink.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-.wlink.inactive { opacity: .5; }
-.wtag { font-family: var(--font-mono); font-size: 9.5px; font-weight: 600; padding: 1px 4px; border-radius: 4px; letter-spacing: .02em; }
-.wtag.proxy { color: var(--violet); background: color-mix(in srgb, var(--violet) 18%, transparent); }
-.wtag.tunnel { color: var(--info); background: color-mix(in srgb, var(--info) 18%, transparent); }
-.seg { font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border-radius: 5px; font-weight: 500; }
-.seg.h3 { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.seg.h2 { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
-.seg.h1 { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .arrow { color: var(--fg-dim); font-size: 10px; }
 
-/* Light theme: the transparent-tint pills wash out on white. Give every layer
-   a dark (700-level) text, a hairline border, and a denser opaque-ish tint so
-   proxy/tunnel/carrier all stay legible (WCAG AA) on a white background, and
-   lift inactive links out of near-invisibility. Dark theme is untouched. */
-:root[data-theme="light"] .wlink.inactive,
-:root:not([data-theme="dark"]) .wlink.inactive { opacity: .68; }
-:root[data-theme="light"] .wtag, :root[data-theme="light"] .seg,
-:root:not([data-theme="dark"]) .wtag, :root:not([data-theme="dark"]) .seg { border: 1px solid transparent; }
-:root[data-theme="light"] .wtag.proxy,
-:root:not([data-theme="dark"]) .wtag.proxy { color: #6d28d9; background: color-mix(in srgb, #7c3aed 16%, #fff); border-color: color-mix(in srgb, #7c3aed 42%, #fff); }
-:root[data-theme="light"] .wtag.tunnel,
-:root:not([data-theme="dark"]) .wtag.tunnel { color: #0369a1; background: color-mix(in srgb, #0284c7 16%, #fff); border-color: color-mix(in srgb, #0284c7 42%, #fff); }
-:root[data-theme="light"] .seg.h3,
-:root:not([data-theme="dark"]) .seg.h3 { color: #15803d; background: color-mix(in srgb, #16a34a 16%, #fff); border-color: color-mix(in srgb, #16a34a 42%, #fff); }
-:root[data-theme="light"] .seg.h2,
-:root:not([data-theme="dark"]) .seg.h2 { color: #b45309; background: color-mix(in srgb, #d97706 16%, #fff); border-color: color-mix(in srgb, #d97706 42%, #fff); }
-:root[data-theme="light"] .seg.h1,
-:root:not([data-theme="dark"]) .seg.h1 { color: #b91c1c; background: color-mix(in srgb, #dc2626 16%, #fff); border-color: color-mix(in srgb, #dc2626 42%, #fff); }
+.wchip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono);
+  font-size: 11px; font-weight: 600; letter-spacing: .01em; white-space: nowrap;
+  padding: 2px 8px; border: 1px solid; border-radius: var(--radius-sm); }
+.wchip.inactive { opacity: .5; }
+.wchip.active { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wc-carrier { opacity: .68; font-weight: 500; }
+
+.wchip.vless { color: var(--wire-vless); background: color-mix(in srgb, var(--wire-vless) 16%, transparent);
+  border-color: color-mix(in srgb, var(--wire-vless) 42%, transparent); }
+.wchip.ss { color: var(--wire-ss); background: color-mix(in srgb, var(--wire-ss) 16%, transparent);
+  border-color: color-mix(in srgb, var(--wire-ss) 42%, transparent); }
+.wchip.other { color: var(--fg-muted); background: var(--muted); border-color: var(--border); }
+/* Tunnel accent: a 3px coloured left edge on top of the transport border. */
+.wchip.tun-ws { border-left-width: 3px; border-left-color: var(--wire-ws); }
+.wchip.tun-xhttp { border-left-width: 3px; border-left-color: var(--wire-xhttp); }
+
+/* Light theme: transparent-tint pills wash out on white. Give the chip a
+   dark (700-level) text, a hairline border, and a denser opaque-ish tint —
+   same recipe the chip/metric contrast pass uses elsewhere in this file —
+   and lift inactive links out of near-invisibility. Dark theme untouched. */
+:root[data-theme="light"] .wchip.inactive,
+:root:not([data-theme="dark"]) .wchip.inactive { opacity: .68; }
+:root[data-theme="light"] .wchip.vless,
+:root:not([data-theme="dark"]) .wchip.vless { color: var(--wire-vless); background: color-mix(in srgb, var(--wire-vless) 14%, #fff); border-color: color-mix(in srgb, var(--wire-vless) 38%, #fff); }
+:root[data-theme="light"] .wchip.ss,
+:root:not([data-theme="dark"]) .wchip.ss { color: var(--wire-ss); background: color-mix(in srgb, var(--wire-ss) 12%, #fff); border-color: color-mix(in srgb, var(--wire-ss) 38%, #fff); }
+:root[data-theme="light"] .wchip.other,
+:root:not([data-theme="dark"]) .wchip.other { color: var(--chip-off-text); background: var(--muted); border-color: var(--border); }
+:root[data-theme="light"] .wchip.tun-ws,
+:root:not([data-theme="dark"]) .wchip.tun-ws { border-left-color: var(--wire-ws); }
+:root[data-theme="light"] .wchip.tun-xhttp,
+:root:not([data-theme="dark"]) .wchip.tun-xhttp { border-left-color: var(--wire-xhttp); }
 
 /* ---- Light theme: chips/metrics/badges wash out on white for the same
    reason the wire-chain pills above did — swap the raw --accent/--warn/
    --danger/--info text+tint for the --chip-* tokens defined in the
    light-theme root blocks (dark 700-level text, denser opaque-ish tint,
    hairline border). This one set of rules covers every chip tone, which is
-   also every "group-header chip" (status pills in Topology, Users
-   active/blocked, method/role chips, config chips, the reason/fingerprint/
-   auto-failback/cluster/bypass chips, the "N active" count) since they all
-   render through .chip.ok/.warn/.bad/.info/.off — plus the RTT/loss
-   .metric text, the user-avatar initials badge, toast and error-banner
-   icons, the apply-bar pill, and the topology row action buttons, which
-   share the same washed-out-on-white construction. Status dots are left
-   alone: a solid-fill dot already reads fine on white. Dark theme is
-   untouched. */
+   also every "group-header chip" that still carries a tone (status pills in
+   Topology, Users active/blocked, method/role chips, the active-bypass
+   chip, the "N active" count, auto-failback:on's .chip.pos just above) since
+   they all render through .chip.ok/.warn/.bad/.info/.off/.pos — the plain
+   config chips (mode/scope/cluster/fingerprint/auto-failback:off/bypass
+   armed) carry no tone at all and use bare .chip, already neutral in both
+   themes without an override here — plus the RTT/loss .metric text, the
+   user-avatar initials badge, toast and error-banner icons, the apply-bar
+   pill, and the topology row action buttons, which share the same
+   washed-out-on-white construction. Status dots are left alone: a
+   solid-fill dot already reads fine on white. Dark theme is untouched. */
 :root[data-theme="light"] .chip.ok,
 :root:not([data-theme="dark"]) .chip.ok { color: var(--chip-ok-text); background: var(--chip-ok-bg); border-color: var(--chip-ok-border); }
 :root[data-theme="light"] .chip.warn,
@@ -309,6 +342,8 @@ tr:hover .rowactions { opacity: 1; }
 :root:not([data-theme="dark"]) .chip.info { color: var(--chip-info-text); background: var(--chip-info-bg); border-color: var(--chip-info-border); }
 :root[data-theme="light"] .chip.off,
 :root:not([data-theme="dark"]) .chip.off { color: var(--chip-off-text); }
+:root[data-theme="light"] .chip.pos,
+:root:not([data-theme="dark"]) .chip.pos { color: var(--chip-ok-text); background: color-mix(in srgb, #16a34a 9%, #fff); border-color: color-mix(in srgb, #16a34a 22%, #fff); }
 
 :root[data-theme="light"] .metric.good,
 :root:not([data-theme="dark"]) .metric.good { color: var(--chip-ok-text); }
@@ -348,12 +383,20 @@ tr:hover .rowactions { opacity: 1; }
 :root[data-theme="light"] .iconbtn.act-power:hover,
 :root:not([data-theme="dark"]) .iconbtn.act-power:hover { background: color-mix(in srgb, #d97706 18%, #fff); }
 
-/* ---- Wire-chain legend (proxy/tunnel/carrier layer key), above the topology ---- */
+/* ---- Wire-chain legend (proxy colour / tunnel accent key), above the topology ---- */
 .wire-legend { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-4); margin: -6px 0 var(--sp-4); font-size: 12px; color: var(--fg-muted); }
 .wire-legend b { color: var(--fg); font-weight: 600; }
-.wl-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
-.wl-swatch.proxy { background: var(--violet); }
-.wl-swatch.tunnel { background: var(--info); }
+.wl-group { display: inline-flex; align-items: center; gap: 6px; }
+.wl-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 3px; vertical-align: -1px; }
+.wl-swatch.vless { background: var(--wire-vless); }
+.wl-swatch.ss { background: var(--wire-ss); }
+/* Mirrors the chip's own tunnel accent (a coloured left edge on a neutral
+   swatch), rather than a plain filled dot, so the legend teaches the actual
+   visual cue instead of a different one. */
+.wl-edge { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: -1px;
+  background: var(--muted); border: 1px solid var(--border); border-left: 3px solid; }
+.wl-edge.tun-ws { border-left-color: var(--wire-ws); }
+.wl-edge.tun-xhttp { border-left-color: var(--wire-xhttp); }
 
 /* ---- Topology ---- */
 .inst { margin-bottom: var(--sp-4); }
@@ -366,7 +409,13 @@ tr:hover .rowactions { opacity: 1; }
 .group-head { display: flex; align-items: center; gap: var(--sp-3); padding: 9px var(--sp-4); border-bottom: 1px solid var(--border-soft); }
 .group-head .gname { font-weight: 600; font-size: 13px; }
 .group-head .gcount { color: var(--fg-dim); font-size: 12px; }
-.group-head .cfgchips { display: flex; gap: 5px; margin-left: 4px; }
+/* Config/metadata chips (mode, scope, cluster, fingerprint, auto-failback) —
+   grouped tight and a touch smaller than the live-signal chips in .right
+   (reason / "N active"), so the header's visual weight sits on status and
+   wire, not on this row of static facts. Scoped to this container only —
+   the shared .chip base (used elsewhere, e.g. the SS panel) is untouched. */
+.group-head .cfgchips { display: flex; gap: 4px; margin-left: 4px; flex-wrap: wrap; }
+.group-head .cfgchips .chip { font-size: 10.5px; padding: 1px 7px; }
 .group-head .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .uprow { display: grid; grid-template-columns: var(--topo-cols);
   align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); border-bottom: 1px solid var(--border-soft); font-size: 13px; }
