@@ -87,7 +87,7 @@ spec:
         runAsGroup: 65534
       containers:
         - name: outline-ui
-          image: registry.k3s.beerloga.su/outline-ui:1.0.1
+          image: registry.k3s.beerloga.su/outline-ui:1.0.2
           args: ["--config", "/etc/outline-ui/config.toml"]
           ports:
             - containerPort: 9000
