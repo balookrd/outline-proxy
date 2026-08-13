@@ -86,8 +86,11 @@ button { font-family: inherit; }
   position: sticky; top: 0; z-index: 20;
 }
 .brand { display: flex; align-items: center; gap: var(--sp-2); font-weight: 600; letter-spacing: -.01em; }
-.brand .logo { width: 22px; height: 22px; display: grid; place-items: center;
-  background: linear-gradient(135deg, var(--accent), var(--info)); border-radius: 6px; color: #04140a; }
+/* outline-logo.png is a self-contained rounded-square badge (own dark
+   background baked in, transparent PNG margin) — no extra badge background
+   needed here, just fit it into the fixed brand slot. */
+.brand .logo { width: 22px; height: 22px; display: grid; place-items: center; flex: none; }
+.brand .logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .brand small { color: var(--fg-dim); font-weight: 400; font-size: 12px; }
 .spacer { flex: 1; } /* generic flex-gap filler — topbar today, drawer header too (UserDrawer.svelte) */
 .env-pill { font-size: 12px; color: var(--fg-muted); padding: 3px 8px; border: 1px solid var(--border);
@@ -165,6 +168,17 @@ select:disabled { opacity: .6; cursor: not-allowed; }
 .btn.ghost:disabled:hover { background: transparent; }
 .iconbtn:disabled:hover { background: var(--muted); color: var(--fg-muted); }
 .iconbtn.danger { color: var(--danger); }
+
+/* ---- Landing hero logo ----
+   logo.png (docs/logo.png, same asset as the README) is a transparent-bg
+   PNG, but its wordmark text renders in near-black — legible on the light
+   theme's pale background, but it would nearly vanish on dark (the default
+   theme, see the tokens above). A fixed white card behind it keeps the
+   logo readable in both themes instead of reaching for filters that would
+   also wreck its orange/blue brand colors. */
+.landing-hero { display: flex; justify-content: center; margin-bottom: var(--sp-5); }
+.landing-hero img { width: 300px; max-width: 60%; height: auto; display: block;
+  background: #fff; border-radius: var(--radius); padding: var(--sp-4); box-shadow: var(--shadow); }
 
 /* ---- Cards / panels ---- */
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sp-4); }
@@ -317,7 +331,9 @@ tr:hover .rowactions { opacity: 1; }
 .drawer .foot { margin-top: auto; padding: var(--sp-4) var(--sp-5); border-top: 1px solid var(--border-soft); display: flex; gap: var(--sp-2); justify-content: flex-end; }
 .fieldrow { display: flex; flex-direction: column; gap: 5px; }
 .fieldrow label { font-size: 12px; color: var(--fg-muted); }
-.fieldrow .hint { font-size: 11px; color: var(--fg-dim); }
+/* Generic — hints also sit outside .fieldrow (e.g. under a .switch toggle,
+   or standalone in .fallbacks-section), not just under a label+input pair. */
+.hint { font-size: 11px; color: var(--fg-dim); }
 .fieldrow input, .fieldrow select, .fieldrow textarea { width: 100%; }
 
 /* Per-transport field grouping inside a drawer body (UplinkDrawer.svelte's
@@ -352,6 +368,13 @@ fieldset.fieldset legend { font-size: 11px; text-transform: uppercase; letter-sp
 .fallback-entry .fallback-body { padding: 0 var(--sp-3) var(--sp-3); margin-top: var(--sp-3);
   display: flex; flex-direction: column; gap: var(--sp-3); border-top: 1px solid var(--border-soft); padding-top: var(--sp-3); }
 .fallback-actions { display: flex; gap: 6px; justify-content: flex-end; }
+/* Drag-to-reorder affordance: the grip only, not the whole summary — the
+   row stays "cursor: pointer" (native open/close toggle) since that's still
+   its primary click behaviour, dragging is scoped to this handle. */
+.fallback-entry .drag-handle { cursor: grab; color: var(--fg-dim); font-size: 13px; line-height: 1; }
+.fallback-entry .drag-handle:active { cursor: grabbing; }
+.fallback-entry.dragging { opacity: .45; }
+.fallback-entry.drag-over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
 
 /* ---- Toast ---- */
 .toasts { position: fixed; bottom: var(--sp-5); right: var(--sp-5); display: flex; flex-direction: column; gap: 8px; z-index: 60; }

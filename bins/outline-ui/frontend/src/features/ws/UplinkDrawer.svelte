@@ -118,6 +118,60 @@
     fallbackRows = next;
   }
 
+  // Drag-and-drop reorder (owner feedback on the ui2 test deploy), layered
+  // next to moveFallback above rather than replacing it — Move up/down stay
+  // as the keyboard/screen-reader-accessible path, drag is a pointer-only
+  // convenience driving the same fallbackRows array.
+  //
+  // `draggable` is set on the row's <summary>, not on the <details> that
+  // wraps the whole row: .fallback-body (sibling of <summary>, rendered
+  // while a row is open) holds this row's <input>s, and making the *whole*
+  // row a drag source would fight native text-selection-drag inside those
+  // inputs. <summary> only ever holds the handle/label/chip — never a form
+  // control — so scoping the drag source there sidesteps that; the drop
+  // *target* below is still the full <details> row, so dropping anywhere on
+  // a row (open or closed) works, not just on its header.
+  let draggingKey: number | null = $state(null);
+  let dragOverKey: number | null = $state(null);
+
+  function handleDragStart(e: DragEvent, key: number) {
+    draggingKey = key;
+    // Firefox won't start a native drag at all unless some data is set.
+    e.dataTransfer?.setData('text/plain', String(key));
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  }
+  function handleDragOver(e: DragEvent, key: number) {
+    e.preventDefault(); // a dragover target must preventDefault to accept a drop
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    if (draggingKey !== null) dragOverKey = key;
+  }
+  function handleDragLeave(key: number) {
+    // Guarded so a stale leave (fired after the next row's dragover already
+    // moved the highlight) can't clobber that newer state.
+    if (dragOverKey === key) dragOverKey = null;
+  }
+  function handleDrop(e: DragEvent, targetKey: number) {
+    e.preventDefault();
+    dragOverKey = null;
+    const sourceKey = draggingKey;
+    draggingKey = null;
+    if (sourceKey === null || sourceKey === targetKey) return;
+    const from = fallbackRows.findIndex((row) => row.key === sourceKey);
+    const to = fallbackRows.findIndex((row) => row.key === targetKey);
+    if (from < 0 || to < 0) return;
+    const next = fallbackRows.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    fallbackRows = next;
+  }
+  function handleDragEnd() {
+    // Fires on the drag source regardless of whether drop landed on a valid
+    // target (e.g. the drag was cancelled with Escape, or dropped outside
+    // the list) — always clear both flags so nothing gets stuck highlighted.
+    draggingKey = null;
+    dragOverKey = null;
+  }
+
   // Matches uplinks.html's drawer (Escape closes it); backdrop click below
   // covers the click-outside case.
   $effect(() => {
@@ -198,6 +252,10 @@
       <input id="uplink-use-link" type="checkbox" bind:checked={fields.useShareLink} />
       <label for="uplink-use-link">Use a share link</label>
     </div>
+    <span class="hint">
+      One vless://… / ss://… link that encodes the whole wire (transport + carrier + creds),
+      expanded on load. Mutually exclusive with the explicit transport fields below.
+    </span>
 
     {#if fields.useShareLink}
       <div class="fieldrow">
@@ -349,8 +407,21 @@
       {/if}
 
       {#each fallbackRows as row, i (row.key)}
-        <details class="fallback-entry" open>
-          <summary>
+        <details
+          class="fallback-entry"
+          class:dragging={draggingKey === row.key}
+          class:drag-over={dragOverKey === row.key && draggingKey !== row.key}
+          open
+          ondragover={(e) => handleDragOver(e, row.key)}
+          ondragleave={() => handleDragLeave(row.key)}
+          ondrop={(e) => handleDrop(e, row.key)}
+        >
+          <summary
+            draggable="true"
+            ondragstart={(e) => handleDragStart(e, row.key)}
+            ondragend={handleDragEnd}
+          >
+            <span class="drag-handle" aria-hidden="true" title="Drag to reorder">⠿</span>
             <span>Fallback {i + 1}</span>
             {#if row.fields.useShareLink}
               <span class="chip info">share-link</span>
@@ -363,6 +434,11 @@
               <input id={`fb-${row.key}-use-link`} type="checkbox" bind:checked={row.fields.useShareLink} />
               <label for={`fb-${row.key}-use-link`}>Use a share link</label>
             </div>
+            <span class="hint">
+              One vless://… / ss://… link that encodes this fallback's whole wire (transport +
+              carrier + creds), expanded on load. Mutually exclusive with the explicit transport
+              fields below.
+            </span>
 
             {#if row.fields.useShareLink}
               <div class="fieldrow">
