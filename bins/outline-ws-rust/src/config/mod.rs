@@ -24,7 +24,6 @@ pub(crate) use schema::UplinkSection;
 // yet added to this binary) will reuse this validator on `[[route]]` sections
 // it assembles itself from a `toml_edit` document, instead of building a
 // whole `ConfigFile`.
-#[allow(unused_imports)]
 pub(crate) use load::load_routing_config;
 #[allow(unused_imports)]
 pub(crate) use schema::RouteSection;

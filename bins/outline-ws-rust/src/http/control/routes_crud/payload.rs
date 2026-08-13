@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use toml_edit::{Array, ArrayOfTables, Item, Table};
 
-use crate::http::control::config_edit::render_table_with_arrays;
-
 /// Mirrors `crate::config::RouteSection`; every field optional. Paths arrive as
 /// JSON strings (deserialized into `PathBuf` only later, when the rendered TOML
 /// is re-parsed as `RouteSection`). `deny_unknown_fields` so a mistyped key is
@@ -178,13 +176,6 @@ pub(super) fn route_revision(arr: &ArrayOfTables) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
-}
-
-/// One `RouteListEntry`'s `config` object from its on-disk table.
-pub(super) fn route_table_to_json(t: &Table) -> Option<Value> {
-    let text = render_table_with_arrays(t);
-    let toml_value: toml::Value = toml::from_str(&text).ok()?;
-    serde_json::to_value(toml_value).ok()
 }
 
 #[cfg(test)]
