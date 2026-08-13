@@ -1389,42 +1389,6 @@ async fn mutate(
     let hot_apply_available = state.apply.is_some();
     let config_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
 
-    // Parse the body first (each kind carries its own shape + revision).
-    let (revision, action, index_hint): (String, &'static str, Option<usize>) = match kind {
-        MutateKind::Create => match read_json::<CreateBody>(request, LABEL).await {
-            Ok(_) => unreachable!(), // replaced below; see note
-            Err(resp) => return resp,
-        },
-        _ => unreachable!(),
-    };
-    let _ = (revision, action, index_hint); // see Step 3b — the real body handling replaces this stub
-    let _ = (hot_apply_available, config_dir, state);
-    json_error(StatusCode::INTERNAL_SERVER_ERROR, "unreachable")
-}
-
-#[cfg(test)]
-#[path = "tests/mutate.rs"]
-mod tests;
-```
-
-> **Step 3b (finish `mutate`)**: the stub above compiles the helpers and tests
-> but the HTTP `mutate` fn must be completed. Replace the whole `mutate` fn body
-> with the real read→lock→mutate→validate→write flow below (kept separate so the
-> unit-testable `apply_*`/`validate_route_array` helpers land first and the
-> tests in Step 1 pass without the HTTP plumbing):
-
-```rust
-async fn mutate(
-    request: Request<Incoming>,
-    state: Arc<ControlState>,
-    kind: MutateKind,
-) -> ControlResponse {
-    let Some(path) = state.config_path.clone() else {
-        return json_error(StatusCode::CONFLICT, "config file path unknown; CRUD needs on-disk config");
-    };
-    let hot_apply_available = state.apply.is_some();
-    let config_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-
     // Deserialize the kind-specific body.
     enum Parsed {
         Create(CreateBody),
@@ -1521,12 +1485,19 @@ fn status_for(msg: &str) -> StatusCode {
         StatusCode::BAD_REQUEST
     }
 }
+
+#[cfg(test)]
+#[path = "tests/mutate.rs"]
+mod tests;
 ```
 
-Delete the placeholder `mutate` stub and the `let _ = ...; unreachable!()`
-lines from Step 3's listing — only the Step 3b version remains. (The two-part
-presentation keeps Step 1's helper tests compiling before the HTTP flow is
-written; in the final file there is exactly one `mutate`.)
+This listing IS the complete `mutate.rs` in one piece: the helpers (`route_array`,
+`route_array_mut`, `group_names_in_doc`, `default_index`, `apply_create` /
+`apply_update` / `apply_delete` / `apply_reorder`, `validate_route_array`), the
+dispatcher (`handle_routes` / `handle_routes_reorder`), the `MutateKind` enum,
+the single `mutate` HTTP flow, and `status_for`. There is no stub and no second
+`mutate`. `LABEL` is `const LABEL: &str = "/control/routes";` declared in the
+imports block near the top of the file (shown earlier in this step).
 
 - [ ] **Step 4: Написать `list.rs`**
 
@@ -1544,6 +1515,7 @@ use http::StatusCode;
 use toml_edit::{DocumentMut, Item};
 
 use crate::http::control::config_edit::json_error_owned;
+use crate::http::control::server::ControlState;
 use crate::http::control::{ControlResponse, json_error, json_response};
 
 use super::mutate::group_names_in_doc;
@@ -1552,7 +1524,6 @@ use super::payload::{
 };
 
 pub(super) async fn handle_list(state: Arc<ControlState>) -> ControlResponse {
-    use crate::http::control::server::ControlState;
     let Some(path) = state.config_path.clone() else {
         return json_error(StatusCode::CONFLICT, "config file path unknown");
     };
@@ -1585,8 +1556,7 @@ pub(super) async fn handle_list(state: Arc<ControlState>) -> ControlResponse {
 }
 ```
 
-Fix the stray `use` inside the fn (move `use crate::http::control::server::ControlState;`
-to the top imports). Update `routes_crud/mod.rs`:
+Update `routes_crud/mod.rs` to the final module set:
 
 ```rust
 mod list;
@@ -1594,13 +1564,17 @@ mod mutate;
 mod payload;
 
 pub(crate) use mutate::{handle_routes, handle_routes_reorder};
-
-#[cfg(test)]
-#[path = "tests/payload.rs"]
-mod tests_payload;
 ```
 
-(Remove the temporary `#![allow(dead_code)]` from Task 5.)
+Notes on `mod.rs`:
+- Do NOT re-attach the payload tests here. Task 5 attached them from
+  `payload.rs` itself (the `#[cfg(test)] #[path = "tests/payload.rs"] mod tests;`
+  lives in `payload.rs`). The mutate tests are likewise attached from the end of
+  the `mutate.rs` listing above. So `mod.rs` declares only the three submodules
+  plus the `handle_routes` / `handle_routes_reorder` re-export — attaching a test
+  path here too would double-include the same file and fail to compile.
+- Remove the temporary `#![allow(dead_code)]` Task 5 put at the top of `mod.rs`:
+  every payload helper now has a real consumer in `mutate.rs` / `list.rs`.
 
 - [ ] **Step 5: Прогнать — mutate + payload тесты зелёные**
 
@@ -1666,6 +1640,22 @@ In the dispatch `match label_path` (lines 144-202), add after the
         },
 ```
 
+- [ ] **Step 3b: Снять временные `allow`, добавленные в Task 6**
+
+Wiring the two arms above makes `handle_routes` / `handle_routes_reorder`
+reachable from non-test code, so the dead-code bridges Task 6 added are now stale.
+Remove both:
+- In `bins/outline-ws-rust/src/http/control/routes_crud/mutate.rs`: the
+  `#[allow(dead_code)]` (with its `TODO(task-7)` comment) on `handle_routes` and
+  `handle_routes_reorder`.
+- In `bins/outline-ws-rust/src/http/control/routes_crud/mod.rs`: the
+  `#[allow(unused_imports)]` (with its `TODO(task-7)` comment) on the
+  `pub(crate) use mutate::{handle_routes, handle_routes_reorder};` line.
+
+The full-crate clippy `-D warnings` in Step 5 confirms nothing else still reads as
+dead code once these come off (if it flags a remaining unreachable helper, that's
+a real wiring gap to chase, not a reason to re-add the blanket allow).
+
 - [ ] **Step 4: Smoke-тест вручную (endpoint отвечает под авторизацией)**
 
 Build and run against a throwaway config, then verify auth + a GET:
@@ -1690,7 +1680,9 @@ the default rule.
 cargo fmt --check -p outline-ws-rust && cargo clippy -p outline-ws-rust --all-targets --no-deps -- -D warnings && cargo test -p outline-ws-rust
 ```
 ```bash
-git add bins/outline-ws-rust/src/http/control/server.rs
+git add bins/outline-ws-rust/src/http/control/server.rs \
+  bins/outline-ws-rust/src/http/control/routes_crud/mutate.rs \
+  bins/outline-ws-rust/src/http/control/routes_crud/mod.rs
 git commit -m "feat(control): dispatch /control/routes and /reorder"
 ```
 
@@ -1724,6 +1716,7 @@ Create `bins/outline-ws-rust/src/http/control/tests/apply_routing.rs` (attach vi
 `apply.rs` if no test module is attached there yet):
 
 ```rust
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1759,7 +1752,8 @@ fn cfg_direct_10() -> RoutingTableConfig {
 async fn rebuild_swaps_the_live_table() {
     let shared = SharedRoutingTable::new(RoutingTable::compile(&cfg(RouteTarget::Drop)).await.unwrap());
     let watchers = Mutex::new(None);
-    let ip: TargetAddr = "10.1.2.3:443".parse().unwrap();
+    // TargetAddr has no FromStr — construct it directly (see tests/table.rs).
+    let ip = TargetAddr::IpV4(Ipv4Addr::new(10, 1, 2, 3), 443);
     assert_eq!(shared.resolve(&ip).primary, RouteTarget::Drop);
 
     let count = rebuild_routing(&shared, &cfg_direct_10(), &watchers).await.unwrap();
@@ -1813,17 +1807,27 @@ pub(super) async fn rebuild_routing(
         .await
         .context("failed to compile routing table")?;
     let rule_count = cfg.rules.len();
-    let new_arc = shared.swap_preserving_version(table);
-    // Respawn watchers on the new table; dropping the old guard stops the old
-    // tasks. Order: install new before dropping old is unnecessary — the swap
-    // already published the table; watchers only drive file hot-reload.
+    // Stop the OLD table's file watchers BEFORE the swap. Those watchers bump
+    // the old table's `version` on mtime change, and `swap_preserving_version`
+    // reads that version (non-atomically) to seed the new table's. If a watcher
+    // bumped it in the read→store window, the new table could be stamped with a
+    // version a per-association cache already holds — the cache would then look
+    // current and skip re-resolution against the new table. Dropping the guard
+    // here makes the seed read stable. `/control/apply` is serialized by its own
+    // mutex, so no second apply races this; the watcher is the only other writer.
     let mut slot = watchers.lock().await;
+    *slot = None; // drop old guard → old watchers stop bumping the old version
+    let new_arc = shared.swap_preserving_version(table);
     *slot = Some(outline_routing::spawn_route_watchers(new_arc));
     Ok(rule_count)
 }
 ```
 
 Add `use anyhow::Context;` if not already imported at the top of `apply.rs`.
+Also (Task 1 review Minor #2 carry-forward): update the doc comment on
+`RoutingTable.version` at `crates/outline-routing/src/table.rs:54-58` — it now
+has a second bumping path (`SharedRoutingTable::swap_preserving_version`), not
+only `spawn_route_watchers`. Add one line noting the swap path.
 
 - [ ] **Step 4: Вызвать из `handle_apply` + расширить ответ**
 
@@ -2746,10 +2750,12 @@ Create `bins/outline-ui/frontend/src/features/ws/RouteDrawer.svelte`:
 - [ ] **Step 5: Прогнать фронт-гейт + собрать**
 
 ```bash
-cd bins/outline-ui/frontend && pnpm run check && pnpm test && pnpm build
+cd bins/outline-ui/frontend && pnpm run check && pnpm exec vitest run && pnpm run build
 ```
 Expected: type-check clean, all Vitest suites green, production build emits
 assets into `dist/` (embedded by the Rust binary under `embed-assets`).
+Note: `pnpm test` is a silent no-op here — package.json has no `test` script;
+CI uses `pnpm exec vitest run` (ci.yml:212), which is what to run.
 
 - [ ] **Step 6: Визуальная проверка**
 
