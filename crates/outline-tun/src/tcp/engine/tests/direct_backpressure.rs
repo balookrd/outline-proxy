@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use outline_routing::{RouteTarget, RoutingTable, RoutingTableConfig};
+use outline_routing::{RouteTarget, RoutingTable, RoutingTableConfig, SharedRoutingTable};
 use outline_uplink::UplinkRegistry;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -102,7 +102,7 @@ async fn direct_routing() -> TunRouting {
     .unwrap();
     TunRouting::new(
         UplinkRegistry::from_single_manager(manager),
-        Some(Arc::new(table)),
+        Some(SharedRoutingTable::new(table)),
         None,
         false,
     )
