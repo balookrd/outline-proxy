@@ -21,6 +21,8 @@ mod tun;
 mod uplinks;
 
 #[cfg(feature = "control")]
+pub(crate) use groups::load_balancing_config_from_group;
+#[cfg(feature = "control")]
 pub(crate) use routing::load_routing_config;
 #[cfg(feature = "control")]
 pub(crate) use uplinks::validate_uplink_section;
