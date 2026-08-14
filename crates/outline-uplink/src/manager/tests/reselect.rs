@@ -459,9 +459,21 @@ async fn sync_reselect_lands_two_nodes_on_the_same_uplink() {
         let one = manager_sync(names());
         let two = manager_sync(names());
         // Start them deliberately apart, the way a night of independent
-        // rotation leaves the real fleet.
+        // rotation leaves the real fleet. `one`'s cold start lands on the sync
+        // slot's deterministic winner, whose index drifts day to day: the slot
+        // key feeds the local `day_key` into the shared BLAKE3 seed (see
+        // `manager/sync_order.rs`), so a fixed pin like "f" only starts split on
+        // days the winner isn't "f" — the calendar-dependent flake this test hit
+        // roughly one day in six. Pin `two` to *any other* uplink, computed from
+        // the winner, so the fixture starts split on every date.
         one.initialize_strict_active_selection().await;
-        two.set_active_uplink_by_name("f", None, false).await.unwrap();
+        let one_start = one
+            .active_uplinks_snapshot()
+            .global
+            .expect("cold start selected an uplink");
+        let two_start = (one_start + 1) % two.uplinks().len();
+        let two_name = two.uplinks()[two_start].name.clone();
+        two.set_active_uplink_by_name(&two_name, None, false).await.unwrap();
         // A manual switch calls `reset_all_uplink_statuses`, so re-seed health
         // afterwards — otherwise every candidate reads `healthy == None` and
         // the group has nothing eligible to rotate onto.
