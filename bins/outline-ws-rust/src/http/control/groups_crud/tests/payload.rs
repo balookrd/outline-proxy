@@ -1,6 +1,6 @@
 use toml_edit::Table;
 
-use super::payload::{GroupPayload, merge_patch_into_table, payload_to_table, table_to_section};
+use super::{GroupPayload, merge_patch_into_table, payload_to_table, table_to_section};
 use crate::http::control::config_edit::render_table_with_arrays;
 
 fn payload(json: &str) -> GroupPayload {

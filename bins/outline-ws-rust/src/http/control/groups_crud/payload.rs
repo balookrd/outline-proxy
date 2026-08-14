@@ -188,3 +188,7 @@ pub(super) fn table_to_section(tbl: &Table) -> Result<UplinkGroupSection, String
     let text = render_table_with_arrays(tbl);
     toml::from_str::<UplinkGroupSection>(&text).map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+#[path = "tests/payload.rs"]
+mod tests;
