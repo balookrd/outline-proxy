@@ -26,7 +26,6 @@ data class ServerProfile(
     val ssLink: String = "",
     // Common
     val paddingEnabled: Boolean = false,
-    val socksListen: String = "127.0.0.1:1080",
     val rawTomlOverride: String = "",
 ) {
     fun toToml(): String {
@@ -38,7 +37,7 @@ data class ServerProfile(
         // for the TLS/QUIC SNI cases (e.g. YouTube on TV).
         sb.append("[tun]\n")
         sb.append("path = \"vpn\"\n")
-        sb.append("mtu = 1500\n\n")
+        sb.append("mtu = ").append(TUN_MTU).append("\n\n")
         sb.append("[tun.tcp]\n")
         sb.append("sniffing = true\n\n")
 
@@ -66,11 +65,14 @@ data class ServerProfile(
         put("vlessLink", vlessLink)
         put("ssLink", ssLink)
         put("paddingEnabled", paddingEnabled)
-        put("socksListen", socksListen)
         put("rawTomlOverride", rawTomlOverride)
     }
 
     companion object {
+        /** Single source of the tunnel MTU: the `[tun] mtu` emitted into the config
+         *  MUST match `VpnService.Builder.setMtu` (OutlineVpnService). */
+        const val TUN_MTU = 1500
+
         fun fromJson(o: JSONObject): ServerProfile = ServerProfile(
             id = o.optString("id", UUID.randomUUID().toString()),
             name = o.optString("name", ""),
@@ -78,7 +80,6 @@ data class ServerProfile(
             vlessLink = o.optString("vlessLink", ""),
             ssLink = o.optString("ssLink", ""),
             paddingEnabled = o.optBoolean("paddingEnabled", false),
-            socksListen = o.optString("socksListen", "127.0.0.1:1080"),
             rawTomlOverride = o.optString("rawTomlOverride", ""),
         )
 
