@@ -89,8 +89,15 @@ pub(super) async fn rebuild_routing(
     // bumped it in the read→store window, the new table could be stamped with a
     // version a per-association cache already holds — the cache would then look
     // current and skip re-resolution against the new table. Dropping the guard
-    // here makes the seed read stable. `/control/apply` is serialized by its own
-    // mutex, so no second apply races this; the watcher is the only other writer.
+    // here narrows that window to effectively nothing — but it only sends a
+    // `watch` shutdown signal, not a synchronous join: a watcher already woken
+    // from its poll sleep and mid-reload will not observe the signal until its
+    // next loop iteration, so it could still land a version bump after the
+    // drop returns. That residual window needs a watched file's mtime to
+    // change in the same instant as this apply, which does not happen in
+    // practice, but is not structurally impossible. `/control/apply` is
+    // serialized by its own mutex, so no second apply races this; the watcher
+    // is the only other writer.
     let mut slot = watchers.lock().await;
     *slot = None; // drop old guard → old watchers stop bumping the old version
     let new_arc = shared.swap_preserving_version(table);

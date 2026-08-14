@@ -396,7 +396,7 @@ async fn proxy_crud(
         if envelope.instance.is_empty() {
             return json_error(StatusCode::BAD_REQUEST, "instance must not be empty");
         }
-        let inner = Bytes::from(serde_json::to_vec(&envelope.body).unwrap_or_default());
+        let inner = envelope_body_bytes(&envelope.body);
         (envelope.instance, Some(inner), query)
     };
 
@@ -447,7 +447,7 @@ async fn proxy_envelope_post(state: &WsState, body: Bytes, path: &str) -> Respon
     let Some(instance) = find(state, &envelope.instance) else {
         return json_error(StatusCode::NOT_FOUND, "unknown instance");
     };
-    let inner = Bytes::from(serde_json::to_vec(&envelope.body).unwrap_or_default());
+    let inner = envelope_body_bytes(&envelope.body);
     match state.backend.request(instance, Method::POST, path, Some(inner)).await {
         Ok(response) => json_response(response.status, &parse_or_raw(&response.body)),
         Err(error) => json_response(
@@ -455,6 +455,15 @@ async fn proxy_envelope_post(state: &WsState, body: Bytes, path: &str) -> Respon
             &serde_json::json!({ "error": format!("{error:#}") }),
         ),
     }
+}
+
+/// Serializes an envelope's `body` field back to bytes for forwarding to the
+/// instance's control API. `unwrap_or_default` turns a (never-expected)
+/// serialization failure of an already-deserialized `Value` into an empty
+/// body rather than a panic. Shared by `proxy_crud`'s mutating branch and
+/// `proxy_envelope_post`.
+fn envelope_body_bytes(body: &Value) -> Bytes {
+    Bytes::from(serde_json::to_vec(body).unwrap_or_default())
 }
 
 /// Control APIs answer JSON, but a proxy or a panic can put anything on the

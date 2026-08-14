@@ -77,6 +77,20 @@ fn reorder_moves_rule() {
     assert!(arr.get(0).unwrap().get("default").unwrap().as_bool().unwrap());
 }
 
+/// Sanity check for the happy path: the BASE doc's existing rules (a valid
+/// CIDR routed `direct`, plus the mandatory default) must pass whole-list
+/// validation, proving the `RoutingTable::compile` step added alongside this
+/// validator doesn't over-reject configs that were always valid.
+#[tokio::test]
+async fn validate_accepts_a_valid_config() {
+    let d = doc();
+    let groups = group_names_in_doc(&d);
+    let names: Vec<&str> = groups.iter().map(String::as_str).collect();
+    validate_route_array(&d, &names, Path::new("/tmp"))
+        .await
+        .expect("base doc is valid");
+}
+
 #[tokio::test]
 async fn validate_rejects_via_to_unknown_group() {
     let mut d = doc();
