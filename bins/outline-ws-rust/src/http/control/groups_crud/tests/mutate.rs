@@ -128,3 +128,43 @@ fn reorder_target_out_of_range_is_rejected() {
     let err = apply_reorder(arr, "main", 5).expect_err("out of range");
     assert!(err.contains("out of range"), "got: {err}");
 }
+
+#[test]
+fn update_does_not_leak_scalar_into_existing_probe_subtable() {
+    // A group that already carries a [uplink_group.probe] sub-table. Patching a
+    // scalar policy field must keep it a GROUP-level key — toml_edit renders an
+    // inline table's leaves by stored position, so a leaf inserted after the
+    // [probe] header would render below it and re-parse INTO probe (silent data
+    // corruption). This guards that hazard by re-parsing the rendered output.
+    let mut d = "\
+[[uplink_group]]
+name = \"main\"
+mode = \"active_active\"
+
+[uplink_group.probe]
+interval_secs = 60
+"
+    .parse::<DocumentMut>()
+    .unwrap();
+    apply_update(&mut d, "main", &payload(r#"{"sticky_ttl_secs":300}"#)).expect("update ok");
+    let text = d.to_string();
+    let reparsed: toml::Value = toml::from_str(&text).expect("rendered TOML must re-parse");
+    let group = &reparsed["uplink_group"][0];
+    assert_eq!(
+        group.get("sticky_ttl_secs").and_then(|v| v.as_integer()),
+        Some(300),
+        "sticky_ttl_secs must stay a group-level key, got:\n{text}"
+    );
+    assert!(
+        group.get("probe").and_then(|p| p.get("sticky_ttl_secs")).is_none(),
+        "sticky_ttl_secs must NOT leak into [probe]:\n{text}"
+    );
+    assert_eq!(
+        group
+            .get("probe")
+            .and_then(|p| p.get("interval_secs"))
+            .and_then(|v| v.as_integer()),
+        Some(60),
+        "probe.interval_secs preserved:\n{text}"
+    );
+}
