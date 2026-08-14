@@ -114,7 +114,7 @@ class OutlineVpnService : VpnService() {
 
         val builder = Builder()
             .setSession("Outline Proxy")
-            .setMtu(1500) // must match `[tun] mtu` in the TOML (loader default 1500)
+            .setMtu(ServerProfile.TUN_MTU) // single source of the TUN MTU; must match `[tun] mtu` in the TOML
             // A private address space for the tunnel interface.
             .addAddress("10.111.0.2", 32)
             .addAddress("fd00:0:0:111::2", 64)
