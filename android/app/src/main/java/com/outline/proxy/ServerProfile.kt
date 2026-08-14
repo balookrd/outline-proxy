@@ -33,8 +33,14 @@ data class ServerProfile(
         if (rawTomlOverride.isNotBlank()) return rawTomlOverride
 
         val sb = StringBuilder()
-        sb.append("[socks5]\n")
-        sb.append("listen = \"").append(socksListen).append("\"\n\n")
+        // Native TUN: the fd comes from VpnService, not this path, but the loader
+        // needs a non-empty [tun].path to activate TUN. sniffing=true is required
+        // for the TLS/QUIC SNI cases (e.g. YouTube on TV).
+        sb.append("[tun]\n")
+        sb.append("path = \"vpn\"\n")
+        sb.append("mtu = 1500\n\n")
+        sb.append("[tun.tcp]\n")
+        sb.append("sniffing = true\n\n")
 
         sb.append("[[outline.uplinks]]\n")
         sb.append("name = \"").append(name.ifBlank { "primary" }).append("\"\n")
