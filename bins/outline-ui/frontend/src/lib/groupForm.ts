@@ -157,13 +157,19 @@ export function buildGroupPayload(f: GroupFormFields, editing: boolean): Record<
   if (!editing && f.name.trim()) out.name = f.name.trim();
   if (f.mode) out.mode = f.mode;
   if (f.routingScope) out.routing_scope = f.routingScope;
-  if (f.sharedResume) out.shared_resume = true;
+  out.shared_resume = f.sharedResume;
   if (f.warmStandbyTcp !== null) out.warm_standby_tcp = Math.trunc(f.warmStandbyTcp);
   if (f.warmStandbyUdp !== null) out.warm_standby_udp = Math.trunc(f.warmStandbyUdp);
+  // KNOWN v1 LIMITATION (do not attempt to fix without server-side delete
+  // semantics): switching reselectMode to 'none' on a group that already has
+  // a schedule, or clearing warm_standby_* back to empty, omits those keys
+  // here — merge_patch_into_table only overwrites present keys, so the old
+  // values survive on the server. Edit config.toml directly, or recreate the
+  // group, to remove a reselect schedule or clear warm-standby.
   if (f.reselectMode === 'at') {
     const at = lines(f.reselectAt);
     if (at.length) out.reselect_at = at;
-    if (f.reselectSync) out.reselect_sync = true;
+    out.reselect_sync = f.reselectSync;
   } else if (f.reselectMode === 'interval' && f.reselectInterval.trim()) {
     out.reselect_interval = f.reselectInterval.trim();
   }
