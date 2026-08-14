@@ -30,15 +30,7 @@ pub(crate) async fn handle_groups(
     state: Arc<ControlState>,
 ) -> ControlResponse {
     match *request.method() {
-        // TODO(Task 4): delegate to `list::handle_list` once
-        // `groups_crud/list.rs` lands (GET listing + uplink_count). No CRUD
-        // test exercises this arm — the mutate suite only calls the pure
-        // `apply_*` helpers below, so this placeholder does not affect the
-        // rendered-doc assertions this file is graded on.
-        http::Method::GET => json_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "GET /control/uplink_groups lands in a follow-up commit",
-        ),
+        http::Method::GET => super::list::handle_list(state, request.uri().query()).await,
         http::Method::POST => handle_create(request, state).await,
         http::Method::PATCH => handle_update(request, state).await,
         http::Method::DELETE => handle_delete(request, state).await,
