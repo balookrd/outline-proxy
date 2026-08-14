@@ -29,9 +29,9 @@ import uniffi.outline_android.stop
  * hand it, plus the config, to the Rust core ([start]). [ACTION_DISCONNECT]
  * tears everything down.
  *
- * Increment 1: the Rust core brings up the SOCKS5 listener and uplinks. The
- * TUN fd is passed but routing TUN packets into SOCKS5 (tun2proxy) and
- * [protect]-ing uplink sockets land in increment 2.
+ * The Rust core attaches the native outline-tun engine directly to this fd and
+ * brings up the uplinks. Loop avoidance is via [applySplitTunnel]
+ * (addDisallowedApplication), so uplink sockets bypass the TUN.
  */
 class OutlineVpnService : VpnService() {
 
@@ -54,11 +54,6 @@ class OutlineVpnService : VpnService() {
 
         private const val NOTIFICATION_CHANNEL_ID = "outline_vpn"
         private const val NOTIFICATION_ID = 1
-
-        // The local SOCKS5 endpoint the Rust core listens on (must match the
-        // `[socks5] listen` address in the TOML). Used by tun2proxy later.
-        const val SOCKS_ADDRESS = "127.0.0.1"
-        const val SOCKS_PORT = 1080
 
         /**
          * Whether the tunnel is up, as reported by the Rust core (same process,
@@ -119,7 +114,7 @@ class OutlineVpnService : VpnService() {
 
         val builder = Builder()
             .setSession("Outline Proxy")
-            .setMtu(1500)
+            .setMtu(1500) // must match `[tun] mtu` in the TOML (loader default 1500)
             // A private address space for the tunnel interface.
             .addAddress("10.111.0.2", 32)
             .addAddress("fd00:0:0:111::2", 64)
@@ -144,8 +139,8 @@ class OutlineVpnService : VpnService() {
         startForeground(NOTIFICATION_ID, buildNotification())
 
         try {
-            start(configToml, filesDir.absolutePath, tun.fd, "socks5://$SOCKS_ADDRESS:$SOCKS_PORT")
-            Log.i(TAG, "outline-ws-rust client + TUN bridge started (tun fd=${tun.fd})")
+            start(configToml, filesDir.absolutePath, tun.fd)
+            Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
             registerNetworkCallback()
         } catch (e: Exception) {
             Log.e(TAG, "failed to start client", e)
