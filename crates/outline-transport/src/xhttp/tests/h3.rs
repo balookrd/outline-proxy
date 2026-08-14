@@ -27,7 +27,9 @@ use h3::quic::{
 use http::HeaderMap;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
-use super::{POST_TIMEOUT, dial_endpoint, driver_loop_h3, post_one_bounded};
+use super::{
+    POST_TIMEOUT, dial_endpoint, driver_loop_h3, driver_loop_h3_stream_one, post_one_bounded,
+};
 use crate::xhttp::{XhttpTarget, inbound_channel, outbound_channel};
 
 fn wildcard_v4() -> SocketAddr {
@@ -47,17 +49,40 @@ struct StubState {
     /// last `SendRequest` clone is dropped.
     connection_closed: AtomicBool,
     next_stream_id: AtomicU64,
+    /// Armed by a test so the *next* `send_data` fails, modelling the peer
+    /// resetting the stream while a write is in flight.
+    fail_next_send: AtomicBool,
+    /// Raw id (+1, so 0 means "none yet") of the stream whose `send_data` failed.
+    failed_stream: AtomicU64,
+    /// `send_data` calls made on that same stream *after* it failed. On a real
+    /// h3-quinn stream every one of these hits the misuse guard, because a
+    /// failed write leaves its `writing` slot occupied.
+    sends_after_failure: AtomicU64,
 }
 
 impl StubState {
+    fn next_raw_id(&self) -> u64 {
+        self.next_stream_id.fetch_add(4, Ordering::Relaxed)
+    }
+
     fn next_id(&self) -> StreamId {
-        StreamId::try_from(self.next_stream_id.fetch_add(4, Ordering::Relaxed))
-            .expect("stub stream id fits a varint")
+        StreamId::try_from(self.next_raw_id()).expect("stub stream id fits a varint")
     }
 }
 
 struct StubSend {
     id: StreamId,
+    raw_id: u64,
+    state: Arc<StubState>,
+}
+
+fn new_stub_send(state: &Arc<StubState>) -> StubSend {
+    let raw_id = state.next_raw_id();
+    StubSend {
+        id: StreamId::try_from(raw_id).expect("stub stream id fits a varint"),
+        raw_id,
+        state: Arc::clone(state),
+    }
 }
 
 impl SendStream<Bytes> for StubSend {
@@ -66,6 +91,14 @@ impl SendStream<Bytes> for StubSend {
     }
 
     fn send_data<T: Into<WriteBuf<Bytes>>>(&mut self, _data: T) -> Result<(), StreamErrorIncoming> {
+        if self.state.failed_stream.load(Ordering::SeqCst) == self.raw_id + 1 {
+            self.state.sends_after_failure.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
+        if self.state.fail_next_send.swap(false, Ordering::SeqCst) {
+            self.state.failed_stream.store(self.raw_id + 1, Ordering::SeqCst);
+            return Err(StreamErrorIncoming::StreamTerminated { error_code: 0x010c });
+        }
         Ok(())
     }
 
@@ -171,7 +204,7 @@ impl OpenStreams<Bytes> for StubOpener {
         _cx: &mut Context<'_>,
     ) -> Poll<Result<Self::BidiStream, StreamErrorIncoming>> {
         Poll::Ready(Ok(StubBidi {
-            send: StubSend { id: self.state.next_id() },
+            send: new_stub_send(&self.state),
             recv: StubRecv { id: self.state.next_id() },
         }))
     }
@@ -180,7 +213,7 @@ impl OpenStreams<Bytes> for StubOpener {
         &mut self,
         _cx: &mut Context<'_>,
     ) -> Poll<Result<Self::SendStream, StreamErrorIncoming>> {
-        Poll::Ready(Ok(StubSend { id: self.state.next_id() }))
+        Poll::Ready(Ok(new_stub_send(&self.state)))
     }
 
     fn close(&mut self, _code: h3::error::Code, _reason: &[u8]) {
@@ -335,6 +368,41 @@ async fn dropping_the_session_kills_in_flight_posts() {
     })
     .await;
     assert!(closed.is_ok(), "an in-flight POST must not outlive the driver that spawned it");
+}
+
+/// A `send_data` that fails leaves h3-quinn's `writing` slot occupied — its
+/// `poll_ready` only clears the slot on the success path. `finish()` is not a
+/// safe way out of that state: while `send_grease_frame` is still set it emits
+/// the GREASE frame through a *second* `send_data`, which trips h3-quinn's
+/// misuse guard (`InternalError`). h3 escalates that to a connection-level
+/// `H3_INTERNAL_ERROR`, so one stream's failed write tears down every stream
+/// multiplexed on the shared QUIC carrier — the carrier-collapse bug.
+#[tokio::test]
+async fn stream_one_queues_nothing_more_after_a_failed_send_data() {
+    let (state, mut send_request, _connection_driver) = silent_server_h3().await;
+    let stream = open_stub_get(&mut send_request).await;
+    let (in_tx, _in_rx) = inbound_channel();
+    let (mut out_tx, out_rx) = outbound_channel();
+
+    let driver = tokio::spawn(driver_loop_h3_stream_one(send_request, in_tx, out_rx, stream));
+
+    // Arm the failure so the driver's own body chunk is the write that fails.
+    state.fail_next_send.store(true, Ordering::SeqCst);
+    let frame = Bytes::from_static(b"uplink frame");
+    out_tx.stage(Message::Binary(frame.clone()), frame.len());
+    let _ = std::future::poll_fn(|cx| out_tx.poll_flush_queue(cx)).await;
+
+    // Dropping the sender ends the uplink pump, which is where the driver
+    // decides how to close the request body.
+    drop(out_tx);
+    let _ = tokio::time::timeout(Duration::from_secs(5), driver).await;
+
+    assert_eq!(
+        state.sends_after_failure.load(Ordering::SeqCst),
+        0,
+        "after a failed send_data the stream-one driver must not queue another frame on that \
+         stream: the retry hits h3-quinn's misuse guard and collapses the whole QUIC carrier"
+    );
 }
 
 #[tokio::test(start_paused = true)]

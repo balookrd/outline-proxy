@@ -11,7 +11,7 @@
 //              direct sockudo-ws reference lives there (CI-enforced).
 
 mod shared;
-mod vendored;
+pub(crate) mod vendored;
 
 pub(crate) use shared::{client_endpoint, connect_websocket_h3, gc_shared_h3_connections};
 

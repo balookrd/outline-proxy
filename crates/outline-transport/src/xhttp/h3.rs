@@ -681,16 +681,24 @@ async fn open_h3_stream_one(
     Ok((issued, echo, sym_echo, udp_records, stream))
 }
 
-async fn driver_loop_h3_stream_one(
+/// Generic over the QUIC types for the same reason [`driver_loop_h3`] is:
+/// production instantiates it with `h3_quinn`, tests with an in-process stub.
+async fn driver_loop_h3_stream_one<T, S>(
     // Anchors the connection's `SendRequest` count at >0 so dropping
     // the bidi stream below doesn't take the h3 connection down with
     // it via `H3_NO_ERROR`. The handle is otherwise unused — stream-one
     // never opens a second request.
-    _send_request_guard: SendRequest<h3_quinn::OpenStreams, Bytes>,
+    _send_request_guard: SendRequest<T, Bytes>,
     in_tx: InboundSender,
     mut out_rx: OutboundReceiver,
-    stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
-) {
+    stream: h3::client::RequestStream<S, Bytes>,
+) where
+    T: h3::quic::OpenStreams<Bytes> + Clone + Send + 'static,
+    S: h3::quic::BidiStream<Bytes> + Send + 'static,
+    S::SendStream: Send,
+    S::RecvStream: Send + 'static,
+    <S::RecvStream as h3::quic::RecvStream>::Buf: Send,
+{
     let (mut send_half, recv_half) = stream.split();
     // Spawn the response-body drain on the receive half.
     let drain_in_tx = in_tx.clone();
@@ -708,12 +716,14 @@ async fn driver_loop_h3_stream_one(
     // the send half. Calling `finish()` at exit closes the request
     // body cleanly so the server sees EOF and can park or tear down.
     // The permit is released only once `send_data` has taken the bytes.
+    let mut send_failed = false;
     while let Some(queued) = out_rx.recv().await {
         let (msg, _permit) = queued.into_parts();
         match msg {
             Message::Binary(b) => {
                 if let Err(error) = send_half.send_data(b).await {
                     debug!(?error, "xhttp/h3 stream-one send_data failed");
+                    send_failed = true;
                     break;
                 }
             },
@@ -726,7 +736,16 @@ async fn driver_loop_h3_stream_one(
             _ => continue,
         }
     }
-    let _ = send_half.finish().await;
+    if send_failed {
+        // A failed write leaves h3-quinn's `writing` slot occupied, so the
+        // GREASE frame `finish()` would emit is a second `send_data` into that
+        // slot — h3 escalates the resulting misuse error to a connection-level
+        // `H3_INTERNAL_ERROR` and the whole shared QUIC carrier collapses,
+        // killing every other session riding it. FIN the stream directly.
+        let _ = crate::h3::vendored::finish_send_side_without_grease(&mut send_half).await;
+    } else {
+        let _ = send_half.finish().await;
+    }
     debug!("xhttp/h3 stream-one driver exiting");
 }
 

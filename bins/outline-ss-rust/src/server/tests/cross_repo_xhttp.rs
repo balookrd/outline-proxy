@@ -774,6 +774,238 @@ async fn cross_repo_xhttp_stream_one_h3_round_trip() -> Result<()> {
     Ok(())
 }
 
+/// A failed downlink write must not take the whole QUIC carrier with it.
+///
+/// When a client stops reading its stream-one response, the server's next
+/// `send_data` on that stream fails. h3-quinn clears its internal `writing`
+/// slot only on the success path, so the slot stays occupied — and closing the
+/// stream with `finish()` still emits the GREASE frame through a *second*
+/// `send_data`. That trips h3-quinn's misuse guard, which h3 escalates to a
+/// connection-level `H3_INTERNAL_ERROR`, tearing down every stream multiplexed
+/// on the same QUIC connection. A second session on that connection is the
+/// witness: it must still complete its round trip.
+#[tokio::test]
+async fn xhttp_stream_one_h3_downlink_failure_does_not_collapse_the_carrier() -> Result<()> {
+    use bytes::Buf as _;
+    // Upstream #1 feeds the doomed session far more than the client will read,
+    // so the server is still pumping downlink when the client stops reading.
+    let flooding_upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let flooding_addr = flooding_upstream.local_addr()?;
+    let flooding_task = tokio::spawn(async move {
+        let (mut stream, _) = flooding_upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        // Ignore write errors: the point is to keep the server's downlink busy,
+        // and the relay is torn down mid-flight on purpose.
+        let chunk = vec![0xA5_u8; 64 * 1024];
+        for _ in 0..128 {
+            if stream.write_all(&chunk).await.is_err() {
+                break;
+            }
+        }
+        Result::<_, anyhow::Error>::Ok(())
+    });
+
+    // Upstream #2 is the witness session's echo.
+    let echo_upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let echo_addr = echo_upstream.local_addr()?;
+    let echo_task = tokio::spawn(async move {
+        let (mut stream, _) = echo_upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    let (listen_addr, server, _registry) = setup_xhttp_h3_server("/xh", false).await?;
+
+    // One QUIC connection, driven by hand, so both sessions provably share a
+    // carrier — going through the client's dial would let its carrier fan-out
+    // put them on separate connections and the test would prove nothing.
+    let (_, _, _, ca_der) = super::cross_repo_shared_test_cert();
+    let mut endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(super::test_h3_client_config(ca_der.clone())?);
+    let connection = endpoint.connect(listen_addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let stream_one_request = |session: &str| {
+        axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(format!("https://localhost:{}/xh/{session}?mode=stream-one", listen_addr.port()))
+            .version(axum::http::Version::HTTP_3)
+            .body(())
+    };
+
+    // Doomed session: hand it the flooding upstream, read one chunk, then stop
+    // reading. The server's downlink pump keeps writing into a stream the peer
+    // has abandoned, and its next `send_data` fails.
+    let mut doomed = send_request
+        .send_request(stream_one_request("00112233445566aa")?)
+        .await?;
+    doomed
+        .send_data(Bytes::from(build_vless_tcp_handshake(flooding_addr, b"ping")?))
+        .await?;
+    doomed.recv_response().await?;
+    let first = doomed.recv_data().await?;
+    assert!(
+        first.is_some(),
+        "the doomed session must receive downlink before it stops reading"
+    );
+    doomed.stop_stream(h3::error::Code::H3_NO_ERROR);
+    drop(doomed);
+
+    // Witness session on the same QUIC connection: only reachable if the
+    // carrier survived the failure above.
+    let mut witness = send_request
+        .send_request(stream_one_request("00112233445566bb")?)
+        .await?;
+    witness
+        .send_data(Bytes::from(build_vless_tcp_handshake(echo_addr, b"ping")?))
+        .await?;
+    let response = tokio::time::timeout(Duration::from_secs(10), witness.recv_response())
+        .await
+        .map_err(|_| anyhow::anyhow!("witness session timed out: the QUIC carrier collapsed"))??;
+    assert_eq!(response.status(), 200);
+
+    let mut echoed = Vec::new();
+    while echoed.len() < 6 {
+        match tokio::time::timeout(Duration::from_secs(10), witness.recv_data())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("witness downlink stalled: the QUIC carrier collapsed")
+            })?? {
+            Some(chunk) => echoed.extend_from_slice(chunk.chunk()),
+            None => bail!("witness session ended early: the QUIC carrier collapsed"),
+        }
+    }
+    assert_eq!(&echoed[2..6], b"pong", "the witness session must round-trip through the relay");
+
+    let echoed_upstream = tokio::time::timeout(Duration::from_secs(5), echo_task).await???;
+    assert_eq!(&echoed_upstream, b"ping");
+
+    driver_task.abort();
+    server.abort();
+    flooding_task.abort();
+    Ok(())
+}
+
+/// The packet-up GET downlink has the same failure mode as stream-one: its
+/// pump's `send_data` can fail, and the caller then closes the stream with
+/// `finish()` — a second `send_data` into h3-quinn's still-occupied `writing`
+/// slot, escalated to a connection-level `H3_INTERNAL_ERROR`. Same witness.
+#[tokio::test]
+async fn xhttp_packet_up_h3_downlink_failure_does_not_collapse_the_carrier() -> Result<()> {
+    use bytes::Buf as _;
+
+    let flooding_upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let flooding_addr = flooding_upstream.local_addr()?;
+    let flooding_task = tokio::spawn(async move {
+        let (mut stream, _) = flooding_upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        let chunk = vec![0xA5_u8; 64 * 1024];
+        for _ in 0..128 {
+            if stream.write_all(&chunk).await.is_err() {
+                break;
+            }
+        }
+        Result::<_, anyhow::Error>::Ok(())
+    });
+
+    let echo_upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let echo_addr = echo_upstream.local_addr()?;
+    let echo_task = tokio::spawn(async move {
+        let (mut stream, _) = echo_upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    let (listen_addr, server, _registry) = setup_xhttp_h3_server("/xh", false).await?;
+
+    let (_, _, _, ca_der) = super::cross_repo_shared_test_cert();
+    let mut endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(super::test_h3_client_config(ca_der.clone())?);
+    let connection = endpoint.connect(listen_addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let build = |method: axum::http::Method, path: String| {
+        axum::http::Request::builder()
+            .method(method)
+            .uri(format!("https://localhost:{}{path}", listen_addr.port()))
+            .version(axum::http::Version::HTTP_3)
+            .body(())
+    };
+
+    // The GET goes first on purpose: h3 arms the GREASE frame on the *first*
+    // request stream of a connection only ("send the grease frame only once"),
+    // so that is the stream whose `finish()` can turn a failed write into a
+    // connection-level error.
+    let mut get = send_request
+        .send_request(build(axum::http::Method::GET, "/xh/00112233445566cc".into())?)
+        .await?;
+    get.recv_response().await?;
+
+    // Packet-up uplink: one POST at seq 0 carries the handshake and opens the
+    // relay against the flooding upstream.
+    let mut post = send_request
+        .send_request(build(axum::http::Method::POST, "/xh/00112233445566cc/0".into())?)
+        .await?;
+    post.send_data(Bytes::from(build_vless_tcp_handshake(flooding_addr, b"ping")?))
+        .await?;
+    post.finish().await?;
+    post.recv_response().await?;
+
+    // Read one chunk, then abandon the stream while the server is still pumping.
+    let first = get.recv_data().await?;
+    assert!(first.is_some(), "the doomed GET must receive downlink before it stops reading");
+    get.stop_stream(h3::error::Code::H3_NO_ERROR);
+    drop(get);
+
+    // Witness on the same QUIC connection.
+    let mut witness = send_request
+        .send_request(build(
+            axum::http::Method::POST,
+            "/xh/00112233445566dd?mode=stream-one".into(),
+        )?)
+        .await?;
+    witness
+        .send_data(Bytes::from(build_vless_tcp_handshake(echo_addr, b"ping")?))
+        .await?;
+    let response = tokio::time::timeout(Duration::from_secs(10), witness.recv_response())
+        .await
+        .map_err(|_| anyhow::anyhow!("witness session timed out: the QUIC carrier collapsed"))??;
+    assert_eq!(response.status(), 200);
+
+    let mut echoed = Vec::new();
+    while echoed.len() < 6 {
+        match tokio::time::timeout(Duration::from_secs(10), witness.recv_data())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("witness downlink stalled: the QUIC carrier collapsed")
+            })?? {
+            Some(chunk) => echoed.extend_from_slice(chunk.chunk()),
+            None => bail!("witness session ended early: the QUIC carrier collapsed"),
+        }
+    }
+    assert_eq!(&echoed[2..6], b"pong", "the witness session must round-trip through the relay");
+
+    let echoed_upstream = tokio::time::timeout(Duration::from_secs(5), echo_task).await???;
+    assert_eq!(&echoed_upstream, b"ping");
+
+    driver_task.abort();
+    server.abort();
+    flooding_task.abort();
+    Ok(())
+}
+
 #[tokio::test]
 async fn cross_repo_xhttp_packet_up_h3_resume_reattaches_parked_upstream() -> Result<()> {
     // Two-round echo upstream: a successful resume reuses the same
