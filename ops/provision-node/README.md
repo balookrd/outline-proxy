@@ -282,7 +282,7 @@ phase is safe to re-run.
 | `identity` | what a disk-image clone kept and no bundle carries: machine-id (regenerated when it is still the reference's), hostname, the `/etc/hosts` line |
 | `packages` | docker apt repo + packages, `daemon.json` (restarts docker only if it changed) |
 | `users` | `outline-ss-rust`, group `certs`, state/log directories — plus `outline-ws` and its directories on profiles that carry the client (`INSTALL_WS_RUST=1`, entry only) |
-| `files` | `/opt`, `/usr/local/{bin,sbin}`, units, nginx site, sysctl, `occtl` symlink, and the generated `post-up.service` where the profile defines one. Then the repo-owned files (`ASSET_FILES`) over the top, and any missing `NGINX_LOCATIONS` into the site |
+| `files` | `/opt`, `/usr/local/{bin,sbin}`, units, nginx site, sysctl, `occtl` symlink, and the generated `post-up.service` where the profile defines one. Then the repo-owned files (`ASSET_FILES`, plus binary/byte-exact ones via `RAW_ASSET_FILES`) over the top, and any missing `NGINX_LOCATIONS` into the site |
 | `secrets` | service configs with owners and modes, `users.txt`, ocserv passwords, ACME material, then `permission-certs.sh` (needs the `users` phase to have created `outline-ss-rust`) |
 | `rehost` | rewrites every reference-host reference: cert paths, ddns cron, dnsproxy flags, ocserv `SRV_CN`, and the IPv6 `/64` when `--ipv6-prefix` is given. Adds the profile's `COMPOSE_REQUIRED_ARGS`, then audits itself: nothing may still name the reference, and every cert/key path it names must exist here |
 | `uplinks` | swaps this node's own `vless_id`/`password` into each `[[outline.uplinks]]` block — in the long form as their own lines, in the share-link form inside each `link = "…"` URI (VLESS userinfo, SS base64 userinfo with the cipher kept) |
@@ -428,6 +428,13 @@ Rules worth keeping:
   asset to overwrite a moment later. Anything genuinely per-node goes in as
   `%HOST%` / `%DOMAIN%`; anything secret does not belong in an asset at all,
   because `assets/` is committed.
+- **`RAW_ASSET_FILES` is `ASSET_FILES` for a binary or a byte-exact file.** Same
+  `<asset>:<target>[:mode]` shape, but the payload is copied verbatim — no
+  `%HOST%` / `%DOMAIN%` expansion, which runs through `sed` in a command
+  substitution and would corrupt a PNG — and the target directory is never
+  created. The file is written only where the directory already exists, so the
+  landing page lands in the nginx webroot (`/var/www/html`, made by the nginx
+  package) on nodes that carry nginx and is skipped everywhere else.
 - **`NGINX_LOCATIONS` is for a route the site file must have**, written as
   `<location>:<proxy_pass URL>` and inserted into the last `server` block when
   missing. It is how an exporter reaches the scrape: a node whose site file

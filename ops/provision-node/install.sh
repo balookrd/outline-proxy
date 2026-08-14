@@ -125,7 +125,7 @@ PROFILE_NAME="$(manifest_get "$BUNDLE/MANIFEST" profile)"
 # Profile defaults, so a profile may leave any section out.
 REHOST_FILES=(); REHOST_IPV6_FILES=(); REHOST_IPV4_FILES=(); REHOST_IFACE_FILES=()
 COMPOSE_REQUIRED_ARGS=(); VERIFY_SELF_DNS=0
-ASSET_FILES=(); NGINX_LOCATIONS=()
+ASSET_FILES=(); NGINX_LOCATIONS=(); RAW_ASSET_FILES=()
 ENABLE_UNITS=(); INSTALL_ONLY_UNITS=(); NET_BRINGUP_EXEC=(); NET_BRINGUP_EXEC_STOP=()
 NET_BRINGUP_BEFORE=
 DOCKER_START=(); VERIFY_UNITS=(); VERIFY_TIMERS=(); VERIFY_METRICS=(); VERIFY_PORTS=()
@@ -451,6 +451,47 @@ install_asset_files() {
     done
 }
 
+# RAW_ASSET_FILES entries are "<asset-path>:<target>[:mode]", like ASSET_FILES,
+# with two differences that matter for a file served straight out of a webroot:
+#
+#   - the payload is copied byte-for-byte. install_asset_files runs the body
+#     through `sed` inside a command substitution to expand %HOST%/%DOMAIN%,
+#     which drops NUL bytes and the trailing newline — harmless for a config,
+#     fatal for an image. Raw assets get no expansion, so a PNG survives intact.
+#   - the target directory is never created. These files land in a tree another
+#     package owns — the nginx webroot /var/www/html, which the nginx package
+#     creates on install (packages phase, before this one). Where nginx is
+#     absent the directory is too, and a landing page there would be dead weight,
+#     so the file is skipped rather than dropped into a conjured orphan tree.
+install_raw_asset_files() {
+    [ ${#RAW_ASSET_FILES[@]} -gt 0 ] || return 0
+    local spec src target mode rest source dir
+    for spec in "${RAW_ASSET_FILES[@]}"; do
+        src="${spec%%:*}"; rest="${spec#*:}"
+        target="${rest%%:*}"; mode="${rest#*:}"
+        [ "$mode" != "$target" ] || mode="0644"
+        dir="$(dirname "$target")"
+        if [ ! -d "$dir" ]; then
+            dim "raw asset: $dir absent (no nginx here?) — skipping $target"
+            continue
+        fi
+        if ! source="$(asset_path "$src")"; then
+            warn "raw asset $src is neither in the bundle nor beside install.sh — $target left as collected"
+            continue
+        fi
+        if [ -f "$target" ] && cmp -s "$source" "$target"; then
+            dim "raw asset: $target already matches $src"
+            continue
+        fi
+        if [ "$DRY_RUN" = "1" ]; then
+            dim "[dry-run] would write $target from assets/$src (verbatim)"
+            continue
+        fi
+        install -m "$mode" -o root -g root "$source" "$target"
+        ok "raw asset: wrote $target from assets/$src"
+    done
+}
+
 # NGINX_LOCATIONS entries are "<location>:<proxy_pass URL>". The site file comes
 # from the reference, so a location the reference never had (the unbound
 # exporter on nuxt, until 2026-08-08) would otherwise be missing on every node
@@ -534,6 +575,10 @@ phase_files() {
     # After the payload, so a repo-owned file wins over the reference's copy of
     # the same path even when a stale bundle still carries one.
     install_asset_files
+    # nginx is installed in the packages phase (above), so its webroot exists by
+    # now on any node that carries it; the landing page drops in there and is
+    # skipped where the webroot is absent.
+    install_raw_asset_files
 
     remove_ss_config_opt
 
