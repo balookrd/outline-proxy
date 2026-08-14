@@ -59,7 +59,7 @@
 | VLESS поверх XHTTP packet-up | Поддерживается | Long-lived GET + POST'ы с seq-номерами на одном HTTP/2 (или HTTP/3) соединении; reorder-буфер на сервере склеивает out-of-order POST'ы; downlink-кольцо переживает обрыв GET'а в полёте (CDN ~100 c); `X-Padding` + SSE-style маскировка заголовков (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
 | VLESS поверх XHTTP stream-one | Поддерживается | Один bidirectional запрос: request body — uplink, response body — downlink. Включается через `?mode=stream-one` в URL запроса на том же base path. Требует h2 или h3 (h1 → 505). На h3 bidi-стрим разделяется через `RequestStream::split` на send/recv половинки на отдельных tasks |
 | Resumption через XHTTP | Поддерживается | Сервер выдаёт `X-Outline-Session` на первом запросе, паркует VLESS-upstream при разрыве carrier'а и переподключает на следующем запросе с `X-Outline-Resume` — в том числе при смене carrier'а (например, fallback клиента с h3 на h2 с тем же токеном) |
-| HTTP fallback (маскировка) | Поддерживается | Reverse-proxy неподходящих под наши маршруты HTTP/1.1 + HTTP/2 запросов на внешний бэкенд (haproxy / nginx / caddy) вместо `404`, чтобы листенер выглядел как обычный веб-сервис. Опциональный HAProxy PROXY-protocol v1/v2 prefix сохраняет реальный IP клиента для логов/ACL |
+| HTTP fallback (маскировка) | Поддерживается | Reverse-proxy неподходящих под наши маршруты HTTP/1.1 + HTTP/2 запросов (а с `apply_to_h3` — и HTTP/3) на внешний бэкенд (haproxy / nginx / caddy) вместо `404`, чтобы листенер выглядел как обычный веб-сервис. Опциональный HAProxy PROXY-protocol v1/v2 prefix сохраняет реальный IP клиента для логов/ACL |
 | SNI fallback (L4 маскировка) | Поддерживается | Подсматривает ClientHello на TLS-листенере и сплайсит коннекты с чужим SNI (сырое TCP вместе с захваченным ClientHello) на внешний бэкенд с собственным сертом. Сестра HTTP-fallback'а на уровень ниже OSI. nginx-style wildcards в `match_sni`; PROXY-protocol v1/v2 настоятельно рекомендуется, чтобы бэкенд видел реальный IP клиента |
 | VLESS REALITY / XTLS / Vision | Не поддерживается | Вне области применения |
 | Outline management API | Не поддерживается | Только data plane |
@@ -559,6 +559,9 @@ backend = "http://127.0.0.1:8080"   # пока только http://
 # add_x_forwarded_proto = true
 # add_x_forwarded_host = true
 # proxy_protocol = "v1"             # либо "v2"; пропустить — выкл.
+# backend_proto = "h1"              # либо "h2" (h2c prior-knowledge) к бэкенду
+# apply_to_h1 = true                # по умолчанию true; TCP-листенер (h1 + h2)
+# apply_to_h3 = false               # по умолчанию false; HTTP/3-листенер, нужна [server.h3]
 ```
 
 Что именно проксируется:
@@ -573,9 +576,16 @@ PROXY-protocol:
 - `proxy_protocol = "v1"` (текстовый) или `"v2"` (бинарный) — добавит HAProxy PROXY-protocol заголовок в начало TCP-соединения с бэкендом. Бэкенд должен быть явно настроен на ровно эту версию (`proxy_protocol on;` в `listen`-директиве nginx, `accept-proxy` на bind у haproxy и т. п.).
 - В качестве destination в заголовок пишется bind-адрес входящего листенера. Если он `0.0.0.0` / `[::]`, кодер деградирует до UNKNOWN (v1) / UNSPEC (v2) — per-connection local_addr пока не пробрасывается.
 
+HTTP/3 (`apply_to_h3`):
+
+- По умолчанию fallback покрывает только TCP-листенер (`apply_to_h1 = true`). Выставьте `apply_to_h3 = true`, чтобы распространить тот же самый reverse-proxy на QUIC / HTTP/3-листенер; для этого нужна настроенная секция `[server.h3]`. Тумблеры независимы — при обоих включённых один бэкенд маскирует пробы и на 443/TCP, и на 443/UDP.
+- Любой HTTP/3-запрос, не попавший ни в XHTTP base path, ни в WS-over-h3 CONNECT, ни в auth-root `/`, проксируется на тот же `backend` с тем же `backend_proto`, той же стрипкой hop-by-hop и переписыванием `X-Forwarded-*`, что и на TCP-стороне. `http_root_auth` на `/` сохраняет приоритет над fallback'ом — ровно как на TCP.
+- `X-Forwarded-Proto` на этом пути всегда `https`: QUIC зашифрован по спеке, «plain h3» листенера не существует, и значение не зависит от того, терминирует ли TCP-листенер TLS.
+- Тело запроса буферизуется целиком до форвардинга, с лимитом 256 KiB (как POST-cap у XHTTP); тело больше лимита отвергается `413 Payload Too Large`, а не буферизуется. Тело ответа стримится обратно через QUIC chunk-ами — бэкенд, отдающий большой файл или SSE-канал, проходит насквозь, не залипая в RAM. Трейлеры пробрасываются в обе стороны, если их умеет выбранный `backend_proto`.
+- На этом пути PROXY-protocol всегда использует v2 с `Transport=DGRAM`, так что бэкенд видит, что origin был UDP/QUIC. `proxy_protocol = "v1"` вместе с `apply_to_h3 = true` отвергается на старте — у v1 нет UDP-формы на проводе; используйте `"v2"` или отключите PROXY-protocol.
+
 Ограничения:
 
-- HTTP/3 fallback не реализован: на `h3_listen` не наши запросы по-прежнему возвращают `404`. Чисто пробросить h3-фреймы на h1/h2 бэкенд без отдельного h3-клиента и большого слоя трансляции framing'а нельзя, поэтому отложено до явного запроса.
 - backend поддерживает только `http://host:port`. HTTPS-upstream и Unix-доменные сокеты добавим по запросу.
 - При высокой частоте запросов fallback открывает по одному upstream TCP-соединению на каждый входящий (без пула). Для маскировочного трафика этого достаточно; если хочется использовать fallback как полноценный балансер — терминируйте на upstream'е напрямую.
 

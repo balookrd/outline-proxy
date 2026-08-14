@@ -18,6 +18,7 @@ use outline_metrics::record_metrics_http_request;
 use outline_uplink::UplinkRegistry;
 
 use super::apply::{ApplyHandle, handle_apply};
+use super::groups_crud::{handle_groups, handle_groups_reorder};
 use super::handlers::{
     handle_activate, handle_reselect, handle_set_enabled, handle_summary, handle_switch,
     handle_topology,
@@ -134,6 +135,8 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/control/uplink_enabled" => "/control/uplink_enabled",
         "/control/uplinks" => "/control/uplinks",
         "/control/uplinks/reorder" => "/control/uplinks/reorder",
+        "/control/uplink_groups" => "/control/uplink_groups",
+        "/control/uplink_groups/reorder" => "/control/uplink_groups/reorder",
         "/control/routes" => "/control/routes",
         "/control/routes/reorder" => "/control/routes/reorder",
         "/control/apply" => "/control/apply",
@@ -184,6 +187,19 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/control/uplinks/reorder" => {
             let response = handle_uplinks_reorder(request, Arc::clone(&state)).await;
             record_metrics_http_request("/control/uplinks/reorder", response.status().as_u16());
+            response
+        },
+        "/control/uplink_groups" => {
+            let response = handle_groups(request, Arc::clone(&state)).await;
+            record_metrics_http_request("/control/uplink_groups", response.status().as_u16());
+            response
+        },
+        "/control/uplink_groups/reorder" => {
+            let response = handle_groups_reorder(request, Arc::clone(&state)).await;
+            record_metrics_http_request(
+                "/control/uplink_groups/reorder",
+                response.status().as_u16(),
+            );
             response
         },
         "/control/routes" => {

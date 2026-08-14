@@ -4,7 +4,8 @@
   const current = $derived(section(route.path));
   const uplinksActive = $derived(route.path.startsWith('/ws/uplinks'));
   const routingActive = $derived(route.path.startsWith('/ws/routing'));
-  const topologyActive = $derived(current === 'ws' && !uplinksActive && !routingActive);
+  const groupsActive = $derived(route.path.startsWith('/ws/groups'));
+  const topologyActive = $derived(current === 'ws' && !uplinksActive && !routingActive && !groupsActive);
 
   function onKey(e: KeyboardEvent, path: string) {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(path); }
@@ -71,6 +72,17 @@
   >
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
     Routing
+  </div>
+  <div
+    class="navlink"
+    class:active={groupsActive}
+    role="button"
+    tabindex="0"
+    onclick={() => go('/ws/groups')}
+    onkeydown={(e) => onKey(e, '/ws/groups')}
+  >
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M7 14v3a1 1 0 0 0 1 1h3"/></svg>
+    Uplink groups
   </div>
 
   <div class="foot">outline-ui</div>
