@@ -57,7 +57,7 @@ It supports:
 | VLESS over XHTTP packet-up | Supported | Long-lived GET + sequenced POSTs sharing one HTTP/2 (or HTTP/3) connection; reorder buffer absorbs out-of-order POSTs; downlink ring survives mid-flight GET drops (CDN ~100 s cut-off); `X-Padding` + SSE-style masquerade headers (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
 | VLESS over XHTTP stream-one | Supported | Single bidirectional request: request body = uplink, response body = downlink. Selected by `?mode=stream-one` in the request URL on the same base path. Requires h2 or h3 (h1 returns 505); on h3 the bidi stream is split via `RequestStream::split` so uplink and downlink halves run on dedicated tasks |
 | XHTTP cross-transport session resumption | Supported | Server mints `X-Outline-Session` on first contact, parks the VLESS upstream when the carrier drops, and re-attaches on the next `X-Outline-Resume` — including across a carrier switch (e.g. client failed h3 → re-dialed h2 with the same token) |
-| HTTP fallback (camouflage) | Supported | Reverse-proxies unmatched HTTP/1.1 + HTTP/2 requests to an upstream backend (haproxy / nginx / caddy) instead of returning 404, so the listener is indistinguishable from a regular web service. Optional HAProxy PROXY-protocol v1/v2 prefix preserves the real client IP for upstream logs/ACLs |
+| HTTP fallback (camouflage) | Supported | Reverse-proxies unmatched HTTP/1.1 + HTTP/2 requests (and HTTP/3, with `apply_to_h3`) to an upstream backend (haproxy / nginx / caddy) instead of returning 404, so the listener is indistinguishable from a regular web service. Optional HAProxy PROXY-protocol v1/v2 prefix preserves the real client IP for upstream logs/ACLs |
 | SNI fallback (L4 camouflage) | Supported | Peeks ClientHello on the TLS listener and splices foreign-SNI connections (raw TCP, including the captured ClientHello) to a backend that holds its own cert. Sister of the HTTP fallback, one OSI layer below. nginx-style wildcards in `match_sni`; PROXY-protocol v1/v2 strongly recommended so the backend sees the real peer IP |
 | VLESS REALITY / XTLS / Vision | Not supported | Out of scope |
 | Outline management API | Not supported | Data plane only |
@@ -557,6 +557,9 @@ backend = "http://127.0.0.1:8080"   # only http:// in MVP
 # add_x_forwarded_proto = true
 # add_x_forwarded_host = true
 # proxy_protocol = "v1"             # or "v2"; omit to disable
+# backend_proto = "h1"              # or "h2" (prior-knowledge h2c) to the backend
+# apply_to_h1 = true                # default true; TCP listener (h1 + h2 via ALPN)
+# apply_to_h3 = false               # default false; HTTP/3 listener, needs [server.h3]
 ```
 
 What gets proxied:
@@ -571,9 +574,16 @@ PROXY-protocol:
 - Set `proxy_protocol = "v1"` (text) or `"v2"` (binary) to prepend the HAProxy PROXY-protocol header to the upstream TCP connection. The upstream MUST be configured to expect that exact version (`proxy_protocol on;` on nginx's `listen` directive, `accept-proxy` on haproxy's bind, etc.).
 - The destination address in the header is the inbound listener's bind address. When that address is `0.0.0.0` / `[::]`, the encoder degrades to UNKNOWN (v1) / UNSPEC (v2) — it does not currently learn the per-connection local address.
 
+HTTP/3 (`apply_to_h3`):
+
+- By default the fallback covers only the TCP listener (`apply_to_h1 = true`). Set `apply_to_h3 = true` to extend the exact same reverse-proxy to the QUIC / HTTP/3 listener; it requires a configured `[server.h3]`. The two toggles are independent — with both on, one backend masquerades probes on 443/TCP and 443/UDP alike.
+- Every HTTP/3 request that does not match an XHTTP base path, a WS-over-h3 CONNECT, or the `/` auth-root challenge is forwarded to the same `backend`, honoring the same `backend_proto`, hop-by-hop stripping, and `X-Forwarded-*` rewriting as the TCP path. `http_root_auth` on `/` keeps priority over the fallback, exactly as on TCP.
+- `X-Forwarded-Proto` is always `https` on this path — QUIC is encrypted by spec, so there is no "plain h3" listener, and the value does not depend on whether the TCP listener terminates TLS.
+- The request body is buffered in full before forwarding, capped at 256 KiB (mirrors the XHTTP POST cap); a larger body is rejected with `413 Payload Too Large` instead of being buffered. The response body is streamed back over QUIC chunk-by-chunk, so a backend serving a large file or an SSE feed flows through without the server holding the whole response in RAM. Trailers are relayed both ways when the chosen `backend_proto` carries them.
+- PROXY-protocol on this path always emits v2 with `Transport=DGRAM`, so the backend can tell the origin was UDP/QUIC. `proxy_protocol = "v1"` together with `apply_to_h3 = true` is rejected at config-load time — v1 has no UDP wire form; use `"v2"` or disable PROXY-protocol.
+
 Limitations:
 
-- HTTP/3 fallback is not implemented; over `h3_listen` unmatched requests still return 404. There is no clean way to bridge h3 frames to an h1/h2 backend without a dedicated h3 client and a much larger framing translation layer; deferred until requested.
 - Backend URL is `http://host:port` only. HTTPS upstreams and Unix-domain sockets can be added on demand.
 - Under high request volume the fallback opens one upstream TCP connection per inbound request (no pooling). Camouflage traffic is rare-path, so this is fine in practice; if you intend to use the fallback as a real load balancer, terminate at the upstream instead.
 
