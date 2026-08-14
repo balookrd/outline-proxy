@@ -160,25 +160,35 @@ export function buildGroupPayload(f: GroupFormFields, editing: boolean): Record<
   out.shared_resume = f.sharedResume;
   if (f.warmStandbyTcp !== null) out.warm_standby_tcp = Math.trunc(f.warmStandbyTcp);
   if (f.warmStandbyUdp !== null) out.warm_standby_udp = Math.trunc(f.warmStandbyUdp);
-  // KNOWN v1 LIMITATION (do not attempt to fix without server-side delete
-  // semantics): switching reselectMode to 'none' on a group that already has
-  // a schedule, or clearing warm_standby_* back to empty, omits those keys
-  // here — merge_patch_into_table only overwrites present keys, so the old
-  // values survive on the server. Edit config.toml directly, or recreate the
-  // group, to remove a reselect schedule or clear warm-standby.
+  // Reselect. Emit reselect_at = [] whenever NOT in at-mode so a PATCH clears a
+  // stale on-disk at-schedule (the server treats an empty array as "no
+  // schedule"): this lets an operator switch an at-scheduled group to interval /
+  // none, or move it back to active_active, without the server rejecting a
+  // leftover reselect_at. KNOWN v1 LIMITATION (merge endpoint has no
+  // delete-semantics; reselect_interval and warm_standby_* have no empty form):
+  // switching AWAY from interval-mode (interval->at / ->none, or leaving
+  // active_passive on an interval-scheduled group) cannot clear the stale
+  // reselect_interval via PATCH, and clearing warm_standby_* is likewise
+  // unsupported — the operator must edit config.toml directly for those.
   if (f.reselectMode === 'at') {
-    const at = lines(f.reselectAt);
-    if (at.length) out.reselect_at = at;
+    out.reselect_at = lines(f.reselectAt);
     out.reselect_sync = f.reselectSync;
-  } else if (f.reselectMode === 'interval' && f.reselectInterval.trim()) {
-    out.reselect_interval = f.reselectInterval.trim();
+  } else {
+    out.reselect_at = [];
+    if (f.reselectMode === 'interval' && f.reselectInterval.trim()) {
+      out.reselect_interval = f.reselectInterval.trim();
+    }
   }
   for (const field of ADVANCED_FIELDS) {
     const raw = (f.advanced[field.key] ?? '').trim();
     if (!raw) continue;
-    if (field.kind === 'int') out[field.key] = Math.trunc(Number(raw));
-    else if (field.kind === 'float') out[field.key] = Number(raw);
-    else if (field.kind === 'bool') out[field.key] = raw === 'true';
+    if (field.kind === 'int') {
+      const n = Math.trunc(Number(raw));
+      if (!Number.isNaN(n)) out[field.key] = n;
+    } else if (field.kind === 'float') {
+      const n = Number(raw);
+      if (!Number.isNaN(n)) out[field.key] = n;
+    } else if (field.kind === 'bool') out[field.key] = raw === 'true';
     else out[field.key] = raw; // enum
   }
   return out;
