@@ -12,10 +12,16 @@ edition = "2024"
 workspace = true
 
 [features]
-default = ["h3", "metrics", "control", "env-filter", "multi-thread", "mimalloc", "tun"]
-tun = ["dep:outline-tun", "outline-tun/metrics", "outline-metrics/tun"]   # TUN device support (transparent proxy)
+default = ["h3", "metrics", "control", "env-filter", "multi-thread", "mimalloc", "tun", "socks5"]
+# SOCKS5 ingress (src/proxy). Off on Android, where the native TUN carries all
+# traffic and the whole 5.3k-LOC ingress can be compiled out.
+socks5 = []
+# TUN device support (transparent proxy). No longer forces metrics: on Android
+# (`tun` without `metrics`) the engine's metric calls resolve to outline-metrics
+# no-op stubs. See `metrics` below for the weak-feature that re-adds TUN metrics.
+tun = ["dep:outline-tun"]
 h3 = ["outline-transport/h3", "outline-tun?/quic", "outline-uplink/quic"]
-metrics = ["outline-metrics/prometheus", "outline-transport/metrics", "outline-uplink/metrics", "dep:serde_json", "hyper/server"]
+metrics = ["outline-metrics/prometheus", "outline-transport/metrics", "outline-uplink/metrics", "outline-tun?/metrics", "dep:serde_json", "hyper/server"]
 # control: authenticated mutating HTTP plane (manual uplink switch etc.).
 # Independent of `metrics`; both planes bind separate sockets but share hyper's server stack.
 control = ["hyper/server", "dep:serde_json", "dep:toml_edit"]

@@ -2,6 +2,7 @@ use std::os::fd::RawFd;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+#[cfg(feature = "socks5")]
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 #[cfg(any(feature = "control", feature = "metrics"))]
@@ -13,9 +14,11 @@ use crate::config::{AppConfig, Args};
 use crate::http::control::{ApplyHandle, spawn_control_server};
 #[cfg(feature = "metrics")]
 use crate::http::metrics::spawn_metrics_server;
+#[cfg(feature = "socks5")]
 use crate::proxy::ProxyConfig;
 use outline_uplink::{UplinkRegistry, log_registry_summary};
 
+#[cfg(feature = "socks5")]
 mod listener;
 mod state_store;
 
@@ -219,27 +222,6 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd
         }
     }
 
-    // fd mode (Android): TUN carries all traffic, so the SOCKS5 server is
-    // not needed. Never bring up the listener when a preopened fd is
-    // active, even if `[socks5] listen` is set — and warn, so the config
-    // conflict isn't silent.
-    let listener = if tun_fd.is_some() {
-        if config.listen.is_some() {
-            warn!(
-                "[socks5] listen is set but a preopened TUN fd is active — ignoring the SOCKS5 listener"
-            );
-        }
-        None
-    } else if let Some(listen) = config.listen {
-        Some(
-            TcpListener::bind(listen)
-                .await
-                .with_context(|| format!("failed to bind {}", listen))?,
-        )
-    } else {
-        None
-    };
-
     #[cfg(feature = "tun")]
     let tun_enabled = config.tun.is_some();
     #[cfg(not(feature = "tun"))]
@@ -251,6 +233,7 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd
         tun_enabled,
         "proxy started"
     );
+    #[cfg(feature = "socks5")]
     listener::warn_about_tcp_probe_target(&config);
     log_registry_summary(&registry);
     // Collect handles for the embedded HTTP listeners so we can await their
@@ -286,24 +269,57 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd
     }
     #[cfg(not(feature = "control"))]
     let _ = args; // suppress unused-when-feature-disabled warning
-    // Build the thin proxy-layer config slice from the fully-resolved AppConfig.
-    // Each accepted connection clones only this Arc — not the full AppConfig —
-    // so there is no unnecessary coupling to uplink/tun/metrics fields.
-    let proxy_config = Arc::new(ProxyConfig {
-        socks5_auth: config.socks5_auth.clone(),
-        dns_cache: dns_cache.clone(),
-        router: shared_routing.clone().map(|t| t as Arc<dyn crate::proxy::Router>),
-        direct_fwmark: config.direct_fwmark,
-        tcp_timeouts: config.tcp_timeouts,
-    });
 
-    let accept_result = if let Some(listener) = listener {
-        listener::run_accept_loop(listener, proxy_config, registry, shutdown_rx.clone()).await
-    } else {
-        // TUN-only mode: no TCP listener; block until shutdown signal.
+    // fd mode (Android): TUN carries all traffic, so the SOCKS5 server is
+    // not needed. Never bring up the listener when a preopened fd is
+    // active, even if `[socks5] listen` is set — and warn, so the config
+    // conflict isn't silent.
+    #[cfg(feature = "socks5")]
+    let accept_result = {
+        let listener = if tun_fd.is_some() {
+            if config.listen.is_some() {
+                warn!(
+                    "[socks5] listen is set but a preopened TUN fd is active — ignoring the SOCKS5 listener"
+                );
+            }
+            None
+        } else if let Some(listen) = config.listen {
+            Some(
+                TcpListener::bind(listen)
+                    .await
+                    .with_context(|| format!("failed to bind {}", listen))?,
+            )
+        } else {
+            None
+        };
+        // Build the thin proxy-layer config slice from the fully-resolved
+        // AppConfig. Each accepted connection clones only this Arc — not the
+        // full AppConfig — so there is no unnecessary coupling to
+        // uplink/tun/metrics fields.
+        let proxy_config = Arc::new(ProxyConfig {
+            socks5_auth: config.socks5_auth.clone(),
+            dns_cache: dns_cache.clone(),
+            router: shared_routing.clone().map(|t| t as Arc<dyn crate::proxy::Router>),
+            direct_fwmark: config.direct_fwmark,
+            tcp_timeouts: config.tcp_timeouts,
+        });
+        if let Some(listener) = listener {
+            listener::run_accept_loop(listener, proxy_config, registry, shutdown_rx.clone()).await
+        } else {
+            // TUN-only mode: no TCP listener; block until shutdown signal.
+            let mut rx = shutdown_rx.clone();
+            let _ = rx.wait_for(|&v| v).await;
+            Ok(())
+        }
+    };
+
+    // Without SOCKS5 (Android): ingress only through TUN — block until shutdown.
+    #[cfg(not(feature = "socks5"))]
+    let accept_result = {
+        let _ = (&registry, &dns_cache, &shared_routing);
         let mut rx = shutdown_rx.clone();
         let _ = rx.wait_for(|&v| v).await;
-        Ok(())
+        Ok::<(), anyhow::Error>(())
     };
 
     // Wait for the embedded HTTP listeners to finish their own drain. Each
