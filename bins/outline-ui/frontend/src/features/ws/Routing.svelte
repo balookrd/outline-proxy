@@ -23,6 +23,12 @@
   const entries = $derived<RouteEntry[]>(routesPoll.data?.routes ?? []);
   const groups = $derived<string[]>(routesPoll.data?.groups ?? []);
   const revision = $derived(routesPoll.data?.revision ?? '');
+  // Routing is first-match-wins and the server requires `default` to be the
+  // last rule — any rule after it would be dead. Reordering can't be allowed
+  // to violate that: the default row must never move up, and the row directly
+  // above it must never move down past it. `-1` (no default rule yet) makes
+  // both comparisons below false, so it's a no-op when the list has none.
+  const defaultIndex = $derived(entries.findIndex((r) => r.is_default));
 
   const dirtyInstances = new SvelteSet<string>();
   const dirty = $derived(instance !== '' && dirtyInstances.has(instance));
@@ -187,8 +193,8 @@
                 <td>{targetText(e.config)}</td>
                 <td>
                   <div class="rowactions">
-                    <button class="iconbtn" title="Move up" disabled={mutating || e.index === 0} aria-label={`Move rule #${e.index} up`} onclick={() => move(e, -1)}>↑</button>
-                    <button class="iconbtn" title="Move down" disabled={mutating || e.index === entries.length - 1} aria-label={`Move rule #${e.index} down`} onclick={() => move(e, 1)}>↓</button>
+                    <button class="iconbtn" title="Move up" disabled={mutating || e.index === 0 || e.is_default} aria-label={`Move rule #${e.index} up`} onclick={() => move(e, -1)}>↑</button>
+                    <button class="iconbtn" title="Move down" disabled={mutating || e.index === entries.length - 1 || e.index === defaultIndex - 1} aria-label={`Move rule #${e.index} down`} onclick={() => move(e, 1)}>↓</button>
                     <button class="iconbtn act-soft" title="Edit" disabled={mutating} aria-label={`Edit rule #${e.index}`} onclick={() => openEdit(e)}>
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                     </button>
@@ -202,7 +208,10 @@
           </tbody>
         </table>
       {:else if !routesPoll.error}
-        <div class="empty">No routes configured for this instance.</div>
+        <div class="empty">
+          No routes configured for this instance.
+          <p class="hint">Start with the default rule — it's the catch-all every other rule falls through to.</p>
+        </div>
       {/if}
     </div>
   {/if}
