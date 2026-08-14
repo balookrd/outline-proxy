@@ -20,6 +20,12 @@ answers. This binary is those two dashboards with the data plane unhooked.
 It holds no state, keeps nothing on disk, and stores no credentials of its own
 beyond what its config points at.
 
+The `/ws` dashboard's Uplink groups tab (`/ws/groups`) — CRUD editor for `[[uplink_group]]` policy
+(mode, routing scope, reselect, warm standby, cluster resume, and the advanced
+scoring/failover/keepalive knobs). Staged → **Apply now**, hot-applied without
+a node restart. A group is created empty; add its uplinks in the Uplinks tab.
+Delete is only allowed for a group with no uplinks.
+
 The `/ws` dashboard's Routing tab edits an instance's `[[route]]` policy
 rules — create, update, delete, and reorder, since first-match-wins means the
 order of rules is itself part of what they do — and hot-applies them through

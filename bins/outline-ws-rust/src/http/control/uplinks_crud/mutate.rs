@@ -405,13 +405,17 @@ pub(super) fn apply_reorder(
     // Capture the group's rendering slots (sorted source positions) to reassign
     // in the new order. A never-written table has no position and is skipped —
     // encode then falls back to running-position append for it.
-    let mut slots: Vec<_> =
-        group_idx.iter().filter_map(|&i| arr.get(i).and_then(|t| t.position())).collect();
+    let mut slots: Vec<_> = group_idx
+        .iter()
+        .filter_map(|&i| arr.get(i).and_then(|t| t.position()))
+        .collect();
     slots.sort_unstable();
 
     // Clone the group's tables out, reorder within the group, reassign slots.
-    let mut group_tables: Vec<Table> =
-        group_idx.iter().map(|&i| arr.get(i).expect("valid group index").clone()).collect();
+    let mut group_tables: Vec<Table> = group_idx
+        .iter()
+        .map(|&i| arr.get(i).expect("valid group index").clone())
+        .collect();
     let moved = group_tables.remove(from);
     group_tables.insert(to, moved);
     for (k, t) in group_tables.iter_mut().enumerate() {

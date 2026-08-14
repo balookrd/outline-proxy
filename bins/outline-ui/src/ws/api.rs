@@ -334,6 +334,18 @@ pub async fn routes_proxy(
     proxy_crud(&state, method, query, body, "/control/routes").await
 }
 
+/// `GET|POST|PATCH|DELETE /dashboard/api/groups` — CRUD passthrough to
+/// `/control/uplink_groups`. GET carries `instance` in the query; mutating
+/// methods carry an `{instance, body}` envelope, same as uplinks/routes.
+pub async fn groups_proxy(
+    State(state): State<WsState>,
+    method: Method,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
+    proxy_crud(&state, method, query, body, "/control/uplink_groups").await
+}
+
 /// `POST /dashboard/api/apply` — asks the instance to hot-apply pending uplink
 /// (and routing) changes. Carries an `{instance}` envelope; its callers omit
 /// `body`, which `/control/apply` ignores regardless of content.
@@ -353,6 +365,13 @@ pub async fn routes_reorder_proxy(State(state): State<WsState>, body: Bytes) -> 
 /// verbatim (same envelope shape as routes reorder, different control path).
 pub async fn uplinks_reorder_proxy(State(state): State<WsState>, body: Bytes) -> Response {
     proxy_envelope_post(&state, body, "/control/uplinks/reorder").await
+}
+
+/// `POST /dashboard/api/groups/reorder` — `{instance, body}` envelope to
+/// `/control/uplink_groups/reorder`; `body` carries `{name, to}`, forwarded
+/// verbatim (same envelope shape as routes/uplinks reorder, different path).
+pub async fn groups_reorder_proxy(State(state): State<WsState>, body: Bytes) -> Response {
+    proxy_envelope_post(&state, body, "/control/uplink_groups/reorder").await
 }
 
 /// Shared CRUD passthrough behind `uplinks_proxy`/`routes_proxy`: GET forwards

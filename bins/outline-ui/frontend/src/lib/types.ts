@@ -281,3 +281,39 @@ export interface RouteMutationResponse {
   restart_required?: boolean;
   revision: string;
 }
+
+// WS uplink groups — GET /control/uplink_groups entries, proxied verbatim
+// through /ws/dashboard/api/groups (groups_crud/list.rs GroupListEntry/
+// GroupsListResponse). `config` mirrors the on-disk `[[uplink_group]]` table
+// (table_to_json), absent when the config couldn't be read. Only the fields
+// the form treats specially are named; the index signature carries the ~40
+// Advanced policy fields (all optional, primitive-typed).
+export interface GroupConfig {
+  name?: string;
+  mode?: string;
+  routing_scope?: string;
+  shared_resume?: boolean;
+  warm_standby_tcp?: number;
+  warm_standby_udp?: number;
+  reselect_at?: string[];
+  reselect_interval?: string;
+  reselect_sync?: boolean;
+  [k: string]: unknown;
+}
+export interface GroupEntry {
+  name: string;
+  // Number of [[outline.uplinks]] assigned to this group. Drives the strict
+  // delete gate (disabled while > 0) and the empty-group apply hint.
+  uplink_count: number;
+  config?: GroupConfig | null;
+}
+export interface GroupsListResponse {
+  groups: GroupEntry[];
+}
+// POST/PATCH/DELETE /control/uplink_groups response (groups_crud MutationResponse).
+export interface GroupMutationResponse {
+  name: string;
+  action: string;
+  apply_required?: boolean;
+  restart_required?: boolean;
+}
