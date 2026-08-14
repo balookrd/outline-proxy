@@ -32,9 +32,7 @@ use hyper::body::Incoming;
 use super::server::ControlState;
 use super::{ControlResponse, plain_response};
 
-// TODO(Task 4): `mod list;` lands with `groups_crud/list.rs` (GET listing +
-// uplink_count). Until then, `handle_groups`'s GET arm (in `mutate.rs`)
-// answers 501 instead of dispatching to a list handler.
+mod list;
 mod mutate;
 mod payload;
 
