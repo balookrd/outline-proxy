@@ -1,3 +1,4 @@
+use std::os::fd::RawFd;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -18,7 +19,7 @@ use outline_uplink::{UplinkRegistry, log_registry_summary};
 mod listener;
 mod state_store;
 
-pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
+pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd>) -> Result<()> {
     let state_store = state_store::init(config.state_path.clone()).await;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -212,13 +213,24 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
             ipsec_bypass,
         );
         if let Some(tun) = config.tun.clone() {
-            outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone(), None)
+            outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone(), tun_fd)
                 .await
                 .context("failed to start TUN loop")?;
         }
     }
 
-    let listener = if let Some(listen) = config.listen {
+    // fd mode (Android): TUN carries all traffic, so the SOCKS5 server is
+    // not needed. Never bring up the listener when a preopened fd is
+    // active, even if `[socks5] listen` is set — and warn, so the config
+    // conflict isn't silent.
+    let listener = if tun_fd.is_some() {
+        if config.listen.is_some() {
+            warn!(
+                "[socks5] listen is set but a preopened TUN fd is active — ignoring the SOCKS5 listener"
+            );
+        }
+        None
+    } else if let Some(listen) = config.listen {
         Some(
             TcpListener::bind(listen)
                 .await
