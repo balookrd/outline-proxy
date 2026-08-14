@@ -7,8 +7,10 @@
 //! proxy crate will depend on this trait, not on `outline-routing`.
 //!
 //! The concrete [`RoutingTable`] impl lives here (main crate owns the trait,
-//! so the orphan rule permits it).
-use outline_routing::{RouteDecision, RoutingTable};
+//! so the orphan rule permits it). The [`SharedRoutingTable`] impl lives here
+//! too, for the same reason — it is the hot-swappable wrapper that
+//! `/control/apply` publishes a freshly-compiled `RoutingTable` into.
+use outline_routing::{RouteDecision, RoutingTable, SharedRoutingTable};
 use socks5_proto::TargetAddr;
 
 /// Minimal surface the proxy layer needs from a routing backend.
@@ -49,5 +51,19 @@ impl Router for RoutingTable {
 
     fn resolve(&self, target: &TargetAddr) -> RouteDecision {
         RoutingTable::resolve(self, target)
+    }
+}
+
+impl Router for SharedRoutingTable {
+    fn version(&self) -> u64 {
+        SharedRoutingTable::version(self)
+    }
+
+    fn resolve_versioned(&self, target: &TargetAddr) -> (RouteDecision, u64) {
+        SharedRoutingTable::resolve_versioned(self, target)
+    }
+
+    fn resolve(&self, target: &TargetAddr) -> RouteDecision {
+        SharedRoutingTable::resolve(self, target)
     }
 }

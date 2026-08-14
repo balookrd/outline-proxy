@@ -9,7 +9,7 @@ use std::sync::Arc;
 use socks5_proto::TargetAddr;
 use tracing::warn;
 
-use outline_routing::{RouteTarget, RoutingTable};
+use outline_routing::{RouteTarget, SharedRoutingTable};
 use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
 
 /// Per-flow dispatch context for the TUN path.
@@ -21,7 +21,7 @@ use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
 #[derive(Clone)]
 pub struct TunRouting {
     registry: UplinkRegistry,
-    routing: Option<Arc<RoutingTable>>,
+    routing: Option<Arc<SharedRoutingTable>>,
     default_group: UplinkManager,
     direct_fwmark: Option<u32>,
     ipsec_bypass: bool,
@@ -74,7 +74,7 @@ impl HealthScope {
 impl TunRouting {
     pub fn new(
         registry: UplinkRegistry,
-        routing: Option<Arc<RoutingTable>>,
+        routing: Option<Arc<SharedRoutingTable>>,
         direct_fwmark: Option<u32>,
         ipsec_bypass: bool,
     ) -> Self {
@@ -145,7 +145,7 @@ impl TunRouting {
                 manager: self.default_group.clone(),
             };
         };
-        let decision = table.resolve(target);
+        let decision = table.load().resolve(target);
         self.materialize_target(decision.primary, decision.fallback, scope)
             .await
     }
@@ -208,7 +208,7 @@ impl TunRouting {
                 manager: self.default_group.clone(),
             };
         };
-        let decision = table.resolve_domain_or_ip(sni_host, Some(ip_target));
+        let decision = table.load().resolve_domain_or_ip(sni_host, Some(ip_target));
         self.materialize_target(decision.primary, decision.fallback, scope)
             .await
     }

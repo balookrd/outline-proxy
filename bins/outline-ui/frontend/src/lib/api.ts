@@ -7,6 +7,8 @@ import type {
   ActivateBody,
   ActivateResponse,
   ProxyOpResult,
+  RoutesListResponse,
+  RouteMutationResponse,
 } from './types';
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -61,3 +63,15 @@ export const uplinksList = (i: string, filters: Record<string, string> = {}) =>
   json<any>(`/ws/dashboard/api/uplinks?${new URLSearchParams({ instance: i, ...filters })}`);
 export const uplinksMutate = (method: 'POST' | 'PATCH' | 'DELETE', i: string, body: unknown) =>
   json<any>(`/ws/dashboard/api/uplinks`, mutate(method, { instance: i, body }));
+
+// WS routing CRUD — proxied to /control/routes (ws/api.rs routes_proxy). GET
+// carries `instance`; POST/PATCH/DELETE carry an {instance, body} envelope;
+// reorder is its own POST endpoint. `body` always includes the `revision`
+// last read, so a concurrent edit is rejected 409 instead of moving the wrong
+// rule (routes_crud mutate revision-guard).
+export const routesList = (i: string) =>
+  json<RoutesListResponse>(`/ws/dashboard/api/routes?${q(i)}`);
+export const routesMutate = (method: 'POST' | 'PATCH' | 'DELETE', i: string, body: unknown) =>
+  json<RouteMutationResponse>(`/ws/dashboard/api/routes`, mutate(method, { instance: i, body }));
+export const routesReorder = (i: string, body: unknown) =>
+  json<RouteMutationResponse>(`/ws/dashboard/api/routes/reorder`, mutate('POST', { instance: i, body }));
