@@ -29,15 +29,14 @@ pub(crate) use load::load_routing_config;
 #[cfg(feature = "control")]
 pub(crate) use schema::RouteSection;
 
-// Surfaced ahead of their consumer: the `groups_crud` control endpoint (not
-// yet fully wired into this binary) reuses this validator on
+// The `groups_crud` control endpoint reuses this validator on
 // `[[uplink_group]]` sections it assembles itself from a `toml_edit`
-// document, instead of building a whole `ConfigFile`. `UplinkGroupSection` is
-// already consumed by `http::control::groups_crud::payload::table_to_section`;
-// `load_balancing_config_from_group` stays unused until the dispatcher/
-// handlers land and call it — drop that `allow` then.
+// document, instead of building a whole `ConfigFile` — same pattern as
+// `load_routing_config` above. `UplinkGroupSection` is consumed by
+// `http::control::groups_crud::payload::table_to_section`;
+// `load_balancing_config_from_group` is consumed by
+// `http::control::groups_crud::mutate::validate_group_policy`.
 #[cfg(feature = "control")]
-#[allow(unused_imports)]
 pub(crate) use load::load_balancing_config_from_group;
 #[cfg(feature = "control")]
 pub(crate) use schema::UplinkGroupSection;
