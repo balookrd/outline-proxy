@@ -25,7 +25,6 @@ pub(crate) use schema::UplinkSection;
 // it assembles itself from a `toml_edit` document, instead of building a
 // whole `ConfigFile`.
 pub(crate) use load::load_routing_config;
-#[allow(unused_imports)]
 pub(crate) use schema::RouteSection;
 
 #[cfg(test)]

@@ -7,7 +7,9 @@
 //! proxy crate will depend on this trait, not on `outline-routing`.
 //!
 //! The concrete [`RoutingTable`] impl lives here (main crate owns the trait,
-//! so the orphan rule permits it).
+//! so the orphan rule permits it). The [`SharedRoutingTable`] impl lives here
+//! too, for the same reason — it is the hot-swappable wrapper that
+//! `/control/apply` publishes a freshly-compiled `RoutingTable` into.
 use outline_routing::{RouteDecision, RoutingTable, SharedRoutingTable};
 use socks5_proto::TargetAddr;
 

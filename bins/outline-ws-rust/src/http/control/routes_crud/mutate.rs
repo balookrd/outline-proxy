@@ -58,7 +58,7 @@ pub(super) fn apply_create(
     rule: &RoutePayload,
     at_index: Option<usize>,
 ) -> Result<usize, String> {
-    let table = payload_to_table(rule);
+    let mut table = Some(payload_to_table(rule));
     let arr = route_array_mut(doc);
     // Default insert position: just before the default rule (so it stays the
     // catch-all), or at the end when there is no default yet.
@@ -68,14 +68,17 @@ pub(super) fn apply_create(
         None => default_index(arr).unwrap_or(arr.len()),
     };
     // ArrayOfTables has no insert-at; rebuild with the new table spliced in.
+    // `table` is moved exactly once: `i == pos` matches at most one loop
+    // iteration (i is unique per iteration), and the post-loop push only
+    // fires when that iteration never happened (pos >= arr.len()).
     let mut rebuilt = ArrayOfTables::new();
     for (i, t) in arr.iter().enumerate() {
         if i == pos {
-            rebuilt.push(table.clone());
+            rebuilt.push(table.take().expect("i == pos matches at most once"));
         }
         rebuilt.push(t.clone());
     }
-    if pos >= arr.len() {
+    if let Some(table) = table {
         rebuilt.push(table);
     }
     *arr = rebuilt;
