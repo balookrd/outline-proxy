@@ -173,7 +173,7 @@ pub(super) fn merge_probe_section(
 /// Adapter: build a `LoadBalancingConfig` from the LB fields embedded in
 /// `[[uplink_group]]` (same field names / defaults as legacy
 /// `[load_balancing]`).
-fn load_balancing_config_from_group(
+pub(crate) fn load_balancing_config_from_group(
     section: &UplinkGroupSection,
 ) -> Result<outline_uplink::LoadBalancingConfig> {
     let shim = LoadBalancingSection {

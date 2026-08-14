@@ -10,8 +10,9 @@ use clap::Parser;
 use crate::config::Args;
 use crate::config::ConfigFile;
 use crate::config::normalize_outline_section;
+use crate::config::schema::UplinkGroupSection;
 
-use super::super::groups::load_groups;
+use super::super::groups::{load_balancing_config_from_group, load_groups};
 
 /// Walk `load_groups` on a TOML string. Mirrors what `load_config` does
 /// internally, minus the disk + async-IO machinery, so tests can drive
@@ -300,4 +301,35 @@ fn shuffle_wires_in_uplink_group_isolates_groups() {
             );
         }
     }
+}
+
+fn parse_group(toml_str: &str) -> UplinkGroupSection {
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        uplink_group: Vec<UplinkGroupSection>,
+    }
+    let mut w: Wrapper = toml::from_str(toml_str).expect("valid group TOML");
+    w.uplink_group.pop().expect("one group")
+}
+
+// These exercise `load_balancing_config_from_group` directly on a parsed
+// `[[uplink_group]]` section, the same shape the control-plane `groups_crud`
+// endpoint will feed it after assembling a section from a `toml_edit`
+// document — no `ConfigFile` involved.
+#[test]
+fn validator_reuse_rejects_reselect_at_and_interval_together() {
+    let g = parse_group(
+        "[[uplink_group]]\nname = \"main\"\nmode = \"active_passive\"\n\
+         routing_scope = \"global\"\nreselect_at = [\"03:00\"]\nreselect_interval = \"10h\"\n",
+    );
+    let err = load_balancing_config_from_group(&g).expect_err("at ⊕ interval");
+    assert!(format!("{err:#}").contains("reselect"), "got: {err:#}");
+}
+
+#[test]
+fn validator_reuse_accepts_valid_group() {
+    let g = parse_group(
+        "[[uplink_group]]\nname = \"main\"\nmode = \"active_active\"\nrouting_scope = \"per_flow\"\n",
+    );
+    load_balancing_config_from_group(&g).expect("valid group");
 }
