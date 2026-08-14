@@ -156,8 +156,7 @@ export function buildGroupPayload(f: GroupFormFields, editing: boolean): Record<
   // name is identity — sent only on create (server ignores it on PATCH anyway).
   if (!editing && f.name.trim()) out.name = f.name.trim();
   if (f.mode) out.mode = f.mode;
-  // routing_scope: emit only if non-default
-  if (f.routingScope && f.routingScope !== 'per_flow') out.routing_scope = f.routingScope;
+  if (f.routingScope) out.routing_scope = f.routingScope;
   if (f.sharedResume) out.shared_resume = true;
   if (f.warmStandbyTcp !== null) out.warm_standby_tcp = Math.trunc(f.warmStandbyTcp);
   if (f.warmStandbyUdp !== null) out.warm_standby_udp = Math.trunc(f.warmStandbyUdp);
