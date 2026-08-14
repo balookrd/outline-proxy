@@ -29,11 +29,11 @@ describe('validateGroupForm', () => {
 describe('buildGroupPayload', () => {
   it('emits only set key fields', () => {
     const f = { ...emptyGroupFields(), name: 'main', mode: 'active_active', routingScope: 'per_flow' };
-    expect(buildGroupPayload(f, false)).toEqual({ name: 'main', mode: 'active_active', routing_scope: 'per_flow' });
+    expect(buildGroupPayload(f, false)).toEqual({ name: 'main', mode: 'active_active', routing_scope: 'per_flow', shared_resume: false });
   });
   it('omits name on edit (identity is immutable)', () => {
     const f = { ...emptyGroupFields(), name: 'main', mode: 'active_passive' };
-    expect(buildGroupPayload(f, true)).toEqual({ mode: 'active_passive', routing_scope: 'per_flow' });
+    expect(buildGroupPayload(f, true)).toEqual({ mode: 'active_passive', routing_scope: 'per_flow', shared_resume: false });
   });
   it('encodes reselect at-schedule with sync', () => {
     const f = {
@@ -42,7 +42,7 @@ describe('buildGroupPayload', () => {
       reselectMode: 'at' as const, reselectAt: '03:00\n15:00', reselectSync: true,
     };
     expect(buildGroupPayload(f, false)).toEqual({
-      name: 'g', mode: 'active_passive', routing_scope: 'global',
+      name: 'g', mode: 'active_passive', routing_scope: 'global', shared_resume: false,
       reselect_at: ['03:00', '15:00'], reselect_sync: true,
     });
   });
@@ -52,14 +52,14 @@ describe('buildGroupPayload', () => {
     f.advanced.rtt_ewma_alpha = '0.3';
     f.advanced.auto_failback = 'false';
     expect(buildGroupPayload(f, false)).toEqual({
-      name: 'g', mode: 'active_active', routing_scope: 'per_flow',
+      name: 'g', mode: 'active_active', routing_scope: 'per_flow', shared_resume: false,
       sticky_ttl_secs: 300, rtt_ewma_alpha: 0.3, auto_failback: false,
     });
   });
   it('round-trips advanced fields through fieldsFromConfig', () => {
     const cfg: GroupConfig = { name: 'g', mode: 'active_active', sticky_ttl_secs: 120, health_weighted_selection: true };
     expect(buildGroupPayload(fieldsFromConfig(cfg), true)).toEqual({
-      mode: 'active_active', routing_scope: 'per_flow', sticky_ttl_secs: 120, health_weighted_selection: true,
+      mode: 'active_active', routing_scope: 'per_flow', shared_resume: false, sticky_ttl_secs: 120, health_weighted_selection: true,
     });
   });
 });
