@@ -212,7 +212,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
             ipsec_bypass,
         );
         if let Some(tun) = config.tun.clone() {
-            outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone())
+            outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone(), None)
                 .await
                 .context("failed to start TUN loop")?;
         }

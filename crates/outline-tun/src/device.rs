@@ -5,7 +5,7 @@
 //! so the fd can be registered with the tokio reactor.
 
 use std::fs::OpenOptions;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -91,6 +91,31 @@ pub(crate) fn is_tun_device_busy_error(error: &anyhow::Error) -> bool {
         .chain()
         .filter_map(|source| source.downcast_ref::<std::io::Error>())
         .any(|io_error| io_error.raw_os_error() == Some(EBUSY_OS_ERROR))
+}
+
+/// Attaches to a TUN fd the OS already opened and bound for us — the Android
+/// `VpnService.establish()` case, where the app cannot open `/dev/net/tun`
+/// itself (no root) and is handed a ready fd instead. We `dup` it so our
+/// `File` owns an independent copy: dropping it on shutdown closes our copy
+/// while the caller (the JVM's `ParcelFileDescriptor`) still owns the
+/// original. No `TUNSETIFF`/`TUNSETOFFLOAD` runs — the fd is already a bound
+/// TUN queue, and a `VpnService` fd carries neither `IFF_VNET_HDR` nor offload
+/// negotiation, so GSO/GRO/USO stay off (`TunGso::default()`).
+#[cfg(unix)]
+pub(crate) fn attach_preopened_fd(fd: RawFd) -> Result<(std::fs::File, TunGso)> {
+    // SAFETY: `F_DUPFD_CLOEXEC` duplicates `fd` into a brand-new lowest-free fd
+    // (the `0` arg is the minimum-fd hint) and dereferences no pointer. We only
+    // read `fd` (duplicate it), never consume it, so the caller keeps ownership.
+    // The result is checked `< 0` before use.
+    let duped = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duped < 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to dup preopened TUN fd {fd}"));
+    }
+    // SAFETY: `duped` is a fresh, valid, uniquely-owned fd (checked `>= 0`), so
+    // `File` becomes its sole owner and closes it exactly once on drop.
+    let file = unsafe { std::fs::File::from_raw_fd(duped) };
+    Ok((file, TunGso::default()))
 }
 
 #[cfg(target_os = "linux")]
@@ -283,3 +308,7 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
         .with_context(|| format!("failed to open {}", config.path.display()))?;
     Ok((file, TunGso::default()))
 }
+
+#[cfg(test)]
+#[path = "tests/device.rs"]
+mod tests;

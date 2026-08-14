@@ -5,6 +5,7 @@
 //! loop that classifies each packet and dispatches it to the right engine
 //! (or synthesises a local ICMP reply).
 
+use std::os::fd::RawFd;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
@@ -21,7 +22,7 @@ use outline_metrics as metrics;
 use crate::classify::{PacketDisposition, classify_packet};
 use crate::config::TunConfig;
 use crate::defrag::{DefragmentedPacket, TunDefragmenter};
-use crate::device::{open_tun_device_with_retry, set_nonblocking};
+use crate::device::{attach_preopened_fd, open_tun_device_with_retry, set_nonblocking};
 use crate::icmp::{build_icmp_echo_reply_packets, icmp_echo_destination};
 use crate::routing::{TunRoute, TunRouting};
 use crate::tcp::TunTcpEngine;
@@ -62,14 +63,19 @@ pub async fn spawn_tun_loop(
     config: TunConfig,
     routing: TunRouting,
     dns_cache: Arc<outline_transport::DnsCache>,
+    preopened_fd: Option<RawFd>,
 ) -> Result<()> {
     let tun_path = config.path.clone();
     let tun_name = config.name.clone();
     let tun_mtu = config.mtu;
     let tun_path_for_task = tun_path.clone();
-    let (device, gso) = open_tun_device_with_retry(&config)
-        .await
-        .with_context(|| format!("failed to open TUN device {}", config.path.display()))?;
+    let (device, gso) = match preopened_fd {
+        Some(fd) => attach_preopened_fd(fd)
+            .with_context(|| format!("failed to attach preopened TUN fd {fd}"))?,
+        None => open_tun_device_with_retry(&config)
+            .await
+            .with_context(|| format!("failed to open TUN device {}", config.path.display()))?,
+    };
     // `vnet_hdr` (fd opened with IFF_VNET_HDR) governs the read/write vnet
     // framing and lets the TCP engine emit downlink TSO super-segments; `udp_gso`
     // (TUN_F_USO accepted) lets the UDP engine coalesce downlink datagrams.
