@@ -242,7 +242,7 @@ export interface ApplyResult {
 
 // WS routing — GET /control/routes entries, proxied verbatim through
 // /ws/dashboard/api/routes (routes_crud/list.rs RouteListEntry/RoutesListResponse).
-// `config` mirrors the on-disk `[[route]]` table (route_table_to_json), absent
+// `config` mirrors the on-disk `[[route]]` table (table_to_json), absent
 // when the config couldn't be read.
 export interface RouteConfig {
   prefixes?: string[];
