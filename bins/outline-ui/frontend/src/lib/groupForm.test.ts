@@ -29,11 +29,11 @@ describe('validateGroupForm', () => {
 describe('buildGroupPayload', () => {
   it('emits only set key fields', () => {
     const f = { ...emptyGroupFields(), name: 'main', mode: 'active_active', routingScope: 'per_flow' };
-    expect(buildGroupPayload(f, false)).toEqual({ name: 'main', mode: 'active_active', routing_scope: 'per_flow', shared_resume: false });
+    expect(buildGroupPayload(f, false)).toEqual({ name: 'main', mode: 'active_active', routing_scope: 'per_flow', shared_resume: false, reselect_at: [] });
   });
   it('omits name on edit (identity is immutable)', () => {
     const f = { ...emptyGroupFields(), name: 'main', mode: 'active_passive' };
-    expect(buildGroupPayload(f, true)).toEqual({ mode: 'active_passive', routing_scope: 'per_flow', shared_resume: false });
+    expect(buildGroupPayload(f, true)).toEqual({ mode: 'active_passive', routing_scope: 'per_flow', shared_resume: false, reselect_at: [] });
   });
   it('encodes reselect at-schedule with sync', () => {
     const f = {
@@ -52,14 +52,14 @@ describe('buildGroupPayload', () => {
     f.advanced.rtt_ewma_alpha = '0.3';
     f.advanced.auto_failback = 'false';
     expect(buildGroupPayload(f, false)).toEqual({
-      name: 'g', mode: 'active_active', routing_scope: 'per_flow', shared_resume: false,
+      name: 'g', mode: 'active_active', routing_scope: 'per_flow', shared_resume: false, reselect_at: [],
       sticky_ttl_secs: 300, rtt_ewma_alpha: 0.3, auto_failback: false,
     });
   });
   it('round-trips advanced fields through fieldsFromConfig', () => {
     const cfg: GroupConfig = { name: 'g', mode: 'active_active', sticky_ttl_secs: 120, health_weighted_selection: true };
     expect(buildGroupPayload(fieldsFromConfig(cfg), true)).toEqual({
-      mode: 'active_active', routing_scope: 'per_flow', shared_resume: false, sticky_ttl_secs: 120, health_weighted_selection: true,
+      mode: 'active_active', routing_scope: 'per_flow', shared_resume: false, reselect_at: [], sticky_ttl_secs: 120, health_weighted_selection: true,
     });
   });
 });
