@@ -1,8 +1,7 @@
 use std::time::Duration;
 
-use crate::proxy::TcpTimeouts;
-
 use super::super::schema::TcpTimeoutsSection;
+use super::super::types::TcpTimeouts;
 
 pub(super) fn load_tcp_timeouts(section: Option<&TcpTimeoutsSection>) -> TcpTimeouts {
     let defaults = TcpTimeouts::DEFAULT;

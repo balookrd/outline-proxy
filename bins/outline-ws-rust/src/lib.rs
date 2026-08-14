@@ -18,6 +18,7 @@ pub(crate) mod fs_util;
 pub mod http;
 pub mod memory;
 pub mod metrics;
+#[cfg(feature = "socks5")]
 pub mod proxy;
 
 mod bootstrap;
