@@ -7,6 +7,7 @@
 
 mod apply;
 mod config_edit;
+mod groups_crud;
 mod handlers;
 mod routes_crud;
 mod server;
