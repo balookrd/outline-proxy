@@ -2629,3 +2629,12 @@ The soonest `notAfter` across an uplink's endpoints is surfaced two ways:
 This is wired through the `metrics` and `dashboard` build features (via
 their `cert-check` sub-feature); stripped `router` builds omit the check
 and the X.509 parser entirely.
+
+## `/control/uplink_groups` (CRUD)
+
+GET lists `[[uplink_group]]` sections (`{name, uplink_count, config}`); POST
+creates an (empty) group; PATCH merges policy into an existing group by name
+(name is immutable); DELETE removes a group that has no uplinks. All mutations
+stage the change to `config.toml`; `POST /control/apply` hot-applies the new
+group set (`registry.apply_new_groups`) without a restart. Per-group LB/reselect
+policy is validated on every mutation with the same loader used at startup.
