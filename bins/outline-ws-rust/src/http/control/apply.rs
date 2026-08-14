@@ -32,6 +32,7 @@ use tracing::{info, warn};
 use outline_uplink::UplinkRegistry;
 
 use crate::config::{Args, load_config};
+use crate::http::control::config_edit::json_error_owned;
 
 use super::{ControlResponse, json_response, plain_response};
 
@@ -193,14 +194,6 @@ pub(crate) async fn handle_apply(
             routes_applied,
         },
     )
-}
-
-fn json_error_owned(status: StatusCode, message: String) -> ControlResponse {
-    #[derive(Serialize)]
-    struct Owned {
-        error: String,
-    }
-    json_response(status, &Owned { error: message })
 }
 
 #[cfg(test)]
