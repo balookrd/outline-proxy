@@ -23,7 +23,7 @@ use super::handlers::{
     handle_topology,
 };
 use super::routes_crud::{handle_routes, handle_routes_reorder};
-use super::uplinks_crud::handle_uplinks;
+use super::uplinks_crud::{handle_uplinks, handle_uplinks_reorder};
 use super::{ControlResponse, is_authorized, plain_response, unauthorized_response};
 use crate::config::ControlConfig;
 use crate::http::serve::{ServeConfig, serve_with_shutdown};
@@ -133,6 +133,7 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/control/reselect" => "/control/reselect",
         "/control/uplink_enabled" => "/control/uplink_enabled",
         "/control/uplinks" => "/control/uplinks",
+        "/control/uplinks/reorder" => "/control/uplinks/reorder",
         "/control/routes" => "/control/routes",
         "/control/routes/reorder" => "/control/routes/reorder",
         "/control/apply" => "/control/apply",
@@ -178,6 +179,11 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/control/uplinks" => {
             let response = handle_uplinks(request, Arc::clone(&state)).await;
             record_metrics_http_request("/control/uplinks", response.status().as_u16());
+            response
+        },
+        "/control/uplinks/reorder" => {
+            let response = handle_uplinks_reorder(request, Arc::clone(&state)).await;
+            record_metrics_http_request("/control/uplinks/reorder", response.status().as_u16());
             response
         },
         "/control/routes" => {

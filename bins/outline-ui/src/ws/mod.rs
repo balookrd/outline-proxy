@@ -39,6 +39,7 @@ pub fn router(state: WsState) -> Router {
                 .patch(api::routes_proxy)
                 .delete(api::routes_proxy),
         )
+        .route("/dashboard/api/uplinks/reorder", post(api::uplinks_reorder_proxy))
         .route("/dashboard/api/routes/reorder", post(api::routes_reorder_proxy))
         .fallback(|| async { crate::assets::spa_index() })
         .with_state(state)

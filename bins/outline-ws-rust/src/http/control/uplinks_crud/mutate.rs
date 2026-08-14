@@ -16,7 +16,7 @@ use crate::http::control::server::ControlState;
 use crate::http::control::{ControlResponse, json_error, json_response};
 
 use super::payload::{
-    CreateBody, DeleteBody, MutationResponse, UpdateBody, merge_patch_into_table,
+    CreateBody, DeleteBody, MutationResponse, ReorderBody, UpdateBody, merge_patch_into_table,
     payload_to_section, payload_to_table, table_to_section,
 };
 
@@ -237,6 +237,50 @@ pub(super) async fn handle_delete(
     }
 }
 
+pub(super) async fn handle_reorder(
+    request: Request<Incoming>,
+    state: Arc<ControlState>,
+) -> ControlResponse {
+    let Some(path) = state.config_path.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            "config file path unknown; CRUD endpoints need on-disk config",
+        );
+    };
+    let hot_apply_available = state.apply.is_some();
+    let body: ReorderBody = match read_json(request, "/control/uplinks/reorder").await {
+        Ok(v) => v,
+        Err(err) => return err,
+    };
+    if body.group.trim().is_empty() || body.name.trim().is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "group and name must be non-empty");
+    }
+
+    let _guard = state.config_write_lock.lock().await;
+    let group_name = body.group.clone();
+    let uplink_name = body.name.clone();
+    let to = body.to;
+    let result = mutate_config_file(&path, |doc| {
+        if find_group_mut(doc, &group_name).is_none() {
+            return Err(format!("uplink_group \"{group_name}\" not found"));
+        }
+        let arr = get_or_init_outline_uplinks(doc);
+        apply_reorder(arr, &group_name, &uplink_name, to)
+    })
+    .await;
+
+    match result {
+        Ok(()) => {
+            info!(group = %body.group, uplink = %body.name, to = body.to, "uplink reordered via /control/uplinks/reorder");
+            json_response(
+                StatusCode::ACCEPTED,
+                &MutationResponse::staged(body.group, body.name, "reordered", hot_apply_available),
+            )
+        },
+        Err((status, msg)) => json_error_owned(status, msg),
+    }
+}
+
 /// Read → mutate → validate-round-trip → atomic-write. `mutator` edits the
 /// in-memory document; return `Err(msg)` to abort with 400/404.
 async fn mutate_config_file<F>(path: &Path, mutator: F) -> Result<(), (StatusCode, String)>
@@ -312,4 +356,81 @@ pub(super) fn count_uplinks_in_group(arr: &ArrayOfTables, group: &str) -> usize 
     arr.iter()
         .filter(|t| t.get("group").and_then(|v| v.as_str()) == Some(group))
         .count()
+}
+
+/// Reorder one uplink within its group. `[[outline.uplinks]]` is a single flat
+/// array with entries from every group interleaved (each carries a `group`
+/// discriminator), so the move is scoped to the target group's entries: their
+/// relative order changes while every other group's entries keep their exact
+/// slot in the file.
+///
+/// Positions are reassigned the same way routes' `apply_reorder` does —
+/// toml_edit renders an array-of-tables sorted by each table's stored
+/// `position` (its source slot), NOT by Vec order, so moving tables in the Vec
+/// without touching positions is a silent no-op on disk and in any content
+/// hash. We capture just this group's position slots and reassign them in the
+/// new order, leaving other groups' slots untouched.
+pub(super) fn apply_reorder(
+    arr: &mut ArrayOfTables,
+    group: &str,
+    name: &str,
+    to: usize,
+) -> Result<(), String> {
+    // Global (array) indices of this group's entries, in array order.
+    let group_idx: Vec<usize> = arr
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.get("group").and_then(|v| v.as_str()) == Some(group))
+        .map(|(i, _)| i)
+        .collect();
+    let n = group_idx.len();
+    if n == 0 {
+        return Err(format!("uplink_group \"{group}\" has no uplinks on disk"));
+    }
+    if to >= n {
+        return Err(format!(
+            "reorder target {to} out of range for group \"{group}\" ({n} uplink(s))"
+        ));
+    }
+    let src_global = find_outline_uplink_index(arr, group, name)
+        .ok_or_else(|| format!("uplink \"{name}\" not found in group \"{group}\""))?;
+    let from = group_idx
+        .iter()
+        .position(|&i| i == src_global)
+        .expect("src_global came from this group's own index list");
+    if from == to {
+        return Ok(()); // no-op move
+    }
+
+    // Capture the group's rendering slots (sorted source positions) to reassign
+    // in the new order. A never-written table has no position and is skipped —
+    // encode then falls back to running-position append for it.
+    let mut slots: Vec<_> =
+        group_idx.iter().filter_map(|&i| arr.get(i).and_then(|t| t.position())).collect();
+    slots.sort_unstable();
+
+    // Clone the group's tables out, reorder within the group, reassign slots.
+    let mut group_tables: Vec<Table> =
+        group_idx.iter().map(|&i| arr.get(i).expect("valid group index").clone()).collect();
+    let moved = group_tables.remove(from);
+    group_tables.insert(to, moved);
+    for (k, t) in group_tables.iter_mut().enumerate() {
+        if let Some(&pos) = slots.get(k) {
+            t.set_position(pos);
+        }
+    }
+
+    // Rebuild the flat array: non-group entries keep their table (and position)
+    // verbatim; the group's global slots receive the reordered tables in turn.
+    let mut reordered = group_tables.into_iter();
+    let mut rebuilt = ArrayOfTables::new();
+    for (i, t) in arr.iter().enumerate() {
+        if group_idx.contains(&i) {
+            rebuilt.push(reordered.next().expect("one reordered table per group slot"));
+        } else {
+            rebuilt.push(t.clone());
+        }
+    }
+    *arr = rebuilt;
+    Ok(())
 }

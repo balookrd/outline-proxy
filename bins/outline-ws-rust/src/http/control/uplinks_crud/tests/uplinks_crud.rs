@@ -3,7 +3,8 @@ use toml_edit::{DocumentMut, Item, Value};
 use crate::config::validate_uplink_section;
 
 use super::mutate::{
-    count_uplinks_in_group, find_group_mut, find_outline_uplink_index, get_or_init_outline_uplinks,
+    apply_reorder, count_uplinks_in_group, find_group_mut, find_outline_uplink_index,
+    get_or_init_outline_uplinks,
 };
 use super::payload::{FallbackPayload, MutationResponse, UplinkPayload};
 use super::payload::{merge_patch_into_table, payload_to_section, payload_to_table, table_to_json};
@@ -683,4 +684,124 @@ async fn write_document_atomic_preserves_mode_and_leaves_no_temp() {
         .parse::<DocumentMut>()
         .expect("persisted config must stay valid TOML");
     assert!(!dir.path().join(".config.toml.tmp").exists(), "temp file left behind");
+}
+
+// ── Reorder within a group ──────────────────────────────────────────────────
+
+fn three_uplink_config() -> &'static str {
+    r#"
+[[uplink_group]]
+name = "core"
+
+[[outline.uplinks]]
+name = "a"
+group = "core"
+transport = "ws"
+tcp_ws_url = "wss://a.example.com:8388/tcp"
+method = "chacha20-ietf-poly1305"
+password = "pw-a"
+
+[[outline.uplinks]]
+name = "b"
+group = "core"
+transport = "ws"
+tcp_ws_url = "wss://b.example.com:8388/tcp"
+method = "chacha20-ietf-poly1305"
+password = "pw-b"
+
+[[outline.uplinks]]
+name = "c"
+group = "core"
+transport = "ws"
+tcp_ws_url = "wss://c.example.com:8388/tcp"
+method = "chacha20-ietf-poly1305"
+password = "pw-c"
+"#
+}
+
+#[test]
+fn reorder_changes_rendered_order_within_group() {
+    let mut doc = three_uplink_config().parse::<DocumentMut>().unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    // Move "c" (index 2 in the group) to the front.
+    apply_reorder(arr, "core", "c", 0).expect("reorder ok");
+    // The RENDERED order must reflect the move — toml_edit encodes tables by
+    // their stored position, so a Vec-only move is a silent no-op on disk.
+    // This asserts the real rendered order, the property the routes reorder
+    // bug once broke.
+    let rendered = doc.to_string();
+    let at = |needle: &str| rendered.find(needle).unwrap_or_else(|| panic!("{needle} present"));
+    assert!(
+        at("name = \"c\"") < at("name = \"a\"") && at("name = \"a\"") < at("name = \"b\""),
+        "expected rendered order c, a, b:\n{rendered}"
+    );
+}
+
+#[test]
+fn reorder_leaves_other_groups_untouched() {
+    let mut doc = r#"
+[[uplink_group]]
+name = "core"
+[[uplink_group]]
+name = "alt"
+
+[[outline.uplinks]]
+name = "a"
+group = "core"
+transport = "ws"
+tcp_ws_url = "wss://a.example.com:8388/tcp"
+method = "chacha20-ietf-poly1305"
+password = "pw-a"
+
+[[outline.uplinks]]
+name = "b"
+group = "core"
+transport = "ws"
+tcp_ws_url = "wss://b.example.com:8388/tcp"
+method = "chacha20-ietf-poly1305"
+password = "pw-b"
+
+[[outline.uplinks]]
+name = "z"
+group = "alt"
+transport = "ws"
+tcp_ws_url = "wss://z.example.com:8388/tcp"
+method = "chacha20-ietf-poly1305"
+password = "pw-z"
+"#
+    .parse::<DocumentMut>()
+    .unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    // Swap a/b within "core"; "z" in "alt" must keep its slot.
+    apply_reorder(arr, "core", "b", 0).expect("reorder ok");
+    let rendered = doc.to_string();
+    let at = |needle: &str| rendered.find(needle).unwrap_or_else(|| panic!("{needle} present"));
+    assert!(at("name = \"b\"") < at("name = \"a\""), "core reordered to b, a:\n{rendered}");
+    // "z" stays after both core entries — its slot never changed.
+    assert!(at("name = \"a\"") < at("name = \"z\""), "alt group entry must not move:\n{rendered}");
+}
+
+#[test]
+fn reorder_rejects_unknown_uplink() {
+    let mut doc = three_uplink_config().parse::<DocumentMut>().unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let err = apply_reorder(arr, "core", "ghost", 0).expect_err("unknown name");
+    assert!(err.contains("ghost"), "got: {err}");
+}
+
+#[test]
+fn reorder_rejects_out_of_range_target() {
+    let mut doc = three_uplink_config().parse::<DocumentMut>().unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let err = apply_reorder(arr, "core", "a", 3).expect_err("target out of range");
+    assert!(err.contains("out of range"), "got: {err}");
+}
+
+#[test]
+fn reorder_same_position_is_noop() {
+    let mut doc = three_uplink_config().parse::<DocumentMut>().unwrap();
+    let before = doc.to_string();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    apply_reorder(arr, "core", "a", 0).expect("noop ok");
+    assert_eq!(doc.to_string(), before, "moving to the same slot must not change the doc");
 }

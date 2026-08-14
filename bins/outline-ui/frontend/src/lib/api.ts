@@ -63,6 +63,12 @@ export const uplinksList = (i: string, filters: Record<string, string> = {}) =>
   json<any>(`/ws/dashboard/api/uplinks?${new URLSearchParams({ instance: i, ...filters })}`);
 export const uplinksMutate = (method: 'POST' | 'PATCH' | 'DELETE', i: string, body: unknown) =>
   json<any>(`/ws/dashboard/api/uplinks`, mutate(method, { instance: i, body }));
+// Reorder one uplink within its group — its own POST endpoint (ws/api.rs
+// uplinks_reorder_proxy → /control/uplinks/reorder). `body` is {group, name,
+// to}: move `name` to 0-based position `to` among its group's uplinks. Order
+// is cosmetic (selection is by weight/RTT), so this only rewrites config order.
+export const uplinksReorder = (i: string, body: { group: string; name: string; to: number }) =>
+  json<any>(`/ws/dashboard/api/uplinks/reorder`, mutate('POST', { instance: i, body }));
 
 // WS routing CRUD — proxied to /control/routes (ws/api.rs routes_proxy). GET
 // carries `instance`; POST/PATCH/DELETE carry an {instance, body} envelope;

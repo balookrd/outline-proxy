@@ -115,6 +115,17 @@ pub(super) struct DeleteBody {
     pub(super) name: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct ReorderBody {
+    pub(super) group: String,
+    pub(super) name: String,
+    /// Target position of `name` among its group's uplinks (0-based, in
+    /// declaration order). Out-of-range is rejected. Uplink order is
+    /// cosmetic — active-uplink selection is by `weight`/RTT, not position —
+    /// so this only rewrites the on-disk/display order within the group.
+    pub(super) to: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct MutationResponse {
     pub(super) group: String,

@@ -348,6 +348,13 @@ pub async fn routes_reorder_proxy(State(state): State<WsState>, body: Bytes) -> 
     proxy_envelope_post(&state, body, "/control/routes/reorder").await
 }
 
+/// `POST /dashboard/api/uplinks/reorder` — `{instance, body}` envelope to
+/// `/control/uplinks/reorder`; `body` carries `{group, name, to}`, forwarded
+/// verbatim (same envelope shape as routes reorder, different control path).
+pub async fn uplinks_reorder_proxy(State(state): State<WsState>, body: Bytes) -> Response {
+    proxy_envelope_post(&state, body, "/control/uplinks/reorder").await
+}
+
 /// Shared CRUD passthrough behind `uplinks_proxy`/`routes_proxy`: GET forwards
 /// `instance` and any other filters as a query string; the mutating methods
 /// carry an `{instance, body}` envelope. Verbatim behaviour of the original
