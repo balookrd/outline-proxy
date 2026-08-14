@@ -3,7 +3,8 @@
 
   const current = $derived(section(route.path));
   const uplinksActive = $derived(route.path.startsWith('/ws/uplinks'));
-  const topologyActive = $derived(current === 'ws' && !uplinksActive);
+  const routingActive = $derived(route.path.startsWith('/ws/routing'));
+  const topologyActive = $derived(current === 'ws' && !uplinksActive && !routingActive);
 
   function onKey(e: KeyboardEvent, path: string) {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(path); }
@@ -59,6 +60,17 @@
   >
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M4 12l4-4M4 12l4 4M20 12l-4-4M20 12l-4 4"/></svg>
     Uplinks
+  </div>
+  <div
+    class="navlink"
+    class:active={routingActive}
+    role="button"
+    tabindex="0"
+    onclick={() => go('/ws/routing')}
+    onkeydown={(e) => onKey(e, '/ws/routing')}
+  >
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+    Routing
   </div>
 
   <div class="foot">outline-ui</div>

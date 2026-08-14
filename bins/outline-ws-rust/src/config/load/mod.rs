@@ -21,6 +21,8 @@ mod tun;
 mod uplinks;
 
 #[cfg(feature = "control")]
+pub(crate) use routing::load_routing_config;
+#[cfg(feature = "control")]
 pub(crate) use uplinks::validate_uplink_section;
 
 #[cfg(test)]
@@ -63,7 +65,12 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
     let groups = groups::load_groups(outline.as_ref(), file.as_ref(), args)?;
-    let routing = routing::load_routing_config(file.as_ref(), &groups, config_dir)?;
+    let group_names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+    let routing = routing::load_routing_config(
+        file.as_ref().and_then(|f| f.route.as_deref()),
+        &group_names,
+        config_dir,
+    )?;
 
     let metrics = args
         .metrics_listen

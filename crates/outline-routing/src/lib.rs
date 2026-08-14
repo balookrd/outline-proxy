@@ -7,11 +7,13 @@
 pub mod cidr;
 pub mod config;
 pub mod domain;
+mod shared;
 pub mod table;
 
 pub use cidr::{CidrSet, read_prefixes_from_file};
 pub use config::{RouteRule, RouteTarget, RoutingTableConfig};
 pub use domain::{DomainSet, read_domains_from_file};
+pub use shared::SharedRoutingTable;
 pub use table::{
     CompiledRule, RouteDecision, RouteWatchersGuard, RoutingTable, spawn_route_watchers,
 };

@@ -15,7 +15,6 @@ use hyper::body::Incoming;
 use super::server::ControlState;
 use super::{ControlResponse, plain_response};
 
-mod io;
 mod list;
 mod mutate;
 mod payload;

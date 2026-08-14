@@ -13,12 +13,17 @@ answers. This binary is those two dashboards with the data plane unhooked.
 
 | Path | Dashboard | Source |
 |---|---|---|
-| `/ws` | uplinks, topology, carrier loss | client control API (`:9191`) |
+| `/ws` | uplinks, routing, topology, carrier loss | client control API (`:9191`) |
 | `/ss` | user CRUD | server control API (`:9190`) |
 | `/` | index linking both | — |
 
 It holds no state, keeps nothing on disk, and stores no credentials of its own
 beyond what its config points at.
+
+The `/ws` dashboard's Routing tab edits an instance's `[[route]]` policy
+rules — create, update, delete, and reorder, since first-match-wins means the
+order of rules is itself part of what they do — and hot-applies them through
+the same "Apply now" button the Uplinks tab uses.
 
 ## Why it exists
 

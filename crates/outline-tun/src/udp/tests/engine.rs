@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use outline_routing::{RouteRule, RouteTarget, RoutingTable, RoutingTableConfig};
+use outline_routing::{
+    RouteRule, RouteTarget, RoutingTable, RoutingTableConfig, SharedRoutingTable,
+};
 use outline_uplink::UplinkRegistry;
 use shadowsocks_crypto::{CipherKind, decrypt_udp_packet};
 use socks5_proto::TargetAddr;
@@ -119,8 +121,8 @@ fn test_tun_writer() -> SharedTunWriter {
 /// One domain rule (`TUNNELLED_SNI` → the tunnel group) over a `Drop` default:
 /// the destination IP matches no CIDR rule, so an IP-resolved flow is dropped
 /// while an SNI-resolved one is tunnelled.
-async fn domain_rule_table() -> Arc<RoutingTable> {
-    Arc::new(
+async fn domain_rule_table() -> Arc<SharedRoutingTable> {
+    SharedRoutingTable::new(
         RoutingTable::compile(&RoutingTableConfig {
             rules: vec![RouteRule {
                 inline_prefixes: Vec::new(),
@@ -140,7 +142,10 @@ async fn domain_rule_table() -> Arc<RoutingTable> {
     )
 }
 
-async fn build_engine(upstream_url: Url, route_by_sni: bool) -> (TunUdpEngine, Arc<RoutingTable>) {
+async fn build_engine(
+    upstream_url: Url,
+    route_by_sni: bool,
+) -> (TunUdpEngine, Arc<SharedRoutingTable>) {
     let manager = build_test_manager_with_urls(None, Some(upstream_url)).await;
     let table = domain_rule_table().await;
     let routing = TunRouting::new(
@@ -256,10 +261,16 @@ async fn routing_rule_reload_drops_the_remembered_sni_route() {
 
     tear_down_flow(&engine, 40200).await;
     // A rule reload bumps the table version — what the watcher does after a
-    // `domain_file` change. The memory predates the current rules, so it must
-    // not steer the recreated flow; resolution falls back to the live table
-    // (here: the `Drop` default for the literal IP).
-    table.version.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    // `domain_file` change. `load_full` hands back the same `RoutingTable`
+    // the engine resolves against (no swap has happened), so bumping its
+    // version in place mirrors an in-place CIDR/domain-set reload. The memory
+    // predates the current rules, so it must not steer the recreated flow;
+    // resolution falls back to the live table (here: the `Drop` default for
+    // the literal IP).
+    table
+        .load_full()
+        .version
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
     send_client_datagram(&engine, 40200, &quic_short_header()).await;
     upstream.expect_silence(Duration::from_millis(750)).await;

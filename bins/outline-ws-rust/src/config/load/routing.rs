@@ -4,14 +4,17 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use outline_routing::{RouteRule, RouteTarget, RoutingTableConfig};
-use outline_uplink::UplinkGroupConfig;
 
-use super::super::schema::{ConfigFile, RouteSection};
+use super::super::schema::RouteSection;
 
 /// Parse the `[[route]]` list into a `RoutingTableConfig`.
 ///
 /// The returned value is a *config* snapshot, not a runtime routing table;
 /// the compiled table lives in `outline-routing` and is built later from this.
+///
+/// Reusable outside the config loader: the `/control/routes` CRUD endpoint
+/// runs this same whole-list validation on sections it assembles from a
+/// `toml_edit` document, without building a whole `ConfigFile`.
 ///
 /// Returns `Ok(None)` when no `[[route]]` is declared (no routing table declared).
 /// Otherwise validates:
@@ -19,12 +22,12 @@ use super::super::schema::{ConfigFile, RouteSection};
 /// - non-default rules have `prefixes` and/or `file`;
 /// - `via` references a declared group or the reserved `direct`/`drop`;
 /// - at most one of `fallback_via`/`fallback_direct`/`fallback_drop` is set.
-pub(super) fn load_routing_config(
-    file: Option<&ConfigFile>,
-    groups: &[UplinkGroupConfig],
+pub(crate) fn load_routing_config(
+    sections: Option<&[RouteSection]>,
+    group_names: &[&str],
     config_dir: &Path,
 ) -> Result<Option<RoutingTableConfig>> {
-    let Some(route_sections) = file.and_then(|f| f.route.as_ref()) else {
+    let Some(route_sections) = sections else {
         return Ok(None);
     };
     // An explicit but empty `[[route]]` array is almost certainly a config
@@ -39,8 +42,6 @@ pub(super) fn load_routing_config(
         );
     }
 
-    let group_names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
-
     let mut rules: Vec<RouteRule> = Vec::new();
     let mut default_target: Option<RouteTarget> = None;
     let mut default_fallback: Option<RouteTarget> = None;
@@ -48,11 +49,11 @@ pub(super) fn load_routing_config(
     for (index, section) in route_sections.iter().enumerate() {
         let target = parse_route_target(
             section.via.as_deref(),
-            &group_names,
+            group_names,
             &format!("[[route]] entry {}", index + 1),
         )?;
         let fallback =
-            parse_route_fallback(section, &group_names, &format!("[[route]] entry {}", index + 1))?;
+            parse_route_fallback(section, group_names, &format!("[[route]] entry {}", index + 1))?;
 
         let is_default = section.default.unwrap_or(false);
         let has_prefixes = section.prefixes.as_ref().is_some_and(|v| !v.is_empty());

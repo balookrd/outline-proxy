@@ -450,7 +450,7 @@ async fn tun_tcp_route_by_sni_reroutes_by_sniffed_domain() {
     let upstream = TestTcpUpstream::start().await;
     let manager = build_test_manager(upstream.url()).await;
     let (writer, mut capture) = TunCapture::new().await;
-    let table = std::sync::Arc::new(
+    let table = outline_routing::SharedRoutingTable::new(
         outline_routing::RoutingTable::compile(&outline_routing::RoutingTableConfig {
             rules: vec![outline_routing::RouteRule {
                 inline_prefixes: Vec::new(),

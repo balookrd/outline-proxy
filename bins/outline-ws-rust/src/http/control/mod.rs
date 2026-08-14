@@ -6,7 +6,9 @@
 //! access path.
 
 mod apply;
+mod config_edit;
 mod handlers;
+mod routes_crud;
 mod server;
 mod topology;
 mod uplinks_crud;

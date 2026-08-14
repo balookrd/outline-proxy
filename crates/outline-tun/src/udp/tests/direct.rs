@@ -10,10 +10,9 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
-use outline_routing::{RouteTarget, RoutingTable, RoutingTableConfig};
+use outline_routing::{RouteTarget, RoutingTable, RoutingTableConfig, SharedRoutingTable};
 use outline_uplink::UplinkRegistry;
 use tokio::net::UdpSocket;
 
@@ -82,7 +81,7 @@ fn packet_length(data: &[u8]) -> Option<usize> {
 /// An engine whose routing table sends everything out `via = "direct"`.
 async fn direct_engine(writer: SharedTunWriter) -> TunUdpEngine {
     let manager = build_test_manager_with_urls(None, None).await;
-    let table = Arc::new(
+    let table = SharedRoutingTable::new(
         RoutingTable::compile(&RoutingTableConfig {
             rules: Vec::new(),
             default_target: RouteTarget::Direct,
