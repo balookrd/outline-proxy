@@ -138,11 +138,24 @@ pub(super) fn apply_reorder(doc: &mut DocumentMut, from: usize, to: usize) -> Re
     if from >= len || to >= len {
         return Err("reorder index not found".to_string());
     }
+    // toml_edit renders `[[route]]` tables sorted by each table's stored
+    // `position` (its slot in the source document), NOT by Vec order — so
+    // rearranging the Vec alone is a silent no-op on the rendered output (both
+    // the atomic disk write and `route_revision`). Capture the block's original
+    // position slots and reassign them in the NEW order, so the encoder emits
+    // the rules where the operator moved them while keeping the route block in
+    // the same span of the file. A rule with no position yet (never written)
+    // keeps `None` and falls back to encode's running-position append.
+    let mut slots: Vec<isize> = arr.iter().filter_map(|t| t.position()).collect();
+    slots.sort_unstable();
     let mut tables: Vec<_> = arr.iter().cloned().collect();
     let moved = tables.remove(from);
     tables.insert(to, moved);
     let mut rebuilt = ArrayOfTables::new();
-    for t in tables {
+    for (i, mut t) in tables.into_iter().enumerate() {
+        if let Some(&pos) = slots.get(i) {
+            t.set_position(pos);
+        }
         rebuilt.push(t);
     }
     *arr = rebuilt;
