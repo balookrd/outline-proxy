@@ -4,15 +4,18 @@ Android VPN client that connects to your servers using the full `outline-ws-rust
 uplink stack (padding + VLESS / SS / WS / TLS, failover). The Rust core is reused
 unchanged; Android only adds a thin `VpnService` + UI layer on top.
 
-> Status: **increment 4**. On top of increments 1–3 (bridge + tun2proxy carry
-> traffic, QUIC/HTTP-3 carriers, logcat logging, persisted server-list UI,
-> Wi-Fi⇄cellular handover), now with **per-app split tunneling**: an app-picker
-> UI with three modes (all apps / only selected / all except selected). The
-> whole Rust stack (incl. quinn + h3) is verified to cross-compile under NDK
-> r29, the Gradle/Kotlin app builds (debug APK, minified release APK, green JVM
-> unit tests), and both builds have been **run on an emulator** — TUN up, Rust
-> core booted, handover followed. Nothing has run on **real hardware**, and no
-> traffic has crossed a live server yet.
+> Status: **increment 4**. On top of increments 1–3 (Rust⇄Kotlin bridge, TUN
+> traffic carried through the uplinks, QUIC/HTTP-3 carriers, logcat logging,
+> persisted server-list UI, Wi-Fi⇄cellular handover), now with **per-app split
+> tunneling**: an app-picker UI with three modes (all apps / only selected /
+> all except selected). The whole Rust stack (incl. quinn + h3) is verified to
+> cross-compile under NDK r29, and the Gradle/Kotlin app builds (debug APK,
+> minified release APK, green JVM unit tests). Both builds were **run on an
+> emulator** under the original tun2proxy bridge — TUN up, Rust core booted,
+> handover followed; that bridge has since been replaced by a native
+> `outline-tun` engine attached directly to the TUN fd (see Architecture),
+> verified so far by build/cross-compile only. Nothing has run on **real
+> hardware**, and no traffic has crossed a live server yet.
 
 ## Layout
 
@@ -35,13 +38,21 @@ android/
 ```
 VpnService.establish() ──tun_fd──┐
                                  ▼
-   tun2proxy ── reads TUN fd, forwards captured flows to ─┐
-                                                          ▼
-   outline-ws-rust SOCKS5 (127.0.0.1:1080) ── uplinks: padding/VLESS/SS/WS/TLS
-                                                          │
-   uplink sockets ── bypass the TUN (own package is ─────┘
+   outline-tun ── native engine, attached to the fd directly ─┐
+                                                              ▼
+   outline-ws-rust uplinks: padding/VLESS/SS/WS/TLS (SOCKS5 ingress compiled out)
+                                                              │
+   uplink sockets ── bypass the TUN (own package is ──────────┘
                      addDisallowedApplication'd) → real network
 ```
+
+The Rust core attaches the native `outline-tun` engine directly to the
+`VpnService` TUN fd via `RunOptions.tun_fd` and drives TCP/UDP flows straight
+into the uplink stack — no tun2proxy bridge, no SOCKS5 loopback hop in
+between. Loop avoidance is unchanged: the Kotlin side excludes this app's own
+package from the VPN (`addDisallowedApplication(self)`), so every socket the
+uplinks open bypasses the TUN automatically — no per-socket
+`VpnService.protect()`.
 
 Those uplink sockets ride whatever network the tunnel is bound to with
 `setUnderlyingNetworks`, so `OutlineVpnService` watches the best **non-VPN**
@@ -56,9 +67,11 @@ and the loss of a network we are not riding is ignored. Watching networks needs
 `ACCESS_NETWORK_STATE`; without it the callback throws and only the handover
 tracking is lost, not the tunnel.
 
-The Rust core is built slim (`--no-default-features` + `h3`): SOCKS5 ingress,
-the WS/TLS uplink stack, and the QUIC/HTTP-3 carriers — without mimalloc,
-metrics, dashboard, or the desktop TUN engine.
+The Rust core is built slim (`--no-default-features` + `h3, tun`): the native
+TUN engine, the WS/TLS uplink stack, and the QUIC/HTTP-3 carriers — without
+mimalloc, metrics, dashboard, or SOCKS5 ingress (the `socks5` feature stays
+off, and `outline-ws-rust` also gates the listener at runtime: given a
+`tun_fd`, it never starts, regardless of the TOML).
 
 ## Prerequisites
 
@@ -88,10 +101,11 @@ Both outputs are gitignored — rerun this after any change under `android/rust/
 (or the monorepo crates it pulls in).
 
 Notes:
-- The crate enables the ws-rust `h3` feature, pulling quinn + the patched `h3`
-  fork (`vendor/h3`). `android/rust` is a detached workspace, so it repeats the
-  root's `[patch.crates-io] h3 = …` — without it the vendored `sockudo-ws`
-  HTTP/3 carrier fails to compile against upstream `h3`.
+- The crate enables the ws-rust `h3` and `tun` features — QUIC/HTTP-3 carriers
+  and the native TUN engine, no SOCKS5 (`socks5` stays off). `h3` pulls quinn +
+  the patched `h3` fork (`vendor/h3`); `android/rust` is a detached workspace,
+  so it repeats the root's `[patch.crates-io] h3 = …` — without it the
+  vendored `sockudo-ws` HTTP/3 carrier fails to compile against upstream `h3`.
 - Bindings are generated from the **host** `.dylib` (a cross-compiled `.so`
   can't be loaded on the build host); the script handles this.
 - cargo-ndk 4.x: API level is `--platform N` (not `-p N`, which is cargo's
@@ -179,11 +193,15 @@ silently dropped by the platform.
 
 - **Increment 1 (done):** Rust⇄Kotlin bridge, SOCKS5 + uplinks boot, `VpnService`
   + Compose scaffold. `.so` verified to cross-compile under NDK r29.
-- **Increment 2 (done):** tun2proxy bridge (TUN fd → SOCKS5) so the tunnel
-  carries traffic; loop avoidance via `addDisallowedApplication(self)`. `.so`
-  (incl. tun2proxy's stack) verified to cross-compile under NDK r29. Not yet
-  exercised end-to-end on a device. DNS handling (tun2proxy virtual vs direct)
-  is still at defaults — a likely tuning point for first real runs.
+- **Increment 2 (done, now superseded by native TUN):** shipped a tun2proxy
+  bridge (TUN fd → SOCKS5) so the tunnel carried traffic, loop avoidance via
+  `addDisallowedApplication(self)`. tun2proxy is gone — replaced by the native
+  `outline-tun` engine attached directly to the `VpnService` fd via
+  `RunOptions.tun_fd` (see Architecture). SOCKS5 ingress is compiled out for
+  Android (`socks5` feature off, plus a runtime gate: fd present ⇒ no
+  listener); loop avoidance is unchanged. `.so` (built with the `h3, tun`
+  features) verified to cross-compile under NDK r29 and the debug APK builds
+  against it; not yet exercised end-to-end on an emulator or device.
 - **Increment 3 (done):** QUIC/h3 (`h3` feature; quinn + h3 verified to
   cross-compile under NDK), logcat logging (paranoid-android), persisted
   server-list UI, reconnect on network change (`setUnderlyingNetworks`). Rust
@@ -199,30 +217,38 @@ silently dropped by the platform.
 ## What is verified vs. not
 
 - **Verified by build:** the Rust core (`outline-android` cdylib) cross-compiles
-  to a loadable `aarch64` Android `.so`, including the SOCKS5 + uplink stack,
-  tun2proxy, and the QUIC/h3 carriers.
+  to a loadable `aarch64` Android `.so`, including the native TUN engine, the
+  uplink stack, and the QUIC/h3 carriers — SOCKS5 ingress and tun2proxy are
+  compiled out (see Architecture).
 - **Verified by build (Kotlin):** `:app:assembleDebug` produces a debug APK and
   `:app:testDebugUnitTest` passes — the latter covers the `outline://` parser,
   the access gate, and profile resolution on the JVM.
-- **Verified on an emulator** (Pixel_10, API 37, arm64), debug build: the
-  service establishes the TUN, the Rust core boots (SOCKS5 listening on
-  127.0.0.1:1080, uplink registry up) and tun2proxy connects into it,
-  `outline://connect` / `disconnect` dispatch, and the underlying-network
-  tracking follows a Wi-Fi ⇄ cellular handover both ways — `dumpsys
-  connectivity` shows the VPN agent's `underlying{[N]}` swapping between the
-  cellular and Wi-Fi networks, never binding the VPN network itself.
+- **Verified on an emulator** (Pixel_10, API 37, arm64), debug build, under the
+  original tun2proxy bridge (now superseded — see Architecture): the service
+  established the TUN, the Rust core booted (SOCKS5 listening on
+  127.0.0.1:1080, uplink registry up) and tun2proxy connected into it,
+  `outline://connect` / `disconnect` dispatched, and the underlying-network
+  tracking followed a Wi-Fi ⇄ cellular handover both ways — `dumpsys
+  connectivity` showed the VPN agent's `underlying{[N]}` swapping between the
+  cellular and Wi-Fi networks, never binding the VPN network itself. The
+  native TUN engine that replaced tun2proxy has not had an equivalent run yet
+  (see "Not verified" below).
 - **Verified on an emulator**, release build: with R8 minification on, the
   `.so` loads and `start()` reaches Rust — the keep rules hold. Checked by
   running the signed release APK, since a bad keep rule fails at runtime only.
 - **Not verified:** nothing has been run on real hardware, and no traffic has
   been carried end-to-end through a live server — the emulator runs pointed at
-  a dead endpoint. Per-app split tunneling still needs a real run. DNS handling
-  in tun2proxy is at defaults and is the likeliest first thing to tune.
+  a dead endpoint. Per-app split tunneling still needs a real run. The native
+  TUN engine itself has not been exercised on an emulator or a device yet —
+  cross-compile and the debug APK build are confirmed (see Roadmap, increment
+  2), but nobody has booted the tunnel and watched packets cross it.
 
 ## Notes for porting
 
 The Rust core needs a few `cfg(android)` adaptations as features expand:
 - `outline-net` `SO_MARK` is privileged on Android — use `VpnService.protect()`.
 - `freebind` / `/proc/net/if_inet6` IPv6-source logic is not applicable; gate it off.
-- The desktop `outline-tun` engine opens `/dev/net/tun` via `TUNSETIFF` (needs
-  root) — not used here; tun2proxy consumes the VpnService fd instead.
+- `outline-tun` now runs on Android too: `/dev/net/tun` + `TUNSETIFF` (needs
+  root) stays the desktop path, and a second one attaches the engine to an
+  already-open fd (`RunOptions.tun_fd`) — the one the `VpnService` hands us, no
+  root needed.
