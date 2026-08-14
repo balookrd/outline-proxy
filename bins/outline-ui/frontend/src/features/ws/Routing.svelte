@@ -80,16 +80,67 @@
     finally { mutating = false; }
   }
 
-  async function move(entry: RouteEntry, dir: -1 | 1) {
-    const to = entry.index + dir;
-    if (to < 0 || to >= entries.length) return;
+  async function reorderTo(from: number, to: number) {
     mutating = true;
     try {
-      await routesReorder(instance, { from: entry.index, to, revision });
+      await routesReorder(instance, { from, to, revision });
       dirtyInstances.add(instance);
       await routesPoll.refresh();
     } catch (e) { toast(errMsg(e), 'error'); }
     finally { mutating = false; }
+  }
+
+  async function move(entry: RouteEntry, dir: -1 | 1) {
+    const to = entry.index + dir;
+    if (to < 0 || to >= entries.length) return;
+    await reorderTo(entry.index, to);
+  }
+
+  // Drag-and-drop reorder, mirroring UplinkDrawer.svelte's fallback drag.
+  // Move up/down (above) stay as the keyboard/screen-reader path; drag is a
+  // pointer-only convenience firing the same routesReorder call. The default
+  // rule never participates: its row is not a drag source (draggable=false)
+  // and never a valid drop target, so "default stays last" (first-match-wins,
+  // nothing may follow the catch-all) holds by construction — the same
+  // invariant the ↑/↓ disabled rules enforce.
+  let draggingIndex: number | null = $state(null);
+  let dragOverIndex: number | null = $state(null);
+
+  function handleDragStart(e: DragEvent, index: number) {
+    draggingIndex = index;
+    // Firefox won't start a native drag unless some data is set.
+    e.dataTransfer?.setData('text/plain', String(index));
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  }
+  function handleDragOver(e: DragEvent, index: number) {
+    if (draggingIndex === null) return;
+    // Refuse a drop onto/after the default rule — leaving preventDefault
+    // uncalled makes the cursor show "no-drop" over those rows.
+    if (defaultIndex !== -1 && index >= defaultIndex) return;
+    e.preventDefault(); // a dragover target must preventDefault to accept a drop
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    dragOverIndex = index;
+  }
+  function handleDragLeave(index: number) {
+    // Guarded so a stale leave (fired after the next row's dragover already
+    // moved the highlight) can't clobber that newer state.
+    if (dragOverIndex === index) dragOverIndex = null;
+  }
+  async function handleDrop(e: DragEvent, targetIndex: number) {
+    e.preventDefault();
+    dragOverIndex = null;
+    const from = draggingIndex;
+    draggingIndex = null;
+    if (from === null || from === targetIndex) return;
+    // Defensive: dragover already blocks this, but guard the drop too.
+    if (defaultIndex !== -1 && targetIndex >= defaultIndex) return;
+    await reorderTo(from, targetIndex);
+  }
+  function handleDragEnd() {
+    // Fires on the source regardless of where the drop landed (or if it was
+    // cancelled), so always clear both flags — nothing stays highlighted.
+    draggingIndex = null;
+    dragOverIndex = null;
   }
 
   async function applyNow() {
@@ -183,8 +234,22 @@
           <thead><tr><th>#</th><th>Matchers</th><th>Target</th><th>Actions</th></tr></thead>
           <tbody>
             {#each entries as e (e.index)}
-              <tr>
-                <td>{e.index}</td>
+              <tr
+                class:dragging={draggingIndex === e.index}
+                class:drag-over={dragOverIndex === e.index && draggingIndex !== e.index}
+                draggable={!e.is_default && !mutating}
+                ondragstart={(ev) => handleDragStart(ev, e.index)}
+                ondragover={(ev) => handleDragOver(ev, e.index)}
+                ondragleave={() => handleDragLeave(e.index)}
+                ondrop={(ev) => handleDrop(ev, e.index)}
+                ondragend={handleDragEnd}
+              >
+                <td>
+                  <span class="route-idx">
+                    {#if !e.is_default}<span class="drag-handle" aria-hidden="true" title="Drag to reorder">⠿</span>{/if}
+                    {e.index}
+                  </span>
+                </td>
                 <td>
                   <div style="display:flex; flex-wrap:wrap; gap:4px">
                     {#each chipsFor(e.config) as c}<span class="chip {c.tone ?? ''}">{c.text}</span>{/each}
