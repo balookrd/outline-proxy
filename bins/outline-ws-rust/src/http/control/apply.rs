@@ -106,6 +106,17 @@ pub(super) async fn rebuild_routing(
     Ok(rule_count)
 }
 
+/// Whether `/control/apply` can hot-apply routing: only when routing was
+/// configured at startup (a `SharedRoutingTable` exists to swap into) AND the
+/// reloaded config still declares routing. Otherwise routing changes are
+/// restart-only and `routes_applied` is None.
+fn routing_hot_apply_possible(
+    shared: Option<&Arc<outline_routing::SharedRoutingTable>>,
+    reloaded_routing: Option<&outline_routing::config::RoutingTableConfig>,
+) -> bool {
+    shared.is_some() && reloaded_routing.is_some()
+}
+
 pub(crate) async fn handle_apply(
     request: Request<Incoming>,
     handle: Arc<ApplyHandle>,
@@ -154,9 +165,16 @@ pub(crate) async fn handle_apply(
     }
 
     // Hot-apply routing when it was configured at startup. The reloaded
-    // `new_config.routing` is already in scope.
+    // `new_config.routing` is already in scope. The match pattern below is the
+    // real runtime gate; the `routing_hot_apply_possible` guard is redundant
+    // with it by construction (both bindings are already `Some` in this arm).
+    // It is kept deliberately so the documented, unit-tested predicate stays
+    // referenced from production — arm pattern and predicate encode the same
+    // "routing configured at startup AND still declared" condition on purpose.
     let routes_applied = match (&handle.shared_routing, &new_config.routing) {
-        (Some(shared), Some(routing_cfg)) => {
+        (Some(shared), Some(routing_cfg))
+            if routing_hot_apply_possible(Some(shared), Some(routing_cfg)) =>
+        {
             match rebuild_routing(shared, routing_cfg, &handle.route_watchers).await {
                 Ok(n) => Some(n),
                 Err(e) => {
