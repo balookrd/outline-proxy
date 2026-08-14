@@ -2,6 +2,8 @@
 
 use super::*;
 
+use std::os::fd::AsRawFd;
+
 /// A pipe read-end stands in for the VpnService TUN fd — attach only dups it,
 /// so any real fd exercises the path.
 fn make_pipe() -> (RawFd, RawFd) {
@@ -21,6 +23,11 @@ fn attach_dups_and_leaves_original_open() {
     let (read_fd, write_fd) = make_pipe();
 
     let (file, gso) = attach_preopened_fd(read_fd).expect("attach must succeed");
+    assert_ne!(
+        file.as_raw_fd(),
+        read_fd,
+        "attach must return a distinct (duped) fd, not the original"
+    );
 
     assert!(!gso.vnet_hdr, "vnet_hdr must be off on a preopened fd");
     assert!(!gso.tcp_gro, "tcp_gro must be off on a preopened fd");

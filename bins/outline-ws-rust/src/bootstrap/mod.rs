@@ -23,6 +23,28 @@ mod listener;
 mod state_store;
 
 pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd>) -> Result<()> {
+    // `tun_fd` is only read by the ingresses that can act on it (TUN itself,
+    // and SOCKS5's Android-fd guard further down); silence the
+    // unused-parameter warning when neither is compiled in.
+    #[cfg(not(any(feature = "tun", feature = "socks5")))]
+    let _ = tun_fd;
+
+    // A preopened TUN fd was handed in (Android) but nothing will spawn TUN
+    // for it — either `[tun]` is absent from the config, or this build has
+    // no TUN support at all. SOCKS5 is unconditionally suppressed whenever
+    // `tun_fd` is set (see the accept_result split below), so this
+    // combination starts no ingress at all and would otherwise just block
+    // with zero diagnostics.
+    #[cfg(feature = "tun")]
+    let tun_fd_has_config = config.tun.is_some();
+    #[cfg(not(feature = "tun"))]
+    let tun_fd_has_config = false;
+    if tun_fd.is_some() && !tun_fd_has_config {
+        warn!(
+            "a TUN fd was supplied but [tun] is missing from the config — no ingress will start (TUN inactive, SOCKS5 gated off)"
+        );
+    }
+
     let state_store = state_store::init(config.state_path.clone()).await;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -314,9 +336,13 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd
     };
 
     // Without SOCKS5 (Android): ingress only through TUN — block until shutdown.
+    // `registry` and `dns_cache` already have unconditional uses earlier in
+    // this function (the startup `info!` log, `log_registry_summary`, and the
+    // registry construction call); only `shared_routing` needs the discard
+    // here to stay live when `tun` and `control` are both off too.
     #[cfg(not(feature = "socks5"))]
     let accept_result = {
-        let _ = (&registry, &dns_cache, &shared_routing);
+        let _ = &shared_routing;
         let mut rx = shutdown_rx.clone();
         let _ = rx.wait_for(|&v| v).await;
         Ok::<(), anyhow::Error>(())
