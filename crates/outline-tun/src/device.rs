@@ -101,6 +101,12 @@ pub(crate) fn is_tun_device_busy_error(error: &anyhow::Error) -> bool {
 /// original. No `TUNSETIFF`/`TUNSETOFFLOAD` runs — the fd is already a bound
 /// TUN queue, and a `VpnService` fd carries neither `IFF_VNET_HDR` nor offload
 /// negotiation, so GSO/GRO/USO stay off (`TunGso::default()`).
+///
+/// The independence is descriptor-level only: `dup`'d fds share the
+/// underlying open file description, so `O_NONBLOCK` and other status flags
+/// set on our copy (via [`set_nonblocking`] in `engine.rs`) also apply to the
+/// caller's original fd. Only the descriptor number and its close are
+/// independent.
 #[cfg(unix)]
 pub(crate) fn attach_preopened_fd(fd: RawFd) -> Result<(std::fs::File, TunGso)> {
     // SAFETY: `F_DUPFD_CLOEXEC` duplicates `fd` into a brand-new lowest-free fd

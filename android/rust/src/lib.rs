@@ -121,6 +121,8 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
     Ok(())
 }
 
+/// Stop the client and tear down the runtime. Returns `NotRunning` if nothing
+/// is active.
 #[uniffi::export]
 pub fn stop() -> Result<(), VpnError> {
     let mut guard = ENGINE.lock().expect("ENGINE mutex poisoned");

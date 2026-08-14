@@ -5,9 +5,16 @@
 //! and the optional read-only metrics and authenticated control-plane HTTP
 //! listeners ([`http`]).
 
+// Shared by the SOCKS5 accept loop and the HTTP listeners (metrics/control) —
+// gated to whichever of those is compiled in, or the module goes unused.
+#[cfg(any(feature = "socks5", feature = "metrics", feature = "control"))]
 pub(crate) mod accept;
+// error_class / client_io classify errors surfaced by `src/proxy` (SOCKS5
+// ingress) and have no consumer outside it.
+#[cfg(feature = "socks5")]
 pub(crate) mod client_io;
 pub mod config;
+#[cfg(feature = "socks5")]
 pub(crate) mod error_class;
 // Hardened atomic config writer. Only the control plane rewrites config.toml,
 // so it shares that feature's gate — otherwise a non-`control` build would flag
