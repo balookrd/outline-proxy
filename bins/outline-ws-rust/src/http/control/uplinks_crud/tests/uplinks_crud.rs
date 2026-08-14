@@ -778,7 +778,10 @@ password = "pw-z"
     let at = |needle: &str| rendered.find(needle).unwrap_or_else(|| panic!("{needle} present"));
     assert!(at("name = \"b\"") < at("name = \"a\""), "core reordered to b, a:\n{rendered}");
     // "z" stays after both core entries — its slot never changed.
-    assert!(at("name = \"a\"") < at("name = \"z\""), "alt group entry must not move:\n{rendered}");
+    assert!(
+        at("name = \"a\"") < at("name = \"z\""),
+        "alt group entry must not move:\n{rendered}"
+    );
 }
 
 #[test]

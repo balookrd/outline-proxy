@@ -537,7 +537,7 @@ pub(crate) struct FallbackSection {
 /// `[uplink_group.probe]` are inherited from it.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub(super) struct UplinkGroupSection {
+pub(crate) struct UplinkGroupSection {
     pub(super) name: Option<String>,
     pub(super) mode: Option<LoadBalancingMode>,
     pub(super) routing_scope: Option<RoutingScope>,

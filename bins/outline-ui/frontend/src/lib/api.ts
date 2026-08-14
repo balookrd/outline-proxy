@@ -9,6 +9,8 @@ import type {
   ProxyOpResult,
   RoutesListResponse,
   RouteMutationResponse,
+  GroupsListResponse,
+  GroupMutationResponse,
 } from './types';
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -81,3 +83,14 @@ export const routesMutate = (method: 'POST' | 'PATCH' | 'DELETE', i: string, bod
   json<RouteMutationResponse>(`/ws/dashboard/api/routes`, mutate(method, { instance: i, body }));
 export const routesReorder = (i: string, body: unknown) =>
   json<RouteMutationResponse>(`/ws/dashboard/api/routes/reorder`, mutate('POST', { instance: i, body }));
+
+// WS uplink-group CRUD — proxied to /control/uplink_groups (ws/api.rs
+// groups_proxy). GET carries `instance`; POST/PATCH/DELETE carry an
+// {instance, body} envelope. Named-entry (by group name), no revision.
+// Reorder is its own POST endpoint ({name, to}), like uplinks/routes reorder.
+export const groupsList = (i: string) =>
+  json<GroupsListResponse>(`/ws/dashboard/api/groups?${q(i)}`);
+export const groupsMutate = (method: 'POST' | 'PATCH' | 'DELETE', i: string, body: unknown) =>
+  json<GroupMutationResponse>(`/ws/dashboard/api/groups`, mutate(method, { instance: i, body }));
+export const groupsReorder = (i: string, body: { name: string; to: number }) =>
+  json<GroupMutationResponse>(`/ws/dashboard/api/groups/reorder`, mutate('POST', { instance: i, body }));
