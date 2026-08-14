@@ -25,8 +25,8 @@ fi
 echo ">> Building native library for $ABI ($PROFILE_DIR) into jniLibs"
 cargo ndk -t "$ABI" --platform 24 -o ../app/src/main/jniLibs -- build --lib $PROFILE_FLAG
 
-# cargo-ndk also copies transitive cdylibs (e.g. tun2proxy's own C-FFI lib),
-# which we statically link and do not need shipped. Keep only our library.
+# cargo-ndk also copies any transitive cdylibs it finds in the dependency
+# graph next to ours; keep only our library in jniLibs.
 find ../app/src/main/jniLibs -name '*.so' ! -name 'liboutline_android.so' -delete
 
 echo ">> Building host cdylib (for binding generation)"

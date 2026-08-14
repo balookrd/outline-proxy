@@ -1,11 +1,10 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use outline_routing::RoutingTableConfig;
 use outline_uplink::UplinkGroupConfig;
 use socks5_proto::Socks5AuthConfig;
-
-use crate::proxy::TcpTimeouts;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -156,4 +155,50 @@ pub struct ControlConfig {
     /// `None` when the binary was launched without a config file (e.g. pure
     /// CLI overrides), in which case CRUD endpoints return 409 Conflict.
     pub config_path: Option<PathBuf>,
+}
+
+/// TCP session timeouts (previously compile-time constants).
+///
+/// `post_client_eof_downstream` — bound for the downstream side to flush and
+/// send FIN after the client half-closes; otherwise stuck half-open sessions
+/// pin two socket FDs forever. Default 600 s (10 min): long enough to cover
+/// modern AI inference patterns that upload a large request body, close the
+/// request stream, and then wait minutes for the server to think (Codex
+/// `compact`, Claude long-context jobs, etc.). Short values (the previous
+/// 30 s default) aborted those sessions mid-response and surfaced to the
+/// client as "error sending request" / "stream disconnected".
+///
+/// `upstream_response` — chunk-0 response deadline per uplink when no
+/// failover is available (strict or exhausted candidates).
+///
+/// `socks_upstream_idle` — kills a SOCKS-through-uplink session when BOTH
+/// directions have been silent (no real payload) for this long. Keepalive
+/// frames do NOT reset the timer.
+///
+/// `direct_idle` — same semantics but for direct (bypass-routed) sessions.
+///
+/// Lives in the config domain (not `crate::proxy`) because `AppConfig` —
+/// built by config loading regardless of the `socks5` feature — carries a
+/// field of this type; `crate::proxy` re-exports it for its own internal use.
+#[derive(Debug, Clone, Copy)]
+pub struct TcpTimeouts {
+    pub post_client_eof_downstream: Duration,
+    pub upstream_response: Duration,
+    pub socks_upstream_idle: Duration,
+    pub direct_idle: Duration,
+}
+
+impl TcpTimeouts {
+    pub const DEFAULT: Self = Self {
+        post_client_eof_downstream: Duration::from_secs(600),
+        upstream_response: Duration::from_secs(15),
+        socks_upstream_idle: Duration::from_secs(300),
+        direct_idle: Duration::from_secs(120),
+    };
+}
+
+impl Default for TcpTimeouts {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
