@@ -35,6 +35,28 @@ pub(in crate::server) use sockudo_ws::{
 pub(in crate::server) type H3ServerRequestStream =
     h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
 
+/// FIN the send side of a request stream **without** emitting the GREASE frame.
+///
+/// The ordinary `RequestStream::finish()` sends GREASE first while
+/// `send_grease_frame` is still set, and that is another `send_data`. h3-quinn
+/// clears its internal `writing` slot only on the success path, so once a write
+/// has failed the slot stays occupied and that second `send_data` trips
+/// h3-quinn's misuse guard (`InternalError`). h3 escalates that to a
+/// *connection-level* `H3_INTERNAL_ERROR`, which tears down every stream
+/// multiplexed on the shared QUIC connection rather than just the broken one.
+///
+/// `poll_quic_finish` is the patched entry point that drives the QUIC FIN
+/// directly, bypassing `send_data` — the only safe way to close a stream whose
+/// send side has already failed.
+pub(in crate::server) async fn finish_send_side_without_grease<S>(
+    stream: &mut h3::server::RequestStream<S, Bytes>,
+) -> Result<(), h3::error::StreamError>
+where
+    S: h3::quic::SendStream<Bytes>,
+{
+    std::future::poll_fn(|cx| stream.poll_quic_finish(cx)).await
+}
+
 pub(in crate::server) fn h3_ws_server_from_endpoint(
     endpoint: quinn::Endpoint,
     ws_config: H3WebSocketConfig,

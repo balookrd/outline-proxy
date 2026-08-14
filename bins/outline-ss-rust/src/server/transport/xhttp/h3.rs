@@ -17,6 +17,7 @@ use tracing::{debug, warn};
 
 use crate::metrics::Protocol;
 use crate::server::cluster::ClusterCtx;
+use crate::server::h3::vendored::finish_send_side_without_grease;
 
 use super::super::super::state::Services;
 use super::super::is_normal_h3_shutdown;
@@ -214,9 +215,19 @@ async fn xhttp_h3_get(
         return Err(anyhow!(error)).context("failed to send xhttp/h3 GET response head");
     }
 
-    let result = drive_downlink_h3(&mut stream, Arc::clone(&session)).await;
+    let (send_side, result) = drive_downlink_h3(&mut stream, Arc::clone(&session)).await;
     session.detach_get();
-    let _ = stream.finish().await;
+    match send_side {
+        SendSide::Healthy => {
+            let _ = stream.finish().await;
+        },
+        // A failed write poisoned h3-quinn's send side: `finish()` would queue
+        // the GREASE frame into an occupied `writing` slot and take the whole
+        // shared QUIC carrier down with this one stream.
+        SendSide::Poisoned => {
+            let _ = finish_send_side_without_grease(&mut stream).await;
+        },
+    }
     result
 }
 
@@ -551,11 +562,14 @@ async fn drive_downlink_send_only(
         for chunk in buf.drain(..) {
             if let Err(error) = send.send_data(chunk).await {
                 let error = anyhow::Error::from(error);
+                // The failed write leaves h3-quinn's `writing` slot occupied, so
+                // `finish()` — which still emits GREASE through a second
+                // `send_data` — would trip its misuse guard and collapse every
+                // stream on the shared QUIC carrier. FIN the stream directly.
+                let _ = finish_send_side_without_grease(&mut send).await;
                 if is_normal_h3_shutdown(&error) {
-                    let _ = send.finish().await;
                     return Ok(());
                 }
-                let _ = send.finish().await;
                 return Err(error.context("xhttp/h3 stream-one send_data failed"));
             }
         }
@@ -570,11 +584,13 @@ async fn drive_downlink_send_only(
             for chunk in recheck {
                 if let Err(error) = send.send_data(chunk).await {
                     let error = anyhow::Error::from(error);
+                    // See the matching arm above: a failed write poisons
+                    // h3-quinn's send side, so the GREASE frame `finish()` would
+                    // queue must not be attempted.
+                    let _ = finish_send_side_without_grease(&mut send).await;
                     if is_normal_h3_shutdown(&error) {
-                        let _ = send.finish().await;
                         return Ok(());
                     }
-                    let _ = send.finish().await;
                     return Err(error.context("xhttp/h3 stream-one send_data failed"));
                 }
             }
@@ -592,10 +608,24 @@ async fn drive_downlink_send_only(
     }
 }
 
+/// Whether a downlink pump left the stream's send side usable.
+///
+/// A failed `send_data` leaves h3-quinn's `writing` slot occupied, so the
+/// stream may afterwards only be closed with a bare QUIC FIN
+/// ([`finish_send_side_without_grease`]) — never with `finish()`, whose GREASE
+/// frame is a second `send_data` and collapses the shared carrier. The flag is
+/// carried out separately from the `Result` because a peer-initiated close is
+/// reported as `Ok` while still poisoning the send side.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SendSide {
+    Healthy,
+    Poisoned,
+}
+
 async fn drive_downlink_h3(
     stream: &mut RequestStream<BidiStream<Bytes>, Bytes>,
     session: Arc<XhttpSession>,
-) -> Result<()> {
+) -> (SendSide, Result<()>) {
     let mut buf: Vec<Bytes> = Vec::new();
     loop {
         buf.clear();
@@ -605,13 +635,13 @@ async fn drive_downlink_h3(
                 let error = anyhow::Error::from(error);
                 if is_normal_h3_shutdown(&error) {
                     debug!("xhttp/h3 GET stream closed by peer");
-                    return Ok(());
+                    return (SendSide::Poisoned, Ok(()));
                 }
-                return Err(error.context("xhttp/h3 GET send_data failed"));
+                return (SendSide::Poisoned, Err(error.context("xhttp/h3 GET send_data failed")));
             }
         }
         if closed {
-            return Ok(());
+            return (SendSide::Healthy, Ok(()));
         }
         let notified = session.downlink_notify.notified();
         // Recheck after subscribing — see `duplex::recv` for the
@@ -623,18 +653,21 @@ async fn drive_downlink_h3(
             for chunk in recheck {
                 if let Err(error) = stream.send_data(chunk).await {
                     if is_normal_h3_shutdown(&anyhow!(error.to_string())) {
-                        return Ok(());
+                        return (SendSide::Poisoned, Ok(()));
                     }
-                    return Err(anyhow!(error)).context("xhttp/h3 GET send_data failed");
+                    return (
+                        SendSide::Poisoned,
+                        Err(anyhow!(error)).context("xhttp/h3 GET send_data failed"),
+                    );
                 }
             }
             if closed_recheck {
-                return Ok(());
+                return (SendSide::Healthy, Ok(()));
             }
             continue;
         }
         if closed_recheck {
-            return Ok(());
+            return (SendSide::Healthy, Ok(()));
         }
         notified.await;
     }

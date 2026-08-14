@@ -37,6 +37,28 @@ pub(super) fn websocket_protocol() -> h3::ext::Protocol {
     h3::ext::Protocol::WEBSOCKET
 }
 
+/// FIN the send side of a request stream **without** emitting the GREASE frame.
+///
+/// The ordinary `RequestStream::finish()` sends GREASE first while
+/// `send_grease_frame` is still set, and that is another `send_data`. h3-quinn
+/// clears its internal `writing` slot only on the success path, so once a write
+/// has failed the slot stays occupied and that second `send_data` trips
+/// h3-quinn's misuse guard (`InternalError`). h3 escalates that to a
+/// *connection-level* `H3_INTERNAL_ERROR`, which tears down every stream
+/// multiplexed on the shared QUIC carrier rather than just the broken one.
+///
+/// `poll_quic_finish` is the patched entry point that drives the QUIC FIN
+/// directly, bypassing `send_data` — the only safe way to close a stream whose
+/// send side has already failed.
+pub(crate) async fn finish_send_side_without_grease<S>(
+    stream: &mut H3RequestStream<S, Bytes>,
+) -> Result<(), h3::error::StreamError>
+where
+    S: h3::quic::SendStream<Bytes>,
+{
+    std::future::poll_fn(|cx| stream.poll_quic_finish(cx)).await
+}
+
 /// Wraps an established h3 CONNECT request stream into a client-role sockudo
 /// WebSocket.
 pub(super) fn client_ws_stream(
