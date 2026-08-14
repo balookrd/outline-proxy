@@ -36,6 +36,24 @@ pub(crate) async fn handle_uplinks(
     }
 }
 
+/// `POST /control/uplinks/reorder` — move one uplink within its group. Split
+/// from `handle_uplinks` (like `/control/routes/reorder` is split from
+/// `/control/routes`) because reorder takes a distinct `{group, name, to}`
+/// body rather than the CRUD shapes.
+pub(crate) async fn handle_uplinks_reorder(
+    request: Request<Incoming>,
+    state: Arc<ControlState>,
+) -> ControlResponse {
+    if *request.method() != Method::POST {
+        return plain_response(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "application/json; charset=utf-8",
+            Bytes::from_static(br#"{"error":"use POST"}"#),
+        );
+    }
+    mutate::handle_reorder(request, state).await
+}
+
 #[cfg(test)]
 #[path = "tests/uplinks_crud.rs"]
 mod tests;

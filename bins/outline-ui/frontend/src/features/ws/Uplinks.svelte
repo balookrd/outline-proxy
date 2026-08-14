@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { uplinksList, uplinksMutate, apply } from '../../lib/api';
+  import { uplinksList, uplinksMutate, uplinksReorder, apply } from '../../lib/api';
   import { createPoll } from '../../lib/poll.svelte';
   import { toast } from '../../lib/toast.svelte';
   import type { UplinkEntry, UplinksListResponse, UplinkConfig, ApplyResult } from '../../lib/types';
@@ -133,6 +133,68 @@
     }
   }
 
+  // Reorder within a group. Uplink order is cosmetic — active-uplink selection
+  // is by weight/RTT, not list position — so this only rewrites config/display
+  // order, no balancing change. Mirrors Routing.svelte's row drag, scoped per
+  // group: a drop reorders only when source and target are the same group
+  // (the on-disk array is flat but group-addressed server-side).
+  let draggingName: string | null = $state(null);
+  let dragOverName: string | null = $state(null);
+
+  async function reorderTo(group: string, name: string, to: number) {
+    mutating = true;
+    try {
+      await uplinksReorder(instance, { group, name, to });
+      dirtyInstances.add(instance);
+      await uplinksPoll.refresh();
+    } catch (err) {
+      toast(errorMessage(err), 'error');
+    } finally {
+      mutating = false;
+    }
+  }
+  async function move(group: string, uplinks: UplinkEntry[], i: number, dir: -1 | 1) {
+    const to = i + dir;
+    if (to < 0 || to >= uplinks.length) return;
+    await reorderTo(group, uplinks[i].name, to);
+  }
+
+  function handleDragStart(e: DragEvent, name: string) {
+    draggingName = name;
+    e.dataTransfer?.setData('text/plain', name);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  }
+  function handleDragOver(e: DragEvent, name: string) {
+    if (draggingName === null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    dragOverName = name;
+  }
+  function handleDragLeave(name: string) {
+    if (dragOverName === name) dragOverName = null;
+  }
+  async function handleDrop(
+    e: DragEvent,
+    group: string,
+    uplinks: UplinkEntry[],
+    targetIndex: number,
+  ) {
+    e.preventDefault();
+    dragOverName = null;
+    const from = draggingName;
+    draggingName = null;
+    if (from === null) return;
+    // Reorder only within a group: a drag whose source isn't among this
+    // group's rows (i.e. dragged across groups) is ignored.
+    const srcIdx = uplinks.findIndex((u) => u.name === from);
+    if (srcIdx === -1 || srcIdx === targetIndex) return;
+    await reorderTo(group, from, targetIndex);
+  }
+  function handleDragEnd() {
+    draggingName = null;
+    dragOverName = null;
+  }
+
   async function applyNow() {
     applying = true;
     try {
@@ -164,25 +226,68 @@
     text: string;
     tone?: 'info' | 'off';
   }
+
+  // Every URL an uplink may carry. A share-link uplink has only `link` on disk
+  // (transport/carrier expansion happens server-side at load — see types.ts),
+  // so `link` is its sole source; explicit-field uplinks carry one or more of
+  // the *_ws_url/*_xhttp_url instead.
+  function wireUrls(cfg: UplinkConfig): string[] {
+    return [
+      cfg.link,
+      cfg.tcp_ws_url, cfg.tcp_xhttp_url,
+      cfg.udp_ws_url, cfg.udp_xhttp_url,
+      cfg.vless_ws_url, cfg.vless_xhttp_url,
+      cfg.ss_ws_url, cfg.ss_xhttp_url,
+    ].filter((s): s is string => typeof s === 'string' && s.length > 0);
+  }
+
   function chipsFor(cfg: UplinkConfig | null | undefined): Chip[] {
+    if (!cfg) return [{ text: 'no on-disk config', tone: 'off' }];
     const chips: Chip[] = [];
-    if (cfg?.link) chips.push({ text: 'share-link', tone: 'info' });
-    if (cfg?.transport) chips.push({ text: String(cfg.transport), tone: 'info' });
-    if (cfg?.tcp_ws_url) chips.push({ text: `TCP WS ${cfg.tcp_ws_url}` });
-    if (cfg?.tcp_xhttp_url) chips.push({ text: `TCP XHTTP ${cfg.tcp_xhttp_url}` });
-    if (cfg?.tcp_mode) chips.push({ text: `TCP mode ${cfg.tcp_mode}` });
-    if (cfg?.udp_ws_url) chips.push({ text: `UDP WS ${cfg.udp_ws_url}` });
-    if (cfg?.udp_xhttp_url) chips.push({ text: `UDP XHTTP ${cfg.udp_xhttp_url}` });
-    if (cfg?.udp_mode) chips.push({ text: `UDP mode ${cfg.udp_mode}` });
-    if (cfg?.vless_ws_url) chips.push({ text: `VLESS WS ${cfg.vless_ws_url}` });
-    if (cfg?.vless_xhttp_url) chips.push({ text: `VLESS XHTTP ${cfg.vless_xhttp_url}` });
-    if (cfg?.vless_mode) chips.push({ text: `VLESS mode ${cfg.vless_mode}` });
-    if (cfg?.ss_ws_url) chips.push({ text: `SS WS ${cfg.ss_ws_url}` });
-    if (cfg?.ss_xhttp_url) chips.push({ text: `SS XHTTP ${cfg.ss_xhttp_url}` });
-    if (cfg?.ss_mode) chips.push({ text: `SS mode ${cfg.ss_mode}` });
-    if (cfg?.method) chips.push({ text: String(cfg.method) });
-    if (cfg?.weight != null) chips.push({ text: `w=${cfg.weight}` });
-    if (cfg?.fwmark != null) chips.push({ text: `fwmark=${cfg.fwmark}` });
+    const seen = new Set<string>();
+    const add = (text: string, tone?: 'info' | 'off') => {
+      if (seen.has(text)) return;
+      seen.add(text);
+      chips.push(tone ? { text, tone } : { text });
+    };
+
+    if (cfg.link) add('share-link', 'info');
+    if (cfg.transport) add(String(cfg.transport), 'info');
+
+    // Decompose every wire URL into its parts. `URL()` parses the authority
+    // and query of any `scheme://…` (vless://, ss://, ws(s)://, http(s)://)
+    // uniformly; a malformed value is skipped. The userinfo (a vless UUID or
+    // ss `method:password`) is the wire's secret and is deliberately never
+    // emitted — everything else (schema/host/port/path and every query param:
+    // type, security, alpn, mode, sni, fp, pbk, flow, …) becomes a chip.
+    for (const raw of wireUrls(cfg)) {
+      let u: URL;
+      try {
+        u = new URL(raw.trim());
+      } catch {
+        continue;
+      }
+      add(`schema ${u.protocol.replace(/:$/, '')}`);
+      if (u.hostname) add(`host ${u.hostname}`);
+      if (u.port) add(`port ${u.port}`);
+      if (u.pathname && u.pathname !== '/') add(`path ${decodeURIComponent(u.pathname)}`);
+      for (const [k, v] of u.searchParams) {
+        if (v) add(`${k} ${v}`);
+      }
+    }
+
+    // *_mode are explicit config keys, not URL query — fold them into the same
+    // `mode <x>` shape (add() de-dupes against any URL `mode` param).
+    for (const m of [cfg.tcp_mode, cfg.udp_mode, cfg.vless_mode, cfg.ss_mode]) {
+      if (m) add(`mode ${m}`);
+    }
+
+    // method (cipher) is a public algorithm name, not a secret — password and
+    // vless_id are, and are never rendered.
+    if (cfg.method) add(String(cfg.method));
+    if (cfg.weight != null) add(`w=${cfg.weight}`);
+    if (cfg.fwmark != null) add(`fwmark=${cfg.fwmark}`);
+
     return chips.length ? chips : [{ text: 'no on-disk config', tone: 'off' }];
   }
 </script>
@@ -235,9 +340,23 @@
               <tr><th>Uplink</th><th>Config</th><th>Actions</th></tr>
             </thead>
             <tbody>
-              {#each g.uplinks as u (u.name)}
-                <tr>
-                  <td>{u.name}</td>
+              {#each g.uplinks as u, i (u.name)}
+                <tr
+                  class:dragging={draggingName === u.name}
+                  class:drag-over={dragOverName === u.name && draggingName !== u.name}
+                  draggable={!mutating}
+                  ondragstart={(ev) => handleDragStart(ev, u.name)}
+                  ondragover={(ev) => handleDragOver(ev, u.name)}
+                  ondragleave={() => handleDragLeave(u.name)}
+                  ondrop={(ev) => handleDrop(ev, g.name, g.uplinks, i)}
+                  ondragend={handleDragEnd}
+                >
+                  <td>
+                    <span class="route-idx">
+                      <span class="drag-handle" aria-hidden="true" title="Drag to reorder">⠿</span>
+                      {u.name}
+                    </span>
+                  </td>
                   <td>
                     <div style="display:flex; flex-wrap:wrap; gap:4px">
                       {#each chipsFor(u.config) as c}
@@ -247,6 +366,8 @@
                   </td>
                   <td>
                     <div class="rowactions">
+                      <button class="iconbtn" title="Move up" disabled={mutating || i === 0} aria-label={`Move ${u.name} up`} onclick={() => move(g.name, g.uplinks, i, -1)}>↑</button>
+                      <button class="iconbtn" title="Move down" disabled={mutating || i === g.uplinks.length - 1} aria-label={`Move ${u.name} down`} onclick={() => move(g.name, g.uplinks, i, 1)}>↓</button>
                       <button
                         class="iconbtn act-soft"
                         title="Edit"
