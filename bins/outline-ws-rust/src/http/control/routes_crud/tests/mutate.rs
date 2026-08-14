@@ -71,10 +71,24 @@ fn update_adds_matcher_to_default_is_refused() {
 #[test]
 fn reorder_moves_rule() {
     let mut d = doc();
-    apply_reorder(&mut d, 0, 1).expect("reorder ok");
+    // BASE order: [0] = direct (prefixes 10.0.0.0/8), [1] = default (main).
+    // Move the default rule to the front.
+    apply_reorder(&mut d, 1, 0).expect("reorder ok");
     let arr = d.get("route").unwrap().as_array_of_tables().unwrap();
-    // default moved to front, direct rule to index 1.
-    assert!(arr.get(0).unwrap().get("default").unwrap().as_bool().unwrap());
+    // Vec order changed: default now at index 0.
+    assert!(arr.get(0).unwrap().get("default").unwrap().as_bool().unwrap(), "vec order");
+    // The RENDERED output must reflect the move too. toml_edit sorts
+    // `[[route]]` tables by each table's stored `position` (source order) on
+    // encode, so a reorder that only touches the Vec (leaving positions
+    // untouched) is a silent no-op on disk and in `route_revision`. This
+    // asserts the real, rendered order — the property the production bug broke.
+    let rendered = d.to_string();
+    let default_at = rendered.find("default = true").expect("default present");
+    let direct_at = rendered.find("10.0.0.0/8").expect("direct present");
+    assert!(
+        default_at < direct_at,
+        "rendered order must reflect the reorder (default before direct):\n{rendered}"
+    );
 }
 
 /// Sanity check for the happy path: the BASE doc's existing rules (a valid
