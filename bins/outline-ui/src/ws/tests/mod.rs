@@ -80,11 +80,12 @@ async fn record(
     StatusCode::OK
 }
 
-/// Spins a throwaway control API answering `/control/routes` and
-/// `/control/routes/reorder`, recording method/path/`Authorization`/body for
-/// every request it receives rather than asserting inline in the handler —
+/// Spins a throwaway control API answering `/control/routes`,
+/// `/control/routes/reorder`, `/control/uplink_groups`, and
+/// `/control/uplink_groups/reorder`, recording method/path/`Authorization`/body
+/// for every request it receives rather than asserting inline in the handler —
 /// so a test can drive the real `router()` and inspect what actually reached
-/// the node afterwards. One handler backs both endpoints; the recorded
+/// the node afterwards. One handler backs all four endpoints; the recorded
 /// `path` is what tells them apart. Mirrors `crate::tests::backend::spawn_echo`'s
 /// "assert on the wire shape, not a mock's expectations" approach.
 async fn spawn_recorder() -> (SocketAddr, Recorder) {
@@ -92,6 +93,8 @@ async fn spawn_recorder() -> (SocketAddr, Recorder) {
     let app = Router::new()
         .route("/control/routes", get(record).post(record).patch(record).delete(record))
         .route("/control/routes/reorder", post(record))
+        .route("/control/uplink_groups", get(record).post(record).patch(record).delete(record))
+        .route("/control/uplink_groups/reorder", post(record))
         .with_state(Arc::clone(&records));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -184,5 +187,34 @@ async fn routes_reorder_proxy_forwards_envelope_body_with_token() {
         forwarded,
         serde_json::json!({ "from": 0, "to": 2, "revision": "deadbeef" }),
         "must forward the envelope's inner body, not drop it"
+    );
+}
+
+/// Mirrors the routes CRUD proxy: GET on `/dashboard/api/groups?instance=X`
+/// must reach `/control/uplink_groups` on that instance's control API with its
+/// bearer token injected server-side, and any OTHER query params (filters)
+/// must be forwarded too — only `instance` itself is stripped.
+#[tokio::test]
+async fn groups_get_forwards_instance_and_injects_token() {
+    let (addr, records) = spawn_recorder().await;
+
+    let response = router(state_with(instance(addr)))
+        .oneshot(
+            Request::get("/dashboard/api/groups?instance=probe&group=main")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let recorded = records.lock().unwrap();
+    assert_eq!(recorded.len(), 1, "expected exactly one upstream request");
+    assert_eq!(recorded[0].method, "GET");
+    assert_eq!(recorded[0].path, "/control/uplink_groups");
+    assert_eq!(recorded[0].query, "group=main", "filters besides `instance` must be forwarded");
+    assert_eq!(
+        recorded[0].auth, "Bearer inst-tok",
+        "control token must be injected server-side"
     );
 }
