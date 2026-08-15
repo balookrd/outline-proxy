@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import outline_yaml
 import uri
+import ws_toml
 from config_model import AccessKeys, User
 
 
@@ -51,6 +52,16 @@ def happ_url(user: User, ak: AccessKeys) -> str | None:
     if not ak.url_base or not has_subscription(user):
         return None
     return uri.join_url(ak.url_base, f"{user.filename}.json")
+
+
+def ws_url(user: User, ak: AccessKeys) -> str | None:
+    """The link handed to the Android client: the ws-rust config.
+
+    Always `.toml` — `file_extension` applies to the Outline artifact only.
+    """
+    if not ak.url_base or not ws_toml.has_wires(user):
+        return None
+    return uri.join_url(ak.url_base, f"{user.filename}.toml")
 
 
 def outline_artifact(user: User, ak: AccessKeys) -> str | None:

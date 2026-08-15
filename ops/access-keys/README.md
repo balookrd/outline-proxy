@@ -1,14 +1,16 @@
 # Генерация access-key артефактов
 
 Генератор клиентских конфигов для узлов `outline-ss-rust`. Читает `config.toml`
-узла и пишет **три файла на юзера** в тот же каталог, откуда их раздаёт nginx.
+узла и пишет **четыре файла на юзера** в тот же каталог, откуда их раздаёт nginx.
 
-Дизайн: [`docs/superpowers/specs/2026-08-11-access-keys-to-python-design.md`](../../docs/superpowers/specs/2026-08-11-access-keys-to-python-design.md).
+Дизайн: [`docs/superpowers/specs/2026-08-11-access-keys-to-python-design.md`](../../docs/superpowers/specs/2026-08-11-access-keys-to-python-design.md),
+ws-rust-конфиг — [`docs/superpowers/specs/2026-08-15-ws-rust-config-generator-design.md`](../../docs/superpowers/specs/2026-08-15-ws-rust-config-generator-design.md).
 
 | Файл | Условие | Содержимое |
 |---|---|---|
 | `<user>.conf` | есть `password` | Outline YAML |
 | `<user>.json` | есть `vless_id` и путь VLESS | Xray-подписка с балансером cloud1+cloud2 |
+| `<user>.toml` | есть хоть один wire | Конфиг `outline-ws-rust` для Android-клиента |
 | `<user>.txt` | есть хоть один URL | все URL юзера, по одному в строке |
 
 Первая строка `<user>.txt` — `ssconf://` на собственный `.conf` (ссылка для
@@ -117,9 +119,12 @@ cloud1+cloud2 (дефолт). На `nuxt` / `nuxt2` передаётся соб�
 user: <id>
 written_conf: <путь>        # если есть password
 written_json: <путь>        # если есть vless_id и путь VLESS
-written_txt:  <путь>
-outline_url:  ssconf://…/<user>.conf    # ссылка для Outline-клиента
-happ_url:     https://…/<user>.json     # ссылка для Happ и прочих xray-клиентов
+written_toml: <путь>        # если есть хоть один wire
+written_txt: <путь>
+outline_url: ssconf://…/<user>.conf    # ссылка для Outline-клиента
+happ_url: https://…/<user>.json        # ссылка для Happ и прочих xray-клиентов
+ws_url: https://…/<user>.toml          # ссылка для Android-клиента
+warning: …                             # выключенная серверная фича, см. ниже
 ```
 
 Строки, которых у юзера быть не может, отсутствуют: у SS-only нет `happ_url`,
@@ -194,13 +199,58 @@ ALPN это расширение TLS.
 WS-ноги остаются на `http/1.1`, и это ограничение клиента: `outline-ss-rust`
 умеет WebSocket поверх h2 (RFC 8441) и h3 (RFC 9220), а xray — нет.
 
+## Конфиг ws-rust для Android (`<user>.toml`)
+
+Один `[[outline.uplinks]]` на узел из `--node`, внутри — цепочка носителей
+через `[[outline.uplinks.fallbacks]]`; все wire'ы заданы share-link'ами — теми
+же, что лежат в `<user>.txt`, поэтому две формы не могут разъехаться, а креды
+едут внутри ссылки и в самом аплинке не повторяются.
+
+Порядок цепочки: `vless-xhttp stream-one` → `vless-ws` → `ss-ws` →
+`ss-xhttp stream-one` → `vless-xhttp packet-up`. Отсутствующий путь или кред
+просто убирает свой wire: SS-only юзер получает два, VLESS-only — три.
+
+ALPN, в отличие от `.json`, wire'ы не размножает: ws-rust читает первый токен
+как запрошенный режим и даунгрейдит носитель внутри wire'а сам
+(`ws_h3 → ws_h2 → ws_h1`).
+
+Группа `main` — `active_passive` + `routing_scope = "global"`: один узел несёт
+весь трафик, поэтому выходной IP стабилен. `auto_failback` намеренно нет —
+уехав на резервный узел, клиент там и остаётся; обратно двигает только
+`reselect_interval = "6h"`. `tun_wire_dial = true` обязателен: по умолчанию он
+`false`, и тогда каждый TUN-дозвон уходит на wire 0, а цепочка fallback'ов не
+работает вовсе — на Android, где весь трафик идёт через TUN, это означало бы
+настроенную, но мёртвую избыточность.
+
+Три серверные фичи меняют то, что клиент реально получит, и о каждой
+выключенной генератор докладывает строкой `warning:`:
+
+| Секция в `config.toml` узла | Что даёт клиенту | Если выключена |
+|---|---|---|
+| `[session_resumption] enabled` | миграцию живого флоу на смерти носителя | флоу рвётся |
+| `[session_resumption] downlink_buffer_bytes` | реплей downstream-хвоста | в мигрировавшем ответе остаётся дыра |
+| `[cluster] enabled` | `shared_resume` — мягкую смену активного узла | смена узла рвёт сессии RST |
+
+`[padding]` включается в клиенте, только если узел падит **все** пути этой
+цепочки: клиентский переключатель глобальный (per-wire override нет), а падинг
+не согласуется по проводу — падёные кадры на непадёном пути убивают сессию. При
+частичном покрытии генератор пишет `enabled = false` и перечисляет непокрытые
+пути в `warning:`.
+
+Формат закреплён фикстурами в [`golden/expected-ws/`](golden/expected-ws/). В
+отличие от `golden/expected/`, это не снимок с бинаря, а зафиксированный формат:
+он меняется осознанно, вместе с изменением генератора. Что фикстура —
+загружаемый конфиг, а не просто валидный TOML, доказывает Rust-тест
+`generated_android_config_fixture_loads` (у схемы ws-rust `deny_unknown_fields`,
+поэтому лишний ключ ронял бы бинарь на старте).
+
 ## Тесты
 
 ```bash
 python3 -m unittest discover -s ops/access-keys -p "test_*.py"
 ```
 
-123 теста, stdlib-only, в сеть не ходят и за пределы временного каталога не
+166 тестов, stdlib-only, в сеть не ходят и за пределы временного каталога не
 пишут. Главный из них — `test_artifacts.py`: собирает все 32 артефакта и
 сверяет с golden побайтово.
 

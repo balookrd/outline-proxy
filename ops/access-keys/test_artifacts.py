@@ -3,6 +3,7 @@
 
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -131,6 +132,26 @@ class UrlHelpersTest(unittest.TestCase):
             artifacts.happ_url(self.user("needs sanitising/1"), self.ak),
             "https://keys.example.com/SECRET/needs_sanitising_1.json",
         )
+
+    def test_ws_url_points_at_the_toml_config(self):
+        self.assertEqual(
+            artifacts.ws_url(self.user("both"), self.ak),
+            "https://keys.example.com/SECRET/both.toml",
+        )
+
+    def test_ws_url_covers_an_ss_only_user(self):
+        # The ws-rust chain also carries SS wires, so an SS-only user gets a
+        # config even though they get no Xray subscription.
+        self.assertEqual(
+            artifacts.ws_url(self.user("ss-only"), self.ak),
+            "https://keys.example.com/SECRET/ss-only.toml",
+        )
+
+    def test_no_ws_url_without_wires(self):
+        # Every enabled user in the golden config inherits the global SS/VLESS
+        # paths, so an undialable user has to be built by hand.
+        bare = replace(self.user("ss-only"), password=None, vless_id=None)
+        self.assertIsNone(artifacts.ws_url(bare, self.ak))
 
 
 if __name__ == "__main__":

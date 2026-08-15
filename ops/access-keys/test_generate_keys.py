@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Tests for the CLI: three files per user, atomic writes, the report."""
+"""Tests for the CLI: four files per user, atomic writes, the report."""
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -21,26 +23,27 @@ def run(out_dir, *extra):
 
 
 class MainTest(unittest.TestCase):
-    def test_writes_three_files_for_a_user_with_both_credentials(self):
+    def test_writes_four_files_for_a_user_with_both_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             self.assertEqual(run(out), 0)
             names = sorted(p.name for p in out.iterdir() if p.name.startswith("both"))
-        self.assertEqual(names, ["both.conf", "both.json", "both.txt"])
+        self.assertEqual(names, ["both.conf", "both.json", "both.toml", "both.txt"])
 
     def test_ss_only_user_gets_no_json(self):
+        # ...but still gets the ws-rust config: its chain carries SS wires.
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             run(out)
             names = sorted(p.name for p in out.iterdir() if p.name.startswith("ss-only"))
-        self.assertEqual(names, ["ss-only.conf", "ss-only.txt"])
+        self.assertEqual(names, ["ss-only.conf", "ss-only.toml", "ss-only.txt"])
 
     def test_vless_only_user_gets_no_conf(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             run(out)
             names = sorted(p.name for p in out.iterdir() if p.name.startswith("vless-only"))
-        self.assertEqual(names, ["vless-only.json", "vless-only.txt"])
+        self.assertEqual(names, ["vless-only.json", "vless-only.toml", "vless-only.txt"])
 
     def test_disabled_user_gets_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -114,7 +117,8 @@ class MainTest(unittest.TestCase):
             out = Path(tmp)
             run(out, "--file-extension", ".key")
             names = sorted(p.name for p in out.iterdir() if p.name.startswith("both"))
-        self.assertEqual(names, ["both.json", "both.key", "both.txt"])
+        # The flag renames the Outline artifact only: .json and .toml keep theirs.
+        self.assertEqual(names, ["both.json", "both.key", "both.toml", "both.txt"])
 
     def test_file_extension_flag_reaches_the_ssconf_url(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -130,6 +134,49 @@ class MainTest(unittest.TestCase):
             first = (out / "both.txt").read_text(encoding="utf-8")
             run(out)
             self.assertEqual((out / "both.txt").read_text(encoding="utf-8"), first)
+
+
+class WsTomlArtifactTest(unittest.TestCase):
+    def test_writes_the_ws_rust_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.assertEqual(run(out), 0)
+            written = (out / "both.toml").read_text(encoding="utf-8")
+        self.assertIn("[[outline.uplinks]]", written)
+        self.assertIn("[[outline.uplinks.fallbacks]]", written)
+
+    def test_toml_is_not_world_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            run(out)
+            self.assertEqual(os.stat(out / "both.toml").st_mode & 0o777, 0o640)
+
+    def test_report_carries_the_toml_path_and_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                run(out)
+            report = buffer.getvalue()
+        self.assertIn("written_toml:", report)
+        self.assertIn("ws_url: https://keys.example.com/SECRET/both.toml", report)
+
+    def test_report_warns_about_missing_server_switches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                run(out)
+            report = buffer.getvalue()
+        # The golden config enables neither session_resumption nor cluster.
+        self.assertIn("warning: carrier migration is inert", report)
+        self.assertIn("warning: switching the active uplink will reset", report)
+
+    def test_dry_run_writes_no_toml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "keys"
+            run(out, "--dry-run")
+            self.assertFalse(out.exists())
 
 
 class OutDirResolutionTest(unittest.TestCase):

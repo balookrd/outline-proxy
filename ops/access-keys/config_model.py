@@ -61,10 +61,44 @@ class User:
 
 
 @dataclass(frozen=True)
+class Padding:
+    """The server's `[padding]` block.
+
+    Carrier padding is config-synchronised, not negotiated on the wire: a
+    server that does not pad a path feeds padded frames to its plain decoder
+    and the session dies. `paths` is therefore the exact set the client may
+    turn padding on for.
+    """
+
+    enabled: bool
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SessionResumption:
+    """The server's `[session_resumption]` block.
+
+    `enabled` mints the Session IDs a client's carrier migration re-attaches
+    to; without it the client-side knob is inert. `downlink_buffer_bytes` is
+    the v2 Symmetric Downlink Replay ring — at 0 only the uplink gap is
+    replayed and a migrated download keeps a hole where the downstream bytes
+    were.
+    """
+
+    enabled: bool
+    downlink_buffer_bytes: int
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     access_keys: AccessKeys
     users: tuple[User, ...]
     alpn_has_h3: bool
+    padding: Padding = Padding(enabled=False, paths=())
+    session_resumption: SessionResumption = SessionResumption(
+        enabled=False, downlink_buffer_bytes=0
+    )
+    cluster_enabled: bool = False
 
 
 def sanitize_filename(value: str) -> str:
@@ -182,6 +216,22 @@ def load(path: str | Path) -> ServerConfig:
             )
         )
 
+    padding_section = raw.get("padding", {})
+    resumption_section = raw.get("session_resumption", {})
+
     return ServerConfig(
-        access_keys=access_keys, users=tuple(users), alpn_has_h3=_h3_in_alpn(server)
+        access_keys=access_keys,
+        users=tuple(users),
+        alpn_has_h3=_h3_in_alpn(server),
+        padding=Padding(
+            enabled=bool(padding_section.get("enabled", False)),
+            paths=tuple(padding_section.get("paths", ())),
+        ),
+        session_resumption=SessionResumption(
+            enabled=bool(resumption_section.get("enabled", False)),
+            downlink_buffer_bytes=int(resumption_section.get("downlink_buffer_bytes", 0)),
+        ),
+        # Absent or false means standalone: the mesh listener never starts and
+        # session ids stay plain random, so a group cannot share resumption.
+        cluster_enabled=bool(raw.get("cluster", {}).get("enabled", False)),
     )

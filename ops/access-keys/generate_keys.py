@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Write the access-key artifacts for every user in a node's config.toml.
 
-Three files per user: <user>.conf (Outline), <user>.json (Xray subscription
-balanced across the cloud entry nodes) and <user>.txt (every URL, one per line).
-The report goes to stdout; save-keys.sh redirects it into users.txt.
+Four files per user: <user>.conf (Outline), <user>.json (Xray subscription
+balanced across the cloud entry nodes), <user>.toml (outline-ws-rust config for
+the Android client) and <user>.txt (every URL, one per line). The report goes to
+stdout; save-keys.sh redirects it into users.txt.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import artifacts  # noqa: E402
 import config_model  # noqa: E402
+import ws_toml  # noqa: E402
 import xray_json  # noqa: E402
 
 DEFAULT_CONFIG = "/etc/outline-ss-rust/config.toml"
@@ -37,9 +39,11 @@ DEFAULT_CONFIG = "/etc/outline-ss-rust/config.toml"
 _REPORT_FIELDS = (
     ("conf", "written_conf"),
     ("json", "written_json"),
+    ("toml", "written_toml"),
     ("txt", "written_txt"),
     ("outline_url", "outline_url"),
     ("happ_url", "happ_url"),
+    ("ws_url", "ws_url"),
 )
 
 
@@ -68,6 +72,8 @@ def render_report(written: Sequence[dict]) -> str:
         lines.extend(
             f"{label}: {record[key]}" for key, label in _REPORT_FIELDS if record.get(key)
         )
+        # Never a credential: these name server-side switches and carrier paths.
+        lines.extend(f"warning: {text}" for text in record.get("warnings", ()))
         blocks.append("".join(f"{line}\n" for line in lines))
     return "\n".join(blocks)
 
@@ -146,6 +152,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             record["json"] = str(target)
 
+        document = ws_toml.build_config(user, nodes, server)
+        if document is not None:
+            target = out_dir / f"{user.filename}.toml"
+            if not args.dry_run:
+                write_atomic(target, document)
+            record["toml"] = str(target)
+            record["warnings"] = ws_toml.config_warnings(user, nodes, server)
+
         urls = artifacts.user_urls(user, ak, server.alpn_has_h3)
         if urls:
             target = out_dir / f"{user.filename}.txt"
@@ -155,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         record["outline_url"] = artifacts.outline_url(user, ak)
         record["happ_url"] = artifacts.happ_url(user, ak)
+        record["ws_url"] = artifacts.ws_url(user, ak)
         written.append(record)
 
     # Never a credential: paths and counts only.

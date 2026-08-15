@@ -237,5 +237,85 @@ password = "p"
         self.assertFalse(self.load_text(text).alpn_has_h3)
 
 
+class ServerFeaturesTest(unittest.TestCase):
+    BASE = """
+[access_keys]
+public_host = "keys.example.com"
+
+[[users]]
+id = "alice"
+password = "pw"
+"""
+
+    def load_body(self, body):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(body, encoding="utf-8")
+            return cm.load(path)
+
+    def test_features_default_to_off(self):
+        server = self.load_body(self.BASE)
+        self.assertFalse(server.padding.enabled)
+        self.assertEqual(server.padding.paths, ())
+        self.assertFalse(server.session_resumption.enabled)
+        self.assertEqual(server.session_resumption.downlink_buffer_bytes, 0)
+        self.assertFalse(server.cluster_enabled)
+
+    def test_reads_padding_paths(self):
+        server = self.load_body(
+            self.BASE
+            + """
+[padding]
+enabled = true
+paths = ["/GLOBAL/ss", "/GLOBAL/ssx"]
+"""
+        )
+        self.assertTrue(server.padding.enabled)
+        self.assertEqual(server.padding.paths, ("/GLOBAL/ss", "/GLOBAL/ssx"))
+
+    def test_padding_paths_without_enabled_stay_inactive(self):
+        server = self.load_body(
+            self.BASE
+            + """
+[padding]
+paths = ["/GLOBAL/ss"]
+"""
+        )
+        self.assertFalse(server.padding.enabled)
+        self.assertEqual(server.padding.paths, ("/GLOBAL/ss",))
+
+    def test_reads_session_resumption(self):
+        server = self.load_body(
+            self.BASE
+            + """
+[session_resumption]
+enabled = true
+downlink_buffer_bytes = 65536
+"""
+        )
+        self.assertTrue(server.session_resumption.enabled)
+        self.assertEqual(server.session_resumption.downlink_buffer_bytes, 65536)
+
+    def test_cluster_needs_explicit_enabled(self):
+        without_flag = self.load_body(
+            self.BASE
+            + """
+[cluster]
+shard_id = 1
+"""
+        )
+        self.assertFalse(without_flag.cluster_enabled)
+
+        enabled = self.load_body(
+            self.BASE
+            + """
+[cluster]
+enabled = true
+shard_id = 1
+"""
+        )
+        self.assertTrue(enabled.cluster_enabled)
+
+
 if __name__ == "__main__":
     unittest.main()
