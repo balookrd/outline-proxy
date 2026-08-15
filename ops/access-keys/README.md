@@ -339,8 +339,23 @@ Rust-генерация ещё доступна, это одна команда.
 
 Заголовки подписки (`profile-title`, `profile-update-interval`) добавляет nginx —
 блок в [`nginx-subscription-headers.conf`](nginx-subscription-headers.conf),
-вставляется в `server`-блок `sites-available/beerloga.su`. Покрывает и `.json`,
-и `.txt`.
+вставляется в `server`-блок `sites-available/beerloga.su`. Покрывает `.json`,
+`.toml` и `.txt` — `.conf` намеренно вне: это одиночный Outline-конфиг, а не
+подписка.
+
+Блок вставлен только на cloud1 и cloud2 (вход мобильных клиентов). На
+`nuxt` / `nuxt2` / `sebek` его нет вовсе, поэтому там без заголовков идут все
+формы одинаково.
+
+⚠️ Проверять заголовки нужно с `--resolve` на конкретный узел:
+`cloud.beerloga.su` резолвится в оба cloud-узла, и обычный `curl` легко
+попадёт на соседний — где правка ещё не применена. Так проверка и врёт:
+«заголовков нет», хотя на этом узле они уже есть.
+
+```bash
+curl -sS -D- -o /dev/null --resolve cloud.beerloga.su:443:127.0.0.1 \
+  https://cloud.beerloga.su/<keys-dir>/<user>.toml | grep -i profile-
+```
 
 `ops/provision-node/collect-from-reference.sh` определяет каталог ключей из
 `[access_keys] write_dir`, а если его нет — по старинке из `save-keys.sh`

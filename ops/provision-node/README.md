@@ -440,6 +440,12 @@ Rules worth keeping:
   missing. It is how an exporter reaches the scrape: a node whose site file
   predates the exporter answers on loopback and 404s on 443, and nothing on the
   node notices.
+  A sibling fix of the same kind lives in the code rather than a profile: the
+  `files` phase widens the subscription location to `(json|toml|txt)`. That
+  extension list travels inside the bundle, so a bundle collected before
+  `<user>.toml` existed would serve the ws-rust config without the `profile-*`
+  headers — a client fetches it once and never refreshes. The edit is
+  idempotent and stays quiet on an already-widened file.
 - **`COMPOSE_REQUIRED_ARGS` is for a flag the reference predates**, written as
   `<compose-file>:<service>:<flag>` and inserted at the head of that service's
   `command:` list. Use it when the fix belongs on every clone rather than on the

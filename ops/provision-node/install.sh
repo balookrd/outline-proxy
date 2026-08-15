@@ -533,6 +533,37 @@ ensure_nginx_locations() {
     done
 }
 
+# The subscription location lists the extensions that carry the profile headers
+# (`profile-title`, `profile-update-interval`) — see
+# ops/access-keys/nginx-subscription-headers.conf. It arrives inside the
+# reference bundle, so a bundle collected before <user>.toml existed pins the
+# old `(json|txt)` and every node cloned from it serves the ws-rust config
+# without the headers: clients fetch it once and never refresh. Widening the
+# list here fixes both the stale bundle and any node provisioned from it.
+#
+# A plain string swap, not a regex: the location line is itself a regex full of
+# parentheses and pipes, and re-escaping it twice is how these edits go wrong.
+# Idempotent — once the line reads `(json|toml|txt)` the old substring is gone.
+ensure_subscription_extensions() {
+    local site="/etc/nginx/sites-available/$NGINX_SITE"
+    [ -f "$site" ] || return 0
+    local old='(json|txt)$' new='(json|toml|txt)$' tmp
+
+    grep -qF "$old" "$site" || { dim "nginx: subscription location already serves .toml"; return 0; }
+    if [ "$DRY_RUN" = "1" ]; then
+        dim "[dry-run] would widen the subscription location to $new in $site"
+        return 0
+    fi
+    tmp="$(mktemp)"
+    awk -v old="$old" -v new="$new" '
+        { i = index($0, old)
+          if (i) $0 = substr($0, 1, i - 1) new substr($0, i + length(old))
+          print }' "$site" > "$tmp"
+    cat "$tmp" > "$site"
+    rm -f "$tmp"
+    ok "nginx: subscription location now serves .toml too"
+}
+
 # The service runs with `--config /etc/outline-ss-rust/config.toml`, and every
 # on-node caller (save-keys.sh, the key generator) now passes that same /etc
 # path explicitly. The historical /opt/outline/outline-ss-rust/config.toml — a
@@ -584,6 +615,7 @@ phase_files() {
 
     if [ -n "$NGINX_SITE" ]; then
         ensure_nginx_locations
+        ensure_subscription_extensions
         run ln -sfn "/etc/nginx/sites-available/$NGINX_SITE" "/etc/nginx/sites-enabled/$NGINX_SITE"
     fi
     if [ "$OCCTL_SYMLINK" = "1" ]; then
