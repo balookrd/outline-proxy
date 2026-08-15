@@ -397,6 +397,196 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
     Ok(())
 }
 
+/// A WebSocket-over-h3 stream whose send side fails must not take the shared
+/// QUIC connection with it.
+///
+/// h3-quinn clears its `writing` slot only on the success path, so a failed
+/// drain leaves the send side occupied. `poll_write` in the vendored transport
+/// stream then still calls `queue_send` for the *next* write — the WebSocket
+/// layer's own Close frame is exactly such a write — and that second
+/// `send_data` trips h3-quinn's misuse guard, which h3 escalates to a
+/// connection-level `H3_INTERNAL_ERROR`. Every other session multiplexed on the
+/// same QUIC connection dies with it; the witness stream below is what proves
+/// it. (`poll_shutdown` already guards on `send_poisoned`; `poll_write` is the
+/// path that was left open.)
+#[tokio::test]
+async fn ws_h3_send_failure_does_not_collapse_the_shared_connection() -> Result<()> {
+    // Floods the doomed session so the server is mid-write when its peer leaves.
+    let flooding = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let flooding_addr = flooding.local_addr()?;
+    let flooding_task = tokio::spawn(async move {
+        let (mut stream, _) = flooding.accept().await?;
+        let mut request = [0_u8; 4];
+        stream.read_exact(&mut request).await?;
+        let chunk = vec![0x5A_u8; 64 * 1024];
+        for _ in 0..128 {
+            if stream.write_all(&chunk).await.is_err() {
+                break;
+            }
+        }
+        Result::<_, anyhow::Error>::Ok(())
+    });
+
+    let echo = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let echo_addr = echo.local_addr()?;
+    let echo_task = tokio::spawn(async move {
+        let (mut stream, _) = echo.accept().await?;
+        let mut request = [0_u8; 4];
+        stream.read_exact(&mut request).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(request)
+    });
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let config = sample_config(addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+        None,
+    )?;
+    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
+        user: vless_user,
+        ws_path: Arc::from("/vless"),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: vless_routes,
+        xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+                0,
+            ),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
+        crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                http_fallback: None,
+                cluster: None,
+            },
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let connect_request = || {
+        Request::builder()
+            .method(Method::CONNECT)
+            .uri(format!("https://localhost:{}/vless", addr.port()))
+            .version(Version::HTTP_3)
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .extension(H3Protocol::WEBSOCKET)
+            .body(())
+    };
+    let vless_payload = |port: u16, body: &[u8]| -> Result<Vec<u8>> {
+        let mut payload = Vec::new();
+        payload.push(VERSION);
+        payload.extend_from_slice(&parse_uuid("550e8400-e29b-41d4-a716-446655440000")?);
+        payload.push(0);
+        payload.push(COMMAND_TCP);
+        payload.extend_from_slice(&port.to_be_bytes());
+        payload.push(0x01);
+        payload.extend_from_slice(&[127, 0, 0, 1]);
+        payload.extend_from_slice(body);
+        Ok(payload)
+    };
+
+    // Doomed session: take one downlink frame, then walk away while the server
+    // is still pumping the flood into it.
+    let mut doomed = send_request.send_request(connect_request()?).await?;
+    assert_eq!(doomed.recv_response().await?.status(), StatusCode::OK);
+    let doomed_ws = H3Stream::<H3Transport>::from_h3_client(doomed);
+    let mut doomed_ws =
+        H3WebSocketStream::from_raw(doomed_ws, H3Role::Client, H3WsConfig::default());
+    doomed_ws
+        .send(H3Message::Binary(vless_payload(flooding_addr.port(), b"ping")?.into()))
+        .await?;
+    match doomed_ws.next().await {
+        Some(Ok(H3Message::Binary(_))) => {},
+        other => anyhow::bail!("doomed session got no downlink: {other:?}"),
+    }
+    drop(doomed_ws);
+
+    // Witness on the same QUIC connection: reachable only if the carrier lived.
+    let mut witness = send_request.send_request(connect_request()?).await?;
+    let status = tokio::time::timeout(std::time::Duration::from_secs(10), witness.recv_response())
+        .await
+        .map_err(|_| anyhow::anyhow!("witness timed out: the shared QUIC connection collapsed"))??
+        .status();
+    assert_eq!(status, StatusCode::OK);
+    let witness_ws = H3Stream::<H3Transport>::from_h3_client(witness);
+    let mut witness_ws =
+        H3WebSocketStream::from_raw(witness_ws, H3Role::Client, H3WsConfig::default());
+    witness_ws
+        .send(H3Message::Binary(vless_payload(echo_addr.port(), b"ping")?.into()))
+        .await?;
+
+    let mut seen = Vec::new();
+    while seen.len() < 6 {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), witness_ws.next())
+            .await
+            .map_err(|_| anyhow::anyhow!("witness stalled: the shared QUIC connection collapsed"))?
+        {
+            Some(Ok(H3Message::Binary(bytes))) => seen.extend_from_slice(&bytes),
+            Some(Ok(_)) => continue,
+            other => anyhow::bail!("witness session ended early: {other:?}"),
+        }
+    }
+    assert_eq!(&seen[..2], &[VERSION, 0x00], "witness vless response header");
+    assert_eq!(&seen[2..6], b"pong", "witness must round-trip through the relay");
+    assert_eq!(echo_task.await??, *b"ping");
+
+    driver.abort();
+    server_task.abort();
+    flooding_task.abort();
+    Ok(())
+}
+
 #[tokio::test]
 async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
     let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));

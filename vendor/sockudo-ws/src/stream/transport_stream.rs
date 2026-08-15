@@ -619,6 +619,20 @@ impl AsyncWrite for Stream<Http3> {
                 send_poisoned,
                 ..
             }) => {
+                // A poisoned send side must never be queued onto again. h3-quinn
+                // keeps its `writing` slot occupied after a failed write, so the
+                // `queue_send` below would be a second `send_data` into that slot
+                // — h3-quinn answers with its misuse guard and h3 escalates that
+                // to a connection-level `H3_INTERNAL_ERROR`, killing every stream
+                // on the shared QUIC connection rather than just this one. The
+                // WebSocket layer reaches here after a failed write on its own
+                // (the Close frame it emits on teardown), so this is a live path,
+                // not a defensive one. `poll_shutdown` guards the same way.
+                if *send_poisoned {
+                    return Poll::Ready(Err(io::Error::other(
+                        "h3 send side poisoned by an earlier write failure",
+                    )));
+                }
                 if write_queued.is_none() {
                     let data = Bytes::copy_from_slice(buf);
                     let n = data.len();
@@ -652,6 +666,14 @@ impl AsyncWrite for Stream<Http3> {
                 send_poisoned,
                 ..
             }) => {
+                // See the Server arm: queueing onto a poisoned send side turns
+                // one stream's write failure into a connection-level
+                // `H3_INTERNAL_ERROR` for every stream on the carrier.
+                if *send_poisoned {
+                    return Poll::Ready(Err(io::Error::other(
+                        "h3 send side poisoned by an earlier write failure",
+                    )));
+                }
                 if write_queued.is_none() {
                     let data = Bytes::copy_from_slice(buf);
                     let n = data.len();
