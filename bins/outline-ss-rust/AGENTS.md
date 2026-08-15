@@ -25,10 +25,10 @@ Prometheus metrics и локально пропатченные копии `h3` 
 - `src/lib.rs`: запуск, tracing, выбор режима работы и настройка Tokio runtime.
 - `src/main.rs`: глобальный allocator бинарника. Не включай allocator features у
   зависимостей, если это не является осознанным изменением.
-- `src/config/`: загрузка CLI/env/TOML-конфига, миграции, валидация, генерация
-  access key и tuning profiles.
+- `src/config/`: загрузка CLI/env/TOML-конфига, миграции, валидация и tuning
+  profiles. Access-key generation вынесена в `ops/access-keys` (вне бинаря).
 - `src/server/`: listeners, runtime services, routing, shutdown, fallbacks,
-  session resumption, control/dashboard servers и transport handlers.
+  session resumption, control server и transport handlers.
 - `src/server/transport/`: WebSocket, XHTTP, VLESS transport, fallback,
   SNI fallback и proxy-protocol plumbing.
 - `src/server/shadowsocks/`: plain Shadowsocks TCP/UDP listeners.
@@ -89,7 +89,7 @@ Prometheus metrics и локально пропатченные копии `h3` 
 - Держи startup validation и runtime/control-plane validation feature-equivalent.
   Если меняешь user invariants, transport eligibility, duplicate checks или
   defaults, синхронно проверяй `src/config/validation.rs`,
-  `src/server/control/manager.rs`, control handlers, dashboard и tests.
+  `src/server/control/manager.rs`, control handlers и tests.
 - Control-plane мутации должны быть согласованы с persistent state. Порядок в
   `control/manager.rs::commit` — валидация → запись на диск → публикация
   snapshot'ов; не публикуй новые route/auth snapshots в runtime до того, как
@@ -106,8 +106,9 @@ Prometheus metrics и локально пропатченные копии `h3` 
   `create_keeps_users_the_runtime_does_not_hold` в `control/tests/manager.rs`.
 - Добавление нового transport/path/user field не считается завершенным, пока не
   обновлены все поверхности: config parsing, validation, runtime route maps, H3
-  path registry, control API, dashboard UI, access-key generation, metrics и
-  документация, где применимо.
+  path registry, control API, metrics и документация, где применимо. (Browser UI
+  и access-key generation вынесены из бинаря — см. `bins/outline-ui` и
+  `ops/access-keys`.)
 - H3 path registry сейчас фактически startup-time registry. Control-plane может
   управлять пользователями только на уже известных путях. Не обещай полноценный
   hot-add новых H3/WS/XHTTP paths без изменения этой модели. Но замораживать в
@@ -127,31 +128,11 @@ Prometheus metrics и локально пропатченные копии `h3` 
   сертификат подхватывают только новые соединения; уже установленные остаются на
   прежнем. Неудачная перезагрузка сохраняет предыдущий сертификат и
   ретраится при следующем изменении файлов.
-- Dashboard должен отображать и сохранять те же user-facing поля, что и control
-  API. Избегай backend-only полей, которые пользователь может создать через API,
-  но не увидеть или не изменить в UI.
-- Dashboard-листенер по полномочиям равен сумме control-токенов всех своих
-  инстансов (`proxy.rs` подставляет их server-side). Собственная аутентификация
-  у него опциональная (`dashboard.token` / `token_file`, Bearer или HTTP Basic)
-  и по умолчанию выключена ради loopback-workflow; вместо принудительного auth
-  не-loopback bind без токена пишет WARN на старте
-  (`server/dashboard/auth.rs`). Добавляя маршруты или расширяя проксирование,
-  держи их под тем же гейтом и не ослабляй это предупреждение.
-- Поверх опционального токена листенер защищён origin-guard'ом
-  (`server/dashboard/guard.rs`, слой в `build_router`): Host против
-  loopback/адреса привязки/`dashboard.allowed_hosts` (403), Origin дословно ==
-  Host с портом (403), `Content-Type: application/json` на любом методе с телом
-  (415, тело не разбирается). Проверки идут ДО матчинга маршрута и НЕЗАВИСИМО от
-  токена — это и закрывает DNS-rebinding и CSRF, которые один токен не ловит
-  (браузер сам переотправляет Basic-креды на cross-site). Слой роутер-уровневый,
-  поэтому новый маршрут покрывается автоматически; не выноси хендлеры из-под него
-  и не ослабляй набор проверок. Ответы дашборда браузеру не должны раскрывать
-  server-side детали инстансов (напр. `control_url`) — отдавай только `name`.
-- Прокси дашборда (`server/dashboard/proxy.rs`) читает тело ответа control API
-  только через `Limited` (`MAX_CONTROL_RESPONSE_BYTES`) — не возвращай
-  безлимитный `collect()`. Пул keep-alive соединений (`control_pool.rs`) отдаёт
-  парковку только replay-safe запросам (`GET`): мутацию нельзя переотправлять
-  на соединении, которое upstream мог закрыть под нами.
+- Браузерный UI (multi-instance dashboard) вынесен из этого бинаря в сервис
+  `bins/outline-ui` (k3s); здесь остаётся только control-плоскость `[control]`.
+  Модулей `src/server/dashboard/*` (listener, origin-guard, proxy, keep-alive
+  pool) в этом бинаре больше нет — не возвращай их сюда; UI-логику правь в
+  `bins/outline-ui`.
 - Будь осторожен с tuning defaults и resource caps. Не повышай дефолтные окна,
   channel capacities, connection/stream limits, NAT/session limits или timeout
   behavior без оценки memory envelope и DoS-поверхности.
@@ -163,9 +144,8 @@ Prometheus metrics и локально пропатченные копии `h3` 
   а не высокопроизводительный backend proxy. Если делаешь его primary workload,
   отдельно оцени pooling, body-size limits, streaming и timeout behavior.
 - Не добавляй новые обязанности в уже широкие файлы без веской причины:
-  `src/config/mod.rs`, `src/server/transport/tcp.rs`,
-  `src/server/dashboard/dashboard.html`, `src/metrics/mod.rs`. Для новых крупных
-  изменений предпочитай маленькие модули с явным именем.
+  `src/config/mod.rs`, `src/server/transport/tcp.rs`, `src/metrics/mod.rs`. Для
+  новых крупных изменений предпочитай маленькие модули с явным именем.
 - В нейминге избегай слишком общих новых `tcp.rs`, `udp.rs`, `mod.rs`-свалок и
   методов вроде `load`/`setup`/`handle`, если сущность имеет более точный смысл.
   Для transport code называй протокол и носитель явно, например

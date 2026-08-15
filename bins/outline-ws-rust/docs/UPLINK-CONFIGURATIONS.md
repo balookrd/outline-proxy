@@ -1138,7 +1138,7 @@ below.
 **What is measured, and where.** For the wire currently carrying
 traffic (primary, or the active fallback), the manager samples the
 carrier socket's OS-level loss counters on a fixed grid
-(`loss_sample_interval_secs`, default `10s`): QUIC `PathStats`
+(`loss_sample_interval_secs`, default `30s`): QUIC `PathStats`
 (lost/sent packets) on an H3/QUIC carrier, `TCP_INFO`
 (retransmits/segments-out) on a TCP carrier. This is deliberately
 **not** the LAN leg to the local SOCKS5/TUN client, and **not** the
@@ -1998,7 +1998,7 @@ transport   = "vless"
 vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
 vless_id        = "00000000-0000-0000-0000-000000000000"
 vless_mode      = "xhttp_h3"
-cipher          = "2022-blake3-aes-256-gcm"
+method          = "2022-blake3-aes-256-gcm"
 password        = "BASE64=="
 
   [[outline.uplinks.fallbacks]]
@@ -2007,7 +2007,7 @@ password        = "BASE64=="
   udp_ws_url  = "wss://ws.example.com/udp"
   tcp_mode    = "ws_h2"
   udp_mode    = "ws_h1"
-  # cipher / password / fwmark / ipv6_first / fingerprint_profile
+  # method / password / fwmark / ipv6_first / fingerprint_profile
   # are inherited from the parent uplink unless overridden here.
 
   [[outline.uplinks.fallbacks]]
@@ -2029,7 +2029,7 @@ that belong to the parent (`name`, `weight`, `group`):
 | `link` | — | Share-link URI for this wire (`vless://…` or `ss://…`), the same format section 5 and "Share-link URI (`ss://`)" describe. Expands into the wire fields of its transport plus the credentials it carries, so a link-configured fallback needs no other field. Mutually exclusive with the explicit wire fields (`tcp_*`, `udp_*`, `vless_*`, `ss_*`, `vless_id`; `method` / `password` conflict with an `ss://` link only). `#NAME` is ignored — identity belongs to the parent uplink. There is no single-URL form for the split `tcp_*` / `udp_*` SS layout; use the long form for it. |
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws\_\* → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
-| `cipher`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. A wire configured by an `ss://` `link` takes them from the URI instead, and never falls back to the parent's. |
+| `method`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. A wire configured by an `ss://` `link` takes them from the URI instead, and never falls back to the parent's. |
 | `fwmark`, `ipv6_first`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. Inheritance is unaffected by `link` — these are dial properties, not wire shape. |
 
 An uplink whose wires are all share links — the shape a subscription-driven
@@ -2049,7 +2049,7 @@ link   = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=
   link = "ss://BASE64URL@cdn.example.com:443?type=ws&security=tls&alpn=h3&path=%2FSECRET%2Fss"
 ```
 
-Credentials ride inside each URI, so the parent's `cipher` / `password` are not
+Credentials ride inside each URI, so the parent's `method` / `password` are not
 consulted for these wires — an `ss://` fallback under a VLESS parent needs no
 explicit secret. Everything that is *not* wire shape still comes from the
 parent: `fwmark`, `ipv6_first` and `fingerprint_profile` are inherited exactly

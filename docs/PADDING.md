@@ -181,7 +181,7 @@ cover = false                            # idle pad-only cover frames (downlink)
 cover_jitter_min_ms = 250                # idle-gap floor before a cover frame
 cover_jitter_max_ms = 1500               # idle-gap ceiling
 
-# Downstream-throttle detection (padded VLESS-over-WS only). Off by default.
+# Downstream-throttle detection (padded SS/VLESS, TCP+UDP, WS/XHTTP). Off by default.
 throttle_detect_enabled = false          # watch throughput, nudge client to switch uplink
 throttle_ratio_percent = 200             # signal when inbound >= 2x outbound (200 = 2x)
 throttle_window_secs = 1                 # sampling window

@@ -1140,7 +1140,7 @@ probe-сэмпл. После четырёх периодов полураспа�
 **Что измеряется и где.** Для wire, который сейчас несёт трафик
 (primary либо активный fallback), менеджер сэмплирует OS-уровневые
 счётчики потерь carrier-сокета по фиксированной сетке
-(`loss_sample_interval_secs`, дефолт `10s`): QUIC `PathStats`
+(`loss_sample_interval_secs`, дефолт `30s`): QUIC `PathStats`
 (lost/sent пакеты) на H3/QUIC-носителе, `TCP_INFO`
 (retransmits/segments-out) на TCP-носителе. Это намеренно **не** LAN-нога
 до локального SOCKS5/TUN-клиента и **не** соединение пробы — проба
@@ -2026,7 +2026,7 @@ transport   = "vless"
 vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
 vless_id        = "00000000-0000-0000-0000-000000000000"
 vless_mode      = "xhttp_h3"
-cipher          = "2022-blake3-aes-256-gcm"
+method          = "2022-blake3-aes-256-gcm"
 password        = "BASE64=="
 
   [[outline.uplinks.fallbacks]]
@@ -2035,7 +2035,7 @@ password        = "BASE64=="
   udp_ws_url  = "wss://ws.example.com/udp"
   tcp_mode    = "ws_h2"
   udp_mode    = "ws_h1"
-  # cipher / password / fwmark / ipv6_first / fingerprint_profile
+  # method / password / fwmark / ipv6_first / fingerprint_profile
   # наследуются от родительского аплинка, если не указаны явно.
 
   [[outline.uplinks.fallbacks]]
@@ -2057,7 +2057,7 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
 | `link` | — | Share-link URI этого wire (`vless://…` либо `ss://…`), тот же формат, что в разделе 5 и «Share-link URI (`ss://`)». Разворачивается в wire-поля своего транспорта плюс креды, которые несёт, поэтому fallback'у со ссылкой другие поля не нужны. Взаимоисключающ с явными wire-полями (`tcp_*`, `udp_*`, `vless_*`, `ss_*`, `vless_id`; `method` / `password` конфликтуют только с `ss://`-ссылкой). `#NAME` игнорируется — идентичность принадлежит родительскому аплинку. Для split-раскладки `tcp_*` / `udp_*` формы одной ссылкой нет — там остаётся длинная форма. |
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` обязателен; `udp_ws_url` опционален (UDP-fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL должен соответствовать `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws\_\* → `vless_ws_url`). `vless_id` per-wire и **не наследуется** от родителя — у разных VLESS-эндпоинтов разные uuid'ы. |
-| `cipher`, `password` | наследуются | По умолчанию — значение родителя. Переопределите тут, если fallback использует другой shared secret. Wire, заданный `ss://`-ссылкой, берёт их из URI и к родительским никогда не откатывается. |
+| `method`, `password` | наследуются | По умолчанию — значение родителя. Переопределите тут, если fallback использует другой shared secret. Wire, заданный `ss://`-ссылкой, берёт их из URI и к родительским никогда не откатывается. |
 | `fwmark`, `ipv6_first`, `fingerprint_profile` | наследуются | То же самое: дефолтятся к родителю, можно переопределить per-fallback. `link` на наследование не влияет — это свойства дайла, а не wire-форма. |
 
 Аплинк, у которого все wire заданы ссылками — форма, в которую складывается
@@ -2077,7 +2077,7 @@ link   = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=
   link = "ss://BASE64URL@cdn.example.com:443?type=ws&security=tls&alpn=h3&path=%2FSECRET%2Fss"
 ```
 
-Креды едут внутри каждой ссылки, поэтому `cipher` / `password` родителя для
+Креды едут внутри каждой ссылки, поэтому `method` / `password` родителя для
 этих wire не читаются — `ss://`-fallback под VLESS-родителем не требует явного
 секрета. Всё, что не относится к wire-форме, по-прежнему приходит от родителя:
 `fwmark`, `ipv6_first` и `fingerprint_profile` наследуются ровно так же, как у

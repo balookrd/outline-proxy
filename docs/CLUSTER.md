@@ -543,7 +543,7 @@ and its padded writer, the node that observes the throttled last mile is the nod
 that can act on it: it runs the `ThroughputMonitor` over its own client-facing
 carrier and injects the `OCTL` cover frame directly. `home→edge` and
 `home→target` slowness is left to the health budget. Detection is gated on the
-server `[padding] throttle_detect` knob (off by default), read per node like the
+server `[padding] throttle_detect_enabled` knob (off by default), read per node like the
 rest of the padding config.
 
 Earlier, when the home did the decryption, the edge could not inject anything and

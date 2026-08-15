@@ -183,7 +183,7 @@ cover = false                            # idle pad-only cover-кадры (downl
 cover_jitter_min_ms = 250                # нижняя граница idle-паузы перед cover
 cover_jitter_max_ms = 1500               # верхняя граница
 
-# Детект downstream-троттлинга (только паддированный VLESS-over-WS). По умолчанию выкл.
+# Детект downstream-троттлинга (паддированные SS/VLESS, TCP+UDP, WS/XHTTP). По умолчанию выкл.
 throttle_detect_enabled = false          # следить за throughput, толкать клиента сменить uplink
 throttle_ratio_percent = 200             # сигнал когда inbound >= 2x outbound (200 = 2x)
 throttle_window_secs = 1                 # окно семплирования
