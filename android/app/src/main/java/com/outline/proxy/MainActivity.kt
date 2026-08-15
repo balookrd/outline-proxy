@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,13 +35,16 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
@@ -56,10 +60,19 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 val profiles = remember { store.load().toMutableStateList() }
                 var selectedId by remember { mutableStateOf(store.selectedId ?: profiles.firstOrNull()?.id) }
+                val scope = rememberCoroutineScope()
+                val context = LocalContext.current
 
                 fun persist() {
                     store.save(profiles)
                     store.selectedId = selectedId
+                    // Keep the background refresh running exactly while at least
+                    // one subscription exists.
+                    if (profiles.any { it.isSubscription }) {
+                        SubscriptionWorker.schedule(context)
+                    } else {
+                        SubscriptionWorker.cancel(context)
+                    }
                 }
 
                 var showSplit by remember { mutableStateOf(false) }
@@ -93,13 +106,48 @@ class MainActivity : ComponentActivity() {
                             persist()
                         },
                         onConnect = {
-                            profiles.firstOrNull { it.id == selectedId }?.let {
-                                requestVpnAndConnect(it.toToml())
+                            profiles.firstOrNull { it.id == selectedId }?.let { profile ->
+                                val config = profile.toToml()
+                                if (config.isBlank()) {
+                                    // A subscription that never downloaded has no
+                                    // config to connect with; say so instead of
+                                    // handing the core an empty TOML.
+                                    Toast.makeText(
+                                        context,
+                                        "No config yet — refresh the subscription first.",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                } else {
+                                    requestVpnAndConnect(config)
+                                }
                             }
                         },
                         onDisconnect = ::disconnect,
                         onOpenSplitTunnel = { showSplit = true },
                         onOpenExternalControl = { showExternal = true },
+                        onRefresh = { profile ->
+                            scope.launch {
+                                when (val result = ConfigFetcher.fetch(profile.configUrl)) {
+                                    is FetchResult.Success -> {
+                                        val idx = profiles.indexOfFirst { it.id == profile.id }
+                                        if (idx >= 0) {
+                                            profiles[idx] = profile.copy(
+                                                cachedToml = result.toml,
+                                                updatedAt = System.currentTimeMillis(),
+                                            )
+                                            persist()
+                                        }
+                                        Toast.makeText(context, "Config updated", Toast.LENGTH_SHORT).show()
+                                    }
+                                    is FetchResult.Failure ->
+                                        Toast.makeText(
+                                            context,
+                                            "Refresh failed: ${result.reason}",
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                }
+                            }
+                        },
                     )
                 }
             }
@@ -141,6 +189,7 @@ private fun ServerListScreen(
     onDisconnect: () -> Unit,
     onOpenSplitTunnel: () -> Unit,
     onOpenExternalControl: () -> Unit,
+    onRefresh: (ServerProfile) -> Unit,
 ) {
     var editing by remember { mutableStateOf<ServerProfile?>(null) }
 
@@ -164,6 +213,7 @@ private fun ServerListScreen(
                         onSelect = { onSelect(profile.id) },
                         onEdit = { editing = profile },
                         onDelete = { onDelete(profile) },
+                        onRefresh = { onRefresh(profile) },
                     )
                 }
             }
@@ -213,6 +263,7 @@ private fun ProfileCard(
     onSelect: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onRefresh: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth().selectable(selected = selected, onClick = onSelect)) {
         Row(
@@ -225,11 +276,37 @@ private fun ProfileCard(
                     profile.name.ifBlank { "(unnamed)" },
                     fontWeight = FontWeight.Bold,
                 )
-                Text(profile.transport, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    if (profile.isSubscription) {
+                        "subscription · ${formatAge(profile.updatedAt)}"
+                    } else {
+                        profile.transport
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (profile.isSubscription) {
+                TextButton(onClick = onRefresh) { Text("Refresh") }
             }
             TextButton(onClick = onEdit) { Text("Edit") }
             TextButton(onClick = onDelete) { Text("Delete") }
         }
+    }
+}
+
+/** Human-readable "when was this subscription last refreshed" for the card. */
+private fun formatAge(updatedAt: Long): String {
+    if (updatedAt <= 0L) return "never updated"
+    val ageMs = System.currentTimeMillis() - updatedAt
+    if (ageMs < 0) return "updated just now"
+    val minutes = ageMs / 60_000
+    val hours = minutes / 60
+    val days = hours / 24
+    return when {
+        minutes < 1 -> "updated just now"
+        minutes < 60 -> "updated ${minutes}m ago"
+        hours < 24 -> "updated ${hours}h ago"
+        else -> "updated ${days}d ago"
     }
 }
 
@@ -245,60 +322,116 @@ private fun ProfileEditorDialog(
     var ssLink by remember { mutableStateOf(initial.ssLink) }
     var paddingEnabled by remember { mutableStateOf(initial.paddingEnabled) }
     var rawOverride by remember { mutableStateOf(initial.rawTomlOverride) }
+    var configUrl by remember { mutableStateOf(initial.configUrl) }
+    var fetching by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    val scope = rememberCoroutineScope()
+    val isSubscription = configUrl.isNotBlank()
+
+    fun save() {
+        val base = initial.copy(
+            name = name,
+            transport = transport,
+            vlessLink = vlessLink,
+            ssLink = ssLink,
+            paddingEnabled = paddingEnabled,
+            rawTomlOverride = rawOverride,
+            configUrl = configUrl.trim(),
+        )
+        if (!isSubscription) {
+            onConfirm(base)
+            return
+        }
+        // A subscription only makes sense once its config downloads: fetch on
+        // save, keep the old cache on failure, refuse to save an empty one.
+        error = null
+        fetching = true
+        scope.launch {
+            when (val result = ConfigFetcher.fetch(base.configUrl)) {
+                is FetchResult.Success -> {
+                    fetching = false
+                    onConfirm(base.copy(cachedToml = result.toml, updatedAt = System.currentTimeMillis()))
+                }
+                is FetchResult.Failure -> {
+                    fetching = false
+                    if (base.cachedToml.isNotBlank()) {
+                        // URL unchanged / still cached: save without disturbing it.
+                        onConfirm(base)
+                    } else {
+                        error = result.reason
+                    }
+                }
+            }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
-            TextButton(onClick = {
-                onConfirm(
-                    initial.copy(
-                        name = name,
-                        transport = transport,
-                        vlessLink = vlessLink,
-                        ssLink = ssLink,
-                        paddingEnabled = paddingEnabled,
-                        rawTomlOverride = rawOverride,
-                    ),
-                )
-            }) { Text("Save") }
+            TextButton(onClick = { save() }, enabled = !fetching) {
+                Text(if (fetching) "Fetching…" else "Save")
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !fetching) { Text("Cancel") } },
         title = { Text("Server") },
         text = {
             Column {
                 OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
 
-                Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected = transport == "vless", onClick = { transport = "vless" })
-                    Text("VLESS", modifier = Modifier.padding(end = 16.dp))
-                    RadioButton(selected = transport == "ss", onClick = { transport = "ss" })
-                    Text("Shadowsocks")
-                }
-
-                if (transport == "vless") {
-                    OutlinedTextField(
-                        vlessLink, { vlessLink = it },
-                        label = { Text("vless:// share link") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                } else {
-                    OutlinedTextField(
-                        ssLink, { ssLink = it },
-                        label = { Text("ss:// share link") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-
-                Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Padding", modifier = Modifier.weight(1f))
-                    Switch(checked = paddingEnabled, onCheckedChange = { paddingEnabled = it })
-                }
-
                 OutlinedTextField(
-                    rawOverride, { rawOverride = it },
-                    label = { Text("Raw TOML override (optional)") },
+                    configUrl, { configUrl = it; error = null },
+                    label = { Text("Config URL (subscription)") },
+                    singleLine = true,
+                    supportingText = {
+                        Text("HTTPS link to a ready client config; fetched and refreshed automatically.")
+                    },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
+                error?.let {
+                    Text(
+                        "Could not fetch: $it",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+
+                // With a subscription URL the config comes from the network, so
+                // the manual transport fields would be dead inputs — hide them.
+                if (!isSubscription) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = transport == "vless", onClick = { transport = "vless" })
+                        Text("VLESS", modifier = Modifier.padding(end = 16.dp))
+                        RadioButton(selected = transport == "ss", onClick = { transport = "ss" })
+                        Text("Shadowsocks")
+                    }
+
+                    if (transport == "vless") {
+                        OutlinedTextField(
+                            vlessLink, { vlessLink = it },
+                            label = { Text("vless:// share link") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        OutlinedTextField(
+                            ssLink, { ssLink = it },
+                            label = { Text("ss:// share link") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+
+                    Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Padding", modifier = Modifier.weight(1f))
+                        Switch(checked = paddingEnabled, onCheckedChange = { paddingEnabled = it })
+                    }
+
+                    OutlinedTextField(
+                        rawOverride, { rawOverride = it },
+                        label = { Text("Raw TOML override (optional)") },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    )
+                }
             }
         },
     )

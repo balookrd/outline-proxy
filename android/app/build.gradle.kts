@@ -108,6 +108,9 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    // Periodic background refresh of subscription configs; its schedule is
+    // persisted by the framework and restored after reboot.
+    implementation("androidx.work:work-runtime-ktx:2.11.0")
 
     // JNA is required at runtime by the UniFFI-generated Kotlin bindings.
     // 5.16.0+ ships 16 KB-page-aligned native libs (libjnidispatch.so); older
