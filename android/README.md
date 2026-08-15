@@ -265,6 +265,51 @@ themselves be allowed to start activities: a background app without that
 privilege (Tasker without "Draw over other apps", say) will have the URI
 silently dropped by the platform.
 
+## Keeping the tunnel alive
+
+Every path that might have to bring the tunnel back — always-on VPN, boot, the
+watchdog alarm, the WorkManager job, `onDestroy` — routes through a single
+`OutlineVpnService.ensure()`. It reads the user's *intent* (`KeepAliveState.shouldRun`,
+set on connect, cleared on an explicit disconnect) and the live core state
+(`isRunning()`), and `KeepAlivePolicy.decide(...)` — a pure, unit-tested function —
+returns one of: do nothing, stop, give up (and notify), or connect. A failing
+connect backs off 5 → 15 → 30 min; a healthy tunnel is re-checked every 5 min.
+
+Four ways the tunnel comes back:
+
+- **Always-on VPN** — the strongest, and the reason `onStartCommand(null)` maps
+  to `ensure()`: the system starts and restarts the service itself. Enabled by
+  the user in system settings.
+- **Boot / app update** — `BootReceiver` (BOOT_COMPLETED, MY_PACKAGE_REPLACED),
+  after unlock. Not direct-boot aware on purpose: profiles hold credentials and
+  stay in credential-protected storage.
+- **Watchdog pair** — an exact alarm (`WatchdogAlarm`, pierces Doze, re-arms
+  itself) and a 15-minute WorkManager job (`WatchdogWorker`, its schedule
+  survives reboot); each calls `ensure()`.
+- **Swipe / kill** — `stopWithTask="false"` plus `onTaskRemoved`/`onDestroy`
+  schedule a check right behind the process going away.
+
+The **Keeping alive…** screen is a checklist of what only the user can grant —
+always-on VPN, battery-optimisation exemption, exact alarms, notifications, and
+the vendor autostart screen (probed per-device with `resolveActivity`; on this
+HONOR it opens `com.hihonor.systemmanager`). Each row shows its status and a
+button to the right system screen. These grants are also what makes starting a
+foreground service from the background legal on Android 12+.
+
+`specialUse` is **not** on Android 15's list of FGS types barred from
+`BOOT_COMPLETED`, so the boot path is open. Test the restriction without changing
+`targetSdk`:
+
+```sh
+adb shell am compat enable FGS_BOOT_COMPLETED_RESTRICTIONS com.outline.proxy
+adb shell am broadcast -a android.intent.action.BOOT_COMPLETED com.outline.proxy
+```
+
+Verified so far: unit tests for the decision table; on-device, the checklist
+screen and its system-screen intents (HONOR / MagicOS). The background revival
+paths (force-stop → return, reboot) are wired but not yet run end-to-end on
+hardware. The vendor table for MIUI/EMUI/ColorOS/One UI is carried unverified.
+
 ## Roadmap
 
 - **Increment 1 (done):** Rust⇄Kotlin bridge, SOCKS5 + uplinks boot, `VpnService`

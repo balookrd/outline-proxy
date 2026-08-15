@@ -108,6 +108,8 @@ dependencies {
     // activity in AndroidManifest.xml.
     implementation("com.google.android.material:material:1.14.0")
     implementation("androidx.activity:activity-compose:1.13.0")
+    // ContextCompat.startForegroundService: the raw API is 26+, minSdk is 24.
+    implementation("androidx.core:core-ktx:1.19.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     // Periodic background refresh of subscription configs; its schedule is

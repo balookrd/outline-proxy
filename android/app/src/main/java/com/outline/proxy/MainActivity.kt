@@ -103,6 +103,7 @@ class MainActivity : ComponentActivity() {
 
                 var showSplit by remember { mutableStateOf(false) }
                 var showExternal by remember { mutableStateOf(false) }
+                var showKeepAlive by remember { mutableStateOf(false) }
 
                 if (showSplit) {
                     SplitTunnelScreen(
@@ -115,6 +116,8 @@ class MainActivity : ComponentActivity() {
                         store = ExternalControlStore(this@MainActivity),
                         onBack = { showExternal = false },
                     )
+                } else if (showKeepAlive) {
+                    KeepAliveScreen(onBack = { showKeepAlive = false })
                 } else {
                     ServerListScreen(
                         profiles = profiles,
@@ -152,6 +155,7 @@ class MainActivity : ComponentActivity() {
                         onDisconnect = ::disconnect,
                         onOpenSplitTunnel = { showSplit = true },
                         onOpenExternalControl = { showExternal = true },
+                        onOpenKeepAlive = { showKeepAlive = true },
                         onRefresh = { profile ->
                             scope.launch {
                                 when (val result = ConfigFetcher.fetch(profile.configUrl)) {
@@ -217,6 +221,7 @@ private fun ServerListScreen(
     onDisconnect: () -> Unit,
     onOpenSplitTunnel: () -> Unit,
     onOpenExternalControl: () -> Unit,
+    onOpenKeepAlive: () -> Unit,
     onRefresh: (ServerProfile) -> Unit,
 ) {
     var editing by remember { mutableStateOf<ServerProfile?>(null) }
@@ -271,6 +276,10 @@ private fun ServerListScreen(
                 onClick = onOpenExternalControl,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("External control…") }
+            TextButton(
+                onClick = onOpenKeepAlive,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Keeping alive…") }
         }
     }
 
