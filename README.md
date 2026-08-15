@@ -4,18 +4,25 @@
 
 # outline-proxy
 
-`outline-proxy` is a Cargo workspace (monorepo) that hosts both halves of an
+`outline-proxy` is a Cargo workspace (monorepo) that hosts an
 Outline-compatible proxy system built on Shadowsocks AEAD and VLESS over
-WebSocket / XHTTP / HTTP/3.
+WebSocket / XHTTP / HTTP/3 — server, client, an aggregating dashboard UI, and
+an Android VPN client.
 
 - **[`outline-ss-rust`](bins/outline-ss-rust/)** — the **server** data plane.
   Accepts Shadowsocks AEAD or VLESS traffic over WebSocket (HTTP/1.1, RFC 8441
   H2, RFC 9220 H3) and XHTTP, and relays it to arbitrary TCP/UDP
   destinations. Multi-user with per-user policy, Prometheus metrics, optional
-  built-in TLS and QUIC/H3 listeners.
+  built-in TLS and QUIC/H3 listeners, and an optional mesh cluster across nodes.
 - **[`outline-ws-rust`](bins/outline-ws-rust/)** — the **client**. Accepts local
   SOCKS5 (and optional TUN) traffic and forwards it through the matching
   transports, with multi-uplink failover, load balancing, and health probes.
+- **[`outline-ui`](bins/outline-ui/)** — an aggregating **web UI** that serves
+  both the server and client dashboards from one binary (`/ss` and `/ws`) with
+  no data plane of its own; it only fans out to each node's control API.
+- **[`android/`](android/)** — an **Android** VPN client that reuses the whole
+  `outline-ws-rust` uplink stack unchanged behind a thin `VpnService` + Compose
+  UI layer.
 
 The client dials the server; both speak the same wire protocol and share a set
 of common crates, which is why they live in one repository.
@@ -80,25 +87,30 @@ Carrier aliases: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
 outline-proxy/
 ├── bins/
 │   ├── outline-ss-rust/   # server binary  (+ its README, CHANGELOG, docs/)
-│   └── outline-ws-rust/   # client binary  (+ its README, CHANGELOG, docs/)
+│   ├── outline-ws-rust/   # client binary  (+ its README, CHANGELOG, docs/)
+│   └── outline-ui/        # aggregating dashboard UI (+ its README)
+├── android/               # Android VPN client (separate workspace: Rust core + Gradle/Kotlin app)
 ├── crates/                # shared crates (wire protocol, transport, uplink, tun, crypto, routing, …)
 ├── vendor/                # patched h3 + sockudo-ws (single copy, workspace-level)
-├── .cargo/config.toml     # cross-build aliases (ss-* / ws-*)
+├── .cargo/config.toml     # cross-build aliases (ss-* / ws-* / ui-*)
 ├── .github/workflows/     # CI: per-binary release / nightly / tag pipelines
 ├── AGENTS.md              # contributor guidelines + monorepo invariants
 └── Cargo.toml             # workspace root: members, profiles, [patch.crates-io]
 ```
 
-Per-binary documentation lives next to each binary —
+Per-binary documentation lives next to each component —
 [server README](bins/outline-ss-rust/README.md) ·
-[client README](bins/outline-ws-rust/README.md) — with deeper material under each
+[client README](bins/outline-ws-rust/README.md) ·
+[dashboard UI README](bins/outline-ui/README.md) ·
+[Android client README](android/README.md) — with deeper material under each
 `bins/*/docs/` (architecture, session resumption, uplink configuration, TUN PMTUD).
 
 Cross-cutting topics under [`docs/`](docs/):
 [carrier padding](docs/PADDING.md) ·
 [SS-UDP record framing over XHTTP](docs/XHTTP-UDP-RECORDS.md) ·
 [outbound IPv6 source selection](docs/OUTBOUND-IPV6.md) ·
-[server mesh cluster](docs/CLUSTER.md).
+[server mesh cluster](docs/CLUSTER.md) ·
+[cluster deployment](docs/CLUSTER-DEPLOY.md).
 
 ## Build
 
@@ -122,6 +134,10 @@ cargo ui-release-musl-aarch64
 `rustls` uses the `aws-lc-rs` provider across the workspace, and the HTTP/3
 WebSocket path depends on the patched `vendor/h3` and `vendor/sockudo-ws`. See
 [`AGENTS.md`](AGENTS.md) for the full set of monorepo invariants.
+
+The Android client lives under [`android/`](android/) as a **separate** Cargo
+workspace (the root `cargo build --workspace` does not reach it) plus a
+Gradle/Kotlin app; build it from there — see [its README](android/README.md).
 
 ## Releases
 

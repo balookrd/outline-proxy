@@ -4,18 +4,21 @@ Android VPN client that connects to your servers using the full `outline-ws-rust
 uplink stack (padding + VLESS / SS / WS / TLS, failover). The Rust core is reused
 unchanged; Android only adds a thin `VpnService` + UI layer on top.
 
-> Status: **increment 4**. On top of increments 1–3 (Rust⇄Kotlin bridge, TUN
-> traffic carried through the uplinks, QUIC/HTTP-3 carriers, logcat logging,
-> persisted server-list UI, Wi-Fi⇄cellular handover), now with **per-app split
-> tunneling**: an app-picker UI with three modes (all apps / only selected /
-> all except selected). The whole Rust stack (incl. quinn + h3) is verified to
-> cross-compile under NDK r29, and the Gradle/Kotlin app builds (debug APK,
-> minified release APK, green JVM unit tests). Both builds were **run on an
-> emulator** under the original tun2proxy bridge — TUN up, Rust core booted,
-> handover followed; that bridge has since been replaced by a native
-> `outline-tun` engine attached directly to the TUN fd (see Architecture),
-> verified so far by build/cross-compile only. Nothing has run on **real
-> hardware**, and no traffic has crossed a live server yet.
+> Status: **feature-complete client, not yet run against a live server**.
+> Increments 1–5 are done — Rust⇄Kotlin bridge, a native `outline-tun` engine
+> attached to the `VpnService` fd, QUIC/HTTP-3 carriers, a persisted server-list
+> UI, Wi-Fi⇄cellular handover, per-app split tunneling, and `outline://`
+> external control — plus a run of later work: config-over-URL subscriptions, a
+> system light/dark theme, a launcher icon, signed release builds, a single
+> connect/disconnect button, keep-the-tunnel-alive across kills / reboot / OEM
+> cleanup, a profile-named foreground notification, and system-back navigation.
+> The whole Rust stack (incl. quinn + h3) cross-compiles under NDK r29, and the
+> Gradle/Kotlin app builds (debug APK, minified release APK, green JVM unit
+> tests). It has run on an **emulator** (under the earlier tun2proxy bridge,
+> since replaced by the native engine); on **real hardware** only the keep-alive
+> checklist screen and its vendor intents have been exercised. No traffic has
+> crossed a live server yet, and the native TUN engine has not been booted at
+> runtime — see "What is verified vs. not".
 
 ## Layout
 
@@ -26,11 +29,17 @@ android/
   app/             # Android app (Gradle, Kotlin, Compose)
     src/main/java/com/outline/proxy/
       OutlineVpnService.kt   # VpnService: establish() TUN, drive the core
-      MainActivity.kt        # config editor + connect/disconnect
-      ExternalControl.kt     # outline:// URI grammar, access gate, settings
-      ControlActivity.kt     # invisible entry point for outline:// commands
+      MainActivity.kt        # config editor + connect/disconnect, screens
+      ServerProfile.kt / ProfileStore.kt        # profile model + persistence
+      SplitTunnel.kt         # per-app allow/deny modes
+      ConfigFetcher.kt / SubscriptionWorker.kt  # config-over-URL subscription
+      ExternalControl.kt / ControlActivity.kt   # outline:// grammar + entry point
+      AppTheme.kt            # system light/dark theme
+      KeepAlivePolicy.kt / KeepAliveState.kt / KeepAliveScreen.kt
+      keepalive/             # BootReceiver, WatchdogAlarm/Worker/Receiver, helper
     src/test/java/com/outline/proxy/
-      ExternalControlTest.kt # JVM unit tests for the URI parser and the gate
+      ExternalControlTest.kt, KeepAlivePolicyTest.kt,   # JVM unit tests
+      SubscriptionProfileTest.kt, ConfigValidationTest.kt
 ```
 
 ## Architecture
@@ -334,6 +343,12 @@ hardware. The vendor table for MIUI/EMUI/ColorOS/One UI is carried unverified.
 - **Increment 5 (done):** external control over the `outline://` scheme
   (connect / disconnect / toggle, optional profile selector), gated by a switch
   and an optional token; parser and gate covered by JVM unit tests.
+- **Increment 6 (done):** productisation — config-over-URL subscriptions
+  (`ConfigFetcher` / `SubscriptionWorker`), keep-the-tunnel-alive infrastructure
+  (`KeepAlivePolicy` + the `keepalive/` watchdog pair), a system light/dark
+  theme, a launcher icon, signed release builds, a single connect/disconnect
+  button, and a profile-named foreground notification. See the sections above
+  for each.
 
 ## What is verified vs. not
 
@@ -357,12 +372,14 @@ hardware. The vendor table for MIUI/EMUI/ColorOS/One UI is carried unverified.
 - **Verified on an emulator**, release build: with R8 minification on, the
   `.so` loads and `start()` reaches Rust — the keep rules hold. Checked by
   running the signed release APK, since a bad keep rule fails at runtime only.
-- **Not verified:** nothing has been run on real hardware, and no traffic has
-  been carried end-to-end through a live server — the emulator runs pointed at
-  a dead endpoint. Per-app split tunneling still needs a real run. The native
-  TUN engine itself has not been exercised on an emulator or a device yet —
-  cross-compile and the debug APK build are confirmed (see Roadmap, increment
-  2), but nobody has booted the tunnel and watched packets cross it.
+- **Not verified:** on real hardware only the keep-alive checklist screen and
+  its vendor intents have been exercised (a HONOR / MagicOS device) — no data
+  plane has, and no traffic has been carried end-to-end through a live server
+  (the emulator runs pointed at a dead endpoint). Per-app split tunneling still
+  needs a real run. The native TUN engine itself has not been exercised on an
+  emulator or a device yet — cross-compile and the debug APK build are confirmed
+  (see Roadmap, increment 2), but nobody has booted the tunnel and watched
+  packets cross it.
 
 ## Notes for porting
 

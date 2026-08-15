@@ -49,10 +49,10 @@ feature gates частью публичного поведения.
   связка с routing. Phased TCP dial machinery живёт в
   `src/proxy/tcp/connect/` и разнесена по модулям `failover_step`,
   `first_chunk`, `pinned_relay`, `chunk0_failover`, `replay`, `retry`,
-  `attribution`, `ring_buffer`.
-- `src/http/`: metrics endpoint, control plane, встроенный dashboard и HTTP
-  serving helpers. Общий accept-loop — `serve.rs`, bounded-чтение тела запроса
-  для обеих плоскостей — `body.rs`.
+  `attribution`.
+- `src/http/`: metrics endpoint, control plane и HTTP serving helpers (дашборд
+  вынесен в `bins/outline-ui`). Общий accept-loop — `serve.rs`, bounded-чтение
+  тела запроса для обеих плоскостей — `body.rs`.
 - `src/accept.rs`: общий для SOCKS5-ingress и HTTP-листенеров хелпер ожидания
   свободного слота соединения, наблюдающий shutdown.
 - `crates/outline-transport/`: WebSocket, HTTP/2, HTTP/3, VLESS,

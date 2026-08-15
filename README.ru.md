@@ -4,19 +4,26 @@
 
 # outline-proxy
 
-`outline-proxy` — это Cargo workspace (монорепозиторий), в котором живут обе
-половины Outline-совместимой прокси-системы на базе Shadowsocks AEAD и VLESS
-поверх WebSocket / XHTTP / HTTP/3.
+`outline-proxy` — это Cargo workspace (монорепозиторий), в котором живёт
+Outline-совместимая прокси-система на базе Shadowsocks AEAD и VLESS поверх
+WebSocket / XHTTP / HTTP/3 — сервер, клиент, агрегирующий dashboard-UI и
+Android-клиент.
 
 - **[`outline-ss-rust`](bins/outline-ss-rust/)** — **серверный** data plane.
   Принимает Shadowsocks AEAD или VLESS поверх WebSocket (HTTP/1.1, RFC 8441 H2,
   RFC 9220 H3) и XHTTP и релеит на произвольные TCP/UDP назначения.
   Multi-user с per-user политиками, Prometheus-метрики, опциональные встроенные
-  TLS- и QUIC/H3-listener'ы.
+  TLS- и QUIC/H3-listener'ы и опциональный mesh-кластер между узлами.
 - **[`outline-ws-rust`](bins/outline-ws-rust/)** — **клиент**. Принимает
   локальный SOCKS5 (и опциональный TUN) трафик и отправляет его через
   соответствующие транспорты, с multi-uplink failover, балансировкой нагрузки
   и health-пробами.
+- **[`outline-ui`](bins/outline-ui/)** — агрегирующий **web-UI**: отдаёт оба
+  дашборда (серверный и клиентский) из одного бинаря (`/ss` и `/ws`), без
+  собственного data plane — только фан-аут в control API каждого узла.
+- **[`android/`](android/)** — **Android**-VPN-клиент, переиспользующий весь
+  uplink-стек `outline-ws-rust` без изменений под тонким слоем `VpnService` +
+  Compose-UI.
 
 Клиент дайлит сервер; обе стороны говорят на одном wire-протоколе и делят набор
 общих крейтов — поэтому они в одном репозитории.
@@ -81,18 +88,22 @@ TCP, и для UDP. По умолчанию TCP и UDP идут по разде�
 outline-proxy/
 ├── bins/
 │   ├── outline-ss-rust/   # серверный бинарь  (+ его README, CHANGELOG, docs/)
-│   └── outline-ws-rust/   # клиентский бинарь  (+ его README, CHANGELOG, docs/)
+│   ├── outline-ws-rust/   # клиентский бинарь  (+ его README, CHANGELOG, docs/)
+│   └── outline-ui/        # агрегирующий dashboard-UI (+ его README)
+├── android/               # Android-VPN-клиент (отдельный workspace: Rust-ядро + Gradle/Kotlin-приложение)
 ├── crates/                # общие крейты (wire-протокол, transport, uplink, tun, crypto, routing, …)
 ├── vendor/                # пропатченные h3 + sockudo-ws (одна копия, на уровне workspace)
-├── .cargo/config.toml     # cross-build алиасы (ss-* / ws-*)
+├── .cargo/config.toml     # cross-build алиасы (ss-* / ws-* / ui-*)
 ├── .github/workflows/     # CI: per-binary release / nightly / tag пайплайны
 ├── AGENTS.md              # правила для контрибьюторов + монорепо-инварианты
 └── Cargo.toml             # корень workspace: members, профили, [patch.crates-io]
 ```
 
-Документация по каждому бинарю лежит рядом с ним —
+Документация по каждому компоненту лежит рядом с ним —
 [README сервера](bins/outline-ss-rust/README.md) ·
-[README клиента](bins/outline-ws-rust/README.md) — а более детальные материалы
+[README клиента](bins/outline-ws-rust/README.md) ·
+[README dashboard-UI](bins/outline-ui/README.ru.md) ·
+[README Android-клиента](android/README.ru.md) — а более детальные материалы
 под каждым `bins/*/docs/` (архитектура, session resumption, настройка uplink'ов,
 TUN PMTUD).
 
@@ -100,7 +111,8 @@ TUN PMTUD).
 [carrier-padding](docs/PADDING.ru.md) ·
 [фрейминг записей SS-UDP поверх XHTTP](docs/XHTTP-UDP-RECORDS.ru.md) ·
 [выбор исходящего IPv6](docs/OUTBOUND-IPV6.ru.md) ·
-[mesh-кластер серверов](docs/CLUSTER.ru.md).
+[mesh-кластер серверов](docs/CLUSTER.ru.md) ·
+[развёртывание кластера](docs/CLUSTER-DEPLOY.ru.md).
 
 ## Сборка
 
@@ -124,6 +136,10 @@ cargo ui-release-musl-aarch64
 `rustls` во всём workspace использует провайдер `aws-lc-rs`, а HTTP/3 WebSocket
 path зависит от пропатченных `vendor/h3` и `vendor/sockudo-ws`. Полный набор
 монорепо-инвариантов — в [`AGENTS.md`](AGENTS.md).
+
+Android-клиент живёт под [`android/`](android/) как **отдельный** Cargo
+workspace (корневой `cargo build --workspace` его не видит) плюс Gradle/Kotlin-
+приложение; собирается оттуда — см. [его README](android/README.ru.md).
 
 ## Релизы
 

@@ -31,7 +31,6 @@
 - Linux `fwmark` на исходящих сокетах на уровне пользователя
 - IPv4 и IPv6: слушатели, upstream-цели и генерация client URL
 - Метрики Prometheus и готовый дашборд Grafana
-- Генерация Outline-совместимых динамических ключей доступа для Shadowsocks-клиентов и `vless://` ссылок для VLESS-клиентов
 - Опциональный встроенный TLS для HTTP/1.1 и HTTP/2
 - Опциональный встроенный QUIC/TLS-слушатель для HTTP/3
 
@@ -54,7 +53,7 @@
 | IPv6 | Поддерживается | Слушатель, upstream-резолвинг, генерация ключей |
 | Метрики Prometheus | Поддерживается | Отдельный слушатель, метки с низкой кардинальностью |
 | Дашборд Grafana | Поддерживается | Готовый JSON-дашборд в репозитории |
-| Outline динамические ключи | Поддерживается | `ssconf://` + генерируемый YAML |
+| Outline динамические ключи | Вне бинаря | Клиентские конфиги генерирует `ops/access-keys`, а не сам бинарь — см. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
 | VLESS поверх WebSocket | Поддерживается | TCP, UDP, mux.cool с XUDP per-packet addressing (совместимо с xray/happ/hiddify), до 8 под-соединений одновременно; доступно поверх HTTP/1.1, HTTP/2 и HTTP/3 |
 | VLESS поверх XHTTP packet-up | Поддерживается | Long-lived GET + POST'ы с seq-номерами на одном HTTP/2 (или HTTP/3) соединении; reorder-буфер на сервере склеивает out-of-order POST'ы; downlink-кольцо переживает обрыв GET'а в полёте (CDN ~100 c); `X-Padding` + SSE-style маскировка заголовков (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
 | VLESS поверх XHTTP stream-one | Поддерживается | Один bidirectional запрос: request body — uplink, response body — downlink. Включается через `?mode=stream-one` в URL запроса на том же base path. Требует h2 или h3 (h1 → 505). На h3 bidi-стрим разделяется через `RequestStream::split` на send/recv половинки на отдельных tasks |
@@ -108,10 +107,9 @@ flowchart LR
 - [src/server/](src/server): транспортные слушатели, обработка WebSocket Upgrade, логика TCP и UDP relay
 - [src/crypto/](src/crypto): шифрование/расшифровка Shadowsocks AEAD для потоков и UDP-пакетов
 - [src/config/](src/config): загрузка конфигурации из CLI, переменных окружения и TOML
-- [src/access_key.rs](src/access_key.rs): генерация Outline динамических ключей и YAML
 - [src/metrics/](src/metrics): экспортёр Prometheus и семейства метрик
-- [src/protocol.rs](src/protocol.rs): хелперы формата Shadowsocks (SOCKS-совместимый target address)
-- [src/nat.rs](src/nat.rs): таблица UDP NAT-сессий
+- [src/protocol/](src/protocol): хелперы формата Shadowsocks/VLESS (SOCKS-совместимый target address)
+- [src/server/nat/](src/server/nat): таблица UDP NAT-сессий
 - [src/fwmark.rs](src/fwmark.rs): хелперы Linux SO_MARK для исходящих сокетов
 - [config.toml](config.toml): пример production-конфигурации
 - [systemd/outline-ss-rust.service](systemd/outline-ss-rust.service): production-ориентированный systemd unit
@@ -262,15 +260,8 @@ cargo release-musl-armv7
 | `xhttp_path_ss` | Опциональный **combined** SS-over-XHTTP-путь: один путь несёт ОБЕ ноги, разделяемые битом первого символа session-id. Вместо `xhttp_path_tcp` + `xhttp_path_udp`; взаимоисключающ с ними и отличается от всех прочих путей |
 | `http_root_auth` | Включить OpenConnect-подобный HTTP Basic challenge на `/`; после 3 неверных паролей сервер отдаёт `403`, а не-корневые пути остаются `404` |
 | `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `Authorization required` |
-| `public_host` | Публичный хост для генерации Outline-ключей |
-| `public_scheme` | `ws` или `wss` для генерируемых client URL |
-| `access_key_url_base` | Базовый URL для хостинга генерируемых YAML-файлов |
-| `access_key_file_extension` | Расширение для генерируемых файлов клиентской Outline-конфигурации; по умолчанию `.yaml` |
-| `print_access_keys` | Вывести динамические Outline-конфигурации и завершить работу |
-| `write_access_keys_dir` | Записать per-user Outline YAML-файлы в указанный каталог и завершить работу |
+| `[access_keys]` | Читается внешним генератором `ops/access-keys`, **не** этим бинарём. Секция парсится ради совместимости (она есть в каждом боевом конфиге, а структуры помечены `deny_unknown_fields`) и игнорируется. Поля: `public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`. См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
 | `method` | Глобальный шифр Shadowsocks по умолчанию |
-| `password` | Пароль в режиме одного пользователя или base64 PSK для `2022-*` |
-| `fwmark` | `fwmark` в режиме одного пользователя |
 | `users[].password` | Опциональный пароль Shadowsocks на пользователя |
 | `users[].vless_id` | Опциональный VLESS UUID на пользователя |
 | `users[].ws_path_vless` | Опциональный VLESS WebSocket-путь на пользователя; при отсутствии используется верхнеуровневый `ws_path_vless` |
@@ -285,6 +276,7 @@ cargo release-musl-armv7
 | `control.listen` | Адрес сокета управляющего слушателя, например `127.0.0.1:7001`. Отдельный сокет — не выставляйте в публичную сеть |
 | `control.token` | Bearer-токен, обязательный в каждом запросе. Для секретов предпочтительнее `control.token_file` |
 | `control.token_file` | Путь к файлу с bearer-токеном; взаимоисключим с `control.token` |
+| `[cluster]` | Опциональное членство в mesh-кластере (relay шардов между узлами). Поля: `enabled`, `shard_id` (`0..16`, уникален в кластере), `cluster_psk` (base64 общего секрета), `mesh_listen` (`host:port`, на который биндится mesh QUIC-слушатель), `mesh_relay_budget_ms` (по умолчанию `4000`) и записи `[[cluster.peers]]` (`shard` + `addr`). Отсутствие или `enabled = false` сохраняет standalone-модель. См. [`../../docs/CLUSTER.ru.md`](../../docs/CLUSTER.ru.md) и [`../../docs/CLUSTER-DEPLOY.ru.md`](../../docs/CLUSTER-DEPLOY.ru.md) |
 
 ### Параметры пользователя
 
@@ -364,7 +356,7 @@ Cross-transport session resumption opt-in (`[session_resumption].enabled = true`
 
 Байт-потоковая сессия возобновляется и между **прокси-протоколами**: сессия, припаркованная по Shadowsocks, переприцепляется к VLESS-носителю той же записи `[[users]]`, и наоборот — эта запись держит и `password`, и `vless_id`, а обе ноги паркуют под её `id`. Именно это держит сессии живыми у клиента, чей аплинк перевыбирает активный wire на смешанном SS/VLESS-наборе. Всё, что носитель должен своему клиенту по фреймингу, строится из аутентифицированного пользователя возобновляющего потока, так что от протокола парковки не переносится ничего; переходы считаются на `outline_ss_orphan_resume_cross_protocol_total{parked,resumed}`. Датаграммные и mux-парковки остаются внутри своего протокола — они держат состояние фрейминга, которое другой протокол выразить не может. Полные правила и то, что гарантирует owner check, когда он остаётся единственным сигналом идентичности на этом пути, — в [`docs/SESSION-RESUMPTION.ru.md`](docs/SESSION-RESUMPTION.ru.md).
 
-Динамический генератор access-key выпускает два URI `vless://...?type=xhttp&path=...` на пользователя, когда `xhttp_path_vless` установлен: один с `mode=packet-up` (файл `<user>-vless-xhttp.<ext>`), второй с `mode=stream-one` (файл `<user>-vless-xhttp-stream-one.<ext>`). xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают оба URI как есть — клиент сам подбирает тот wire-режим, который проходит на его сети.
+Внешний генератор `ops/access-keys` выпускает оба URI `vless://...?type=xhttp&path=...` на пользователя, когда `xhttp_path_vless` установлен: один с `mode=packet-up`, второй с `mode=stream-one` — в артефакты этого пользователя (`<user>.json` подписка и `<user>.txt`). xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают оба URI как есть — клиент сам подбирает тот wire-режим, который проходит на его сети. См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов).
 
 ### VLESS поверх WebSocket/TLS
 
@@ -432,7 +424,6 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 Ограничения v1:
 
 - Значения `ws_path_tcp` / `ws_path_udp` / `ws_path_vless` у создаваемого пользователя должны уже присутствовать в стартовом конфиге — Axum/H3 роутеры регистрируют пути только на старте. Ввод совершенно нового пути по-прежнему требует рестарта.
-- Неявный пользователь, синтезируемый из верхнеуровневого `password`, через этот API не управляется — добавьте явную запись `[[users]]`.
 
 Если `http_root_auth = true`, обычный `GET /` получает HTTP Basic challenge. Имя пользователя игнорируется, а пароль проверяется по настроенным Shadowsocks-пользователям. Параметр `http_root_realm` задаёт текст этого запроса пароля. После трёх неудачных попыток пароля в рамках одной браузерной сессии сервер начинает отвечать `403 Forbidden`. Обычные HTTP-запросы к любым не-корневым путям по-прежнему получают `404 Not Found`.
 
@@ -450,25 +441,20 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 - `OUTLINE_SS_PREFER_IPV4_UPSTREAM`
 - `OUTLINE_SS_OUTBOUND_IPV6_PREFIX`
 - `OUTLINE_SS_OUTBOUND_IPV6_INTERFACE`
+- `OUTLINE_SS_OUTBOUND_IPV6_PREFIX_INTERFACE`
 - `OUTLINE_SS_OUTBOUND_IPV6_REFRESH_SECS`
 - `OUTLINE_SS_OUTBOUND_IPV6_STICKY`
 - `OUTLINE_SS_OUTBOUND_IPV6_STICKY_TTL_SECS`
-- `OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`
 - `OUTLINE_SS_WS_PATH_UDP`
 - `OUTLINE_SS_HTTP_ROOT_AUTH`
 - `OUTLINE_SS_HTTP_ROOT_REALM`
-- `OUTLINE_SS_PUBLIC_HOST`
-- `OUTLINE_SS_PUBLIC_SCHEME`
-- `OUTLINE_SS_ACCESS_KEY_URL_BASE`
-- `OUTLINE_SS_PRINT_ACCESS_KEYS`
 - `OUTLINE_SS_METHOD`
-- `OUTLINE_SS_PASSWORD`
-- `OUTLINE_SS_FWMARK`
+- `OUTLINE_SS_TUNING_PROFILE`
+- `OUTLINE_SS_USERS`
 - `OUTLINE_SS_CONTROL_LISTEN`
 - `OUTLINE_SS_CONTROL_TOKEN`
 - `OUTLINE_SS_CONTROL_TOKEN_FILE`
-- `OUTLINE_SS_USERS`
 
 `OUTLINE_SS_USERS` использует записи вида `id=password`, разделённые запятыми:
 
@@ -485,9 +471,14 @@ OUTLINE_SS_USERS=alice=secret1,bob=secret2
 Для тестирования или доверенных приватных сетей:
 
 ```toml
+[server]
 listen = "0.0.0.0:3000"
+
+[websocket]
 ws_path_tcp = "/tcp"
 ws_path_udp = "/udp"
+
+[shadowsocks]
 method = "chacha20-ietf-poly1305"
 ```
 
@@ -566,7 +557,7 @@ backend = "http://127.0.0.1:8080"   # пока только http://
 
 Что именно проксируется:
 
-- Любой запрос, который **не** попал ни в один сконфигурированный WebSocket / XHTTP / metrics / control / dashboard маршрут. Порядок приоритетов прежний: WebSocket и XHTTP-маршруты первыми, затем `http_root_auth` на `/`, и только потом fallback.
+- Любой запрос, который **не** попал ни в один сконфигурированный WebSocket / XHTTP / metrics / control маршрут. Порядок приоритетов прежний: WebSocket и XHTTP-маршруты первыми, затем `http_root_auth` на `/`, и только потом fallback.
 - Hop-by-hop заголовки (`Connection`, `Keep-Alive`, `TE`, `Trailers`, `Transfer-Encoding`, `Upgrade`, `Proxy-*`) срезаются в обе стороны, включая всё, что перечислено внутри `Connection:`. Тело стримится в обе стороны.
 - `Host` заменяется на authority бэкенда — virtual host'ы на upstream'е резолвятся так, словно запрос пришёл напрямую к нему (поведение nginx-овского `proxy_set_header Host $proxy_host;`).
 - `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` добавляются/устанавливаются в зависимости от тумблеров выше. `X-Forwarded-Proto` отражает, терминировал ли входящий листенер TLS.
@@ -756,8 +747,9 @@ listen = "0.0.0.0:443"
 Публикация метрик на отдельном слушателе:
 
 ```toml
-metrics_listen = "127.0.0.1:9090"
-metrics_path = "/metrics"
+[metrics]
+listen = "127.0.0.1:9090"
+path = "/metrics"
 
 [tuning]
 client_active_ttl_secs = 300

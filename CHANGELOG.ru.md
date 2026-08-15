@@ -12,15 +12,25 @@
 | **Сервер** (`outline-ss-rust`) | [`bins/outline-ss-rust/CHANGELOG.ru.md`](bins/outline-ss-rust/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ss-rust/CHANGELOG.md) |
 | **Клиент** (`outline-ws-rust`) | [`bins/outline-ws-rust/CHANGELOG.ru.md`](bins/outline-ws-rust/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ws-rust/CHANGELOG.md) |
 
-**Сервер** (`outline-ss-rust`) сейчас на **1.6.0** (2026-07-01), **клиент**
-(`outline-ws-rust`) — на **1.6.1** (2026-07-02); адаптивный carrier-padding
-вышел в линейке 1.6. Главная недавняя работа — клиентский data-plane:
-**TUN GSO / GRO / USO offload** (`[tun] gso` / `gro` / `uso`) для срезания
-per-packet CPU и **connection sniffing с переопределением назначения**
-(TLS SNI / HTTP Host на TCP, QUIC ClientHello на UDP), чтобы exit-узел
-резолвил реальное имя хоста — плюс фиксы пропускной способности одиночного
-flow на больших RTT (поднятые приёмные окна носителей + congestion control
-BBR, зеркалимый сервером на его QUIC-листенере). Подробности — в changelog'ах
-бинарей.
+Оба бинаря на **1.7.0**, выпущены 2026-07-06 (теги `ss-v1.7.0` / `ws-v1.7.0`);
+работа, пришедшая после, лежит в секции `## Unreleased` каждого бинаря.
+Адаптивный
+carrier-padding, TUN GSO / GRO / USO offload и connection sniffing с
+переопределением назначения вышли в этой линейке раньше. Главная недавняя
+работа охватывает всю систему:
+
+- **Mesh-кластер серверов.** Edge-узлы релеят сессию клиента на home-узел, что
+  ей владеет, с метриками исхода релея и полной миграцией сессии при
+  переключении edge — включая single-target UDP и VLESS-mux-бандлы.
+- **Share-link для всего.** Combined-path Shadowsocks-юзеры получают share-link
+  `ss://…` рядом с артефактами `vless://…`, а клиент может описать целый uplink —
+  или одну fallback-жилу — из одного share-link-URI.
+- **Детерминированный синхронный перевыбор** (`load_balancing.reselect_sync`),
+  чтобы клон-пара узлов ротировалась на один uplink и уходила с одного egress.
+- **Android-VPN-клиент** ([`android/`](android/)), переиспользующий uplink-стек
+  `outline-ws-rust` без изменений, плюс агрегирующий dashboard-сервис
+  **`outline-ui`**.
+
+Подробная история по версиям — в changelog'ах бинарей.
 
 *English version: [CHANGELOG.md](CHANGELOG.md)*
