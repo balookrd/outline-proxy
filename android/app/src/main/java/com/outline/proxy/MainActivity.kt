@@ -18,10 +18,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -299,7 +305,8 @@ private fun ProfileCard(
                 )
                 Text(
                     if (profile.isSubscription) {
-                        "subscription · ${formatAge(profile.updatedAt)}"
+                        "subscription · ${formatAge(profile.updatedAt)} · " +
+                            "every ${SubscriptionWorker.REFRESH_PERIOD_HOURS}h"
                     } else {
                         profile.transport
                     },
@@ -307,10 +314,16 @@ private fun ProfileCard(
                 )
             }
             if (profile.isSubscription) {
-                TextButton(onClick = onRefresh) { Text("Refresh") }
+                IconButton(onClick = onRefresh) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                }
             }
-            TextButton(onClick = onEdit) { Text("Edit") }
-            TextButton(onClick = onDelete) { Text("Delete") }
+            IconButton(onClick = onEdit) {
+                Icon(Icons.Filled.Edit, contentDescription = "Edit")
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Filled.Delete, contentDescription = "Delete")
+            }
         }
     }
 }

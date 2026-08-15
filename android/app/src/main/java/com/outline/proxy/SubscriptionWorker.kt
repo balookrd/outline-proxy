@@ -52,11 +52,14 @@ class SubscriptionWorker(
     companion object {
         private const val TAG = "SubscriptionWorker"
         private const val WORK_NAME = "outline-subscription"
-        private const val PERIOD_HOURS = 12L
+
+        /** How often a subscription's config is refreshed in the background. */
+        const val REFRESH_PERIOD_HOURS = 12L
 
         /** Idempotent: safe to call on every save; keeps a single periodic work. */
         fun schedule(context: Context) {
-            val request = PeriodicWorkRequestBuilder<SubscriptionWorker>(PERIOD_HOURS, TimeUnit.HOURS)
+            val request =
+                PeriodicWorkRequestBuilder<SubscriptionWorker>(REFRESH_PERIOD_HOURS, TimeUnit.HOURS)
                 .addTag(WORK_NAME)
                 .build()
             runCatching {

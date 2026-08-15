@@ -102,6 +102,8 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.06.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    // Refresh/Edit/Delete glyphs for the profile card actions.
+    implementation("androidx.compose.material:material-icons-core")
     // Provides the XML theme (Theme.Material3.DayNight) referenced by the
     // activity in AndroidManifest.xml.
     implementation("com.google.android.material:material:1.14.0")
