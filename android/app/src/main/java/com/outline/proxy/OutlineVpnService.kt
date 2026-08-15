@@ -497,7 +497,10 @@ class OutlineVpnService : VpnService() {
         return Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("Outline Proxy")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setSmallIcon(R.drawable.ic_stat_tunnel)
+            // The cyan of the emblem's "wires"; the launcher tints the small-icon
+            // circle with this instead of the OEM default accent.
+            .setColor(0xFF40C4FF.toInt())
             .setContentIntent(openApp)
             .setOngoing(true)
             .addAction(

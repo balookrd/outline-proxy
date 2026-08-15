@@ -1,0 +1,15 @@
+<!-- Status-bar notification icon: a monochrome silhouette (Android renders the
+     small icon from alpha only and tints it, so a full-colour launcher icon
+     cannot be used here). Echoes the emblem: a hexagon shield with a forward
+     arrow cut out. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M2,12 L7,3.5 L17,3.5 L22,12 L17,20.5 L7,20.5 Z
+                          M6,10.5 L13.5,10.5 L13.5,8 L18,12 L13.5,16 L13.5,13.5 L6,13.5 Z" />
+</vector>
