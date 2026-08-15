@@ -57,7 +57,7 @@ class MainActivity : ComponentActivity() {
         store = ProfileStore(this)
 
         setContent {
-            MaterialTheme {
+            OutlineTheme {
                 val profiles = remember { store.load().toMutableStateList() }
                 var selectedId by remember { mutableStateOf(store.selectedId ?: profiles.firstOrNull()?.id) }
                 val scope = rememberCoroutineScope()
