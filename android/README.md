@@ -204,6 +204,29 @@ when the node ships the matching sections. The generator reports the ones that
 are off as `warning:` lines — see
 [`ops/access-keys/README.md`](../ops/access-keys/README.md).
 
+### Subscription URL
+
+Instead of pasting the config, a profile can point at an HTTPS URL that serves
+one (**Config URL** field in the editor) — the same `<user>.toml` the node
+generates, fetched and kept current the way Happ tracks a subscription. With a
+URL set, the transport fields are hidden: the URL is the single source of the
+config.
+
+- The body must be a whole client config (not an xray-style list of servers);
+  one URL is one profile with all its uplinks inside.
+- **HTTPS only** — the config carries UUIDs and passwords. The URL's path is a
+  secret token, so it is never logged in full, only masked (`host/…tail`).
+- The fetched config is cached in the profile. A background worker
+  (`SubscriptionWorker`, WorkManager, every 12 h) refreshes it; a failed fetch
+  keeps the last good cache and never disturbs a running tunnel. The list shows
+  "updated N h ago" and a **Refresh** button for an immediate pull.
+- A response only replaces the cache if it looks like a config (has `[tun]` or
+  `[[outline.uplinks]]`), so an HTML error page or captcha cannot blank out a
+  working subscription.
+- The fetch goes out directly (this app is excluded from its own VPN). If the
+  source is only reachable *through* the tunnel, background refresh will fail and
+  the cache carries on — a known limitation.
+
 ## External control (`outline://`)
 
 Automation apps (Tasker, launcher shortcuts, `adb`) can drive the tunnel over a

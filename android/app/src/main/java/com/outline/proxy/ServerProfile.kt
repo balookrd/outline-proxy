@@ -15,6 +15,11 @@ import java.util.UUID
  * `rawTomlOverride`, when non-blank, is used verbatim instead of the generated
  * TOML — an escape hatch for configs the structured form can't yet express
  * (fallbacks, groups, combined paths, multiple uplinks).
+ *
+ * `configUrl`, when non-blank, makes this a *subscription*: the whole config is
+ * fetched from that HTTPS URL and kept in [cachedToml], refreshed in the
+ * background. The URL is then the single source of truth — [toToml] returns the
+ * cache and ignores the override and the structured fields.
  */
 data class ServerProfile(
     val id: String = UUID.randomUUID().toString(),
@@ -27,8 +32,18 @@ data class ServerProfile(
     // Common
     val paddingEnabled: Boolean = false,
     val rawTomlOverride: String = "",
+    // Subscription
+    val configUrl: String = "",
+    val cachedToml: String = "",
+    val updatedAt: Long = 0L,
 ) {
+    /** This profile's config is fetched from [configUrl] rather than built locally. */
+    val isSubscription: Boolean get() = configUrl.isNotBlank()
+
     fun toToml(): String {
+        // A subscription's config is whatever was last fetched — nothing else may
+        // leak into it, so this wins over both the override and the fields.
+        if (isSubscription) return cachedToml
         if (rawTomlOverride.isNotBlank()) return rawTomlOverride
 
         val sb = StringBuilder()
@@ -66,6 +81,9 @@ data class ServerProfile(
         put("ssLink", ssLink)
         put("paddingEnabled", paddingEnabled)
         put("rawTomlOverride", rawTomlOverride)
+        put("configUrl", configUrl)
+        put("cachedToml", cachedToml)
+        put("updatedAt", updatedAt)
     }
 
     companion object {
@@ -81,6 +99,9 @@ data class ServerProfile(
             ssLink = o.optString("ssLink", ""),
             paddingEnabled = o.optBoolean("paddingEnabled", false),
             rawTomlOverride = o.optString("rawTomlOverride", ""),
+            configUrl = o.optString("configUrl", ""),
+            cachedToml = o.optString("cachedToml", ""),
+            updatedAt = o.optLong("updatedAt", 0L),
         )
 
         fun listToJson(profiles: List<ServerProfile>): String {
