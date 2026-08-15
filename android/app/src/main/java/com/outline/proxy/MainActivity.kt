@@ -44,6 +44,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -62,6 +63,25 @@ class MainActivity : ComponentActivity() {
                 var selectedId by remember { mutableStateOf(store.selectedId ?: profiles.firstOrNull()?.id) }
                 val scope = rememberCoroutineScope()
                 val context = LocalContext.current
+
+                // The tunnel lives in the service (its own state), so the UI polls
+                // it: the button reflects it, and each transition raises a toast —
+                // the same lightweight feedback the subscription refresh uses.
+                var connected by remember { mutableStateOf(OutlineVpnService.isActive()) }
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        val now = OutlineVpnService.isActive()
+                        if (now != connected) {
+                            Toast.makeText(
+                                context,
+                                if (now) "Tunnel connected" else "Tunnel disconnected",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                            connected = now
+                        }
+                        delay(1000)
+                    }
+                }
 
                 fun persist() {
                     store.save(profiles)
@@ -93,6 +113,7 @@ class MainActivity : ComponentActivity() {
                     ServerListScreen(
                         profiles = profiles,
                         selectedId = selectedId,
+                        connected = connected,
                         onSelect = { selectedId = it; persist() },
                         onSave = { edited ->
                             val idx = profiles.indexOfFirst { it.id == edited.id }
@@ -182,6 +203,7 @@ class MainActivity : ComponentActivity() {
 private fun ServerListScreen(
     profiles: List<ServerProfile>,
     selectedId: String?,
+    connected: Boolean,
     onSelect: (String) -> Unit,
     onSave: (ServerProfile) -> Unit,
     onDelete: (ServerProfile) -> Unit,
@@ -226,16 +248,15 @@ private fun ServerListScreen(
                     onClick = { editing = ServerProfile() },
                     modifier = Modifier.weight(1f),
                 ) { Text("Add server") }
+                // One button that reflects the tunnel state: Disconnect while up,
+                // Connect while down. Disconnect is always tappable; Connect needs
+                // a selected profile.
                 Button(
-                    onClick = onConnect,
-                    enabled = selectedId != null,
+                    onClick = { if (connected) onDisconnect() else onConnect() },
+                    enabled = connected || selectedId != null,
                     modifier = Modifier.weight(1f),
-                ) { Text("Connect") }
+                ) { Text(if (connected) "Disconnect" else "Connect") }
             }
-            OutlinedButton(
-                onClick = onDisconnect,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            ) { Text("Disconnect") }
             TextButton(
                 onClick = onOpenSplitTunnel,
                 modifier = Modifier.fillMaxWidth(),
