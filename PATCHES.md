@@ -105,7 +105,13 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
    `queue_grease()` then trips the very misuse guard the drain was meant to
    avoid. Any send-side failure now poisons the stream, and `h3_shutdown_phase`
    (unit-tested) routes a poisoned stream straight to the QUIC FIN, which never
-   goes through `send_data`. (Note: the unused `Http3ServerStream` /
+   goes through `send_data`. `poll_write` refuses a poisoned stream outright,
+   for the same reason and on the same slot: the WebSocket layer keeps writing
+   after a failed write — the Close frame it emits on teardown is exactly such
+   a write — and that `queue_send` is itself a second `send_data` into the
+   still-occupied slot. Guarding only the shutdown path left that hole open,
+   and it was the one still collapsing carriers in production after the
+   `send_poisoned` flag first landed. (Note: the unused `Http3ServerStream` /
    `Http3ClientStream` wrappers in `src/http3/stream.rs` are left at upstream
    vanilla — the data plane never instantiates them, so the fix lives only in
    the one live stream type.)
