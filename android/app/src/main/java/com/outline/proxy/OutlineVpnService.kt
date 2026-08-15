@@ -17,6 +17,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import androidx.core.content.ContextCompat
+import com.outline.proxy.keepalive.WatchdogAlarm
+import com.outline.proxy.keepalive.WatchdogWorker
 import uniffi.outline_android.isRunning
 import uniffi.outline_android.start
 import uniffi.outline_android.stop
@@ -50,10 +53,18 @@ class OutlineVpnService : VpnService() {
         private const val TAG = "OutlineVpnService"
         const val ACTION_CONNECT = "com.outline.proxy.CONNECT"
         const val ACTION_DISCONNECT = "com.outline.proxy.DISCONNECT"
+        const val ACTION_ENSURE = "com.outline.proxy.ENSURE"
         const val EXTRA_CONFIG_TOML = "config_toml"
 
         private const val NOTIFICATION_CHANNEL_ID = "outline_vpn"
         private const val NOTIFICATION_ID = 1
+
+        /** Channel for revival failures; separate from the ongoing tunnel notification. */
+        const val NOTIFICATION_CHANNEL_ALERTS = "outline_vpn_alerts"
+        private const val NOTIFICATION_ID_ALERT = 2
+
+        private const val TASK_REMOVED_DELAY_MS = 1_000L
+        private const val DESTROY_DELAY_MS = 2_000L
 
         /**
          * Whether the tunnel is up, as reported by the Rust core (same process,
@@ -81,11 +92,31 @@ class OutlineVpnService : VpnService() {
                 },
             )
         }
+
+        /**
+         * The single revival entry point: every path that might have to bring the
+         * tunnel back (always-on VPN, boot, watchdog alarm, worker, onDestroy)
+         * calls this instead of assembling a connect of its own.
+         */
+        fun ensure(context: Context) {
+            val intent = Intent(context, OutlineVpnService::class.java).apply {
+                action = ACTION_ENSURE
+            }
+            // Android 12+ forbids starting a foreground service from the
+            // background unless an exemption applies (battery-optimisation
+            // allowlist, exact alarm, BOOT_COMPLETED). Losing that race must not
+            // crash the receiver we are called from.
+            runCatching { ContextCompat.startForegroundService(context, intent) }
+                .onFailure { Log.w(TAG, "cannot start the service from the background", it) }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_DISCONNECT -> {
+                KeepAliveState(this).shouldRun = false
+                WatchdogAlarm.cancel(this)
+                WatchdogWorker.cancel(this)
                 disconnect()
                 return START_NOT_STICKY
             }
@@ -96,7 +127,16 @@ class OutlineVpnService : VpnService() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
+                KeepAliveState(this).shouldRun = true
+                WatchdogWorker.schedule(this)
                 connect(configToml)
+                return START_STICKY
+            }
+            // A null action is the system starting us: always-on VPN, or a
+            // START_STICKY restart after the process was killed. Both mean
+            // "bring the tunnel back if it should be up".
+            ACTION_ENSURE, null -> {
+                ensureTunnel()
                 return START_STICKY
             }
             else -> {
@@ -104,6 +144,85 @@ class OutlineVpnService : VpnService() {
                 return START_NOT_STICKY
             }
         }
+    }
+
+    /**
+     * Act on [KeepAlivePolicy]'s verdict.
+     *
+     * The foreground notification goes up first, unconditionally: we may have
+     * been started with `startForegroundService`, and the system kills a service
+     * that fails to call `startForeground` within a few seconds — including on
+     * the paths where the answer turns out to be "do nothing".
+     */
+    private fun ensureTunnel() {
+        startForeground(NOTIFICATION_ID, buildNotification())
+
+        val state = KeepAliveState(this)
+        val store = ProfileStore(this)
+        val profile = store.load().firstOrNull { it.id == store.selectedId }
+
+        val decision = KeepAlivePolicy.decide(
+            shouldRun = state.shouldRun,
+            coreAlive = isActive(),
+            // prepare() returns an Intent when consent is missing; from a
+            // background start there is no way to show it, only to detect it.
+            consentGranted = prepare(this) == null,
+            hasProfile = profile != null && profile.toToml().isNotBlank(),
+            consecutiveFailures = state.consecutiveFailures,
+        )
+        Log.i(TAG, "ensure: ${decision.action}")
+
+        when (decision.action) {
+            KeepAliveAction.NOTHING -> WatchdogAlarm.schedule(this, decision.retryDelayMs)
+            KeepAliveAction.STOP -> {
+                WatchdogAlarm.cancel(this)
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+            KeepAliveAction.GIVE_UP -> {
+                state.shouldRun = false
+                WatchdogAlarm.cancel(this)
+                alert("Tunnel cannot start", "Open Outline Proxy and connect again.")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+            KeepAliveAction.CONNECT -> {
+                // The core may be dead while this service is alive; the old fd is
+                // nobody's now, so tear the tunnel down before rebuilding it.
+                tunInterface?.close()
+                tunInterface = null
+                WatchdogAlarm.schedule(this, decision.retryDelayMs)
+                connect(profile!!.toToml())
+            }
+        }
+    }
+
+    /** A one-off notification about a failure the user has to fix. */
+    private fun alert(title: String, text: String) {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(
+                NOTIFICATION_CHANNEL_ALERTS,
+                "VPN alerts",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ),
+        )
+        val openApp = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        manager.notify(
+            NOTIFICATION_ID_ALERT,
+            Notification.Builder(this, NOTIFICATION_CHANNEL_ALERTS)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentIntent(openApp)
+                .setAutoCancel(true)
+                .build(),
+        )
     }
 
     private fun connect(configToml: String) {
@@ -131,6 +250,7 @@ class OutlineVpnService : VpnService() {
         val tun = builder.establish()
         if (tun == null) {
             Log.e(TAG, "VpnService.establish() returned null (no consent?)")
+            KeepAliveState(this).recordFailure()
             stopSelf()
             return
         }
@@ -138,12 +258,19 @@ class OutlineVpnService : VpnService() {
 
         startForeground(NOTIFICATION_ID, buildNotification())
 
+        val state = KeepAliveState(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            state.alwaysOnSeen = isAlwaysOn
+        }
         try {
             start(configToml, filesDir.absolutePath, tun.fd)
             Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
+            state.clearFailures()
             registerNetworkCallback()
         } catch (e: Exception) {
             Log.e(TAG, "failed to start client", e)
+            val failures = state.recordFailure()
+            WatchdogAlarm.schedule(this, KeepAlivePolicy.backoffFor(failures))
             disconnect()
         }
     }
@@ -316,7 +443,24 @@ class OutlineVpnService : VpnService() {
         stopSelf()
     }
 
+    /**
+     * The user swiped the app away. With `stopWithTask="false"` the service
+     * survives, but some OEM builds tear the process down anyway — so schedule a
+     * check right behind it.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (KeepAliveState(this).shouldRun) {
+            WatchdogAlarm.schedule(this, TASK_REMOVED_DELAY_MS)
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        // A deliberate disconnect clears shouldRun first, so this only fires
+        // when something else killed us.
+        if (KeepAliveState(this).shouldRun) {
+            WatchdogAlarm.schedule(this, DESTROY_DELAY_MS)
+        }
         disconnect()
         super.onDestroy()
     }
