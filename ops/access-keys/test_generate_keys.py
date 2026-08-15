@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -134,6 +135,70 @@ class MainTest(unittest.TestCase):
             first = (out / "both.txt").read_text(encoding="utf-8")
             run(out)
             self.assertEqual((out / "both.txt").read_text(encoding="utf-8"), first)
+
+
+class ServingGroupTest(unittest.TestCase):
+    """0640 only serves if the group is the one nginx reads as.
+
+    A file left root:root at 0640 is unreadable to the worker, so every
+    artifact answers 403 the moment it is regenerated — a failure users
+    discover before the run does.
+    """
+
+    def test_write_atomic_hands_the_file_to_the_serving_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "artifact.conf"
+            calls = []
+            with (
+                unittest.mock.patch.object(gk, "serving_gid", return_value=4242),
+                unittest.mock.patch.object(
+                    gk.os, "fchown", side_effect=lambda fd, uid, gid: calls.append((uid, gid))
+                ),
+            ):
+                gk.write_atomic(target, "body")
+            self.assertEqual(calls, [(-1, 4242)])
+            self.assertEqual(target.read_text(encoding="utf-8"), "body")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o640)
+
+    def test_missing_group_is_reported_not_silently_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "artifact.conf"
+            gk._GROUP_FAILURES.clear()
+            with unittest.mock.patch.object(gk, "serving_gid", return_value=None):
+                gk.write_atomic(target, "body")
+            self.assertIn("artifact.conf", gk._GROUP_FAILURES)
+            gk._GROUP_FAILURES.clear()
+
+    def test_unprivileged_chown_failure_still_writes_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "artifact.conf"
+            gk._GROUP_FAILURES.clear()
+            with (
+                unittest.mock.patch.object(gk, "serving_gid", return_value=4242),
+                unittest.mock.patch.object(gk.os, "fchown", side_effect=PermissionError),
+            ):
+                gk.write_atomic(target, "body")
+            self.assertEqual(target.read_text(encoding="utf-8"), "body")
+            self.assertIn("artifact.conf", gk._GROUP_FAILURES)
+            gk._GROUP_FAILURES.clear()
+
+    def test_serving_gid_is_none_when_the_group_does_not_exist(self):
+        with unittest.mock.patch.object(gk.grp, "getgrnam", side_effect=KeyError):
+            self.assertIsNone(gk.serving_gid())
+
+    def test_run_warns_on_stderr_when_the_group_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            buffer = io.StringIO()
+            gk._GROUP_FAILURES.clear()
+            with (
+                unittest.mock.patch.object(gk, "serving_gid", return_value=None),
+                contextlib.redirect_stderr(buffer),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                run(out)
+            gk._GROUP_FAILURES.clear()
+        self.assertIn("403", buffer.getvalue())
 
 
 class WsTomlArtifactTest(unittest.TestCase):

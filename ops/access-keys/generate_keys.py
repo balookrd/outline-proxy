@@ -10,6 +10,7 @@ stdout; save-keys.sh redirects it into users.txt.
 from __future__ import annotations
 
 import argparse
+import grp
 import json
 import os
 import sys
@@ -47,20 +48,51 @@ _REPORT_FIELDS = (
 )
 
 
+SERVING_GROUP = "www-data"
+
+# Files whose group could not be set this run. Collected rather than raised:
+# one warning at the end beats an unreadable artifact nobody notices until a
+# client gets a 403.
+_GROUP_FAILURES: set[str] = set()
+
+
+def serving_gid() -> int | None:
+    """GID of the group nginx runs its workers as, or None if absent."""
+    try:
+        return grp.getgrnam(SERVING_GROUP).gr_gid
+    except KeyError:
+        return None
+
+
 def write_atomic(path: Path, content: str) -> None:
     """Write via a temp file so a client never reads a half-written artifact.
 
     The artifacts carry every user's password and vless_id, so they must never
     be world-readable — not even during the brief temp-file window. We create
-    the temp file directly at 0640 (root:www-data on the node: the serving
-    group reads, everyone else is shut out) instead of writing under the umask
-    and relaxing to 0644 afterwards. os.open with the mode plus fchmod pins it
-    to exactly 0640, independent of the caller's umask.
+    the temp file directly at 0640 instead of writing under the umask and
+    relaxing to 0644 afterwards. os.open with the mode plus fchmod pins it to
+    exactly 0640, independent of the caller's umask.
+
+    0640 only serves if the group is the one nginx reads as, so the group is
+    set explicitly: a file left root:root at 0640 is unreadable to the worker
+    and every artifact 404s— sorry, 403s — the moment it is regenerated. That
+    is a silent failure, discovered by users rather than by the run, so the
+    group is set here rather than assumed from the directory.
     """
     tmp = path.with_name(f".{path.name}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         os.fchmod(handle.fileno(), 0o640)
+        gid = serving_gid()
+        if gid is not None:
+            try:
+                os.fchown(handle.fileno(), -1, gid)
+            except (PermissionError, OSError):
+                # Not the owner (a non-root dry run on a dev box). The mode
+                # still protects the file; `main` reports the consequence once.
+                _GROUP_FAILURES.add(path.name)
+        else:
+            _GROUP_FAILURES.add(path.name)
         handle.write(content)
     os.replace(tmp, path)
 
@@ -175,6 +207,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Never a credential: paths and counts only.
     print(render_report(written), end="")
     print(f"\n{len(written)} user(s), {len(nodes)} balancer node(s)", file=sys.stderr)
+    if _GROUP_FAILURES:
+        print(
+            f"WARNING: could not set group {SERVING_GROUP!r} on "
+            f"{len(_GROUP_FAILURES)} artifact(s); at mode 0640 nginx cannot read "
+            "them and every subscription will answer 403. Run as root on a node "
+            f"where the {SERVING_GROUP} group exists.",
+            file=sys.stderr,
+        )
     return 0
 
 
