@@ -6,6 +6,7 @@ import android.net.VpnService
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -104,6 +105,16 @@ class MainActivity : ComponentActivity() {
                 var showSplit by remember { mutableStateOf(false) }
                 var showExternal by remember { mutableStateOf(false) }
                 var showKeepAlive by remember { mutableStateOf(false) }
+
+                // On a sub-screen the system Back gesture / button should return to
+                // the list, not leave the app. The top "‹ Back" button already
+                // does this; without a handler the gesture falls through to the
+                // Activity and finishes it.
+                BackHandler(enabled = showSplit || showExternal || showKeepAlive) {
+                    showSplit = false
+                    showExternal = false
+                    showKeepAlive = false
+                }
 
                 if (showSplit) {
                     SplitTunnelScreen(
