@@ -119,7 +119,7 @@ export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk
 
 1. `./build-rust.sh` (один раз и после правок Rust).
 2. Откройте `android/` в Android Studio — она запишет `local.properties` (путь
-   к SDK) и при первой синхронизации скачает дистрибутив Gradle 9.6.1.
+   к SDK) и при первой синхронизации скачает дистрибутив Gradle 9.7.0.
    `compileSdk = 37` докачивается автоматически, если платформы нет.
 3. Запустите на устройстве/эмуляторе, добавьте сервер, нажмите Connect.
 
@@ -128,9 +128,42 @@ export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk
 JVM-юнит-тесты. Если системной JDK нет, подойдёт встроенная в Android Studio:
 `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
 
+### Подпись release-сборки
+
+`:app:assembleRelease` подписывает APK, если креды доступны, и молча отдаёт
+неподписанный APK, если их нет, — свежий клон собирается в любом случае. Креды
+берутся сначала из `android/keystore.properties`, а при отсутствии файла — из
+окружения (`OUTLINE_KEYSTORE_FILE`, `OUTLINE_KEYSTORE_PASSWORD`,
+`OUTLINE_KEY_ALIAS`, `OUTLINE_KEY_PASSWORD`). *Неполный* набор — жёсткая ошибка,
+а не тихий откат к неподписанной сборке: неподписанный APK не встаёт поверх
+подписанного, и узнавать об этом на `adb install` хуже, чем упасть на сборке.
+
+Файл с паролями и любые `*.jks`/`*.keystore`/`*.p12` в дереве — в `.gitignore`;
+сам keystore держите вне рабочего дерева
+(`~/.android/outline-proxy-release.jks`). Создать новый:
+
+```sh
+keytool -genkeypair -v -keystore ~/.android/outline-proxy-release.jks \
+  -storetype PKCS12 -alias outline-proxy -keyalg RSA -keysize 4096 \
+  -validity 10950 -dname "CN=Outline Proxy, O=Outline Proxy, C=RU"
+```
+
+Дальше пропишите путь и пароли в `keystore.properties` (`storeFile`,
+`storePassword`, `keyAlias`, `keyPassword`). Включены только схемы подписи
+v2/v3: `minSdk` = 24, а это как раз релиз, в котором появилась v2, — legacy-v1
+(JAR) не даёт ничего. **Сохраните бэкап keystore и пароля**: без них приложение
+можно будет только переустановить с нуля, обновить поверх — уже никогда.
+
+Проверить то, что собралось:
+
+```sh
+$ANDROID_HOME/build-tools/<ver>/apksigner verify --print-certs -v \
+  app/build/outputs/apk/release/app-release.apk
+```
+
 ### Gradle-тулчейн
 
-AGP 9.3.1 / Gradle 9.6.1 / Kotlin 2.4.10 на штатных дефолтах AGP 9 — в
+AGP 9.3.1 / Gradle 9.7.0 / Kotlin 2.4.10 на штатных дефолтах AGP 9 — в
 `gradle.properties` нет ни одного флага совместимости `android.*`, и ни AGP, ни
 Gradle не выдают предупреждений об устаревании (два `Expression is unused` —
 из сгенерированных UniFFI-биндингов). Три следствия, о которых стоит знать:

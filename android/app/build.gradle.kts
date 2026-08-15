@@ -1,9 +1,42 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // AGP 9 compiles Kotlin itself ("built-in Kotlin"); `org.jetbrains.kotlin.android`
     // is gone. The Compose compiler plugin stays — AGP looks it up by id and wires
     // it into its own Kotlin compile tasks.
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// Release-signing credentials, resolved once at configuration time. Primary source is
+// `android/keystore.properties` (git-ignored, holds an absolute path to a keystore kept
+// outside the work tree); CI and one-off builds can pass the same four values through the
+// environment instead. When neither is present the release build still runs and simply
+// produces an unsigned APK, so a fresh clone is never blocked on secrets it cannot have.
+val signingProps: Map<String, String>? = run {
+    val file = rootProject.file("keystore.properties")
+    val fromFile = if (file.exists()) {
+        Properties().apply { file.inputStream().use { load(it) } }
+            .entries.associate { (k, v) -> k.toString() to v.toString() }
+    } else {
+        mapOf(
+            "storeFile" to System.getenv("OUTLINE_KEYSTORE_FILE"),
+            "storePassword" to System.getenv("OUTLINE_KEYSTORE_PASSWORD"),
+            "keyAlias" to System.getenv("OUTLINE_KEY_ALIAS"),
+            "keyPassword" to System.getenv("OUTLINE_KEY_PASSWORD"),
+        ).filterValues { !it.isNullOrBlank() }.mapValues { it.value!! }
+    }
+    val required = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    // An incomplete set is a misconfiguration, not a request for an unsigned build:
+    // fail loudly rather than silently handing back an APK that cannot be installed
+    // over a previous release.
+    when {
+        fromFile.keys.containsAll(required) -> fromFile
+        fromFile.isEmpty() -> null
+        else -> throw GradleException(
+            "Incomplete release-signing config; missing: ${required - fromFile.keys}",
+        )
+    }
 }
 
 android {
@@ -24,10 +57,26 @@ android {
         }
     }
 
+    signingConfigs {
+        signingProps?.let { props ->
+            create("release") {
+                storeFile = file(props.getValue("storeFile"))
+                storePassword = props.getValue("storePassword")
+                keyAlias = props.getValue("keyAlias")
+                keyPassword = props.getValue("keyPassword")
+                // minSdk is 24 (Android 7.0), the release that introduced v2, so the
+                // legacy JAR signature buys nothing and only slows packaging down.
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

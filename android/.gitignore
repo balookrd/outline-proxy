@@ -14,3 +14,9 @@ app/src/main/jniLibs/
 
 # Generated UniFFI Kotlin bindings (regenerated from the built library)
 app/src/main/java/uniffi/
+
+# Release-signing credentials and any stray keystore (the real one lives in ~/.android/)
+keystore.properties
+*.jks
+*.keystore
+*.p12
