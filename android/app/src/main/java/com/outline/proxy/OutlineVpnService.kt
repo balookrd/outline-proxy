@@ -15,6 +15,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.graphics.drawable.Icon
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -480,13 +481,32 @@ class OutlineVpnService : VpnService() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
+        val disconnect = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, OutlineVpnService::class.java).apply { action = ACTION_DISCONNECT },
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        // Name the active profile in the banner so the user can tell at a glance
+        // which server the tunnel is on.
+        val store = ProfileStore(this)
+        val name = store.load().firstOrNull { it.id == store.selectedId }?.name?.takeIf { it.isNotBlank() }
+        val text = if (name != null) "Connected · $name" else "Connected"
 
         return Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("Outline Proxy")
-            .setContentText("Tunnel active")
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(openApp)
             .setOngoing(true)
+            .addAction(
+                Notification.Action.Builder(
+                    Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+                    "Disconnect",
+                    disconnect,
+                ).build(),
+            )
             .build()
     }
 }
