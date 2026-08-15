@@ -117,7 +117,7 @@ Notes:
 
 1. `./build-rust.sh` (once, and after Rust changes).
 2. Open `android/` in Android Studio — it writes `local.properties` (SDK path)
-   and downloads the Gradle 9.6.1 distribution on first sync. `compileSdk = 37`
+   and downloads the Gradle 9.7.0 distribution on first sync. `compileSdk = 37`
    is pulled in automatically if the platform is missing.
 3. Run on a device/emulator, add a server, Connect.
 
@@ -126,9 +126,43 @@ CLI alternative (needs a JDK 17+ and an Android SDK, `local.properties` with
 for the JVM unit tests. Without a system JDK, Android Studio's bundled one
 works: `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
 
+### Release signing
+
+`:app:assembleRelease` signs the APK when release credentials are available, and
+falls back to an unsigned APK when they are not — a fresh clone builds either
+way. Credentials come from `android/keystore.properties` first, and from the
+environment (`OUTLINE_KEYSTORE_FILE`, `OUTLINE_KEYSTORE_PASSWORD`,
+`OUTLINE_KEY_ALIAS`, `OUTLINE_KEY_PASSWORD`) when that file is absent. A
+*partial* set is a hard error rather than a silent downgrade: an unsigned APK
+cannot be installed over a signed one, and finding that out at `adb install`
+time is worse than failing the build.
+
+The properties file and any `*.jks`/`*.keystore`/`*.p12` in the tree are
+gitignored; keep the keystore itself outside the work tree
+(`~/.android/outline-proxy-release.jks`). To create one:
+
+```sh
+keytool -genkeypair -v -keystore ~/.android/outline-proxy-release.jks \
+  -storetype PKCS12 -alias outline-proxy -keyalg RSA -keysize 4096 \
+  -validity 10950 -dname "CN=Outline Proxy, O=Outline Proxy, C=RU"
+```
+
+Then point `keystore.properties` at it (`storeFile`, `storePassword`,
+`keyAlias`, `keyPassword`). Only v2/v3 signature schemes are enabled: `minSdk`
+is 24, the release that introduced v2, so the legacy v1 JAR signature is dead
+weight. **Back the keystore and its password up** — losing them means the app
+can only ever be reinstalled from scratch, never upgraded in place.
+
+Verify what you shipped:
+
+```sh
+$ANDROID_HOME/build-tools/<ver>/apksigner verify --print-certs -v \
+  app/build/outputs/apk/release/app-release.apk
+```
+
 ### Gradle toolchain
 
-AGP 9.3.1 / Gradle 9.6.1 / Kotlin 2.4.10 on stock AGP 9 defaults —
+AGP 9.3.1 / Gradle 9.7.0 / Kotlin 2.4.10 on stock AGP 9 defaults —
 `gradle.properties` carries no `android.*` compatibility flags, and the build
 draws no deprecation warnings from AGP or Gradle (the two `Expression is
 unused` ones come from the generated UniFFI bindings). Three consequences
