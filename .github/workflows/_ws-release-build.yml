@@ -119,6 +119,13 @@ jobs:
           name: release-${{ matrix.artifact_name }}
           path: dist/*.tar.gz
           if-no-files-found: error
+          # These are consumed by the `publish` job minutes later; nothing
+          # reads them afterwards. Without an explicit retention they inherit
+          # the 90-day default, and since a release build runs on every push
+          # that accumulated ~210 copies of each binary — 4.7 GiB, which is
+          # what exhausted the private-repo artifact storage quota and started
+          # failing every upload with "Artifact storage quota has been hit".
+          retention-days: 7
 
   publish:
     runs-on: ubuntu-latest
