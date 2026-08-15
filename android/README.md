@@ -185,6 +185,25 @@ worth knowing:
   rule change by *running* the release build, not by building it: renaming
   breaks at runtime, never at build time.
 
+## Where the config comes from
+
+The node generates a ready client config per user — `<user>.toml`, next to
+`.conf` and `.json` (`ops/access-keys/generate_keys.py`; the report calls its
+link `ws_url`). It carries the full carrier chain for every entry node, failover
+between nodes, and live-flow migration — none of which the profile's structured
+form can express, since a single `vless://` / `ss://` link describes one carrier
+of one node. Paste it whole into the **Raw TOML override** field.
+
+The generated `[tun] mtu` must match `ServerProfile.TUN_MTU` — 1500 on both
+sides today. Change one and you must change the other, or the VPN comes up with
+an MTU the proxy core does not know about.
+
+What lands in the config depends on the node: the h3 carrier mode, the set of
+paths, padding, carrier migration and soft node switching are only turned on
+when the node ships the matching sections. The generator reports the ones that
+are off as `warning:` lines — see
+[`ops/access-keys/README.md`](../ops/access-keys/README.md).
+
 ## External control (`outline://`)
 
 Automation apps (Tasker, launcher shortcuts, `adb`) can drive the tunnel over a

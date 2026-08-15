@@ -1893,3 +1893,39 @@ async fn load_config_tun_wire_dial_can_be_enabled_per_group() {
     let config = load_config(&path, &args).await.unwrap();
     assert!(config.groups[0].load_balancing.tun_wire_dial);
 }
+
+/// The generated Android config must load through the real loader, not merely
+/// parse as TOML. The schema is `deny_unknown_fields`: one key that drifted
+/// from the generator's idea of it aborts the binary at startup — exactly how
+/// a stale `[dashboard]` block took nodes down. Failing here keeps that in CI
+/// instead of on someone's phone.
+#[cfg(feature = "tun")]
+#[tokio::test]
+async fn generated_android_config_fixture_loads() {
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../ops/access-keys/golden/expected-ws/both.toml"
+    ));
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(path, &args).await.unwrap();
+
+    let tun = config.tun.as_ref().expect("fixture enables TUN");
+    assert_eq!(tun.mtu, 1500);
+    assert!(tun.tcp.sniffing);
+    assert!(tun.tcp.carrier_migration);
+
+    let group = config
+        .groups
+        .iter()
+        .find(|g| g.name == "main")
+        .expect("fixture declares the main group");
+    assert_eq!(group.uplinks.len(), 2);
+    // Five carriers per node: primary plus four fallbacks.
+    assert_eq!(group.uplinks[0].fallbacks.len(), 4);
+    assert_eq!(group.load_balancing.mode, LoadBalancingMode::ActivePassive);
+    assert_eq!(group.load_balancing.routing_scope, RoutingScope::Global);
+    assert!(!group.load_balancing.shared_resume);
+    assert!(group.load_balancing.tun_wire_dial);
+    assert_eq!(group.load_balancing.warm_standby_tcp, 1);
+}
