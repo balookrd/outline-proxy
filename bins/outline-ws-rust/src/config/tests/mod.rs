@@ -1907,7 +1907,13 @@ async fn generated_android_config_fixture_loads() {
         "/../../ops/access-keys/golden/expected-ws/both.toml"
     ));
 
-    let args = super::Args::parse_from(["test"]);
+    // The fixture is an Android config: TUN attaches to the VpnService fd, so it
+    // carries no [tun].name. On Linux (CI's host) the loader demands one for the
+    // TUNSETIFF attach path, a platform check that has nothing to do with the
+    // schema drift this test guards. Supply a name so the Linux-only validation
+    // passes; the assertions below still exercise the real deny_unknown_fields
+    // loader over every generated key.
+    let args = super::Args::parse_from(["test", "--tun-name", "tun0"]);
     let config = load_config(path, &args).await.unwrap();
 
     let tun = config.tun.as_ref().expect("fixture enables TUN");
