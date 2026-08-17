@@ -120,12 +120,13 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
           # These are consumed by the `publish` job minutes later; nothing
-          # reads them afterwards. Without an explicit retention they inherit
-          # the 90-day default, and since a release build runs on every push
-          # that accumulated ~210 copies of each binary — 4.7 GiB, which is
-          # what exhausted the private-repo artifact storage quota and started
-          # failing every upload with "Artifact storage quota has been hit".
-          retention-days: 7
+          # reads them afterwards. Without a short retention they pile up: a
+          # release build runs on every push, so even the 7-day window kept
+          # ~210 copies of each binary — 4.7 GiB — which exhausted the
+          # private-repo artifact storage quota and failed every upload with
+          # "Artifact storage quota has been hit". 1 day is the floor and still
+          # outlives the publish job that consumes them minutes later.
+          retention-days: 1
 
   publish:
     runs-on: ubuntu-latest
