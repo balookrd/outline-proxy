@@ -112,7 +112,8 @@ private fun Header() {
     Image(
         painter = painterResource(logo),
         contentDescription = "outline-proxy",
-        modifier = Modifier.padding(vertical = 8.dp).height(52.dp),
+        contentScale = ContentScale.Fit,
+        modifier = Modifier.padding(vertical = 10.dp).fillMaxWidth(0.82f).height(72.dp),
     )
 }
 
