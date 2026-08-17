@@ -21,6 +21,15 @@ class KeepAliveState(context: Context) {
         set(value) = prefs.edit().putInt(KEY_FAILURES, value).apply()
 
     /**
+     * When the current tunnel came up (epoch ms), or 0 when down. Persisted so the
+     * Home screen can show the connection duration even after the Activity was
+     * recreated while the tunnel kept running.
+     */
+    var connectedSince: Long
+        get() = prefs.getLong(KEY_CONNECTED_SINCE, 0L)
+        set(value) = prefs.edit().putLong(KEY_CONNECTED_SINCE, value).apply()
+
+    /**
      * Last known `VpnService.isAlwaysOn()`, or null before the tunnel has ever
      * come up. Only the service can read it, so the UI shows what was recorded
      * rather than guessing.
@@ -45,6 +54,7 @@ class KeepAliveState(context: Context) {
         const val KEY_SHOULD_RUN = "should_run"
         const val KEY_FAILURES = "consecutive_failures"
         const val KEY_ALWAYS_ON = "always_on_seen"
+        const val KEY_CONNECTED_SINCE = "connected_since"
         const val ALWAYS_ON_UNKNOWN = -1
     }
 }

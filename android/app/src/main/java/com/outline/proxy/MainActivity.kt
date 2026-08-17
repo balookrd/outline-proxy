@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,10 +20,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -34,6 +37,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -75,6 +79,9 @@ class MainActivity : ComponentActivity() {
                 // it: the button reflects it, and each transition raises a toast —
                 // the same lightweight feedback the subscription refresh uses.
                 var connected by remember { mutableStateOf(OutlineVpnService.isActive()) }
+                var connectedSince by remember {
+                    mutableStateOf(KeepAliveState(this@MainActivity).connectedSince)
+                }
                 LaunchedEffect(Unit) {
                     while (true) {
                         val now = OutlineVpnService.isActive()
@@ -85,6 +92,7 @@ class MainActivity : ComponentActivity() {
                                 Toast.LENGTH_SHORT,
                             ).show()
                             connected = now
+                            connectedSince = KeepAliveState(this@MainActivity).connectedSince
                         }
                         delay(1000)
                     }
@@ -105,17 +113,23 @@ class MainActivity : ComponentActivity() {
                 var showSplit by remember { mutableStateOf(false) }
                 var showExternal by remember { mutableStateOf(false) }
                 var showKeepAlive by remember { mutableStateOf(false) }
+                var showProfiles by remember { mutableStateOf(false) }
 
                 // On a sub-screen the system Back gesture / button should return to
-                // the list, not leave the app. The top "‹ Back" button already
-                // does this; without a handler the gesture falls through to the
+                // Home, not leave the app. The top "‹ Back" button already does
+                // this; without a handler the gesture falls through to the
                 // Activity and finishes it.
-                BackHandler(enabled = showSplit || showExternal || showKeepAlive) {
+                BackHandler(enabled = showSplit || showExternal || showKeepAlive || showProfiles) {
                     showSplit = false
                     showExternal = false
                     showKeepAlive = false
+                    showProfiles = false
                 }
 
+                // One background under every screen so Home and the sub-screens
+                // share the exact same surface colour instead of Home showing the
+                // window theme and the Scaffolds painting colorScheme.background.
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                 if (showSplit) {
                     SplitTunnelScreen(
                         store = SplitTunnelStore(this@MainActivity),
@@ -129,11 +143,12 @@ class MainActivity : ComponentActivity() {
                     )
                 } else if (showKeepAlive) {
                     KeepAliveScreen(onBack = { showKeepAlive = false })
-                } else {
+                } else if (showProfiles) {
                     ServerListScreen(
                         profiles = profiles,
                         selectedId = selectedId,
                         connected = connected,
+                        onBack = { showProfiles = false },
                         onSelect = { selectedId = it; persist() },
                         onSave = { edited ->
                             val idx = profiles.indexOfFirst { it.id == edited.id }
@@ -146,27 +161,6 @@ class MainActivity : ComponentActivity() {
                             if (selectedId == profile.id) selectedId = profiles.firstOrNull()?.id
                             persist()
                         },
-                        onConnect = {
-                            profiles.firstOrNull { it.id == selectedId }?.let { profile ->
-                                val config = profile.toToml()
-                                if (config.isBlank()) {
-                                    // A subscription that never downloaded has no
-                                    // config to connect with; say so instead of
-                                    // handing the core an empty TOML.
-                                    Toast.makeText(
-                                        context,
-                                        "No config yet — refresh the subscription first.",
-                                        Toast.LENGTH_LONG,
-                                    ).show()
-                                } else {
-                                    requestVpnAndConnect(config)
-                                }
-                            }
-                        },
-                        onDisconnect = ::disconnect,
-                        onOpenSplitTunnel = { showSplit = true },
-                        onOpenExternalControl = { showExternal = true },
-                        onOpenKeepAlive = { showKeepAlive = true },
                         onRefresh = { profile ->
                             scope.launch {
                                 when (val result = ConfigFetcher.fetch(profile.configUrl)) {
@@ -191,6 +185,39 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                     )
+                } else {
+                    HomeScreen(
+                        profile = profiles.firstOrNull { it.id == selectedId },
+                        connected = connected,
+                        connectedSinceMs = connectedSince,
+                        onToggle = {
+                            if (connected) {
+                                disconnect()
+                            } else {
+                                profiles.firstOrNull { it.id == selectedId }?.let { profile ->
+                                    val config = profile.toToml()
+                                    if (config.isBlank()) {
+                                        // A subscription that never downloaded has no
+                                        // config to connect with; say so instead of
+                                        // handing the core an empty TOML.
+                                        Toast.makeText(
+                                            context,
+                                            "No config yet — refresh the subscription first.",
+                                            Toast.LENGTH_LONG,
+                                        ).show()
+                                    } else {
+                                        requestVpnAndConnect(config)
+                                    }
+                                }
+                            }
+                        },
+                        onAddServer = { showProfiles = true },
+                        onOpenProfiles = { showProfiles = true },
+                        onOpenSplitTunnel = { showSplit = true },
+                        onOpenExternalControl = { showExternal = true },
+                        onOpenKeepAlive = { showKeepAlive = true },
+                    )
+                }
                 }
             }
         }
@@ -225,73 +252,35 @@ private fun ServerListScreen(
     profiles: List<ServerProfile>,
     selectedId: String?,
     connected: Boolean,
+    onBack: () -> Unit,
     onSelect: (String) -> Unit,
     onSave: (ServerProfile) -> Unit,
     onDelete: (ServerProfile) -> Unit,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-    onOpenSplitTunnel: () -> Unit,
-    onOpenExternalControl: () -> Unit,
-    onOpenKeepAlive: () -> Unit,
     onRefresh: (ServerProfile) -> Unit,
 ) {
     var editing by remember { mutableStateOf<ServerProfile?>(null) }
 
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp),
+    SubScreen(title = "Servers", onBack = onBack) {
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Outline Proxy", style = MaterialTheme.typography.headlineSmall)
-
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(profiles, key = { it.id }) { profile ->
-                    ProfileCard(
-                        profile = profile,
-                        selected = profile.id == selectedId,
-                        onSelect = { onSelect(profile.id) },
-                        onEdit = { editing = profile },
-                        onDelete = { onDelete(profile) },
-                        onRefresh = { onRefresh(profile) },
-                    )
-                }
+            items(profiles, key = { it.id }) { profile ->
+                ProfileCard(
+                    profile = profile,
+                    selected = profile.id == selectedId,
+                    onSelect = { onSelect(profile.id) },
+                    onEdit = { editing = profile },
+                    onDelete = { onDelete(profile) },
+                    onRefresh = { onRefresh(profile) },
+                )
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedButton(
-                    onClick = { editing = ServerProfile() },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Add server") }
-                // One button that reflects the tunnel state: Disconnect while up,
-                // Connect while down. Disconnect is always tappable; Connect needs
-                // a selected profile.
-                Button(
-                    onClick = { if (connected) onDisconnect() else onConnect() },
-                    enabled = connected || selectedId != null,
-                    modifier = Modifier.weight(1f),
-                ) { Text(if (connected) "Disconnect" else "Connect") }
-            }
-            TextButton(
-                onClick = onOpenSplitTunnel,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Split tunneling…") }
-            TextButton(
-                onClick = onOpenExternalControl,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("External control…") }
-            TextButton(
-                onClick = onOpenKeepAlive,
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Keeping alive…") }
         }
+
+        OutlinedButton(
+            onClick = { editing = ServerProfile() },
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        ) { Text("Add server") }
     }
 
     editing?.let { profile ->
@@ -508,34 +497,54 @@ private fun SplitTunnelScreen(
         loading = false
     }
 
+    var query by remember { mutableStateOf("") }
+
     fun persist() = store.save(SplitTunnelConfig(mode, selected.toSet()))
 
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text("‹ Back") }
-                Text("Split tunneling", style = MaterialTheme.typography.headlineSmall)
+    SubScreen(title = "Split Tunneling", onBack = onBack) {
+        SectionCard(modifier = Modifier.padding(top = 4.dp), padding = PaddingValues(vertical = 4.dp)) {
+            Column {
+                ModeOption("All apps", SplitMode.OFF, mode) { mode = it; persist() }
+                ModeOption("Only selected apps", SplitMode.ALLOWLIST, mode) { mode = it; persist() }
+                ModeOption("All apps except selected", SplitMode.DENYLIST, mode) { mode = it; persist() }
             }
+        }
 
-            ModeOption("All apps", SplitMode.OFF, mode) { mode = it; persist() }
-            ModeOption("Only selected apps", SplitMode.ALLOWLIST, mode) { mode = it; persist() }
-            ModeOption("All apps except selected", SplitMode.DENYLIST, mode) { mode = it; persist() }
-
-            when {
-                mode == SplitMode.OFF ->
-                    Text(
-                        "Every app's traffic goes through the tunnel.",
-                        modifier = Modifier.padding(top = 12.dp),
-                        style = MaterialTheme.typography.bodyMedium,
+        when {
+            mode == SplitMode.OFF ->
+                Text(
+                    "Every app's traffic goes through the tunnel.",
+                    modifier = Modifier.padding(top = 16.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            loading ->
+                Text("Loading apps…", modifier = Modifier.padding(top = 16.dp))
+            else -> {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    placeholder = { Text("Search apps") },
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                )
+                // Filter by name, then float the checked apps to the top so the
+                // current selection is always in view.
+                val visible = apps
+                    .filter { it.label.contains(query, ignoreCase = true) }
+                    .sortedWith(
+                        compareByDescending<AppInfo> { selected.contains(it.packageName) }
+                            .thenBy { it.label.lowercase() },
                     )
-                loading ->
-                    Text("Loading apps…", modifier = Modifier.padding(top = 12.dp))
-                else ->
-                    LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 12.dp)) {
-                        items(apps, key = { it.packageName }) { app ->
-                            val checked = selected.contains(app.packageName)
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    items(visible, key = { it.packageName }) { app ->
+                        val checked = selected.contains(app.packageName)
+                        SectionCard(padding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth().clickable {
                                     if (checked) selected.remove(app.packageName) else selected.add(app.packageName)
@@ -552,11 +561,16 @@ private fun SplitTunnelScreen(
                                 )
                                 Column(modifier = Modifier.padding(start = 8.dp)) {
                                     Text(app.label)
-                                    Text(app.packageName, style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                        app.packageName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                             }
                         }
                     }
+                }
             }
         }
     }
@@ -578,50 +592,48 @@ private fun ExternalControlScreen(
 
     fun persist() = store.save(ExternalControlConfig(enabled, token))
 
-    Scaffold { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text("‹ Back") }
-                Text("External control", style = MaterialTheme.typography.headlineSmall)
+    SubScreen(title = "External Control", onBack = onBack) {
+        SectionCard(modifier = Modifier.padding(top = 4.dp)) {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Allow outline:// commands", modifier = Modifier.weight(1f))
+                    Switch(checked = enabled, onCheckedChange = { enabled = it; persist() })
+                }
+                OutlinedTextField(
+                    token,
+                    { token = it; persist() },
+                    enabled = enabled,
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    label = { Text("Token (optional)") },
+                    supportingText = {
+                        Text("When set, commands without a matching ?token= are ignored.")
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                )
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Allow outline:// commands", modifier = Modifier.weight(1f))
-                Switch(checked = enabled, onCheckedChange = { enabled = it; persist() })
-            }
-
-            OutlinedTextField(
-                token,
-                { token = it; persist() },
-                enabled = enabled,
-                singleLine = true,
-                label = { Text("Token (optional)") },
-                supportingText = {
-                    Text("When set, commands without a matching ?token= are ignored.")
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            )
-
-            Text(
-                """
-                Supported commands:
-
-                outline://connect
-                outline://connect?profile=<name or id>
-                outline://disconnect
-                outline://toggle[?profile=<name or id>]
-
-                Any app on this device can send these, which is why the switch
-                and the token are here. Commands never create a server — the
-                profile must already exist in the list.
-                """.trimIndent(),
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 16.dp),
-            )
         }
+
+        Text(
+            """
+            Supported commands:
+
+            outline://connect
+            outline://connect?profile=<name or id>
+            outline://disconnect
+            outline://toggle[?profile=<name or id>]
+
+            Any app on this device can send these, which is why the switch
+            and the token are here. Commands never create a server — the
+            profile must already exist in the list.
+            """.trimIndent(),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 16.dp, start = 4.dp),
+        )
     }
 }
 
@@ -633,7 +645,8 @@ private fun ModeOption(
     onSelect: (SplitMode) -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable { onSelect(value) },
+        modifier = Modifier.fillMaxWidth().clickable { onSelect(value) }
+            .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RadioButton(selected = current == value, onClick = { onSelect(value) })
