@@ -47,23 +47,14 @@ fun KeepAliveScreen(onBack: () -> Unit) {
         ActivityResultContracts.RequestPermission(),
     ) { refresh++ }
 
-    Scaffold { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text("‹ Back") }
-                Text("Keeping the tunnel alive", style = MaterialTheme.typography.headlineSmall)
-            }
+    SubScreen(title = "Keeping Alive", onBack = onBack) {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             Text(
                 "Android and the phone vendor may stop background apps. These " +
                     "switches are what keeps the tunnel up.",
                 style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp, start = 4.dp),
             )
 
             // Read so that bumping `refresh` re-runs the status queries below.

@@ -267,6 +267,7 @@ class OutlineVpnService : VpnService() {
             start(configToml, filesDir.absolutePath, tun.fd)
             Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
             state.clearFailures()
+            if (state.connectedSince == 0L) state.connectedSince = System.currentTimeMillis()
             registerNetworkCallback()
         } catch (e: Exception) {
             Log.e(TAG, "failed to start client", e)
@@ -432,6 +433,7 @@ class OutlineVpnService : VpnService() {
     }
 
     private fun disconnect() {
+        KeepAliveState(this).connectedSince = 0L
         unregisterNetworkCallback()
         try {
             if (isRunning()) stop()
