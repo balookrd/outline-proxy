@@ -84,7 +84,7 @@ jobs:
           echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
           echo "artifact_version=$artifact_version" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.vars.outputs.checkout_ref }}
           fetch-depth: 0
@@ -114,7 +114,7 @@ jobs:
             "${{ matrix.flavor }}" \
             dist
 
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.artifact_name }}
           path: dist/*.tar.gz
@@ -132,7 +132,7 @@ jobs:
     needs: build
 
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ inputs.rolling_tag }}
         with:
           fetch-depth: 0
@@ -150,7 +150,7 @@ jobs:
           git tag -f "$TAG" "$REF"
           git push origin "refs/tags/$TAG" --force
 
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-*
           merge-multiple: true
@@ -188,7 +188,7 @@ jobs:
           done
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ inputs.tag }}
           name: ${{ inputs.release_name != '' && inputs.release_name || format('Client {0}', inputs.tag) }}
