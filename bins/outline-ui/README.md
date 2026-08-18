@@ -178,7 +178,12 @@ pnpm -C bins/outline-ui/frontend install
 pnpm -C bins/outline-ui/frontend build                        # → frontend/dist/
 cargo zigbuild --release -p outline-ui --features embed-assets \
   --target aarch64-unknown-linux-musl
-docker build --platform linux/arm64 -f bins/outline-ui/Dockerfile \
+# --provenance=false --sbom=false: without them buildx stores the image as an
+# OCI image index (arch manifest + attestation manifest), and the weekly
+# registry-gc --delete-untagged then sweeps the child manifests (they carry no
+# tag) → the image stops pulling on nodes without a local cache.
+docker build --provenance=false --sbom=false --platform linux/arm64 \
+  -f bins/outline-ui/Dockerfile \
   -t registry.k3s.beerloga.su/outline-ui:0.2.0 .
 docker push registry.k3s.beerloga.su/outline-ui:0.2.0
 export KUBECONFIG=~/.kube/k3s-home.yaml
