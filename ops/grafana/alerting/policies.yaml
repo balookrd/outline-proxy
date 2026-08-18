@@ -45,3 +45,16 @@ policies:
         group_wait: 30s
         group_interval: 5m
         repeat_interval: 24h
+
+      # A node reboot is the same shape as a client restart — an event already
+      # over by the time the mail lands — so it takes the same event route: no
+      # resolved notice, one daily repeat. Grouped by alertname (not instance)
+      # so that all three nodes rebooting at once arrive as one mail, which is
+      # the signal that the cause was shared power rather than a single board.
+      - receiver: owner-events
+        object_matchers:
+          - [alertname, =, NodeRebooted]
+        group_by: [alertname]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 24h

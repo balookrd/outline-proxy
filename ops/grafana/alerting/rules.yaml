@@ -275,6 +275,59 @@ groups:
                 - evaluator: {type: gt, params: [0]}
 
   - orgId: 1
+    name: nodes
+    folder: Alerts
+    interval: 1m
+    rules:
+      - uid: node-rebooted
+        title: NodeRebooted
+        condition: C
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: 'k3s node {{ $labels.instance }} rebooted'
+          description: >-
+            Fires while the node's kernel is younger than 10 minutes, read
+            straight off node_boot_time_seconds. A reboot is an event, not a
+            condition, so the route (owner-events) drops the resolved notice —
+            "recovered" for a boot already ten minutes past reads as a second
+            incident, not the end of the first. The window is sized by delivery,
+            not recovery: node-exporter runs under kubelet and only starts
+            scraping ~30-90s into the boot, so the first sample already shows a
+            minute or two of uptime. Ten minutes leaves comfortable slack over
+            the 1m evaluation plus 30s group_wait, where the 3-minute floor used
+            for the client process would not. All three nodes booting inside one
+            window group into a single mail — which is itself the tell that the
+            cause was shared (power) rather than local to one board. On
+            2026-08-18 only k3s-2 rebooted (14:29 MSK, no graceful shutdown in
+            the journal); k3s-1 and k3s-3 had 14 days of uptime, which is what
+            made "local to k3s-2" the conclusion.
+        noDataState: OK
+        execErrState: OK
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: adnsc1wi03doga
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              # `min by (instance)`, so if a node ever exports two boot-time
+              # series the freshest one decides — a max would let a stale series
+              # mask the reboot. The instance filter keeps this to the three
+              # cluster nodes; drop it to cover the whole node-exporter fleet.
+              expr: 'min by (instance) (time() - node_boot_time_seconds{instance=~"k3s-[0-9]+"}) < bool 600'
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+
+  - orgId: 1
     name: heartbeat
     folder: Alerts
     interval: 1m
