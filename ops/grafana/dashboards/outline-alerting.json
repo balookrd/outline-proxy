@@ -730,6 +730,61 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "type": "timeseries",
+      "id": 14,
+      "title": "Рестарты клиента по интервалам (ClientRestarted)",
+      "description": "Число рестартов outline-ws-rust в каждом интервале (changes от времени старта процесса). Наглядная история срабатываний ClientRestarted — видна независимо от того, был ли рестарт в последний час.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "changes(outline_ws_start_time_seconds[$__interval])",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     }
   ]
 }
