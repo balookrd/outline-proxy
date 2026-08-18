@@ -41,6 +41,18 @@ spec:
     metadata:
       labels: { app: registry }
     spec:
+      # Reschedule ~1.7 min after a host dies (40s NotReady detect + 60s here),
+      # not the 5-min default. Stateless single replica — safe to move fast; the
+      # floor stays above a k3s restart / network blip so it does not churn.
+      tolerations:
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 60
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 60
       containers:
         - name: registry
           image: registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373 # 2.8.3

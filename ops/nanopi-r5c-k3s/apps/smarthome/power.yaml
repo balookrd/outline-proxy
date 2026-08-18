@@ -20,6 +20,18 @@ spec:
         runAsGroup: 1000
       imagePullSecrets:
         - name: registry-creds
+      # Reschedule ~1.7 min after a host dies (40s NotReady detect + 60s here),
+      # not the 5-min default. Stateless single replica — safe to move fast; the
+      # floor stays above a k3s restart / network blip so it does not churn.
+      tolerations:
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 60
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 60
       containers:
         - name: power
           image: registry.k3s.beerloga.su/power:c521877

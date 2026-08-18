@@ -69,6 +69,18 @@ spec:
       securityContext:
         runAsUser: 1000       # same uid the docker container ran as
         fsGroup: 1000
+      # Reschedule ~1.7 min after a host dies (40s NotReady detect + 60s here),
+      # not the 5-min default. Stateless single replica — safe to move fast; the
+      # floor stays above a k3s restart / network blip so it does not churn.
+      tolerations:
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 60
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: 60
       containers:
         - name: mosquitto
           image: eclipse-mosquitto@sha256:6f8d8a947c506f8a2290ec65cd4bd2bc7cb4d43fb5f6271f861cb013e2ef9797 # 2.1.2-alpine
