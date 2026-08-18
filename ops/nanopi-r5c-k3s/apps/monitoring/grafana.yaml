@@ -34,7 +34,12 @@ spec:
         fsGroup: 472
       containers:
         - name: grafana
-          image: grafana/grafana-oss@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2 # v13.0.2
+          # grafana/grafana, not -oss: the grafana-oss image is frozen at
+          # 13.0.2 (13.0.3+ and every 13.1.x return 404 on Docker Hub). Grafana
+          # now ships those releases only under grafana/grafana, which is the
+          # same Apache-licensed OSS build — enterprise features stay off
+          # without a licence. Verified via the Docker registry API 2026-08-18.
+          image: grafana/grafana@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43 # v13.1.3
           ports:
             - { containerPort: 3000, name: http }
           env:
