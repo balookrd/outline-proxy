@@ -123,9 +123,9 @@ button { font-family: inherit; }
   position: sticky; top: 0; z-index: 20;
 }
 .brand { display: flex; align-items: center; gap: var(--sp-2); font-weight: 600; letter-spacing: -.01em; }
-/* outline-logo.png is a self-contained rounded-square badge (own dark
-   background baked in, transparent PNG margin) — no extra badge background
-   needed here, just fit it into the fixed brand slot. */
+/* outline-logo.png is a self-contained rounded-square badge (opaque dark
+   fill baked in) — no extra badge background needed here, just fit it into
+   the fixed brand slot. */
 .brand .logo { width: 22px; height: 22px; display: grid; place-items: center; flex: none; }
 .brand .logo img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .brand small { color: var(--fg-dim); font-weight: 400; font-size: 12px; }
@@ -212,16 +212,22 @@ select:disabled { opacity: .6; cursor: not-allowed; }
    coded icon-button family, defined together further down (search
    "Per-row action buttons") and shared by Topology, Users and Uplinks. */
 
-/* ---- Landing hero logo ----
-   logo.png (docs/logo.png, same asset as the README) is a transparent-bg
-   PNG, but its wordmark text renders in near-black — legible on the light
-   theme's pale background, but it would nearly vanish on dark (the default
-   theme, see the tokens above). A fixed white card behind it keeps the
-   logo readable in both themes instead of reaching for filters that would
-   also wreck its orange/blue brand colors. */
-.landing-hero { display: flex; justify-content: center; margin-bottom: var(--sp-5); }
-.landing-hero img { width: 300px; max-width: 60%; height: auto; display: block;
-  background: #fff; border-radius: var(--radius); padding: var(--sp-4); box-shadow: var(--shadow); }
+/* ---- Landing hero banner ----
+   Theme-dependent 4:1 banners (banner-light / banner-dark), each carrying its
+   own baked background — so no white card here. The variant is picked by the
+   same cascade app.css uses for its tokens: dark is the default (:root), light
+   wins on an explicit light choice or OS-light before any explicit dark. */
+.landing-hero { margin-bottom: var(--sp-5); }
+.landing-hero img { width: 100%; height: auto; display: block;
+  border-radius: var(--radius); box-shadow: var(--shadow); }
+.landing-hero .light { display: none; }
+.landing-hero .dark { display: block; }
+:root[data-theme="light"] .landing-hero .light { display: block; }
+:root[data-theme="light"] .landing-hero .dark { display: none; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .landing-hero .light { display: block; }
+  :root:not([data-theme="dark"]) .landing-hero .dark { display: none; }
+}
 
 /* ---- Cards / panels ---- */
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sp-4); }
