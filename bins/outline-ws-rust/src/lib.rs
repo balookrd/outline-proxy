@@ -27,10 +27,12 @@ pub mod memory;
 pub mod metrics;
 #[cfg(feature = "socks5")]
 pub mod proxy;
+pub mod status;
 
 mod bootstrap;
 
 pub use bootstrap::run_with_config;
+pub use status::{Carrier, CarrierStatus, active_carriers, clear_active_registry};
 
 use std::os::fd::RawFd;
 

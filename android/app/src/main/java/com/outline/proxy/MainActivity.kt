@@ -54,10 +54,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import uniffi.outline_android.lastError
+import uniffi.outline_android.tunnelStatus
 
 class MainActivity : ComponentActivity() {
 
@@ -82,6 +85,13 @@ class MainActivity : ComponentActivity() {
                 var connectedSince by remember {
                     mutableStateOf(KeepAliveState(this@MainActivity).connectedSince)
                 }
+                // Active carrier per transport, read from the Rust core while the
+                // tunnel is up; `null` clears the readout when it goes down. Family
+                // (ss/vless) and carrier (ws_*/xhttp_*) are independent axes.
+                var tcpFamily by remember { mutableStateOf<String?>(null) }
+                var tcpCarrier by remember { mutableStateOf<String?>(null) }
+                var udpFamily by remember { mutableStateOf<String?>(null) }
+                var udpCarrier by remember { mutableStateOf<String?>(null) }
                 LaunchedEffect(Unit) {
                     while (true) {
                         val now = OutlineVpnService.isActive()
@@ -93,6 +103,22 @@ class MainActivity : ComponentActivity() {
                             ).show()
                             connected = now
                             connectedSince = KeepAliveState(this@MainActivity).connectedSince
+                        }
+                        if (now) {
+                            // `tunnelStatus()` blocks briefly on the core's runtime,
+                            // so keep it off the main thread.
+                            val status = withContext(Dispatchers.IO) {
+                                runCatching { tunnelStatus() }.getOrNull()
+                            }
+                            tcpFamily = status?.tcpFamily
+                            tcpCarrier = status?.tcpCarrier
+                            udpFamily = status?.udpFamily
+                            udpCarrier = status?.udpCarrier
+                        } else {
+                            tcpFamily = null
+                            tcpCarrier = null
+                            udpFamily = null
+                            udpCarrier = null
                         }
                         delay(1000)
                     }
@@ -190,6 +216,10 @@ class MainActivity : ComponentActivity() {
                         profile = profiles.firstOrNull { it.id == selectedId },
                         connected = connected,
                         connectedSinceMs = connectedSince,
+                        tcpFamily = tcpFamily,
+                        tcpCarrier = tcpCarrier,
+                        udpFamily = udpFamily,
+                        udpCarrier = udpCarrier,
                         onToggle = {
                             if (connected) {
                                 disconnect()
@@ -240,6 +270,40 @@ class MainActivity : ComponentActivity() {
 
     private fun startTunnel(configToml: String) {
         OutlineVpnService.requestConnect(this, configToml)
+        watchConnectResult()
+    }
+
+    /**
+     * After a connect request, give the core a few seconds to come up. A valid
+     * config has the client task running within the first sample; a hard failure
+     * (bad config, bind error) exits the task, so the tunnel never settles into a
+     * stable "running" state. In that case surface the core's exit reason so a
+     * failed connect is not silent. The keep-alive watchdog re-spawns on failure,
+     * which makes `isActive()` flicker, hence the "stable for two samples" gate
+     * rather than a single reading.
+     */
+    private fun watchConnectResult() {
+        lifecycleScope.launch {
+            var stableUp = 0
+            repeat(8) {
+                delay(750)
+                if (OutlineVpnService.isActive()) {
+                    stableUp++
+                    if (stableUp >= 2) return@launch // settled connection — success
+                } else {
+                    stableUp = 0
+                }
+            }
+            // The window elapsed without a stable connection: report why, if the
+            // core recorded a reason.
+            val reason = withContext(Dispatchers.IO) { runCatching { lastError() }.getOrNull() }
+            Toast.makeText(
+                this@MainActivity,
+                reason?.let { "Couldn't connect: ${it.substringBefore('\n')}" }
+                    ?: "Couldn't connect",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
     }
 
     private fun disconnect() {
