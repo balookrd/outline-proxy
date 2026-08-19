@@ -17,7 +17,7 @@ contactPoints:
       - uid: email-owner-1
         type: email
         settings:
-          addresses: balookrd@gmail.com
+          addresses: balookrd@yandex.ru
           # One mail per alert group rather than one per alert — grouping is
           # what keeps a fleet-wide event from arriving as six messages.
           singleEmail: true
@@ -41,7 +41,7 @@ contactPoints:
       - uid: email-owner-events-1
         type: email
         settings:
-          addresses: balookrd@gmail.com
+          addresses: balookrd@yandex.ru
           singleEmail: true
         disableResolveMessage: true
       - uid: owner-events-telegram-1

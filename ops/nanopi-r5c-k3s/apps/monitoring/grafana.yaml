@@ -63,8 +63,14 @@ spec:
             - { name: GF_SMTP_HOST, value: "smtp.gmail.com:587" }
             - { name: GF_SMTP_USER, value: balookrd@gmail.com }
             - { name: GF_SMTP_PASSWORD__FILE, value: /etc/grafana/secrets/smtp }
+            # FROM_ADDRESS stays the Gmail account: smtp.gmail.com only lets us
+            # send as the authenticated user (or a verified alias), and
+            # beerloga.su has no mail infra (no MX/SPF) to send from or to
+            # verify an alias. FROM_NAME carries the beerloga identity instead —
+            # the client shows "Grafana - beerloga.su" as the sender name over
+            # the real balookrd@gmail.com address.
             - { name: GF_SMTP_FROM_ADDRESS, value: balookrd@gmail.com }
-            - { name: GF_SMTP_FROM_NAME, value: "outline alerting" }
+            - { name: GF_SMTP_FROM_NAME, value: "Grafana - beerloga.su" }
           volumeMounts:
             - { name: data, mountPath: /var/lib/grafana }
             - { name: datasources, mountPath: /etc/grafana/provisioning/datasources }
