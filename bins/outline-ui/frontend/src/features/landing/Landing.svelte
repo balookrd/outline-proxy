@@ -3,7 +3,8 @@
   import { listInstances } from '../../lib/api';
   import { createPoll } from '../../lib/poll.svelte';
   import { go } from '../../lib/router.svelte';
-  import logo from '../../assets/logo.png';
+  import bannerLight from '../../assets/banner-light.png';
+  import bannerDark from '../../assets/banner-dark.png';
 
   // Capability check: a panel is only worth showing if the backend actually has
   // instances configured for it. `createPoll` re-checks periodically (and pauses
@@ -28,7 +29,8 @@
 <section class="view active" id="view-landing">
   <div class="page-head"><div><h1>Overview</h1><p>Two dashboards, one aggregating service. Pick a panel.</p></div></div>
   <div class="landing-hero">
-    <img src={logo} alt="outline" />
+    <img class="light" src={bannerLight} alt="outline-proxy" />
+    <img class="dark" src={bannerDark} alt="outline-proxy" />
   </div>
   <div class="cards">
     {#if ssCount > 0}
