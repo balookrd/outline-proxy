@@ -39,6 +39,23 @@ val signingProps: Map<String, String>? = run {
     }
 }
 
+// Build identity. CI overrides these through the environment so a published APK
+// carries the release version and the exact commit it was built from; a local
+// build falls back to the checked-in version and the current git short SHA (or
+// "dev" outside a work tree). Surfaced in-app via BuildConfig.
+val buildVersionName: String =
+    System.getenv("BUILD_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "0.1.0"
+val buildVersionCode: Int =
+    System.getenv("BUILD_VERSION_CODE")?.toIntOrNull() ?: 1
+val buildGitSha: String =
+    System.getenv("BUILD_GIT_SHA")?.takeIf { it.isNotBlank() }
+        ?: runCatching {
+            ProcessBuilder("git", "rev-parse", "--short", "HEAD")
+                .directory(rootDir)
+                .start()
+                .inputStream.bufferedReader().readText().trim()
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: "dev"
+
 android {
     namespace = "com.outline.proxy"
     // androidx 2026.x (compose-bom 2026.06 -> lifecycle-runtime-compose 2.11)
@@ -49,8 +66,9 @@ android {
         applicationId = "com.outline.proxy"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = buildVersionCode
+        versionName = buildVersionName
+        buildConfigField("String", "GIT_SHA", "\"$buildGitSha\"")
         ndk {
             // Match the Rust ABIs produced by cargo-ndk (see android/README.md).
             abiFilters += listOf("arm64-v8a")
@@ -88,6 +106,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     testOptions {
         // The unit tests cover pure Kotlin logic (URI parsing, access checks);
