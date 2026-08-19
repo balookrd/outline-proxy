@@ -313,6 +313,17 @@ impl UplinkManager {
         &self.inner.group_name
     }
 
+    /// Transport family (`"ss"` / `"vless"`) of the uplink at `index`, or `None`
+    /// if the index is out of range. This is an axis independent of the wire's
+    /// carrier mode (`ws_*` / `xhttp_*`): either family can ride either carrier,
+    /// so callers that want to name the active carrier need both.
+    pub fn uplink_transport(&self, index: usize) -> Option<String> {
+        self.inner
+            .uplinks
+            .get(index)
+            .map(|uplink| uplink.transport.to_string())
+    }
+
     /// Whether this group shares one resume id across its uplinks
     /// (`shared_resume`, set when the uplinks are edges of one server-side mesh
     /// `[cluster]`). A group-shared resume id is what makes a session presentable

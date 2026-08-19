@@ -171,6 +171,11 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd
     // join handle is deliberately dropped (dropping it does not cancel it).
     drop(registry.spawn_shared_connection_gc_loop());
 
+    // Publish the registry so an embedder (Android) can read the active carrier
+    // without a metrics/control HTTP surface. Cleared before this function
+    // returns; a hard embedder stop that aborts the task clears it separately.
+    crate::status::set_active_registry(registry.clone());
+
     // Compile the policy routing table (if user declared [[route]]) and
     // spawn per-rule file watchers for hot-reload. The watchers live behind
     // a shared `Mutex<Option<RouteWatchersGuard>>` slot rather than a plain
@@ -357,6 +362,10 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd
             warn!(error = %error, "HTTP listener join failed");
         }
     }
+
+    // The registry is going out of scope; drop the published handle so a later
+    // `active_carriers()` reports "not running" rather than a dead registry.
+    crate::status::clear_active_registry();
 
     accept_result
 }

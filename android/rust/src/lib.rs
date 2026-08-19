@@ -47,6 +47,12 @@ struct Engine {
 
 static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
 
+/// Reason the most recent client task exited with an error, if any. Cleared
+/// when a new [`start`] begins and set by the task on a startup/runtime failure
+/// (a bad config, a bind error, …), so the UI can tell the user *why* a connect
+/// attempt did not come up rather than failing silently.
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
 /// Best-effort one-time logging setup. On Android, `tracing` is routed into
 /// logcat (tag `OutlineProxy`) via paranoid-android; elsewhere it goes to the
 /// plain fmt subscriber. Failures here are non-fatal.
@@ -86,9 +92,27 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
     init_logging();
 
     let mut guard = ENGINE.lock().expect("ENGINE mutex poisoned");
-    if guard.is_some() {
-        return Err(VpnError::AlreadyRunning);
+    match guard.as_ref() {
+        // A live client task is genuinely already running — refuse.
+        Some(engine) if !engine.client_task.is_finished() => {
+            return Err(VpnError::AlreadyRunning);
+        },
+        // The previous task already exited (e.g. it failed at startup with a bad
+        // config). Reap the dead engine so this fresh start can proceed instead
+        // of tripping `AlreadyRunning` forever. `shutdown_background` does not
+        // block the caller.
+        Some(_) => {
+            if let Some(dead) = guard.take() {
+                dead.runtime.shutdown_background();
+            }
+            outline_ws_rust::clear_active_registry();
+        },
+        None => {},
     }
+
+    // A fresh attempt starts with a clean slate — any earlier failure reason is
+    // stale now.
+    *LAST_ERROR.lock().expect("LAST_ERROR mutex poisoned") = None;
 
     outline_ws_rust::init_rustls_crypto_provider()
         .map_err(|e| VpnError::Runtime { msg: format!("crypto provider: {e:#}") })?;
@@ -113,7 +137,11 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
     let opts = RunOptions { tun_fd: Some(tun_fd) };
     let client_task = runtime.spawn(async move {
         if let Err(e) = outline_ws_rust::run_with_options(client_args, opts).await {
-            error!("client exited with error: {e:#}");
+            let msg = format!("{e:#}");
+            error!("client exited with error: {msg}");
+            // Record the reason so the UI can surface it; the task ending is
+            // what flips `is_running` to false.
+            *LAST_ERROR.lock().expect("LAST_ERROR mutex poisoned") = Some(msg);
         }
     });
 
@@ -128,6 +156,9 @@ pub fn stop() -> Result<(), VpnError> {
     let mut guard = ENGINE.lock().expect("ENGINE mutex poisoned");
     match guard.take() {
         Some(engine) => {
+            // Aborting the task skips `run_with_config`'s own cleanup, so drop
+            // the published registry handle here too.
+            outline_ws_rust::clear_active_registry();
             engine.client_task.abort();
             engine.runtime.shutdown_timeout(Duration::from_secs(2));
             info!("client stopped");
@@ -137,8 +168,57 @@ pub fn stop() -> Result<(), VpnError> {
     }
 }
 
-/// Whether a client instance is currently running.
+/// Whether a client instance is currently running. A finished client task —
+/// e.g. one that exited at startup on a bad config — reads as *not* running,
+/// so the UI shows "disconnected" and the keep-alive watchdog can react, rather
+/// than a phantom "connected" backed by a dead task.
 #[uniffi::export]
 pub fn is_running() -> bool {
-    ENGINE.lock().expect("ENGINE mutex poisoned").is_some()
+    ENGINE
+        .lock()
+        .expect("ENGINE mutex poisoned")
+        .as_ref()
+        .is_some_and(|engine| !engine.client_task.is_finished())
+}
+
+/// The reason the most recent connect attempt failed, or `None` if the last
+/// attempt is still running or succeeded. Set when the client task exits with
+/// an error and cleared when a new [`start`] begins, so the UI can tell the
+/// user why a connect did not come up.
+#[uniffi::export]
+pub fn last_error() -> Option<String> {
+    LAST_ERROR.lock().expect("LAST_ERROR mutex poisoned").clone()
+}
+
+/// The tunnel's currently active carriers, one per transport. `*_family` is the
+/// uplink family (`ss` / `vless`) and `*_carrier` the wire's effective mode
+/// (`ws_h3`, `xhttp_h2`, …) — independent axes, since either family can ride
+/// either carrier. A `None` field means that transport has no active wire.
+///
+/// Byte counters are deliberately absent: the slim Android build compiles out
+/// the Prometheus `metrics` feature, so throughput is measured on the Kotlin
+/// side from the TUN interface instead.
+#[derive(uniffi::Record)]
+pub struct TunnelStatus {
+    pub tcp_family: Option<String>,
+    pub tcp_carrier: Option<String>,
+    pub udp_family: Option<String>,
+    pub udp_carrier: Option<String>,
+}
+
+/// Read the active carriers, or `None` if the client is not running. Drives the
+/// home-screen "traffic" readout. Cheap enough for the UI's ~2s poll.
+#[uniffi::export]
+pub fn tunnel_status() -> Option<TunnelStatus> {
+    let guard = ENGINE.lock().expect("ENGINE mutex poisoned");
+    let engine = guard.as_ref()?;
+    // The FFI thread is not a Tokio worker, so `block_on` is legal here; the
+    // read is sub-millisecond, so holding the ENGINE lock across it is fine.
+    let status = engine.runtime.block_on(outline_ws_rust::active_carriers())?;
+    Some(TunnelStatus {
+        tcp_family: status.tcp.as_ref().map(|c| c.family.clone()),
+        tcp_carrier: status.tcp.map(|c| c.mode),
+        udp_family: status.udp.as_ref().map(|c| c.family.clone()),
+        udp_carrier: status.udp.map(|c| c.mode),
+    })
 }
