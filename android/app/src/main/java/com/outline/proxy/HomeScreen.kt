@@ -118,7 +118,22 @@ fun HomeScreen(
         ActionRow(canConnect = profile != null, connected = connected, onAddServer, onToggle)
         Spacer(Modifier.height(16.dp))
         QuickLinks(onOpenSplitTunnel, onOpenExternalControl, onOpenKeepAlive)
+        Spacer(Modifier.height(16.dp))
+        VersionFooter()
     }
+}
+
+/** App build identity: version name, version code, and the commit it was built
+ *  from — set by CI, or the local git SHA / "dev" for a developer build. */
+@Composable
+private fun VersionFooter() {
+    Text(
+        "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) · ${BuildConfig.GIT_SHA}",
+        fontSize = 10.sp,
+        textAlign = TextAlign.Center,
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+        modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 4.dp),
+    )
 }
 
 @Composable
