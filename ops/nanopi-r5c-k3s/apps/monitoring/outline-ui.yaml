@@ -99,7 +99,7 @@ spec:
           tolerationSeconds: 60
       containers:
         - name: outline-ui
-          image: registry.k3s.beerloga.su/outline-ui:1.0.5
+          image: registry.k3s.beerloga.su/outline-ui:1.0.6
           args: ["--config", "/etc/outline-ui/config.toml"]
           ports:
             - containerPort: 9000
