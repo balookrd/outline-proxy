@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Adaptive-icon background; matches the dark field of the outline-ss|ws-rust
-         emblem so the padded foreground blends seamlessly under any launcher mask. -->
-    <color name="ic_launcher_background">#10141B</color>
+    <!-- Adaptive-icon background; matches the dark fill of the outline-proxy
+         emblem so the foreground glow blends seamlessly under any launcher mask. -->
+    <color name="ic_launcher_background">#0B0F14</color>
 </resources>
