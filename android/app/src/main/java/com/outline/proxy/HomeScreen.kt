@@ -138,13 +138,13 @@ private fun VersionFooter() {
 
 @Composable
 private fun Header() {
-    // The full brand lockup as authored, per theme.
+    // The full-width brand banner, per theme.
     val logo = if (isSystemInDarkTheme()) R.drawable.brand_logo_dark else R.drawable.brand_logo_light
     Image(
         painter = painterResource(logo),
         contentDescription = "outline-proxy",
-        contentScale = ContentScale.Fit,
-        modifier = Modifier.padding(vertical = 10.dp).fillMaxWidth(0.82f).height(56.dp),
+        contentScale = ContentScale.FillWidth,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
     )
 }
 
