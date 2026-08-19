@@ -1,0 +1,22 @@
+name: Tag Release (android)
+
+on:
+  push:
+    tags:
+      - "android-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-tag-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: ./.github/workflows/_android-release-build.yml
+    with:
+      tag: ${{ github.ref_name }}
+      prerelease: false
+      make_latest: "true"
+    secrets: inherit

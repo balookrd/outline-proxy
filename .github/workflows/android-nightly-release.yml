@@ -1,0 +1,34 @@
+name: Nightly Release (android)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "android/**"
+      - ".github/workflows/android-nightly-release.yml"
+      - ".github/workflows/_android-release-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-nightly-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      !startsWith(github.event.head_commit.message, 'release: cut ')
+    uses: ./.github/workflows/_android-release-build.yml
+    with:
+      tag: android-nightly
+      checkout_ref: ${{ github.sha }}
+      prerelease: true
+      make_latest: "false"
+      release_name: Android Nightly
+      version_name: 0.1.0-nightly
+      rolling_tag: true
+    secrets: inherit
