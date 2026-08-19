@@ -1,0 +1,56 @@
+name: Cleanup old artifacts
+
+# GitHub Actions artifact storage is billed per account and shared across every
+# repository, so nightly/release artifacts pile up until uploads start failing
+# with "Artifact storage quota has been hit". This job trims them daily: it
+# deletes anything already expired plus anything older than the age threshold,
+# keeping only recent builds.
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # daily at 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      max_age_days:
+        description: "Delete non-expired artifacts older than this many days"
+        default: "14"
+
+permissions:
+  actions: write # deleting artifacts needs write on the Actions scope
+  contents: read
+
+concurrency:
+  group: cleanup-artifacts
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete expired and aged-out artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const maxAgeDays = Number(context.payload.inputs?.max_age_days ?? '14');
+            const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+            const { owner, repo } = context.repo;
+            // Collect the full list first: deleting shifts pagination, so paging
+            // and deleting at the same time would skip artifacts.
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner, repo, per_page: 100 },
+            );
+            let deleted = 0, freed = 0;
+            for (const a of artifacts) {
+              const agedOut = new Date(a.created_at).getTime() < cutoff;
+              if (a.expired || agedOut) {
+                await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: a.id });
+                deleted++;
+                freed += a.size_in_bytes;
+              }
+            }
+            const freedMiB = (freed / 1048576).toFixed(0);
+            core.info(`Deleted ${deleted} of ${artifacts.length} artifacts, freed ${freedMiB} MiB`);
+            await core.summary
+              .addRaw(`Deleted **${deleted}** of ${artifacts.length} artifacts, freed **${freedMiB} MiB** (kept non-expired newer than ${maxAgeDays}d).`)
+              .write();
