@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/logo.png" alt="outline-sslws-rust logo" width="320">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
+    <img src="docs/logo-light.png" alt="outline-proxy logo" width="100%">
+  </picture>
 </p>
 
 # outline-ss-rust
