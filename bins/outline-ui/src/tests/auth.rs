@@ -2,9 +2,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use axum::routing::get;
 use axum::{Router, middleware};
-use base64::Engine as _;
 use tower::ServiceExt as _;
 
+// `base64::Engine` (needed for `.encode()`) is already in scope via `super::*`
+// from the parent module, so no local `use base64::Engine as _` here.
 use super::*;
 
 fn app(token: &str) -> Router {
