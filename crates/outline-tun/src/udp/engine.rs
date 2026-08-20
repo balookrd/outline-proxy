@@ -107,20 +107,19 @@ pub(super) struct TunUdpEngineInner {
     /// The uplink task keeps buffering the client's datagrams (handshake
     /// preface) while it queues for a permit. Unset = no limit.
     pub(super) dial_admission: std::sync::OnceLock<Arc<tokio::sync::Semaphore>>,
+    /// Process-wide budget of live carriers (`[tun] max_carrier_flows`), shared
+    /// with the TCP engine — see `TunTcpEngineInner::carrier_slots`. Before it
+    /// existed the cap bound this table alone, so the two paths could add up to
+    /// twice the configured ceiling. Unset (`OnceLock` empty) = no accounting.
+    pub(super) carrier_slots: std::sync::OnceLock<Arc<crate::carrier_slots::CarrierSlots>>,
 }
 
-impl TunUdpEngineInner {
-    /// Ceiling on the tunnelled table. `max_carrier_flows` binds when set, but
-    /// never above `max_flows` — the flow table's own limit still holds, and a
-    /// carrier cap larger than it would be a silent no-op.
-    pub(super) fn tunnelled_flow_cap(&self) -> usize {
-        if self.max_carrier_flows == 0 {
-            self.max_flows
-        } else {
-            self.max_carrier_flows.min(self.max_flows)
-        }
-    }
-}
+// The ceiling that used to live here as `tunnelled_flow_cap` now belongs to the
+// budget shared with the TCP engine — `crate::carrier_slots::carrier_flow_cap`,
+// resolved once in `spawn_tun_loop`. Keeping a second copy of the rule here
+// would let the two paths disagree about what the cap means, which is the bug
+// this replaced: the cap bound this table alone while tunnelled TCP flows went
+// uncounted.
 
 impl TunUdpEngine {
     #[allow(clippy::too_many_arguments)]
@@ -166,6 +165,7 @@ impl TunUdpEngine {
                 )),
                 udp_gso,
                 dial_admission: std::sync::OnceLock::new(),
+                carrier_slots: std::sync::OnceLock::new(),
             }),
         };
         engine.spawn_cleanup_loop();
@@ -178,6 +178,12 @@ impl TunUdpEngine {
     /// never called when the limit is disabled.
     pub(crate) fn set_dial_admission(&self, semaphore: Arc<tokio::sync::Semaphore>) {
         let _ = self.inner.dial_admission.set(semaphore);
+    }
+
+    /// Install the process-wide carrier-slot budget (shared with the TCP
+    /// engine). Called once at engine wiring, before any traffic.
+    pub(crate) fn set_carrier_slots(&self, slots: Arc<crate::carrier_slots::CarrierSlots>) {
+        let _ = self.inner.carrier_slots.set(slots);
     }
 
     pub(crate) async fn handle_packet(&self, packet: ParsedUdpPacket) -> Result<()> {

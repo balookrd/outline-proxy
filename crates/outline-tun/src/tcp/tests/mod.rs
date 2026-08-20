@@ -3141,6 +3141,7 @@ pub(in crate::tcp) async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         pending_server_data: VecDeque::new(),
         pending_server_bytes_total: 0,
         pending_budget_global: None,
+        carrier_slot: None,
         backlog_limit_exceeded_since: None,
         last_ack_progress_at: Instant::now(),
         pending_client_data: VecDeque::new(),

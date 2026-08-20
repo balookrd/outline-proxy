@@ -66,6 +66,17 @@ pub(super) struct TunTcpEngineInner {
     /// dial only, never for the flow's lifetime — and the burst handshakes in
     /// small waves instead. Unset (`OnceLock` empty) = no limit.
     pub(super) dial_admission: std::sync::OnceLock<Arc<tokio::sync::Semaphore>>,
+    /// Process-wide budget of live carriers (`[tun] max_carrier_flows`), shared
+    /// with the UDP engine so the ceiling covers every tunnelled flow rather
+    /// than a per-protocol slice of it. Only flows routed to a group take a
+    /// slot; direct flows are ~28× cheaper and stay outside the cap.
+    /// Unset (`OnceLock` empty) = no accounting.
+    pub(super) carrier_slots: std::sync::OnceLock<Arc<crate::carrier_slots::CarrierSlots>>,
+    /// Eviction index holding *only* the flows that own a carrier slot. Kept
+    /// apart from `eviction_index`, which also carries direct flows: popping a
+    /// direct victim would tear down a flow without freeing the carrier the
+    /// admission actually needs.
+    pub(in crate::tcp::engine) carrier_eviction_index: FlowEvictionIndex,
     pub(super) idle_timeout: Duration,
     /// TUN fd negotiated TSO offload — new flows inherit this into
     /// `TcpFlowState::gso_enabled` to enable super-segment downlink writes.
@@ -103,6 +114,8 @@ impl TunTcpEngine {
                 max_flows,
                 pending_server_bytes_global: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 dial_admission: std::sync::OnceLock::new(),
+                carrier_slots: std::sync::OnceLock::new(),
+                carrier_eviction_index: FlowEvictionIndex::new(),
                 idle_timeout,
                 gso_enabled,
                 tcp: Arc::new(tcp),
@@ -125,6 +138,13 @@ impl TunTcpEngine {
     /// is disabled, leaving the gate open.
     pub(crate) fn set_dial_admission(&self, semaphore: Arc<tokio::sync::Semaphore>) {
         let _ = self.inner.dial_admission.set(semaphore);
+    }
+
+    /// Install the process-wide carrier-slot budget, shared with the UDP engine.
+    /// Called once at engine wiring (before any traffic); a second call is
+    /// ignored. Left unset only in tests that do not exercise the cap.
+    pub(crate) fn set_carrier_slots(&self, slots: Arc<crate::carrier_slots::CarrierSlots>) {
+        let _ = self.inner.carrier_slots.set(slots);
     }
 
     /// Test shim: feed a packet whose checksum came from the sender (what the

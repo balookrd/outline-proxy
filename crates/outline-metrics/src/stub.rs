@@ -252,6 +252,7 @@ pub fn record_tun_ip_fragment_received(_ip_family: &'static str) {}
 pub fn record_tun_ip_reassembly(_ip_family: &'static str, _result: &'static str) {}
 pub fn set_tun_ip_fragment_sets_active(_ip_family: &'static str, _count: usize) {}
 pub fn set_tun_config(_max_flows: usize, _max_carrier_flows: usize, _idle_timeout: Duration) {}
+pub fn set_tun_carrier_flows_active(_in_use: usize) {}
 pub fn record_tun_tcp_event(_group: &str, _uplink: &str, _event: &'static str) {}
 
 pub fn record_tun_udp_event(_group: &str, _uplink: &str, _event: &'static str) {}

@@ -388,16 +388,23 @@ listen = "[::1]:9090"
 # flows and to direct (`via = "direct"`) flows; when a table is full the
 # least-recently-seen flow in it is evicted. Default 4096.
 # max_flows = 4096
-# Cap on concurrent *tunnelled* UDP flows only — the ones that each dial a
-# carrier. A carrier costs ~28x a direct flow's socket in RSS (measured 0.279
-# MiB vs 0.010 MiB against a plain ws:// upstream, more with TLS/H3), so on a
-# memory-capped host `max_flows` is reached long after the memory is gone: a
-# 2026-08-08 flow burst held ~1155 flows against the 4096 limit while its 419
-# carriers drove RSS from 199 to 757 MiB and the cgroup's MemoryHigh throttle
-# froze the runtime. Overflow evicts the least-recently-seen tunnelled flow,
-# exactly as max_flows does; direct flows are never charged against it. Size it
-# from `outline_ws_tun_carrier_flow_memory_estimate_bytes` and the RAM you are
-# willing to spend. Must not exceed max_flows. Default 0 (off).
+# Cap on concurrent *tunnelled* flows — the ones that each dial a carrier —
+# across BOTH the TCP and UDP paths. A carrier costs ~28x a direct flow's socket
+# in RSS (measured 0.279 MiB vs 0.010 MiB against a plain ws:// upstream, more
+# with TLS/H3), so on a memory-capped host `max_flows` is reached long after the
+# memory is gone: a 2026-08-08 flow burst held ~1155 flows against the 4096
+# limit while its 419 carriers drove RSS from 199 to 757 MiB and the cgroup's
+# MemoryHigh throttle froze the runtime. Overflow evicts the least-recently-seen
+# tunnelled flow of the same protocol, exactly as max_flows does; direct flows
+# are never charged against it. Size it from
+# `outline_ws_tun_carrier_flow_memory_estimate_bytes` and the RAM you are
+# willing to spend, and watch `outline_ws_tun_carrier_flows_active` to see
+# whether it binds. Must not exceed max_flows. Default 0 (off).
+#
+# NOTE: this used to bind on the UDP path alone, so a value tuned before that
+# change is effectively twice as strict now — the two paths together used to
+# reach roughly 2x it (256 UDP alongside 318 TCP was measured in production).
+# Revisit the number when upgrading.
 # max_carrier_flows = 0
 # idle_timeout_secs = 300
 # Process-wide cap on concurrent upstream dials, shared by the TCP and UDP

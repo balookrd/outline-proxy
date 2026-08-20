@@ -5,6 +5,7 @@
 //! (`tun2tcp`) and a stateless UDP forwarder (`tun2udp`).
 
 mod atomic_counter;
+mod carrier_slots;
 mod classify;
 pub mod config;
 pub(crate) mod defrag;

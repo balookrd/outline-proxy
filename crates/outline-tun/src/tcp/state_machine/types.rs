@@ -450,6 +450,16 @@ pub(in crate::tcp) struct TcpFlowState {
     /// returns its contribution no matter which path tears it down). `None` in
     /// unit tests that build a `TcpFlowState` without an engine.
     pub(in crate::tcp) pending_budget_global: Option<Arc<AtomicUsize>>,
+    /// Carrier slot this flow holds against the process-wide
+    /// `[tun] max_carrier_flows` budget (shared with the UDP engine). `Some`
+    /// only while the flow is routed to a group: direct flows are ~28× cheaper
+    /// and stay outside the cap, and a flow that flips to direct mid-life (SNI
+    /// re-resolve) drops the guard at that point.
+    ///
+    /// A guard rather than a flag: the slot has to come back exactly once on
+    /// every teardown path, and `Drop` is the only place that sees them all.
+    /// `None` in unit tests that build a `TcpFlowState` without an engine.
+    pub(in crate::tcp) carrier_slot: Option<crate::carrier_slots::CarrierSlot>,
     pub(in crate::tcp) backlog_limit_exceeded_since: Option<Instant>,
     pub(in crate::tcp) last_ack_progress_at: Instant,
     pub(in crate::tcp) pending_client_data: VecDeque<Bytes>,

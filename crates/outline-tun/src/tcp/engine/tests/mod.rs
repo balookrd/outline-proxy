@@ -24,6 +24,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{MaybeTlsStream, accept_async};
 use url::Url;
 
+mod carrier_cap;
 mod dial_admission;
 mod direct_backpressure;
 mod global_budget;
@@ -1886,6 +1887,7 @@ fn eviction_test_flow_state(
         pending_server_data: VecDeque::new(),
         pending_server_bytes_total: 0,
         pending_budget_global: None,
+        carrier_slot: None,
         backlog_limit_exceeded_since: None,
         last_ack_progress_at: last_seen,
         pending_client_data: VecDeque::new(),

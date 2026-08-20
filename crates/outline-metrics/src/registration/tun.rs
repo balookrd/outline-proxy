@@ -14,6 +14,7 @@ pub(super) struct TunFields {
     pub(super) tun_ip_fragment_sets_active: IntGaugeVec,
     pub(super) tun_max_flows: IntGauge,
     pub(super) tun_max_carrier_flows: IntGauge,
+    pub(super) tun_carrier_flows_active: IntGauge,
     pub(super) tun_carrier_flow_memory_estimate_bytes: IntGauge,
     pub(super) tun_idle_timeout_seconds: Gauge,
     pub(super) tun_tcp_events_total: IntCounterVec,
@@ -133,7 +134,13 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         registry,
         IntGauge,
         "outline_ws_tun_max_carrier_flows",
-        "Configured maximum number of tunnelled (carrier-owning) TUN UDP flows; 0 = only max_flows applies."
+        "Configured ceiling on tunnelled (carrier-owning) TUN flows, TCP and UDP together; 0 = only max_flows applies."
+    );
+    let tun_carrier_flows_active = register_scalar!(
+        registry,
+        IntGauge,
+        "outline_ws_tun_carrier_flows_active",
+        "Tunnelled TUN flows holding a carrier right now, TCP and UDP together. Compare with tun_max_carrier_flows to see whether the cap is binding."
     );
     let tun_carrier_flow_memory_estimate_bytes = register_scalar!(
         registry,
@@ -343,6 +350,7 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         tun_ip_fragment_sets_active,
         tun_max_flows,
         tun_max_carrier_flows,
+        tun_carrier_flows_active,
         tun_carrier_flow_memory_estimate_bytes,
         tun_idle_timeout_seconds,
         tun_tcp_events_total,

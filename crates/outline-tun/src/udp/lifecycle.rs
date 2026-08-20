@@ -160,23 +160,39 @@ impl TunUdpEngine {
                 record_flow_activity(&self.inner.eviction_index, &key, &mut *existing);
                 existing.outbound_tx.clone()
             } else {
-                // `tunnelled_flow_cap` — the carrier cap when set, `max_flows`
-                // otherwise. Each of these flows owns a carrier, and a carrier
-                // is ~28× a direct flow in RSS, so this table has to be bounded
-                // tighter than the shared `max_flows` prices it.
-                if guard.len() >= self.inner.tunnelled_flow_cap() {
-                    // Victim selection is a single O(log n) index pop: no scan of
-                    // the table and no other flow's lock is taken, so the
-                    // write-lock this read-loop holds is released in constant
-                    // time instead of after one await per live flow.
-                    match evict_oldest_flow(&mut guard, &self.inner.eviction_index) {
-                        Some((_, evicted)) => evicted_flow = Some(evicted),
+                // Each of these flows owns a carrier, and a carrier is ~28× a
+                // direct flow in RSS, so they are bounded tighter than the
+                // shared `max_flows` prices them. The budget is shared with the
+                // TCP engine: `max_carrier_flows` means "how many carriers may
+                // live at once", and counting each protocol separately let the
+                // two paths together reach roughly twice the configured cap.
+                let carrier_slot = match self.inner.carrier_slots.get() {
+                    Some(slots) => match slots.try_acquire() {
+                        Some(slot) => Some(slot),
                         None => {
-                            warn!("TUN UDP flow table limit reached and no flow could be evicted");
-                            return;
+                            // Victim selection is a single O(log n) index pop: no
+                            // scan of the table and no other flow's lock is taken,
+                            // so the write-lock this read-loop holds is released in
+                            // constant time instead of after one await per live flow.
+                            match evict_oldest_flow(&mut guard, &self.inner.eviction_index) {
+                                Some((_, evicted)) => {
+                                    evicted_flow = Some(evicted);
+                                    // The victim's slot comes back only once the
+                                    // background closer drops its state, so take
+                                    // the place we just paid for directly.
+                                    Some(slots.acquire_evicted())
+                                },
+                                None => {
+                                    warn!(
+                                        "TUN UDP flow table limit reached and no flow could be evicted"
+                                    );
+                                    return;
+                                },
+                            }
                         },
-                    }
-                }
+                    },
+                    None => None,
+                };
                 let (outbound_tx, outbound_rx) = mpsc::channel::<Bytes>(UDP_OUTBOUND_QUEUE_CAP);
                 let uplink_task = self.spawn_udp_uplink(
                     key.clone(),
@@ -196,6 +212,7 @@ impl TunUdpEngine {
                     last_ptb_sent: None,
                     outbound_tx: outbound_tx.clone(),
                     _uplink_task: Some(uplink_task),
+                    _carrier_slot: carrier_slot,
                 };
                 guard.insert(key.clone(), Arc::new(Mutex::new(state)));
                 self.inner.eviction_index.upsert(key.clone(), flow_id, now);
@@ -209,13 +226,22 @@ impl TunUdpEngine {
             // read-loop must not wait on that with the table locked.
             {
                 let snapshot = flow.lock().await;
+                let (carriers_in_use, carrier_limit) = self
+                    .inner
+                    .carrier_slots
+                    .get()
+                    .map(|slots| (slots.in_use(), slots.cap()))
+                    .unwrap_or((0, 0));
                 warn!(
                     evicted_flow_id = snapshot.id,
                     evicted_uplink = %snapshot.uplink_name,
-                    limit = self.inner.tunnelled_flow_cap(),
+                    // The budget is shared with the TCP engine, so `in_use` can
+                    // exceed this path's own flow count — that is the point.
+                    carriers_in_use,
+                    carrier_limit,
                     max_flows = self.inner.max_flows,
                     max_carrier_flows = self.inner.max_carrier_flows,
-                    "evicted oldest TUN UDP flow due to flow table limit"
+                    "evicted oldest TUN UDP flow: the carrier budget is full"
                 );
             }
             self.enqueue_close(flow, "evicted");
