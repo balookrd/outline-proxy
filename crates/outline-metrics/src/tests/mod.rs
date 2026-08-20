@@ -6,6 +6,8 @@ use std::sync::LazyLock;
 
 mod counter_cache;
 mod transport;
+#[cfg(feature = "tun")]
+mod tun_flow_gauge;
 
 static METRICS_TEST_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 

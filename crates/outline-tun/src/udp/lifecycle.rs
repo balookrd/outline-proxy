@@ -63,6 +63,12 @@ pub(super) enum CloseWork {
     },
 }
 
+/// Placeholder `uplink_name` a flow carries between insertion into the table and
+/// the moment its dial resolves. It is not a real uplink, so it never owns a
+/// `tun_flows_active` entry — `bind_flow_uplink` relies on that when deciding
+/// whether a rename is a migration or just the first bind.
+pub(super) const UPLINK_CONNECTING: &str = "connecting";
+
 impl TunUdpEngine {
     pub(super) fn spawn_cleanup_loop(&self) {
         let engine = self.clone();
@@ -204,7 +210,7 @@ impl TunUdpEngine {
                 let state = UdpFlowState {
                     id: flow_id,
                     uplink_index: usize::MAX,
-                    uplink_name: Arc::from("connecting"),
+                    uplink_name: Arc::from(UPLINK_CONNECTING),
                     group_name: Arc::from(manager.group_name()),
                     created_at: now,
                     last_seen: now,
@@ -751,6 +757,25 @@ impl TunUdpEngine {
         let mut flow = handle.lock().await;
         if flow.id != flow_id {
             return false;
+        }
+        // Carry the flow's `tun_flows_active` entry over with it. The gauge is
+        // keyed by `(group, uplink)`: the `+1` was booked when the flow was
+        // created and the `-1` is booked, on close, against whatever uplink it
+        // is on by then. A migration that only renamed the flow therefore
+        // stranded the `+1` on the uplink it left and took the `-1` from the one
+        // it arrived at, so both series drifted by one per migration and the
+        // destination went negative — production showed `nuxt2 = +177` against
+        // `sebek = -177`, and a 14-day minimum of -491 on another node. Direct
+        // flows were never affected because they never migrate.
+        //
+        // Skipped for the first bind, which merely replaces the `"connecting"`
+        // placeholder: `record_tun_flow_created` has not run yet at that point,
+        // so there is no `+1` to move and booking one here would push
+        // `uplink="connecting"` negative instead.
+        if flow.uplink_name.as_ref() != UPLINK_CONNECTING
+            && flow.uplink_name.as_ref() != uplink_name.as_ref()
+        {
+            metrics::move_tun_flow_active(&flow.group_name, &flow.uplink_name, uplink_name);
         }
         flow.uplink_index = uplink_index;
         flow.uplink_name = Arc::clone(uplink_name);
