@@ -18,6 +18,9 @@ use crate::http::control::{ControlResponse, json_response};
 
 /// Bounded-body read + JSON deserialize. `label` is the metrics/path tag
 /// forwarded to `read_limited_body` (413 on over-limit, 400 on read error).
+// `ControlResponse` (an HTTP `Response`) is the plane's error shape; boxing it
+// to satisfy `result_large_err` would churn every caller for no real gain.
+#[allow(clippy::result_large_err)]
 pub(crate) async fn read_json<T: DeserializeOwned>(
     request: Request<Incoming>,
     label: &'static str,
