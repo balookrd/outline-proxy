@@ -1,0 +1,7 @@
+ssconf://keys.example.com/SECRET/needs_sanitising_1.conf
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zYW5pdGlzZQ@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#keys:needs%20sanitising%2F1-ss-ws
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zYW5pdGlzZQ@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fssx#keys:needs%20sanitising%2F1-ss-xhttp-packet-up
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1zYW5pdGlzZQ@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#keys:needs%20sanitising%2F1-ss-xhttp-stream-one
+vless://55555555-5555-4555-8555-555555555555@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fvless&encryption=none#keys:needs%20sanitising%2F1-vless-ws
+vless://55555555-5555-4555-8555-555555555555@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fxhttp&encryption=none#keys:needs%20sanitising%2F1-vless-xhttp-packet-up
+vless://55555555-5555-4555-8555-555555555555@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fxhttp&encryption=none#keys:needs%20sanitising%2F1-vless-xhttp-stream-one

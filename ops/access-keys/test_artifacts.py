@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Golden comparison: Python must reproduce the binary's artifacts exactly."""
+"""Golden comparison for the artifacts this module assembles.
+
+The Python generator is the source of truth now that Rust generation is gone;
+golden/expected is its byte-for-byte snapshot. This file pins the two artifact
+kinds `artifacts` owns — the Outline `.conf` and the `.txt` URL list. The
+`.json` and `.toml` are pinned by test_xray_json and test_ws_toml; the whole
+set is pinned by test_generate_keys.GoldenCorpusTest.
+"""
 
 import sys
 import unittest
@@ -16,30 +23,39 @@ GOLDEN = HERE / "golden" / "config.toml"
 EXPECTED = HERE / "golden" / "expected"
 
 
-def golden_files():
-    return sorted(p.name for p in EXPECTED.iterdir() if p.is_file())
-
-
 class GoldenTest(unittest.TestCase):
+    """The Outline `.conf` and `.txt` artifacts match the golden corpus.
+
+    `legacy_artifacts` still feeds `user_urls`, so its per-carrier URIs stay
+    anchored byte-for-byte through every `<user>.txt` even though the generator
+    no longer emits a file per carrier.
+    """
+
     def setUp(self):
         self.server = cm.load(GOLDEN)
         self.ak = self.server.access_keys
-        self.produced = {}
+
+    def test_conf_matches_the_golden_corpus(self):
         for user in self.server.users:
-            for artifact in artifacts.legacy_artifacts(
-                user, self.ak, self.server.alpn_has_h3
-            ):
-                self.produced[artifact.name + self.ak.file_extension] = artifact.content
+            content = artifacts.outline_artifact(user, self.ak)
+            path = EXPECTED / f"{user.filename}{self.ak.file_extension}"
+            with self.subTest(user=user.filename):
+                if content is None:
+                    self.assertFalse(path.exists())
+                else:
+                    self.assertEqual(content, path.read_text(encoding="utf-8"))
 
-    def test_produces_exactly_the_same_file_names(self):
-        self.assertEqual(sorted(self.produced), golden_files())
-
-    def test_every_file_matches_byte_for_byte(self):
-        for name in golden_files():
-            with self.subTest(artifact=name):
-                self.assertEqual(
-                    self.produced[name], (EXPECTED / name).read_text(encoding="utf-8")
-                )
+    def test_txt_matches_the_golden_corpus(self):
+        for user in self.server.users:
+            urls = artifacts.user_urls(user, self.ak, self.server.alpn_has_h3)
+            path = EXPECTED / f"{user.filename}.txt"
+            with self.subTest(user=user.filename):
+                if urls:
+                    self.assertEqual(
+                        "\n".join(urls) + "\n", path.read_text(encoding="utf-8")
+                    )
+                else:
+                    self.assertFalse(path.exists())
 
 
 class UserUrlsTest(unittest.TestCase):

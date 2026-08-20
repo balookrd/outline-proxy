@@ -1,0 +1,44 @@
+# outline-ws-rust client config for the Android app.
+# Generated for user own-method — do not edit by hand.
+
+[tun]
+path = "vpn"
+mtu = 1500
+
+[tun.tcp]
+sniffing = true
+carrier_migration = true
+
+[padding]
+enabled = false
+
+[[uplink_group]]
+name = "main"
+mode = "active_passive"
+routing_scope = "global"
+shared_resume = false
+reselect_interval = "6h"
+tun_wire_dial = true
+health_weighted_selection = true
+warm_standby_tcp = 1
+warm_standby_udp = 1
+
+[[outline.uplinks]]
+name = "cloud1"
+group = "main"
+weight = 1.0
+shuffle_wires = true
+link = "ss://MjAyMi1ibGFrZTMtY2hhY2hhMjAtcG9seTEzMDU6Y0dGemMzZHZjbVF0TXpJdFlubDBaWE10Wm05eUxUSXdNakl0YTJWNWN3PT0@cloud1.beerloga.su:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#cloud1:own-method-ss-ws"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://MjAyMi1ibGFrZTMtY2hhY2hhMjAtcG9seTEzMDU6Y0dGemMzZHZjbVF0TXpJdFlubDBaWE10Wm05eUxUSXdNakl0YTJWNWN3PT0@cloud1.beerloga.su:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#cloud1:own-method-ss-xhttp-stream-one"
+
+[[outline.uplinks]]
+name = "cloud2"
+group = "main"
+weight = 1.0
+shuffle_wires = true
+link = "ss://MjAyMi1ibGFrZTMtY2hhY2hhMjAtcG9seTEzMDU6Y0dGemMzZHZjbVF0TXpJdFlubDBaWE10Wm05eUxUSXdNakl0YTJWNWN3PT0@cloud2.beerloga.su:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#cloud2:own-method-ss-ws"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://MjAyMi1ibGFrZTMtY2hhY2hhMjAtcG9seTEzMDU6Y0dGemMzZHZjbVF0TXpJdFlubDBaWE10Wm05eUxUSXdNakl0YTJWNWN3PT0@cloud2.beerloga.su:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#cloud2:own-method-ss-xhttp-stream-one"

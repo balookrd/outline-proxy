@@ -1,0 +1,7 @@
+ssconf://keys.example.com/SECRET/both.conf
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1ib3Ro@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#keys:both-ss-ws
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1ib3Ro@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fssx#keys:both-ss-xhttp-packet-up
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1ib3Ro@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fssx#keys:both-ss-xhttp-stream-one
+vless://22222222-2222-4222-8222-222222222222@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fvless&encryption=none#keys:both-vless-ws
+vless://22222222-2222-4222-8222-222222222222@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fxhttp&encryption=none#keys:both-vless-xhttp-packet-up
+vless://22222222-2222-4222-8222-222222222222@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fxhttp&encryption=none#keys:both-vless-xhttp-stream-one

@@ -15,6 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import xray_json as gen  # noqa: E402
 from config_model import User  # noqa: E402
 
+HERE = Path(__file__).resolve().parent
+GOLDEN_CONFIG = HERE / "golden" / "config.toml"
+GOLDEN_DIR = HERE / "golden" / "expected"
+
 NODES = ("cloud1.beerloga.su", "cloud2.beerloga.su")
 UUID = "11111111-1111-4111-8111-111111111111"
 
@@ -212,6 +216,32 @@ class BuildConfigTest(unittest.TestCase):
             for o in doc["outbounds"][:6]
         }
         self.assertEqual(paths, {"/OWN/xhttp", "/OWN/vless"})
+
+
+class GoldenJsonTest(unittest.TestCase):
+    """Every `.json` subscription in the golden corpus is reproducible.
+
+    Broader than BuildConfigTest's hand-built user: it walks the synthetic
+    config, pins the subscription for each user that has one, and asserts a user
+    without a VLESS subscription gets none. Serialisation matches the generator
+    exactly — a one-element array, indent=2, ensure_ascii=False, trailing
+    newline. NODES equals the pair used to snapshot the corpus.
+    """
+
+    def test_matches_the_golden_corpus(self):
+        import artifacts
+        import config_model
+
+        server = config_model.load(GOLDEN_CONFIG)
+        for user in server.users:
+            path = GOLDEN_DIR / f"{user.filename}.json"
+            with self.subTest(user=user.filename):
+                if not artifacts.has_subscription(user):
+                    self.assertFalse(path.exists())
+                    continue
+                document = gen.build_config(user, NODES)
+                actual = json.dumps([document], indent=2, ensure_ascii=False) + "\n"
+                self.assertEqual(actual, path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

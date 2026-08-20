@@ -232,7 +232,12 @@ class BuildConfigTest(unittest.TestCase):
 
 
 class FixtureTest(unittest.TestCase):
-    """The fixture pins the accepted format; the Rust side proves it loads."""
+    """The expected-ws fixtures pin the accepted format; Rust proves they load.
+
+    `both.toml` here is loaded through the real ws-rust config loader by
+    `generated_android_config_fixture_loads` — its `deny_unknown_fields` schema
+    is the thing this fixture guards against silent drift.
+    """
 
     def test_matches_the_checked_in_fixtures(self):
         import config_model
@@ -244,6 +249,30 @@ class FixtureTest(unittest.TestCase):
                 encoding="utf-8"
             )
             self.assertEqual(gen.build_config(user, NODES, server), expected, name)
+
+
+class GoldenTomlTest(unittest.TestCase):
+    """Every `.toml` in the golden corpus is reproducible from build_config.
+
+    Broader than FixtureTest: it walks the synthetic config and pins the ws-rust
+    config for every user, and asserts a wireless user (no credential) gets
+    none. NODES equals xray_json.DEFAULT_NODES, the pair the generator used to
+    snapshot the corpus, so the comparison is byte-for-byte.
+    """
+
+    def test_matches_the_golden_corpus(self):
+        import config_model
+
+        server = config_model.load(HERE / "golden" / "config.toml")
+        expected_dir = HERE / "golden" / "expected"
+        for user in server.users:
+            doc = gen.build_config(user, NODES, server)
+            path = expected_dir / f"{user.filename}.toml"
+            with self.subTest(user=user.filename):
+                if doc is None:
+                    self.assertFalse(path.exists())
+                else:
+                    self.assertEqual(doc, path.read_text(encoding="utf-8"))
 
 
 class WarningsTest(unittest.TestCase):
