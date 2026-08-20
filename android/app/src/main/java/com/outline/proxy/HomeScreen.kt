@@ -25,7 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AltRoute
+import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ChevronRight
@@ -564,7 +564,7 @@ private fun QuickLinks(
     ) {
         Row(modifier = Modifier.padding(vertical = 16.dp)) {
             QuickLink(
-                Icons.Filled.AltRoute, "Split Tunneling",
+                Icons.AutoMirrored.Filled.AltRoute, "Split Tunneling",
                 Modifier.weight(1f), onOpenSplitTunnel,
             )
             QuickLink(
