@@ -11,6 +11,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.TrafficStats
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -21,9 +22,18 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.outline.proxy.keepalive.WatchdogAlarm
 import com.outline.proxy.keepalive.WatchdogWorker
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import uniffi.outline_android.isRunning
 import uniffi.outline_android.start
 import uniffi.outline_android.stop
+import uniffi.outline_android.tunnelStatus
+import java.util.Locale
 
 /**
  * The VPN tunnel service.
@@ -50,6 +60,15 @@ class OutlineVpnService : VpnService() {
     @Volatile
     private var underlyingNetwork: Network? = null
 
+    /** Drives the periodic refresh of the ongoing tunnel notification. */
+    private val notifScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var notifJob: Job? = null
+
+    /** `TrafficStats` byte counters captured at connect, so the banner can show
+     *  bytes moved this session. */
+    private var trafficBaseTx = 0L
+    private var trafficBaseRx = 0L
+
     companion object {
         private const val TAG = "OutlineVpnService"
         const val ACTION_CONNECT = "com.outline.proxy.CONNECT"
@@ -59,6 +78,13 @@ class OutlineVpnService : VpnService() {
 
         private const val NOTIFICATION_CHANNEL_ID = "outline_vpn"
         private const val NOTIFICATION_ID = 1
+
+        /** How long after connect the banner reads "Connecting…" while no link
+         *  is up yet; mirrors the home-screen status. */
+        private const val CONNECTING_WINDOW_MS = 10_000L
+
+        /** How often the ongoing notification refreshes its status and traffic. */
+        private const val NOTIFICATION_REFRESH_MS = 2_000L
 
         /** Channel for revival failures; separate from the ongoing tunnel notification. */
         const val NOTIFICATION_CHANNEL_ALERTS = "outline_vpn_alerts"
@@ -174,7 +200,15 @@ class OutlineVpnService : VpnService() {
         Log.i(TAG, "ensure: ${decision.action}")
 
         when (decision.action) {
-            KeepAliveAction.NOTHING -> WatchdogAlarm.schedule(this, decision.retryDelayMs)
+            KeepAliveAction.NOTHING -> {
+                WatchdogAlarm.schedule(this, decision.retryDelayMs)
+                // Core already alive (e.g. a revived process): keep the banner
+                // refreshing if nothing is doing so yet.
+                if (notifJob == null) {
+                    captureTrafficBaseline()
+                    startNotificationUpdates()
+                }
+            }
             KeepAliveAction.STOP -> {
                 WatchdogAlarm.cancel(this)
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -268,6 +302,8 @@ class OutlineVpnService : VpnService() {
             Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
             state.clearFailures()
             if (state.connectedSince == 0L) state.connectedSince = System.currentTimeMillis()
+            captureTrafficBaseline()
+            startNotificationUpdates()
             registerNetworkCallback()
         } catch (e: Exception) {
             Log.e(TAG, "failed to start client", e)
@@ -437,6 +473,7 @@ class OutlineVpnService : VpnService() {
     }
 
     private fun disconnect() {
+        stopNotificationUpdates()
         KeepAliveState(this).connectedSince = 0L
         unregisterNetworkCallback()
         try {
@@ -472,7 +509,10 @@ class OutlineVpnService : VpnService() {
         super.onDestroy()
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(
+        status: String = "Connecting…",
+        detail: String? = null,
+    ): Notification {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
@@ -495,14 +535,15 @@ class OutlineVpnService : VpnService() {
         )
 
         // Name the active profile in the banner so the user can tell at a glance
-        // which server the tunnel is on.
+        // which server the tunnel is on. The title carries the live status, the
+        // text the bytes moved this session.
         val store = ProfileStore(this)
         val name = store.load().firstOrNull { it.id == store.selectedId }?.name?.takeIf { it.isNotBlank() }
-        val text = if (name != null) "Connected · $name" else "Connected"
+        val title = if (name != null) "$status · $name" else status
 
         return Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Outline Proxy")
-            .setContentText(text)
+            .setContentTitle(title)
+            .setContentText(detail ?: "Outline Proxy")
             .setSmallIcon(R.drawable.ic_stat_tunnel)
             // The cyan of the emblem's "wires"; the launcher tints the small-icon
             // circle with this instead of the OEM default accent.
@@ -517,5 +558,71 @@ class OutlineVpnService : VpnService() {
                 ).build(),
             )
             .build()
+    }
+
+    /** Capture the current TrafficStats counters as the session baseline. */
+    private fun captureTrafficBaseline() {
+        trafficBaseTx = TrafficStats.getTotalTxBytes().coerceAtLeast(0)
+        trafficBaseRx = TrafficStats.getTotalRxBytes().coerceAtLeast(0)
+    }
+
+    /**
+     * Refresh the ongoing notification with the live status and traffic until
+     * the tunnel goes down. Runs off the main thread — `tunnelStatus()` blocks
+     * briefly on the core's runtime.
+     */
+    private fun startNotificationUpdates() {
+        notifJob?.cancel()
+        notifJob = notifScope.launch {
+            val manager = getSystemService(NotificationManager::class.java)
+            while (isActive) {
+                runCatching { manager?.notify(NOTIFICATION_ID, currentNotification()) }
+                delay(NOTIFICATION_REFRESH_MS)
+            }
+        }
+    }
+
+    private fun stopNotificationUpdates() {
+        notifJob?.cancel()
+        notifJob = null
+    }
+
+    /**
+     * Build the notification for the tunnel's current state: status mirroring the
+     * home screen (Connecting… / Connected / No link) and the bytes moved this
+     * session.
+     */
+    private fun currentNotification(): Notification {
+        val running = runCatching { isRunning() }.getOrDefault(false)
+        val hasLink = runCatching { tunnelStatus()?.hasLiveLink ?: false }.getOrDefault(false)
+        val since = KeepAliveState(this).connectedSince
+        val connecting = running && !hasLink && since > 0L &&
+            System.currentTimeMillis() - since < CONNECTING_WINDOW_MS
+        val status = when {
+            !running -> "Disconnected"
+            hasLink -> "Connected"
+            connecting -> "Connecting…"
+            else -> "No link"
+        }
+        val up = (TrafficStats.getTotalTxBytes() - trafficBaseTx).coerceAtLeast(0)
+        val down = (TrafficStats.getTotalRxBytes() - trafficBaseRx).coerceAtLeast(0)
+        return buildNotification(status, "↑ ${formatBytes(up)}   ↓ ${formatBytes(down)}")
+    }
+
+    /** Human-readable byte count for the banner ("0 B", "1.2 MB"). */
+    private fun formatBytes(bytes: Long): String {
+        if (bytes < 1024) return "$bytes B"
+        val units = arrayOf("KB", "MB", "GB", "TB")
+        var value = bytes.toDouble() / 1024
+        var unit = 0
+        while (value >= 1024 && unit < units.lastIndex) {
+            value /= 1024
+            unit++
+        }
+        return if (value >= 100) {
+            "${value.toInt()} ${units[unit]}"
+        } else {
+            String.format(Locale.ROOT, "%.1f %s", value, units[unit])
+        }
     }
 }
