@@ -35,6 +35,9 @@ internal val BrandCyan = Color(0xFF40C4FF)
 internal val BrandOrange = Color(0xFFF57C1F)
 internal val StatusGreen = Color(0xFF2ECC71)
 
+/** Tunnel is up but no uplink is healthy yet — the "No link" state. */
+internal val StatusAmber = Color(0xFFF5A623)
+
 /** Rounded translucent card, the surface every grouped block sits on. */
 @Composable
 internal fun SectionCard(

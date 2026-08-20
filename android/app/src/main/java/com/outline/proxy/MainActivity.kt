@@ -63,6 +63,9 @@ import kotlinx.coroutines.withContext
 import uniffi.outline_android.lastError
 import uniffi.outline_android.tunnelStatus
 
+/** How long after connect the status reads "Connecting…" while no link is up yet. */
+private const val CONNECTING_WINDOW_MS = 10_000L
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var store: ProfileStore
@@ -93,7 +96,18 @@ class MainActivity : ComponentActivity() {
                 var tcpCarrier by remember { mutableStateOf<String?>(null) }
                 var udpFamily by remember { mutableStateOf<String?>(null) }
                 var udpCarrier by remember { mutableStateOf<String?>(null) }
+                // Whether the running tunnel actually has a live uplink. `connected`
+                // only says the engine is up; this says traffic can flow.
+                var hasLiveLink by remember { mutableStateOf(false) }
+                // The brief window right after connect, before the first probe has
+                // established a link — shown as "Connecting…" rather than "No link".
+                var connecting by remember { mutableStateOf(false) }
                 LaunchedEffect(Unit) {
+                    // The moment the UI first observed this connection — used for the
+                    // connecting window. Taken here rather than from the service's
+                    // `connectedSince` (which can still read 0 at the transition and
+                    // would flash "No link").
+                    var connectAt = 0L
                     while (true) {
                         val now = OutlineVpnService.isActive()
                         if (now != connected) {
@@ -104,6 +118,18 @@ class MainActivity : ComponentActivity() {
                             ).show()
                             connected = now
                             connectedSince = KeepAliveState(this@MainActivity).connectedSince
+                            if (now) {
+                                // Show "Connecting…" from the first frame, before the
+                                // async status fetch below — otherwise the gap renders
+                                // as a "No link" flash.
+                                connectAt = System.currentTimeMillis()
+                                connecting = true
+                                hasLiveLink = false
+                            } else {
+                                connectAt = 0L
+                                connecting = false
+                                hasLiveLink = false
+                            }
                         }
                         if (now) {
                             // `tunnelStatus()` blocks briefly on the core's runtime,
@@ -115,12 +141,20 @@ class MainActivity : ComponentActivity() {
                             tcpCarrier = status?.tcpCarrier
                             udpFamily = status?.udpFamily
                             udpCarrier = status?.udpCarrier
+                            hasLiveLink = status?.hasLiveLink ?: false
                         } else {
                             tcpFamily = null
                             tcpCarrier = null
                             udpFamily = null
                             udpCarrier = null
+                            hasLiveLink = false
                         }
+                        // "Connecting…" shows only while there is no live link yet
+                        // (network trouble); an instant connect jumps straight to
+                        // "Connected". Recomputed every tick so it ages into "No link"
+                        // once the window lapses.
+                        connecting = now && !hasLiveLink && connectAt > 0L &&
+                            System.currentTimeMillis() - connectAt < CONNECTING_WINDOW_MS
                         delay(1000)
                     }
                 }
@@ -217,6 +251,8 @@ class MainActivity : ComponentActivity() {
                         profile = profiles.firstOrNull { it.id == selectedId },
                         connected = connected,
                         connectedSinceMs = connectedSince,
+                        hasLiveLink = hasLiveLink,
+                        connecting = connecting,
                         tcpFamily = tcpFamily,
                         tcpCarrier = tcpCarrier,
                         udpFamily = udpFamily,
