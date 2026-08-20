@@ -1,5 +1,13 @@
 name: Release (android)
 
+# Helper for cutting an Android release. It does NOT create the tag: the release
+# tag must be signed with the maintainer's key so the GitHub release shows as
+# Verified, and CI cannot sign as the maintainer. So this only computes the next
+# android-vMAJOR.MINOR.PATCH and prints the exact `git tag -s` command to run
+# locally. (Unlike Release (server|client|ui) there is also no in-file version to
+# bump: app/build.gradle.kts reads versionName from BUILD_VERSION_NAME, which Tag
+# Release (android) injects from the tag name.)
+
 on:
   workflow_dispatch:
     inputs:
@@ -8,26 +16,14 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-
-concurrency:
-  group: android-release-${{ github.event.inputs.major_minor }}
-  cancel-in-progress: false
-
 jobs:
-  tag:
+  compute:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
-
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - id: version
         name: Compute next version
@@ -60,22 +56,7 @@ jobs:
             exit 1
           fi
 
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-
-      - name: Create and push tag
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          set -euo pipefail
-          # Unlike Release (server|client|ui), there is no in-file version to bump:
-          # app/build.gradle.kts reads versionName from BUILD_VERSION_NAME, which
-          # Tag Release (android) injects from the tag name. So there is nothing to
-          # commit — cut the tag straight from the dispatched ref. Pushing an
-          # android-v* tag triggers Tag Release (android), which builds and
-          # publishes the signed APK.
-          git tag -a "$TAG" -m "$TAG"
-          git push origin "$TAG"
 
       - name: Next steps
         env:
@@ -83,9 +64,18 @@ jobs:
         run: |
           cat <<EOF
 
-          Tag ${TAG} pushed to origin.
+          Next Android release tag: ${TAG}
 
-          Workflow "Tag Release (android)" now builds the APK for that tag and
-          publishes it as a GitHub release.
+          Create it as a SIGNED tag locally — your signature is what makes the
+          GitHub release show as Verified; CI cannot sign as you — then push it:
+
+            git fetch origin
+            git checkout main
+            git pull --ff-only origin main
+            git tag -s ${TAG} -m "${TAG}"
+            git push origin ${TAG}
+
+          Pushing an android-v* tag triggers "Tag Release (android)", which builds
+          and publishes the signed APK for that tag.
 
           EOF
