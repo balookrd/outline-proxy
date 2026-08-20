@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -159,7 +160,7 @@ class MainActivity : ComponentActivity() {
                 if (showSplit) {
                     SplitTunnelScreen(
                         store = SplitTunnelStore(this@MainActivity),
-                        loadApps = { loadLaunchableApps(this@MainActivity) },
+                        loadApps = { loadNetworkApps(this@MainActivity) },
                         onBack = { showSplit = false },
                     )
                 } else if (showExternal) {
@@ -552,7 +553,10 @@ private fun SplitTunnelScreen(
 ) {
     val initial = remember { store.load() }
     var mode by remember { mutableStateOf(initial.mode) }
-    val selected = remember { initial.packages.toMutableStateList() }
+    // Two independent selections. The list backing the active mode follows
+    // `mode`, so switching modes never moves or drops the other's selection.
+    val allow = remember { initial.allowPackages.toMutableStateList() }
+    val deny = remember { initial.denyPackages.toMutableStateList() }
     var apps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
 
@@ -562,8 +566,20 @@ private fun SplitTunnelScreen(
     }
 
     var query by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
 
-    fun persist() = store.save(SplitTunnelConfig(mode, selected.toSet()))
+    fun persist() = store.save(SplitTunnelConfig(mode, allow.toSet(), deny.toSet()))
+
+    // Switching mode shows a different list (allow vs deny), so snap the scroll
+    // back to the top instead of inheriting the previous mode's offset.
+    LaunchedEffect(mode) { listState.scrollToItem(0) }
+
+    // The list backing the active mode; null in OFF, where there is nothing to pick.
+    val selected = when (mode) {
+        SplitMode.ALLOWLIST -> allow
+        SplitMode.DENYLIST -> deny
+        SplitMode.OFF -> null
+    }
 
     SubScreen(title = "Split Tunneling", onBack = onBack) {
         SectionCard(modifier = Modifier.padding(top = 4.dp), padding = PaddingValues(vertical = 4.dp)) {
@@ -575,7 +591,7 @@ private fun SplitTunnelScreen(
         }
 
         when {
-            mode == SplitMode.OFF ->
+            selected == null ->
                 Text(
                     "Every app's traffic goes through the tunnel.",
                     modifier = Modifier.padding(top = 16.dp),
@@ -585,6 +601,16 @@ private fun SplitTunnelScreen(
             loading ->
                 Text("Loading apps…", modifier = Modifier.padding(top = 16.dp))
             else -> {
+                Text(
+                    if (mode == SplitMode.ALLOWLIST) {
+                        "Only the checked apps are tunneled; everything else uses the direct connection."
+                    } else {
+                        "The checked apps bypass the tunnel; everything else is tunneled."
+                    },
+                    modifier = Modifier.padding(top = 16.dp, start = 4.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
@@ -603,6 +629,7 @@ private fun SplitTunnelScreen(
                             .thenBy { it.label.lowercase() },
                     )
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
