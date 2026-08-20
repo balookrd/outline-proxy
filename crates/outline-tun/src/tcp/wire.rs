@@ -247,7 +247,7 @@ fn parse_tcp_options(options: &[u8]) -> Result<ParsedTcpOptions> {
                         parsed.sack_permitted = true;
                     },
                     5 if body.len() >= 8 && body.len().is_multiple_of(8) => {
-                        for block in body.chunks_exact(8) {
+                        for block in body.as_chunks::<8>().0 {
                             let left = u32::from_be_bytes([block[0], block[1], block[2], block[3]]);
                             let right =
                                 u32::from_be_bytes([block[4], block[5], block[6], block[7]]);

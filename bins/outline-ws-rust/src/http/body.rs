@@ -28,6 +28,10 @@ pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 /// single `match` away from their payload. The response type is the one both
 /// planes already use (`ControlResponse` / `DashboardResponse` are aliases of
 /// it). `endpoint` is a static label used only for the warn log.
+// The error variant is a ready-to-send HTTP `Response` — the shape both planes
+// return as their error — so `result_large_err` is expected here; boxing it
+// would only churn every caller for no real gain.
+#[allow(clippy::result_large_err)]
 pub(crate) async fn read_limited_body<B>(
     body: B,
     endpoint: &'static str,

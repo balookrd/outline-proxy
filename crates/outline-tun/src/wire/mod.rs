@@ -100,14 +100,12 @@ pub(crate) fn checksum16_parts(parts: &[&[u8]]) -> u16 {
         // is grouping-independent, so accumulating in u64 and folding the
         // end-around carry once at the end is exact, and a u64 cannot overflow
         // for any datagram size.
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
-            let word =
-                u64::from_be_bytes(chunk.try_into().expect("chunks_exact(8) yields 8 bytes"));
+        let (chunks, rem) = bytes.as_chunks::<8>();
+        for chunk in chunks {
+            let word = u64::from_be_bytes(*chunk);
             sum += word >> 32;
             sum += word & 0xffff_ffff;
         }
-        let rem = chunks.remainder();
         let mut i = 0;
         while i + 2 <= rem.len() {
             sum += u64::from(u16::from_be_bytes([rem[i], rem[i + 1]]));
