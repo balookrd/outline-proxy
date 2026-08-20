@@ -8,6 +8,7 @@ use bytes::Bytes;
 use tokio::sync::{Mutex, RwLock, mpsc};
 
 use super::eviction::{FlowEvictionIndex, record_flow_activity};
+use crate::carrier_slots::CarrierSlot;
 use crate::utils::maybe_shrink_hash_map;
 use crate::wire::IpVersion;
 use outline_transport::AbortOnDrop;
@@ -95,6 +96,16 @@ pub(super) struct UdpFlowState {
     /// promptly — even when the peer went silent and `read_packet` would
     /// otherwise block forever (UDP/quinn have no peer-gone shutdown signal).
     pub(super) _uplink_task: Option<AbortOnDrop>,
+    /// Carrier slot this flow holds against the process-wide
+    /// `[tun] max_carrier_flows` budget (shared with the TCP engine).
+    /// `None` only when the engine was wired without a budget (tests).
+    ///
+    /// Held as a guard rather than accounted by hand: the flow leaves the table
+    /// on several paths (idle GC, global switch, send error, eviction) and the
+    /// eviction path hands the victim to a background closer, so the slot is
+    /// returned when this state is dropped — no teardown branch has to remember
+    /// to do it.
+    pub(super) _carrier_slot: Option<CarrierSlot>,
 }
 
 /// Flow map: `RwLock` on the map itself, `Arc<Mutex<_>>` per flow.

@@ -220,9 +220,40 @@ impl TunTcpEngine {
                     // selected — mirroring handle_new_flow's initial commit.
                     {
                         let mut state = flow.lock().await;
+                        let was_tunnelled =
+                            matches!(state.routing.route, crate::TunRoute::Group { .. });
+                        let now_tunnelled = matches!(new_route, crate::TunRoute::Group { .. });
                         state.routing.manager = manager.clone();
                         state.routing.route = new_route.clone();
                         state.routing.group_name = Arc::from(manager.group_name());
+
+                        // The carrier budget counts carriers, so a flow that
+                        // changes sides here has to change its accounting too:
+                        // the SNI re-resolve runs *after* the flow was admitted
+                        // and can send it either way. Leaving the slot with a
+                        // now-direct flow would leak it (the cap wedges as those
+                        // accumulate); not taking one for a flow that just became
+                        // tunnelled would let carriers exceed the cap unseen.
+                        if was_tunnelled != now_tunnelled {
+                            if now_tunnelled {
+                                if let Some(slots) = engine.inner.carrier_slots.get() {
+                                    // No eviction here: this flow already exists
+                                    // and its carrier is about to be dialled, so
+                                    // refusing it would strand a live connection.
+                                    // The overshoot is bounded by how many flows
+                                    // flip in one direction at once.
+                                    state.carrier_slot = Some(slots.acquire_evicted());
+                                    engine.inner.carrier_eviction_index.upsert(
+                                        key.clone(),
+                                        flow_id,
+                                        state.timestamps.last_seen,
+                                    );
+                                }
+                            } else {
+                                state.carrier_slot = None;
+                                engine.inner.carrier_eviction_index.remove(&key, flow_id);
+                            }
+                        }
                     }
                     Some(sniffed)
                 } else {

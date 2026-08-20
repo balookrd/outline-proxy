@@ -125,6 +125,9 @@ impl TunTcpEngine {
             pending_server_data: VecDeque::new(),
             pending_server_bytes_total: 0,
             pending_budget_global: Some(Arc::clone(&self.inner.pending_server_bytes_global)),
+            // Taken in `insert_flow`, once the flow is actually admitted: a flow
+            // rejected there must not have consumed a slot.
+            carrier_slot: None,
             backlog_limit_exceeded_since: None,
             last_ack_progress_at: now,
             pending_client_data: VecDeque::new(),
@@ -200,15 +203,60 @@ impl TunTcpEngine {
                 .await;
         }
 
-        let (flow_id, group_name, uplink_name, last_seen) = {
+        let (flow_id, group_name, uplink_name, last_seen, is_tunnelled) = {
             let state = flow.lock().await;
             (
                 state.id,
                 state.routing.group_name.clone(),
                 state.routing.uplink_name.clone(),
                 state.timestamps.last_seen,
+                matches!(state.routing.route, TunRoute::Group { .. }),
             )
         };
+
+        // Carriers, not flows, are what `max_carrier_flows` bounds: a tunnelled
+        // flow dials its own and costs ~28× a direct one in RSS. The budget is
+        // shared with the UDP engine, so the ceiling covers every carrier in the
+        // process rather than a per-protocol slice of it — counting the two
+        // paths separately let them together reach roughly twice the cap.
+        if is_tunnelled && let Some(slots) = self.inner.carrier_slots.get() {
+            let slot = match slots.try_acquire() {
+                Some(slot) => slot,
+                None => {
+                    // Evict from the carrier index, never the shared one: its
+                    // oldest entry may well be a direct flow, and tearing that
+                    // down would free no carrier at all.
+                    let Some(candidate) = self.inner.carrier_eviction_index.pop_oldest() else {
+                        bail!(
+                            "TUN TCP carrier limit reached and no tunnelled flow could be evicted"
+                        )
+                    };
+                    debug!(
+                        evicted_flow_id = candidate.flow_id,
+                        admitted_flow_id = flow_id,
+                        // Shared with the UDP engine, so this can exceed the
+                        // TCP flow count on its own.
+                        carriers_in_use = slots.in_use(),
+                        carrier_limit = slots.cap(),
+                        "TUN TCP carrier budget full: evicting the least recently used tunnelled flow"
+                    );
+                    self.abort_flow_with_rst_if_id(
+                        &candidate.key,
+                        candidate.flow_id,
+                        "carrier_cap",
+                    )
+                    .await;
+                    // The victim returns its slot only once its state is
+                    // dropped, so claim the place we just made directly.
+                    slots.acquire_evicted()
+                },
+            };
+            flow.lock().await.carrier_slot = Some(slot);
+            self.inner
+                .carrier_eviction_index
+                .upsert(key.clone(), flow_id, last_seen);
+        }
+
         self.inner.flows.insert(key.clone(), flow);
         self.inner.eviction_index.upsert(key, flow_id, last_seen);
         metrics::record_tun_tcp_event(&group_name, &uplink_name, "flow_created");
@@ -232,10 +280,12 @@ impl TunTcpEngine {
     ) {
         let Some(flow) = self.lookup_flow(key).await else {
             self.inner.eviction_index.remove(key, expected_flow_id);
+            self.inner.carrier_eviction_index.remove(key, expected_flow_id);
             return;
         };
         if flow.lock().await.id != expected_flow_id {
             self.inner.eviction_index.remove(key, expected_flow_id);
+            self.inner.carrier_eviction_index.remove(key, expected_flow_id);
             return;
         }
         let Some((_, flow)) = self
@@ -244,6 +294,7 @@ impl TunTcpEngine {
             .remove_if(key, |_, current| Arc::ptr_eq(current, &flow))
         else {
             self.inner.eviction_index.remove(key, expected_flow_id);
+            self.inner.carrier_eviction_index.remove(key, expected_flow_id);
             return;
         };
 
@@ -281,6 +332,7 @@ impl TunTcpEngine {
             state.status = TcpFlowStatus::Closed;
             clear_flow_metrics(&mut state);
             self.inner.eviction_index.remove(key, state.id);
+            self.inner.carrier_eviction_index.remove(key, state.id);
             (
                 state.id,
                 state.routing.group_name.clone(),
@@ -309,6 +361,7 @@ impl TunTcpEngine {
                 set_flow_status(&mut state, TcpFlowStatus::Closed);
                 clear_flow_metrics(&mut state);
                 self.inner.eviction_index.remove(key, state.id);
+                self.inner.carrier_eviction_index.remove(key, state.id);
                 (
                     state.id,
                     state.routing.group_name.clone(),

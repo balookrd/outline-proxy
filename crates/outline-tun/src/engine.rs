@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
 
+use crate::carrier_slots::{CarrierSlots, carrier_flow_cap};
 use crate::classify::{PacketDisposition, classify_packet};
 use crate::config::TunConfig;
 use crate::defrag::{DefragmentedPacket, TunDefragmenter};
@@ -123,6 +124,15 @@ pub async fn spawn_tun_loop(
         udp_engine.set_dial_admission(Arc::clone(&dial_admission));
         tcp_engine.set_dial_admission(dial_admission);
     }
+    // Likewise one carrier-slot budget for both engines. Every tunnelled flow
+    // owns a carrier, so `max_carrier_flows` only means "how many carriers may
+    // live at once" if TCP and UDP draw from the same pool; when the cap bound
+    // the UDP table alone the two paths together reached roughly twice it.
+    // `0` keeps the historical "disabled" meaning — the counter still tracks
+    // live carriers for the gauge, it just never refuses.
+    let carrier_slots = Arc::new(CarrierSlots::new(carrier_flow_cap(max_carrier_flows, max_flows)));
+    udp_engine.set_carrier_slots(Arc::clone(&carrier_slots));
+    tcp_engine.set_carrier_slots(carrier_slots);
     metrics::set_tun_config(max_flows, max_carrier_flows, idle_timeout);
     // Kernel-side netdev counters: the only place a packet dropped *by the
     // kernel* (rather than by us) is visible from inside the process. sysfs is

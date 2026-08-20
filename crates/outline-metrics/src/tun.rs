@@ -98,6 +98,16 @@ pub fn set_tun_config(max_flows: usize, max_carrier_flows: usize, idle_timeout: 
     METRICS.tun_idle_timeout_seconds.set(idle_timeout.as_secs_f64());
 }
 
+/// Live carriers across both TUN paths. Called whenever a slot is taken or
+/// returned, so the series tracks the burst that actually costs the memory —
+/// a periodic sample would miss it: the spikes that drive the process into its
+/// cgroup limit last well under one scrape interval.
+pub fn set_tun_carrier_flows_active(in_use: usize) {
+    METRICS
+        .tun_carrier_flows_active
+        .set(i64::try_from(in_use).unwrap_or(i64::MAX));
+}
+
 pub fn record_tun_tcp_event(group: &str, uplink: &str, event: &'static str) {
     METRICS
         .tun_tcp_events_total

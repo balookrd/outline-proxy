@@ -294,7 +294,7 @@ async fn build_engine(max_flows: usize) -> TunUdpEngine {
 
 async fn build_engine_with_carrier_cap(max_flows: usize, max_carrier_flows: usize) -> TunUdpEngine {
     let manager = build_test_manager_with_urls(None, Some(spawn_idle_udp_upstream().await)).await;
-    TunUdpEngine::new(
+    let engine = TunUdpEngine::new(
         test_tun_writer(),
         crate::TunRouting::from_single_manager(manager),
         max_flows,
@@ -305,7 +305,14 @@ async fn build_engine_with_carrier_cap(max_flows: usize, max_carrier_flows: usiz
         false,
         Vec::new().into(),
         false,
-    )
+    );
+    // The cap lives in the budget shared with the TCP engine, so the engine has
+    // to be wired with one exactly as `spawn_tun_loop` does — otherwise the
+    // table is bounded only by `max_flows`.
+    engine.set_carrier_slots(std::sync::Arc::new(crate::carrier_slots::CarrierSlots::new(
+        crate::carrier_slots::carrier_flow_cap(max_carrier_flows, max_flows),
+    )));
+    engine
 }
 
 /// A direct-routed engine: `via = "direct"` for every destination, so flows
