@@ -112,7 +112,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          name="outline-ss-rust-v${VERSION}-${{ matrix.target }}"
+          name="outline-ss-rust-${VERSION}-${{ matrix.target }}"
           cp "target/${{ matrix.target }}/release/outline-ss-rust" "dist/${name}"
           chmod +x "dist/${name}"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"

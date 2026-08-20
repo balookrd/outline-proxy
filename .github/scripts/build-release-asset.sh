@@ -31,7 +31,7 @@ case "$flavor" in
 esac
 
 src_path="target/${target}/${artifact_dir}/${binary_name}"
-dest_name="${dest_prefix}-v${version}-${target}"
+dest_name="${dest_prefix}-${version}-${target}"
 
 mkdir -p "$output_dir"
 cp "$src_path" "${output_dir}/${dest_name}"
