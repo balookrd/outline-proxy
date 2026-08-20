@@ -1064,6 +1064,25 @@ mod ws_message_cap {
         assert_eq!(cfg.max_frame_size, Some(WS_MAX_MESSAGE_SIZE));
     }
 
+    /// tungstenite defaults reserve a 128 KiB read buffer eagerly on every
+    /// session and let the write buffer grow to another 128 KiB. Each tunnelled
+    /// flow dials its own carrier, so that reserve is paid per flow — on a
+    /// 700 MiB budget with bursts reaching ~574 concurrent sessions it is the
+    /// difference between surviving a burst and being OOM-killed. The write
+    /// buffer is dropped entirely (the SS/VLESS writers already coalesce up to
+    /// `FRAME_SOFT_CAP`), mirroring the server's `write_buffer_size(0)`.
+    #[test]
+    fn shrinks_carrier_read_and_write_buffers() {
+        let cfg = ws_client_config();
+        assert_eq!(cfg.read_buffer_size, 32 * 1024);
+        assert_eq!(cfg.write_buffer_size, 0);
+        // Deliberately left at the tungstenite default: capping it would turn a
+        // congested carrier from "buffer grows" into `WriteBufferFull` and a
+        // torn session, and `carrier_queue` already applies backpressure
+        // upstream.
+        assert_eq!(cfg.max_write_buffer_size, usize::MAX);
+    }
+
     #[tokio::test]
     async fn rejects_inbound_message_larger_than_cap() {
         // 2 MiB is under tungstenite's 64 MiB default but over our 1 MiB cap:

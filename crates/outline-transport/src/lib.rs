@@ -353,10 +353,29 @@ pub(crate) const WS_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 /// rejects a frame whose declared length exceeds the cap at header-parse time,
 /// before its payload is read into a buffer, so an oversized message is refused
 /// rather than allocated whole.
+///
+/// The buffer sizes are set here for the same reason: every tunnelled flow
+/// dials its own carrier, so tungstenite's defaults are paid once per flow, not
+/// once per process.
 pub(crate) fn ws_client_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
     tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(WS_MAX_MESSAGE_SIZE))
         .max_frame_size(Some(WS_MAX_MESSAGE_SIZE))
+        // tungstenite reserves `read_buffer_size` eagerly per session (128 KiB
+        // by default) and grows the write buffer to another 128 KiB on top.
+        // 32 KiB still takes a typical frame in one read, and the size is a
+        // starting capacity rather than a ceiling, so a larger message grows
+        // the buffer on demand — only the eager reserve shrinks.
+        .read_buffer_size(32 * 1024)
+        // Mirrors the server's `write_buffer_size(0)` in
+        // `bins/outline-ss-rust/src/server/transport/mod.rs`: the SS/VLESS
+        // writers already coalesce up to `FRAME_SOFT_CAP` before handing a
+        // frame over, so buffering the coalesced frame a second time buys
+        // nothing and costs residency. `max_write_buffer_size` stays at the
+        // tungstenite default: capping it would turn a congested carrier from
+        // "buffer grows" into `WriteBufferFull` and a torn session, and
+        // `carrier_queue` already applies backpressure upstream.
+        .write_buffer_size(0)
 }
 
 /// Sweep H2 (and H3 when enabled) shared-connection caches, removing entries
