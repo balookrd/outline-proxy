@@ -32,6 +32,30 @@ pub fn record_tun_flow_created(group: &str, uplink: &str) {
     METRICS.tun_flows_active.with_label_values(&[group, uplink]).inc();
 }
 
+/// Re-labels a live flow from one uplink to another in `tun_flows_active`.
+///
+/// The gauge is keyed by `(group, uplink)`, and the `+1` is booked when the flow
+/// is created while the `-1` is booked when it closes. A tunnelled flow can
+/// change uplinks in between (soft switch, runtime failover), and without this
+/// the `+1` stays stranded on the uplink it started on while the `-1` lands on
+/// the one it ended on: both series drift by one per migration, and the
+/// destination goes negative. Production showed `nuxt2 = +177` against
+/// `sebek = -177` on one node and a 14-day minimum of -491 on another.
+///
+/// Deliberately does not touch `tun_flows_total` or the duration histogram: the
+/// flow did not close, it moved, and counting a close here would inflate the
+/// lifecycle counters with events that never happened.
+pub fn move_tun_flow_active(group: &str, from_uplink: &str, to_uplink: &str) {
+    if from_uplink == to_uplink {
+        return;
+    }
+    METRICS
+        .tun_flows_active
+        .with_label_values(&[group, from_uplink])
+        .dec();
+    METRICS.tun_flows_active.with_label_values(&[group, to_uplink]).inc();
+}
+
 pub fn record_tun_flow_closed(group: &str, uplink: &str, reason: &'static str, duration: Duration) {
     METRICS
         .tun_flows_total
