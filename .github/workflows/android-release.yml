@@ -1,4 +1,5 @@
 name: Release (android)
+run-name: "${{ github.workflow }} — ${{ inputs.major_minor }}"
 
 # Helper for cutting an Android release. It does NOT create the tag: the release
 # tag must be signed with the maintainer's key so the GitHub release shows as

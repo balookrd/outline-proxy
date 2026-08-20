@@ -1,4 +1,5 @@
 name: Release (client)
+run-name: "${{ github.workflow }} — ${{ inputs.major_minor }}"
 
 on:
   workflow_dispatch:

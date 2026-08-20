@@ -1,4 +1,5 @@
 name: Nightly Release (server)
+run-name: "${{ github.workflow }} — ${{ github.sha }}"
 
 on:
   push:
