@@ -55,6 +55,11 @@ pub struct CarrierStatus {
     pub tcp: Option<Carrier>,
     /// Carrier the wire new UDP sessions currently land on.
     pub udp: Option<Carrier>,
+    /// Whether at least one uplink in the group is currently healthy on TCP or
+    /// UDP — i.e. the tunnel actually has a live path, not merely a running
+    /// engine. `false` means "up but no link" (all uplinks down / not yet
+    /// probed).
+    pub has_live_link: bool,
 }
 
 /// Read the default group's active TCP/UDP carriers, or `None` if no client is
@@ -66,7 +71,11 @@ pub async fn active_carriers() -> Option<CarrierStatus> {
     let group = manager.group_name().to_string();
     let tcp = active_carrier(&manager, TransportKind::Tcp).await;
     let udp = active_carrier(&manager, TransportKind::Udp).await;
-    Some(CarrierStatus { group, tcp, udp })
+    // A live path on either transport means the tunnel can actually carry
+    // traffic; both false is "up but no link".
+    let has_live_link = manager.has_any_healthy(TransportKind::Tcp).await
+        || manager.has_any_healthy(TransportKind::Udp).await;
+    Some(CarrierStatus { group, tcp, udp, has_live_link })
 }
 
 /// The active carrier for `transport`: the family of the active uplink plus the

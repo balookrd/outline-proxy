@@ -204,6 +204,9 @@ pub struct TunnelStatus {
     pub tcp_carrier: Option<String>,
     pub udp_family: Option<String>,
     pub udp_carrier: Option<String>,
+    /// `true` when at least one uplink is healthy on TCP or UDP — the tunnel has
+    /// a live path. `false` means the engine is up but no link is alive.
+    pub has_live_link: bool,
 }
 
 /// Read the active carriers, or `None` if the client is not running. Drives the
@@ -220,5 +223,6 @@ pub fn tunnel_status() -> Option<TunnelStatus> {
         tcp_carrier: status.tcp.map(|c| c.mode),
         udp_family: status.udp.as_ref().map(|c| c.family.clone()),
         udp_carrier: status.udp.map(|c| c.mode),
+        has_live_link: status.has_live_link,
     })
 }

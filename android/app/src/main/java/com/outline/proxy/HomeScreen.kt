@@ -42,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -87,6 +88,8 @@ fun HomeScreen(
     profile: ServerProfile?,
     connected: Boolean,
     connectedSinceMs: Long,
+    hasLiveLink: Boolean,
+    connecting: Boolean,
     tcpFamily: String?,
     tcpCarrier: String?,
     udpFamily: String?,
@@ -111,7 +114,7 @@ fun HomeScreen(
         Header()
         Spacer(Modifier.height(20.dp))
         StatusCard(
-            profile, connected, connectedSinceMs,
+            profile, connected, connectedSinceMs, hasLiveLink, connecting,
             tcpFamily, tcpCarrier, udpFamily, udpCarrier, onOpenProfiles,
         )
         Spacer(Modifier.height(16.dp))
@@ -153,6 +156,8 @@ private fun StatusCard(
     profile: ServerProfile?,
     connected: Boolean,
     connectedSinceMs: Long,
+    hasLiveLink: Boolean,
+    connecting: Boolean,
     tcpFamily: String?,
     tcpCarrier: String?,
     udpFamily: String?,
@@ -184,15 +189,31 @@ private fun StatusCard(
                     EmblemRing()
                     Spacer(Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
+                        // Four states: disconnected (engine down), connecting (up,
+                        // link not established yet), connected (a live uplink), and
+                        // "No link" — up but no uplink is healthy, so traffic can't
+                        // flow.
+                        val dots = connectingDots(active = connecting)
+                        val statusText = when {
+                            !connected -> "Disconnected"
+                            hasLiveLink -> "Connected"
+                            connecting -> "Connecting$dots"
+                            else -> "No link"
+                        }
+                        val statusColor = when {
+                            !connected -> MaterialTheme.colorScheme.outline
+                            hasLiveLink -> StatusGreen
+                            connecting -> BrandBlue
+                            else -> StatusAmber
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
-                                Modifier.size(9.dp).clip(CircleShape)
-                                    .background(if (connected) StatusGreen else MaterialTheme.colorScheme.outline),
+                                Modifier.size(9.dp).clip(CircleShape).background(statusColor),
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                if (connected) "Connected" else "Disconnected",
-                                color = if (connected) StatusGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                                statusText,
+                                color = if (connected) statusColor else MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium,
                             )
@@ -474,6 +495,24 @@ private fun DurationText(sinceMs: Long) {
     val elapsed = ((now - sinceMs).coerceAtLeast(0)) / 1000
     val text = "%02d:%02d:%02d".format(elapsed / 3600, (elapsed % 3600) / 60, elapsed % 60)
     StatValue(text)
+}
+
+/**
+ * Cycles `"."` → `".."` → `"..."` → `"."` once a second while [active], so
+ * "Connecting" visibly animates; returns `""` when inactive.
+ */
+@Composable
+private fun connectingDots(active: Boolean): String {
+    // Keyed on `active` so each new connecting spell restarts at a single dot.
+    var count by remember(active) { mutableIntStateOf(1) }
+    LaunchedEffect(active) {
+        if (!active) return@LaunchedEffect
+        while (true) {
+            delay(1000)
+            count = count % 3 + 1
+        }
+    }
+    return if (active) ".".repeat(count) else ""
 }
 
 @Composable
