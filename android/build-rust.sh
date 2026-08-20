@@ -22,6 +22,14 @@ if [ "${2:-}" = "--release" ]; then
     PROFILE_DIR="release"
 fi
 
+# Host cdylib extension for the bindgen step below: dylib on macOS (local dev),
+# so on Linux (CI runner). Hardcoding .dylib made a Linux build fail the bindgen
+# step with "No such file or directory".
+case "$(uname -s)" in
+    Darwin) LIB_EXT="dylib" ;;
+    *)      LIB_EXT="so" ;;
+esac
+
 echo ">> Building native library for $ABI ($PROFILE_DIR) into jniLibs"
 cargo ndk -t "$ABI" --platform 24 -o ../app/src/main/jniLibs -- build --lib $PROFILE_FLAG
 
@@ -36,7 +44,7 @@ echo ">> Generating UniFFI Kotlin bindings"
 # uniffi 0.31+ auto-detects a library source, so the path is positional and the
 # old `--library` flag is a deprecated no-op.
 cargo run --bin uniffi-bindgen -- generate \
-    "target/$PROFILE_DIR/liboutline_android.dylib" \
+    "target/$PROFILE_DIR/liboutline_android.$LIB_EXT" \
     --language kotlin \
     --out-dir ../app/src/main/java
 
