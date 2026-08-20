@@ -291,19 +291,23 @@ class OutlineVpnService : VpnService() {
             SplitMode.OFF -> disallow(builder, packageName)
 
             SplitMode.DENYLIST -> {
-                config.packages.forEach { disallow(builder, it) }
+                config.denyPackages.forEach { disallow(builder, it) }
                 disallow(builder, packageName)
             }
 
             SplitMode.ALLOWLIST -> {
-                val allowed = config.packages.filter { it != packageName }
+                val allowed = config.allowPackages.filter { it != packageName }
                 if (allowed.isEmpty()) {
                     Log.w(TAG, "allowlist is empty — no app traffic will be tunneled")
                 }
                 allowed.forEach { allow(builder, it) }
             }
         }
-        Log.i(TAG, "split-tunnel mode=${config.mode} packages=${config.packages.size}")
+        Log.i(
+            TAG,
+            "split-tunnel mode=${config.mode} " +
+                "allow=${config.allowPackages.size} deny=${config.denyPackages.size}",
+        )
     }
 
     private fun allow(builder: Builder, pkg: String) {
