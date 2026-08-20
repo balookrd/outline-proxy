@@ -82,6 +82,11 @@ jobs:
 
           echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
           echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+          # Nightly passes the full commit SHA; keep the artifact name compact.
+          if [[ "$artifact_version" =~ ^nightly-([0-9a-f]{40})$ ]]; then
+            artifact_version="nightly-${BASH_REMATCH[1]:0:8}"
+          fi
+
           echo "artifact_version=$artifact_version" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
