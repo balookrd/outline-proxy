@@ -112,7 +112,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          name="outline-ui-v${VERSION}-${{ matrix.target }}"
+          name="outline-ui-${VERSION}-${{ matrix.target }}"
           cp "target/${{ matrix.target }}/release/outline-ui" "dist/${name}"
           chmod +x "dist/${name}"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
