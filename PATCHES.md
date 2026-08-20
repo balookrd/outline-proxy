@@ -123,6 +123,19 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
    per-target close into a fatal carrier read error (`Invalid close code:
    1013`), flapping `ws_h3 -> ws_h2` and tearing down flows on the wire. Range
    widened to `1007..=1014` (1015 stays out — TLS, never on the wire).
+4. **h3-read-buf-capacity** (`src/stream/transport_stream.rs`) — the initial
+   `read_buf` capacity on the live H3 WebSocket streams drops from 64 KiB to
+   32 KiB in `from_h3_client` and `from_h3_server`
+   (`Http3StreamInner::{Client,Server}` — the same two constructors
+   `fix-h3-poll-write` patches). The buffer is allocated eagerly per stream and
+   every tunnelled flow carries its own carrier, so the reserve was paid once
+   per flow; on `.104`, under a 700 MiB cgroup cap, it is part of what got the
+   process OOM-killed. `BytesMut::with_capacity` sets a starting capacity rather
+   than a ceiling, so a large message still grows the buffer on demand — only
+   the eager reserve changes. `from_h2` (`Http2StreamInner::recv_buf`) and
+   `from_quic` (`Http3StreamInner::Raw`) are deliberately left upstream-vanilla:
+   the data plane never instantiates them — the same rule that keeps
+   `fix-h3-poll-write` confined to the two live stream types.
 
 **`Cargo.toml`** (kept out of the patch): the rustls-stack dependencies are
 pinned with `default-features = false` and the `aws_lc_rs` provider feature
