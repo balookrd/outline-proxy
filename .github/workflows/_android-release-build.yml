@@ -140,11 +140,11 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           src=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
-          # A tagged release carries just its version; nightlies all share the
-          # one rolling `android-nightly` tag, so stamp the commit into the file
-          # name to keep successive nightly APKs distinguishable.
+          # A tagged release carries its version; nightlies all share the one
+          # rolling `android-nightly` tag, so name them by the commit instead to
+          # keep successive nightly APKs distinguishable.
           if [[ "$ROLLING" == "true" ]]; then
-            name="outline-proxy-${VERSION_NAME}-${SHA:0:8}-arm64-v8a.apk"
+            name="outline-proxy-nightly-${SHA:0:8}-arm64-v8a.apk"
           else
             name="outline-proxy-${VERSION_NAME}-arm64-v8a.apk"
           fi
