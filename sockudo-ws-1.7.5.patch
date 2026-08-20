@@ -214,7 +214,7 @@ index 11da3b8..f481641 100644
  async fn handle_http3_request_filtered<F, Fut, Filter>(
      request: http::Request<()>,
 diff --git a/src/stream/transport_stream.rs b/src/stream/transport_stream.rs
-index 0b15673..d2a5132 100644
+index 0b15673..6c5136d 100644
 --- a/src/stream/transport_stream.rs
 +++ b/src/stream/transport_stream.rs
 @@ -253,12 +253,12 @@ impl AsyncRead for Stream<Http2> {
@@ -355,20 +355,24 @@ index 0b15673..d2a5132 100644
      },
  }
  
-@@ -403,6 +458,9 @@ impl Stream<Http3> {
+@@ -402,7 +457,10 @@ impl Stream<Http3> {
+         Self {
              inner: StreamInner::Http3(Http3StreamInner::Server {
                  stream,
-                 read_buf: BytesMut::with_capacity(64 * 1024),
+-                read_buf: BytesMut::with_capacity(64 * 1024),
++                read_buf: BytesMut::with_capacity(32 * 1024),
 +                write_queued: None,
 +                shutdown_started: false,
 +                send_poisoned: false,
              }),
              _marker: PhantomData,
          }
-@@ -418,6 +476,9 @@ impl Stream<Http3> {
+@@ -417,7 +475,10 @@ impl Stream<Http3> {
+         Self {
              inner: StreamInner::Http3(Http3StreamInner::Client {
                  stream,
-                 read_buf: BytesMut::with_capacity(64 * 1024),
+-                read_buf: BytesMut::with_capacity(64 * 1024),
++                read_buf: BytesMut::with_capacity(32 * 1024),
 +                write_queued: None,
 +                shutdown_started: false,
 +                send_poisoned: false,

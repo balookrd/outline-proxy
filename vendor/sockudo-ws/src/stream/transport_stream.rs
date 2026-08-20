@@ -457,7 +457,7 @@ impl Stream<Http3> {
         Self {
             inner: StreamInner::Http3(Http3StreamInner::Server {
                 stream,
-                read_buf: BytesMut::with_capacity(64 * 1024),
+                read_buf: BytesMut::with_capacity(32 * 1024),
                 write_queued: None,
                 shutdown_started: false,
                 send_poisoned: false,
@@ -475,7 +475,7 @@ impl Stream<Http3> {
         Self {
             inner: StreamInner::Http3(Http3StreamInner::Client {
                 stream,
-                read_buf: BytesMut::with_capacity(64 * 1024),
+                read_buf: BytesMut::with_capacity(32 * 1024),
                 write_queued: None,
                 shutdown_started: false,
                 send_poisoned: false,

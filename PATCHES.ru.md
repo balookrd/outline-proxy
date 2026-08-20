@@ -124,6 +124,19 @@ vendored-копии.
    (`Invalid close code: 1013`), дёргая `ws_h3 -> ws_h2` и рвя потоки на wire.
    Диапазон расширен до `1007..=1014` (1015 не входит — TLS, на wire не
    передаётся).
+4. **h3-read-buf-capacity** (`src/stream/transport_stream.rs`) — начальная
+   ёмкость `read_buf` у живых H3 WebSocket-стримов снижена с 64 KiB до 32 KiB в
+   `from_h3_client` и `from_h3_server` (`Http3StreamInner::{Client,Server}` — те
+   же два конструктора, что правит `fix-h3-poll-write`). Буфер аллоцируется
+   эагерно на КАЖДЫЙ стрим, а каждый туннельный флоу несёт свой носитель, так
+   что резерв платился по разу на флоу; на `.104` под cgroup-лимитом 700 MiB это
+   часть той памяти, из-за которой процесс убивал OOM. `BytesMut::with_capacity`
+   задаёт начальную ёмкость, а не потолок, поэтому крупное сообщение по-прежнему
+   растит буфер сам — меняется только объём эагерного резерва. `from_h2`
+   (`Http2StreamInner::recv_buf`) и `from_quic` (`Http3StreamInner::Raw`)
+   намеренно оставлены upstream-vanilla: data plane их не инстанцирует — тот же
+   принцип, по которому `fix-h3-poll-write` живёт только в двух живых типах
+   стрима.
 
 **`Cargo.toml`** (в патч не входит): зависимости rustls-стека запинены с
 `default-features = false` и provider-фичей `aws_lc_rs`
