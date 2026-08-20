@@ -124,6 +124,7 @@ impl Metrics {
             tun_max_flows: tun.tun_max_flows,
             #[cfg(feature = "tun")]
             tun_max_carrier_flows: tun.tun_max_carrier_flows,
+            #[cfg(feature = "tun")]
             tun_carrier_flows_active: tun.tun_carrier_flows_active,
             #[cfg(feature = "tun")]
             tun_carrier_flow_memory_estimate_bytes: tun.tun_carrier_flow_memory_estimate_bytes,
