@@ -1,0 +1,7 @@
+ssconf://keys.example.com/SECRET/own-paths.conf
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1vd24@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fss#keys:own-paths-ss-ws
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1vd24@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fssx#keys:own-paths-ss-xhttp-packet-up
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1vd24@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FOWN%2Fssx#keys:own-paths-ss-xhttp-stream-one
+vless://33333333-3333-4333-8333-333333333333@keys.example.com:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fvless&encryption=none#keys:own-paths-vless-ws
+vless://33333333-3333-4333-8333-333333333333@keys.example.com:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fxhttp&encryption=none#keys:own-paths-vless-xhttp-packet-up
+vless://33333333-3333-4333-8333-333333333333@keys.example.com:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FOWN%2Fxhttp&encryption=none#keys:own-paths-vless-xhttp-stream-one

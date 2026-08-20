@@ -1,0 +1,62 @@
+# outline-ws-rust client config for the Android app.
+# Generated for user own-paths — do not edit by hand.
+
+[tun]
+path = "vpn"
+mtu = 1500
+
+[tun.tcp]
+sniffing = true
+carrier_migration = true
+
+[padding]
+enabled = false
+
+[[uplink_group]]
+name = "main"
+mode = "active_passive"
+routing_scope = "global"
+shared_resume = false
+reselect_interval = "6h"
+tun_wire_dial = true
+health_weighted_selection = true
+warm_standby_tcp = 1
+warm_standby_udp = 1
+
+[[outline.uplinks]]
+name = "cloud1"
+group = "main"
+weight = 1.0
+shuffle_wires = true
+link = "vless://33333333-3333-4333-8333-333333333333@cloud1.beerloga.su:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FOWN%2Fxhttp&encryption=none#cloud1:own-paths-vless-xhttp-stream-one"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://33333333-3333-4333-8333-333333333333@cloud1.beerloga.su:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fvless&encryption=none#cloud1:own-paths-vless-ws"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1vd24@cloud1.beerloga.su:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fss#cloud1:own-paths-ss-ws"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1vd24@cloud1.beerloga.su:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FOWN%2Fssx#cloud1:own-paths-ss-xhttp-stream-one"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://33333333-3333-4333-8333-333333333333@cloud1.beerloga.su:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fxhttp&encryption=none#cloud1:own-paths-vless-xhttp-packet-up"
+
+[[outline.uplinks]]
+name = "cloud2"
+group = "main"
+weight = 1.0
+shuffle_wires = true
+link = "vless://33333333-3333-4333-8333-333333333333@cloud2.beerloga.su:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FOWN%2Fxhttp&encryption=none#cloud2:own-paths-vless-xhttp-stream-one"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://33333333-3333-4333-8333-333333333333@cloud2.beerloga.su:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fvless&encryption=none#cloud2:own-paths-vless-ws"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1vd24@cloud2.beerloga.su:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fss#cloud2:own-paths-ss-ws"
+
+  [[outline.uplinks.fallbacks]]
+  link = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpwdy1vd24@cloud2.beerloga.su:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FOWN%2Fssx#cloud2:own-paths-ss-xhttp-stream-one"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://33333333-3333-4333-8333-333333333333@cloud2.beerloga.su:443?type=xhttp&mode=packet-up&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FOWN%2Fxhttp&encryption=none#cloud2:own-paths-vless-xhttp-packet-up"

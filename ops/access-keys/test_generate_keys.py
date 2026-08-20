@@ -17,6 +17,7 @@ sys.path.insert(0, str(HERE))
 import generate_keys as gk  # noqa: E402
 
 GOLDEN = HERE / "golden" / "config.toml"
+GOLDEN_DIR = HERE / "golden" / "expected"
 
 
 def run(out_dir, *extra):
@@ -85,7 +86,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(payload[0]["outbounds"][0]["tag"], "cloud1-xhttp-h3")
 
     def test_conf_matches_the_golden_artifact(self):
-        golden = (HERE / "golden" / "expected" / "both.conf").read_text(encoding="utf-8")
+        golden = (GOLDEN_DIR / "both.conf").read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             run(out)
@@ -135,6 +136,35 @@ class MainTest(unittest.TestCase):
             first = (out / "both.txt").read_text(encoding="utf-8")
             run(out)
             self.assertEqual((out / "both.txt").read_text(encoding="utf-8"), first)
+
+
+class GoldenCorpusTest(unittest.TestCase):
+    """The whole produced set matches the golden corpus byte-for-byte.
+
+    Every file the generator writes for the synthetic golden config is pinned
+    in golden/expected — .conf, .json, .toml and .txt for each user. This is the
+    regression anchor for the Python generator: a drift in any artifact fails
+    here instead of reaching a client. Re-snapshot recipe: golden/README.md.
+    """
+
+    def setUp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.assertEqual(run(out), 0)
+            self.produced = {
+                p.name: p.read_text(encoding="utf-8") for p in out.iterdir() if p.is_file()
+            }
+        self.golden = {
+            p.name: p.read_text(encoding="utf-8") for p in GOLDEN_DIR.iterdir() if p.is_file()
+        }
+
+    def test_produces_exactly_the_golden_file_set(self):
+        self.assertEqual(sorted(self.produced), sorted(self.golden))
+
+    def test_every_artifact_matches_byte_for_byte(self):
+        for name, content in self.golden.items():
+            with self.subTest(artifact=name):
+                self.assertEqual(self.produced[name], content)
 
 
 class ServingGroupTest(unittest.TestCase):
