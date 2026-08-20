@@ -12,6 +12,8 @@ per-binary changelogs:
 |-----------|-----------|---------|
 | **Server** (`outline-ss-rust`) | [`bins/outline-ss-rust/CHANGELOG.md`](bins/outline-ss-rust/CHANGELOG.md) | [`CHANGELOG.ru.md`](bins/outline-ss-rust/CHANGELOG.ru.md) |
 | **Client** (`outline-ws-rust`) | [`bins/outline-ws-rust/CHANGELOG.md`](bins/outline-ws-rust/CHANGELOG.md) | [`CHANGELOG.ru.md`](bins/outline-ws-rust/CHANGELOG.ru.md) |
+| **Dashboard** (`outline-ui`) | [`bins/outline-ui/CHANGELOG.md`](bins/outline-ui/CHANGELOG.md) | [`CHANGELOG.ru.md`](bins/outline-ui/CHANGELOG.ru.md) |
+| **Android app** | [`android/CHANGELOG.md`](android/CHANGELOG.md) | [`CHANGELOG.ru.md`](android/CHANGELOG.ru.md) |
 
 Both binaries are at **1.7.0**, released 2026-07-06 (tags `ss-v1.7.0` /
 `ws-v1.7.0`); work landed since then sits in each binary's `## Unreleased`
@@ -29,7 +31,10 @@ whole system:
 - **Deterministic synchronized re-selection** (`load_balancing.reselect_sync`)
   so a cloned node pair rotates onto the same uplink and leaves from one egress.
 - **An Android VPN client** ([`android/`](android/)) reusing the `outline-ws-rust`
-  uplink stack unchanged, plus the **`outline-ui`** aggregating dashboard service.
+  uplink stack unchanged — now with an in-app tunnel status card (duration,
+  traffic, active carrier), a build-version footer, and a signed-APK release
+  pipeline (`android-v*` tags, rolling `android-nightly`) — plus the
+  **`outline-ui`** aggregating dashboard service.
 
 See each binary's changelog for the full, version-by-version detail.
 
