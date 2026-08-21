@@ -164,3 +164,37 @@ async fn serves_spa_index_and_assets_with_feature() {
     let missing = app.oneshot(authed("/ui-assets/definitely-missing.js")).await.unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
+
+/// The clone form fetches an instance's effective defaults through this
+/// route; without it, the request falls through to the `ss` tree's own SPA
+/// fallback and the browser gets HTML where it expected JSON.
+///
+/// Mirrors `delete_with_json_content_type_clears_the_origin_gate` above: the
+/// test config carries no `ss` instances, so once the route is registered,
+/// reaching `ss::api::forward` shows up as a 404 "unknown instance" — still
+/// JSON — rather than a fallback-served 200 `text/html` SPA shell.
+#[tokio::test]
+async fn ss_defaults_route_is_not_the_spa_fallback() {
+    let app = build_app(&config());
+
+    let response = app
+        .oneshot(authed("/ss/dashboard/api/defaults?instance=missing"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "expected the handler's 404, not a fallback-served 200"
+    );
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        content_type.contains("application/json"),
+        "expected JSON from the defaults handler, got content-type {content_type:?}"
+    );
+}
