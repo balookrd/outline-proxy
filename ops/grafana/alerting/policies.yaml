@@ -38,10 +38,20 @@ policies:
       # what made the alert sit "firing" long after the service was back. The
       # trade is real — a fleet-wide rollout now sends a few mails instead of
       # one — but a restart is worth knowing about while it is still news.
+      #
+      # Grouped by instance as well, unlike NodeRebooted below. Sharing one
+      # group costs whole nodes here: the mail leaves 30s after the *first*
+      # instance fires, and every instance that starts later has to wait out
+      # `group_interval` — but this rule's window is 3 minutes, shorter than
+      # that 5, so those alerts clear before the group may notify again and the
+      # resolved notice is disabled. A rolling deploy across the fleet reported
+      # exactly one node and swallowed the other three; three simultaneous
+      # OOM-kills would read the same way. NodeRebooted survives the same
+      # grouping only because its window (10m) outlasts `group_interval`.
       - receiver: owner-events
         object_matchers:
           - [alertname, =, ClientRestarted]
-        group_by: [alertname]
+        group_by: [alertname, instance]
         group_wait: 30s
         group_interval: 5m
         repeat_interval: 24h
