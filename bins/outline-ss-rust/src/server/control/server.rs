@@ -25,8 +25,8 @@ use crate::config::{ControlConfig, TuningProfile};
 use super::super::bootstrap::serve_plain_listener;
 use super::super::shutdown::ShutdownSignal;
 use super::handlers::{
-    ControlState, block_user, create_user, delete_user, get_user, list_users, unblock_user,
-    update_user,
+    ControlState, block_user, create_user, delete_user, get_defaults, get_user, list_users,
+    unblock_user, update_user,
 };
 use super::manager::UserManager;
 
@@ -59,6 +59,7 @@ async fn run(
         .route("/control/users/{id}", get(get_user).patch(update_user).delete(delete_user))
         .route("/control/users/{id}/block", post(block_user))
         .route("/control/users/{id}/unblock", post(unblock_user))
+        .route("/control/defaults", get(get_defaults))
         .fallback(any(not_found))
         .layer(middleware::from_fn_with_state(state.clone(), require_bearer_token))
         .with_state(state);

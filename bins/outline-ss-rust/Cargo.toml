@@ -71,6 +71,10 @@ proptest = "1.5"
 # real-time sleeps.
 tokio = { version = "1.48", features = ["test-util"] }
 tokio-tungstenite = "0.29"
+# Drives axum routers directly in control-plane tests via `ServiceExt::oneshot`,
+# without binding a real listener. The "util" feature is already pulled in
+# transitively by axum's own `tower` dependency; no explicit features needed.
+tower = "0.5"
 # End-to-end tests dial the outline-ws-rust client transport against this
 # server. Now an in-workspace path dependency (previously cross-repo).
 outline-transport = { path = "../../crates/outline-transport", features = ["h3", "test-tls"] }

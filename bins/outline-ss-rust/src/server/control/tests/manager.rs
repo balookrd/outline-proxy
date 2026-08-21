@@ -4,8 +4,11 @@ use arc_swap::ArcSwap;
 use crate::server::tests::sample_config;
 
 /// Builds a `UserManager` whose only registered route surface is the default
-/// tcp/udp paths from `sample_config`.
-fn test_manager() -> UserManager {
+/// tcp/udp paths from `sample_config`. Visible to all of `control` (not just
+/// `pub(super)`) because `manager.rs` re-exports it for `control::server::tests`
+/// to reuse instead of duplicating a second manager builder — a re-export
+/// cannot grant wider reach than the item's own visibility allows.
+pub(in crate::server::control) fn test_manager() -> UserManager {
     manager_for(sample_config("127.0.0.1:0".parse().unwrap()))
 }
 
@@ -290,4 +293,48 @@ async fn a_failed_write_leaves_the_runtime_untouched() {
 
     assert!(manager.get("cloud3").await.is_none(), "rejected user became live anyway");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), ON_DISK_CONFIG, "file was touched");
+}
+
+/// The clone-a-user UI needs the server's effective method and paths: a user
+/// that carries none of its own runs on these, and without them the UI cannot
+/// generate a password (it does not know the cipher) or show the real paths.
+#[test]
+fn defaults_expose_effective_method_and_paths() {
+    let manager = test_manager();
+    let defaults = manager.defaults();
+
+    assert_eq!(defaults.method, CipherKind::Chacha20IetfPoly1305);
+    assert_eq!(defaults.ws_path_tcp, "/tcp");
+    assert_eq!(defaults.ws_path_udp, "/udp");
+    assert!(defaults.ws_path_ss.is_none());
+    assert!(defaults.ws_path_vless.is_none());
+    assert!(defaults.xhttp_path_tcp.is_none());
+    assert!(defaults.xhttp_path_udp.is_none());
+    assert!(defaults.xhttp_path_ss.is_none());
+    assert!(defaults.xhttp_path_vless.is_none());
+}
+
+/// Serialization is the wire contract for `GET /control/defaults`: the method
+/// must be a plain cipher string and unset optional paths must be absent (not
+/// `null`), matching how `UserView` already serializes.
+#[test]
+fn server_defaults_serializes_method_as_string_and_omits_unset_paths() {
+    let defaults = ServerDefaults {
+        method: CipherKind::Aes256Gcm,
+        ws_path_tcp: "/tcp".to_string(),
+        ws_path_udp: "/udp".to_string(),
+        ws_path_ss: None,
+        ws_path_vless: Some("/vless".to_string()),
+        xhttp_path_tcp: None,
+        xhttp_path_udp: None,
+        xhttp_path_ss: None,
+        xhttp_path_vless: None,
+    };
+
+    let json = serde_json::to_value(&defaults).unwrap();
+    assert_eq!(json["method"], "aes-256-gcm");
+    assert_eq!(json["ws_path_tcp"], "/tcp");
+    assert_eq!(json["ws_path_vless"], "/vless");
+    assert!(json.get("ws_path_ss").is_none(), "unset path must be omitted, not null");
+    assert!(json.get("xhttp_path_tcp").is_none(), "unset path must be omitted, not null");
 }

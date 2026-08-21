@@ -152,6 +152,14 @@ pub(super) async fn list_users(State(state): State<ControlState>) -> axum::respo
     ok_json(ListResponse { users: state.manager.list().await })
 }
 
+/// Read-only snapshot of the server-wide defaults (method + paths). The
+/// dashboard needs it to show a user's *effective* configuration: a user that
+/// carries no method of its own runs on `default_method`, and the clone form
+/// cannot generate a password without knowing which cipher that is.
+pub(super) async fn get_defaults(State(state): State<ControlState>) -> axum::response::Response {
+    ok_json(state.manager.defaults())
+}
+
 pub(super) async fn get_user(
     State(state): State<ControlState>,
     Path(id): Path<String>,

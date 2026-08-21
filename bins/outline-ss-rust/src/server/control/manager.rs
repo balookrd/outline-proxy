@@ -121,6 +121,30 @@ impl From<&UserEntry> for UserView {
     }
 }
 
+/// The server-wide fallbacks a user inherits when it carries none of its own.
+/// Exposed read-only over `GET /control/defaults` so the dashboard can show a
+/// user's *effective* method and paths: cloning a user that runs on these
+/// otherwise yields a blank form, and the UI cannot generate a password
+/// without knowing the cipher. Carries no secrets — method and paths only.
+#[derive(Debug, Serialize)]
+pub(super) struct ServerDefaults {
+    pub method: CipherKind,
+    pub ws_path_tcp: String,
+    pub ws_path_udp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ws_path_ss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ws_path_vless: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xhttp_path_tcp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xhttp_path_udp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xhttp_path_ss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xhttp_path_vless: Option<String>,
+}
+
 /// Startup-registered route paths the control plane may attach new users
 /// to. The live axum/h3 routers cannot grow new paths until the next
 /// process restart, so a hot-reload mutation that names an unregistered
@@ -171,6 +195,23 @@ impl UserManager {
             allowed_xhttp_ss_paths: allowed.xhttp_ss,
             allowed_xhttp_ss_udp_paths: allowed.xhttp_ss_udp,
             config_path: config.config_path.clone(),
+        }
+    }
+
+    /// Snapshot of the server-wide defaults. Not `async` and takes no lock:
+    /// these fields are set once in `new` and never mutate, unlike the user
+    /// list behind `Inner`.
+    pub(super) fn defaults(&self) -> ServerDefaults {
+        ServerDefaults {
+            method: self.default_method,
+            ws_path_tcp: self.default_ws_path_tcp.clone(),
+            ws_path_udp: self.default_ws_path_udp.clone(),
+            ws_path_ss: self.default_ws_path_ss.clone(),
+            ws_path_vless: self.default_ws_path_vless.clone(),
+            xhttp_path_tcp: self.default_xhttp_path_tcp.clone(),
+            xhttp_path_udp: self.default_xhttp_path_udp.clone(),
+            xhttp_path_ss: self.default_xhttp_path_ss.clone(),
+            xhttp_path_vless: self.default_xhttp_path_vless.clone(),
         }
     }
 
@@ -647,3 +688,8 @@ where
 #[cfg(test)]
 #[path = "tests/manager.rs"]
 mod tests;
+
+// Reused by `control::server::tests` so the defaults route test drives a real
+// `UserManager` instead of duplicating a second builder.
+#[cfg(test)]
+pub(in crate::server::control) use tests::test_manager;
