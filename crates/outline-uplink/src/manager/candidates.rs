@@ -313,6 +313,39 @@ impl UplinkManager {
             })
     }
 
+    /// Whether every transport-capable uplink in this group is *confirmed*
+    /// down on `transport` — i.e. each one's health verdict is an explicit
+    /// `Some(false)`.
+    ///
+    /// This is the status counterpart to [`Self::has_any_healthy`], and the two
+    /// deliberately disagree on the unproven case. Routing has to be
+    /// conservative: an uplink whose health is still `None` (freshly started,
+    /// no probe cycle finished and no traffic yet) is not a target it may send
+    /// a connection to, so `has_any_healthy` reports false. A user-facing
+    /// status must not turn that same "not proven yet" into "no link" — the
+    /// tunnel has simply not been exercised. So this reports true only for a
+    /// *proven* outage, leaving the startup window and any momentary
+    /// uncertainty to read as connecting rather than down.
+    pub async fn link_confirmed_down(&self, transport: TransportKind) -> bool {
+        let scope = self.inner.load_balancing.routing_scope;
+        let mut considered = 0usize;
+        let all_down = self
+            .inner
+            .uplinks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.inner.admin_enabled(*index))
+            .filter(|(_, u)| supports_transport_for_scope(u, transport, scope))
+            .inspect(|_| considered += 1)
+            .all(|(index, _)| {
+                self.inner
+                    .with_status(index, |status| status.of(transport).healthy == Some(false))
+            });
+        // No usable uplink at all is a configuration outage, not a link one;
+        // report it as down so the UI does not claim a working tunnel.
+        considered > 0 && all_down
+    }
+
     /// Like [`Self::has_any_healthy`], but additionally demands *fresh
     /// evidence that this process is still doing the work* — a healthy uplink
     /// whose status was updated within `window`.
