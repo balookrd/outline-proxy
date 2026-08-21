@@ -125,6 +125,19 @@ class BuildWiresTest(unittest.TestCase):
         for wire in wires:
             self.assertIn("@cloud2.beerloga.su:443?", wire.link)
 
+    def test_shuffle_timer_is_stable_in_range_and_varies_by_identity(self):
+        alice = make_user(name="alice")
+        # Idempotent: a re-run must not churn the client's config.
+        self.assertEqual(gen.shuffle_timer(alice, NODE), gen.shuffle_timer(alice, NODE))
+        # Always a whole-minute value inside the closed range.
+        self.assertRegex(gen.shuffle_timer(alice, NODE), r"^\d+m$")
+        self.assertTrue(30 <= int(gen.shuffle_timer(alice, NODE)[:-1]) <= 60)
+        # Not a constant: identity moves the period. The two group nodes each
+        # carry their own cadence rather than rerolling in lockstep.
+        self.assertNotEqual(
+            gen.shuffle_timer(alice, NODES[0]), gen.shuffle_timer(alice, NODES[1])
+        )
+
     def test_has_wires_needs_a_credential_and_a_path(self):
         self.assertTrue(gen.has_wires(make_user()))
         self.assertFalse(gen.has_wires(make_user(password=None, vless_id=None)))
@@ -166,6 +179,18 @@ class BuildConfigTest(unittest.TestCase):
     def test_uplinks_shuffle_wires(self):
         doc = self.parsed()
         self.assertTrue(all(u["shuffle_wires"] for u in doc["outline"]["uplinks"]))
+
+    def test_shuffle_on_rerolls_the_active_wire_on_a_per_uplink_timer(self):
+        # With the chain shuffled, also reroll the *active* wire on a timer so a
+        # steady flow never settles on one carrier shape. The period is a stable
+        # per-uplink pick in [30, 60] minutes, not a constant.
+        doc = self.parsed()
+        uplinks = doc["outline"]["uplinks"]
+        self.assertTrue(all(u["shuffle_wires"] for u in uplinks))
+        for u in uplinks:
+            timer = u["shuffle_timer"]
+            self.assertRegex(timer, r"^\d+m$", timer)
+            self.assertTrue(30 <= int(timer[:-1]) <= 60, timer)
 
     def test_group_is_active_passive_global_without_auto_failback(self):
         group = self.parsed()["uplink_group"][0]

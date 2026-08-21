@@ -12,6 +12,7 @@ go into <user>.txt: credentials ride inside the URI, so the uplink needs no
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -22,6 +23,32 @@ PORT = 443
 GROUP = "main"
 TUN_MTU = 1500  # MUST match ServerProfile.TUN_MTU / VpnService.Builder.setMtu
 RESELECT_INTERVAL = "6h"
+
+# Reshuffle each uplink's wire chain once at load so the primary is not always
+# the same carrier shape.
+SHUFFLE_WIRES = True
+# When the chain is shuffled, also reroll the *active* wire on a timer picked
+# in this closed range of minutes. Bounds only — the exact per-uplink value is
+# a stable hash of identity, see shuffle_timer().
+SHUFFLE_TIMER_MIN_MINUTES = 30
+SHUFFLE_TIMER_MAX_MINUTES = 60
+
+
+def shuffle_timer(user: User, node: str) -> str:
+    """Per-uplink active-wire reroll interval, a stable pick in [30, 60] minutes.
+
+    Not a constant: a fixed reroll period is itself a fingerprint, so every
+    user/node uplink gets its own cadence. The value is derived by hashing
+    identity (sha256 — not Python's per-process-salted `hash`) rather than drawn
+    fresh each run, so regeneration stays idempotent and the golden corpus stays
+    byte-for-byte: a client's config never churns on a re-run, yet two clients
+    rarely share a period. Parsed by the same human-duration reader as
+    reselect_interval, so `"43m"` is 2580s.
+    """
+    span = SHUFFLE_TIMER_MAX_MINUTES - SHUFFLE_TIMER_MIN_MINUTES + 1
+    digest = hashlib.sha256(f"{user.name}\x00{node}".encode()).digest()
+    minutes = SHUFFLE_TIMER_MIN_MINUTES + int.from_bytes(digest[:8], "big") % span
+    return f"{minutes}m"
 
 
 @dataclass(frozen=True)
@@ -283,7 +310,9 @@ def build_config(user: User, nodes: Sequence[str], server: ServerConfig) -> str 
                 f"group = {quote(GROUP)}",
                 "weight = 1.0",
                 # Anti-DPI reroll across the idle wires of this uplink.
-                "shuffle_wires = true",
+                f"shuffle_wires = {str(SHUFFLE_WIRES).lower()}",
+                # Timed active-wire reroll rides on the shuffle being on.
+                *([f"shuffle_timer = {quote(shuffle_timer(user, node))}"] if SHUFFLE_WIRES else []),
                 f"link = {quote(primary.link)}",
                 "",
             ]

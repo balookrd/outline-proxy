@@ -28,6 +28,7 @@ name = "cloud1"
 group = "main"
 weight = 1.0
 shuffle_wires = true
+shuffle_timer = "34m"
 link = "vless://22222222-2222-4222-8222-222222222222@cloud1.beerloga.su:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fxhttp&encryption=none#cloud1:both-vless-xhttp-stream-one"
 
   [[outline.uplinks.fallbacks]]
@@ -47,6 +48,7 @@ name = "cloud2"
 group = "main"
 weight = 1.0
 shuffle_wires = true
+shuffle_timer = "34m"
 link = "vless://22222222-2222-4222-8222-222222222222@cloud2.beerloga.su:443?type=xhttp&mode=stream-one&security=tls&alpn=h3%2Ch2&path=%2FGLOBAL%2Fxhttp&encryption=none#cloud2:both-vless-xhttp-stream-one"
 
   [[outline.uplinks.fallbacks]]

@@ -28,6 +28,7 @@ name = "cloud1"
 group = "main"
 weight = 1.0
 shuffle_wires = true
+shuffle_timer = "47m"
 link = "ss://MjAyMi1ibGFrZTMtY2hhY2hhMjAtcG9seTEzMDU6Y0dGemMzZHZjbVF0TXpJdFlubDBaWE10Wm05eUxUSXdNakl0YTJWNWN3PT0@cloud1.beerloga.su:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#cloud1:own-method-ss-ws"
 
   [[outline.uplinks.fallbacks]]
@@ -38,6 +39,7 @@ name = "cloud2"
 group = "main"
 weight = 1.0
 shuffle_wires = true
+shuffle_timer = "50m"
 link = "ss://MjAyMi1ibGFrZTMtY2hhY2hhMjAtcG9seTEzMDU6Y0dGemMzZHZjbVF0TXpJdFlubDBaWE10Wm05eUxUSXdNakl0YTJWNWN3PT0@cloud2.beerloga.su:443?type=ws&security=tls&alpn=h3%2Ch2%2Chttp%2F1.1&path=%2FGLOBAL%2Fss#cloud2:own-method-ss-ws"
 
   [[outline.uplinks.fallbacks]]
