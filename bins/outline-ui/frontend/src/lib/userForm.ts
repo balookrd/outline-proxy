@@ -1,5 +1,46 @@
 import { parseAliases, aliasesToText } from './format';
-import type { NewUser, PatchUser, User } from './types';
+import type { NewUser, PatchUser, ServerDefaults, User } from './types';
+
+// Random-bytes source, injectable so unit tests stay deterministic. Default
+// is WebCrypto (available in the browser and in Vitest's Node env via the
+// global `crypto`).
+export type RandomBytes = (n: number) => Uint8Array;
+export const webCryptoBytes: RandomBytes = (n) => crypto.getRandomValues(new Uint8Array(n));
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+function bytesToBase64Url(bytes: Uint8Array): string {
+  return bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// SS-2022 master-key length per cipher (bins/outline-ss-rust crates/outline-wire
+// cipher.rs::key_len). For these methods the Shadowsocks "password" IS the
+// base64 of a raw key of exactly this length.
+const SS2022_KEY_LEN: Record<string, number> = {
+  '2022-blake3-aes-128-gcm': 16,
+  '2022-blake3-aes-256-gcm': 32,
+  '2022-blake3-chacha20-poly1305': 32,
+};
+
+// Generate a Shadowsocks password appropriate for `method`:
+//   - SS-2022  → base64 of a fresh random master key of the exact length;
+//   - legacy AEAD (aes-*-gcm, chacha20-ietf-poly1305) → an arbitrary random
+//     secret (the server EVP-derives the key from it), url-safe base64;
+//   - '' (server default) → null: the UI does not know the server's effective
+//     cipher, so it must not guess a format. Caller prompts to pick a method.
+export function generatePassword(method: string, rand: RandomBytes = webCryptoBytes): string | null {
+  if (!method) return null;
+  const keyLen = SS2022_KEY_LEN[method];
+  if (keyLen) return bytesToBase64(rand(keyLen));
+  return bytesToBase64Url(rand(24));
+}
+
+export function generateVlessId(uuid: () => string = () => crypto.randomUUID()): string {
+  return uuid();
+}
 
 // Plain-string/number form state for UserDrawer.svelte, kept framework-free
 // so the tricky part of Task 7 (edit-time null-reset semantics, create-time
@@ -72,6 +113,78 @@ export function fieldsFromUser(user: User): UserFormFields {
     aliases: aliasesToText(user.aliases),
     enabled: user.enabled,
   };
+}
+
+// Build create-form fields from an existing user as a template ("clone a
+// similar account"): the carrier (method, fwmark, all ws/xhttp paths, enabled)
+// is copied verbatim via fieldsFromUser; `id` and `aliases` are blanked (id
+// must be unique; alias names are globally unique server-side, so they cannot
+// be duplicated); fresh secrets are generated only for the identities the
+// template actually has.
+//
+// `defaults` are the server's effective fallbacks (GET /control/defaults). A
+// user that carries no method/paths of its own runs on them, so a clone that
+// ignored them would show a blank form — and, with no method, could not
+// generate a password at all. They are applied only where the template is
+// silent, and only for the identities it has: filling ss paths for a
+// VLESS-only user would attach it to routes it never used.
+export function cloneUserFields(
+  template: User,
+  defaults: ServerDefaults | null = null,
+  rand: RandomBytes = webCryptoBytes,
+  uuid: () => string = () => crypto.randomUUID(),
+): UserFormFields {
+  const base = fieldsFromUser(template);
+  const out: UserFormFields = { ...base, id: '', aliases: '' };
+
+  if (defaults) {
+    if (template.has_password) {
+      out.method = base.method || defaults.method;
+      // The server runs ss either combined (one path carrying tcp+udp) or
+      // split, and picks per-user with a specific-beats-general rule (see
+      // user_entry.rs::effective_ws_path_ss / effective_xhttp_path_ss): an
+      // owned split path (tcp and/or udp) suppresses a combined path
+      // entirely, even when a combined string is also present. Deciding the
+      // shape from the default alone would fill both shapes on a template
+      // that owns one of them and silently change the user's effective
+      // routing server-side — so decide from what the template itself
+      // already owns first, and only mirror the default's shape when the
+      // template owns neither half of the family.
+      if (base.wsPathTcp || base.wsPathUdp) {
+        out.wsPathTcp = base.wsPathTcp || defaults.ws_path_tcp;
+        out.wsPathUdp = base.wsPathUdp || defaults.ws_path_udp;
+      } else if (!base.wsPathSs) {
+        if (defaults.ws_path_ss) {
+          out.wsPathSs = defaults.ws_path_ss;
+        } else {
+          out.wsPathTcp = defaults.ws_path_tcp;
+          out.wsPathUdp = defaults.ws_path_udp;
+        }
+      }
+      // else: base.wsPathSs is owned -> combined shape, keep it verbatim
+      // and leave wsPathTcp/wsPathUdp untouched (filling them would
+      // suppress the combined path server-side).
+      if (base.xhttpPathTcp || base.xhttpPathUdp) {
+        out.xhttpPathTcp = base.xhttpPathTcp || defaults.xhttp_path_tcp || '';
+        out.xhttpPathUdp = base.xhttpPathUdp || defaults.xhttp_path_udp || '';
+      } else if (!base.xhttpPathSs) {
+        if (defaults.xhttp_path_ss) {
+          out.xhttpPathSs = defaults.xhttp_path_ss;
+        } else {
+          out.xhttpPathTcp = defaults.xhttp_path_tcp || '';
+          out.xhttpPathUdp = defaults.xhttp_path_udp || '';
+        }
+      }
+    }
+    if (template.has_vless_id) {
+      out.wsPathVless = base.wsPathVless || defaults.ws_path_vless || '';
+      out.xhttpPathVless = base.xhttpPathVless || defaults.xhttp_path_vless || '';
+    }
+  }
+
+  out.password = template.has_password ? (generatePassword(out.method, rand) ?? '') : '';
+  out.vlessId = template.has_vless_id ? generateVlessId(uuid) : '';
+  return out;
 }
 
 // Matches saveUser()'s pre-submit guard: creating a user needs a credential

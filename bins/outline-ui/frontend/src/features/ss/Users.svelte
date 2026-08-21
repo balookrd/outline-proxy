@@ -1,13 +1,15 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { listUsers, createUser, updateUser, deleteUser, blockUser, unblockUser } from '../../lib/api';
+  import { listUsers, createUser, updateUser, deleteUser, blockUser, unblockUser, getDefaults } from '../../lib/api';
   import { createPoll } from '../../lib/poll.svelte';
   import { toast } from '../../lib/toast.svelte';
-  import type { User, NewUser, PatchUser } from '../../lib/types';
+  import type { User, NewUser, PatchUser, ServerDefaults } from '../../lib/types';
   import InstanceSelector from '../../components/layout/InstanceSelector.svelte';
   import ErrorBanner from '../../components/layout/ErrorBanner.svelte';
   import UsersTable from './UsersTable.svelte';
   import UserDrawer from './UserDrawer.svelte';
+  import { cloneUserFields } from '../../lib/userForm';
+  import type { UserFormFields } from '../../lib/userForm';
 
   let instance = $state('');
   let refreshSecs = $state(5);
@@ -38,18 +40,79 @@
   // refresh while the drawer is open must not overwrite an in-progress edit.
   let drawerOpen = $state(false);
   let editingUser = $state<User | null>(null);
+  let seedFields = $state<UserFormFields | null>(null);
+  let seedNeedsPassword = $state(false);
+
+  // Stale-response guard for the drawer's open/close lifecycle. Plain `let`,
+  // NOT `$state` — it is bookkeeping only, nothing renders from it.
+  //
+  // Why this exists: openCloneDrawer is async (it awaits getDefaults()
+  // before writing seedFields/drawerOpen), and nothing disables the other
+  // row buttons while that fetch is in flight. So the operator can click
+  // Clone(A), then — before the fetch resolves — click Edit(B): editingUser
+  // becomes B and the drawer opens on B synchronously. When Clone(A)'s
+  // fetch then resolves, its continuation would (without this guard) still
+  // run `seedFields = cloneUserFields(A, defaults)`. UserDrawer's prefill
+  // $effect reads seedFields and assumes editingUser/seedFields stay stable
+  // for as long as `open` is true; a new seedFields identity re-triggers it
+  // while editingUser is still B, so it takes the edit branch and reassigns
+  // `fields = fieldsFromUser(B)` — silently discarding whatever the
+  // operator just typed — and refocuses the id input mid-edit. The same
+  // staleness lets two Clone clicks in flight seed the drawer from the
+  // wrong template if the older response lands last.
+  //
+  // Every function that opens or closes the drawer bumps this counter at
+  // entry. openCloneDrawer captures the value it saw at entry and re-checks
+  // it after the await: if a newer open/close has since run, this request
+  // has been superseded and must bail out untouched.
+  let drawerGeneration = 0;
 
   function openCreateDrawer() {
+    drawerGeneration++;
     editingUser = null;
+    seedFields = null;
+    seedNeedsPassword = false;
     drawerOpen = true;
   }
   function openEditDrawer(user: User) {
+    drawerGeneration++;
     editingUser = user;
+    seedFields = null;
+    seedNeedsPassword = false;
+    drawerOpen = true;
+  }
+  async function openCloneDrawer(user: User) {
+    const generation = ++drawerGeneration;
+    // Snapshot the template into seed fields (fresh secrets, blank id/aliases);
+    // create-mode drawer (editingUser stays null) prefilled from it. The
+    // server's defaults fill whatever the template leaves unset — without them
+    // a user running on defaults would clone into a blank form with no
+    // password (the UI cannot pick a cipher it does not know).
+    editingUser = null;
+    seedNeedsPassword = Boolean(user.has_password);
+    let defaults: ServerDefaults | null = null;
+    try {
+      defaults = await getDefaults(instance);
+    } catch (e) {
+      // Only surface the toast if this request is still current — if a
+      // newer open/close superseded it, the operator already moved on and a
+      // toast about an abandoned clone would just be noise.
+      if (generation === drawerGeneration) {
+        toast(`Could not load server defaults: ${errorMessage(e)}`, 'error');
+      }
+    }
+    // Bail out without touching seedFields/drawerOpen if a newer open/close
+    // ran while this fetch was in flight — see drawerGeneration above.
+    if (generation !== drawerGeneration) return;
+    seedFields = cloneUserFields(user, defaults);
     drawerOpen = true;
   }
   function closeDrawer() {
+    drawerGeneration++;
     drawerOpen = false;
     editingUser = null;
+    seedFields = null;
+    seedNeedsPassword = false;
   }
 
   function errorMessage(e: unknown): string {
@@ -134,6 +197,9 @@
       <div class="panel">
         <UsersTable {users} filter={search}>
           {#snippet rowActions(user: User)}
+            <button class="iconbtn act-activate" title="Clone" disabled={mutating} aria-label={`Clone ${user.id}`} onclick={() => openCloneDrawer(user)}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+            </button>
             <button class="iconbtn act-soft" title="Edit" disabled={mutating} aria-label={`Edit ${user.id}`} onclick={() => openEditDrawer(user)}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
             </button>
@@ -164,4 +230,4 @@
   {/if}
 </section>
 
-<UserDrawer open={drawerOpen} {editingUser} onclose={closeDrawer} onsave={saveUser} />
+<UserDrawer open={drawerOpen} {editingUser} {seedFields} {seedNeedsPassword} onclose={closeDrawer} onsave={saveUser} />

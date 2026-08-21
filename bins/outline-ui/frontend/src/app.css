@@ -556,6 +556,8 @@ tbody tr:hover { background: color-mix(in srgb, var(--surface-3) 30%, transparen
    or standalone in .fallbacks-section), not just under a label+input pair. */
 .hint { font-size: 11px; color: var(--fg-dim); }
 .fieldrow input, .fieldrow select, .fieldrow textarea { width: 100%; }
+.secret-row { display: flex; gap: 6px; align-items: center; }
+.secret-row input { flex: 1 1 auto; min-width: 0; }
 
 /* Per-transport field grouping inside a drawer body (UplinkDrawer.svelte's
    TCP/UDP/SS/VLESS sections) — a plain <fieldset> with the default UA

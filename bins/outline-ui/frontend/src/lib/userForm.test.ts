@@ -229,3 +229,217 @@ describe('emptyUserFields', () => {
     });
   });
 });
+
+import {
+  generatePassword,
+  generateVlessId,
+  cloneUserFields,
+} from './userForm';
+
+// Deterministic byte source: n bytes all equal to 0x07. Lets us assert the
+// decoded master-key length without depending on real randomness.
+const fixedBytes = (n: number): Uint8Array => new Uint8Array(n).fill(7);
+
+describe('generatePassword', () => {
+  it('SS-2022 aes-128 → base64 of a 16-byte master key', () => {
+    const pw = generatePassword('2022-blake3-aes-128-gcm', fixedBytes);
+    expect(pw).not.toBeNull();
+    expect(atob(pw as string).length).toBe(16);
+  });
+  it('SS-2022 aes-256 → base64 of a 32-byte master key', () => {
+    const pw = generatePassword('2022-blake3-aes-256-gcm', fixedBytes);
+    expect(atob(pw as string).length).toBe(32);
+  });
+  it('SS-2022 chacha20 → base64 of a 32-byte master key', () => {
+    const pw = generatePassword('2022-blake3-chacha20-poly1305', fixedBytes);
+    expect(atob(pw as string).length).toBe(32);
+  });
+  it('legacy AEAD method → non-empty base64url secret (no padding, url-safe)', () => {
+    const pw = generatePassword('aes-256-gcm', fixedBytes) as string;
+    expect(pw.length).toBeGreaterThan(0);
+    expect(pw).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+  it('empty method (server default) → null (UI cannot know the cipher)', () => {
+    expect(generatePassword('', fixedBytes)).toBeNull();
+  });
+});
+
+describe('generateVlessId', () => {
+  it('returns the injected uuid verbatim', () => {
+    expect(generateVlessId(() => 'fixed-uuid-value')).toBe('fixed-uuid-value');
+  });
+  it('default source produces a v4 UUID', () => {
+    expect(generateVlessId()).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  });
+});
+
+const fixedUuid = () => 'uuid-fixed';
+
+describe('cloneUserFields', () => {
+  it('copies the carrier, generates a password, blanks id/aliases (SS-2022 template)', () => {
+    const template: User = {
+      id: 'team-madrid',
+      enabled: true,
+      method: '2022-blake3-aes-256-gcm',
+      fwmark: 7,
+      ws_path_tcp: '/tcp',
+      ws_path_ss: '/pss',
+      xhttp_path_vless: '/pxhttp',
+      aliases: { mobile: '10.0.0.0/8' },
+      has_password: true,
+    };
+    const out = cloneUserFields(template, null, fixedBytes, fixedUuid);
+    expect(out.id).toBe('');
+    expect(out.aliases).toBe('');
+    expect(out.method).toBe('2022-blake3-aes-256-gcm');
+    expect(out.fwmark).toBe(7);
+    expect(out.wsPathTcp).toBe('/tcp');
+    expect(out.wsPathSs).toBe('/pss');
+    expect(out.xhttpPathVless).toBe('/pxhttp');
+    expect(out.enabled).toBe(true);
+    expect(atob(out.password).length).toBe(32);
+    expect(out.vlessId).toBe(''); // no has_vless_id on the template
+  });
+
+  it('generates vless_id only when the template has one', () => {
+    const template: User = {
+      id: 'v-only', enabled: true, method: '2022-blake3-aes-256-gcm',
+      ws_path_vless: '/vless', has_vless_id: true,
+    };
+    const out = cloneUserFields(template, null, fixedBytes, fixedUuid);
+    expect(out.vlessId).toBe('uuid-fixed');
+    expect(out.password).toBe(''); // no has_password
+  });
+
+  it('generates both secrets when the template has both identities', () => {
+    const template: User = {
+      id: 'both', enabled: false, method: '2022-blake3-aes-128-gcm',
+      ws_path_ss: '/pss', ws_path_vless: '/vless',
+      has_password: true, has_vless_id: true,
+    };
+    const out = cloneUserFields(template, null, fixedBytes, fixedUuid);
+    expect(atob(out.password).length).toBe(16);
+    expect(out.vlessId).toBe('uuid-fixed');
+    expect(out.enabled).toBe(false); // enabled copied verbatim
+  });
+
+  it('default-method template: password stays blank (not guessed)', () => {
+    const template: User = {
+      id: 'def', enabled: true, ws_path_ss: '/pss', has_password: true,
+    };
+    const out = cloneUserFields(template, null, fixedBytes, fixedUuid);
+    expect(out.method).toBe('');
+    expect(out.password).toBe('');
+  });
+});
+
+import type { ServerDefaults } from './types';
+
+const srvDefaults: ServerDefaults = {
+  method: '2022-blake3-aes-256-gcm',
+  ws_path_tcp: '/dtcp',
+  ws_path_udp: '/dudp',
+  ws_path_vless: '/dvless',
+  xhttp_path_vless: '/dxvless',
+};
+
+describe('cloneUserFields with server defaults', () => {
+  it('fills the effective method so a default-method template still gets a password', () => {
+    const template: User = { id: 'plain', enabled: true, has_password: true };
+    const out = cloneUserFields(template, srvDefaults, fixedBytes, () => 'uuid-fixed');
+    expect(out.method).toBe('2022-blake3-aes-256-gcm');
+    expect(atob(out.password).length).toBe(32);
+  });
+
+  it('fills split ss paths from defaults when the template has none', () => {
+    const template: User = { id: 'plain', enabled: true, has_password: true };
+    const out = cloneUserFields(template, srvDefaults, fixedBytes, () => 'uuid-fixed');
+    expect(out.wsPathTcp).toBe('/dtcp');
+    expect(out.wsPathUdp).toBe('/dudp');
+    expect(out.wsPathSs).toBe('');
+  });
+
+  it('prefers a combined ss path when the server default is combined', () => {
+    const combined: ServerDefaults = { ...srvDefaults, ws_path_ss: '/dss' };
+    const template: User = { id: 'plain', enabled: true, has_password: true };
+    const out = cloneUserFields(template, combined, fixedBytes, () => 'uuid-fixed');
+    expect(out.wsPathSs).toBe('/dss');
+    expect(out.wsPathTcp).toBe('');
+    expect(out.wsPathUdp).toBe('');
+  });
+
+  it("never overrides the template's own explicit values", () => {
+    const template: User = {
+      id: 'explicit', enabled: true, method: 'aes-256-gcm',
+      ws_path_tcp: '/own-tcp', has_password: true,
+    };
+    const out = cloneUserFields(template, srvDefaults, fixedBytes, () => 'uuid-fixed');
+    expect(out.method).toBe('aes-256-gcm');
+    expect(out.wsPathTcp).toBe('/own-tcp');
+    expect(out.wsPathUdp).toBe('/dudp'); // unset on the template -> default
+  });
+
+  it('fills vless paths only for a template that has a vless identity', () => {
+    const vlessOnly: User = { id: 'v', enabled: true, has_vless_id: true };
+    const out = cloneUserFields(vlessOnly, srvDefaults, fixedBytes, () => 'uuid-fixed');
+    expect(out.wsPathVless).toBe('/dvless');
+    expect(out.xhttpPathVless).toBe('/dxvless');
+    expect(out.wsPathTcp).toBe(''); // no ss identity -> no ss paths
+    expect(out.password).toBe('');
+    expect(out.vlessId).toBe('uuid-fixed');
+  });
+
+  it('without defaults behaves exactly as before (no password for a default method)', () => {
+    const template: User = { id: 'plain', enabled: true, has_password: true };
+    const out = cloneUserFields(template, null, fixedBytes, () => 'uuid-fixed');
+    expect(out.method).toBe('');
+    expect(out.password).toBe('');
+    expect(out.wsPathTcp).toBe('');
+  });
+
+  // Shape precedence must come from what the template itself already owns,
+  // mirroring the server's specific-beats-general rule
+  // (user_entry.rs::effective_ws_path_ss / effective_xhttp_path_ss): an
+  // owned split path (tcp and/or udp) suppresses a combined path entirely.
+  // Deciding purely from the default's shape — the previous bug — could
+  // populate both shapes at once and silently change the user's effective
+  // routing server-side.
+  it("keeps a template-owned combined ss path when the default is split-only (doesn't also fill split)", () => {
+    const template: User = {
+      id: 'clone-combined', enabled: true, ws_path_ss: '/own-ss', has_password: true,
+    };
+    // srvDefaults is split-only: ws_path_tcp/ws_path_udp set, no ws_path_ss.
+    const out = cloneUserFields(template, srvDefaults, fixedBytes, () => 'uuid-fixed');
+    expect(out.wsPathSs).toBe('/own-ss');
+    expect(out.wsPathTcp).toBe('');
+    expect(out.wsPathUdp).toBe('');
+  });
+
+  it('keeps a template-owned split ss path when the default is combined, filling only the missing peer', () => {
+    const combined: ServerDefaults = { ...srvDefaults, ws_path_ss: '/dss' };
+    const template: User = {
+      id: 'clone-split', enabled: true, ws_path_tcp: '/own-tcp', has_password: true,
+    };
+    const out = cloneUserFields(template, combined, fixedBytes, () => 'uuid-fixed');
+    expect(out.wsPathTcp).toBe('/own-tcp');
+    expect(out.wsPathUdp).toBe('/dudp'); // missing peer filled from the split default
+    expect(out.wsPathSs).toBe(''); // owned split suppresses combined -> never filled
+  });
+
+  it('mirrors the same precedence for xhttp: template-owned combined path beats split xhttp defaults', () => {
+    const splitXhttpDefaults: ServerDefaults = {
+      ...srvDefaults,
+      xhttp_path_tcp: '/dxtcp',
+      xhttp_path_udp: '/dxudp',
+    };
+    const template: User = {
+      id: 'clone-xhttp-combined', enabled: true, xhttp_path_ss: '/own-xss', has_password: true,
+    };
+    const out = cloneUserFields(template, splitXhttpDefaults, fixedBytes, () => 'uuid-fixed');
+    expect(out.xhttpPathSs).toBe('/own-xss');
+    expect(out.xhttpPathTcp).toBe('');
+    expect(out.xhttpPathUdp).toBe('');
+  });
+});
