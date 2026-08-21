@@ -130,8 +130,16 @@ fun HomeScreen(
  *  from — set by CI, or the local git SHA / "dev" for a developer build. */
 @Composable
 private fun VersionFooter() {
+    // A tagged release is identified by its version; nightly and local builds
+    // share one placeholder version that says nothing, so they name the channel
+    // and the commit they were built from instead.
+    val label = if (BuildConfig.CHANNEL == "release") {
+        "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+    } else {
+        "${BuildConfig.CHANNEL} · ${BuildConfig.GIT_SHA}"
+    }
     Text(
-        "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE}) · ${BuildConfig.GIT_SHA}",
+        label,
         fontSize = 10.sp,
         textAlign = TextAlign.Center,
         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
