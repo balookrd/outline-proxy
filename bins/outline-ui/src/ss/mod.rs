@@ -20,6 +20,7 @@ pub struct SsState {
 pub fn router(state: SsState) -> Router {
     Router::new()
         .route("/dashboard/api/instances", get(api::list_instances))
+        .route("/dashboard/api/defaults", get(api::defaults))
         .route("/dashboard/api/users", get(api::list_users).post(api::create_user))
         .route("/dashboard/api/users/{id}", patch(api::update_user).delete(api::delete_user))
         .route("/dashboard/api/users/{id}/block", post(api::block_user))

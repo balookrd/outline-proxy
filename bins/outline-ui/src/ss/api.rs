@@ -54,6 +54,16 @@ pub async fn list_users(
     forward(&state, &query.instance, Method::GET, "/control/users", None).await
 }
 
+/// Effective server-wide defaults (method + paths) of one instance. The clone
+/// form needs them to fill a user that carries none of its own: without the
+/// method it cannot generate a password, and the paths would show up blank.
+pub async fn defaults(
+    State(state): State<SsState>,
+    Query(query): Query<InstanceQuery>,
+) -> Response {
+    forward(&state, &query.instance, Method::GET, "/control/defaults", None).await
+}
+
 pub async fn create_user(
     State(state): State<SsState>,
     Query(query): Query<InstanceQuery>,
