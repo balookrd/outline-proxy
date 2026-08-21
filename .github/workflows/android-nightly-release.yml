@@ -6,7 +6,16 @@ on:
     branches:
       - main
     paths:
+      # The APK links the client and the shared crates through
+      # `android/rust` -> `bins/outline-ws-rust`, so a change to any of them
+      # produces a different .so and must rebuild the app.
       - "android/**"
+      - "bins/outline-ws-rust/**"
+      - "crates/**"
+      - "vendor/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
       - ".github/workflows/android-nightly-release.yml"
       - ".github/workflows/_android-release-build.yml"
   workflow_dispatch:
