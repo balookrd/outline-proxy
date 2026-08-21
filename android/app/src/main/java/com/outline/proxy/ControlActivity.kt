@@ -8,6 +8,10 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Entry point for external control over the `outline://` URI scheme — see
@@ -102,15 +106,22 @@ class ControlActivity : ComponentActivity() {
         // otherwise the server list claims a profile that is not the live one.
         store.selectedId = profile.id
 
-        val configToml = profile.toToml()
-        val consent = VpnService.prepare(this)
-        if (consent == null) {
-            OutlineVpnService.requestConnect(this, configToml)
-            finish()
-        } else {
-            // finish() is deferred to the consent callback.
-            pendingConfig = configToml
-            vpnConsentLauncher.launch(consent)
+        // Refresh an expired subscription before dialling; the cached config is
+        // used unchanged when the fetch fails. finish() moves into the
+        // coroutine so the activity outlives the fetch.
+        lifecycleScope.launch {
+            val configToml = withContext(Dispatchers.IO) {
+                SubscriptionRefresh.configForConnect(this@ControlActivity, profile)
+            }
+            val consent = VpnService.prepare(this@ControlActivity)
+            if (consent == null) {
+                OutlineVpnService.requestConnect(this@ControlActivity, configToml)
+                finish()
+            } else {
+                // finish() is deferred to the consent callback.
+                pendingConfig = configToml
+                vpnConsentLauncher.launch(consent)
+            }
         }
     }
 

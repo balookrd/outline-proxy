@@ -263,18 +263,36 @@ class MainActivity : ComponentActivity() {
                                 disconnect()
                             } else {
                                 profiles.firstOrNull { it.id == selectedId }?.let { profile ->
-                                    val config = profile.toToml()
-                                    if (config.isBlank()) {
-                                        // A subscription that never downloaded has no
-                                        // config to connect with; say so instead of
-                                        // handing the core an empty TOML.
-                                        Toast.makeText(
-                                            context,
-                                            "No config yet — refresh the subscription first.",
-                                            Toast.LENGTH_LONG,
-                                        ).show()
-                                    } else {
-                                        requestVpnAndConnect(config)
+                                    scope.launch {
+                                        // Bring an expired subscription up to date
+                                        // first; falls back to the cached config
+                                        // when the fetch fails (usually offline).
+                                        val config = withContext(Dispatchers.IO) {
+                                            SubscriptionRefresh.configForConnect(context, profile)
+                                        }
+                                        val idx = profiles.indexOfFirst { it.id == profile.id }
+                                        if (idx >= 0 && config != profile.cachedToml &&
+                                            profile.isSubscription && config.isNotBlank()
+                                        ) {
+                                            // Mirror the refreshed config into the UI list
+                                            // so the card's "updated" line is not stale.
+                                            profiles[idx] = profile.copy(
+                                                cachedToml = config,
+                                                updatedAt = System.currentTimeMillis(),
+                                            )
+                                        }
+                                        if (config.isBlank()) {
+                                            // A subscription that never downloaded has no
+                                            // config to connect with; say so instead of
+                                            // handing the core an empty TOML.
+                                            Toast.makeText(
+                                                context,
+                                                "No config yet — refresh the subscription first.",
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                        } else {
+                                            requestVpnAndConnect(config)
+                                        }
                                     }
                                 }
                             }
