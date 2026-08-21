@@ -13,7 +13,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - **Live tunnel status card** on the home screen: connection duration, bytes moved this session (from Android `TrafficStats`), and the active carrier per transport (`tcp  vless/xhttp/h3`, `udp  ss/ws/h2`) in an elastic three-column layout so the widest carrier label never clips. The carrier is read from the running client over a new `tunnel_status()` FFI.
-- **Build-version footer** (`v0.1.0 (1) · <sha>`) whose name / code / commit CI stamps into `BuildConfig` via `BUILD_VERSION_NAME` / `BUILD_VERSION_CODE` / `BUILD_GIT_SHA`.
+- **Build-version footer**, labelled by what actually identifies the build: a tagged release shows its version and code (`v1.1.2 (57)`), while nightly and local builds show the channel and the commit they came from (`nightly · cdcaf46f`, `dev · 4f71e7ef`) — their version is a fixed placeholder that never moves. CI stamps `BuildConfig` via `BUILD_CHANNEL` / `BUILD_VERSION_NAME` / `BUILD_VERSION_CODE` / `BUILD_GIT_SHA`.
 - **Signed release APK from CI**: a reusable workflow cross-compiles the native library (cargo-ndk) and the UniFFI bindings, assembles a release APK signed from repository secrets (unsigned when they are absent), and publishes it to a GitHub release — on `android-v*` tags (stable) and as a rolling `android-nightly` prerelease.
 - **Native TUN data plane**: the app drives the native `outline-tun` engine over the `VpnService` fd — no SOCKS5 listener, no tun2proxy bridge.
 - **Config sources**: subscribe to a client config over an HTTPS URL (auto-refreshed on a schedule), or configure a Shadowsocks uplink from an `ss://` share link.
