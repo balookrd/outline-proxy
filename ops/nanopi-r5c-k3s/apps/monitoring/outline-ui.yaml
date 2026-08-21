@@ -59,6 +59,21 @@ data:
     name = "cloud2"
     control_url = "https://cloud2.beerloga.su/rust-ss-exporter"
     token_file = "/etc/outline-ui/secrets/ss-cloud2"
+
+    [[ss.instances]]
+    name = "nuxt"
+    control_url = "https://nuxt.beerloga.su/rust-ss-exporter"
+    token_file = "/etc/outline-ui/secrets/ss-nuxt"
+
+    [[ss.instances]]
+    name = "nuxt2"
+    control_url = "https://nuxt2.beerloga.su/rust-ss-exporter"
+    token_file = "/etc/outline-ui/secrets/ss-nuxt2"
+
+    [[ss.instances]]
+    name = "sebek"
+    control_url = "https://sebek.beerloga.su/rust-ss-exporter"
+    token_file = "/etc/outline-ui/secrets/ss-sebek"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -99,7 +114,7 @@ spec:
           tolerationSeconds: 60
       containers:
         - name: outline-ui
-          image: registry.k3s.beerloga.su/outline-ui:1.0.6
+          image: registry.k3s.beerloga.su/outline-ui:1.0.8
           args: ["--config", "/etc/outline-ui/config.toml"]
           ports:
             - containerPort: 9000
