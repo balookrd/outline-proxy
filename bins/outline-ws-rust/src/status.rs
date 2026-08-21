@@ -55,10 +55,11 @@ pub struct CarrierStatus {
     pub tcp: Option<Carrier>,
     /// Carrier the wire new UDP sessions currently land on.
     pub udp: Option<Carrier>,
-    /// Whether at least one uplink in the group is currently healthy on TCP or
-    /// UDP — i.e. the tunnel actually has a live path, not merely a running
-    /// engine. `false` means "up but no link" (all uplinks down / not yet
-    /// probed).
+    /// Whether the tunnel still has a usable path, as opposed to a *proven*
+    /// outage. `false` only when every uplink is confirmed down on both TCP and
+    /// UDP; an uplink whose health is not established yet (freshly started, no
+    /// probe cycle or traffic so far) keeps this `true`, so a starting tunnel
+    /// reads as connecting rather than flashing "no link".
     pub has_live_link: bool,
 }
 
@@ -71,10 +72,12 @@ pub async fn active_carriers() -> Option<CarrierStatus> {
     let group = manager.group_name().to_string();
     let tcp = active_carrier(&manager, TransportKind::Tcp).await;
     let udp = active_carrier(&manager, TransportKind::Udp).await;
-    // A live path on either transport means the tunnel can actually carry
-    // traffic; both false is "up but no link".
-    let has_live_link = manager.has_any_healthy(TransportKind::Tcp).await
-        || manager.has_any_healthy(TransportKind::Udp).await;
+    // Status reports a *proven* outage, not "nothing proven healthy yet":
+    // `has_any_healthy` (what routing gates on) is false during the startup
+    // window before any probe or traffic, which would surface as a spurious
+    // "no link". Both transports must be confirmed down for that claim.
+    let has_live_link = !(manager.link_confirmed_down(TransportKind::Tcp).await
+        && manager.link_confirmed_down(TransportKind::Udp).await);
     Some(CarrierStatus { group, tcp, udp, has_live_link })
 }
 

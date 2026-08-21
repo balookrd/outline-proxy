@@ -878,3 +878,28 @@ async fn carrier_degraded_failover_works_with_auto_failback() {
         .await;
     assert_eq!(manager.global_active_uplink_index().await, Some(1));
 }
+
+/// `link_confirmed_down` is the user-facing status signal, and unlike
+/// `has_any_healthy` (which routing gates on, and which reads an unproven
+/// uplink as "not a target") it only reports a *proven* outage. That is what
+/// keeps a starting tunnel from flashing "no link" before any probe cycle or
+/// traffic has established health.
+#[tokio::test]
+async fn link_confirmed_down_only_reports_a_proven_outage() {
+    let manager = manager();
+
+    // Nothing probed yet: health is `None` everywhere, so nothing is proven down.
+    assert!(!manager.link_confirmed_down(TransportKind::Tcp).await);
+
+    // One uplink down, the other still unproven — not an outage.
+    manager.test_set_tcp_health(0, false, 0).await;
+    assert!(!manager.link_confirmed_down(TransportKind::Tcp).await);
+
+    // Every uplink confirmed down: now it is.
+    manager.test_set_tcp_health(1, false, 0).await;
+    assert!(manager.link_confirmed_down(TransportKind::Tcp).await);
+
+    // Recovery clears it again.
+    manager.test_set_tcp_health(1, true, 30).await;
+    assert!(!manager.link_confirmed_down(TransportKind::Tcp).await);
+}
