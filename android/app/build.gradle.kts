@@ -47,6 +47,11 @@ val buildVersionName: String =
     System.getenv("BUILD_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "0.1.0"
 val buildVersionCode: Int =
     System.getenv("BUILD_VERSION_CODE")?.toIntOrNull() ?: 1
+// Which pipeline produced this build: "release" (a tagged release, identified by
+// its version), "nightly" (a rolling build, identified by its commit), or "dev"
+// for a local one. Drives what the in-app footer shows.
+val buildChannel: String =
+    System.getenv("BUILD_CHANNEL")?.takeIf { it.isNotBlank() } ?: "dev"
 val buildGitSha: String =
     System.getenv("BUILD_GIT_SHA")?.takeIf { it.isNotBlank() }
         ?: runCatching {
@@ -69,6 +74,7 @@ android {
         versionCode = buildVersionCode
         versionName = buildVersionName
         buildConfigField("String", "GIT_SHA", "\"$buildGitSha\"")
+        buildConfigField("String", "CHANNEL", "\"$buildChannel\"")
         ndk {
             // Match the Rust ABIs produced by cargo-ndk (see android/README.md).
             abiFilters += listOf("arm64-v8a")
