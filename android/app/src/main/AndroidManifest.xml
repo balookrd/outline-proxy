@@ -13,12 +13,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Keep-alive: exact alarms pierce Doze and are one of the exemptions that
-         make starting a foreground service from the background legal; boot
+    <!-- Keep-alive: an exact alarm pierces Doze and is one of the exemptions
+         that make starting a foreground service from the background legal; boot
          restores the tunnel; battery-optimisation exemption is requested from
-         the keep-alive screen. -->
+         the keep-alive screen. Deliberately no USE_EXACT_ALARM next to it: that
+         one is meant for alarm clocks and calendars, and alongside a VpnService,
+         QUERY_ALL_PACKAGES and boot-persistence it completes the profile Play
+         Protect scores as stalkerware, which is what gets sideloaded builds
+         flagged. SCHEDULE_EXACT_ALARM is not granted on install for targetSdk 34+
+         either, so the keep-alive checklist asks for it; until it is given,
+         WatchdogAlarm runs on an inexact alarm. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission
         android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
