@@ -16,6 +16,42 @@ use super::super::super::super::state_machine::{
 use super::super::super::TunTcpEngine;
 use super::backlog::BacklogGate;
 
+/// Read buffer handed to one `try_read_buf` call.
+pub(in crate::tcp::engine) const DIRECT_READ_BUFFER_BYTES: usize = 16_384;
+
+/// How far the buffer may outweigh the bytes actually read before the chunk is
+/// copied into a right-sized allocation.
+///
+/// `Bytes::from(Vec)` adopts the whole allocation, so a chunk keeps the entire
+/// read buffer alive for as long as it sits in the flow's downlink queue — a
+/// 100-byte read pinning 16 KiB. The queue is charged `chunk.len()`, so the
+/// engine-wide `pending_server_budget_bytes` counted the 100 bytes and stayed
+/// blind to the 16 KiB actually held: the budget could be overrun manyfold
+/// while reporting itself nearly empty.
+///
+/// Copying is only worth it while the waste dominates: at a nearly-full buffer
+/// the copy costs about as many bytes as it frees, so the chunk is handed over
+/// as-is. Interactive traffic — the case that produced 100-byte reads — sits far
+/// below this ratio and is always compacted.
+const COMPACT_WHEN_CAPACITY_EXCEEDS_FILLED_BY: usize = 2;
+
+/// Whether a read of `filled` bytes into a buffer of `capacity` should be copied
+/// into a right-sized allocation instead of adopting the buffer wholesale.
+pub(in crate::tcp::engine) fn should_compact_read_chunk(filled: usize, capacity: usize) -> bool {
+    filled > 0 && filled.saturating_mul(COMPACT_WHEN_CAPACITY_EXCEEDS_FILLED_BY) < capacity
+}
+
+/// Turns a read buffer into the chunk queued for the client, copying it down to
+/// size when the buffer would otherwise be pinned by a fraction of its bytes.
+pub(in crate::tcp::engine) fn compact_read_chunk(mut buf: Vec<u8>, filled: usize) -> Bytes {
+    let filled = filled.min(buf.len());
+    if should_compact_read_chunk(filled, buf.capacity()) {
+        return Bytes::copy_from_slice(&buf[..filled]);
+    }
+    buf.truncate(filled);
+    Bytes::from(buf)
+}
+
 impl TunTcpEngine {
     /// Simpler reader for direct (non-tunneled) TCP flows: reads raw bytes
     /// from the plain `OwnedReadHalf` and pushes them through the same TCP
@@ -63,7 +99,7 @@ impl TunTcpEngine {
                     engine.close_flow(&key, "read_error").await;
                     return;
                 }
-                let mut buf = Vec::with_capacity(16_384);
+                let mut buf = Vec::with_capacity(DIRECT_READ_BUFFER_BYTES);
                 let read_result = read_half.try_read_buf(&mut buf);
                 match read_result {
                     Ok(0) => {
@@ -100,7 +136,7 @@ impl TunTcpEngine {
                         return;
                     },
                     Ok(n) => {
-                        let chunk = Bytes::from(buf);
+                        let chunk = compact_read_chunk(buf, n);
                         let (flush, backlog_pressure) = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
