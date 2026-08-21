@@ -27,6 +27,7 @@ use url::Url;
 mod carrier_cap;
 mod dial_admission;
 mod direct_backpressure;
+mod direct_chunk;
 mod global_budget;
 mod migrate;
 mod resume;
