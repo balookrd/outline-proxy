@@ -292,9 +292,12 @@ Four ways the tunnel comes back:
 - **Boot / app update** — `BootReceiver` (BOOT_COMPLETED, MY_PACKAGE_REPLACED),
   after unlock. Not direct-boot aware on purpose: profiles hold credentials and
   stay in credential-protected storage.
-- **Watchdog pair** — an exact alarm (`WatchdogAlarm`, pierces Doze, re-arms
-  itself) and a 15-minute WorkManager job (`WatchdogWorker`, its schedule
-  survives reboot); each calls `ensure()`.
+- **Watchdog pair** — an alarm (`WatchdogAlarm`, pierces Doze, re-arms itself)
+  and a 15-minute WorkManager job (`WatchdogWorker`, its schedule survives
+  reboot); each calls `ensure()`. The alarm is exact only once
+  `SCHEDULE_EXACT_ALARM` is granted, otherwise the system batches it at its own
+  discretion; `USE_EXACT_ALARM`, which would grant that without asking, is
+  deliberately left out — the manifest comment says why.
 - **Swipe / kill** — `stopWithTask="false"` plus `onTaskRemoved`/`onDestroy`
   schedule a check right behind the process going away.
 

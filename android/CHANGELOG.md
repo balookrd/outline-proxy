@@ -24,6 +24,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Dropped the `USE_EXACT_ALARM` permission.** It is reserved for alarm clocks and calendars, and next to the VPN service, `QUERY_ALL_PACKAGES` and boot persistence it completed the permission profile Play Protect scores as stalkerware — which is what got sideloaded builds flagged as malware on install. The keep-alive checklist asks for `SCHEDULE_EXACT_ALARM` instead, and until that is granted the watchdog runs on an inexact alarm.
 - Moved to the native TUN engine (dropped the SOCKS5 + tun2proxy bridge), uniffi 0.32, AGP 9 with R8, and Gradle 9.7.0.
 
 ### Fixed
