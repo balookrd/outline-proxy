@@ -29,6 +29,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import uniffi.outline_android.isRunning
 import uniffi.outline_android.start
 import uniffi.outline_android.stop
@@ -234,7 +235,14 @@ class OutlineVpnService : VpnService() {
                 tunInterface?.close()
                 tunInterface = null
                 WatchdogAlarm.schedule(this, decision.retryDelayMs)
-                connect(profile!!.toToml())
+                // A revive can happen long after the last refresh (boot, an OEM
+                // kill days later), so bring an expired subscription up to date
+                // first; a failed fetch keeps the cached config.
+                val target = profile!!
+                notifScope.launch {
+                    val config = SubscriptionRefresh.configForConnect(this@OutlineVpnService, target)
+                    withContext(Dispatchers.Main) { connect(config) }
+                }
             }
         }
     }
