@@ -3,6 +3,7 @@ import type {
   User,
   NewUser,
   PatchUser,
+  ServerDefaults,
   TopologyResponse,
   ActivateBody,
   ActivateResponse,
@@ -40,6 +41,7 @@ export const listInstances = (base: '/ss'|'/ws') => json<InstancesResponse>(`${b
 
 // SS
 export const listUsers   = (i: string) => json<{ users: User[] }>(`/ss/dashboard/api/users?${q(i)}`).then(r => r.users);
+export const getDefaults = (i: string) => json<ServerDefaults>(`/ss/dashboard/api/defaults?${q(i)}`);
 export const createUser  = (i: string, u: NewUser)  => json<User>(`/ss/dashboard/api/users?${q(i)}`, mutate('POST', u));
 export const updateUser  = (i: string, id: string, p: PatchUser) =>
   json<User>(`/ss/dashboard/api/users/${seg(id)}?${q(i)}`, mutate('PATCH', p));

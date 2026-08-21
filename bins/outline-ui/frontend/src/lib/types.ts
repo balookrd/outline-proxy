@@ -317,3 +317,19 @@ export interface GroupMutationResponse {
   apply_required?: boolean;
   restart_required?: boolean;
 }
+
+// Server-wide fallbacks a user inherits when it carries none of its own —
+// mirrors ServerDefaults in outline-ss-rust's control API. `method`,
+// `ws_path_tcp` and `ws_path_udp` always come back; the rest are omitted
+// when unset (the server skips `None`).
+export interface ServerDefaults {
+  method: string;
+  ws_path_tcp: string;
+  ws_path_udp: string;
+  ws_path_ss?: string;
+  ws_path_vless?: string;
+  xhttp_path_tcp?: string;
+  xhttp_path_udp?: string;
+  xhttp_path_ss?: string;
+  xhttp_path_vless?: string;
+}
