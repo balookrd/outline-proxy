@@ -69,6 +69,12 @@ class OutlineVpnService : VpnService() {
     private var trafficBaseTx = 0L
     private var trafficBaseRx = 0L
 
+    /** When the tunnel last had a live link (or the session start). Debounces the
+     *  status: a brief drop below the grace window reads "Connecting…", not the
+     *  jarring "No link" flash. */
+    @Volatile
+    private var lastLinkAtMs = 0L
+
     companion object {
         private const val TAG = "OutlineVpnService"
         const val ACTION_CONNECT = "com.outline.proxy.CONNECT"
@@ -79,9 +85,10 @@ class OutlineVpnService : VpnService() {
         private const val NOTIFICATION_CHANNEL_ID = "outline_vpn"
         private const val NOTIFICATION_ID = 1
 
-        /** How long after connect the banner reads "Connecting…" while no link
-         *  is up yet; mirrors the home-screen status. */
-        private const val CONNECTING_WINDOW_MS = 10_000L
+        /** How long the status stays "Connecting…" after the link drops (or from
+         *  connect) before it reads "No link" — debounces transient health flaps
+         *  so a brief blip does not flash "No link". Mirrors the home screen. */
+        private const val NO_LINK_GRACE_MS = 2_000L
 
         /** How often the ongoing notification refreshes its status and traffic. */
         private const val NOTIFICATION_REFRESH_MS = 2_000L
@@ -560,10 +567,13 @@ class OutlineVpnService : VpnService() {
             .build()
     }
 
-    /** Capture the current TrafficStats counters as the session baseline. */
+    /** Capture the current TrafficStats counters as the session baseline, and
+     *  seed the link-grace clock so the connect itself gets a "Connecting…"
+     *  window before any "No link". */
     private fun captureTrafficBaseline() {
         trafficBaseTx = TrafficStats.getTotalTxBytes().coerceAtLeast(0)
         trafficBaseRx = TrafficStats.getTotalRxBytes().coerceAtLeast(0)
+        lastLinkAtMs = System.currentTimeMillis()
     }
 
     /**
@@ -595,9 +605,11 @@ class OutlineVpnService : VpnService() {
     private fun currentNotification(): Notification {
         val running = runCatching { isRunning() }.getOrDefault(false)
         val hasLink = runCatching { tunnelStatus()?.hasLiveLink ?: false }.getOrDefault(false)
-        val since = KeepAliveState(this).connectedSince
-        val connecting = running && !hasLink && since > 0L &&
-            System.currentTimeMillis() - since < CONNECTING_WINDOW_MS
+        // The core health flag is instantaneous and can blip false for a tick;
+        // keep "Connecting…" until the link has been absent past the grace window.
+        if (hasLink) lastLinkAtMs = System.currentTimeMillis()
+        val connecting = running && !hasLink &&
+            System.currentTimeMillis() - lastLinkAtMs < NO_LINK_GRACE_MS
         val status = when {
             !running -> "Disconnected"
             hasLink -> "Connected"

@@ -63,8 +63,9 @@ import kotlinx.coroutines.withContext
 import uniffi.outline_android.lastError
 import uniffi.outline_android.tunnelStatus
 
-/** How long after connect the status reads "Connecting…" while no link is up yet. */
-private const val CONNECTING_WINDOW_MS = 10_000L
+/** How long the status stays "Connecting…" after the link drops (or from
+ *  connect) before it reads "No link" — debounces transient health flaps. */
+private const val NO_LINK_GRACE_MS = 2_000L
 
 class MainActivity : ComponentActivity() {
 
@@ -103,11 +104,11 @@ class MainActivity : ComponentActivity() {
                 // established a link — shown as "Connecting…" rather than "No link".
                 var connecting by remember { mutableStateOf(false) }
                 LaunchedEffect(Unit) {
-                    // The moment the UI first observed this connection — used for the
-                    // connecting window. Taken here rather than from the service's
-                    // `connectedSince` (which can still read 0 at the transition and
-                    // would flash "No link").
-                    var connectAt = 0L
+                    // When the link was last up (or the connect moment). Debounces
+                    // the status: a brief drop stays "Connecting…" rather than
+                    // flashing "No link". Tracked in the UI, not from the service's
+                    // `connectedSince` (which can still read 0 at the transition).
+                    var lastLinkAt = 0L
                     while (true) {
                         val now = OutlineVpnService.isActive()
                         if (now != connected) {
@@ -122,11 +123,11 @@ class MainActivity : ComponentActivity() {
                                 // Show "Connecting…" from the first frame, before the
                                 // async status fetch below — otherwise the gap renders
                                 // as a "No link" flash.
-                                connectAt = System.currentTimeMillis()
+                                lastLinkAt = System.currentTimeMillis()
                                 connecting = true
                                 hasLiveLink = false
                             } else {
-                                connectAt = 0L
+                                lastLinkAt = 0L
                                 connecting = false
                                 hasLiveLink = false
                             }
@@ -142,6 +143,7 @@ class MainActivity : ComponentActivity() {
                             udpFamily = status?.udpFamily
                             udpCarrier = status?.udpCarrier
                             hasLiveLink = status?.hasLiveLink ?: false
+                            if (hasLiveLink) lastLinkAt = System.currentTimeMillis()
                         } else {
                             tcpFamily = null
                             tcpCarrier = null
@@ -149,12 +151,11 @@ class MainActivity : ComponentActivity() {
                             udpCarrier = null
                             hasLiveLink = false
                         }
-                        // "Connecting…" shows only while there is no live link yet
-                        // (network trouble); an instant connect jumps straight to
-                        // "Connected". Recomputed every tick so it ages into "No link"
-                        // once the window lapses.
-                        connecting = now && !hasLiveLink && connectAt > 0L &&
-                            System.currentTimeMillis() - connectAt < CONNECTING_WINDOW_MS
+                        // "No link" only after the link has been absent past the
+                        // grace window; a healthy connect or a brief flap stays
+                        // "Connecting…" / "Connected" without flashing.
+                        connecting = now && !hasLiveLink && lastLinkAt > 0L &&
+                            System.currentTimeMillis() - lastLinkAt < NO_LINK_GRACE_MS
                         delay(1000)
                     }
                 }
