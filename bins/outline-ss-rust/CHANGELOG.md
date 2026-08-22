@@ -8,6 +8,10 @@ This changelog covers the git release tags `v1.0.0` through `1.7.0` (the monorep
 
 ## Unreleased
 
+### Added
+
+- **`GET /control/defaults` — the server-wide method and paths a user inherits.** The control API only ever reported a user's *explicit* fields, so a user running on the server defaults read back empty and nothing outside the process could reconstruct its effective configuration — a dashboard could not even offer to clone such a user, since generating a password needs the cipher. The route returns the default method plus the ws / xhttp paths the server actually applies, omitting unset optional paths instead of serializing them as null (the shape `UserView` already uses for a user's own fields). It carries configuration only — no password, no `vless_id` — and sits behind the same bearer token as every other control route.
+
 ### Changed
 
 - **HTTP/3 WebSocket streams no longer reserve 64 KiB per stream up front.** The vendored `sockudo-ws` allocated its `read_buf` eagerly at 64 KiB for every live H3 stream (`from_h3_server` here, `from_h3_client` on the client); it now starts at 32 KiB. The capacity is a starting size rather than a ceiling, so a large message still grows the buffer on demand. Client and server share the vendored crate, so both sides get the smaller reserve; the server's own code is untouched. `from_h2` and `from_quic` stay upstream-vanilla — the data plane never instantiates them. See `h3-read-buf-capacity` in `PATCHES.md`.
