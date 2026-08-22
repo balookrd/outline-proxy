@@ -33,8 +33,8 @@ pub fn clear_active_registry() {
     *slot().lock().expect("status registry mutex poisoned") = None;
 }
 
-/// The active carrier on one transport: the uplink's transport family and the
-/// wire's effective carrier mode. These are independent axes — either family
+/// The active carrier on one transport: the transport family and the effective
+/// carrier mode of the wire currently carrying it. These are independent axes — either family
 /// (`ss` / `vless`) can ride either carrier (`ws_*` / `xhttp_*`), so both are
 /// needed to name the carrier.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,18 +81,22 @@ pub async fn active_carriers() -> Option<CarrierStatus> {
     Some(CarrierStatus { group, tcp, udp, has_live_link })
 }
 
-/// The active carrier for `transport`: the family of the active uplink plus the
-/// effective mode of the wire that transport's new sessions land on. Resolves
-/// the active uplink (strict-active selection, falling back to the global
-/// active uplink), then that uplink's active wire, then folds in the wire's
-/// mode-downgrade slot.
+/// The active carrier for `transport`: the family and effective mode of the wire
+/// that transport's new sessions land on. Resolves the active uplink
+/// (strict-active selection, falling back to the global active uplink), then
+/// that uplink's active wire, then reads both axes off that wire — folding in
+/// its mode-downgrade slot.
 async fn active_carrier(manager: &UplinkManager, transport: TransportKind) -> Option<Carrier> {
     let index = match manager.active_uplink_index_for_transport(transport).await {
         Some(index) => index,
         None => manager.global_active_uplink_index().await?,
     };
-    let family = manager.uplink_transport(index)?;
+    // Resolve the wire first: a fallback chain mixes families (a VLESS primary
+    // with `ss://` fallbacks is the standard generated shape), so the family
+    // belongs to the wire that is actually carrying this transport, not to the
+    // parent uplink.
     let wire = manager.active_wire(index, transport);
+    let family = manager.wire_transport(index, wire)?;
     let mode = match transport {
         TransportKind::Tcp => manager.effective_tcp_mode_for_wire(index, wire).await,
         TransportKind::Udp => manager.effective_udp_mode_for_wire(index, wire).await,
