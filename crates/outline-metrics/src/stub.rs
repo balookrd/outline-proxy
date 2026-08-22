@@ -62,6 +62,7 @@ pub const H3_ENDPOINT_KIND_WS: &str = "ws_h3";
 pub const H3_ENDPOINT_KIND_XHTTP: &str = "xhttp_h3";
 pub fn record_h3_endpoint_opened(_kind: &'static str) {}
 pub fn record_h3_endpoint_closed(_kind: &'static str) {}
+pub fn record_h3_carrier_reaped(_kind: &'static str) {}
 pub fn set_h3_pool_carriers(_kind: &'static str, _idle: usize, _busy: usize) {}
 pub fn record_upstream_transport(
     _source: &'static str,

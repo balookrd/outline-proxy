@@ -19,8 +19,9 @@
 //! introduced for — a NAT translation stuck on a dead path cannot pin future
 //! dials — survives. Reuse applies to connections that already work.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
 use anyhow::{Context, Result, anyhow};
@@ -38,7 +39,8 @@ use crate::h3::{
     is_expected_h3_close,
 };
 use crate::shared_cache::{
-    CachedEntry, ConnLife, ConnLifeGuard, ConnLifeLevel, ConnectionKey, SharedConnectionRegistry,
+    CachedEntry, CarrierIdleState, ConnLife, ConnLifeGuard, ConnLifeLevel, ConnectionKey,
+    SharedConnectionRegistry, carriers_to_reap,
 };
 
 /// Same bound the rest of the H3 paths use for a fresh handshake.
@@ -57,6 +59,16 @@ const FRESH_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const XHTTP_H3_CARRIER_MIN: u8 = 2;
 const XHTTP_H3_CARRIER_CAP: u64 = 32;
 const XHTTP_H3_CARRIER_MAX: u8 = 8;
+
+// Reaping. The sweep runs every 15 s, so eight sweeps is two minutes of
+// carrying nothing before a carrier is closed.
+//
+// One warm carrier per server is kept, not `MIN`: the floor in `choose_slot`
+// exists to spread *active* sessions, which is moot when there are none, while
+// the floor here only has to save the next session a QUIC and an HTTP/3
+// handshake. Traffic returning lifts the pool back to `MIN` on its own.
+const REAP_AFTER_SWEEPS: u32 = 8;
+const REAP_KEEP_WARM: u8 = 1;
 
 // The floor has to fit under the ceiling and be worth having: a floor of 1
 // would put every session of an uplink on one connection, which is the blast
@@ -102,6 +114,9 @@ pub(super) struct SharedXhttpH3Connection {
     /// Sessions currently riding this carrier. Rises and falls with real usage
     /// through [`PooledSession`], and is what [`choose_slot`] balances on.
     active_sessions: Arc<AtomicU64>,
+    /// Consecutive maintenance sweeps that found this carrier empty. Reset the
+    /// moment a session lands on it.
+    idle_sweeps: AtomicU32,
     /// Soft close: stops new sessions landing here without disturbing the ones
     /// already running. Closing the QUIC connection outright would kill them
     /// all — the mistake [`crate::h3`] documents.
@@ -316,6 +331,7 @@ async fn dial(
         connection: connection.clone(),
         send_request,
         active_sessions: Arc::new(AtomicU64::new(0)),
+        idle_sweeps: AtomicU32::new(0),
         closed: AtomicBool::new(false),
         _connection_guard: H3ConnectionGuard(connection),
         _driver_task: driver_task,
@@ -323,19 +339,50 @@ async fn dial(
     })
 }
 
-/// Drop carriers whose connection is gone, and publish the census. Called from
-/// the same maintenance sweep that tends the WS pool.
+/// Drop carriers whose connection is gone, close the ones carrying nothing,
+/// and publish the census. Called from the maintenance sweep that tends both
+/// pools.
 pub(crate) async fn gc() {
     registry().gc().await;
+
+    // Group by logical server: the floor of warm carriers is per server, not
+    // per process — a node with twenty uplinks would otherwise keep one carrier
+    // in total and dial on every uplink switch.
+    let mut by_server: HashMap<ConnectionKey, Vec<(XhttpH3Key, Arc<SharedXhttpH3Connection>)>> =
+        HashMap::new();
     let (mut idle, mut busy) = (0usize, 0usize);
-    for carrier in registry().values().await {
+    for (key, carrier) in registry().entries().await {
         if carrier.active() == 0 {
+            carrier.idle_sweeps.fetch_add(1, Ordering::Relaxed);
             idle += 1;
         } else {
+            carrier.idle_sweeps.store(0, Ordering::Relaxed);
             busy += 1;
         }
+        by_server.entry(key.base.clone()).or_default().push((key, carrier));
     }
     metrics::set_h3_pool_carriers(metrics::H3_ENDPOINT_KIND_XHTTP, idle, busy);
+
+    for (_, carriers) in by_server {
+        let census: Vec<CarrierIdleState> = carriers
+            .iter()
+            .map(|(key, carrier)| CarrierIdleState {
+                slot: key.slot,
+                active: carrier.active(),
+                idle_sweeps: carrier.idle_sweeps.load(Ordering::Relaxed),
+            })
+            .collect();
+        for slot in carriers_to_reap(&census, REAP_KEEP_WARM, REAP_AFTER_SWEEPS) {
+            let Some((key, _)) = carriers.iter().find(|(key, _)| key.slot == slot) else {
+                continue;
+            };
+            // Re-checked under the write lock: a session may have landed on
+            // this carrier since the census was taken.
+            if registry().remove_if(key, |carrier| carrier.active() == 0).await {
+                metrics::record_h3_carrier_reaped(metrics::H3_ENDPOINT_KIND_XHTTP);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

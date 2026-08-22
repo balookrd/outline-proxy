@@ -69,6 +69,11 @@ pub fn set_h3_pool_carriers(kind: &'static str, idle: usize, busy: usize) {
         .set(i64::try_from(busy).unwrap_or(i64::MAX));
 }
 
+/// An idle pooled carrier was closed and its endpoint released.
+pub fn record_h3_carrier_reaped(kind: &'static str) {
+    METRICS.h3_carriers_reaped_total.with_label_values(&[kind]).inc();
+}
+
 pub fn record_upstream_transport(
     source: &'static str,
     protocol: &'static str,

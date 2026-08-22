@@ -380,11 +380,32 @@ where
         }
     }
 
-    /// Every connection currently cached, for read-only inspection (the pool
-    /// census the maintenance sweep publishes). Clones the `Arc`s under a read
-    /// lock rather than holding the lock across the caller's work.
-    pub(crate) async fn values(&self) -> Vec<Arc<V>> {
-        self.map.read().await.values().cloned().collect()
+    /// Remove `key` only if the cached value still satisfies `pred`.
+    ///
+    /// The reaper decides what to drop from a census taken outside the lock, so
+    /// a session can land on a carrier between the decision and the removal.
+    /// Re-checking under the write lock keeps that race from evicting a carrier
+    /// that just became busy. (Evicting one would not break the session — it
+    /// holds its own `Arc` — but it would throw away a connection someone is
+    /// using and force the next session to dial.)
+    pub(crate) async fn remove_if(&self, key: &K, pred: impl Fn(&V) -> bool) -> bool {
+        let mut map = self.map.write().await;
+        if map.get(key).is_some_and(|conn| pred(conn)) {
+            map.remove(key);
+            return true;
+        }
+        false
+    }
+
+    /// Every cached entry with its key, for the reaper: it groups carriers by
+    /// logical server, which the key carries and the value does not.
+    pub(crate) async fn entries(&self) -> Vec<(K, Arc<V>)> {
+        self.map
+            .read()
+            .await
+            .iter()
+            .map(|(key, conn)| (key.clone(), Arc::clone(conn)))
+            .collect()
     }
 
     /// Remove every entry whose value reports `is_open() == false`.
@@ -413,6 +434,61 @@ where
             }
         }
     }
+}
+
+// ── Idle-carrier reaping ──────────────────────────────────────────────────────
+
+/// One carrier as the reaper sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CarrierIdleState {
+    /// Slot this carrier occupies within its logical server.
+    pub(crate) slot: u8,
+    /// Streams or sessions riding it right now.
+    pub(crate) active: u64,
+    /// Consecutive maintenance sweeps that found it carrying nothing.
+    pub(crate) idle_sweeps: u32,
+}
+
+/// Which carriers of one logical server should be closed.
+///
+/// A pooled carrier is never closed by QUIC itself: keep-alive PINGs (8–12 s)
+/// outrun the idle timeout (28–35 s), so a connection opened during a burst
+/// holds its UDP socket and its 2.87 MiB receive buffer until the process
+/// exits. Measured on two lightly-loaded nodes on 2026-08-22: 3 and 6 carrier
+/// flows against 24 live endpoints each, nine of them carrying nothing.
+///
+/// The policy keeps `min_keep` carriers as a warm floor — dialing costs a QUIC
+/// and an HTTP/3 handshake, and a pool that empties itself between bursts pays
+/// that on the next session — and closes the rest, oldest idle first. Carriers
+/// that have not been idle for `required_sweeps` are left alone, so a brief lull
+/// does not cost a connection.
+pub(crate) fn carriers_to_reap(
+    carriers: &[CarrierIdleState],
+    min_keep: u8,
+    required_sweeps: u32,
+) -> Vec<u8> {
+    let busy = carriers.iter().filter(|c| c.active > 0).count();
+    // Idle but not yet eligible: still part of the warm floor.
+    let young_idle = carriers
+        .iter()
+        .filter(|c| c.active == 0 && c.idle_sweeps < required_sweeps)
+        .count();
+
+    let mut eligible: Vec<&CarrierIdleState> = carriers
+        .iter()
+        .filter(|c| c.active == 0 && c.idle_sweeps >= required_sweeps)
+        .collect();
+    if eligible.is_empty() {
+        return Vec::new();
+    }
+
+    // Longest-idle first, so what survives is the carrier most likely to be
+    // wanted again. Ties by slot keep the outcome deterministic.
+    eligible.sort_by(|a, b| b.idle_sweeps.cmp(&a.idle_sweeps).then_with(|| a.slot.cmp(&b.slot)));
+
+    let keep = usize::from(min_keep).saturating_sub(busy + young_idle);
+    let reap = eligible.len().saturating_sub(keep);
+    eligible.iter().take(reap).map(|c| c.slot).collect()
 }
 
 // ── with_reuse ────────────────────────────────────────────────────────────────

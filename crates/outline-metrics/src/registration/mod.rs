@@ -102,6 +102,7 @@ impl Metrics {
             carrier_writer_terminations_total: t.carrier_writer_terminations_total,
             h3_endpoints_active: t.h3_endpoints_active,
             h3_pool_carriers: t.h3_pool_carriers,
+            h3_carriers_reaped_total: t.h3_carriers_reaped_total,
             #[cfg(feature = "tun")]
             tun_packets_total: tun.tun_packets_total,
             #[cfg(feature = "tun")]
