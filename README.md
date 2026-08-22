@@ -149,11 +149,24 @@ Each binary versions and releases independently via prefixed tags:
 - `ss-v<x.y.z>` → builds and publishes the **server** (workflow *Tag Release (server)*)
 - `ws-v<x.y.z>` → builds and publishes the **client** (workflow *Tag Release (client)*)
 - `ui-v<x.y.z>` → builds and publishes the **dashboard UI** (workflow *Tag Release (ui)*)
+- `android-v<x.y.z>` → builds and publishes the **Android app** (workflow *Tag Release (android)*)
 
-Pushes to `main` publish rolling `ss-nightly` / `ws-nightly` / `ui-nightly`
-prereleases (path-filtered, so only the affected binary rebuilds). The manual
-*Release (server|client|ui)* workflows bump the corresponding `bins/*/Cargo.toml`
-version and open the tagging flow.
+Pushes to `main` publish rolling `ss-nightly` / `ws-nightly` / `ui-nightly` /
+`android-nightly` prereleases (path-filtered, so only the affected component
+rebuilds — the Android filter also covers the client and the shared crates its
+native library links). The manual *Release (server|client|ui)* workflows bump the
+corresponding `bins/*/Cargo.toml` version and open the tagging flow.
+
+### Installing the Android app
+
+The app is not on any store: each release attaches a **signed APK**
+(`outline-proxy-<version>-arm64-v8a.apk`, or
+`outline-proxy-nightly-<sha>-arm64-v8a.apk` on the rolling tag) to its GitHub
+release — download it and open it to install. An installed build can also fetch
+its own updates: tapping the version label at the bottom of the home screen
+checks whatever channel that build came from, downloads the APK into Downloads,
+and hands it to the system installer. It never installs anything itself, which
+is why the app asks for no install permission.
 
 ## License
 
