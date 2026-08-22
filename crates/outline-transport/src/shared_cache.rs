@@ -380,6 +380,13 @@ where
         }
     }
 
+    /// Every connection currently cached, for read-only inspection (the pool
+    /// census the maintenance sweep publishes). Clones the `Arc`s under a read
+    /// lock rather than holding the lock across the caller's work.
+    pub(crate) async fn values(&self) -> Vec<Arc<V>> {
+        self.map.read().await.values().cloned().collect()
+    }
+
     /// Remove every entry whose value reports `is_open() == false`.
     ///
     /// Called from the warm-standby maintenance loop so dead entries do not

@@ -27,9 +27,7 @@ use h3::quic::{
 use http::HeaderMap;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
-use super::{
-    POST_TIMEOUT, dial_endpoint, driver_loop_h3, driver_loop_h3_stream_one, post_one_bounded,
-};
+use super::{POST_TIMEOUT, driver_loop_h3, driver_loop_h3_stream_one, post_one_bounded};
 use crate::xhttp::{XhttpTarget, inbound_channel, outbound_channel};
 
 fn wildcard_v4() -> SocketAddr {
@@ -445,25 +443,32 @@ async fn a_timed_out_post_releases_the_h3_connection() {
     );
 }
 
-#[tokio::test]
-async fn xhttp_h3_binds_a_fresh_socket_per_session() {
-    let first = dial_endpoint(wildcard_v4(), None).expect("first xhttp/h3 endpoint binds");
-    let second = dial_endpoint(wildcard_v4(), None).expect("second xhttp/h3 endpoint binds");
+/// The endpoint an xhttp/h3 dial binds, as `h3_pool::dial` does it.
+fn dial_endpoint(bind: std::net::SocketAddr) -> anyhow::Result<crate::h3::TrackedEndpoint> {
+    crate::h3::client_endpoint(bind, None, outline_metrics::H3_ENDPOINT_KIND_XHTTP)
+}
 
-    // A stale NAT translation is keyed on the source port; a session that
-    // reused a process-wide socket would stay pinned to a dead path forever.
-    // Distinct local ports prove each session negotiates its own translation.
+#[tokio::test]
+async fn xhttp_h3_binds_a_fresh_socket_per_dial() {
+    let first = dial_endpoint(wildcard_v4()).expect("first xhttp/h3 endpoint binds");
+    let second = dial_endpoint(wildcard_v4()).expect("second xhttp/h3 endpoint binds");
+
+    // Sessions share carriers now, so this is no longer per session — but it
+    // must stay true per *dial*. A stale NAT translation is keyed on the source
+    // port, so a retry that reused the previous port would stay pinned to the
+    // dead path that made it retry in the first place.
     assert_ne!(
         first.local_addr().expect("first endpoint has a local addr"),
         second.local_addr().expect("second endpoint has a local addr"),
-        "each xhttp/h3 session must dial from its own UDP source port"
+        "each xhttp/h3 dial must leave from its own UDP source port"
     );
 }
 
 #[tokio::test]
 async fn xhttp_h3_does_not_share_a_socket_with_the_native_ws_h3_carrier() {
-    let xhttp = dial_endpoint(wildcard_v4(), None).expect("xhttp/h3 endpoint binds");
-    let ws = crate::h3::client_endpoint(wildcard_v4(), None).expect("ws_h3 endpoint binds");
+    let xhttp = dial_endpoint(wildcard_v4()).expect("xhttp/h3 endpoint binds");
+    let ws = crate::h3::client_endpoint(wildcard_v4(), None, outline_metrics::H3_ENDPOINT_KIND_WS)
+        .expect("ws_h3 endpoint binds");
 
     assert_ne!(
         xhttp.local_addr().expect("xhttp endpoint has a local addr"),

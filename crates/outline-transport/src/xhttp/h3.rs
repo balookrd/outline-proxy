@@ -11,7 +11,6 @@
 //! and the `h3` / `h3-quinn` crates that the rest of the H3 path
 //! already depends on.
 
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -20,7 +19,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use bytes::{Buf, Bytes};
 use h3::client::SendRequest;
 use http::{HeaderMap, Method, Request, Version};
-use rustls::pki_types::ServerName;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -116,8 +114,11 @@ pub(super) async fn connect_xhttp_h3(
             anyhow::Error::new(TransportOperation::DnsResolveNoAddresses { host: host.clone() })
         })?;
 
-        let (send_request, loss_probe, quic_carrier) =
-            h3_handshake(server_addr, &host, fwmark).await?;
+        let super::h3_pool::PooledCarrier {
+            send_request,
+            loss_probe,
+            carrier: quic_carrier,
+        } = super::h3_pool::acquire(server_addr, &host, port, fwmark).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
         let authority = if port == 443 {
@@ -266,109 +267,6 @@ pub(super) async fn connect_xhttp_h3(
         .await
         .with_context(|| format!("xhttp/h3 dial to {url} timed out"))?
         .with_context(|| format!("xhttp/h3 dial to {url} failed"))
-}
-
-/// QUIC endpoint backing one XHTTP-over-H3 session.
-///
-/// Each session dials from its own freshly-bound UDP socket, same as the
-/// native `ws_h3` carrier — see [`crate::h3::client_endpoint`] for why a
-/// per-dial source port is required (stale NAT translations pin a shared
-/// port to a dead path). The endpoint moves into the session's driver task,
-/// so the socket lives exactly as long as the session.
-fn dial_endpoint(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<quinn::Endpoint> {
-    crate::h3::client_endpoint(bind_addr, fwmark)
-        .with_context(|| format!("failed to bind xhttp/h3 QUIC endpoint on {bind_addr}"))
-}
-
-async fn h3_handshake(
-    server_addr: SocketAddr,
-    host: &str,
-    fwmark: Option<u32>,
-) -> Result<(
-    SendRequest<h3_quinn::OpenStreams, Bytes>,
-    Option<crate::CarrierLossProbe>,
-    Option<Arc<dyn crate::CarrierLossCounters>>,
-)> {
-    let endpoint = dial_endpoint(crate::bind_addr_for(server_addr), fwmark)?;
-
-    let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
-        ServerName::IpAddress(ip.into())
-    } else {
-        ServerName::try_from(host.to_string())
-            .map_err(|_| anyhow!("invalid TLS server name for xhttp/h3: {host}"))?
-    };
-    let server_name_str = match &server_name {
-        ServerName::DnsName(name) => name.as_ref().to_owned(),
-        ServerName::IpAddress(_) => host.to_string(),
-        _ => host.to_string(),
-    };
-    let connecting = endpoint
-        .connect_with(crate::quic::h3_quic_client_config(), server_addr, &server_name_str)
-        .with_context(|| format!("failed to initiate xhttp/h3 QUIC connection to {server_addr}"))?;
-    let connection = connecting
-        .await
-        .with_context(|| format!("xhttp/h3 QUIC handshake failed for {server_addr}"))?;
-    // Captured before `connection` moves into `h3_quinn::Connection::new`
-    // below — cloning a `quinn::Connection` is cheap (it is `Arc`-backed), so
-    // this costs nothing on the hot dial path. No `#[cfg(feature = "h3")]`
-    // needed here: this whole module (`xhttp/h3.rs`) is only compiled when
-    // `h3` is enabled — see `mod h3;` in `xhttp/mod.rs`.
-    //
-    // The clone is wrapped in its own `Arc` (`XhttpQuicCarrier`) rather than
-    // handed straight to `CarrierLossProbe::Quic`: the probe only holds a
-    // `Weak` onto this `Arc`, and `connect_xhttp_h3` hands the `Arc` itself to
-    // `XhttpStream` (`_quic_carrier`) so it is this session, not the probe,
-    // that keeps the connection alive — see `crate::CarrierLossCounters`.
-    let quic_carrier: Arc<dyn crate::CarrierLossCounters> =
-        Arc::new(XhttpQuicCarrier(connection.clone()));
-    let counters: std::sync::Weak<dyn crate::CarrierLossCounters> = Arc::downgrade(&quic_carrier);
-    let identity = connection.stable_id() as u64;
-    let loss_probe = Some(crate::CarrierLossProbe::Quic { counters, identity });
-    let (mut driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection))
-        .await
-        .context("xhttp/h3 HTTP/3 handshake failed")?;
-    // Spawn the h3 connection driver. The send_request handle stays
-    // usable as long as the driver keeps running; on driver exit any
-    // outstanding RequestStream sees a closed-stream error, which
-    // the GET / POST loops treat as terminal and shut the session
-    // down via `XhttpSession::close()` indirectly through `in_tx`.
-    //
-    // The quinn endpoint handle moves into this task so it lives for the
-    // full duration of the h3 session: a local `let _guard = endpoint`
-    // in the outer function would drop it on `Ok` return, and on
-    // some carriers (notably stream-one, where the request body is
-    // long-lived) that drop closes the connection with
-    // `ApplicationClose(H3_NO_ERROR)` before any application data
-    // flows. Packet-up tolerates the early drop because each POST
-    // opens a fresh stream that completes synchronously, but
-    // stream-one's bidi stream needs the endpoint alive across the
-    // whole exchange. Only fwmark dials own their endpoint outright;
-    // for the rest this is a handle on the shared per-address-family
-    // endpoint, where holding it is harmless.
-    tokio::spawn(async move {
-        let _endpoint_guard = endpoint;
-        let close = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
-        debug!(?close, "xhttp/h3 driver closed");
-    });
-    Ok((send_request, loss_probe, Some(quic_carrier)))
-}
-
-/// Strong owner of the QUIC connection backing one XHTTP-over-H3 session.
-/// `XhttpStream` holds this `Arc` (`_quic_carrier`) for exactly its own
-/// lifetime; the loss probe handed out alongside it holds only a `Weak` onto
-/// the same `Arc`, so it observes the connection's counters without
-/// extending its life — see `crate::CarrierLossCounters`.
-struct XhttpQuicCarrier(quinn::Connection);
-
-impl crate::CarrierLossCounters for XhttpQuicCarrier {
-    fn loss_counters(&self) -> Option<crate::CarrierLossSample> {
-        let path = self.0.stats().path;
-        Some(crate::CarrierLossSample {
-            sent: path.sent_packets,
-            lost: path.lost_packets,
-            alive: self.0.close_reason().is_none(),
-        })
-    }
 }
 
 /// Synchronously opens the long-lived h3 GET, awaits response

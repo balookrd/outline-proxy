@@ -51,6 +51,8 @@ mod h1;
 mod h2;
 #[cfg(feature = "h3")]
 mod h3;
+#[cfg(feature = "h3")]
+pub(crate) mod h3_pool;
 mod stream;
 
 #[cfg(test)]
