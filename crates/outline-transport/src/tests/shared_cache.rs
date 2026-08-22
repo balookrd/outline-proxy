@@ -43,3 +43,38 @@ fn a_driver_reported_close_is_not_repeated_on_drop() {
     // Nothing left to report: a third observer would also find it closed.
     assert!(!life.close(None, CONN_CLASS_LOCAL_DROP, true));
 }
+
+/// A cache entry standing in for a real carrier: the census only asks whether
+/// the connection is still open.
+struct FakeConn {
+    id: u64,
+    open: bool,
+}
+
+impl super::CachedEntry for FakeConn {
+    fn conn_id(&self) -> u64 {
+        self.id
+    }
+
+    fn is_open(&self) -> bool {
+        self.open
+    }
+}
+
+/// The pool census is published straight after the sweep, so it must see the
+/// live carriers and none of the dead ones. Reporting a dead entry as an idle
+/// carrier would invent endpoints that no longer hold a UDP socket — precisely
+/// the number this gauge exists to measure.
+#[tokio::test]
+async fn census_sees_live_entries_and_not_swept_ones() {
+    let registry = super::SharedConnectionRegistry::<u8, FakeConn>::new();
+    registry.insert(1, Arc::new(FakeConn { id: 1, open: true })).await;
+    registry.insert(2, Arc::new(FakeConn { id: 2, open: false })).await;
+    registry.insert(3, Arc::new(FakeConn { id: 3, open: true })).await;
+
+    registry.gc().await;
+
+    let mut ids: Vec<u64> = registry.values().await.iter().map(|conn| conn.id).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 3]);
+}

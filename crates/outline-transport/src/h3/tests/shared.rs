@@ -74,8 +74,10 @@ async fn fresh_dials_bind_distinct_local_ports() {
     // to a dead path (a router that re-created its port-forward keeps the
     // old UDP mapping alive as long as packets keep flowing through it).
     let bind: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
-    let a = super::client_endpoint(bind, None).expect("first endpoint");
-    let b = super::client_endpoint(bind, None).expect("second endpoint");
+    let a = super::client_endpoint(bind, None, outline_metrics::H3_ENDPOINT_KIND_WS)
+        .expect("first endpoint");
+    let b = super::client_endpoint(bind, None, outline_metrics::H3_ENDPOINT_KIND_WS)
+        .expect("second endpoint");
     let port_a = a.local_addr().expect("local addr a").port();
     let port_b = b.local_addr().expect("local addr b").port();
     assert_ne!(port_a, port_b, "two fresh dials must not share a local UDP port");

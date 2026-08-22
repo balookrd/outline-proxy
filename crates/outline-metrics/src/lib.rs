@@ -58,19 +58,20 @@ pub use self::session::{SessionTracker, track_session};
 pub use self::snapshot::render_prometheus;
 #[cfg(feature = "prometheus")]
 pub use self::transport::{
-    DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL, FlowBytesCounter, UdpFlowCounters, add_bytes,
-    add_probe_bytes, add_transport_connects_active, add_udp_datagram, add_uplink_open_connections,
+    DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL, FlowBytesCounter, H3_ENDPOINT_KIND_WS,
+    H3_ENDPOINT_KIND_XHTTP, UdpFlowCounters, add_bytes, add_probe_bytes,
+    add_transport_connects_active, add_udp_datagram, add_uplink_open_connections,
     add_upstream_transports_active, direct_tcp_bytes, direct_udp_counters, flow_bytes_counter,
     record_carrier_writer_termination, record_dropped_malformed_udp_packet,
-    record_dropped_oversized_udp_packet, record_failover, record_loss_failover,
-    record_metrics_http_request, record_mid_session_retry, record_payload_integrity_error,
-    record_probe, record_probe_wakeup, record_request, record_resume_lookup,
-    record_runtime_failure, record_runtime_failure_cause, record_runtime_failure_other_detail,
-    record_runtime_failure_signature, record_runtime_failure_suppressed,
-    record_socks_tcp_strict_abort, record_soft_switch, record_transport_connect,
-    record_uplink_connection_close, record_uplink_reselect, record_uplink_selected,
-    record_upstream_transport, record_warm_standby_acquire, record_warm_standby_refill,
-    udp_flow_counters,
+    record_dropped_oversized_udp_packet, record_failover, record_h3_endpoint_closed,
+    record_h3_endpoint_opened, record_loss_failover, record_metrics_http_request,
+    record_mid_session_retry, record_payload_integrity_error, record_probe, record_probe_wakeup,
+    record_request, record_resume_lookup, record_runtime_failure, record_runtime_failure_cause,
+    record_runtime_failure_other_detail, record_runtime_failure_signature,
+    record_runtime_failure_suppressed, record_socks_tcp_strict_abort, record_soft_switch,
+    record_transport_connect, record_uplink_connection_close, record_uplink_reselect,
+    record_uplink_selected, record_upstream_transport, record_warm_standby_acquire,
+    record_warm_standby_refill, set_h3_pool_carriers, udp_flow_counters,
 };
 #[cfg(all(feature = "prometheus", feature = "tun"))]
 pub use self::tun::{
@@ -134,6 +135,8 @@ struct Metrics {
     upstream_transports_active: IntGaugeVec,
     metrics_http_requests_total: IntCounterVec,
     carrier_writer_terminations_total: IntCounterVec,
+    h3_endpoints_active: IntGaugeVec,
+    h3_pool_carriers: IntGaugeVec,
     #[cfg(feature = "tun")]
     tun_packets_total: IntCounterVec,
     #[cfg(feature = "tun")]

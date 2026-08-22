@@ -17,6 +17,8 @@ use tokio::sync::Mutex;
 use tokio::time::timeout;
 use url::Url;
 
+use outline_metrics as metrics;
+
 use crate::shared_cache::{
     ConnLife, ConnLifeGuard, ConnLifeLevel, SharedConnectionRegistry, classify_by_substrings,
 };
@@ -124,7 +126,7 @@ const H3_CARRIER_MAX: u8 = 16;
 /// Ties resolve to the lowest slot index, which makes selection deterministic
 /// and self-balancing: successive dials fill slot 0, then 1, … up to the floor,
 /// then keep the pool evenly loaded.
-fn choose_slot(loads: &[Option<u64>], min: u8, cap: u64) -> u8 {
+pub(crate) fn choose_slot(loads: &[Option<u64>], min: u8, cap: u64) -> u8 {
     let mut populated: u8 = 0;
     let mut first_empty: Option<u8> = None;
     let mut best_under_cap: Option<(u8, u64)> = None;
@@ -185,7 +187,7 @@ pub(super) struct SharedH3Connection {
     // (per-dial source port) lives exactly as long as the endpoint handle.
     // Dropping it with the connection is what closes the socket.
     #[allow(dead_code)]
-    endpoint: quinn::Endpoint,
+    endpoint: TrackedEndpoint,
     connection: quinn::Connection,
     // Kept alive to prevent the h3 driver from initiating graceful shutdown
     // (H3_NO_ERROR) prematurely. The h3 layer treats the last SendRequest
@@ -438,15 +440,54 @@ impl crate::shared_cache::CachedEntry for SharedH3Connection {
 pub(crate) fn client_endpoint(
     bind_addr: std::net::SocketAddr,
     fwmark: Option<u32>,
-) -> Result<quinn::Endpoint> {
+    kind: &'static str,
+) -> Result<TrackedEndpoint> {
     let socket = bind_udp_socket(bind_addr, fwmark)?;
-    quinn::Endpoint::new(
+    let endpoint = quinn::Endpoint::new(
         quinn::EndpointConfig::default(),
         None,
         socket,
         Arc::new(quinn::TokioRuntime),
     )
-    .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"))
+    .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"))?;
+    Ok(TrackedEndpoint::new(endpoint, kind))
+}
+
+/// A [`quinn::Endpoint`] counted while it lives.
+///
+/// An endpoint is far from free: besides the UDP socket it allocates a receive
+/// buffer of `max_udp_payload_size * gro_segments * BATCH_SIZE` — 2.87 MiB on
+/// Linux once GRO is available. With one endpoint per dial, the endpoint count
+/// sizes this process's memory more than the flow count does, and nothing
+/// reported it. The gauge splits by dialer because the two paths have very
+/// different lifetimes: pooled `ws_h3` carriers outlive their traffic, whereas
+/// an `xhttp_h3` endpoint dies with its session.
+///
+/// Dereferences to the endpoint, so callers dial through it as before.
+pub(crate) struct TrackedEndpoint {
+    endpoint: quinn::Endpoint,
+    kind: &'static str,
+}
+
+impl TrackedEndpoint {
+    fn new(endpoint: quinn::Endpoint, kind: &'static str) -> Self {
+        metrics::record_h3_endpoint_opened(kind);
+        Self { endpoint, kind }
+    }
+}
+
+impl std::ops::Deref for TrackedEndpoint {
+    type Target = quinn::Endpoint;
+
+    fn deref(&self) -> &quinn::Endpoint {
+        &self.endpoint
+    }
+}
+
+impl Drop for TrackedEndpoint {
+    fn drop(&mut self) {
+        metrics::record_h3_endpoint_closed(self.kind);
+    }
 }
 
 // ── Shared-connection cache ───────────────────────────────────────────────────
@@ -587,7 +628,7 @@ async fn connect_h3_connection(
 
     // Freshly-bound per-dial endpoint — see [`client_endpoint`] for why the
     // source port must change between dials.
-    let endpoint = client_endpoint(bind_addr, fwmark)?;
+    let endpoint = client_endpoint(bind_addr, fwmark, metrics::H3_ENDPOINT_KIND_WS)?;
 
     let connecting = endpoint
         .connect_with(client_config, server_addr, server_name)
@@ -647,7 +688,7 @@ async fn connect_h3_connection(
     })
 }
 
-fn classify_h3_close(err: &str) -> &'static str {
+pub(crate) fn classify_h3_close(err: &str) -> &'static str {
     // H3 close strings are produced by h3/quinn and retain mixed case; match
     // as-is rather than normalizing so categories remain precise (e.g.
     // `Timeout` is quinn's idle-timeout enum variant).
@@ -676,9 +717,22 @@ fn classify_h3_close(err: &str) -> &'static str {
 /// after DNS rotation changes the resolved address for a server name).
 pub(crate) async fn gc_shared_h3_connections() {
     h3_registry().gc().await;
+    // Census after the sweep, so dead entries are already gone. `idle` counts
+    // carriers holding an endpoint while carrying no streams — keep-alive PINGs
+    // keep QUIC's idle timeout from ever closing them, so they persist until
+    // the process exits and are exactly what an idle reaper would reclaim.
+    let (mut idle, mut busy) = (0usize, 0usize);
+    for conn in h3_registry().values().await {
+        if conn.active() == 0 {
+            idle += 1;
+        } else {
+            busy += 1;
+        }
+    }
+    metrics::set_h3_pool_carriers(metrics::H3_ENDPOINT_KIND_WS, idle, busy);
 }
 
-fn is_expected_h3_close(err: &str) -> bool {
+pub(crate) fn is_expected_h3_close(err: &str) -> bool {
     err.contains("H3_NO_ERROR")
         || err.contains("Connection closed by client")
         || err.contains("connection closed by client")

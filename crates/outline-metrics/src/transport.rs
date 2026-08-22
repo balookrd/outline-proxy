@@ -37,6 +37,38 @@ pub fn record_carrier_writer_termination(writer: &'static str, reason: &'static 
         .inc();
 }
 
+/// Label for endpoints dialed by the pooled WS-over-H3 carrier.
+pub const H3_ENDPOINT_KIND_WS: &str = "ws_h3";
+/// Label for endpoints dialed by an XHTTP-over-H3 session.
+pub const H3_ENDPOINT_KIND_XHTTP: &str = "xhttp_h3";
+
+/// A QUIC client endpoint was bound. Paired with
+/// [`record_h3_endpoint_closed`] by an RAII guard in `outline-transport`, so
+/// the gauge counts endpoints that are actually alive.
+pub fn record_h3_endpoint_opened(kind: &'static str) {
+    METRICS.h3_endpoints_active.with_label_values(&[kind]).inc();
+}
+
+/// A QUIC client endpoint was dropped, closing its UDP socket.
+pub fn record_h3_endpoint_closed(kind: &'static str) {
+    METRICS.h3_endpoints_active.with_label_values(&[kind]).dec();
+}
+
+/// Publish one pool's census: `busy` carriers are carrying traffic, `idle`
+/// ones hold an endpoint while carrying nothing. `kind` matches the label used
+/// by [`record_h3_endpoint_opened`], so the two gauges join. Called from the
+/// maintenance sweep, which already walks each pool.
+pub fn set_h3_pool_carriers(kind: &'static str, idle: usize, busy: usize) {
+    METRICS
+        .h3_pool_carriers
+        .with_label_values(&[kind, "idle"])
+        .set(i64::try_from(idle).unwrap_or(i64::MAX));
+    METRICS
+        .h3_pool_carriers
+        .with_label_values(&[kind, "busy"])
+        .set(i64::try_from(busy).unwrap_or(i64::MAX));
+}
+
 pub fn record_upstream_transport(
     source: &'static str,
     protocol: &'static str,

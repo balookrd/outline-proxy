@@ -13,7 +13,10 @@
 mod shared;
 pub(crate) mod vendored;
 
-pub(crate) use shared::{client_endpoint, connect_websocket_h3, gc_shared_h3_connections};
+pub(crate) use shared::{
+    TrackedEndpoint, choose_slot, classify_h3_close, client_endpoint, connect_websocket_h3,
+    gc_shared_h3_connections, is_expected_h3_close,
+};
 
 use std::sync::Arc;
 
@@ -103,7 +106,7 @@ impl Sink<SockudoMessage> for H3WsStream {
 
 /// Sends QUIC `CONNECTION_CLOSE` when dropped so the server is notified
 /// immediately rather than waiting for its idle timeout to fire.
-pub(super) struct H3ConnectionGuard(pub(super) quinn::Connection);
+pub(crate) struct H3ConnectionGuard(pub(crate) quinn::Connection);
 
 impl Drop for H3ConnectionGuard {
     fn drop(&mut self) {

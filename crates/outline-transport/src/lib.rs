@@ -387,6 +387,8 @@ pub async fn gc_shared_connections() {
     h2::gc_shared_h2_connections().await;
     #[cfg(feature = "h3")]
     crate::h3::gc_shared_h3_connections().await;
+    #[cfg(feature = "h3")]
+    crate::xhttp::h3_pool::gc().await;
     ws_mode_cache::gc().await;
     xhttp_mode_cache::gc().await;
     xhttp_submode_cache::gc().await;
