@@ -7,6 +7,7 @@ use tokio::sync::{Mutex, watch};
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
+use outline_net::RelayReadBuf;
 
 use super::super::super::super::TcpFlowKey;
 use super::super::super::super::maintenance::commit_flow_changes;
@@ -16,41 +17,8 @@ use super::super::super::super::state_machine::{
 use super::super::super::TunTcpEngine;
 use super::backlog::BacklogGate;
 
-/// Read buffer handed to one `try_read_buf` call.
+/// Read window a direct flow offers the origin on each `try_read_buf`.
 pub(in crate::tcp::engine) const DIRECT_READ_BUFFER_BYTES: usize = 16_384;
-
-/// How far the buffer may outweigh the bytes actually read before the chunk is
-/// copied into a right-sized allocation.
-///
-/// `Bytes::from(Vec)` adopts the whole allocation, so a chunk keeps the entire
-/// read buffer alive for as long as it sits in the flow's downlink queue — a
-/// 100-byte read pinning 16 KiB. The queue is charged `chunk.len()`, so the
-/// engine-wide `pending_server_budget_bytes` counted the 100 bytes and stayed
-/// blind to the 16 KiB actually held: the budget could be overrun manyfold
-/// while reporting itself nearly empty.
-///
-/// Copying is only worth it while the waste dominates: at a nearly-full buffer
-/// the copy costs about as many bytes as it frees, so the chunk is handed over
-/// as-is. Interactive traffic — the case that produced 100-byte reads — sits far
-/// below this ratio and is always compacted.
-const COMPACT_WHEN_CAPACITY_EXCEEDS_FILLED_BY: usize = 2;
-
-/// Whether a read of `filled` bytes into a buffer of `capacity` should be copied
-/// into a right-sized allocation instead of adopting the buffer wholesale.
-pub(in crate::tcp::engine) fn should_compact_read_chunk(filled: usize, capacity: usize) -> bool {
-    filled > 0 && filled.saturating_mul(COMPACT_WHEN_CAPACITY_EXCEEDS_FILLED_BY) < capacity
-}
-
-/// Turns a read buffer into the chunk queued for the client, copying it down to
-/// size when the buffer would otherwise be pinned by a fraction of its bytes.
-pub(in crate::tcp::engine) fn compact_read_chunk(mut buf: Vec<u8>, filled: usize) -> Bytes {
-    let filled = filled.min(buf.len());
-    if should_compact_read_chunk(filled, buf.capacity()) {
-        return Bytes::copy_from_slice(&buf[..filled]);
-    }
-    buf.truncate(filled);
-    Bytes::from(buf)
-}
 
 impl TunTcpEngine {
     /// Simpler reader for direct (non-tunneled) TCP flows: reads raw bytes
@@ -68,6 +36,21 @@ impl TunTcpEngine {
         // downlink byte counter is process-global — resolve it once.
         let down_bytes = metrics::direct_tcp_bytes("down");
         tokio::spawn(async move {
+            // One buffer for the whole flow, the way the SOCKS relay loops do
+            // it. The previous per-read `Vec::with_capacity` allocated and freed
+            // 16 KiB on every readable event — thousands per second under load,
+            // interleaved with the flow's long-lived structures. Heap profiling
+            // found ~82% of RSS sitting in dirty mimalloc arenas that could not
+            // be returned, a few long-lived objects pinning each one; churn of
+            // this shape is what spreads those objects across arenas in the
+            // first place, so it is worth not producing.
+            //
+            // `fixed`, not `adaptive`: this keeps the flat 16 KiB window the
+            // flow already advertised, so only the allocation pattern changes.
+            // The buffer is still dropped after `RELAY_BUF_IDLE_GRACE`, so an
+            // idle direct flow pins nothing — exactly what allocating per read
+            // bought us.
+            let mut read_buf = RelayReadBuf::fixed(DIRECT_READ_BUFFER_BYTES);
             loop {
                 // Downlink backpressure. Parking here stops draining the socket,
                 // so the kernel receive buffer fills and the window we advertise
@@ -82,10 +65,8 @@ impl TunTcpEngine {
                     return;
                 }
 
-                // Wait for readability (or close) without holding a receive
-                // buffer; allocate it only once data is ready and drop it
-                // before the next park, so an idle direct flow holds no
-                // per-flow read buffer.
+                // Waiting for readability goes through the buffer's own park —
+                // that is what arms the idle release.
                 let ready = tokio::select! {
                     _ = close_rx.changed() => {
                         if *close_rx.borrow() {
@@ -93,14 +74,13 @@ impl TunTcpEngine {
                         }
                         continue;
                     }
-                    ready = read_half.readable() => ready,
+                    ready = read_buf.park(read_half.readable()) => ready,
                 };
                 if ready.is_err() {
                     engine.close_flow(&key, "read_error").await;
                     return;
                 }
-                let mut buf = Vec::with_capacity(DIRECT_READ_BUFFER_BYTES);
-                let read_result = read_half.try_read_buf(&mut buf);
+                let read_result = read_half.try_read_buf(read_buf.ready());
                 match read_result {
                     Ok(0) => {
                         // EOF — upstream closed.
@@ -136,7 +116,11 @@ impl TunTcpEngine {
                         return;
                     },
                     Ok(n) => {
-                        let chunk = compact_read_chunk(buf, n);
+                        // Copied, not adopted: the buffer is reused by the
+                        // next read, and the chunk outlives it in the flow's
+                        // downlink queue. The copy is exactly `n` bytes, so the
+                        // queue's charge and the memory it holds agree.
+                        let chunk = Bytes::copy_from_slice(read_buf.filled());
                         let (flush, backlog_pressure) = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
