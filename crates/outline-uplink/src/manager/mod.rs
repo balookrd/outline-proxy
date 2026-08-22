@@ -313,15 +313,30 @@ impl UplinkManager {
         &self.inner.group_name
     }
 
-    /// Transport family (`"ss"` / `"vless"`) of the uplink at `index`, or `None`
-    /// if the index is out of range. This is an axis independent of the wire's
-    /// carrier mode (`ws_*` / `xhttp_*`): either family can ride either carrier,
-    /// so callers that want to name the active carrier need both.
-    pub fn uplink_transport(&self, index: usize) -> Option<String> {
-        self.inner
-            .uplinks
-            .get(index)
-            .map(|uplink| uplink.transport.to_string())
+    /// Transport family (`"ss"` / `"vless"`) of wire `wire_index` on the uplink
+    /// at `index`, or `None` if the uplink index is out of range.
+    ///
+    /// Wire 0 is the primary and carries the uplink's own family; every other
+    /// wire is a fallback that declares its own, and a chain routinely mixes
+    /// them (a VLESS primary with `ss://` fallbacks is the shape the access-key
+    /// generator emits). Reading the family off the parent would therefore
+    /// mislabel every fallback wire, so this resolves it per wire — the same
+    /// way the snapshot's wire chain does. Out-of-range wires fall back to the
+    /// parent's family, mirroring `effective_*_mode_for_wire`.
+    ///
+    /// The family is an axis independent of the wire's carrier mode
+    /// (`ws_*` / `xhttp_*`): either family can ride either carrier, so callers
+    /// naming the active carrier need both.
+    pub fn wire_transport(&self, index: usize, wire_index: u8) -> Option<String> {
+        let uplink = self.inner.uplinks.get(index)?;
+        if wire_index == 0 {
+            return Some(uplink.transport.to_string());
+        }
+        let transport = match uplink.fallbacks.get((wire_index - 1) as usize) {
+            Some(fallback) => fallback.transport,
+            None => uplink.transport,
+        };
+        Some(transport.to_string())
     }
 
     /// Whether this group shares one resume id across its uplinks

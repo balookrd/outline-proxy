@@ -903,3 +903,29 @@ async fn link_confirmed_down_only_reports_a_proven_outage() {
     manager.test_set_tcp_health(1, true, 30).await;
     assert!(!manager.link_confirmed_down(TransportKind::Tcp).await);
 }
+
+/// The carrier family belongs to the *wire*, not to the parent uplink. A chain
+/// routinely mixes them — the generated Android config pairs a VLESS primary
+/// with `ss://` fallbacks — so reading it off the parent would misname every
+/// leg the tunnel falls back to.
+#[tokio::test]
+async fn wire_transport_names_the_family_of_each_wire() {
+    let mut uplink = dead_uplink("mixed", 1.0);
+    let mut vless_leg = ss_fallback("vless-leg");
+    vless_leg.transport = UplinkTransport::Vless;
+    vless_leg.vless_ws_url = Some(Url::parse("wss://dead.example.com/vless-leg/ws").unwrap());
+    vless_leg.vless_id = Some([0x22; 16]);
+    uplink.fallbacks = vec![vless_leg];
+
+    let manager =
+        UplinkManager::new_for_test("main", vec![uplink], probe_enabled(), lb_global()).unwrap();
+
+    // Wire 0 is the primary and carries the uplink's own family.
+    assert_eq!(manager.wire_transport(0, 0).as_deref(), Some("ss"));
+    // Wire 1 is the fallback, which declares a different one.
+    assert_eq!(manager.wire_transport(0, 1).as_deref(), Some("vless"));
+    // A wire past the chain falls back to the parent rather than vanishing.
+    assert_eq!(manager.wire_transport(0, 9).as_deref(), Some("ss"));
+    // An unknown uplink has no family at all.
+    assert_eq!(manager.wire_transport(7, 0), None);
+}
