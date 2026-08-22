@@ -100,6 +100,8 @@ fun HomeScreen(
     onOpenSplitTunnel: () -> Unit,
     onOpenExternalControl: () -> Unit,
     onOpenKeepAlive: () -> Unit,
+    onCheckForUpdates: () -> Unit,
+    updateStatus: String?,
 ) {
     Column(
         modifier = Modifier
@@ -122,28 +124,36 @@ fun HomeScreen(
         Spacer(Modifier.height(16.dp))
         QuickLinks(onOpenSplitTunnel, onOpenExternalControl, onOpenKeepAlive)
         Spacer(Modifier.height(16.dp))
-        VersionFooter()
+        VersionFooter(onCheckForUpdates, updateStatus)
     }
 }
 
 /** App build identity: version name, version code, and the commit it was built
  *  from — set by CI, or the local git SHA / "dev" for a developer build. */
 @Composable
-private fun VersionFooter() {
+private fun VersionFooter(onCheckForUpdates: () -> Unit, updateStatus: String?) {
     // A tagged release is identified by its version; nightly and local builds
     // share one placeholder version that says nothing, so they name the channel
     // and the commit they were built from instead.
-    val label = if (BuildConfig.CHANNEL == "release") {
+    val build = if (BuildConfig.CHANNEL == "release") {
         "v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
     } else {
         "${BuildConfig.CHANNEL} · ${BuildConfig.GIT_SHA}"
     }
+    // While an update check or download is running the footer reports it: this
+    // is the only place the app says anything about updates, and a download with
+    // no visible progress is indistinguishable from one that has stalled.
     Text(
-        label,
+        updateStatus?.let { "$build · $it" } ?: build,
         fontSize = 10.sp,
         textAlign = TextAlign.Center,
         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-        modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 4.dp),
+        // The build label doubles as the update entry point: what you are running
+        // and "is there anything newer" are the same question.
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onCheckForUpdates)
+            .padding(top = 2.dp, bottom = 4.dp),
     )
 }
 

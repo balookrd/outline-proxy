@@ -101,7 +101,6 @@ jobs:
         shell: bash
         env:
           BUILD_VERSION_NAME: ${{ steps.vars.outputs.version_name }}
-          BUILD_VERSION_CODE: ${{ github.run_number }}
           BUILD_GIT_SHA: ${{ github.sha }}
           # A tagged release is named by its version; a rolling nightly shares one
           # placeholder version, so the app labels it by channel + commit instead.
@@ -113,6 +112,16 @@ jobs:
         run: |
           set -euo pipefail
           export BUILD_GIT_SHA="${BUILD_GIT_SHA:0:8}"
+
+          # versionCode decides what Android accepts as an upgrade, and the two
+          # channels cannot share a counter: `github.run_number` is per-workflow,
+          # so nightly and tag releases both start at 1. Offsetting one channel
+          # would only move the problem — it makes the other channel permanently
+          # uninstallable over it. Stamp build time instead (epoch minutes, well
+          # inside the 2^31 ceiling): the newer build always wins, whichever
+          # channel it came from, so switching channels works in both directions.
+          export BUILD_VERSION_CODE=$(( $(date -u +%s) / 60 ))
+          echo "versionCode: $BUILD_VERSION_CODE"
 
           # Signing is all-or-nothing (see app/build.gradle.kts): export the
           # keystore path only when a key is actually present, else build unsigned.
