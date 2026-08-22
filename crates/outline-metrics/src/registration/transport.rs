@@ -10,6 +10,7 @@ pub(super) struct TransportFields {
     pub(super) carrier_writer_terminations_total: IntCounterVec,
     pub(super) h3_endpoints_active: IntGaugeVec,
     pub(super) h3_pool_carriers: IntGaugeVec,
+    pub(super) h3_carriers_reaped_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> TransportFields {
@@ -84,6 +85,17 @@ pub(super) fn build(registry: &Registry) -> TransportFields {
         ["kind", "state"]
     );
 
+    // Closing an idle carrier is the only way its socket and 2.87 MiB buffer
+    // come back: QUIC never closes one by itself, because keep-alive PINGs
+    // outrun the idle timeout.
+    let h3_carriers_reaped_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_h3_carriers_reaped_total",
+        "Pooled H3 carriers closed for carrying nothing, by pool.",
+        ["kind"]
+    );
+
     TransportFields {
         transport_connects_total,
         transport_connects_active,
@@ -93,5 +105,6 @@ pub(super) fn build(registry: &Registry) -> TransportFields {
         carrier_writer_terminations_total,
         h3_endpoints_active,
         h3_pool_carriers,
+        h3_carriers_reaped_total,
     }
 }

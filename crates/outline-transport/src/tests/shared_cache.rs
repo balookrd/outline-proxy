@@ -74,7 +74,62 @@ async fn census_sees_live_entries_and_not_swept_ones() {
 
     registry.gc().await;
 
-    let mut ids: Vec<u64> = registry.values().await.iter().map(|conn| conn.id).collect();
+    let mut ids: Vec<u64> = registry.entries().await.iter().map(|(_, conn)| conn.id).collect();
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 3]);
+}
+
+use super::{CarrierIdleState, carriers_to_reap};
+
+fn carrier(slot: u8, active: u64, idle_sweeps: u32) -> CarrierIdleState {
+    CarrierIdleState { slot, active, idle_sweeps }
+}
+
+/// A carrier that is still working is never reaped, however long the pool has
+/// been quiet around it.
+#[test]
+fn busy_carriers_are_never_reaped() {
+    let pool = [carrier(0, 3, 99), carrier(1, 1, 99)];
+    assert!(carriers_to_reap(&pool, 2, 8).is_empty());
+}
+
+/// A brief lull must not cost a connection: dialing one back costs a QUIC and
+/// an HTTP/3 handshake on the next session.
+#[test]
+fn a_short_idle_spell_is_not_enough() {
+    let pool = [carrier(0, 0, 7), carrier(1, 0, 3)];
+    assert!(carriers_to_reap(&pool, 0, 8).is_empty());
+}
+
+/// With the floor already covered by busy carriers, every eligible idle one
+/// goes — that is the memory the reaper exists to return.
+#[test]
+fn idle_carriers_go_once_the_floor_is_covered_by_busy_ones() {
+    let pool = [carrier(0, 5, 0), carrier(1, 2, 0), carrier(2, 0, 9), carrier(3, 0, 12)];
+    let mut reaped = carriers_to_reap(&pool, 2, 8);
+    reaped.sort_unstable();
+    assert_eq!(reaped, vec![2, 3]);
+}
+
+/// The floor is kept out of the idle carriers themselves when nothing is busy,
+/// and what survives is the freshest — the one most likely to be wanted next.
+#[test]
+fn the_floor_is_kept_from_the_freshest_idle_carriers() {
+    let pool = [carrier(0, 0, 20), carrier(1, 0, 9), carrier(2, 0, 40)];
+    assert_eq!(
+        carriers_to_reap(&pool, 1, 8),
+        vec![2, 0],
+        "longest-idle first, and slot 1 stays as the warm floor"
+    );
+}
+
+/// Idle-but-young carriers count towards the floor, so the reaper does not
+/// close an old one only for the pool to fall below its floor anyway.
+#[test]
+fn young_idle_carriers_count_towards_the_floor() {
+    let pool = [carrier(0, 0, 2), carrier(1, 0, 30)];
+    assert!(
+        carriers_to_reap(&pool, 2, 8).is_empty(),
+        "slot 0 is idle but young and fills the floor alongside slot 1"
+    );
 }

@@ -6,8 +6,9 @@
 // live in the parent module (`mod.rs`) because they are the public API
 // consumed by `ws_stream.rs`.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -20,7 +21,8 @@ use url::Url;
 use outline_metrics as metrics;
 
 use crate::shared_cache::{
-    ConnLife, ConnLifeGuard, ConnLifeLevel, SharedConnectionRegistry, classify_by_substrings,
+    CarrierIdleState, ConnLife, ConnLifeGuard, ConnLifeLevel, SharedConnectionRegistry,
+    carriers_to_reap, classify_by_substrings,
 };
 use crate::{AbortOnDrop, DnsCache, TransportStream, bind_addr_for, bind_udp_socket};
 
@@ -109,6 +111,14 @@ const H3_CARRIER_MIN: u8 = 4;
 const H3_CARRIER_CAP: u64 = 32;
 const H3_CARRIER_MAX: u8 = 16;
 
+// Reaping, shared with the XHTTP pool: eight 15-second sweeps of carrying
+// nothing, and one warm carrier per server kept back. The `MIN` above spreads
+// *active* streams, which is moot when there are none; this floor only saves
+// the next stream a handshake, and traffic returning lifts the pool back to
+// `MIN` by itself.
+const REAP_AFTER_SWEEPS: u32 = 8;
+const REAP_KEEP_WARM: u8 = 1;
+
 /// Pure carrier-selection policy, factored out of `pick_h3_carrier_slot` so it
 /// can be unit-tested without a live registry.
 ///
@@ -193,6 +203,9 @@ pub(super) struct SharedH3Connection {
     // (H3_NO_ERROR) prematurely. The h3 layer treats the last SendRequest
     // being dropped as a signal that no more requests will be made.
     send_request: Mutex<H3SendRequestHandle>,
+    /// Consecutive maintenance sweeps that found this carrier empty. Reset the
+    /// moment a stream lands on it.
+    idle_sweeps: AtomicU32,
     /// Soft-close flag: set to `true` by `open_websocket` on timeout so no
     /// new streams are opened, but existing streams continue to work
     /// undisturbed.  Using `connection.close()` was too aggressive — it kills
@@ -679,6 +692,7 @@ async fn connect_h3_connection(
         endpoint,
         connection: connection_handle.clone(),
         send_request: Mutex::new(send_request),
+        idle_sweeps: AtomicU32::new(0),
         closed: AtomicBool::new(false),
         streams_opened,
         active_streams: Arc::new(AtomicU64::new(0)),
@@ -717,19 +731,50 @@ pub(crate) fn classify_h3_close(err: &str) -> &'static str {
 /// after DNS rotation changes the resolved address for a server name).
 pub(crate) async fn gc_shared_h3_connections() {
     h3_registry().gc().await;
-    // Census after the sweep, so dead entries are already gone. `idle` counts
-    // carriers holding an endpoint while carrying no streams — keep-alive PINGs
-    // keep QUIC's idle timeout from ever closing them, so they persist until
-    // the process exits and are exactly what an idle reaper would reclaim.
+
+    // Census after the sweep, so dead entries are already gone, and group by
+    // logical server: the warm floor is per server, not per process.
+    let mut by_server: HashMap<
+        crate::shared_cache::ConnectionKey,
+        Vec<(H3ConnectionKey, Arc<SharedH3Connection>)>,
+    > = HashMap::new();
     let (mut idle, mut busy) = (0usize, 0usize);
-    for conn in h3_registry().values().await {
+    for (key, conn) in h3_registry().entries().await {
         if conn.active() == 0 {
+            conn.idle_sweeps.fetch_add(1, Ordering::Relaxed);
             idle += 1;
         } else {
+            conn.idle_sweeps.store(0, Ordering::Relaxed);
             busy += 1;
         }
+        by_server.entry(key.base.clone()).or_default().push((key, conn));
     }
     metrics::set_h3_pool_carriers(metrics::H3_ENDPOINT_KIND_WS, idle, busy);
+
+    // Nothing else ever closes these. Keep-alive PINGs (8–12 s) outrun QUIC's
+    // idle timeout (28–35 s), so a carrier opened during a burst holds its UDP
+    // socket and 2.87 MiB receive buffer until the process exits — measured on
+    // two lightly-loaded nodes as 24 live endpoints against 3 carrier flows.
+    for (_, carriers) in by_server {
+        let census: Vec<CarrierIdleState> = carriers
+            .iter()
+            .map(|(key, conn)| CarrierIdleState {
+                slot: key.slot,
+                active: conn.active(),
+                idle_sweeps: conn.idle_sweeps.load(Ordering::Relaxed),
+            })
+            .collect();
+        for slot in carriers_to_reap(&census, REAP_KEEP_WARM, REAP_AFTER_SWEEPS) {
+            let Some((key, _)) = carriers.iter().find(|(key, _)| key.slot == slot) else {
+                continue;
+            };
+            // Re-checked under the write lock: a stream may have landed here
+            // since the census was taken.
+            if h3_registry().remove_if(key, |conn| conn.active() == 0).await {
+                metrics::record_h3_carrier_reaped(metrics::H3_ENDPOINT_KIND_WS);
+            }
+        }
+    }
 }
 
 pub(crate) fn is_expected_h3_close(err: &str) -> bool {
