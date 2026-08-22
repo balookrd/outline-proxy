@@ -176,6 +176,20 @@ class MainActivity : ComponentActivity() {
                 var showExternal by remember { mutableStateOf(false) }
                 var showKeepAlive by remember { mutableStateOf(false) }
                 var showProfiles by remember { mutableStateOf(false) }
+                // A tap on the build label asks GitHub what its channel publishes;
+                // an available build is offered as a download, never installed here.
+                var update by remember { mutableStateOf<UpdateChecker.Result.Available?>(null) }
+                // What the version footer appends while an update check or a
+                // download is in flight; null once there is nothing to report.
+                var updateStatus by remember { mutableStateOf<String?>(null) }
+                // Set once an APK is on disk: the footer then reads "tap to
+                // install" and its tap opens an installer instead of re-checking.
+                var downloadedApk by remember { mutableStateOf<String?>(null) }
+                // One download at a time: a second tap used to start a parallel
+                // fetch whose progress callbacks then overwrote the finished
+                // one's terminal status, leaving the footer stuck mid-percentage
+                // while the APK was already on disk.
+                var downloading by remember { mutableStateOf(false) }
 
                 // On a sub-screen the system Back gesture / button should return to
                 // Home, not leave the app. The top "‹ Back" button already does
@@ -302,8 +316,74 @@ class MainActivity : ComponentActivity() {
                         onOpenSplitTunnel = { showSplit = true },
                         onOpenExternalControl = { showExternal = true },
                         onOpenKeepAlive = { showKeepAlive = true },
+                        onCheckForUpdates = {
+                            val apk = downloadedApk
+                            if (downloading) return@HomeScreen
+                            if (apk != null) {
+                                UpdateChecker.openForInstall(this@MainActivity, apk)
+                                return@HomeScreen
+                            }
+                            updateStatus = "checking…"
+                            scope.launch {
+                                when (val result = UpdateChecker.check()) {
+                                    is UpdateChecker.Result.Available -> {
+                                        updateStatus = null
+                                        update = result
+                                    }
+                                    UpdateChecker.Result.UpToDate -> updateStatus = "up to date"
+                                    is UpdateChecker.Result.Failed ->
+                                        updateStatus = "check failed: ${result.reason}"
+                                }
+                            }
+                        },
+                        updateStatus = updateStatus,
                     )
                 }
+                }
+
+                update?.let { available ->
+                    AlertDialog(
+                        onDismissRequest = { update = null },
+                        title = { Text("Update available") },
+                        text = {
+                            Text(
+                                "${available.label} is published for this channel.\n\n" +
+                                    "The APK downloads to your Downloads folder; open it to " +
+                                    "install — the app does not install it for you.",
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                update = null
+                                if (downloading) return@TextButton
+                                downloading = true
+                                updateStatus = "downloading 0%"
+                                // lifecycleScope, not the composition's: a 24 MB
+                                // fetch outlives a recomposition, and a cancelled
+                                // one would freeze the footer at its last percent.
+                                lifecycleScope.launch {
+                                    val outcome = UpdateChecker.download(
+                                        this@MainActivity,
+                                        available,
+                                    ) { percent ->
+                                        if (downloading) updateStatus = "downloading $percent%"
+                                    }
+                                    downloading = false
+                                    updateStatus = when (outcome) {
+                                        is UpdateChecker.Download.Saved -> {
+                                            downloadedApk = outcome.uri
+                                            "downloaded — tap to install"
+                                        }
+                                        is UpdateChecker.Download.Failed ->
+                                            "download failed: ${outcome.reason}"
+                                    }
+                                }
+                            }) { Text("Download") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { update = null }) { Text("Later") }
+                        },
+                    )
                 }
             }
         }
