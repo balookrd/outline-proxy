@@ -100,6 +100,10 @@ class MainActivity : ComponentActivity() {
                 // Whether the running tunnel actually has a live uplink. `connected`
                 // only says the engine is up; this says traffic can flow.
                 var hasLiveLink by remember { mutableStateOf(false) }
+                // Worst of the two transports' last measured latencies: what
+                // turns a flat "Connected" into "Connected · slow" on an
+                // edge-class link. See `LinkQuality`.
+                var linkLatencyMs by remember { mutableStateOf<Int?>(null) }
                 // The brief window right after connect, before the first probe has
                 // established a link — shown as "Connecting…" rather than "No link".
                 var connecting by remember { mutableStateOf(false) }
@@ -143,6 +147,10 @@ class MainActivity : ComponentActivity() {
                             udpFamily = status?.udpFamily
                             udpCarrier = status?.udpCarrier
                             hasLiveLink = status?.hasLiveLink ?: false
+                            linkLatencyMs = LinkQuality.worstOf(
+                                status?.tcpLatencyMs?.toInt(),
+                                status?.udpLatencyMs?.toInt(),
+                            )
                             if (hasLiveLink) lastLinkAt = System.currentTimeMillis()
                         } else {
                             tcpFamily = null
@@ -150,6 +158,7 @@ class MainActivity : ComponentActivity() {
                             udpFamily = null
                             udpCarrier = null
                             hasLiveLink = false
+                            linkLatencyMs = null
                         }
                         // "No link" only after the link has been absent past the
                         // grace window; a healthy connect or a brief flap stays
@@ -267,6 +276,7 @@ class MainActivity : ComponentActivity() {
                         connected = connected,
                         connectedSinceMs = connectedSince,
                         hasLiveLink = hasLiveLink,
+                        linkLatencyMs = linkLatencyMs,
                         connecting = connecting,
                         tcpFamily = tcpFamily,
                         tcpCarrier = tcpCarrier,

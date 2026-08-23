@@ -346,6 +346,23 @@ impl UplinkManager {
         considered > 0 && all_down
     }
 
+    /// Last measured latency of the uplink currently carrying `transport`.
+    ///
+    /// This is the dial/probe round-trip the manager already records, exposed
+    /// for a user-facing status: "connected" is a binary that cannot tell a
+    /// fibre link from a 2G one, where a handshake takes seconds and the tunnel
+    /// technically works while nothing usable gets through. Reads the strict
+    /// active uplink, falling back to the global active — the same resolution
+    /// order the carrier readout uses — and `None` when neither is resolved or
+    /// the uplink has never been measured.
+    pub async fn active_latency(&self, transport: TransportKind) -> Option<Duration> {
+        let index = match self.active_uplink_index_for_transport(transport).await {
+            Some(index) => index,
+            None => self.global_active_uplink_index().await?,
+        };
+        self.inner.with_status(index, |status| status.of(transport).latency)
+    }
+
     /// Like [`Self::has_any_healthy`], but additionally demands *fresh
     /// evidence that this process is still doing the work* — a healthy uplink
     /// whose status was updated within `window`.

@@ -61,6 +61,16 @@ pub struct CarrierStatus {
     /// probe cycle or traffic so far) keeps this `true`, so a starting tunnel
     /// reads as connecting rather than flashing "no link".
     pub has_live_link: bool,
+    /// Last measured latency of the uplink carrying each transport.
+    ///
+    /// `has_live_link` is a binary and cannot separate a fibre path from an
+    /// edge-class one, where the tunnel is honestly up and equally honestly
+    /// useless: a handshake alone eats seconds. Surfacing the number lets the
+    /// UI say "connected, but slow" instead of a flat green that contradicts
+    /// what the user sees. `None` where the transport has no resolved active
+    /// uplink or it has never been measured.
+    pub tcp_latency: Option<std::time::Duration>,
+    pub udp_latency: Option<std::time::Duration>,
 }
 
 /// Read the default group's active TCP/UDP carriers, or `None` if no client is
@@ -78,7 +88,16 @@ pub async fn active_carriers() -> Option<CarrierStatus> {
     // "no link". Both transports must be confirmed down for that claim.
     let has_live_link = !(manager.link_confirmed_down(TransportKind::Tcp).await
         && manager.link_confirmed_down(TransportKind::Udp).await);
-    Some(CarrierStatus { group, tcp, udp, has_live_link })
+    let tcp_latency = manager.active_latency(TransportKind::Tcp).await;
+    let udp_latency = manager.active_latency(TransportKind::Udp).await;
+    Some(CarrierStatus {
+        group,
+        tcp,
+        udp,
+        has_live_link,
+        tcp_latency,
+        udp_latency,
+    })
 }
 
 /// The active carrier for `transport`: the family and effective mode of the wire
