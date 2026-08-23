@@ -42,15 +42,21 @@ fn configure_runtime_defaults(_builder: &mut tokio::runtime::Builder) {}
 async fn async_main() -> Result<()> {
     let AppMode::Serve(config) = AppMode::load()?;
     init_tracing();
+    #[cfg(feature = "mimalloc")]
     spawn_mimalloc_maintenance();
     server::run(config).await
 }
 
 /// Period between forced mimalloc reclamation passes.
+#[cfg(feature = "mimalloc")]
 const MIMALLOC_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Spawn a low-frequency background thread that forces mimalloc to return
 /// decommittable memory to the OS.
+///
+/// Only for the mimalloc build: jemalloc runs its own background thread and
+/// decays per extent rather than per arena, which is why it returns memory
+/// this loop could not.
 ///
 /// mimalloc purges freed pages lazily, driven by allocator activity
 /// (alloc/free traffic). A process that goes idle right after a large
@@ -61,6 +67,7 @@ const MIMALLOC_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// negligible next to the RSS it returns. mimalloc already decommits on
 /// purge by default (`mi_option_purge_decommits = 1`), so reclaimed pages
 /// are handed back to the kernel rather than merely reset.
+#[cfg(feature = "mimalloc")]
 fn spawn_mimalloc_maintenance() {
     let spawned = std::thread::Builder::new()
         .name("mimalloc-purge".to_owned())

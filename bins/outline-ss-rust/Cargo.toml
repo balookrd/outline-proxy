@@ -24,9 +24,10 @@ hyper = { version = "1.8", features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "server", "server-auto", "service", "tokio"] }
 http-body-util = "0.1"
 libc = "0.2"
-libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"] }
+libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"], optional = true }
 lru = "0.18"
-mimalloc = { version = "0.1", default-features = false }
+mimalloc = { version = "0.1", default-features = false, optional = true }
+tikv-jemallocator = { version = "0.6", default-features = false, features = ["background_threads", "stats"], optional = true }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-util = { version = "0.20", default-features = false, features = ["recency"] }
@@ -61,8 +62,15 @@ x509-parser = "0.18"
 zeroize = "1.8"
 
 [features]
-default = ["control"]
+default = ["control", "jemalloc"]
 control = []
+# Allocator, mutually exclusive. jemalloc is the default since 2026-08-23: on
+# the client it cut RSS from 143 MiB to 30 at matched load, and the server has
+# the same symptom — 87-90% of its resident memory sits in dirty mimalloc
+# arenas that never come back, because a partly-used arena cannot be returned
+# and arenas are 32 MiB at minimum. `mimalloc` stays buildable for rollback.
+jemalloc = ["dep:tikv-jemallocator"]
+mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 
 [dev-dependencies]
 proptest = "1.5"
