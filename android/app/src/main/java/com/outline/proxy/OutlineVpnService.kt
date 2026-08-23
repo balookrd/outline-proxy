@@ -59,6 +59,7 @@ class OutlineVpnService : VpnService() {
      * the profile did not declare `[dial]` of its own. An explicit operator
      * value is never overridden, on start or on a later network change.
      */
+    @Volatile
     private var dialBudgetManaged = false
 
     /**
@@ -66,6 +67,7 @@ class OutlineVpnService : VpnService() {
      * signal-strength wobble, and re-applying the same number each time would
      * be pure noise in the log.
      */
+    @Volatile
     private var appliedDialSecs: Int? = null
 
     /**
@@ -523,6 +525,7 @@ class OutlineVpnService : VpnService() {
      * attempt a failure; walking back would leave a 60 s bound slowing every
      * failover down. Both directions are handled: `null` restores the default.
      */
+    @Synchronized
     private fun refreshDialBudget() {
         if (!dialBudgetManaged) return
         val seconds = currentDialSeconds()
@@ -690,6 +693,15 @@ class OutlineVpnService : VpnService() {
         notifJob = notifScope.launch {
             val manager = getSystemService(NotificationManager::class.java)
             while (isActive) {
+                // Safety net for the dial budget. A generation change
+                // (2G -> 3G -> LTE and back) normally arrives as
+                // `onCapabilitiesChanged` on the same Network, but not every
+                // firmware reports the bandwidth estimate again when the radio
+                // technology changes, and a missed event would strand the
+                // tunnel on a budget sized for a network it left. The check is
+                // a capability read plus a comparison against the value already
+                // applied, so a tick that changes nothing costs nothing.
+                refreshDialBudget()
                 runCatching { manager?.notify(NOTIFICATION_ID, currentNotification()) }
                 delay(NOTIFICATION_REFRESH_MS)
             }
