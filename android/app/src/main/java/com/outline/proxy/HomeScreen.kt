@@ -90,6 +90,7 @@ fun HomeScreen(
     connectedSinceMs: Long,
     hasLiveLink: Boolean,
     linkLatencyMs: Int?,
+    link: LinkReadout?,
     connecting: Boolean,
     tcpFamily: String?,
     tcpCarrier: String?,
@@ -117,7 +118,7 @@ fun HomeScreen(
         Header()
         Spacer(Modifier.height(20.dp))
         StatusCard(
-            profile, connected, connectedSinceMs, hasLiveLink, linkLatencyMs, connecting,
+            profile, connected, connectedSinceMs, hasLiveLink, linkLatencyMs, link, connecting,
             tcpFamily, tcpCarrier, udpFamily, udpCarrier, onOpenProfiles,
         )
         Spacer(Modifier.height(16.dp))
@@ -177,6 +178,7 @@ private fun StatusCard(
     connectedSinceMs: Long,
     hasLiveLink: Boolean,
     linkLatencyMs: Int?,
+    link: LinkReadout?,
     connecting: Boolean,
     tcpFamily: String?,
     tcpCarrier: String?,
@@ -240,6 +242,18 @@ private fun StatusCard(
                                 color = if (connected) statusColor else MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium,
+                            )
+                        }
+                        // Why the status reads the way it does: what the phone
+                        // is riding, how fast the platform thinks it is, and what
+                        // it costs the tunnel. Absent until there is something to
+                        // say — an empty line would only push the layout around.
+                        LinkInfo.summary(link)?.let { summary ->
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                summary,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Spacer(Modifier.height(4.dp))

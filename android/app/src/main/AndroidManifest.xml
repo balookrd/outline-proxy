@@ -25,6 +25,13 @@
          WatchdogAlarm runs on an inexact alarm. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Optional, and never requested on its own: it only names the radio
+         technology (LTE / 5G / 2G) on the home screen. Everything the tunnel
+         itself decides — the carrier-dial budget above all — is derived from the
+         bandwidth estimate in NetworkCapabilities, which needs no permission, so
+         denying this costs a label and nothing else. The keep-alive checklist
+         offers it alongside the other grants. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission
         android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
         tools:ignore="BatteryLife" />

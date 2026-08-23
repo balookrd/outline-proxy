@@ -47,6 +47,10 @@ fun KeepAliveScreen(onBack: () -> Unit) {
         ActivityResultContracts.RequestPermission(),
     ) { refresh++ }
 
+    val phoneState = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { refresh++ }
+
     SubScreen(title = "Keeping Alive", onBack = onBack) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             Text(
@@ -122,6 +126,23 @@ fun KeepAliveScreen(onBack: () -> Unit) {
                         "makes some firmware more eager to kill it.",
                     action = "Allow",
                     onAction = { notifications.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                )
+            }
+
+            // Not a keep-alive grant at all, but this is the screen where the app
+            // explains what each permission buys, so it belongs with the others
+            // rather than ambushing the user from the home screen.
+            run {
+                val granted = LinkProbe.canReadRan(context)
+                ChecklistItem(
+                    title = "Network type",
+                    status = if (granted) GrantStatus.GRANTED else GrantStatus.MISSING,
+                    explanation = "Optional. Lets the home screen name the radio technology " +
+                        "(2G / 3G / LTE / 5G) instead of guessing a class from the speed " +
+                        "estimate. Nothing the tunnel decides depends on it — the dial " +
+                        "timeouts are sized from the speed estimate either way.",
+                    action = "Allow",
+                    onAction = { phoneState.launch(Manifest.permission.READ_PHONE_STATE) },
                 )
             }
 
