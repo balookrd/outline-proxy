@@ -69,11 +69,19 @@ object LinkProbe {
             caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> LinkTransport.ETHERNET
             else -> LinkTransport.OTHER
         }
+        val downstreamKbps = caps?.linkDownstreamBandwidthKbps?.takeIf { it > 0 }
         return LinkReadout(
             transport = transport,
-            downstreamKbps = caps?.linkDownstreamBandwidthKbps?.takeIf { it > 0 },
+            downstreamKbps = downstreamKbps,
             ranLabel = if (transport == LinkTransport.CELLULAR) ranLabel(context) else null,
             latencyMs = latencyMs,
+            // What a dial on this link is allowed to take. The readout needs it
+            // to tell a slow measurement from one that simply hit the ceiling.
+            dialBudgetSecs = DialTimeout.secondsFor(
+                isCellular = transport == LinkTransport.CELLULAR,
+                downstreamKbps = downstreamKbps,
+                latencyMs = latencyMs,
+            ),
         )
     }
 
@@ -87,8 +95,8 @@ object LinkProbe {
      *
      * The permission is never requested from here — the Keep Alive checklist
      * offers it alongside the other grants, with the same explanation of what it
-     * buys. Until then the home screen shows the class inferred from bandwidth,
-     * which needs nothing.
+     * buys. Without it the line simply says "Cellular"; nothing else on screen
+     * or in the tunnel's own decisions depends on the answer.
      */
     private fun ranLabel(context: Context): String? {
         if (!canReadRan(context)) return null

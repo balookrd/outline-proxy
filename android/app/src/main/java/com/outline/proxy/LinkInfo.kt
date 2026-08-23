@@ -10,55 +10,39 @@ enum class LinkTransport { WIFI, CELLULAR, ETHERNET, OTHER, NONE }
  *
  * [ranLabel] is the radio access technology as the platform names it, and is
  * `null` whenever it cannot be had: on Wi-Fi, or on cellular without
- * `READ_PHONE_STATE`. The speed class derived from [downstreamKbps] stands in
- * for it there — coarser, but free of any permission.
+ * `READ_PHONE_STATE`.
+ *
+ * [downstreamKbps] is the platform's bandwidth estimate. It is *not* displayed
+ * — firmware invents it, and a figure the user can see is wrong costs more
+ * trust than it buys — but it still sizes the dial budget before anything has
+ * been measured, so it is carried here.
+ *
+ * [dialBudgetSecs] is that budget, needed to judge [latencyMs]: a round-trip
+ * that reaches the budget is a dial that ran out of time, not a link that is
+ * merely slow.
  */
 data class LinkReadout(
     val transport: LinkTransport,
     val downstreamKbps: Int?,
     val ranLabel: String?,
     val latencyMs: Int?,
+    val dialBudgetSecs: Int? = null,
 )
 
 /**
  * Turns what the platform reports about the current link into the one line the
  * home screen shows under the status.
  *
- * Two independent sources, deliberately: the bandwidth estimate is always
- * available and drives both this readout and the carrier-dial budget
- * ([DialTimeout]), while the exact radio technology needs `READ_PHONE_STATE`
- * and is only shown once the user grants it. Nothing here asks for the
- * permission: it is offered as one item among the others on the Keep Alive
- * checklist, where the app already explains what each grant buys.
+ * Only what is actually known is shown: the radio technology, which needs
+ * `READ_PHONE_STATE` and is simply omitted without it, and the round-trip the
+ * core measured. Nothing here asks for the permission — it is offered as one
+ * item among the others on the Keep Alive checklist, where the app already
+ * explains what each grant buys.
  *
  * Kept free of Android calls (only integer constants are referenced, which the
  * compiler inlines) so it can be unit-tested.
  */
 object LinkInfo {
-
-    /**
-     * How slow the link actually is, from the round-trip the core measured on
-     * its own dials — on the same thresholds the dial budget is sized on, so the
-     * words on the card and the budget behind them always tell the same story.
-     *
-     * Deliberately *not* derived from the bandwidth estimate. The estimate is a
-     * claim, and firmware makes it up: one HONOR device reported 14 kbit/s on a
-     * full-signal LTE cell that was carrying traffic fine, on both operators.
-     * Printing "very slow" from that would have been the app arguing with a link
-     * the user can see working. A measured round-trip cannot be invented.
-     *
-     * Named for speed, never for a generation, for the same reason: a phone can
-     * show 5G in the status bar, report LTE from the radio, and still crawl.
-     */
-    fun speedClass(latencyMs: Int?): String? {
-        val ms = latencyMs ?: return null
-        if (ms <= 0) return null
-        return when {
-            ms >= DialTimeout.EDGE_LATENCY_MS -> "very slow"
-            ms >= DialTimeout.SLOW_LATENCY_MS -> "slow"
-            else -> null
-        }
-    }
 
     /**
      * Generation name for a `TelephonyManager.NETWORK_TYPE_*` value, or `null`
@@ -94,31 +78,39 @@ object LinkInfo {
     }
 
     /**
-     * `est. 120 kbit/s` / `est. 24 Mbit/s`, or `null` where the platform has
-     * made no estimate.
+     * `180 ms` / `1.8 s`, or `null` when there is no measurement worth showing.
      *
-     * Labelled an estimate because that is all it is — the figure comes from the
-     * OS, not from anything the tunnel measured, and on some firmware it is
-     * plainly wrong. Shown anyway: when it disagrees with the latency beside it,
-     * that disagreement is itself the useful signal.
+     * A round-trip that reaches [dialBudgetSecs] is discarded rather than
+     * printed: that is a dial which ran out of time, and the number it yields is
+     * the budget, not the link. It reads as a precise measurement while being
+     * none — the first probe after a connect produced exactly "10.0 s" on a
+     * 10-second budget — and a wrong number costs more than a missing one.
+     * Values at 80% of the budget and above are treated the same way, since a
+     * dial that nearly expired is equally uninformative.
      */
-    fun bandwidthLabel(downstreamKbps: Int?): String? {
-        val kbps = downstreamKbps ?: return null
-        if (kbps <= 0) return null
-        return if (kbps < 1000) "est. $kbps kbit/s" else "est. ${kbps / 1000} Mbit/s"
-    }
-
-    /** `180 ms` / `1.8 s`, or `null` before anything has been measured. */
-    fun latencyLabel(latencyMs: Int?): String? {
+    fun latencyLabel(latencyMs: Int?, dialBudgetSecs: Int? = null): String? {
         val ms = latencyMs ?: return null
         if (ms <= 0) return null
+        val budgetMs = (dialBudgetSecs ?: DEFAULT_DIAL_BUDGET_SECS) * 1000
+        if (ms >= budgetMs * TIMEOUT_SUSPICION_NUMERATOR / TIMEOUT_SUSPICION_DENOMINATOR) return null
         return if (ms < 1000) "$ms ms" else String.format(java.util.Locale.ROOT, "%.1f s", ms / 1000.0)
     }
 
+    /** Mirrors the engine default; used when the app set no budget of its own. */
+    private const val DEFAULT_DIAL_BUDGET_SECS = 10
+
+    private const val TIMEOUT_SUSPICION_NUMERATOR = 8
+    private const val TIMEOUT_SUSPICION_DENOMINATOR = 10
+
     /**
-     * The line itself: what the link is, how fast the platform thinks it is, and
-     * what it actually costs the tunnel — dropping any part that is unknown
-     * rather than printing a placeholder.
+     * The line itself: what the link is, and what it costs the tunnel.
+     *
+     * Two facts, both of them measured or named by the platform — no derived
+     * verdicts. The bandwidth estimate and the speed class it fed used to be
+     * here and were removed: the estimate is routinely invented by firmware
+     * (14 kbit/s on a working LTE cell), and a label computed from a lie is a
+     * lie with more confidence. The round-trip is the honest number, so it
+     * carries the line alone.
      */
     fun summary(link: LinkReadout?): String? {
         if (link == null || link.transport == LinkTransport.NONE) return null
@@ -130,16 +122,7 @@ object LinkInfo {
             LinkTransport.OTHER -> "Network"
             LinkTransport.NONE -> return null
         }
-        // The speed class sits *beside* the technology, never instead of it:
-        // "5G · very slow" is the whole point — the case where the status bar
-        // promises one thing and the link delivers another is exactly what the
-        // user is trying to understand.
-        val parts = listOfNotNull(
-            head,
-            speedClass(link.latencyMs),
-            bandwidthLabel(link.downstreamKbps),
-            latencyLabel(link.latencyMs),
-        )
+        val parts = listOfNotNull(head, latencyLabel(link.latencyMs, link.dialBudgetSecs))
         return parts.joinToString(" · ")
     }
 }
