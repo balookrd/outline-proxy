@@ -104,6 +104,10 @@ class MainActivity : ComponentActivity() {
                 // turns a flat "Connected" into "Connected · slow" on an
                 // edge-class link. See `LinkQuality`.
                 var linkLatencyMs by remember { mutableStateOf<Int?>(null) }
+                // What the phone is riding right now — transport, the platform's
+                // bandwidth estimate, and the radio technology when it can be
+                // read. Shown under the status so "slow" comes with a reason.
+                var link by remember { mutableStateOf<LinkReadout?>(null) }
                 // The brief window right after connect, before the first probe has
                 // established a link — shown as "Connecting…" rather than "No link".
                 var connecting by remember { mutableStateOf(false) }
@@ -152,6 +156,12 @@ class MainActivity : ComponentActivity() {
                                 status?.udpLatencyMs?.toInt(),
                             )
                             if (hasLiveLink) lastLinkAt = System.currentTimeMillis()
+                            // Read after the latency so the line and the status
+                            // agree within a tick. Off the main thread: it is
+                            // several binder round trips.
+                            link = withContext(Dispatchers.IO) {
+                                runCatching { LinkProbe.read(context, linkLatencyMs) }.getOrNull()
+                            }
                         } else {
                             tcpFamily = null
                             tcpCarrier = null
@@ -159,6 +169,13 @@ class MainActivity : ComponentActivity() {
                             udpCarrier = null
                             hasLiveLink = false
                             linkLatencyMs = null
+                            // Still worth showing with the tunnel down: seeing
+                            // "Cellular · 2G-class" before connecting explains
+                            // what is about to happen. Only the latency is
+                            // missing, since nothing has measured anything yet.
+                            link = withContext(Dispatchers.IO) {
+                                runCatching { LinkProbe.read(context, null) }.getOrNull()
+                            }
                         }
                         // "No link" only after the link has been absent past the
                         // grace window; a healthy connect or a brief flap stays
@@ -277,6 +294,7 @@ class MainActivity : ComponentActivity() {
                         connectedSinceMs = connectedSince,
                         hasLiveLink = hasLiveLink,
                         linkLatencyMs = linkLatencyMs,
+                        link = link,
                         connecting = connecting,
                         tcpFamily = tcpFamily,
                         tcpCarrier = tcpCarrier,

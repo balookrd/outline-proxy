@@ -425,7 +425,7 @@ class OutlineVpnService : VpnService() {
         val bestMatching = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                if (bestMatching) bind(network) else bind(pickBest(cm))
+                if (bestMatching) bind(network) else bind(LinkProbe.bestNonVpn(cm))
                 refreshDialBudget()
             }
 
@@ -454,7 +454,7 @@ class OutlineVpnService : VpnService() {
                 if (bestMatching) {
                     if (underlyingNetwork == network) bind(null)
                 } else {
-                    bind(pickBest(cm))
+                    bind(LinkProbe.bestNonVpn(cm))
                 }
                 refreshDialBudget()
             }
@@ -508,7 +508,7 @@ class OutlineVpnService : VpnService() {
      */
     private fun currentDialSeconds(): Int? = runCatching {
         val cm = getSystemService(ConnectivityManager::class.java) ?: return@runCatching null
-        val network = underlyingNetwork ?: pickBest(cm) ?: return@runCatching null
+        val network = underlyingNetwork ?: LinkProbe.bestNonVpn(cm) ?: return@runCatching null
         val caps = cm.getNetworkCapabilities(network) ?: return@runCatching null
         DialTimeout.secondsFor(
             isCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
@@ -544,34 +544,6 @@ class OutlineVpnService : VpnService() {
         underlyingNetwork = network
         setUnderlyingNetworks(network?.let { arrayOf(it) })
         Log.i(TAG, "underlying network -> ${network ?: "system default"}")
-    }
-
-    /**
-     * Pre-31 fallback: rank the currently connected non-VPN networks ourselves.
-     * Validated beats unvalidated, then Ethernet > Wi-Fi > cellular > anything
-     * else — the same order the platform's best-matching callback would apply.
-     */
-    @Suppress("DEPRECATION") // getAllNetworks(): only reached below API 31.
-    private fun pickBest(cm: ConnectivityManager): Network? =
-        cm.allNetworks
-            .mapNotNull { n -> cm.getNetworkCapabilities(n)?.let { n to it } }
-            .filter {
-                it.second.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                    it.second.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-            }
-            .maxWithOrNull(
-                compareBy(
-                    { it.second.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) },
-                    { transportRank(it.second) },
-                ),
-            )
-            ?.first
-
-    private fun transportRank(caps: NetworkCapabilities): Int = when {
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 3
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 2
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 1
-        else -> 0
     }
 
     private fun unregisterNetworkCallback() {

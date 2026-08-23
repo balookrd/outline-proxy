@@ -275,6 +275,28 @@ re-reports the bandwidth estimate when only the radio technology changes, the
 budget is also re-checked on the service's existing 2-second tick — a capability
 read and a comparison, free when nothing moved.
 
+### What the home screen says about the link
+
+Under the tunnel status the card shows the network the tunnel is actually
+riding: `Wi-Fi · ~90 Mbit/s · 20 ms`, or `Cellular · 2G-class · ~120 kbit/s ·
+4.2 s`. Three independent things, and any of them is dropped rather than faked
+when it is unknown:
+
+- **What the link is.** Wi-Fi and Ethernet name themselves. A cellular link
+  names its radio technology (2G / 3G / LTE / 5G) when the app is allowed to
+  read it, and otherwise falls back to a speed class inferred from the
+  platform's bandwidth estimate — the same thresholds that size the dial budget,
+  so the label and the budget always tell the same story.
+- **How fast the platform thinks it is** — the estimate itself.
+- **What it costs the tunnel** — the last latency the core measured on the
+  uplink, which is the number behind "Connected · slow".
+
+Naming the radio technology needs `READ_PHONE_STATE`. The app never asks for it
+on its own: it sits on the **Keeping Alive** checklist with the other grants,
+marked optional, because nothing the tunnel decides depends on it — the dial
+budget is sized from the bandwidth estimate either way, and denying it costs a
+label and nothing else.
+
 ## External control (`outline://`)
 
 Automation apps (Tasker, launcher shortcuts, `adb`) can drive the tunnel over a
