@@ -110,12 +110,20 @@ const H3_CARRIER_MIN: u8 = 4;
 const H3_CARRIER_CAP: u64 = 32;
 const H3_CARRIER_MAX: u8 = 16;
 
-// Reaping, shared with the XHTTP pool: eight 15-second sweeps of carrying
-// nothing, and one warm carrier per server kept back. The `MIN` above spreads
-// *active* streams, which is moot when there are none; this floor only saves
-// the next stream a handshake, and traffic returning lifts the pool back to
+// Twenty-four sweeps at 15 s each: six minutes of carrying nothing before a
+// carrier is closed. Two minutes was too eager — measured on 2026-08-23, both a
+// loaded and an idle node closed and re-dialed carriers at the same rate (3-9
+// reaped against 4-10 dialed per five minutes, ~70 QUIC+HTTP/3 handshakes an
+// hour), meaning the pool kept discarding carriers it wanted back within
+// minutes. Six minutes outlasts that gap while still releasing genuinely
+// abandoned carriers, and since the move to jemalloc a carrier held a few
+// minutes longer costs almost nothing.
+//
+// One warm carrier per server is kept, not `MIN`: the floor above spreads
+// *active* streams, which is moot when there are none, while this floor only
+// saves the next stream a handshake. Traffic returning lifts the pool back to
 // `MIN` by itself.
-const REAP_AFTER_SWEEPS: u32 = 8;
+const REAP_AFTER_SWEEPS: u32 = 24;
 const REAP_KEEP_WARM: u8 = 1;
 
 /// Pure carrier-selection policy, factored out of `pick_h3_carrier_slot` so it
