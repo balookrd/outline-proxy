@@ -17,9 +17,16 @@
 //! the first place — the tunnel converges on carrying nothing at all. Raising
 //! `[dial] timeout_secs` trades worst-case failover latency for the
 //! ability to complete a handshake on such a link.
+//!
+//! The budget is not fixed for the process: [`set_dial_timeout`] re-sizes it
+//! when the link underneath changes, so a phone that starts on Wi-Fi and walks
+//! into a 2G cell widens the bound instead of failing every dial until someone
+//! reconnects it.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+use tracing::info;
 
 /// Bound for establishing a fresh carrier (TCP + TLS + HTTP upgrade, or the
 /// QUIC + HTTP/3 handshake) when nothing is configured.
@@ -40,22 +47,55 @@ const MAX_DIAL_TIMEOUT: Duration = Duration::from_secs(120);
 const H3_STREAM_NUMERATOR: u32 = 7;
 const H3_STREAM_DENOMINATOR: u32 = 10;
 
-static DIAL_TIMEOUT: OnceLock<Duration> = OnceLock::new();
-
-/// Install the configured dial budget. `None` leaves the default in place.
+/// Configured budget in milliseconds, or `0` for "nothing set — use the
+/// default".
 ///
-/// Called once during startup, before any dial. Later calls are ignored, which
-/// keeps the value stable for the process lifetime — these bounds are read on
-/// the dial path and must not shift underneath an in-flight handshake.
+/// An atomic rather than a `OnceLock` because the right budget is a property of
+/// the *network*, not of the process: a phone that starts on Wi-Fi and walks
+/// into a 2G cell needs the wider bound without tearing the tunnel down, and an
+/// embedder that can see the link change is the only party that knows. Each
+/// dial reads the value once when it starts, so a change applies to dials that
+/// begin after it and never moves the deadline of one already in flight.
+static DIAL_TIMEOUT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Install the configured dial budget from config. `None` leaves the default.
 pub fn init_dial_timeout(timeout: Option<Duration>) {
     if let Some(configured) = timeout {
-        let _ = DIAL_TIMEOUT.set(clamp_dial_timeout(configured));
+        store_dial_timeout(configured);
+    }
+}
+
+/// Re-size the budget for the link now underneath the tunnel.
+///
+/// Meant for an embedder that watches the platform's network state (the Android
+/// `VpnService`). Takes effect on the next dial; in-flight handshakes keep the
+/// deadline they started with. `None` restores the default — the caller saying
+/// "this link needs nothing special", not "leave whatever was there".
+pub fn set_dial_timeout(timeout: Option<Duration>) {
+    match timeout {
+        Some(configured) => store_dial_timeout(configured),
+        None => {
+            if DIAL_TIMEOUT_MS.swap(0, Ordering::Relaxed) != 0 {
+                info!("carrier-dial budget reset to the default");
+            }
+        },
+    }
+}
+
+fn store_dial_timeout(configured: Duration) {
+    let clamped = clamp_dial_timeout(configured);
+    let millis = clamped.as_millis() as u64;
+    if DIAL_TIMEOUT_MS.swap(millis, Ordering::Relaxed) != millis {
+        info!(budget_secs = clamped.as_secs(), "carrier-dial budget set");
     }
 }
 
 /// Bound for establishing a fresh carrier of any family.
 pub(crate) fn fresh_connect_timeout() -> Duration {
-    DIAL_TIMEOUT.get().copied().unwrap_or(DEFAULT_DIAL_TIMEOUT)
+    match DIAL_TIMEOUT_MS.load(Ordering::Relaxed) {
+        0 => DEFAULT_DIAL_TIMEOUT,
+        millis => Duration::from_millis(millis),
+    }
 }
 
 /// Bound for issuing a CONNECT/upgrade request on an already-established H2

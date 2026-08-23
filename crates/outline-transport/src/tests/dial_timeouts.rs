@@ -41,3 +41,42 @@ fn the_h3_stream_bound_scales_with_the_dial_budget() {
     // …and never collapses to nothing at the floor.
     assert!(h3_stream_from(MIN_DIAL_TIMEOUT) >= Duration::from_secs(1));
 }
+
+/// The whole point of the atomic: a phone that starts on Wi-Fi and walks into a
+/// 2G cell has to widen the bound without the tunnel being torn down.
+///
+/// Serialised with the reset test below — they share process-wide state, and
+/// Rust runs tests in parallel by default.
+#[test]
+fn the_budget_can_be_re_sized_and_reset() {
+    let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    set_dial_timeout(Some(Duration::from_secs(60)));
+    assert_eq!(fresh_connect_timeout(), Duration::from_secs(60));
+    assert_eq!(h3_open_stream_timeout(), Duration::from_secs(42));
+
+    // Walking back onto a fast link restores the default rather than leaving the
+    // wide bound behind, where it would slow every failover down.
+    set_dial_timeout(None);
+    assert_eq!(fresh_connect_timeout(), DEFAULT_DIAL_TIMEOUT);
+
+    // Out-of-range values are clamped on this path too.
+    set_dial_timeout(Some(Duration::from_millis(1)));
+    assert_eq!(fresh_connect_timeout(), MIN_DIAL_TIMEOUT);
+    set_dial_timeout(None);
+}
+
+/// `init_dial_timeout(None)` is the "config said nothing" case and must not
+/// disturb a budget an embedder already installed.
+#[test]
+fn config_silence_does_not_clear_an_installed_budget() {
+    let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    set_dial_timeout(Some(Duration::from_secs(30)));
+    init_dial_timeout(None);
+    assert_eq!(fresh_connect_timeout(), Duration::from_secs(30));
+    set_dial_timeout(None);
+}
+
+/// Guards the process-wide budget for the two tests that mutate it.
+static STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -125,7 +125,7 @@ use tokio::net::TcpStream;
 // Re-export resumption surface so callers in outline-uplink (and any
 // future user) can reach `SessionId`, `global_resume_cache`, and friends
 // without taking a direct dependency on the inner module path.
-pub use dial_timeouts::{DEFAULT_DIAL_TIMEOUT, init_dial_timeout};
+pub use dial_timeouts::{DEFAULT_DIAL_TIMEOUT, init_dial_timeout, set_dial_timeout};
 pub use resumption::{ResumeCache, SessionId, UdpResumeStore, global_resume_cache};
 
 mod carrier_loss;
