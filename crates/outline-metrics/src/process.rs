@@ -146,9 +146,9 @@ pub fn init() {
 pub fn update_process_memory(
     rss_bytes: Option<u64>,
     virtual_bytes: Option<u64>,
-    _heap_bytes: Option<u64>,
+    heap_bytes: Option<u64>,
     heap_allocated_bytes: Option<u64>,
-    _heap_free_bytes: Option<u64>,
+    heap_free_bytes: Option<u64>,
     heap_mode: &'static str,
     open_fds: Option<u64>,
     thread_count: Option<u64>,
@@ -163,6 +163,15 @@ pub fn update_process_memory(
     METRICS
         .process_heap_allocated_bytes
         .set(heap_allocated_bytes.unwrap_or(0) as f64);
+    // Published only when the allocator itself reported them; the estimating
+    // sampler passes `None` and these stay at zero, which reads as "no data"
+    // rather than as a heap with nothing free in it.
+    METRICS
+        .process_heap_resident_bytes
+        .set(heap_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_heap_free_bytes
+        .set(heap_free_bytes.unwrap_or(0) as f64);
     for mode in ["exact", "estimated", "unavailable"] {
         METRICS
             .process_heap_mode_info

@@ -89,6 +89,8 @@ impl Metrics {
             process_resident_memory_bytes: proc.process_resident_memory_bytes,
             process_virtual_memory_bytes: proc.process_virtual_memory_bytes,
             process_heap_allocated_bytes: proc.process_heap_allocated_bytes,
+            process_heap_resident_bytes: proc.process_heap_resident_bytes,
+            process_heap_free_bytes: proc.process_heap_free_bytes,
             process_heap_mode_info: proc.process_heap_mode_info,
             process_open_fds: proc.process_open_fds,
             process_threads: proc.process_threads,
@@ -103,6 +105,7 @@ impl Metrics {
             h3_endpoints_active: t.h3_endpoints_active,
             h3_pool_carriers: t.h3_pool_carriers,
             h3_carriers_reaped_total: t.h3_carriers_reaped_total,
+            h3_carriers_dialed_total: t.h3_carriers_dialed_total,
             #[cfg(feature = "tun")]
             tun_packets_total: tun.tun_packets_total,
             #[cfg(feature = "tun")]

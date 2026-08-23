@@ -92,7 +92,38 @@ fn sample_process_rss_bytes() -> Option<u64> {
     None
 }
 
-#[cfg(target_os = "linux")]
+/// Heap figures straight from jemalloc: `(resident, allocated, free, mode)`.
+///
+/// This is the only configuration where the numbers are real. The estimating
+/// path below reports `VmData`, which is every anonymous mapping the process
+/// owns — on a node measured on 2026-08-22 it claimed 105 MiB of "heap" against
+/// 26 MiB of RSS. jemalloc instead reports what it handed out (`allocated`) and
+/// what it holds from the OS (`resident`); the difference is memory the
+/// allocator is sitting on, which is exactly the quantity every question about
+/// fragmentation here has needed.
+#[cfg(all(target_os = "linux", feature = "jemalloc"))]
+fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'static str) {
+    use tikv_jemalloc_ctl::{epoch, stats};
+
+    // jemalloc's counters are a snapshot refreshed on demand; without advancing
+    // the epoch every read returns the values from process start.
+    if epoch::advance().is_err() {
+        return (None, None, None, "unavailable");
+    }
+    let (Ok(resident), Ok(allocated)) = (stats::resident::read(), stats::allocated::read()) else {
+        return (None, None, None, "unavailable");
+    };
+    let resident = resident as u64;
+    let allocated = allocated as u64;
+    (
+        Some(resident),
+        Some(allocated),
+        Some(resident.saturating_sub(allocated)),
+        "exact",
+    )
+}
+
+#[cfg(all(target_os = "linux", not(feature = "jemalloc")))]
 fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'static str) {
     let estimated_heap_bytes =
         read_proc_status_kib("VmData").map(|value_kib| value_kib.saturating_mul(1024));

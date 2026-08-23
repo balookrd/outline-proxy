@@ -140,6 +140,7 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/control/routes" => "/control/routes",
         "/control/routes/reorder" => "/control/routes/reorder",
         "/control/apply" => "/control/apply",
+        "/control/alloc" => "/control/alloc",
         _ => "other",
     };
 
@@ -152,6 +153,11 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/switch" => {
             let response = handle_switch(&request, state.uplinks.clone()).await;
             record_metrics_http_request("/switch", response.status().as_u16());
+            response
+        },
+        "/control/alloc" => {
+            let response = super::alloc::handle_alloc(&request).await;
+            record_metrics_http_request("/control/alloc", response.status().as_u16());
             response
         },
         "/control/topology" => {

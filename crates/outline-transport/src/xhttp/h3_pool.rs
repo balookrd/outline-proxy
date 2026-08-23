@@ -253,6 +253,7 @@ pub(super) async fn acquire(
     }
 
     let carrier = Arc::new(dial(server_addr, host, fwmark, key.clone()).await?);
+    metrics::record_h3_carrier_dialed(metrics::H3_ENDPOINT_KIND_XHTTP);
     registry().insert(key, Arc::clone(&carrier)).await;
     Ok(session_on(carrier))
 }
