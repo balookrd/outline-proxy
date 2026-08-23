@@ -89,6 +89,7 @@ fun HomeScreen(
     connected: Boolean,
     connectedSinceMs: Long,
     hasLiveLink: Boolean,
+    linkLatencyMs: Int?,
     connecting: Boolean,
     tcpFamily: String?,
     tcpCarrier: String?,
@@ -116,7 +117,7 @@ fun HomeScreen(
         Header()
         Spacer(Modifier.height(20.dp))
         StatusCard(
-            profile, connected, connectedSinceMs, hasLiveLink, connecting,
+            profile, connected, connectedSinceMs, hasLiveLink, linkLatencyMs, connecting,
             tcpFamily, tcpCarrier, udpFamily, udpCarrier, onOpenProfiles,
         )
         Spacer(Modifier.height(16.dp))
@@ -175,6 +176,7 @@ private fun StatusCard(
     connected: Boolean,
     connectedSinceMs: Long,
     hasLiveLink: Boolean,
+    linkLatencyMs: Int?,
     connecting: Boolean,
     tcpFamily: String?,
     tcpCarrier: String?,
@@ -214,7 +216,11 @@ private fun StatusCard(
                         val dots = connectingDots(active = connecting)
                         val statusText = when {
                             !connected -> "Disconnected"
-                            hasLiveLink -> "Connected"
+                            // A live link is not the same as a usable one: on an
+                            // edge-class network the tunnel is up while nothing
+                            // loads, so the label says so rather than sitting on
+                            // a green the user can see is wrong.
+                            hasLiveLink -> LinkQuality.connectedLabel(linkLatencyMs)
                             connecting -> "Connecting$dots"
                             else -> "No link"
                         }

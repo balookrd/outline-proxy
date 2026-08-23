@@ -207,6 +207,13 @@ pub struct TunnelStatus {
     /// `true` when at least one uplink is healthy on TCP or UDP — the tunnel has
     /// a live path. `false` means the engine is up but no link is alive.
     pub has_live_link: bool,
+    /// Last measured latency of the uplink carrying each transport, in
+    /// milliseconds. A live link says nothing about whether it is usable: on an
+    /// edge-class network the tunnel is up and a handshake still takes seconds,
+    /// so the UI needs the number to qualify its own green. `None` where the
+    /// transport has no active uplink or none has been measured yet.
+    pub tcp_latency_ms: Option<u32>,
+    pub udp_latency_ms: Option<u32>,
 }
 
 /// Read the active carriers, or `None` if the client is not running. Drives the
@@ -218,11 +225,18 @@ pub fn tunnel_status() -> Option<TunnelStatus> {
     // The FFI thread is not a Tokio worker, so `block_on` is legal here; the
     // read is sub-millisecond, so holding the ENGINE lock across it is fine.
     let status = engine.runtime.block_on(outline_ws_rust::active_carriers())?;
+    // Saturating: a latency past u32::MAX ms is a broken measurement, and the
+    // UI only ever compares it against a "this is slow" threshold anyway.
+    let to_millis = |d: Option<std::time::Duration>| {
+        d.map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX))
+    };
     Some(TunnelStatus {
         tcp_family: status.tcp.as_ref().map(|c| c.family.clone()),
         tcp_carrier: status.tcp.map(|c| c.mode),
         udp_family: status.udp.as_ref().map(|c| c.family.clone()),
         udp_carrier: status.udp.map(|c| c.mode),
         has_live_link: status.has_live_link,
+        tcp_latency_ms: to_millis(status.tcp_latency),
+        udp_latency_ms: to_millis(status.udp_latency),
     })
 }

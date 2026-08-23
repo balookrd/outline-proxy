@@ -612,7 +612,14 @@ class OutlineVpnService : VpnService() {
      */
     private fun currentNotification(): Notification {
         val running = runCatching { isRunning() }.getOrDefault(false)
-        val hasLink = runCatching { tunnelStatus()?.hasLiveLink ?: false }.getOrDefault(false)
+        val status0 = runCatching { tunnelStatus() }.getOrNull()
+        val hasLink = status0?.hasLiveLink ?: false
+        // Same qualifier the home screen applies: an edge-class link is up and
+        // unusable at once, and the banner is where the user looks first.
+        val latencyMs = LinkQuality.worstOf(
+            status0?.tcpLatencyMs?.toInt(),
+            status0?.udpLatencyMs?.toInt(),
+        )
         // The core health flag is instantaneous and can blip false for a tick;
         // keep "Connecting…" until the link has been absent past the grace window.
         if (hasLink) lastLinkAtMs = System.currentTimeMillis()
@@ -620,7 +627,7 @@ class OutlineVpnService : VpnService() {
             System.currentTimeMillis() - lastLinkAtMs < NO_LINK_GRACE_MS
         val status = when {
             !running -> "Disconnected"
-            hasLink -> "Connected"
+            hasLink -> LinkQuality.connectedLabel(latencyMs)
             connecting -> "Connecting…"
             else -> "No link"
         }
