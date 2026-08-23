@@ -160,7 +160,9 @@ impl TunTcpEngine {
                         // direction — writing bytes into the tunnel proves only
                         // that we wrote them. The call rate-limits itself to one
                         // status write per 5 s, so this stays cheap per chunk.
-                        manager.report_active_traffic(uplink_index, TransportKind::Tcp).await;
+                        manager
+                            .report_downlink_delivery(uplink_index, TransportKind::Tcp)
+                            .await;
 
                         if backlog_pressure.should_abort {
                             engine.abort_tun_tcp_backlog(&key, &flow, &backlog_pressure).await;

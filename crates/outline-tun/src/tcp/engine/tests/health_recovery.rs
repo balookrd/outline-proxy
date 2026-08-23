@@ -112,4 +112,15 @@ async fn tun_downlink_traffic_restores_uplink_health_without_probe() {
         "downlink traffic did not restore uplink health: `healthy` is a one-way \
          door on the TUN path, so the tunnel reads as down while it carries data"
     );
+
+    // ...and only the verdict. One flow's downlink says this path still
+    // delivers; it does not say fresh dials succeed, so the cooldown the
+    // failure stamped has to stand until it expires on its own. Otherwise a
+    // single busy flow would keep clearing the evidence that every *new*
+    // connection is failing, and selection would never move off the uplink.
+    assert!(
+        !health.has_any_healthy(TransportKind::Tcp).await,
+        "downlink delivery cleared the failure cooldown; one flow's bytes must \
+         not vouch for new sessions"
+    );
 }

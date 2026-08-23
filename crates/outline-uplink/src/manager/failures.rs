@@ -16,6 +16,21 @@ use super::mode_downgrade::ModeDowngradeTrigger;
 
 const PROBE_WAKEUP_MIN_INTERVAL: Duration = Duration::from_secs(15);
 
+/// How much a liveness report is allowed to undo.
+///
+/// Both scopes prove the same narrow thing — bytes moved — but they differ in
+/// what the caller can vouch for beyond that, and therefore in how much failure
+/// evidence they may erase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LivenessScope {
+    /// The caller owns the session end to end and its dial is what established
+    /// the path (the SOCKS relay). Clears the failure streaks and the cooldown.
+    Session,
+    /// Bytes arrived from the uplink on a path someone else established (the
+    /// TUN downlink readers). Clears the health verdict only.
+    Delivery,
+}
+
 /// Records `now` as the most recent probe wakeup if at least `min_interval`
 /// has elapsed since the previous one.  Returns `true` when the timestamp was
 /// refreshed (caller should fire the wakeup), `false` when the rate-limit
@@ -660,7 +675,8 @@ impl UplinkManager {
         }
     }
 
-    /// Called when real traffic successfully flows through an uplink.
+    /// Called when real traffic successfully flows through a session this
+    /// caller owns end to end (the SOCKS relay).
     ///
     /// Updates the activity timestamp (rate-limited to once per 5 s to keep
     /// write-lock contention low for high-frequency UDP callers), marks the
@@ -669,19 +685,48 @@ impl UplinkManager {
     /// evidence of liveness than a probe ping/pong, so we treat it
     /// accordingly.
     pub async fn report_active_traffic(&self, index: usize, transport: TransportKind) {
+        self.report_liveness(index, transport, LivenessScope::Session).await
+    }
+
+    /// Called when downlink bytes arrive from an uplink on the TUN path.
+    ///
+    /// Weaker than [`Self::report_active_traffic`] on purpose. The TUN engine
+    /// carries every app on the device through one uplink, so a single
+    /// long-lived flow's downlink proves that *this* path still delivers — it
+    /// says nothing about whether fresh dials succeed. Erasing the failure
+    /// streaks and the cooldown on that evidence would let one busy flow mask a
+    /// group where every new connection fails, and suppress the failover that
+    /// evidence should trigger.
+    ///
+    /// So this clears the health verdict and nothing else: enough to leave a
+    /// "no link" state that no other signal can lift when no `[probe]` is
+    /// configured, while selection keeps treating the uplink as unproven until
+    /// the cooldown expires on its own.
+    pub async fn report_downlink_delivery(&self, index: usize, transport: TransportKind) {
+        self.report_liveness(index, transport, LivenessScope::Delivery).await
+    }
+
+    async fn report_liveness(&self, index: usize, transport: TransportKind, scope: LivenessScope) {
         let now = Instant::now();
         // Fast path: skip the write lock when we recently reported for this
-        // transport. Read `last_active` under the lock without cloning the whole
+        // transport. Read the stamp under the lock without cloning the whole
         // status — it owns several Vecs + a String, and this runs per downlink
         // chunk on the SOCKS relay.
-        let recently_active = self.inner.with_status(index, |s| {
-            let last = match transport {
-                TransportKind::Tcp => s.tcp.last_active,
-                TransportKind::Udp => s.udp.last_active,
-            };
-            last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5))
+        //
+        // Skipping is only safe while there is nothing to repair. A standing
+        // `Some(false)` verdict makes this report the one signal that can lift
+        // it where no `[probe]` is configured, and the rate limit — meant to
+        // spare a lock, not to gate health — would hold the tunnel at "no link"
+        // for up to five seconds past the traffic disproving it. A failure
+        // landing right after a chunk is exactly that case, so it is common.
+        let can_skip = self.inner.with_status(index, |s| {
+            let plane = s.of(transport);
+            let recent = plane
+                .last_active
+                .is_some_and(|t| now.duration_since(t) < Duration::from_secs(5));
+            recent && plane.healthy != Some(false)
         });
-        if recently_active {
+        if can_skip {
             return;
         }
         let uplink_name = self.inner.uplinks[index].name.clone();
@@ -690,11 +735,13 @@ impl UplinkManager {
         let probe_enabled = self.inner.probe.enabled();
         let mut did_update = false;
         self.inner.with_status_mut(index, |status| {
+            let needs_repair = status.of(transport).healthy == Some(false);
             let last = match transport {
                 TransportKind::Tcp => &mut status.tcp.last_active,
                 TransportKind::Udp => &mut status.udp.last_active,
             };
-            if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5)) {
+            if !needs_repair && last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5))
+            {
                 return;
             }
             *last = Some(now);
@@ -711,14 +758,20 @@ impl UplinkManager {
                     // runtime-failure streak regardless of who owns the health
                     // bit — even when probe is authoritative, we should not
                     // escalate to a health flip while the data path is alive.
-                    status.tcp.consecutive_runtime_failures = 0;
-                    status.tcp.chunk0_consecutive_failures = 0;
+                    // Session scope only: see `report_downlink_delivery` for why
+                    // TUN downlink must not erase this evidence.
+                    if scope == LivenessScope::Session {
+                        status.tcp.consecutive_runtime_failures = 0;
+                        status.tcp.chunk0_consecutive_failures = 0;
+                    }
                     if !probe_enabled {
                         status.tcp.healthy = Some(true);
-                        status.tcp.consecutive_failures = 0;
-                        // When probe is disabled active traffic is the only health
-                        // signal, so clear the cooldown immediately.
-                        status.tcp.cooldown_until = None;
+                        if scope == LivenessScope::Session {
+                            status.tcp.consecutive_failures = 0;
+                            // When probe is disabled active traffic is the only
+                            // health signal, so clear the cooldown immediately.
+                            status.tcp.cooldown_until = None;
+                        }
                     }
                     // When probe is enabled it is the authoritative source of health.
                     // Do not clear the cooldown from in-flight traffic: a session
@@ -730,11 +783,15 @@ impl UplinkManager {
                     // failed uplink before the probe has had a chance to confirm.
                 },
                 TransportKind::Udp => {
-                    status.udp.consecutive_runtime_failures = 0;
+                    if scope == LivenessScope::Session {
+                        status.udp.consecutive_runtime_failures = 0;
+                    }
                     if !probe_enabled {
                         status.udp.healthy = Some(true);
-                        status.udp.consecutive_failures = 0;
-                        status.udp.cooldown_until = None;
+                        if scope == LivenessScope::Session {
+                            status.udp.consecutive_failures = 0;
+                            status.udp.cooldown_until = None;
+                        }
                     }
                 },
             }
@@ -745,6 +802,7 @@ impl UplinkManager {
         debug!(
             uplink = %uplink_name,
             transport = ?transport,
+            scope = ?scope,
             "real traffic activity recorded"
         );
     }
