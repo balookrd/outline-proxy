@@ -18,6 +18,19 @@ pub struct ProcessMemorySnapshot {
     pub virtual_file_shared_bytes: Option<u64>,
     pub virtual_special_bytes: Option<u64>,
     pub top_virtual_mappings: Vec<TopVirtualMapping>,
+    /// Heap as the allocator itself reports it. `None` unless built with
+    /// jemalloc: `/proc` cannot separate live data from memory an allocator is
+    /// holding, and that difference is the whole question — on mimalloc 87-90%
+    /// of this process's RSS turned out to be arenas it would never return.
+    pub heap: Option<HeapSnapshot>,
+}
+
+/// `resident - allocated` is fragmentation: memory the allocator holds from the
+/// OS without handing it out.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HeapSnapshot {
+    pub allocated_bytes: u64,
+    pub resident_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,6 +84,40 @@ pub fn append_to_prometheus_output(out: &mut String, snapshot: &ProcessMemorySna
         );
         write_type(out, "outline_ss_process_threads", "gauge");
         writeln!(out, "outline_ss_process_threads {v}").ok();
+    }
+
+    // Only emitted when the allocator reported them. Absent series read as "not
+    // measured", which is honest; a zero would read as "the heap holds nothing
+    // spare" — the opposite of what mimalloc was doing here.
+    if let Some(heap) = snapshot.heap {
+        write_help(
+            out,
+            "outline_ss_process_heap_allocated_bytes",
+            "Heap bytes handed out to the program, as reported by the allocator.",
+        );
+        write_type(out, "outline_ss_process_heap_allocated_bytes", "gauge");
+        writeln!(out, "outline_ss_process_heap_allocated_bytes {}", heap.allocated_bytes).ok();
+
+        write_help(
+            out,
+            "outline_ss_process_heap_resident_bytes",
+            "Heap bytes the allocator holds from the OS.",
+        );
+        write_type(out, "outline_ss_process_heap_resident_bytes", "gauge");
+        writeln!(out, "outline_ss_process_heap_resident_bytes {}", heap.resident_bytes).ok();
+
+        write_help(
+            out,
+            "outline_ss_process_heap_free_bytes",
+            "Heap bytes held by the allocator but not allocated to the program; the fragmentation figure.",
+        );
+        write_type(out, "outline_ss_process_heap_free_bytes", "gauge");
+        writeln!(
+            out,
+            "outline_ss_process_heap_free_bytes {}",
+            heap.resident_bytes.saturating_sub(heap.allocated_bytes)
+        )
+        .ok();
     }
 
     if let Some(v) = snapshot.virtual_stack_bytes {
@@ -218,11 +265,33 @@ fn sample_impl() -> Option<ProcessMemorySnapshot> {
         virtual_file_shared_bytes: bd.file_shared_bytes,
         virtual_special_bytes: bd.special_bytes,
         top_virtual_mappings: diag.top_mappings,
+        heap: sample_heap(),
     })
 }
 
 #[cfg(not(target_os = "linux"))]
 fn sample_impl() -> Option<ProcessMemorySnapshot> {
+    None
+}
+
+/// Heap figures from jemalloc's own counters.
+///
+/// The statistics are snapshots refreshed on demand, so the epoch has to be
+/// advanced first — without it every read returns the values from process
+/// start.
+#[cfg(all(target_os = "linux", feature = "jemalloc"))]
+fn sample_heap() -> Option<HeapSnapshot> {
+    use tikv_jemalloc_ctl::{epoch, stats};
+
+    epoch::advance().ok()?;
+    Some(HeapSnapshot {
+        allocated_bytes: stats::allocated::read().ok()? as u64,
+        resident_bytes: stats::resident::read().ok()? as u64,
+    })
+}
+
+#[cfg(all(target_os = "linux", not(feature = "jemalloc")))]
+fn sample_heap() -> Option<HeapSnapshot> {
     None
 }
 
@@ -459,3 +528,7 @@ fn truncate_label(value: &str, limit: usize) -> String {
     s.push_str("...");
     s
 }
+
+#[cfg(test)]
+#[path = "tests/process_memory.rs"]
+mod tests;

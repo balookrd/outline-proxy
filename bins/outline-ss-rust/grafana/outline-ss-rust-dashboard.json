@@ -6317,6 +6317,150 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Heap as jemalloc itself reports it. `live` is what the program holds, `held` what the allocator keeps from the OS, and the gap between them is fragmentation — memory nobody is using that will not come back. Absent on builds without jemalloc rather than zero. This is the number that was invisible under mimalloc, where 87-90% of RSS sat in dirty arenas only smaps could see.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*fragmentation.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#E24D42",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 221
+      },
+      "id": 210,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "label_replace(outline_ss_process_heap_allocated_bytes{instance=~\"$instance\"}, \"short_instance\", \"$1\", \"instance\", \"^([^.:]+).*\")",
+          "legendFormat": "{{short_instance}} live",
+          "refId": "A"
+        },
+        {
+          "expr": "label_replace(outline_ss_process_heap_resident_bytes{instance=~\"$instance\"}, \"short_instance\", \"$1\", \"instance\", \"^([^.:]+).*\")",
+          "legendFormat": "{{short_instance}} held",
+          "refId": "B"
+        },
+        {
+          "expr": "label_replace(outline_ss_process_heap_free_bytes{instance=~\"$instance\"}, \"short_instance\", \"$1\", \"instance\", \"^([^.:]+).*\")",
+          "legendFormat": "{{short_instance}} fragmentation",
+          "refId": "C"
+        }
+      ],
+      "title": "Heap: live vs held (fragmentation)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Share of the allocator's memory that is not in use. Under mimalloc this ran at 87-90% and never came down; under jemalloc it should stay low and follow load. A slow climb back toward the old figures is the signal that the allocator has stopped returning memory.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#33A02C",
+                "value": 0
+              },
+              {
+                "color": "#EAB839",
+                "value": 40
+              },
+              {
+                "color": "#E24D42",
+                "value": 70
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 221
+      },
+      "id": 211,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "label_replace(100 * outline_ss_process_heap_free_bytes{instance=~\"$instance\"} / clamp_min(outline_ss_process_heap_resident_bytes{instance=~\"$instance\"}, 1), \"short_instance\", \"$1\", \"instance\", \"^([^.:]+).*\")",
+          "legendFormat": "{{short_instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Heap held but unused (%)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -6600,7 +6744,10 @@
       }
     ]
   },
-  "time": { "from": "now-24h", "to": "now" },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "browser",
   "title": "outline-ss-rust",

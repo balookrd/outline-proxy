@@ -28,6 +28,7 @@ libmimalloc-sys = { version = "0.1", default-features = false, features = ["exte
 lru = "0.18"
 mimalloc = { version = "0.1", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.6", default-features = false, features = ["background_threads", "stats"], optional = true }
+tikv-jemalloc-ctl = { version = "0.6", default-features = false, features = ["stats"], optional = true }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-util = { version = "0.20", default-features = false, features = ["recency"] }
@@ -69,7 +70,7 @@ control = []
 # the same symptom — 87-90% of its resident memory sits in dirty mimalloc
 # arenas that never come back, because a partly-used arena cannot be returned
 # and arenas are 32 MiB at minimum. `mimalloc` stays buildable for rollback.
-jemalloc = ["dep:tikv-jemallocator"]
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 
 [dev-dependencies]
