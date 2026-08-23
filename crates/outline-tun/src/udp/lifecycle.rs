@@ -878,7 +878,9 @@ impl TunUdpEngine {
                     // the TCP reader for why the uplink direction is not
                     // reported. Rate-limited to one status write per 5 s inside
                     // the manager.
-                    manager.report_active_traffic(uplink_index, TransportKind::Udp).await;
+                    manager
+                        .report_downlink_delivery(uplink_index, TransportKind::Udp)
+                        .await;
 
                     let batch_len = batch.len();
                     if batch_len > 1 {
