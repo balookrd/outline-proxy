@@ -14,12 +14,16 @@ class LinkInfoTest {
         latencyMs: Int? = null,
     ) = LinkReadout(LinkTransport.CELLULAR, kbps, ran, latencyMs)
 
-    /** The card and the dial budget must never disagree about what "slow" means. */
+    /**
+     * The class comes from what the core measured, never from the platform's
+     * bandwidth claim — firmware that invents the claim must not be able to
+     * label a working link "very slow".
+     */
     @Test
-    fun `the speed class follows the same thresholds as the dial budget`() {
-        assertEquals("very slow", LinkInfo.speedClass(DialTimeout.EDGE_KBPS))
-        assertEquals("slow", LinkInfo.speedClass(DialTimeout.SLOW_KBPS))
-        assertNull(LinkInfo.speedClass(40_000))
+    fun `the speed class follows the measured round-trip`() {
+        assertEquals("very slow", LinkInfo.speedClass(DialTimeout.EDGE_LATENCY_MS))
+        assertEquals("slow", LinkInfo.speedClass(DialTimeout.SLOW_LATENCY_MS))
+        assertNull(LinkInfo.speedClass(200))
         assertNull(LinkInfo.speedClass(null))
         assertNull(LinkInfo.speedClass(0))
     }
@@ -35,8 +39,8 @@ class LinkInfoTest {
 
     @Test
     fun `bandwidth and latency read in human units`() {
-        assertEquals("~120 kbit/s", LinkInfo.bandwidthLabel(120))
-        assertEquals("~24 Mbit/s", LinkInfo.bandwidthLabel(24_000))
+        assertEquals("est. 120 kbit/s", LinkInfo.bandwidthLabel(120))
+        assertEquals("est. 24 Mbit/s", LinkInfo.bandwidthLabel(24_000))
         assertEquals("180 ms", LinkInfo.latencyLabel(180))
         assertEquals("1.8 s", LinkInfo.latencyLabel(1_800))
         assertNull(LinkInfo.bandwidthLabel(0))
@@ -47,29 +51,43 @@ class LinkInfoTest {
     @Test
     fun `a known radio technology is named`() {
         assertEquals(
-            "LTE · ~24 Mbit/s · 90 ms",
+            "LTE · est. 24 Mbit/s · 90 ms",
             LinkInfo.summary(cellular(kbps = 24_000, ran = "LTE", latencyMs = 90)),
         )
     }
 
     /**
      * The case the whole line exists for: the status bar promises 5G, the radio
-     * reports LTE, and 14 kbit/s is what actually arrives. Technology and speed
-     * are separate facts and both have to be on screen.
+     * reports LTE, and the dial takes four seconds. Technology and speed are
+     * separate facts and both have to be on screen.
      */
     @Test
     fun `a fast technology running slowly says both`() {
         assertEquals(
-            "LTE · very slow · ~14 kbit/s · 4.2 s",
+            "LTE · very slow · est. 14 kbit/s · 4.2 s",
             LinkInfo.summary(cellular(kbps = 14, ran = "LTE", latencyMs = 4_200)),
         )
     }
 
-    /** Without the permission the speed class carries the line on its own. */
+    /**
+     * The firmware-lies case, reported from a HONOR device: a full-signal LTE
+     * cell carrying traffic fine while the platform claims 14 kbit/s. The
+     * estimate is shown — labelled an estimate — but it must not put the word
+     * "slow" on a link whose measured round-trip is healthy.
+     */
+    @Test
+    fun `a bogus bandwidth estimate cannot brand a healthy link slow`() {
+        assertEquals(
+            "LTE · est. 14 kbit/s · 180 ms",
+            LinkInfo.summary(cellular(kbps = 14, ran = "LTE", latencyMs = 180)),
+        )
+    }
+
+    /** Without the permission the class still carries the line. */
     @Test
     fun `an unknown radio technology still reports the speed`() {
         assertEquals(
-            "Cellular · very slow · ~120 kbit/s · 4.2 s",
+            "Cellular · very slow · est. 120 kbit/s · 4.2 s",
             LinkInfo.summary(cellular(kbps = 120, latencyMs = 4_200)),
         )
     }
@@ -83,13 +101,14 @@ class LinkInfoTest {
     @Test
     fun `wifi and ethernet are named plainly`() {
         assertEquals(
-            "Wi-Fi · ~90 Mbit/s · 20 ms",
+            "Wi-Fi · est. 90 Mbit/s · 20 ms",
             LinkInfo.summary(LinkReadout(LinkTransport.WIFI, 90_000, null, 20)),
         )
-        // A slow Wi-Fi is qualified too — the backhaul is what the user feels.
+        // A Wi-Fi whose dials crawl is qualified too — the measurement is the
+        // measurement, whatever the transport underneath it.
         assertEquals(
-            "Wi-Fi · slow · ~800 kbit/s",
-            LinkInfo.summary(LinkReadout(LinkTransport.WIFI, 800, null, null)),
+            "Wi-Fi · slow · est. 800 kbit/s · 1.5 s",
+            LinkInfo.summary(LinkReadout(LinkTransport.WIFI, 800, null, 1_500)),
         )
         assertEquals("Ethernet", LinkInfo.summary(LinkReadout(LinkTransport.ETHERNET, null, null, null)))
     }
@@ -98,7 +117,10 @@ class LinkInfoTest {
     @Test
     fun `missing pieces leave no gaps in the line`() {
         assertEquals("Wi-Fi · 20 ms", LinkInfo.summary(LinkReadout(LinkTransport.WIFI, null, null, 20)))
-        assertEquals("Wi-Fi · ~90 Mbit/s", LinkInfo.summary(LinkReadout(LinkTransport.WIFI, 90_000, null, null)))
+        assertEquals(
+            "Wi-Fi · est. 90 Mbit/s",
+            LinkInfo.summary(LinkReadout(LinkTransport.WIFI, 90_000, null, null)),
+        )
     }
 
     @Test

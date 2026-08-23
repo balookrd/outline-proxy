@@ -50,6 +50,44 @@ class DialTimeoutTest {
         assertNull(DialTimeout.secondsFor(isCellular = true, downstreamKbps = 0))
     }
 
+    /**
+     * The correction the HONOR device forced: it claimed 14 kbit/s on a
+     * full-signal LTE cell that was carrying traffic fine, on both operators.
+     * A measured round-trip cannot be invented, so it wins.
+     */
+    @Test
+    fun `a measured round-trip overrides a bogus bandwidth estimate`() {
+        assertNull(DialTimeout.secondsFor(isCellular = true, downstreamKbps = 14, latencyMs = 180))
+        assertEquals(
+            DialTimeout.EDGE_TIMEOUT_SECS,
+            DialTimeout.secondsFor(isCellular = true, downstreamKbps = 40_000, latencyMs = 4_000),
+        )
+    }
+
+    /** A measured round-trip is direct evidence, whatever carries it. */
+    @Test
+    fun `a measured round-trip widens wifi too`() {
+        assertEquals(
+            DialTimeout.SLOW_TIMEOUT_SECS,
+            DialTimeout.secondsFor(isCellular = false, downstreamKbps = 90_000, latencyMs = 1_500),
+        )
+    }
+
+    /** Before the first dial completes there is nothing to measure — hence the estimate. */
+    @Test
+    fun `without a measurement the estimate still covers the cold start`() {
+        assertEquals(
+            DialTimeout.EDGE_TIMEOUT_SECS,
+            DialTimeout.secondsFor(isCellular = true, downstreamKbps = 60, latencyMs = null),
+        )
+        // 0 is the platform's "not measured", not a zero round-trip: it falls
+        // through to the estimate rather than reading as an instant link.
+        assertEquals(
+            DialTimeout.EDGE_TIMEOUT_SECS,
+            DialTimeout.secondsFor(isCellular = true, downstreamKbps = 60, latencyMs = 0),
+        )
+    }
+
     @Test
     fun `the budget is appended as a top-level table`() {
         val out = DialTimeout.applyTo(profile, 60)

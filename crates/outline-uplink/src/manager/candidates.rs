@@ -348,19 +348,29 @@ impl UplinkManager {
 
     /// Last measured latency of the uplink currently carrying `transport`.
     ///
-    /// This is the dial/probe round-trip the manager already records, exposed
-    /// for a user-facing status: "connected" is a binary that cannot tell a
-    /// fibre link from a 2G one, where a handshake takes seconds and the tunnel
-    /// technically works while nothing usable gets through. Reads the strict
-    /// active uplink, falling back to the global active — the same resolution
-    /// order the carrier readout uses — and `None` when neither is resolved or
-    /// the uplink has never been measured.
+    /// This is the round-trip the manager already records, exposed for a
+    /// user-facing status: "connected" is a binary that cannot tell a fibre link
+    /// from a 2G one, where a handshake takes seconds and the tunnel technically
+    /// works while nothing usable gets through. Reads the strict active uplink,
+    /// falling back to the global active — the same resolution order the carrier
+    /// readout uses.
+    ///
+    /// Prefers the RTT EWMA over the probe's own sample, because the two have
+    /// different coverage: `latency` is written by the probe loop alone, so a
+    /// deployment with no `[probe]` section (the generated Android profile) has
+    /// none at all, while `rtt_ewma` also takes every real dial through
+    /// `report_connection_latency`. Reading only the probe field left the phone
+    /// status with no latency to show and its "connected but slow" verdict
+    /// permanently unreachable.
     pub async fn active_latency(&self, transport: TransportKind) -> Option<Duration> {
         let index = match self.active_uplink_index_for_transport(transport).await {
             Some(index) => index,
             None => self.global_active_uplink_index().await?,
         };
-        self.inner.with_status(index, |status| status.of(transport).latency)
+        self.inner.with_status(index, |status| {
+            let plane = status.of(transport);
+            plane.rtt_ewma.value().or(plane.latency)
+        })
     }
 
     /// Like [`Self::has_any_healthy`], but additionally demands *fresh

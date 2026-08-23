@@ -510,9 +510,17 @@ class OutlineVpnService : VpnService() {
         val cm = getSystemService(ConnectivityManager::class.java) ?: return@runCatching null
         val network = underlyingNetwork ?: LinkProbe.bestNonVpn(cm) ?: return@runCatching null
         val caps = cm.getNetworkCapabilities(network) ?: return@runCatching null
+        // The core's own measurement, once it has one — it outranks the
+        // platform's bandwidth claim, which some firmware invents. Null before
+        // the first dial completes, and on the pre-start call where no engine is
+        // running yet; the estimate covers that gap.
+        val measured = runCatching { tunnelStatus() }.getOrNull()?.let {
+            LinkQuality.worstOf(it.tcpLatencyMs?.toInt(), it.udpLatencyMs?.toInt())
+        }
         DialTimeout.secondsFor(
             isCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
             downstreamKbps = caps.linkDownstreamBandwidthKbps,
+            latencyMs = measured,
         )
     }.getOrNull()
 

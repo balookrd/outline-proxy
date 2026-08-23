@@ -37,23 +37,25 @@ data class LinkReadout(
 object LinkInfo {
 
     /**
-     * How fast the link is, from the platform's own estimate, on the same
-     * thresholds the dial budget is sized on — so the words on the card and the
-     * budget behind them always tell the same story.
+     * How slow the link actually is, from the round-trip the core measured on
+     * its own dials — on the same thresholds the dial budget is sized on, so the
+     * words on the card and the budget behind them always tell the same story.
      *
-     * Named for speed, never for a generation. An earlier version said
-     * "2G-class" and read as a claim about the radio: a phone showing 5G in the
-     * status bar while the estimate says 14 kbit/s is a perfectly ordinary
-     * sight — a congested cell, a cell edge, or a carrier that lights the 5G
-     * icon on an LTE anchor — and the card must describe the speed without
-     * arguing about the technology.
+     * Deliberately *not* derived from the bandwidth estimate. The estimate is a
+     * claim, and firmware makes it up: one HONOR device reported 14 kbit/s on a
+     * full-signal LTE cell that was carrying traffic fine, on both operators.
+     * Printing "very slow" from that would have been the app arguing with a link
+     * the user can see working. A measured round-trip cannot be invented.
+     *
+     * Named for speed, never for a generation, for the same reason: a phone can
+     * show 5G in the status bar, report LTE from the radio, and still crawl.
      */
-    fun speedClass(downstreamKbps: Int?): String? {
-        val kbps = downstreamKbps ?: return null
-        if (kbps <= 0) return null
+    fun speedClass(latencyMs: Int?): String? {
+        val ms = latencyMs ?: return null
+        if (ms <= 0) return null
         return when {
-            kbps <= DialTimeout.EDGE_KBPS -> "very slow"
-            kbps <= DialTimeout.SLOW_KBPS -> "slow"
+            ms >= DialTimeout.EDGE_LATENCY_MS -> "very slow"
+            ms >= DialTimeout.SLOW_LATENCY_MS -> "slow"
             else -> null
         }
     }
@@ -91,11 +93,19 @@ object LinkInfo {
         else -> null
     }
 
-    /** `~120 kbit/s` / `~24 Mbit/s`, or `null` for an estimate the platform has not made. */
+    /**
+     * `est. 120 kbit/s` / `est. 24 Mbit/s`, or `null` where the platform has
+     * made no estimate.
+     *
+     * Labelled an estimate because that is all it is — the figure comes from the
+     * OS, not from anything the tunnel measured, and on some firmware it is
+     * plainly wrong. Shown anyway: when it disagrees with the latency beside it,
+     * that disagreement is itself the useful signal.
+     */
     fun bandwidthLabel(downstreamKbps: Int?): String? {
         val kbps = downstreamKbps ?: return null
         if (kbps <= 0) return null
-        return if (kbps < 1000) "~$kbps kbit/s" else "~${kbps / 1000} Mbit/s"
+        return if (kbps < 1000) "est. $kbps kbit/s" else "est. ${kbps / 1000} Mbit/s"
     }
 
     /** `180 ms` / `1.8 s`, or `null` before anything has been measured. */
@@ -126,7 +136,7 @@ object LinkInfo {
         // user is trying to understand.
         val parts = listOfNotNull(
             head,
-            speedClass(link.downstreamKbps),
+            speedClass(link.latencyMs),
             bandwidthLabel(link.downstreamKbps),
             latencyLabel(link.latencyMs),
         )
