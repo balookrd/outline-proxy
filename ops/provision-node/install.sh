@@ -128,6 +128,7 @@ COMPOSE_REQUIRED_ARGS=(); VERIFY_SELF_DNS=0
 ASSET_FILES=(); NGINX_LOCATIONS=(); RAW_ASSET_FILES=()
 ENABLE_UNITS=(); INSTALL_ONLY_UNITS=(); NET_BRINGUP_EXEC=(); NET_BRINGUP_EXEC_STOP=()
 NET_BRINGUP_BEFORE=
+MESH_PEERS=(); MESH_PORT=9443
 DOCKER_START=(); VERIFY_UNITS=(); VERIFY_TIMERS=(); VERIFY_METRICS=(); VERIFY_PORTS=()
 CERT_DOMAINS=(); DDNS_MODE="none"; DDNS_BUILD=""; DDNS_START=""; DDNS_IMAGE=""
 CERT_ISSUE_CMD=""
@@ -635,6 +636,7 @@ phase_files() {
     fi
 
     write_bringup_unit
+    write_mesh_allowlist
     write_policy_rule_guard
 
     run sysctl --system -q
@@ -694,6 +696,62 @@ WantedBy=multi-user.target"
     printf '%s\n' "$body" > "$unit"
     chmod 0644 "$unit"
     ok "wrote $unit"
+}
+
+# Announce the cluster's mesh peers to the firewall.
+#
+# `/opt/network/iptables-update.sh` rebuilds INPUT_EX from scratch on every run
+# — flush, then the ACCEPT rules, DROP last — so a rule added by hand on a live
+# node survives exactly until the next boot. It is also deliberately never
+# rehosted (see the profiles), precisely so one file can be identical on every
+# node of a cluster; the list therefore carries this node's own address too,
+# which costs nothing and keeps the file byte-for-byte the same fleet-wide.
+#
+# Without this the mesh port is simply closed and a cluster silently degrades to
+# standalone nodes: sessions parked on one member are unreachable from another,
+# which is the failure `shared_resume` on the client is meant to prevent.
+#
+# Idempotent: a peer already listed is left alone, so re-running changes nothing.
+write_mesh_allowlist() {
+    [ ${#MESH_PEERS[@]} -gt 0 ] || return 0
+
+    local f=/opt/network/iptables-update.sh
+    if [ ! -f "$f" ]; then
+        warn "$f missing — mesh peers not announced, the cluster port stays closed"
+        return 0
+    fi
+    local marker='iptables -w -A INPUT_EX -j DROP'
+    if ! grep -qF -- "$marker" "$f"; then
+        warn "no DROP terminator in $f — refusing to guess where mesh rules belong"
+        return 0
+    fi
+
+    local peer rule pending=()
+    for peer in "${MESH_PEERS[@]}"; do
+        rule="iptables -w -A INPUT_EX -p udp -s $peer --dport $MESH_PORT -j ACCEPT"
+        grep -qF -- "$rule" "$f" || pending+=("$rule")
+    done
+    if [ ${#pending[@]} -eq 0 ]; then
+        ok "mesh allow-list already lists all ${#MESH_PEERS[@]} peer(s) on $MESH_PORT/udp"
+        return 0
+    fi
+    if [ "$DRY_RUN" = "1" ]; then
+        dim "[dry-run] would add to $f:"
+        printf '       %s\n' "${pending[@]}"
+        return 0
+    fi
+
+    cp -a "$f" "$f.bak.$(date +%Y%m%d%H%M%S)"
+    local block
+    block=$(printf '%s\n' "${pending[@]}")
+    # Insert before the DROP that terminates the chain: appended after it the
+    # rules would never be reached.
+    awk -v marker="$marker" -v block="$block" '
+        index($0, marker) && !done { print block; done = 1 }
+        { print }
+    ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    chmod 0755 "$f"
+    ok "announced ${#pending[@]} mesh peer(s) on $MESH_PORT/udp in $f"
 }
 
 # init-ws0.sh adds the policy rule that sends marked client traffic into the

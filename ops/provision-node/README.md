@@ -337,13 +337,20 @@ What still has no automatic answer is anything the *peers* hold: `shard_id`,
   is not broken in any way it can detect: it simply never appears in Grafana.
 - **Announcing the node to the mesh.** `/opt/network/iptables-update.sh` holds
   the peer allow-list for the QUIC mesh port (9443) as literal addresses, and
-  the same file is rolled out to every edge node — that is what keeps the list
-  identical everywhere. It is therefore never rehosted, and a new node is not
-  reachable on 9443 until its address is added to that file **on every edge
-  node**. The same goes for `[cluster] peers` in each node's ss-rust config, and
-  for the clone's own `shard_id`, which arrives as a copy of the reference's and
-  must be made unique — the install warns about it but cannot choose a value.
-  Fleet-wide edit, not part of an install.
+  the same file is rolled out to every node of a cluster — that is what keeps
+  the list identical everywhere, and why it is never rehosted. The install now
+  writes those rules itself from `MESH_PEERS` in the profile: idempotent (a peer
+  already listed is left alone) and inserted before the `DROP` that terminates
+  the chain, since the script rebuilds `INPUT_EX` from scratch on every run and
+  a rule added by hand would survive only until the next boot.
+
+  Two things still are not automatic. **Adding a node to the cluster** means
+  editing `MESH_PEERS` for the whole family — the list must match on every
+  member — and it only takes effect where an install is then run. And each
+  node's ss-rust config needs its own `[cluster]` block: `peers` agreeing with
+  `MESH_PEERS`, and a `shard_id` unique within that cluster, which arrives as a
+  copy of the reference's — the install warns about it but cannot choose a
+  value. The `cluster_psk` is a secret and lives nowhere in this repository.
 - **Applying network configuration.** The `network` phase only unpacks the
   reference's `interfaces`/`interfaces.d` for a human to merge. Bringing an
   interface down over ssh on a host with no console is how a node gets
