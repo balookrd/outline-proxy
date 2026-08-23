@@ -278,18 +278,28 @@ read and a comparison, free when nothing moved.
 ### What the home screen says about the link
 
 Under the tunnel status the card shows the network the tunnel is actually
-riding: `Wi-Fi · ~90 Mbit/s · 20 ms`, or `Cellular · 2G-class · ~120 kbit/s ·
-4.2 s`. Three independent things, and any of them is dropped rather than faked
-when it is unknown:
+riding: `Wi-Fi · ~90 Mbit/s · 20 ms`, or `LTE · very slow · ~14 kbit/s · 4.2 s`.
+Four independent things, and any of them is dropped rather than faked when it is
+unknown:
 
 - **What the link is.** Wi-Fi and Ethernet name themselves. A cellular link
   names its radio technology (2G / 3G / LTE / 5G) when the app is allowed to
-  read it, and otherwise falls back to a speed class inferred from the
-  platform's bandwidth estimate — the same thresholds that size the dial budget,
-  so the label and the budget always tell the same story.
+  read it, and says "Cellular" otherwise.
+- **How fast it is**, in words — from the platform's bandwidth estimate, on the
+  same thresholds that size the dial budget, so the label and the budget always
+  tell the same story. Named for speed and never for a generation: the point is
+  that a link can be LTE *and* slower than GPRS at the same time.
 - **How fast the platform thinks it is** — the estimate itself.
 - **What it costs the tunnel** — the last latency the core measured on the
   uplink, which is the number behind "Connected · slow".
+
+The technology and the speed are separate facts on purpose. A phone showing 5G
+in the status bar while this line says `LTE · very slow · ~14 kbit/s` is not a
+contradiction and not a bug: the status-bar icon commonly reflects 5G coverage
+or a 5G-capable NSA anchor rather than the radio actually carrying data, which
+is what `dataNetworkType` reports here — and neither of them says anything about
+a congested cell delivering 14 kbit/s. That combination is exactly what the line
+exists to make visible.
 
 Naming the radio technology needs `READ_PHONE_STATE`. The app never asks for it
 on its own: it sits on the **Keeping Alive** checklist with the other grants,

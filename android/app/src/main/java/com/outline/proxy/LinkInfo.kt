@@ -37,16 +37,23 @@ data class LinkReadout(
 object LinkInfo {
 
     /**
-     * Speed class inferred from the platform's own estimate, using the same
-     * thresholds the dial budget is sized on — so "2G-class" on the card and a
-     * 60-second dial budget always tell the same story.
+     * How fast the link is, from the platform's own estimate, on the same
+     * thresholds the dial budget is sized on — so the words on the card and the
+     * budget behind them always tell the same story.
+     *
+     * Named for speed, never for a generation. An earlier version said
+     * "2G-class" and read as a claim about the radio: a phone showing 5G in the
+     * status bar while the estimate says 14 kbit/s is a perfectly ordinary
+     * sight — a congested cell, a cell edge, or a carrier that lights the 5G
+     * icon on an LTE anchor — and the card must describe the speed without
+     * arguing about the technology.
      */
     fun speedClass(downstreamKbps: Int?): String? {
         val kbps = downstreamKbps ?: return null
         if (kbps <= 0) return null
         return when {
-            kbps <= DialTimeout.EDGE_KBPS -> "2G-class"
-            kbps <= DialTimeout.SLOW_KBPS -> "3G-class"
+            kbps <= DialTimeout.EDGE_KBPS -> "very slow"
+            kbps <= DialTimeout.SLOW_KBPS -> "slow"
             else -> null
         }
     }
@@ -108,15 +115,21 @@ object LinkInfo {
         val head = when (link.transport) {
             LinkTransport.WIFI -> "Wi-Fi"
             LinkTransport.ETHERNET -> "Ethernet"
-            LinkTransport.CELLULAR -> {
-                // The exact technology when it is known, the inferred class when
-                // it is not, and a bare "Cellular" when neither is available.
-                link.ranLabel ?: speedClass(link.downstreamKbps)?.let { "Cellular · $it" } ?: "Cellular"
-            }
+            // The radio technology when it can be read, "Cellular" otherwise.
+            LinkTransport.CELLULAR -> link.ranLabel ?: "Cellular"
             LinkTransport.OTHER -> "Network"
             LinkTransport.NONE -> return null
         }
-        val parts = listOfNotNull(head, bandwidthLabel(link.downstreamKbps), latencyLabel(link.latencyMs))
+        // The speed class sits *beside* the technology, never instead of it:
+        // "5G · very slow" is the whole point — the case where the status bar
+        // promises one thing and the link delivers another is exactly what the
+        // user is trying to understand.
+        val parts = listOfNotNull(
+            head,
+            speedClass(link.downstreamKbps),
+            bandwidthLabel(link.downstreamKbps),
+            latencyLabel(link.latencyMs),
+        )
         return parts.joinToString(" · ")
     }
 }
