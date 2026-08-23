@@ -32,6 +32,11 @@ pub mod status;
 mod bootstrap;
 
 pub use bootstrap::run_with_config;
+/// Re-sizing the carrier-dial budget for the link now underneath the tunnel.
+/// Re-exported for embedders (the Android `VpnService`), which watch the
+/// platform's network state and are the only party that can see the link
+/// change; they depend on this crate, not on `outline-transport` directly.
+pub use outline_transport::set_dial_timeout;
 pub use status::{Carrier, CarrierStatus, active_carriers, clear_active_registry};
 
 use std::os::fd::RawFd;

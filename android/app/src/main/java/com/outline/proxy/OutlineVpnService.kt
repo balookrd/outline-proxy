@@ -31,6 +31,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.outline_android.isRunning
+import uniffi.outline_android.setDialTimeoutSecs
 import uniffi.outline_android.start
 import uniffi.outline_android.stop
 import uniffi.outline_android.tunnelStatus
@@ -52,6 +53,20 @@ class OutlineVpnService : VpnService() {
 
     private var tunInterface: ParcelFileDescriptor? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * Whether the app owns the carrier-dial budget for this session — true when
+     * the profile did not declare `[dial]` of its own. An explicit operator
+     * value is never overridden, on start or on a later network change.
+     */
+    private var dialBudgetManaged = false
+
+    /**
+     * Last budget handed to the core. `onCapabilitiesChanged` fires on every
+     * signal-strength wobble, and re-applying the same number each time would
+     * be pure noise in the log.
+     */
+    private var appliedDialSecs: Int? = null
 
     /**
      * The network currently bound as the tunnel's underlying one. Written from
@@ -409,6 +424,22 @@ class OutlineVpnService : VpnService() {
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 if (bestMatching) bind(network) else bind(pickBest(cm))
+                refreshDialBudget()
+            }
+
+            /**
+             * A handover between cells — and, on many devices, a data-SIM switch
+             * — arrives here rather than as `onAvailable`/`onLost`: the `Network`
+             * stays the same object while its properties change underneath,
+             * including the bandwidth estimate the dial budget is sized from.
+             * Watching only the two coarse callbacks would leave the tunnel on a
+             * budget picked for a network that no longer exists.
+             */
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities,
+            ) {
+                refreshDialBudget()
             }
 
             /**
@@ -423,6 +454,7 @@ class OutlineVpnService : VpnService() {
                 } else {
                     bind(pickBest(cm))
                 }
+                refreshDialBudget()
             }
         }
         // Losing the handover watch is not worth losing the tunnel over: the
@@ -456,19 +488,51 @@ class OutlineVpnService : VpnService() {
      * run by this point, so our own VPN would answer for it.
      */
     private fun withDialBudget(configToml: String): String {
-        val seconds = runCatching {
-            val cm = getSystemService(ConnectivityManager::class.java) ?: return@runCatching null
-            val network = underlyingNetwork ?: pickBest(cm) ?: return@runCatching null
-            val caps = cm.getNetworkCapabilities(network) ?: return@runCatching null
-            DialTimeout.secondsFor(
-                isCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
-                downstreamKbps = caps.linkDownstreamBandwidthKbps,
-            )
-        }.getOrNull()
-        if (seconds != null && !DialTimeout.declaresDial(configToml)) {
+        dialBudgetManaged = !DialTimeout.declaresDial(configToml)
+        val seconds = currentDialSeconds()
+        appliedDialSecs = seconds
+        if (seconds != null && dialBudgetManaged) {
             Log.i(TAG, "slow link: raising the carrier-dial budget to ${seconds}s")
         }
         return DialTimeout.applyTo(configToml, seconds)
+    }
+
+    /**
+     * The budget this link calls for, or `null` for the engine default.
+     *
+     * Resolved off the same non-VPN network the underlying-network watch picks,
+     * deliberately not `activeNetwork`: once `establish()` has run, our own VPN
+     * would answer for it.
+     */
+    private fun currentDialSeconds(): Int? = runCatching {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return@runCatching null
+        val network = underlyingNetwork ?: pickBest(cm) ?: return@runCatching null
+        val caps = cm.getNetworkCapabilities(network) ?: return@runCatching null
+        DialTimeout.secondsFor(
+            isCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+            downstreamKbps = caps.linkDownstreamBandwidthKbps,
+        )
+    }.getOrNull()
+
+    /**
+     * Re-size the running engine's dial budget for the link now underneath it.
+     *
+     * The budget written into the TOML only describes the network the tunnel
+     * *started* on. Walking from Wi-Fi into a 2G cell would otherwise leave the
+     * 10 s default in place, where it expires mid-handshake and scores every
+     * attempt a failure; walking back would leave a 60 s bound slowing every
+     * failover down. Both directions are handled: `null` restores the default.
+     */
+    private fun refreshDialBudget() {
+        if (!dialBudgetManaged) return
+        val seconds = currentDialSeconds()
+        if (seconds == appliedDialSecs) return
+        appliedDialSecs = seconds
+        runCatching { setDialTimeoutSecs(seconds?.toUInt()) }
+            .onSuccess {
+                Log.i(TAG, "carrier-dial budget -> ${seconds?.let { "${it}s" } ?: "engine default"}")
+            }
+            .onFailure { Log.w(TAG, "cannot re-size the carrier-dial budget", it) }
     }
 
     /** Bind [network] as the tunnel's underlying network; `null` = system default. */
@@ -514,6 +578,9 @@ class OutlineVpnService : VpnService() {
         }
         networkCallback = null
         underlyingNetwork = null
+        // The next session re-derives both from its own profile and network.
+        dialBudgetManaged = false
+        appliedDialSecs = null
     }
 
     private fun disconnect() {

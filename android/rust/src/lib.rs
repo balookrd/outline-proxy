@@ -181,6 +181,24 @@ pub fn is_running() -> bool {
         .is_some_and(|engine| !engine.client_task.is_finished())
 }
 
+/// Re-size the carrier-dial budget for the link now underneath the tunnel.
+///
+/// The right budget is a property of the network, not of the process: a phone
+/// that connects on Wi-Fi and walks into a 2G cell needs the wider bound, and
+/// only the platform-facing side can see that happen. `None` restores the
+/// engine default — "this link needs nothing special", which matters when
+/// walking the other way, since leaving a 60 s bound on a fast link would slow
+/// every failover down.
+///
+/// Takes effect on the next dial; handshakes already in flight keep the
+/// deadline they started with. Safe to call when nothing is running — the value
+/// is process-wide and the next engine picks it up. Values outside 2..=120 s are
+/// clamped.
+#[uniffi::export]
+pub fn set_dial_timeout_secs(secs: Option<u32>) {
+    outline_ws_rust::set_dial_timeout(secs.map(|s| Duration::from_secs(u64::from(s))));
+}
+
 /// The reason the most recent connect attempt failed, or `None` if the last
 /// attempt is still running or succeeded. Set when the client task exits with
 /// an error and cleared when a new [`start`] begins, so the UI can tell the

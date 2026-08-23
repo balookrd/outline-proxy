@@ -257,9 +257,15 @@ alone rather than assumed slow.
 A config that declares `[dial]` itself is never touched: an explicit value from
 the operator outranks this guess.
 
-The choice is made **once, when the tunnel starts** — the core reads the budget
-at startup and holds it for the life of the process. Walking from Wi-Fi into a
-2G cell does not widen it; that takes a reconnect.
+The budget **follows the link**, it is not frozen at connect time. The service
+watches the network it rides — including `onCapabilitiesChanged`, which is how a
+cell handover and, on many devices, a data-SIM switch actually arrive: the
+`Network` object stays the same while its properties change underneath. Walking
+from Wi-Fi into a 2G cell widens the bound, walking back restores the default
+(leaving 60 s on a fast link would only slow failover down), and the engine picks
+the new value up on its next dial — handshakes already in flight keep the
+deadline they started with. Nothing is torn down, and a repeated estimate is not
+re-applied, so a signal-strength wobble costs nothing.
 
 ## External control (`outline://`)
 
