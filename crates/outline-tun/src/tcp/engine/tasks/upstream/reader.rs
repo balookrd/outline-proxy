@@ -148,6 +148,20 @@ impl TunTcpEngine {
                             (flush, backlog_pressure, state.routing.uplink_name.clone())
                         };
 
+                        // Proven delivery: bytes arriving *from* the uplink are
+                        // this path's liveness evidence, the same signal the
+                        // SOCKS relay reports in `pinned_relay`. Without it
+                        // `healthy` is a one-way door whenever no `[probe]` is
+                        // configured (the Android profile's shape): runtime
+                        // failures clear the flag and nothing here sets it back,
+                        // so a network change leaves the group reading "no link"
+                        // for the lifetime of the process while it carries
+                        // traffic. Deliberately not reported on the uplink
+                        // direction — writing bytes into the tunnel proves only
+                        // that we wrote them. The call rate-limits itself to one
+                        // status write per 5 s, so this stays cheap per chunk.
+                        manager.report_active_traffic(uplink_index, TransportKind::Tcp).await;
+
                         if backlog_pressure.should_abort {
                             engine.abort_tun_tcp_backlog(&key, &flow, &backlog_pressure).await;
                             return;

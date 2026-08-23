@@ -871,6 +871,14 @@ impl TunUdpEngine {
                             metrics::udp_flow_counters("down", group, uplink)
                         })
                         .record(total_payload);
+                    // Proven delivery, the UDP mirror of the TCP downlink
+                    // reader: datagrams coming back from the uplink are the only
+                    // thing that can clear `healthy` on a deployment with no
+                    // `[probe]` configured (the Android profile's shape). See
+                    // the TCP reader for why the uplink direction is not
+                    // reported. Rate-limited to one status write per 5 s inside
+                    // the manager.
+                    manager.report_active_traffic(uplink_index, TransportKind::Udp).await;
 
                     let batch_len = batch.len();
                     if batch_len > 1 {
