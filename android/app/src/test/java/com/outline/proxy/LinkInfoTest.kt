@@ -5,28 +5,15 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-/** What the status line says about the link, and what it leaves out. */
+/** What the status line says about the link, and what it deliberately omits. */
 class LinkInfoTest {
 
     private fun cellular(
         kbps: Int? = null,
         ran: String? = null,
         latencyMs: Int? = null,
-    ) = LinkReadout(LinkTransport.CELLULAR, kbps, ran, latencyMs)
-
-    /**
-     * The class comes from what the core measured, never from the platform's
-     * bandwidth claim — firmware that invents the claim must not be able to
-     * label a working link "very slow".
-     */
-    @Test
-    fun `the speed class follows the measured round-trip`() {
-        assertEquals("very slow", LinkInfo.speedClass(DialTimeout.EDGE_LATENCY_MS))
-        assertEquals("slow", LinkInfo.speedClass(DialTimeout.SLOW_LATENCY_MS))
-        assertNull(LinkInfo.speedClass(200))
-        assertNull(LinkInfo.speedClass(null))
-        assertNull(LinkInfo.speedClass(0))
-    }
+        budget: Int? = null,
+    ) = LinkReadout(LinkTransport.CELLULAR, kbps, ran, latencyMs, budget)
 
     @Test
     fun `radio technologies are grouped by generation`() {
@@ -38,89 +25,60 @@ class LinkInfoTest {
     }
 
     @Test
-    fun `bandwidth and latency read in human units`() {
-        assertEquals("est. 120 kbit/s", LinkInfo.bandwidthLabel(120))
-        assertEquals("est. 24 Mbit/s", LinkInfo.bandwidthLabel(24_000))
+    fun `latency reads in human units`() {
         assertEquals("180 ms", LinkInfo.latencyLabel(180))
         assertEquals("1.8 s", LinkInfo.latencyLabel(1_800))
-        assertNull(LinkInfo.bandwidthLabel(0))
         assertNull(LinkInfo.latencyLabel(null))
-    }
-
-    /** A healthy link needs no qualifier beyond its name. */
-    @Test
-    fun `a known radio technology is named`() {
-        assertEquals(
-            "LTE · est. 24 Mbit/s · 90 ms",
-            LinkInfo.summary(cellular(kbps = 24_000, ran = "LTE", latencyMs = 90)),
-        )
+        assertNull(LinkInfo.latencyLabel(0))
     }
 
     /**
-     * The case the whole line exists for: the status bar promises 5G, the radio
-     * reports LTE, and the dial takes four seconds. Technology and speed are
-     * separate facts and both have to be on screen.
+     * The first probe after a connect produced exactly "10.0 s" on a 10-second
+     * budget — a dial that ran out of time, printed as if it were a
+     * measurement. Anything at or near the ceiling is dropped instead.
      */
     @Test
-    fun `a fast technology running slowly says both`() {
-        assertEquals(
-            "LTE · very slow · est. 14 kbit/s · 4.2 s",
-            LinkInfo.summary(cellular(kbps = 14, ran = "LTE", latencyMs = 4_200)),
-        )
+    fun `a round-trip that hit the dial budget is not a measurement`() {
+        assertNull(LinkInfo.latencyLabel(10_000, dialBudgetSecs = 10))
+        assertNull(LinkInfo.latencyLabel(9_000, dialBudgetSecs = 10))
+        // Comfortably inside the budget: a real, if unhappy, number.
+        assertEquals("4.0 s", LinkInfo.latencyLabel(4_000, dialBudgetSecs = 10))
     }
 
-    /**
-     * The firmware-lies case, reported from a HONOR device: a full-signal LTE
-     * cell carrying traffic fine while the platform claims 14 kbit/s. The
-     * estimate is shown — labelled an estimate — but it must not put the word
-     * "slow" on a link whose measured round-trip is healthy.
-     */
+    /** A widened budget widens what counts as a plausible measurement. */
     @Test
-    fun `a bogus bandwidth estimate cannot brand a healthy link slow`() {
-        assertEquals(
-            "LTE · est. 14 kbit/s · 180 ms",
-            LinkInfo.summary(cellular(kbps = 14, ran = "LTE", latencyMs = 180)),
-        )
-    }
-
-    /** Without the permission the class still carries the line. */
-    @Test
-    fun `an unknown radio technology still reports the speed`() {
-        assertEquals(
-            "Cellular · very slow · est. 120 kbit/s · 4.2 s",
-            LinkInfo.summary(cellular(kbps = 120, latencyMs = 4_200)),
-        )
-    }
-
-    /** Neither known: still worth saying it is cellular. */
-    @Test
-    fun `a cellular link with nothing measured still names itself`() {
-        assertEquals("Cellular", LinkInfo.summary(cellular()))
+    fun `the ceiling follows the budget in force`() {
+        assertEquals("20.0 s", LinkInfo.latencyLabel(20_000, dialBudgetSecs = 60))
+        assertNull(LinkInfo.latencyLabel(55_000, dialBudgetSecs = 60))
     }
 
     @Test
-    fun `wifi and ethernet are named plainly`() {
+    fun `the line names the technology and what it costs`() {
+        assertEquals("LTE · 90 ms", LinkInfo.summary(cellular(ran = "LTE", latencyMs = 90)))
         assertEquals(
-            "Wi-Fi · est. 90 Mbit/s · 20 ms",
+            "Wi-Fi · 20 ms",
             LinkInfo.summary(LinkReadout(LinkTransport.WIFI, 90_000, null, 20)),
-        )
-        // A Wi-Fi whose dials crawl is qualified too — the measurement is the
-        // measurement, whatever the transport underneath it.
-        assertEquals(
-            "Wi-Fi · slow · est. 800 kbit/s · 1.5 s",
-            LinkInfo.summary(LinkReadout(LinkTransport.WIFI, 800, null, 1_500)),
         )
         assertEquals("Ethernet", LinkInfo.summary(LinkReadout(LinkTransport.ETHERNET, null, null, null)))
     }
 
-    /** Unknown parts are dropped rather than printed as placeholders. */
+    /**
+     * The bandwidth estimate is carried for the dial budget but never shown: a
+     * HONOR device reported 14 kbit/s on a full-signal LTE cell that was
+     * carrying traffic fine, and a figure the user can see is wrong costs more
+     * trust than it buys.
+     */
     @Test
-    fun `missing pieces leave no gaps in the line`() {
-        assertEquals("Wi-Fi · 20 ms", LinkInfo.summary(LinkReadout(LinkTransport.WIFI, null, null, 20)))
-        assertEquals(
-            "Wi-Fi · est. 90 Mbit/s",
-            LinkInfo.summary(LinkReadout(LinkTransport.WIFI, 90_000, null, null)),
-        )
+    fun `the bandwidth estimate never reaches the line`() {
+        val line = LinkInfo.summary(cellular(kbps = 14, ran = "LTE", latencyMs = 180))
+        assertEquals("LTE · 180 ms", line)
+    }
+
+    /** Nothing measured yet: the technology alone still says something useful. */
+    @Test
+    fun `a link with no measurement still names itself`() {
+        assertEquals("Cellular", LinkInfo.summary(cellular()))
+        assertEquals("LTE", LinkInfo.summary(cellular(ran = "LTE", latencyMs = 10_000, budget = 10)))
     }
 
     @Test

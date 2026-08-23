@@ -287,28 +287,30 @@ read and a comparison, free when nothing moved.
 ### What the home screen says about the link
 
 Under the tunnel status the card shows the network the tunnel is actually
-riding: `Wi-Fi · ~90 Mbit/s · 20 ms`, or `LTE · very slow · ~14 kbit/s · 4.2 s`.
-Four independent things, and any of them is dropped rather than faked when it is
-unknown:
+riding: `Wi-Fi · 20 ms`, or `LTE · 4.2 s`. Two facts, both of them measured or
+named by the platform, and either is dropped rather than faked when unknown:
 
 - **What the link is.** Wi-Fi and Ethernet name themselves. A cellular link
   names its radio technology (2G / 3G / LTE / 5G) when the app is allowed to
-  read it, and says "Cellular" otherwise.
-- **How fast it is**, in words — from the platform's bandwidth estimate, on the
-  same thresholds that size the dial budget, so the label and the budget always
-  tell the same story. Named for speed and never for a generation: the point is
-  that a link can be LTE *and* slower than GPRS at the same time.
-- **How fast the platform thinks it is** — the estimate itself.
-- **What it costs the tunnel** — the last latency the core measured on the
-  uplink, which is the number behind "Connected · slow".
+  read it, and says "Cellular" otherwise. Note that this is the radio actually
+  carrying data (`dataNetworkType`), which routinely disagrees with the
+  status-bar icon: that icon commonly tracks 5G *coverage* or a 5G-capable NSA
+  anchor, so "5G" up there and `LTE` here is normal, not a bug.
+- **What the link costs the tunnel** — the last round-trip the core measured on
+  a real dial.
 
-The technology and the speed are separate facts on purpose. A phone showing 5G
-in the status bar while this line says `LTE · very slow · ~14 kbit/s` is not a
-contradiction and not a bug: the status-bar icon commonly reflects 5G coverage
-or a 5G-capable NSA anchor rather than the radio actually carrying data, which
-is what `dataNetworkType` reports here — and neither of them says anything about
-a congested cell delivering 14 kbit/s. That combination is exactly what the line
-exists to make visible.
+Nothing derived is shown. An earlier version also printed the platform's
+bandwidth estimate and a speed class computed from it, and both were removed:
+firmware invents the estimate (one device reported 14 kbit/s on a full-signal
+LTE cell that was carrying traffic perfectly well), and a label computed from a
+wrong number is a wrong number with more confidence behind it. The estimate is
+still read — it sizes the dial budget before anything has been measured — it is
+just not put on screen.
+
+A round-trip that reaches the dial budget is dropped too. That is a dial which
+ran out of time, and the number it yields is the budget rather than the link:
+the first probe after a connect produced exactly "10.0 s" on a 10-second budget.
+Showing nothing beats showing a timeout dressed up as a measurement.
 
 Naming the radio technology needs `READ_PHONE_STATE`. The app never asks for it
 on its own: it sits on the **Keeping Alive** checklist with the other grants,
