@@ -11,6 +11,7 @@ pub(super) struct TransportFields {
     pub(super) h3_endpoints_active: IntGaugeVec,
     pub(super) h3_pool_carriers: IntGaugeVec,
     pub(super) h3_carriers_reaped_total: IntCounterVec,
+    pub(super) h3_carriers_dialed_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> TransportFields {
@@ -96,6 +97,19 @@ pub(super) fn build(registry: &Registry) -> TransportFields {
         ["kind"]
     );
 
+    // The counterpart of `reaped`: without it, carrier churn can only be
+    // inferred from a reap count that does not move the endpoint total, which
+    // is how an idle node's turnover went unmeasured. Dials cost a QUIC and an
+    // HTTP/3 handshake each, so the ratio against `reaped` is what says whether
+    // the warm floor is set too low.
+    let h3_carriers_dialed_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_h3_carriers_dialed_total",
+        "Pooled H3 carriers opened by a fresh dial, by pool.",
+        ["kind"]
+    );
+
     TransportFields {
         transport_connects_total,
         transport_connects_active,
@@ -106,5 +120,6 @@ pub(super) fn build(registry: &Registry) -> TransportFields {
         h3_endpoints_active,
         h3_pool_carriers,
         h3_carriers_reaped_total,
+        h3_carriers_dialed_total,
     }
 }

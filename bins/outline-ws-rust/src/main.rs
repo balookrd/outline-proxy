@@ -3,9 +3,32 @@ use clap::Parser;
 
 use outline_ws_rust::config::Args;
 
+#[cfg(all(feature = "mimalloc", feature = "jemalloc"))]
+compile_error!("features `mimalloc` and `jemalloc` are mutually exclusive: pick one allocator");
+
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// jemalloc tuning, read once at startup.
+///
+/// `background_thread` matters most: without it decay only advances when the
+/// allocator is called, so a process that goes quiet right after a burst sits
+/// on its high-water mark — the same trap that made mimalloc need a periodic
+/// `mi_collect` here. `dirty_decay_ms` is the window before freed pages are
+/// returned; 5 s trades a little reuse for RSS that follows load down.
+/// `muzzy_decay_ms:0` returns the rest immediately rather than keeping a
+/// second tier of half-released pages.
+///
+/// jemalloc applies `MALLOC_CONF` from the environment after this symbol, so a
+/// node can retune without a rebuild.
+#[cfg(feature = "jemalloc")]
+#[unsafe(export_name = "malloc_conf")]
+pub static MALLOC_CONF: &[u8] = b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0\0";
 
 /// Period between forced mimalloc reclamation passes. 10 s keeps the window
 /// where post-burst RSS sits above `MemoryHigh` short (that window is where a

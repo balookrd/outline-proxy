@@ -5,6 +5,7 @@
 //! present a bearer token matching `[control].token`; there is no anonymous
 //! access path.
 
+mod alloc;
 mod apply;
 mod config_edit;
 mod groups_crud;

@@ -12,7 +12,7 @@ edition = "2024"
 workspace = true
 
 [features]
-default = ["h3", "metrics", "control", "env-filter", "multi-thread", "mimalloc", "tun", "socks5"]
+default = ["h3", "metrics", "control", "env-filter", "multi-thread", "jemalloc", "tun", "socks5"]
 # SOCKS5 ingress (src/proxy). Off on Android, where the native TUN carries all
 # traffic and the whole 5.3k-LOC ingress can be compiled out.
 socks5 = []
@@ -31,7 +31,19 @@ env-filter = ["tracing-subscriber/env-filter"]
 # multi-thread: tokio work-stealing scheduler. Opt out via `--no-default-features`
 # for a single-threaded build, removing ~100–200 KB of scheduler code on MIPS.
 multi-thread = ["tokio/rt-multi-thread"]
+# mimalloc: the previous default, kept buildable for comparison and rollback.
+# Measured against jemalloc on 2026-08-22/23 (see the spec below) and dropped
+# from `default`: at matched load it held 143 MiB against jemalloc's 30 on the
+# same node, because it cannot return a partly-used arena and its arenas are
+# 32 MiB at minimum.
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
+# jemalloc: alternative allocator, mutually exclusive with `mimalloc`. Built to
+# answer one question mimalloc cannot: it reports live bytes (`stats.allocated`)
+# next to what it holds from the OS (`stats.resident`), so fragmentation is
+# measured rather than inferred. It also decays dirty pages per extent instead
+# of per 32+ MiB arena, which is exactly where mimalloc could not give memory
+# back on our nodes.
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 # test-tls: integration-only. Lets the binary trust a self-signed root supplied
 # via the OUTLINE_WS_TEST_TLS_CA_DER env var (forwarded to
 # outline_transport::install_test_tls_root) so e2e tests can drive TLS / H3 /
@@ -53,6 +65,8 @@ libc = "0.2"
 libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"], optional = true }
 lru = { version = "0.18", default-features = false }
 mimalloc = { version = "0.1", default-features = false, optional = true }
+tikv-jemallocator = { version = "0.6", default-features = false, features = ["background_threads", "stats"], optional = true }
+tikv-jemalloc-ctl = { version = "0.6", default-features = false, features = ["stats"], optional = true }
 outline-metrics = { path = "../../crates/outline-metrics", default-features = false }
 outline-net = { path = "../../crates/outline-net" }
 outline-routing = { path = "../../crates/outline-routing" }

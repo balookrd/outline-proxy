@@ -69,6 +69,13 @@ pub fn set_h3_pool_carriers(kind: &'static str, idle: usize, busy: usize) {
         .set(i64::try_from(busy).unwrap_or(i64::MAX));
 }
 
+/// A pooled carrier was opened by a fresh dial. Pair with
+/// [`record_h3_carrier_reaped`]: a node where the two track each other is
+/// paying handshakes to reclaim memory it needs again moments later.
+pub fn record_h3_carrier_dialed(kind: &'static str) {
+    METRICS.h3_carriers_dialed_total.with_label_values(&[kind]).inc();
+}
+
 /// An idle pooled carrier was closed and its endpoint released.
 pub fn record_h3_carrier_reaped(kind: &'static str) {
     METRICS.h3_carriers_reaped_total.with_label_values(&[kind]).inc();

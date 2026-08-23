@@ -5,6 +5,8 @@ pub(super) struct ProcessFields {
     pub(super) process_resident_memory_bytes: Gauge,
     pub(super) process_virtual_memory_bytes: Gauge,
     pub(super) process_heap_allocated_bytes: Gauge,
+    pub(super) process_heap_resident_bytes: Gauge,
+    pub(super) process_heap_free_bytes: Gauge,
     pub(super) process_heap_mode_info: IntGaugeVec,
     pub(super) process_open_fds: Gauge,
     pub(super) process_threads: Gauge,
@@ -30,6 +32,23 @@ pub(super) fn build(registry: &Registry) -> ProcessFields {
         Gauge,
         "outline_ws_process_heap_allocated_bytes",
         "Current allocated heap bytes when available; may be estimated from process memory maps."
+    );
+    // Only meaningful in `exact` mode: with jemalloc these come from the
+    // allocator itself, so `resident - allocated` is the memory it holds but is
+    // not handing out — fragmentation, measured. In `estimated` mode the
+    // sampler has no such number and leaves them at zero rather than inventing
+    // one.
+    let process_heap_resident_bytes = register_scalar!(
+        registry,
+        Gauge,
+        "outline_ws_process_heap_resident_bytes",
+        "Heap bytes the allocator holds from the OS; 0 unless heap sampling is exact."
+    );
+    let process_heap_free_bytes = register_scalar!(
+        registry,
+        Gauge,
+        "outline_ws_process_heap_free_bytes",
+        "Heap bytes held by the allocator but not allocated to the program; 0 unless heap sampling is exact."
     );
     let process_heap_mode_info = register_labeled!(
         registry,
@@ -69,6 +88,8 @@ pub(super) fn build(registry: &Registry) -> ProcessFields {
         process_resident_memory_bytes,
         process_virtual_memory_bytes,
         process_heap_allocated_bytes,
+        process_heap_resident_bytes,
+        process_heap_free_bytes,
         process_heap_mode_info,
         process_open_fds,
         process_threads,

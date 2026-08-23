@@ -665,6 +665,11 @@ async fn connect_h3_connection(
     })??;
 
     let id = h3_registry().next_id();
+    // Counted only for pooled dials: a probe has no cache key, never enters the
+    // registry, and would drown the pool's own turnover in this counter.
+    if cache_key.is_some() {
+        metrics::record_h3_carrier_dialed(metrics::H3_ENDPOINT_KIND_WS);
+    }
     let streams_opened = Arc::new(AtomicU64::new(0));
     // A dial with no cache key is a probe: one-shot, never shared, and by far
     // the most frequent kind — it keeps its lifecycle pair at debug.

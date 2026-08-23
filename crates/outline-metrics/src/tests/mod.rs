@@ -384,6 +384,37 @@ fn render_prometheus_exports_process_memory_metrics() {
     assert!(rendered.contains(
         "outline_ws_process_sockets_by_state{family=\"ipv4\",protocol=\"tcp\",state=\"close_wait\"} 3"
     ));
+    // Resident and free come from the allocator, so an estimating sampler that
+    // passes them along must still be rendered verbatim rather than folded into
+    // `allocated`.
+    assert!(rendered.contains("outline_ws_process_heap_resident_bytes 5678"));
+    assert!(rendered.contains("outline_ws_process_heap_free_bytes 256"));
+}
+
+/// The estimating sampler has no idea how much of the heap is free — it reads
+/// `VmData`, which is every anonymous mapping. Publishing a guess there would
+/// read as "the allocator holds nothing spare", the opposite of what we spent a
+/// day proving. `None` must render as zero, meaning "not measured".
+#[test]
+fn render_prometheus_leaves_unmeasured_heap_figures_at_zero() {
+    let _guard = test_guard();
+    init();
+    update_process_memory(
+        Some(1234),
+        Some(4321),
+        None,
+        Some(5678),
+        None,
+        "estimated",
+        Some(42),
+        Some(9),
+        None,
+    );
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    assert!(rendered.contains("outline_ws_process_heap_resident_bytes 0"));
+    assert!(rendered.contains("outline_ws_process_heap_free_bytes 0"));
+    assert!(rendered.contains("outline_ws_process_heap_allocated_bytes 5678"));
 }
 
 #[test]
