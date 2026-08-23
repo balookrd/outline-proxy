@@ -28,6 +28,7 @@ mod carrier_cap;
 mod dial_admission;
 mod direct_backpressure;
 mod global_budget;
+mod health_recovery;
 mod migrate;
 mod resume;
 mod window_autotune;
