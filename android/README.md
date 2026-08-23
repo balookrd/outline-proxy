@@ -236,6 +236,31 @@ config.
   source is only reachable *through* the tunnel, background refresh will fail and
   the cache carries on — a known limitation.
 
+### Dial budget on slow links
+
+The generated config carries no `[dial]` section, so the core bounds every fresh
+carrier dial at its 10 s default. That fits Wi-Fi and LTE and is the *cause* of
+failure on an edge-class cell: a 2G round trip runs close to a second and the
+certificate chain alone takes seconds to clock out, so the budget expires
+mid-handshake, every attempt is scored a failure, and the retries eat the
+bandwidth the handshake needed — the tunnel reports itself up while carrying
+nothing.
+
+So the app fills the section in from what the platform says about the link it is
+about to ride (`DialTimeout`): a cellular link estimated at or below 200 kbit/s
+gets 60 s, one below 2 Mbit/s gets 30 s, anything faster keeps the default. Wi-Fi
+and Ethernet are never widened — a slow Wi-Fi is usually a slow backhaul, where
+the handshake still completes in a couple of round trips, and widening the bound
+would only delay failover. A link the platform has not characterised yet is left
+alone rather than assumed slow.
+
+A config that declares `[dial]` itself is never touched: an explicit value from
+the operator outranks this guess.
+
+The choice is made **once, when the tunnel starts** — the core reads the budget
+at startup and holds it for the life of the process. Walking from Wi-Fi into a
+2G cell does not widen it; that takes a reconnect.
+
 ## External control (`outline://`)
 
 Automation apps (Tasker, launcher shortcuts, `adb`) can drive the tunnel over a

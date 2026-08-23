@@ -313,7 +313,7 @@ class OutlineVpnService : VpnService() {
             state.alwaysOnSeen = isAlwaysOn
         }
         try {
-            start(configToml, filesDir.absolutePath, tun.fd)
+            start(withDialBudget(configToml), filesDir.absolutePath, tun.fd)
             Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
             state.clearFailures()
             if (state.connectedSince == 0L) state.connectedSince = System.currentTimeMillis()
@@ -440,6 +440,35 @@ class OutlineVpnService : VpnService() {
         }
             .onSuccess { networkCallback = cb }
             .onFailure { Log.w(TAG, "cannot watch the underlying network", it) }
+    }
+
+    /**
+     * Size the carrier-dial budget for the link this tunnel is about to ride and
+     * write it into the profile.
+     *
+     * The generated profile ships no `[dial]` section, so every network gets the
+     * core's 10 s default — the very budget that cannot complete a handshake on
+     * an edge-class cell. See [DialTimeout] for the thresholds and for why the
+     * choice is fixed at start.
+     *
+     * The network is resolved the same way the underlying-network watch resolves
+     * it, and deliberately *not* via `activeNetwork`: `establish()` has already
+     * run by this point, so our own VPN would answer for it.
+     */
+    private fun withDialBudget(configToml: String): String {
+        val seconds = runCatching {
+            val cm = getSystemService(ConnectivityManager::class.java) ?: return@runCatching null
+            val network = underlyingNetwork ?: pickBest(cm) ?: return@runCatching null
+            val caps = cm.getNetworkCapabilities(network) ?: return@runCatching null
+            DialTimeout.secondsFor(
+                isCellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+                downstreamKbps = caps.linkDownstreamBandwidthKbps,
+            )
+        }.getOrNull()
+        if (seconds != null && !DialTimeout.declaresDial(configToml)) {
+            Log.i(TAG, "slow link: raising the carrier-dial budget to ${seconds}s")
+        }
+        return DialTimeout.applyTo(configToml, seconds)
     }
 
     /** Bind [network] as the tunnel's underlying network; `null` = system default. */
