@@ -213,6 +213,15 @@ when the node ships the matching sections. The generator reports the ones that
 are off as `warning:` lines — see
 [`ops/access-keys/README.md`](../ops/access-keys/README.md).
 
+The generated profile also carries `[outline.probe]` — a DNS probe plus TLS
+handshakes through the tunnel, mirroring the fleet's own `main` group. Without
+it the client has no health signal independent of traffic: an uplink marked down
+can only be cleared by data flowing over it, so losing every uplink at once (a
+SIM switch, a dead cell) used to read as "no link" until the tunnel was
+reconnected by hand. The probe interval is 60 s rather than the fleet's 10 s —
+on a phone the difference is battery, and on an edge-class cell it is the very
+bandwidth the tunnel needs.
+
 ### Subscription URL
 
 Instead of pasting the config, a profile can point at an HTTPS URL that serves

@@ -30,6 +30,49 @@ SHUFFLE_WIRES = True
 # When the chain is shuffled, also reroll the *active* wire on a timer picked
 # in this closed range of minutes. Bounds only — the exact per-uplink value is
 # a stable hash of identity, see shuffle_timer().
+# Probe settings, mirroring the `main` group on cloud1 — the phone needs the
+# same health signal the fleet clients have. Without any `[probe]` section at
+# all (the shape this generator used to emit) `healthy` is written only by the
+# data path, so a client that loses every uplink at once — a SIM switch, a dead
+# cell — has no independent way to find out they came back, and the UI has no
+# latency to show either: the RTT the status displays comes from probe samples
+# and real dials alike, but on a phone the dials are the only ones and they stop
+# happening once everything is marked down.
+#
+# The one deliberate departure from cloud1 is the interval. The fleet probes
+# every 10 s from mains power over a fat pipe; a phone would pay for that in
+# battery and — on the edge-class cells this whole exercise is about — in the
+# very bandwidth the tunnel needs. 60 s is the floor ws-rust itself recommends
+# (below it, bursts of handshakes trip upstream rate limits), and it still finds
+# a recovered uplink inside a minute without any traffic to prompt it.
+PROBE_INTERVAL_SECS = 60
+PROBE_TIMEOUT_SECS = 10
+# Two consecutive failures before a verdict: one probe cycle can lose to a
+# handover or a moment of congestion, which on mobile is normal rather than a
+# reason to fail over.
+PROBE_MIN_FAILURES = 2
+# One handshake per cycle. `min_failures` already absorbs a flap, so a second
+# attempt would only double the cost of every cycle.
+PROBE_ATTEMPTS = 1
+# Bare-TCP reachability sweep across every wire, run only after a cycle has
+# already failed on all of them: a switched-off exit is then called down at once
+# instead of walking the carrier descent for minutes.
+PROBE_ENDPOINT_CHECK = True
+PROBE_ENDPOINT_CHECK_TIMEOUT_MS = 2000
+PROBE_DNS_SERVER = "1.1.1.1"
+PROBE_DNS_PORT = 53
+PROBE_DNS_NAME = "google.com"
+# TLS handshakes through the tunnel, same targets as cloud1: hosts that are
+# both unremarkable to reach and representative of what the user actually
+# opens, so a probe passing means something a user would notice.
+PROBE_TLS_TARGETS = (
+    "www.instagram.com",
+    "www.youtube.com",
+    "www.googletagmanager.com",
+    "www.googlevideo.com",
+    "api.telegram.org",
+)
+
 SHUFFLE_TIMER_MIN_MINUTES = 30
 SHUFFLE_TIMER_MAX_MINUTES = 60
 
@@ -298,6 +341,24 @@ def build_config(user: User, nodes: Sequence[str], server: ServerConfig) -> str 
         "health_weighted_selection = true",
         "warm_standby_tcp = 1",
         "warm_standby_udp = 1",
+        "",
+        "[outline.probe]",
+        f"interval_secs = {PROBE_INTERVAL_SECS}",
+        f"timeout_secs = {PROBE_TIMEOUT_SECS}",
+        f"min_failures = {PROBE_MIN_FAILURES}",
+        f"attempts = {PROBE_ATTEMPTS}",
+        f"endpoint_check = {str(PROBE_ENDPOINT_CHECK).lower()}",
+        f"endpoint_check_timeout_ms = {PROBE_ENDPOINT_CHECK_TIMEOUT_MS}",
+        "",
+        "[outline.probe.dns]",
+        f"server = {quote(PROBE_DNS_SERVER)}",
+        f"port = {PROBE_DNS_PORT}",
+        f"name = {quote(PROBE_DNS_NAME)}",
+        "",
+        "[outline.probe.tls]",
+        "targets = [",
+        *[f"  {quote(target)}," for target in PROBE_TLS_TARGETS],
+        "]",
         "",
     ]
 

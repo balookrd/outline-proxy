@@ -31,6 +31,19 @@ object DialTimeout {
     /** …and below which it is still materially slower than the default assumes (2.5G/3G). */
     const val SLOW_KBPS = 2_000
 
+    /**
+     * Measured dial round-trip at or above which the link is treated as
+     * edge-class regardless of what the platform claims about its bandwidth.
+     *
+     * A dial is TCP + TLS + the HTTP upgrade, so healthy LTE lands in the low
+     * hundreds of milliseconds and 3G under a second. Seconds mean the
+     * handshake itself is the bottleneck.
+     */
+    const val EDGE_LATENCY_MS = 3_000
+
+    /** …and the milder threshold, matching what the status calls "slow". */
+    const val SLOW_LATENCY_MS = LinkQuality.SLOW_LATENCY_MS
+
     /** Budget for an edge-class link, in seconds. */
     const val EDGE_TIMEOUT_SECS = 60
 
@@ -40,17 +53,38 @@ object DialTimeout {
     /**
      * Seconds to request for this link, or `null` to leave the core's default.
      *
-     * Only cellular links are widened. Wi-Fi and Ethernet report bandwidth too,
-     * but a slow Wi-Fi is usually a slow *backhaul*, where the handshake still
-     * completes in a couple of round trips — the default already covers it, and
-     * widening the bound would only slow failover down.
+     * [latencyMs] — the round-trip the core measured on its own dials — decides
+     * whenever it exists, and the platform's bandwidth estimate only fills the
+     * gap before the first dial has completed. That order is not a preference,
+     * it is a correction: the estimate is a claim, and some firmware makes it up
+     * entirely. One HONOR device reported 14 kbit/s on a full-signal LTE cell
+     * that was carrying traffic perfectly well, on both operators — sizing the
+     * budget from that would have left a healthy link with a six-fold slower
+     * failover for no reason.
+     *
+     * The estimate is still worth keeping for the cold start: on a genuine 2G
+     * cell the first dial has to survive before there is anything to measure,
+     * and the default 10 s is exactly what it cannot survive. There a wrong
+     * guess costs far less than no guess.
+     *
+     * Only cellular links are widened on the estimate. Wi-Fi and Ethernet report
+     * bandwidth too, but a slow Wi-Fi is usually a slow *backhaul*, where the
+     * handshake still completes in a couple of round trips. A measured latency
+     * widens any transport — there the evidence is direct.
      *
      * An unknown estimate ([downstreamKbps] `null` or non-positive) is left
      * alone: the platform reports 0 for a link it has not characterised yet, and
      * treating "no data" as "2G" would hand every fresh cellular connect a
      * 60-second window to stall in.
      */
-    fun secondsFor(isCellular: Boolean, downstreamKbps: Int?): Int? {
+    fun secondsFor(isCellular: Boolean, downstreamKbps: Int?, latencyMs: Int? = null): Int? {
+        latencyMs?.takeIf { it > 0 }?.let { measured ->
+            return when {
+                measured >= EDGE_LATENCY_MS -> EDGE_TIMEOUT_SECS
+                measured >= SLOW_LATENCY_MS -> SLOW_TIMEOUT_SECS
+                else -> null
+            }
+        }
         if (!isCellular) return null
         val kbps = downstreamKbps ?: return null
         if (kbps <= 0) return null

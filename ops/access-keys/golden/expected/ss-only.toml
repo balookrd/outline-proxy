@@ -23,6 +23,28 @@ health_weighted_selection = true
 warm_standby_tcp = 1
 warm_standby_udp = 1
 
+[outline.probe]
+interval_secs = 60
+timeout_secs = 10
+min_failures = 2
+attempts = 1
+endpoint_check = true
+endpoint_check_timeout_ms = 2000
+
+[outline.probe.dns]
+server = "1.1.1.1"
+port = 53
+name = "google.com"
+
+[outline.probe.tls]
+targets = [
+  "www.instagram.com",
+  "www.youtube.com",
+  "www.googletagmanager.com",
+  "www.googlevideo.com",
+  "api.telegram.org",
+]
+
 [[outline.uplinks]]
 name = "cloud1"
 group = "main"
