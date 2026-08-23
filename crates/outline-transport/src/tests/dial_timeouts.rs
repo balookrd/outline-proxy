@@ -1,0 +1,43 @@
+use std::time::Duration;
+
+use super::*;
+
+/// The default has to survive untouched: it is what every deployment that never
+/// sets the knob keeps running with, and the hand-tuned constants it replaced
+/// were 10 s for a fresh dial and 7 s for opening an H3 stream.
+#[test]
+fn defaults_match_the_constants_they_replaced() {
+    assert_eq!(DEFAULT_DIAL_TIMEOUT, Duration::from_secs(10));
+    assert_eq!(h3_stream_from(DEFAULT_DIAL_TIMEOUT), Duration::from_secs(7));
+}
+
+/// A too-small value is the dangerous direction — it turns every handshake into
+/// a failure — so it is clamped rather than honoured.
+#[test]
+fn a_dial_budget_below_the_floor_is_clamped() {
+    assert_eq!(clamp_dial_timeout(Duration::from_millis(200)), MIN_DIAL_TIMEOUT);
+    assert_eq!(clamp_dial_timeout(Duration::ZERO), MIN_DIAL_TIMEOUT);
+}
+
+/// Past the ceiling the bound stops bounding anything, so it is capped too.
+#[test]
+fn a_dial_budget_above_the_ceiling_is_clamped() {
+    assert_eq!(clamp_dial_timeout(Duration::from_secs(600)), MAX_DIAL_TIMEOUT);
+}
+
+/// Everything in between is taken as written.
+#[test]
+fn a_dial_budget_within_range_is_kept() {
+    let edge_class = Duration::from_secs(45);
+    assert_eq!(clamp_dial_timeout(edge_class), edge_class);
+}
+
+/// The H3 stream bound scales with the connect bound instead of staying pinned
+/// at 7 s — the point of raising the knob on a 2 G link is that *every* stage of
+/// the dial gets more room.
+#[test]
+fn the_h3_stream_bound_scales_with_the_dial_budget() {
+    assert_eq!(h3_stream_from(Duration::from_secs(60)), Duration::from_secs(42));
+    // …and never collapses to nothing at the floor.
+    assert!(h3_stream_from(MIN_DIAL_TIMEOUT) >= Duration::from_secs(1));
+}

@@ -24,7 +24,6 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use http::{HeaderMap, HeaderValue, Method, Request, Version};
@@ -56,7 +55,7 @@ use super::{
 
 /// Same dial budget as the h2/h3 paths — keeps fallback windows
 /// uniform across carriers.
-const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::dial_timeouts::fresh_connect_timeout;
 
 fn h1_tls_config() -> Arc<rustls::ClientConfig> {
     // Cache + per-dial fingerprint selection live in `build_client_config`
@@ -190,7 +189,7 @@ pub(super) async fn connect_xhttp_h1(
 
     // The dial-scoped TLS fingerprint is set once by `DialPlan::connect`;
     // the TLS handshake inside `dial` reads it through `build_client_config`.
-    timeout(FRESH_CONNECT_TIMEOUT, dial)
+    timeout(fresh_connect_timeout(), dial)
         .await
         .with_context(|| format!("xhttp/h1 dial to {url} timed out"))?
         .with_context(|| format!("xhttp/h1 dial to {url} failed"))

@@ -46,12 +46,12 @@ use super::{
 /// Time budget for the initial dial: TCP + TLS + h2 handshake +
 /// first POST/GET ack. Matches the bound used by the WS h2 dial
 /// in `h2/shared.rs` for parity with manager-level retry windows.
-const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::dial_timeouts::fresh_connect_timeout;
 
 /// Upper bound for a single packet-up POST (send request, read response
 /// headers, drain the small body) on an already-established h2 connection.
 ///
-/// `FRESH_CONNECT_TIMEOUT` only covers the dial, so without this bound a
+/// `fresh_connect_timeout()` only covers the dial, so without this bound a
 /// server that accepts the request stream and then goes silent leaves
 /// `send_request` pending forever — this carrier sets no h2 keep-alive ping
 /// and the TCP socket carries no keepalive, so nothing else ever ends the
@@ -262,7 +262,7 @@ pub(super) async fn connect_xhttp_h2(
 
     // The dial-scoped TLS fingerprint is set once by `DialPlan::connect`;
     // the TLS handshake inside `dial` reads it through `build_client_config`.
-    timeout(FRESH_CONNECT_TIMEOUT, dial)
+    timeout(fresh_connect_timeout(), dial)
         .await
         .with_context(|| format!("xhttp dial to {url} timed out"))?
         .with_context(|| format!("xhttp dial to {url} failed"))

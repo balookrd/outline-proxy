@@ -100,6 +100,19 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let tcp_timeouts =
         tcp_timeouts::load_tcp_timeouts(file.as_ref().and_then(|f| f.tcp_timeouts.as_ref()));
 
+    // `[dial] timeout_secs`. Rejected rather than clamped at zero:
+    // a zero budget fails every dial instantly, and silently substituting the
+    // floor would hide a typo behind a tunnel that "just works differently".
+    let dial_timeout = match file
+        .as_ref()
+        .and_then(|f| f.dial.as_ref())
+        .and_then(|d| d.timeout_secs)
+    {
+        Some(0) => bail!("[dial] timeout_secs must be greater than zero"),
+        Some(secs) => Some(std::time::Duration::from_secs(secs)),
+        None => None,
+    };
+
     #[cfg(feature = "tun")]
     if listen.is_none() && tun.is_none() {
         bail!("no ingress configured: set --listen / [socks5].listen and/or configure [tun]");
@@ -161,6 +174,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         direct_ipv6_prefix_interface,
         state_path,
         tcp_timeouts,
+        dial_timeout,
         fingerprint_profile,
         padding,
     })

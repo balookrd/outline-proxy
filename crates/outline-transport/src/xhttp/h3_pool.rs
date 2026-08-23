@@ -44,7 +44,7 @@ use crate::shared_cache::{
 };
 
 /// Same bound the rest of the H3 paths use for a fresh handshake.
-const FRESH_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+use crate::dial_timeouts::fresh_connect_timeout;
 
 // Pool policy. The shape is [`choose_slot`]'s, the numbers are XHTTP's, because
 // the unit of load here is a session rather than a WebSocket stream.
@@ -282,7 +282,7 @@ async fn dial(
     let connecting = endpoint
         .connect_with(crate::quic::h3_quic_client_config(), server_addr, &server_name_str)
         .with_context(|| format!("failed to initiate xhttp/h3 QUIC connection to {server_addr}"))?;
-    let (connection, mut driver, send_request) = timeout(FRESH_CONNECT_TIMEOUT, async {
+    let (connection, mut driver, send_request) = timeout(fresh_connect_timeout(), async {
         let connection = connecting
             .await
             .with_context(|| format!("xhttp/h3 QUIC handshake failed for {server_addr}"))?;
@@ -295,7 +295,7 @@ async fn dial(
     .map_err(|_| {
         anyhow!(
             "xhttp/h3 fresh connect timed out after {}s to {server_addr}",
-            FRESH_CONNECT_TIMEOUT.as_secs()
+            fresh_connect_timeout().as_secs()
         )
     })??;
 

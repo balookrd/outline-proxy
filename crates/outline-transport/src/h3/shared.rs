@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use http::{Method, Request};
@@ -40,14 +39,14 @@ use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri, websocket_pa
 // handshake itself is already complete at this point; a generous budget of a
 // few seconds is plenty for a healthy path and keeps the worst-case recovery
 // latency bounded.
-const OPEN_WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(7);
+use crate::dial_timeouts::h3_open_stream_timeout;
 
 // Upper bound for establishing a fresh HTTP/3 connection (QUIC handshake +
 // HTTP/3 handshake).  Without this bound, a server black hole would let the
 // QUIC handshake stall for up to `max_idle_timeout` (120s), which masks
 // failover in exactly the same way as the shared-connection stalls do.
 // 10 seconds matches the bound used for fresh H2 and H1 handshakes.
-const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::dial_timeouts::fresh_connect_timeout;
 
 // ── Connection key ────────────────────────────────────────────────────────────
 
@@ -335,7 +334,7 @@ impl SharedH3Connection {
             );
         }
 
-        let mut stream: H3RequestStreamHandle = timeout(OPEN_WEBSOCKET_TIMEOUT, async {
+        let mut stream: H3RequestStreamHandle = timeout(h3_open_stream_timeout(), async {
             let mut send_request = self.send_request.lock().await;
             send_request
                 .send_request(request)
@@ -346,16 +345,16 @@ impl SharedH3Connection {
         .map_err(|_| {
             anyhow!(
                 "HTTP/3 websocket CONNECT request timed out after {}s on shared connection",
-                OPEN_WEBSOCKET_TIMEOUT.as_secs()
+                h3_open_stream_timeout().as_secs()
             )
         })??;
 
-        let response = timeout(OPEN_WEBSOCKET_TIMEOUT, stream.recv_response())
+        let response = timeout(h3_open_stream_timeout(), stream.recv_response())
             .await
             .map_err(|_| {
                 anyhow!(
                     "HTTP/3 websocket CONNECT response timed out after {}s on shared connection",
-                    OPEN_WEBSOCKET_TIMEOUT.as_secs()
+                    h3_open_stream_timeout().as_secs()
                 )
             })?
             .context("failed to receive HTTP/3 websocket response")?;
@@ -646,7 +645,7 @@ async fn connect_h3_connection(
     let connecting = endpoint
         .connect_with(client_config, server_addr, server_name)
         .with_context(|| format!("failed to initiate QUIC connection to {server_addr}"))?;
-    let (connection_handle, mut driver, send_request) = timeout(FRESH_CONNECT_TIMEOUT, async {
+    let (connection_handle, mut driver, send_request) = timeout(fresh_connect_timeout(), async {
         let connection = connecting
             .await
             .with_context(|| format!("QUIC handshake failed for {server_addr}"))?;
@@ -660,7 +659,7 @@ async fn connect_h3_connection(
     .map_err(|_| {
         anyhow!(
             "HTTP/3 fresh connect timed out after {}s to {server_addr}",
-            FRESH_CONNECT_TIMEOUT.as_secs()
+            fresh_connect_timeout().as_secs()
         )
     })??;
 
