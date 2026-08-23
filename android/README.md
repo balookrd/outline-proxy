@@ -259,13 +259,21 @@ the operator outranks this guess.
 
 The budget **follows the link**, it is not frozen at connect time. The service
 watches the network it rides — including `onCapabilitiesChanged`, which is how a
-cell handover and, on many devices, a data-SIM switch actually arrive: the
-`Network` object stays the same while its properties change underneath. Walking
-from Wi-Fi into a 2G cell widens the bound, walking back restores the default
-(leaving 60 s on a fast link would only slow failover down), and the engine picks
-the new value up on its next dial — handshakes already in flight keep the
-deadline they started with. Nothing is torn down, and a repeated estimate is not
-re-applied, so a signal-strength wobble costs nothing.
+cell handover, a generation change (2G ↔ 3G ↔ LTE ↔ 5G) and, on many devices, a
+data-SIM switch actually arrive: the `Network` object stays the same while its
+properties change underneath. Walking from Wi-Fi into a 2G cell widens the bound,
+walking back restores the default (leaving 60 s on a fast link would only slow
+failover down), and the engine picks the new value up on its next dial —
+handshakes already in flight keep the deadline they started with. Nothing is torn
+down, and a repeated estimate is not re-applied, so a signal-strength wobble
+costs nothing.
+
+Generations land where you would expect them: GPRS and EDGE are estimated at or
+below 200 kbit/s and get 60 s, UMTS and a weak HSPA or LTE land under 2 Mbit/s
+and get 30 s, and anything healthier keeps the default. Since not every firmware
+re-reports the bandwidth estimate when only the radio technology changes, the
+budget is also re-checked on the service's existing 2-second tick — a capability
+read and a comparison, free when nothing moved.
 
 ## External control (`outline://`)
 
