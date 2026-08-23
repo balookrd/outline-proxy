@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use anyhow::{Context, Result, anyhow};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -23,7 +21,7 @@ use crate::{
 // own. Without a bound here the fallback chain h3 -> h2 -> h1 could stall
 // for minutes when the server is in a network black hole, before
 // `report_runtime_failure` gets a chance to mark the uplink down.
-const HTTP1_WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::dial_timeouts::fresh_connect_timeout as http1_ws_connect_timeout;
 
 /// Socket-level knobs shared by every HTTP-family dial branch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -560,7 +558,7 @@ async fn connect_websocket_http1(
         issued_session_id,
         ack_prefix_advertised_by_server,
         symmetric_replay_advertised_by_server,
-    ) = timeout(HTTP1_WS_CONNECT_TIMEOUT, async {
+    ) = timeout(http1_ws_connect_timeout(), async {
         let tcp = connect_tcp_socket(server_addr, options.network.fwmark).await?;
         // Build a `Request` so we can attach `X-Outline-*` headers; the
         // default form (`url.as_str().into_client_request()`) hides the
@@ -619,7 +617,7 @@ async fn connect_websocket_http1(
     .map_err(|_| {
         anyhow!(
             "HTTP/1 websocket handshake timed out after {}s connecting to {server_addr}",
-            HTTP1_WS_CONNECT_TIMEOUT.as_secs()
+            http1_ws_connect_timeout().as_secs()
         )
     })??;
     connect_guard.finish("success");

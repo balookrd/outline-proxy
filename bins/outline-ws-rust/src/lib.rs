@@ -76,6 +76,7 @@ pub async fn run_with_options(args: Args, opts: RunOptions) -> Result<()> {
         config.quic.stream_receive_window,
         config.quic.receive_window,
     );
+    outline_transport::init_dial_timeout(config.dial_timeout);
     outline_net::init_udp_socket_bufs(config.udp_recv_buf_bytes, config.udp_send_buf_bytes);
     outline_net::init_prefer_public_ipv6_src(config.prefer_public_ipv6_src.unwrap_or(true));
     outline_net::init_direct_ipv6_prefix_iface(config.direct_ipv6_prefix_interface.clone());

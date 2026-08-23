@@ -40,12 +40,12 @@ use super::{
 
 /// Same dial budget the h2 path uses — keeps fallback windows
 /// uniform across carriers.
-const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::dial_timeouts::fresh_connect_timeout;
 
 /// Upper bound for a single packet-up POST (open stream, send body, read
 /// response) on an already-established QUIC connection.
 ///
-/// `FRESH_CONNECT_TIMEOUT` only covers the handshake, so without this bound a
+/// `fresh_connect_timeout()` only covers the handshake, so without this bound a
 /// server that accepts the request stream and then goes silent leaves
 /// `recv_response()` pending forever: QUIC keep-alive (8–12 s) keeps
 /// `max_idle_timeout` (28–35 s) from ever firing, and the POST task holds a
@@ -263,7 +263,7 @@ pub(super) async fn connect_xhttp_h3(
         ))
     };
 
-    timeout(FRESH_CONNECT_TIMEOUT, dial)
+    timeout(fresh_connect_timeout(), dial)
         .await
         .with_context(|| format!("xhttp/h3 dial to {url} timed out"))?
         .with_context(|| format!("xhttp/h3 dial to {url} failed"))

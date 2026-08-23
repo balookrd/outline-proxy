@@ -163,7 +163,7 @@ type H2SendRequestHandle = http2::SendRequest<Empty<Bytes>>;
 // failover has a chance to react promptly.  The handshake itself is already
 // complete at this point; 10 seconds is a generous budget for issuing a
 // CONNECT request and reading its response on a healthy link.
-const OPEN_WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::dial_timeouts::open_stream_timeout;
 
 // Upper bound for establishing a fresh HTTP/2 connection (TCP + TLS +
 // h2 handshake).  Neither `TcpStream::connect`, `connect_tls_h2`, nor
@@ -172,7 +172,7 @@ const OPEN_WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 // fallback path for the entire TCP SYN retransmit budget (Linux ~127s,
 // macOS ~75s).  10 seconds is plenty for a healthy fresh connect and
 // matches the bound used for HTTP/1 websocket handshakes.
-const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::dial_timeouts::fresh_connect_timeout;
 
 // ── Connection key ────────────────────────────────────────────────────────────
 
@@ -289,7 +289,7 @@ impl SharedH2Connection {
         // Previously we held a Mutex here, which caused all callers to queue
         // behind a single .ready().await — any timeout became a false runtime
         // failure on a healthy uplink.
-        let response_future = timeout(OPEN_WEBSOCKET_TIMEOUT, async {
+        let response_future = timeout(open_stream_timeout(), async {
             let mut send_request = self.send_request.clone();
             send_request
                 .ready()
@@ -301,16 +301,16 @@ impl SharedH2Connection {
         .map_err(|_| {
             anyhow!(
                 "HTTP/2 websocket CONNECT send timed out after {}s on shared connection",
-                OPEN_WEBSOCKET_TIMEOUT.as_secs()
+                open_stream_timeout().as_secs()
             )
         })??;
 
-        let mut response = timeout(OPEN_WEBSOCKET_TIMEOUT, response_future)
+        let mut response = timeout(open_stream_timeout(), response_future)
             .await
             .map_err(|_| {
                 anyhow!(
                     "HTTP/2 websocket CONNECT response timed out after {}s on shared connection",
-                    OPEN_WEBSOCKET_TIMEOUT.as_secs()
+                    open_stream_timeout().as_secs()
                 )
             })?
             .context("failed to send HTTP/2 websocket CONNECT request")?;
@@ -319,12 +319,12 @@ impl SharedH2Connection {
         }
         let negotiated = crate::resumption::parse_resume_response_echo(resume, response.headers());
 
-        let upgraded = timeout(OPEN_WEBSOCKET_TIMEOUT, hyper::upgrade::on(&mut response))
+        let upgraded = timeout(open_stream_timeout(), hyper::upgrade::on(&mut response))
             .await
             .map_err(|_| {
                 anyhow!(
                     "HTTP/2 websocket upgrade timed out after {}s on shared connection",
-                    OPEN_WEBSOCKET_TIMEOUT.as_secs()
+                    open_stream_timeout().as_secs()
                 )
             })?
             .context("failed to upgrade HTTP/2 websocket stream")?;
@@ -516,7 +516,7 @@ async fn connect_h2_connection(
     fwmark: Option<u32>,
     cache_key: Option<H2ConnectionKey>,
 ) -> Result<SharedH2Connection> {
-    let (send_request, conn, loss_probe) = timeout(FRESH_CONNECT_TIMEOUT, async {
+    let (send_request, conn, loss_probe) = timeout(fresh_connect_timeout(), async {
         let (io, loss_probe) = if use_tls {
             let (tls, loss_probe) = connect_tls_h2(server_addr, server_name, fwmark).await?;
             (H2Io::Tls { inner: tls }, loss_probe)
@@ -546,7 +546,7 @@ async fn connect_h2_connection(
     .map_err(|_| {
         anyhow!(
             "HTTP/2 fresh connect timed out after {}s to {server_addr}",
-            FRESH_CONNECT_TIMEOUT.as_secs()
+            fresh_connect_timeout().as_secs()
         )
     })??;
 

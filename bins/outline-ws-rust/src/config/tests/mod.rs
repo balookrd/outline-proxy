@@ -1935,3 +1935,84 @@ async fn generated_android_config_fixture_loads() {
     assert!(group.load_balancing.tun_wire_dial);
     assert_eq!(group.load_balancing.warm_standby_tcp, 1);
 }
+
+/// The dial budget is what a 2 G deployment reaches for: the default 10 s
+/// expires mid-handshake there, and every expired dial is scored a failure.
+#[tokio::test]
+async fn load_config_reads_the_dial_timeout() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [dial]
+        timeout_secs = 45
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert_eq!(config.dial_timeout, Some(std::time::Duration::from_secs(45)));
+}
+
+/// Unset leaves the transport crate's own default in place rather than
+/// materialising a number here — one owner for the value.
+#[tokio::test]
+async fn load_config_without_a_dial_section_leaves_the_default() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert_eq!(config.dial_timeout, None);
+}
+
+/// Zero fails every dial instantly. Rejecting it beats clamping: a typo that
+/// silently becomes "2 s" would read as a tunnel that just behaves oddly.
+#[tokio::test]
+async fn load_config_rejects_a_zero_dial_timeout() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [dial]
+        timeout_secs = 0
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    assert!(
+        format!("{err:#}").contains("timeout_secs"),
+        "error should name the offending key, got: {err:#}"
+    );
+}

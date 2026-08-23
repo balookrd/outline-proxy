@@ -94,6 +94,10 @@ pub(crate) struct ConfigFile {
     /// TCP session timeouts applied to SOCKS CONNECT and direct sessions.
     /// All fields optional; unset ones inherit compile-time defaults.
     pub(super) tcp_timeouts: Option<TcpTimeoutsSection>,
+    /// Carrier-dial budget shared by every wire family. Unset keeps the
+    /// compile-time default; raise it on links where a TLS/QUIC handshake
+    /// cannot finish inside it (2G/EDGE).
+    pub(super) dial: Option<DialSection>,
     /// Browser fingerprint diversification strategy applied to WS / XHTTP
     /// dials. Accepts `"off"` / `"none"` / `"disabled"` (default — wire
     /// shape unchanged), `"stable"` / `"per_host_stable"` /
@@ -128,6 +132,19 @@ pub(super) struct PaddingSection {
     /// React to a server downstream-throttle signal by penalising the current
     /// uplink and migrating away. Default `false`.
     pub(super) react_to_throttle: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DialSection {
+    /// Upper bound on a fresh carrier dial: TCP + TLS + HTTP upgrade, or the
+    /// QUIC + HTTP/3 handshake. Default 10 s, which fits broadband and LTE.
+    /// On an edge-class link a handshake needs far longer than that, and a
+    /// budget that expires mid-handshake scores every attempt as a failure
+    /// while the retries eat the bandwidth the handshake needed. Clamped to
+    /// 2..=120 s. Raising it costs worst-case failover latency, since this is
+    /// also what bounds a dial into a network black hole.
+    pub(super) timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
