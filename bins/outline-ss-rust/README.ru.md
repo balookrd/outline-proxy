@@ -793,6 +793,8 @@ scrape_configs:
 - Топ-размеры virtual mapping и gap'ов из `/proc/self/smaps`
 - Информация о сборке и конфигурации
 
+Глобальный аллокатор бинаря — `jemalloc` (`mimalloc` остаётся за feature-флагом на случай отката). Оба живут в анонимных отображениях, а не в традиционной области `[heap]`, поэтому `[heap]`- и trim-метрики не экспортируются: под jemalloc используйте `outline_ss_process_heap_*` (allocated, resident и их разность — фрагментация), под mimalloc — RSS и датчики анонимных mapping'ов.
+
 ### Grafana
 
 Импортируйте [grafana/outline-ss-rust-dashboard.json](grafana/outline-ss-rust-dashboard.json) в Grafana.

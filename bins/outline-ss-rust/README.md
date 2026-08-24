@@ -788,7 +788,7 @@ The metrics set includes:
 - Virtual memory category gauges for anonymous, file-backed, stack, and special mappings
 - Top virtual mapping size / gap gauges from `/proc/self/smaps`
 
-The bundled binary uses `mimalloc` as its global allocator. On Linux this usually moves allocator-managed memory into anonymous mappings instead of the traditional `[heap]` region, so allocator-focused `[heap]` and trim metrics are not exported. Use RSS plus the anonymous mapping gauges for allocator-related memory tracking.
+The bundled binary uses `jemalloc` as its global allocator (`mimalloc` stays behind a feature for rollback). Both live in anonymous mappings rather than the traditional `[heap]` region, so `[heap]` and trim metrics are not exported; use `outline_ss_process_heap_*` when jemalloc is on (allocated, resident, and their difference — the fragmentation figure), and RSS plus the anonymous mapping gauges otherwise.
 - Build and configuration info
 
 ### Grafana
