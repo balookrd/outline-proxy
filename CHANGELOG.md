@@ -15,9 +15,9 @@ per-binary changelogs:
 | **Dashboard** (`outline-ui`) | [`bins/outline-ui/CHANGELOG.md`](bins/outline-ui/CHANGELOG.md) | [`CHANGELOG.ru.md`](bins/outline-ui/CHANGELOG.ru.md) |
 | **Android app** | [`android/CHANGELOG.md`](android/CHANGELOG.md) | [`CHANGELOG.ru.md`](android/CHANGELOG.ru.md) |
 
-Both binaries are at **1.7.0**, released 2026-07-06 (tags `ss-v1.7.0` /
-`ws-v1.7.0`); work landed since then sits in each binary's `## Unreleased`
-section. Adaptive carrier
+Both binaries are at **1.9.0**, released 2026-08-24 (tags `ss-v1.9.0` /
+`ws-v1.9.0`), alongside `outline-ui` **1.2.0** and the Android app **1.2.0**
+from the same cut. Adaptive carrier
 padding, TUN GSO / GRO / USO offload, and connection sniffing with destination
 override all shipped earlier in this line. The headline recent work spans the
 whole system:
