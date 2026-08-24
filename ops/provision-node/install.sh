@@ -1440,8 +1440,87 @@ phase_cron() {
 
 # ------------------------------------------------------------------- services
 
+
+# Writes the memory drop-in for outline-ws-rust and outline-ss-rust from
+# memory-tuning/fleet.tsv in the bundle, keyed on the --host argument.
+#
+# One canonical file per service (20-memory.conf), matching what
+# ops/memory-tuning/apply.sh writes on a live fleet. install.sh runs BEFORE the
+# services start, so a fresh node comes up already tuned; no set-property
+# needed, systemd reads the drop-in at unit start.
+#
+# The table entry is not required. A node absent from fleet.tsv (or one whose
+# services have `-` limits) is left with systemd defaults — the previous
+# behaviour, so this addition never makes an unpatched install worse.
+install_memory_dropin() {
+    local table="$BUNDLE/memory-tuning/fleet.tsv"
+    if [ ! -f "$table" ]; then
+        dim "memory-tuning: no fleet.tsv in bundle (older bundle) — skipping"
+        return 0
+    fi
+
+    local short ssh ws_high ws_max ss_high ss_max _rest
+    local matched=0
+    while IFS=$'\t ' read -r short ssh ws_high ws_max ss_high ss_max _rest; do
+        case "$short" in ''|\#*) continue ;; esac
+        [ "$short" = "$HOST" ] || continue
+        matched=1
+        _write_memory_dropin outline-ws-rust "$ws_high" "$ws_max" 1
+        _write_memory_dropin outline-ss-rust "$ss_high" "$ss_max" 0
+        break
+    done < "$table"
+
+    if [ "$matched" = 0 ]; then
+        warn "memory-tuning: --host '$HOST' not in fleet.tsv — cgroup limits left at systemd defaults"
+    fi
+}
+
+# $1 unit  $2 high  $3 max  $4 want_thread_stack(0/1). `-` means the service
+# does not run on this node; nothing is written for it.
+_write_memory_dropin() {
+    local unit="$1" high="$2" max="$3" want_stack="$4"
+    [ "$high" = "-" ] && return 0
+    local d="/etc/systemd/system/${unit}.service.d"
+    local mem="$d/20-memory.conf" stack="$d/30-thread-stack.conf"
+    local legacy="$d/30-mem-tuning.conf"
+    local ctl="/etc/systemd/system.control/${unit}.service.d"
+
+    run install -d -m 0755 "$d"
+    if [ "$DRY_RUN" = "1" ]; then
+        dim "[dry-run] would write $mem with High=$high Max=$max"
+    else
+        cat > "$mem" <<EOF
+# Managed by ops/provision-node/install.sh from memory-tuning/fleet.tsv.
+# The same file is maintained on live nodes by ops/memory-tuning/apply.sh.
+[Service]
+MemoryAccounting=yes
+MemoryHigh=${high}
+MemoryMax=${max}
+EOF
+        ok "wrote $mem (High=$high Max=$max)"
+    fi
+    # Legacy pre-jemalloc drop-in carried MIMALLOC_* env that no longer applies.
+    [ -f "$legacy" ] && run rm -f "$legacy"
+    # Any set-property override left on the node beats a static drop-in after a
+    # reboot, so wipe it here to let the table win.
+    [ -d "$ctl" ] && run rm -rf "$ctl"
+    if [ "$want_stack" = 1 ]; then
+        if [ "$DRY_RUN" = "1" ]; then
+            dim "[dry-run] would write $stack (THREAD_STACK_SIZE_KB=512)"
+        else
+            cat > "$stack" <<EOF
+# Managed by ops/provision-node/install.sh — thread stack, not a memory limit.
+[Service]
+Environment=THREAD_STACK_SIZE_KB=512
+EOF
+            ok "wrote $stack"
+        fi
+    fi
+}
+
 phase_services() {
     log "phase services"
+    install_memory_dropin
     run systemctl daemon-reload
 
     # Access-key files are served by nginx and derived from the SS config, so

@@ -52,12 +52,22 @@ but its value is unchanged here, so nothing needs restarting.
 would trigger an immediate reclaim storm) — raise the limit or investigate the
 process first.
 
-## Not covered
+## From a fresh provision
 
-Placing these drop-ins during a from-scratch provision (so a reinstalled node
-comes up already tuned) is a separate task — it needs the per-node limits mapped
-onto `provision-node`'s group profiles. Until then, run `apply.sh` by hand after
-provisioning; the source is at least versioned now.
+A reinstalled node comes up already tuned: `collect-from-reference` ships
+`fleet.tsv` inside the bundle (`bundle/memory-tuning/fleet.tsv`), and
+`install.sh` finds the node's row by `--host` and writes the same
+`20-memory.conf` before any service starts. Runs live too — no `set-property`
+needed at provisioning, systemd reads the drop-in when the unit first starts.
+
+A node absent from `fleet.tsv` (or a service with `-` limits for that row) is
+left at systemd defaults — the previous behaviour, so this addition never
+worsens an unpatched install. A bundle without `memory-tuning/fleet.tsv` (an
+older one) is skipped with a hint.
+
+After the initial provision, `apply.sh` is what you use to reflect edits to the
+table on live nodes, since re-running the full provisioner for a limit change
+would be overkill.
 
 ## Reference
 

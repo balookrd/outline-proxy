@@ -112,6 +112,16 @@ if [ -d "$SCRIPT_DIR/assets" ]; then
     dim "assets/ copied into the bundle"
 fi
 
+# The memory-tuning table travels alongside profile.conf: install.sh reads it
+# by --host to write the same soft cgroup step that apply.sh maintains on live
+# nodes. One source (../memory-tuning/fleet.tsv), two ways in — reprovision
+# and re-sync — reproduce the same limits.
+if [ -f "$SCRIPT_DIR/../memory-tuning/fleet.tsv" ]; then
+    mkdir -p "$OUT/memory-tuning"
+    cp "$SCRIPT_DIR/../memory-tuning/fleet.tsv" "$OUT/memory-tuning/fleet.tsv"
+    dim "memory-tuning/fleet.tsv copied into the bundle"
+fi
+
 # ---------------------------------------------------------------- tar helpers
 
 # pull_tar <output-file> <exclude-csv> <path...>

@@ -1,22 +1,23 @@
 # Memory-tuning source of truth for the fleet.
 #
-# One row per node, tab-separated. apply.sh reads this and writes a single
-# canonical systemd drop-in per service, then applies the cgroup limits to the
-# live service without a restart.
+# One row per node, tab-separated. Two keys for the same row:
+#   - `short`      matches install.sh's --host during provisioning
+#   - `ssh_target` matches apply.sh when re-syncing a live fleet
+# Both consumers pick their key and share the same limits, so there is one
+# source and two ways in.
+#
+# Values carry a soft reclaim step: High < Max. Max stays below the node's
+# MemAvailable (see the spec) — a limit above available RAM is a fake fuse,
+# the node OOMs before the cgroup counts that high.
 #
 # A dash (-) means the service does not run on that node; its drop-in is left
-# untouched. Limits carry a soft reclaim step: High < Max. Max stays below the
-# node's MemAvailable (see the spec) — a limit above available RAM is a fake
-# fuse, the node OOMs before the cgroup counts that high.
+# untouched. Snapshot: 2026-08-24.
 #
-# Snapshot: 2026-08-24. ws Max awaits a week of fleetwatch peaks before any
-# further change; exit-node ss was widened (no ws to share with).
-#
-# host                       ws_high  ws_max  ss_high  ss_max
-mmv@198.18.1.104             600M     700M    130M     150M
-mmv@198.18.1.102             900M     1000M   300M     400M
-sysadm@cloud1.beerloga.su    1600M    1800M   500M     700M
-sysadm@cloud2.beerloga.su    1600M    1800M   500M     700M
-sysadm@nuxt.beerloga.su      -        -       700M     800M
-sysadm@nuxt2.beerloga.su     -        -       700M     800M
-sysadm@188.220.148.143       -        -       380M     450M
+# short   ssh_target                   ws_high  ws_max  ss_high  ss_max
+.104      mmv@198.18.1.104             600M     700M    130M     150M
+.102      mmv@198.18.1.102             900M     1000M   300M     400M
+cloud1    sysadm@cloud1.beerloga.su    1600M    1800M   500M     700M
+cloud2    sysadm@cloud2.beerloga.su    1600M    1800M   500M     700M
+nuxt      sysadm@nuxt.beerloga.su      -        -       700M     800M
+nuxt2     sysadm@nuxt2.beerloga.su     -        -       700M     800M
+sebek     sysadm@188.220.148.143       -        -       380M     450M
