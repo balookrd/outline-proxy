@@ -1843,6 +1843,7 @@ dependencies = [
  "sockudo-ws",
  "subtle",
  "thiserror 2.0.18",
+ "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
