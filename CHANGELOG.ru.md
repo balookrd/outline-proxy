@@ -14,8 +14,9 @@
 | **Дашборд** (`outline-ui`) | [`bins/outline-ui/CHANGELOG.ru.md`](bins/outline-ui/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ui/CHANGELOG.md) |
 | **Android-приложение** | [`android/CHANGELOG.ru.md`](android/CHANGELOG.ru.md) | [`CHANGELOG.md`](android/CHANGELOG.md) |
 
-Оба бинаря на **1.7.0**, выпущены 2026-07-06 (теги `ss-v1.7.0` / `ws-v1.7.0`);
-работа, пришедшая после, лежит в секции `## Unreleased` каждого бинаря.
+Оба бинаря на **1.9.0**, выпущены 2026-08-24 (теги `ss-v1.9.0` / `ws-v1.9.0`),
+вместе с `outline-ui` **1.2.0** и Android-приложением **1.2.0** из той же
+нарезки.
 Адаптивный
 carrier-padding, TUN GSO / GRO / USO offload и connection sniffing с
 переопределением назначения вышли в этой линейке раньше. Главная недавняя

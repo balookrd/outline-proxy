@@ -2,19 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
-This changelog covers the git release tags `v1.0.0` through `1.7.0` (the monorepo tags `ss-v1.5.0` … `ss-v1.7.0` for the merged tree; the earlier `v1.x` tags predate the ss/ws split). The latest stable release is `1.7.0` (2026-07-06). The `## Unreleased` section captures changes that landed after `ss-v1.7.0`.
+This changelog covers the git release tags `v1.0.0` through `1.9.0` (the monorepo tags `ss-v1.5.0` … `ss-v1.9.0` for the merged tree; the earlier `v1.x` tags predate the ss/ws split). The latest stable release is `1.9.0` (2026-08-24).
 
 *Русская версия: [CHANGELOG.ru.md](CHANGELOG.ru.md)*
 
-## Unreleased
+## 1.9.0 - 2026-08-24
 
 ### Added
 
 - **`GET /control/defaults` — the server-wide method and paths a user inherits.** The control API only ever reported a user's *explicit* fields, so a user running on the server defaults read back empty and nothing outside the process could reconstruct its effective configuration — a dashboard could not even offer to clone such a user, since generating a password needs the cipher. The route returns the default method plus the ws / xhttp paths the server actually applies, omitting unset optional paths instead of serializing them as null (the shape `UserView` already uses for a user's own fields). It carries configuration only — no password, no `vless_id` — and sits behind the same bearer token as every other control route.
+- **`GET /control/alloc`, and heap metrics that finally mean the heap.** `heap_allocated_bytes` used to report `VmData` — every anonymous mapping the process owned, which claimed ~105 MiB of "heap" against 26 MiB of RSS — and the `exact` mode it declared was never implemented. Under jemalloc it now carries the allocator's own figures, joined by `heap_resident_bytes` (held from the OS) and `heap_free_bytes` (their difference — the fragmentation the allocator is sitting on). `GET /control/alloc` reports the same accounting on demand, which is what identified the memory cause on the fleet in the first place: external tools cannot separate live data from memory an allocator will not release. Absent rather than zero on a build without jemalloc — a zero would read as "the allocator holds nothing spare", the opposite of what mimalloc was doing here. Two Grafana panels read them: *Heap: live vs held (fragmentation)* and *Heap held but unused (%)*, the latter carrying the mimalloc baseline (87–90%) in its description so a drift back toward it reads as a regression.
 
 ### Changed
 
 - **HTTP/3 WebSocket streams no longer reserve 64 KiB per stream up front.** The vendored `sockudo-ws` allocated its `read_buf` eagerly at 64 KiB for every live H3 stream (`from_h3_server` here, `from_h3_client` on the client); it now starts at 32 KiB. The capacity is a starting size rather than a ceiling, so a large message still grows the buffer on demand. Client and server share the vendored crate, so both sides get the smaller reserve; the server's own code is untouched. `from_h2` and `from_quic` stay upstream-vanilla — the data plane never instantiates them. See `h3-read-buf-capacity` in `PATCHES.md`.
+- **The server allocator now defaults to jemalloc; mimalloc stays behind a feature.** 87–90% of the server's resident memory sat in dirty mimalloc arenas that never came back — measured across the fleet at ~1.5 days uptime, `nuxt` 115 MiB of 127 RSS, `cloud1` 78 of 90, `.104` 54 of 60 — because a partly-used arena cannot be returned and arenas are 32 MiB at minimum, so the periodic `mi_collect` only ever reclaimed wholly-free slices. jemalloc is configured `background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0`; the background thread is the load-bearing part, since without it decay only advances on allocator calls and a process that goes quiet after a burst keeps its high-water mark. `MALLOC_CONF` from the environment still overrides this, so a node retunes without a rebuild; the two allocators are mutually exclusive at compile time (`compile_error!`), and both copies of the `mi_collect` loop are now gated on the mimalloc feature. The server's allocation profile — many short connections rather than long-lived carriers holding multi-megabyte buffers — differs from the client's, so this rolled out one node at a time, measured against a mimalloc neighbour before going further.
 
 ## 1.8.0 - 2026-08-20
 ### Added

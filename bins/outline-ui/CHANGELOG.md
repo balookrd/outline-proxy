@@ -9,6 +9,17 @@ commit.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.0] - 2026-08-24
+
+### Added
+
+- **Clone an SS user from an existing one.** Provisioning a key meant inventing a password and copying paths by hand from another user; each row now carries a Clone action that opens the create form pre-filled from that user with fresh secrets, so only the `id` is left to type. The carrier (method, fwmark, ws / xhttp paths, enabled) is copied; `id` is blank because it must be unique and aliases are dropped because their names are unique server-side; secrets are generated only for the identities the template actually has (`has_password` / `has_vless_id`), matched to the cipher — SS-2022 gets base64 of a raw key of the exact length its variant needs, legacy AEAD an arbitrary secret, and a server-default method yields nothing rather than a guess. Where the template is silent the fields fall back to the instance's server defaults, so cloning a user that runs on the server-wide cipher still produces a working password. Path filling mirrors the server's own `effective_ws_path_ss` precedence (a split template stays split, a combined one stays combined), and the defaults fetch carries a generation token so a slow response cannot land on a drawer the operator has since reopened.
+- **The dashboard proxies each instance's SS server defaults.** `GET /ss/dashboard/api/defaults?instance=<name>` forwards to that instance's `/control/defaults` the same way `list_users` forwards `/control/users`: the bearer token is injected server-side and the body passed through untouched, so no control credential reaches the browser. This is what lets Clone fill a user that runs on the server-wide cipher instead of leaving the field blank.
+
+### Fixed
+
+- **The theme toggle shows the theme it switches *to*, and the browser chrome follows the page.** The toggle rendered a hardcoded moon whatever the active theme was, so it never told you where clicking would take you; it now shows a sun on dark and a moon on light, tracking both the explicit choice and — when none is set — the OS preference as it changes, via a `matchMedia` listener rather than a one-shot read. `applyTheme` also maintains `<meta name="theme-color">` from the `--bg` tokens, so the browser's own chrome follows the page instead of staying on its default.
+
 ## [1.1.0] - 2026-08-20
 
 Everything below shipped as the image rollouts that make up this release.
