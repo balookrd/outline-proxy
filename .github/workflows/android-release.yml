@@ -1,13 +1,17 @@
 name: Release (android)
 run-name: "${{ github.workflow }} — ${{ inputs.major_minor }}"
 
-# Helper for cutting an Android release. It does NOT create the tag: the release
-# tag must be signed with the maintainer's key so the GitHub release shows as
-# Verified, and CI cannot sign as the maintainer. So this only computes the next
-# android-vMAJOR.MINOR.PATCH and prints the exact `git tag -s` command to run
-# locally. (Unlike Release (server|client|ui) there is also no in-file version to
-# bump: app/build.gradle.kts reads versionName from BUILD_VERSION_NAME, which Tag
-# Release (android) injects from the tag name.)
+# Helper for cutting an Android release. It bumps the version in
+# android/rust/Cargo.toml (and the matching android/rust/Cargo.lock entry),
+# commits `release: cut android-v...` on main, and prints the exact `git tag -s`
+# command to run locally. It does NOT create the tag itself: the release tag
+# must be signed with the maintainer's key so the GitHub release shows as
+# Verified, and CI cannot sign as the maintainer.
+#
+# app/build.gradle.kts still reads versionName from BUILD_VERSION_NAME, which
+# Tag Release (android) injects from the tag name; the Cargo.toml bump keeps
+# the Rust crate version in lockstep with the tag, matching Release
+# (server|client|ui).
 
 on:
   workflow_dispatch:
@@ -17,14 +21,30 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.event.inputs.major_minor }}
+  cancel-in-progress: false
+
 jobs:
-  compute:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - id: version
         name: Compute next version
@@ -57,7 +77,74 @@ jobs:
             exit 1
           fi
 
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Cargo.toml
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          version = os.environ["VERSION"]
+          path = Path("android/rust/Cargo.toml")
+          text = path.read_text()
+
+          new_text, count = re.subn(
+              r'^version = "[^"]+"$',
+              f'version = "{version}"',
+              text,
+              count=1,
+              flags=re.M,
+          )
+          if count != 1:
+              raise SystemExit("failed to update package version in android/rust/Cargo.toml")
+
+          path.write_text(new_text)
+          PY
+
+      - name: Update Cargo.lock
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          version = os.environ["VERSION"]
+          path = Path("android/rust/Cargo.lock")
+          text = path.read_text()
+
+          pattern = r'(\[\[package\]\]\nname = "outline-android"\nversion = ")([^"]+)(")'
+          new_text, count = re.subn(pattern, r'\g<1>' + version + r'\3', text, count=1)
+          if count != 1:
+              raise SystemExit("failed to update outline-android version in android/rust/Cargo.lock")
+
+          path.write_text(new_text)
+          PY
+
+      - name: Commit
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git add android/rust/Cargo.toml android/rust/Cargo.lock
+          if git diff --cached --quiet; then
+            echo "No version file changes for ${TAG}; release will use current HEAD"
+          else
+            git commit -m "release: cut ${TAG}"
+          fi
+
+      - name: Push
+        run: |
+          set -euo pipefail
+          git push origin HEAD:main
 
       - name: Next steps
         env:
@@ -65,7 +152,7 @@ jobs:
         run: |
           cat <<EOF
 
-          Next Android release tag: ${TAG}
+          Release commit pushed to main.
 
           Create it as a SIGNED tag locally — your signature is what makes the
           GitHub release show as Verified; CI cannot sign as you — then push it:
