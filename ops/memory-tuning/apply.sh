@@ -93,6 +93,8 @@ managed_mem="# Managed by ops/memory-tuning/apply.sh from fleet.tsv — do not e
 $want_mem"
 [ "$cur_mem" != "$managed_mem" ] && changes="$changes limits"
 [ -f "$legacy" ] && changes="$changes drop-legacy-mimalloc-env"
+strays=$(ls -1 "$d"/*.pre-* "$d"/*.bak.* 2>/dev/null || true)
+[ -n "$strays" ] && changes="$changes drop-stray-backups"
 [ -d "$ctl" ] && changes="$changes drop-setproperty-override"
 if [ "$want_stack" = 1 ]; then
 	[ -f "$stack" ] || changes="$changes thread-stack"
@@ -111,6 +113,7 @@ fi
 install -d -m 0755 "$d"
 printf '%s\n' "$managed_mem" > "$mem"
 rm -f "$legacy"
+for stray in $strays; do rm -f "$stray"; done
 rm -rf "$ctl"
 if [ "$want_stack" = 1 ]; then
 	printf '%s\n' "# Managed by ops/memory-tuning/apply.sh — do not edit on the node.

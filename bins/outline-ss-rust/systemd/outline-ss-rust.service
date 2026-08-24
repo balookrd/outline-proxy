@@ -10,7 +10,6 @@ User=outline-ss-rust
 Group=outline-ss-rust
 Environment=RUST_LOG=outline_ss_rust=info,tower_http=info
 Environment=NO_COLOR=1
-Environment=MIMALLOC_ARENA_RESERVE=262144
 ExecStart=/usr/local/bin/outline-ss-rust --config /etc/outline-ss-rust/config.toml
 Restart=on-failure
 RestartSec=3

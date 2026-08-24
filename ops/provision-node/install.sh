@@ -1501,6 +1501,15 @@ EOF
     fi
     # Legacy pre-jemalloc drop-in carried MIMALLOC_* env that no longer applies.
     [ -f "$legacy" ] && run rm -f "$legacy"
+    # Stray backups from earlier memory-tuning rounds (e.g. 20-memory.conf.bak.*,
+    # 30-mem-tuning.conf.pre-*). systemd ignores non-.conf files so they do not
+    # affect the running service, but they still carry MIMALLOC_* env and
+    # confuse anyone reading the tree. Same sweep runs in
+    # ops/memory-tuning/apply.sh — reinstall and re-sync agree.
+    local stray
+    for stray in "$d"/*.pre-* "$d"/*.bak.*; do
+        [ -e "$stray" ] && run rm -f "$stray"
+    done
     # Any set-property override left on the node beats a static drop-in after a
     # reboot, so wipe it here to let the table win.
     [ -d "$ctl" ] && run rm -rf "$ctl"
