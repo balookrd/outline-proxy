@@ -23,13 +23,16 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.AltRoute
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,7 +40,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -488,9 +490,9 @@ private fun ServerListScreen(
 ) {
     var editing by remember { mutableStateOf<ServerProfile?>(null) }
 
-    SubScreen(title = "Servers", onBack = onBack) {
+    SubScreen(title = "Servers", icon = Icons.Filled.Dns, onBack = onBack) {
         LazyColumn(
-            modifier = Modifier.fillMaxWidth().weight(1f).padding(top = 4.dp),
+            modifier = Modifier.fillMaxWidth().weight(1f),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(profiles, key = { it.id }) { profile ->
@@ -508,7 +510,11 @@ private fun ServerListScreen(
         OutlinedButton(
             onClick = { editing = ServerProfile() },
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-        ) { Text("Add server") }
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null)
+            Text("Add server", modifier = Modifier.padding(start = 8.dp))
+        }
     }
 
     editing?.let { profile ->
@@ -529,9 +535,12 @@ private fun ProfileCard(
     onDelete: () -> Unit,
     onRefresh: () -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth().selectable(selected = selected, onClick = onSelect)) {
+    SectionCard(
+        modifier = Modifier.fillMaxWidth().selectable(selected = selected, onClick = onSelect),
+        padding = PaddingValues(12.dp),
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             RadioButton(selected = selected, onClick = onSelect)
@@ -539,6 +548,7 @@ private fun ProfileCard(
                 Text(
                     profile.name.ifBlank { "(unnamed)" },
                     fontWeight = FontWeight.Bold,
+                    color = if (selected) BrandBlue else MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
                     if (profile.isSubscription) {
@@ -548,18 +558,27 @@ private fun ProfileCard(
                         profile.transport
                     },
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             if (profile.isSubscription) {
                 IconButton(onClick = onRefresh) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = BrandBlue)
                 }
             }
             IconButton(onClick = onEdit) {
-                Icon(Icons.Filled.Edit, contentDescription = "Edit")
+                Icon(
+                    Icons.Filled.Edit,
+                    contentDescription = "Edit",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.Delete, contentDescription = "Delete")
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Delete",
+                    tint = MaterialTheme.colorScheme.error,
+                )
             }
         }
     }
@@ -744,8 +763,12 @@ private fun SplitTunnelScreen(
         SplitMode.OFF -> null
     }
 
-    SubScreen(title = "Split Tunneling", onBack = onBack) {
-        SectionCard(modifier = Modifier.padding(top = 4.dp), padding = PaddingValues(vertical = 4.dp)) {
+    SubScreen(
+        title = "Split Tunneling",
+        icon = Icons.AutoMirrored.Filled.AltRoute,
+        onBack = onBack,
+    ) {
+        SectionCard(padding = PaddingValues(vertical = 4.dp)) {
             Column {
                 ModeOption("All apps", SplitMode.OFF, mode) { mode = it; persist() }
                 ModeOption("Only selected apps", SplitMode.ALLOWLIST, mode) { mode = it; persist() }
@@ -846,8 +869,8 @@ private fun ExternalControlScreen(
 
     fun persist() = store.save(ExternalControlConfig(enabled, token))
 
-    SubScreen(title = "External Control", onBack = onBack) {
-        SectionCard(modifier = Modifier.padding(top = 4.dp)) {
+    SubScreen(title = "External Control", icon = Icons.Filled.Tune, onBack = onBack) {
+        SectionCard {
             Column {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -871,23 +894,35 @@ private fun ExternalControlScreen(
             }
         }
 
-        Text(
-            """
-            Supported commands:
-
-            outline://connect
-            outline://connect?profile=<name or id>
-            outline://disconnect
-            outline://toggle[?profile=<name or id>]
-
-            Any app on this device can send these, which is why the switch
-            and the token are here. Commands never create a server — the
-            profile must already exist in the list.
-            """.trimIndent(),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 16.dp, start = 4.dp),
-        )
+        SectionCard(modifier = Modifier.padding(top = 12.dp)) {
+            Column {
+                Text(
+                    "Supported commands",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    """
+                    outline://connect
+                    outline://connect?profile=<name or id>
+                    outline://disconnect
+                    outline://toggle[?profile=<name or id>]
+                    """.trimIndent(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                Text(
+                    "Any app on this device can send these, which is why the switch and " +
+                        "the token are here. Commands never create a server; the profile " +
+                        "must already exist in the list.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 14.dp),
+                )
+            }
+        }
     }
 }
 
@@ -904,6 +939,10 @@ private fun ModeOption(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RadioButton(selected = current == value, onClick = { onSelect(value) })
-        Text(label)
+        Text(
+            label,
+            fontWeight = if (current == value) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (current == value) BrandBlue else MaterialTheme.colorScheme.onSurface,
+        )
     }
 }
