@@ -98,6 +98,8 @@ class OutlineVpnService : VpnService() {
         const val ACTION_CONNECT = "com.outline.proxy.CONNECT"
         const val ACTION_DISCONNECT = "com.outline.proxy.DISCONNECT"
         const val ACTION_ENSURE = "com.outline.proxy.ENSURE"
+        const val ACTION_STANDBY = "com.outline.proxy.STANDBY"
+        const val ACTION_STOP_STANDBY = "com.outline.proxy.STOP_STANDBY"
         const val EXTRA_CONFIG_TOML = "config_toml"
 
         private const val NOTIFICATION_CHANNEL_ID = "outline_vpn"
@@ -161,6 +163,34 @@ class OutlineVpnService : VpnService() {
             runCatching { ContextCompat.startForegroundService(context, intent) }
                 .onFailure { Log.w(TAG, "cannot start the service from the background", it) }
         }
+
+        /**
+         * Show the ongoing notification in standby (tunnel down) — used when the
+         * persistent-notification setting is on and the tunnel is not running.
+         * Called only from the visible settings screen, so a plain `startService`
+         * is a legal foreground start.
+         */
+        fun enterStandby(context: Context) {
+            runCatching {
+                context.startService(
+                    Intent(context, OutlineVpnService::class.java).apply { action = ACTION_STANDBY },
+                )
+            }.onFailure { Log.w(TAG, "cannot start standby", it) }
+        }
+
+        /**
+         * Drop a standby notification: stop the service when the tunnel is down.
+         * A running tunnel is left untouched — its own notification stays, and
+         * the (now-off) setting simply lets the next disconnect stop the service.
+         */
+        fun exitStandby(context: Context) {
+            if (isActive()) return
+            runCatching {
+                context.startService(
+                    Intent(context, OutlineVpnService::class.java).apply { action = ACTION_STOP_STANDBY },
+                )
+            }.onFailure { Log.w(TAG, "cannot stop standby", it) }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -183,6 +213,23 @@ class OutlineVpnService : VpnService() {
                 WatchdogWorker.schedule(this)
                 connect(configToml)
                 return START_STICKY
+            }
+            ACTION_STANDBY -> {
+                // Persistent-notification mode wants the banner up even with the
+                // tunnel down. Post it and stay foreground; do not touch the
+                // tunnel. NOT_STICKY for standby: a killed standby returns when
+                // the app is next opened, not via a sticky restart (the chosen
+                // scope). If the tunnel is somehow already up (a race), keep it
+                // sticky so we do not weaken a running tunnel's keep-alive.
+                startForeground(NOTIFICATION_ID, currentNotification())
+                return if (isRunning()) START_STICKY else START_NOT_STICKY
+            }
+            ACTION_STOP_STANDBY -> {
+                if (!isRunning()) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+                return START_NOT_STICKY
             }
             // A null action is the system starting us: always-on VPN, or a
             // START_STICKY restart after the process was killed. Both mean
@@ -566,7 +613,12 @@ class OutlineVpnService : VpnService() {
         appliedDialSecs = null
     }
 
-    private fun disconnect() {
+    /**
+     * Tear the tunnel down — core, TUN, network callbacks, notification updates —
+     * without deciding the service's fate. Shared by the deliberate-disconnect
+     * path and by [onDestroy].
+     */
+    private fun teardownTunnel() {
         stopNotificationUpdates()
         KeepAliveState(this).connectedSince = 0L
         unregisterNetworkCallback()
@@ -577,8 +629,21 @@ class OutlineVpnService : VpnService() {
         }
         tunInterface?.close()
         tunInterface = null
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+    }
+
+    /**
+     * A user-driven disconnect. Tears the tunnel down, then either drops into
+     * standby (persistent-notification on: keep the ongoing banner with a Connect
+     * button) or stops the service outright (the default, unchanged behaviour).
+     */
+    private fun disconnect() {
+        teardownTunnel()
+        if (KeepAliveState(this).persistentNotification) {
+            startForeground(NOTIFICATION_ID, buildNotification(running = false, status = "Disconnected"))
+        } else {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     /**
@@ -599,11 +664,12 @@ class OutlineVpnService : VpnService() {
         if (KeepAliveState(this).shouldRun) {
             WatchdogAlarm.schedule(this, DESTROY_DELAY_MS)
         }
-        disconnect()
+        teardownTunnel()
         super.onDestroy()
     }
 
     private fun buildNotification(
+        running: Boolean = true,
         status: String = "Connecting…",
         detail: String? = null,
     ): Notification {
@@ -621,23 +687,52 @@ class OutlineVpnService : VpnService() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val disconnect = PendingIntent.getService(
-            this,
-            1,
-            Intent(this, OutlineVpnService::class.java).apply { action = ACTION_DISCONNECT },
-            PendingIntent.FLAG_IMMUTABLE,
-        )
+
+        // One status-aware toggle: Disconnect while the tunnel is up (straight to
+        // the service, instant), Connect while it is down (an activity, because
+        // showing VPN consent needs one — QuickConnectActivity, first-party and
+        // exported=false).
+        val (actionLabel, actionIcon, actionIntent) = when (NotificationPolicy.toggle(running)) {
+            NotifToggle.DISCONNECT -> Triple(
+                "Disconnect",
+                android.R.drawable.ic_menu_close_clear_cancel,
+                PendingIntent.getService(
+                    this,
+                    1,
+                    Intent(this, OutlineVpnService::class.java).apply { action = ACTION_DISCONNECT },
+                    PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
+            NotifToggle.CONNECT -> Triple(
+                "Connect",
+                android.R.drawable.ic_media_play,
+                PendingIntent.getActivity(
+                    this,
+                    2,
+                    Intent(this, QuickConnectActivity::class.java),
+                    PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
+        }
 
         // Name the active profile in the banner so the user can tell at a glance
-        // which server the tunnel is on. The title carries the live status, the
-        // text the bytes moved this session.
+        // which server the tunnel is on. The title carries the live status.
         val store = ProfileStore(this)
-        val name = store.load().firstOrNull { it.id == store.selectedId }?.name?.takeIf { it.isNotBlank() }
+        val profile = store.load().firstOrNull { it.id == store.selectedId }
+        val name = profile?.name?.takeIf { it.isNotBlank() }
         val title = if (name != null) "$status · $name" else status
+
+        // Second line: the live traffic readout while connected. With none to show
+        // (standby / connecting) name the server's transport instead of leaving it
+        // empty or padding it with the app name — an empty content line just opens
+        // a gap above the action button, and the app name is already in the header.
+        val body = detail ?: profile?.let {
+            if (it.isSubscription) "Subscription" else it.transport.ifBlank { null }
+        }
 
         return Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle(title)
-            .setContentText(detail ?: "Outline Proxy")
+            .setContentText(body)
             .setSmallIcon(R.drawable.ic_stat_tunnel)
             // The cyan of the emblem's "wires"; the launcher tints the small-icon
             // circle with this instead of the OEM default accent.
@@ -646,9 +741,9 @@ class OutlineVpnService : VpnService() {
             .setOngoing(true)
             .addAction(
                 Notification.Action.Builder(
-                    Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
-                    "Disconnect",
-                    disconnect,
+                    Icon.createWithResource(this, actionIcon),
+                    actionLabel,
+                    actionIntent,
                 ).build(),
             )
             .build()
@@ -700,6 +795,13 @@ class OutlineVpnService : VpnService() {
      */
     private fun currentNotification(): Notification {
         val running = runCatching { isRunning() }.getOrDefault(false)
+        if (!running) {
+            // Standby: a static "Disconnected" banner with a Connect action and
+            // no traffic line — the session counters are meaningless with nothing
+            // running (and the baseline may be zero, which would print the whole
+            // device total as this session's).
+            return buildNotification(running = false, status = "Disconnected", detail = null)
+        }
         val status0 = runCatching { tunnelStatus() }.getOrNull()
         val hasLink = status0?.hasLiveLink ?: false
         // Same qualifier the home screen applies: an edge-class link is up and
@@ -711,17 +813,20 @@ class OutlineVpnService : VpnService() {
         // The core health flag is instantaneous and can blip false for a tick;
         // keep "Connecting…" until the link has been absent past the grace window.
         if (hasLink) lastLinkAtMs = System.currentTimeMillis()
-        val connecting = running && !hasLink &&
+        val connecting = !hasLink &&
             System.currentTimeMillis() - lastLinkAtMs < NO_LINK_GRACE_MS
         val status = when {
-            !running -> "Disconnected"
             hasLink -> LinkQuality.connectedLabel(latencyMs)
             connecting -> "Connecting…"
             else -> "No link"
         }
         val up = (TrafficStats.getTotalTxBytes() - trafficBaseTx).coerceAtLeast(0)
         val down = (TrafficStats.getTotalRxBytes() - trafficBaseRx).coerceAtLeast(0)
-        return buildNotification(status, "↑ ${formatBytes(up)}   ↓ ${formatBytes(down)}")
+        return buildNotification(
+            running = true,
+            status = status,
+            detail = "↑ ${formatBytes(up)}   ↓ ${formatBytes(down)}",
+        )
     }
 
     /** Human-readable byte count for the banner ("0 B", "1.2 MB"). */

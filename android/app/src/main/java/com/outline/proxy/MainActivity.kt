@@ -78,6 +78,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         store = ProfileStore(this)
 
+        // Persistent-notification mode: make sure the ongoing banner is up as soon
+        // as the app is opened, even with the tunnel down (standby). A running
+        // tunnel already carries its own banner, so only raise standby when idle.
+        if (KeepAliveState(this).persistentNotification && !OutlineVpnService.isActive()) {
+            OutlineVpnService.enterStandby(this)
+        }
+
         setContent {
             OutlineTheme {
                 val profiles = remember { store.load().toMutableStateList() }
