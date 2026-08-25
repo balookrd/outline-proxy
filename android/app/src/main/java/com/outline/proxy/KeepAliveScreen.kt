@@ -9,16 +9,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.outline.proxy.keepalive.KeepAliveHelper
@@ -51,14 +52,14 @@ fun KeepAliveScreen(onBack: () -> Unit) {
         ActivityResultContracts.RequestPermission(),
     ) { refresh++ }
 
-    SubScreen(title = "Keeping Alive", onBack = onBack) {
+    SubScreen(title = "Keeping Alive", icon = Icons.Filled.MonitorHeart, onBack = onBack) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             Text(
                 "Android and the phone vendor may stop background apps. These " +
                     "switches are what keeps the tunnel up.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp, start = 4.dp),
+                modifier = Modifier.padding(bottom = 16.dp, start = 4.dp),
             )
 
             // Read so that bumping `refresh` re-runs the status queries below.
@@ -169,22 +170,47 @@ private fun ChecklistItem(
     action: String,
     onAction: () -> Unit,
 ) {
-    Card(modifier = Modifier.padding(bottom = 12.dp)) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                when (status) {
-                    GrantStatus.GRANTED -> "✓ $title"
-                    GrantStatus.MISSING -> "✗ $title"
-                    GrantStatus.UNKNOWN -> "? $title"
-                },
-                style = MaterialTheme.typography.titleMedium,
-            )
+    val statusText = when (status) {
+        GrantStatus.GRANTED -> "Allowed"
+        GrantStatus.MISSING -> "Needs action"
+        GrantStatus.UNKNOWN -> "Check manually"
+    }
+    val statusColor = when (status) {
+        GrantStatus.GRANTED -> StatusGreen
+        GrantStatus.MISSING -> MaterialTheme.colorScheme.error
+        GrantStatus.UNKNOWN -> StatusAmber
+    }
+    SectionCard(modifier = Modifier.padding(bottom = 12.dp)) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    statusText,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = statusColor,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
             Text(
                 explanation,
                 style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp, bottom = 12.dp),
             )
-            Button(onClick = onAction) { Text(action) }
+            OutlinedButton(
+                onClick = onAction,
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Text(action)
+            }
         }
     }
 }
