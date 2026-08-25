@@ -44,6 +44,16 @@ class KeepAliveState(context: Context) {
             .putInt(KEY_ALWAYS_ON, if (value == null) ALWAYS_ON_UNKNOWN else if (value) 1 else 0)
             .apply()
 
+    /**
+     * The user wants a persistent status-bar notification with a
+     * Connect/Disconnect toggle, kept even while the tunnel is down. Opt-in;
+     * default off. Read by [OutlineVpnService] to decide whether a disconnect
+     * drops into standby or stops the service, and by the Keeping Alive screen.
+     */
+    var persistentNotification: Boolean
+        get() = prefs.getBoolean(KEY_PERSISTENT_NOTIFICATION, false)
+        set(value) = prefs.edit().putBoolean(KEY_PERSISTENT_NOTIFICATION, value).apply()
+
     fun recordFailure(): Int = (consecutiveFailures + 1).also { consecutiveFailures = it }
 
     fun clearFailures() {
@@ -55,6 +65,7 @@ class KeepAliveState(context: Context) {
         const val KEY_FAILURES = "consecutive_failures"
         const val KEY_ALWAYS_ON = "always_on_seen"
         const val KEY_CONNECTED_SINCE = "connected_since"
+        const val KEY_PERSISTENT_NOTIFICATION = "persistent_notification"
         const val ALWAYS_ON_UNKNOWN = -1
     }
 }

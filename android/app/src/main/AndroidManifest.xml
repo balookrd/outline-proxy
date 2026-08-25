@@ -77,6 +77,17 @@
             </intent-filter>
         </activity>
 
+        <!-- The persistent notification's Connect action. Invisible (translucent)
+             and exported="false" so only our own notification drives it; external
+             callers still go through the gated outline:// ControlActivity. No
+             intent-filter, kept out of recents. -->
+        <activity
+            android:name=".QuickConnectActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- The VPN tunnel service. BIND_VPN_SERVICE is granted to the system
              only; the special-use foreground type keeps the tunnel alive. -->
         <service
@@ -91,6 +102,20 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="vpn_tunnel" />
+        </service>
+
+        <!-- Quick Settings tile: a connect/disconnect toggle in the QS panel,
+             mirroring the notification's toggle. exported + BIND_QUICK_SETTINGS_TILE
+             so only the system can bind it; the user adds it from the QS editor. -->
+        <service
+            android:name=".OutlineTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_tunnel"
+            android:label="Outline"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
         </service>
 
         <!-- Exact-alarm watchdog: fires through Doze and is re-armed by ensure(). -->

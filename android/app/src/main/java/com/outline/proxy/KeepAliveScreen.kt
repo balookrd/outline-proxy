@@ -1,10 +1,14 @@
 package com.outline.proxy
 
 import android.Manifest
+import android.app.StatusBarManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.Icon
 import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
@@ -18,10 +22,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,6 +50,9 @@ fun KeepAliveScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     var refresh by remember { mutableIntStateOf(0) }
 
+    val keepAlive = remember { KeepAliveState(context) }
+    var persistent by remember { mutableStateOf(keepAlive.persistentNotification) }
+
     val notifications = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { refresh++ }
@@ -54,6 +63,65 @@ fun KeepAliveScreen(onBack: () -> Unit) {
 
     SubScreen(title = "Keeping Alive", icon = Icons.Filled.MonitorHeart, onBack = onBack) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Persistent notification",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "Keep a notification with a Connect/Disconnect button in the " +
+                                "status bar, even when the VPN is off.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    Switch(
+                        checked = persistent,
+                        onCheckedChange = { on ->
+                            persistent = on
+                            keepAlive.persistentNotification = on
+                            // Reflect it immediately while the tunnel is down: turning
+                            // it on posts the standby banner, off removes it. A running
+                            // tunnel already shows its banner and is left untouched.
+                            if (!OutlineVpnService.isActive()) {
+                                if (on) OutlineVpnService.enterStandby(context)
+                                else OutlineVpnService.exitStandby(context)
+                            }
+                        },
+                    )
+                }
+            }
+
+            SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
+                Column {
+                    Text(
+                        "Quick Settings tile",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Toggle the tunnel straight from the Quick Settings panel.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    OutlinedButton(
+                        onClick = { requestAddQsTile(context) },
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.padding(top = 12.dp),
+                    ) {
+                        Text("Add tile")
+                    }
+                }
+            }
+
             Text(
                 "Android and the phone vendor may stop background apps. These " +
                     "switches are what keeps the tunnel up.",
@@ -222,3 +290,25 @@ private fun ChecklistItem(
 private fun Context.launchSafely(intent: Intent): Boolean = runCatching {
     startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }.isSuccess
+
+/**
+ * Ask the system to add the Quick Settings tile ([OutlineTileService]) in one tap
+ * (Android 13+). Below that there is no add-tile API, so point the user at the
+ * Quick Settings editor instead.
+ */
+private fun requestAddQsTile(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        context.getSystemService(StatusBarManager::class.java)?.requestAddTileService(
+            ComponentName(context, OutlineTileService::class.java),
+            "Outline",
+            Icon.createWithResource(context, R.drawable.ic_stat_tunnel),
+            context.mainExecutor,
+        ) {}
+    } else {
+        Toast.makeText(
+            context,
+            "Open Quick Settings, tap edit (pencil), and add the Outline tile.",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+}
