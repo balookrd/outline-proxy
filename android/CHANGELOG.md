@@ -8,6 +8,13 @@ changes, not every commit.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **A persistent notification you can keep even while the VPN is off.** A "Persistent notification" switch on the Keeping Alive screen keeps the ongoing banner in the status bar around the clock, not only while connected: disconnecting drops the service into a standby state that keeps the banner (with the tunnel torn down) instead of removing it, and opening the app raises it when idle. The banner carries a single status-aware action — **Disconnect** while the tunnel is up, **Connect** while it is down — so the tunnel toggles straight from the shade; Connect opens an invisible activity only long enough to obtain VPN consent the first time. Its second line names the traffic moved while connected and the server transport in standby, dropping the app-name filler. Opt-in and off by default, so the standard behaviour — a banner only while connected — is unchanged.
+- **A Quick Settings tile that toggles the tunnel.** An "Outline" tile mirrors the notification's toggle — highlighted while connected, dim while off, the selected server as its subtitle — so the VPN flips from the Quick Settings panel without opening the app. The Keeping Alive screen offers an "Add tile" button that asks the system to place it in one tap on Android 13+ (and points at the Quick Settings editor below that).
+
 ## [1.2.0] - 2026-08-24
 
 ### Added
