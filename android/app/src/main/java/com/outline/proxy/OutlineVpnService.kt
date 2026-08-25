@@ -102,7 +102,11 @@ class OutlineVpnService : VpnService() {
         const val ACTION_STOP_STANDBY = "com.outline.proxy.STOP_STANDBY"
         const val EXTRA_CONFIG_TOML = "config_toml"
 
-        private const val NOTIFICATION_CHANNEL_ID = "outline_vpn"
+        // Bumped from the original "outline_vpn": a channel's badge setting is
+        // immutable once created, so a new id is the only way setShowBadge(false)
+        // takes effect over an existing install. The old channel is deleted.
+        private const val NOTIFICATION_CHANNEL_ID = "outline_vpn_status"
+        private const val LEGACY_NOTIFICATION_CHANNEL_ID = "outline_vpn"
         private const val NOTIFICATION_ID = 1
 
         /** How long the status stays "Connecting…" after the link drops (or from
@@ -678,8 +682,15 @@ class OutlineVpnService : VpnService() {
             NOTIFICATION_CHANNEL_ID,
             "VPN status",
             NotificationManager.IMPORTANCE_LOW,
-        )
+        ).apply {
+            // No launcher badge for an always-present status banner: an ongoing
+            // notification is not an unread alert, and the dot on the app icon
+            // reads as one. Only meaningful on the channel's first creation.
+            setShowBadge(false)
+        }
         manager.createNotificationChannel(channel)
+        // Retire the pre-badge-fix channel so it does not linger in settings.
+        manager.deleteNotificationChannel(LEGACY_NOTIFICATION_CHANNEL_ID)
 
         val openApp = PendingIntent.getActivity(
             this,
