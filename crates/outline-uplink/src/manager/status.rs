@@ -317,6 +317,50 @@ impl UplinkStatus {
         }
     }
 
+    /// The latency to *report to a user* for the wire currently carrying
+    /// `transport`, or `None` when nothing recent enough has measured it.
+    ///
+    /// Two things separate this from what ranking reads. It follows
+    /// [`PerTransportStatus::active_wire`], so the number describes the same
+    /// wire as the carrier label shown beside it — reading the primary slot
+    /// unconditionally paired one wire's cost with another wire's carrier on
+    /// every uplink that had descended. And it expires: ranking is entitled to
+    /// weight a stale measurement by its age ([`RttEwma::confidence`]), but a
+    /// status line has no such gradation — it either has evidence or it has
+    /// none, and repeating a number nothing refreshes keeps a tunnel labelled
+    /// "slow" long after the dial that earned the label. Nothing routinely
+    /// refreshes it either: a warm-standby acquisition records no latency, so
+    /// a client parked on a pooled carrier takes no fresh samples at all.
+    ///
+    /// `latency` — the probe loop's own sample — stays the fallback it was
+    /// made into for deployments with no `[probe]` section, under both rules:
+    /// the probe writes it for the primary wire alone, so it cannot answer for
+    /// a descended uplink, and its age is the probe cycle's own stamp
+    /// ([`Self::last_checked`]).
+    pub(crate) fn active_wire_latency(
+        &self,
+        transport: TransportKind,
+        halflife: Duration,
+        now: Instant,
+    ) -> Option<Duration> {
+        let plane = self.of(transport);
+        if let Some(measured) = plane.active_wire_rtt_slot().value_if_unexpired(halflife, now) {
+            return Some(measured);
+        }
+        if plane.active_wire != 0 {
+            return None;
+        }
+        let sampled = plane.latency?;
+        // `halflife == 0` is the documented off switch for decay; mirror what
+        // `RttEwma::confidence` does with it rather than inventing a second
+        // rule for the probe field.
+        if halflife.is_zero() {
+            return Some(sampled);
+        }
+        let expiry = halflife.saturating_mul(crate::rtt::EXPIRY_HALFLIVES);
+        (now.saturating_duration_since(self.last_checked?) < expiry).then_some(sampled)
+    }
+
     /// `Copy` projection of the fields the selection path reads *after* it has
     /// released the status lock — see [`SelectionView`]. `config` supplies the
     /// carrier-loss latency-penalty knobs that fold into `base_latency`, and

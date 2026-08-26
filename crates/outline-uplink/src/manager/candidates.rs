@@ -362,15 +362,20 @@ impl UplinkManager {
     /// `report_connection_latency`. Reading only the probe field left the phone
     /// status with no latency to show and its "connected but slow" verdict
     /// permanently unreachable.
+    ///
+    /// Which slot that EWMA lives in, and when a slot stops counting as a
+    /// measurement, are [`UplinkStatus::active_wire_latency`]'s business: the
+    /// number must describe the wire this readout names, and must expire
+    /// rather than outlive the dial that produced it.
     pub async fn active_latency(&self, transport: TransportKind) -> Option<Duration> {
         let index = match self.active_uplink_index_for_transport(transport).await {
             Some(index) => index,
             None => self.global_active_uplink_index().await?,
         };
-        self.inner.with_status(index, |status| {
-            let plane = status.of(transport);
-            plane.rtt_ewma.value().or(plane.latency)
-        })
+        let halflife = self.inner.load_balancing.rtt_ewma_halflife;
+        let now = Instant::now();
+        self.inner
+            .with_status(index, |status| status.active_wire_latency(transport, halflife, now))
     }
 
     /// Like [`Self::has_any_healthy`], but additionally demands *fresh
