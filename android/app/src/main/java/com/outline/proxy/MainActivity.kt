@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Edit
@@ -55,6 +56,7 @@ import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
@@ -131,7 +133,11 @@ class MainActivity : ComponentActivity() {
                         if (now != connected) {
                             Toast.makeText(
                                 context,
-                                if (now) "Tunnel connected" else "Tunnel disconnected",
+                                if (now) {
+                                    context.getString(R.string.status_toast_connected)
+                                } else {
+                                    context.getString(R.string.status_toast_disconnected)
+                                },
                                 Toast.LENGTH_SHORT,
                             ).show()
                             connected = now
@@ -284,12 +290,16 @@ class MainActivity : ComponentActivity() {
                                             )
                                             persist()
                                         }
-                                        Toast.makeText(context, "Config updated", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(
+                                            context,
+                                            context.getString(R.string.srv_toast_config_updated),
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
                                     }
                                     is FetchResult.Failure ->
                                         Toast.makeText(
                                             context,
-                                            "Refresh failed: ${result.reason}",
+                                            context.getString(R.string.srv_refresh_failed, result.reason),
                                             Toast.LENGTH_LONG,
                                         ).show()
                                 }
@@ -338,7 +348,7 @@ class MainActivity : ComponentActivity() {
                                             // handing the core an empty TOML.
                                             Toast.makeText(
                                                 context,
-                                                "No config yet — refresh the subscription first.",
+                                                context.getString(R.string.srv_no_config_yet),
                                                 Toast.LENGTH_LONG,
                                             ).show()
                                         } else {
@@ -360,16 +370,20 @@ class MainActivity : ComponentActivity() {
                                 UpdateChecker.openForInstall(this@MainActivity, apk)
                                 return@HomeScreen
                             }
-                            updateStatus = "checking…"
+                            updateStatus = context.getString(R.string.upd_checking)
                             scope.launch {
                                 when (val result = UpdateChecker.check()) {
                                     is UpdateChecker.Result.Available -> {
                                         updateStatus = null
                                         update = result
                                     }
-                                    UpdateChecker.Result.UpToDate -> updateStatus = "up to date"
+                                    UpdateChecker.Result.UpToDate ->
+                                        updateStatus = context.getString(R.string.upd_up_to_date)
                                     is UpdateChecker.Result.Failed ->
-                                        updateStatus = "check failed: ${result.reason}"
+                                        updateStatus = context.getString(
+                                            R.string.upd_check_failed,
+                                            result.reason,
+                                        )
                                 }
                             }
                         },
@@ -381,12 +395,12 @@ class MainActivity : ComponentActivity() {
                 update?.let { available ->
                     AlertDialog(
                         onDismissRequest = { update = null },
-                        title = { Text("Update available") },
+                        title = { Text(stringResource(R.string.upd_available)) },
                         text = {
                             Text(
-                                "${available.label} is published for this channel.\n\n" +
-                                    "The APK downloads to your Downloads folder; open it to " +
-                                    "install — the app does not install it for you.",
+                                stringResource(R.string.upd_published_for_channel, available.label) +
+                                    "\n\n" +
+                                    stringResource(R.string.upd_apk_note),
                             )
                         },
                         confirmButton = {
@@ -394,7 +408,7 @@ class MainActivity : ComponentActivity() {
                                 update = null
                                 if (downloading) return@TextButton
                                 downloading = true
-                                updateStatus = "downloading 0%"
+                                updateStatus = context.getString(R.string.upd_downloading_pct, 0)
                                 // lifecycleScope, not the composition's: a 24 MB
                                 // fetch outlives a recomposition, and a cancelled
                                 // one would freeze the footer at its last percent.
@@ -403,22 +417,32 @@ class MainActivity : ComponentActivity() {
                                         this@MainActivity,
                                         available,
                                     ) { percent ->
-                                        if (downloading) updateStatus = "downloading $percent%"
+                                        if (downloading) {
+                                            updateStatus = context.getString(
+                                                R.string.upd_downloading_pct,
+                                                percent,
+                                            )
+                                        }
                                     }
                                     downloading = false
                                     updateStatus = when (outcome) {
                                         is UpdateChecker.Download.Saved -> {
                                             downloadedApk = outcome.uri
-                                            "downloaded — tap to install"
+                                            context.getString(R.string.upd_downloaded_tap)
                                         }
                                         is UpdateChecker.Download.Failed ->
-                                            "download failed: ${outcome.reason}"
+                                            context.getString(
+                                                R.string.upd_download_failed,
+                                                outcome.reason,
+                                            )
                                     }
                                 }
-                            }) { Text("Download") }
+                            }) { Text(stringResource(R.string.upd_download)) }
                         },
                         dismissButton = {
-                            TextButton(onClick = { update = null }) { Text("Later") }
+                            TextButton(onClick = { update = null }) {
+                                Text(stringResource(R.string.upd_later))
+                            }
                         },
                     )
                 }
@@ -472,8 +496,9 @@ class MainActivity : ComponentActivity() {
             val reason = withContext(Dispatchers.IO) { runCatching { lastError() }.getOrNull() }
             Toast.makeText(
                 this@MainActivity,
-                reason?.let { "Couldn't connect: ${it.substringBefore('\n')}" }
-                    ?: "Couldn't connect",
+                reason?.let {
+                    this@MainActivity.getString(R.string.conn_failed_reason, it.substringBefore('\n'))
+                } ?: this@MainActivity.getString(R.string.conn_failed),
                 Toast.LENGTH_LONG,
             ).show()
         }
@@ -497,7 +522,7 @@ private fun ServerListScreen(
 ) {
     var editing by remember { mutableStateOf<ServerProfile?>(null) }
 
-    SubScreen(title = "Servers", icon = Icons.Filled.Dns, onBack = onBack) {
+    SubScreen(title = stringResource(R.string.srv_title), icon = Icons.Filled.Dns, onBack = onBack) {
         LazyColumn(
             modifier = Modifier.fillMaxWidth().weight(1f),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -520,7 +545,7 @@ private fun ServerListScreen(
             shape = RoundedCornerShape(16.dp),
         ) {
             Icon(Icons.Filled.Add, contentDescription = null)
-            Text("Add server", modifier = Modifier.padding(start = 8.dp))
+            Text(stringResource(R.string.srv_add), modifier = Modifier.padding(start = 8.dp))
         }
     }
 
@@ -553,14 +578,17 @@ private fun ProfileCard(
             RadioButton(selected = selected, onClick = onSelect)
             Column(modifier = Modifier.weight(1f).padding(start = 8.dp)) {
                 Text(
-                    profile.name.ifBlank { "(unnamed)" },
+                    profile.name.ifBlank { stringResource(R.string.srv_unnamed) },
                     fontWeight = FontWeight.Bold,
                     color = if (selected) BrandBlue else MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
                     if (profile.isSubscription) {
-                        "subscription · ${formatAge(profile.updatedAt)} · " +
-                            "every ${SubscriptionWorker.REFRESH_PERIOD_HOURS}h"
+                        stringResource(
+                            R.string.srv_sub_summary,
+                            formatAge(profile.updatedAt),
+                            SubscriptionWorker.REFRESH_PERIOD_HOURS,
+                        )
                     } else {
                         profile.transport
                     },
@@ -570,20 +598,24 @@ private fun ProfileCard(
             }
             if (profile.isSubscription) {
                 IconButton(onClick = onRefresh) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = BrandBlue)
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = stringResource(R.string.a11y_refresh),
+                        tint = BrandBlue,
+                    )
                 }
             }
             IconButton(onClick = onEdit) {
                 Icon(
                     Icons.Filled.Edit,
-                    contentDescription = "Edit",
+                    contentDescription = stringResource(R.string.a11y_edit),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "Delete",
+                    contentDescription = stringResource(R.string.a11y_delete),
                     tint = MaterialTheme.colorScheme.error,
                 )
             }
@@ -591,19 +623,36 @@ private fun ProfileCard(
     }
 }
 
-/** Human-readable "when was this subscription last refreshed" for the card. */
-private fun formatAge(updatedAt: Long): String {
-    if (updatedAt <= 0L) return "never updated"
+private enum class UpdatedAgeBucket { NEVER, JUST_NOW, MINUTES, HOURS, DAYS }
+private data class UpdatedAge(val bucket: UpdatedAgeBucket, val amount: Long = 0)
+
+/** Pure "when was this subscription last refreshed" bucket — same thresholds as
+ *  before, no Context; [formatAge] resolves the wording from resources. */
+private fun updatedAgeOf(updatedAt: Long): UpdatedAge {
+    if (updatedAt <= 0L) return UpdatedAge(UpdatedAgeBucket.NEVER)
     val ageMs = System.currentTimeMillis() - updatedAt
-    if (ageMs < 0) return "updated just now"
+    if (ageMs < 0) return UpdatedAge(UpdatedAgeBucket.JUST_NOW)
     val minutes = ageMs / 60_000
     val hours = minutes / 60
     val days = hours / 24
     return when {
-        minutes < 1 -> "updated just now"
-        minutes < 60 -> "updated ${minutes}m ago"
-        hours < 24 -> "updated ${hours}h ago"
-        else -> "updated ${days}d ago"
+        minutes < 1 -> UpdatedAge(UpdatedAgeBucket.JUST_NOW)
+        minutes < 60 -> UpdatedAge(UpdatedAgeBucket.MINUTES, minutes)
+        hours < 24 -> UpdatedAge(UpdatedAgeBucket.HOURS, hours)
+        else -> UpdatedAge(UpdatedAgeBucket.DAYS, days)
+    }
+}
+
+/** Human-readable "when was this subscription last refreshed" for the card. */
+@Composable
+private fun formatAge(updatedAt: Long): String {
+    val age = updatedAgeOf(updatedAt)
+    return when (age.bucket) {
+        UpdatedAgeBucket.NEVER -> stringResource(R.string.age_never_updated)
+        UpdatedAgeBucket.JUST_NOW -> stringResource(R.string.age_updated_just_now)
+        UpdatedAgeBucket.MINUTES -> stringResource(R.string.age_updated_minutes, age.amount)
+        UpdatedAgeBucket.HOURS -> stringResource(R.string.age_updated_hours, age.amount)
+        UpdatedAgeBucket.DAYS -> stringResource(R.string.age_updated_days, age.amount)
     }
 }
 
@@ -627,8 +676,17 @@ private fun ProfileEditorDialog(
     val isSubscription = configUrl.isNotBlank()
 
     fun save() {
+        // Blank Name → derive from the link the user pasted: its #remark, else host.
+        val derivedName = name.ifBlank {
+            val src = when {
+                configUrl.isNotBlank() -> configUrl
+                transport == "vless" -> vlessLink
+                else -> ssLink
+            }
+            ServerProfile.deriveName(src).orEmpty()
+        }
         val base = initial.copy(
-            name = name,
+            name = derivedName,
             transport = transport,
             vlessLink = vlessLink,
             ssLink = ssLink,
@@ -667,27 +725,27 @@ private fun ProfileEditorDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
             TextButton(onClick = { save() }, enabled = !fetching) {
-                Text(if (fetching) "Fetching…" else "Save")
+                Text(if (fetching) stringResource(R.string.dlg_fetching) else stringResource(R.string.btn_save))
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !fetching) { Text("Cancel") } },
-        title = { Text("Server") },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !fetching) { Text(stringResource(R.string.btn_cancel)) } },
+        title = { Text(stringResource(R.string.dlg_server_title)) },
         text = {
             Column {
-                OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.dlg_name)) }, modifier = Modifier.fillMaxWidth())
 
                 OutlinedTextField(
                     configUrl, { configUrl = it; error = null },
-                    label = { Text("Config URL (subscription)") },
+                    label = { Text(stringResource(R.string.dlg_config_url)) },
                     singleLine = true,
                     supportingText = {
-                        Text("HTTPS link to a ready client config; fetched and refreshed automatically.")
+                        Text(stringResource(R.string.dlg_config_url_help))
                     },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
                 error?.let {
                     Text(
-                        "Could not fetch: $it",
+                        stringResource(R.string.dlg_could_not_fetch, it),
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(top = 4.dp),
@@ -699,33 +757,33 @@ private fun ProfileEditorDialog(
                 if (!isSubscription) {
                     Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(selected = transport == "vless", onClick = { transport = "vless" })
-                        Text("VLESS", modifier = Modifier.padding(end = 16.dp))
+                        Text(stringResource(R.string.dlg_transport_vless), modifier = Modifier.padding(end = 16.dp))
                         RadioButton(selected = transport == "ss", onClick = { transport = "ss" })
-                        Text("Shadowsocks")
+                        Text(stringResource(R.string.dlg_transport_ss))
                     }
 
                     if (transport == "vless") {
                         OutlinedTextField(
                             vlessLink, { vlessLink = it },
-                            label = { Text("vless:// share link") },
+                            label = { Text(stringResource(R.string.dlg_vless_link)) },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     } else {
                         OutlinedTextField(
                             ssLink, { ssLink = it },
-                            label = { Text("ss:// share link") },
+                            label = { Text(stringResource(R.string.dlg_ss_link)) },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
 
                     Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Padding", modifier = Modifier.weight(1f))
+                        Text(stringResource(R.string.dlg_padding), modifier = Modifier.weight(1f))
                         Switch(checked = paddingEnabled, onCheckedChange = { paddingEnabled = it })
                     }
 
                     OutlinedTextField(
                         rawOverride, { rawOverride = it },
-                        label = { Text("Raw TOML override (optional)") },
+                        label = { Text(stringResource(R.string.dlg_raw_toml)) },
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     )
                 }
@@ -771,34 +829,34 @@ private fun SplitTunnelScreen(
     }
 
     SubScreen(
-        title = "Split Tunneling",
+        title = stringResource(R.string.home_link_split),
         icon = Icons.AutoMirrored.Filled.AltRoute,
         onBack = onBack,
     ) {
         SectionCard(padding = PaddingValues(vertical = 4.dp)) {
             Column {
-                ModeOption("All apps", SplitMode.OFF, mode) { mode = it; persist() }
-                ModeOption("Only selected apps", SplitMode.ALLOWLIST, mode) { mode = it; persist() }
-                ModeOption("All apps except selected", SplitMode.DENYLIST, mode) { mode = it; persist() }
+                ModeOption(stringResource(R.string.split_mode_all), SplitMode.OFF, mode) { mode = it; persist() }
+                ModeOption(stringResource(R.string.split_mode_only), SplitMode.ALLOWLIST, mode) { mode = it; persist() }
+                ModeOption(stringResource(R.string.split_mode_except), SplitMode.DENYLIST, mode) { mode = it; persist() }
             }
         }
 
         when {
             selected == null ->
                 Text(
-                    "Every app's traffic goes through the tunnel.",
+                    stringResource(R.string.split_desc_all),
                     modifier = Modifier.padding(top = 16.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             loading ->
-                Text("Loading apps…", modifier = Modifier.padding(top = 16.dp))
+                Text(stringResource(R.string.split_loading_apps), modifier = Modifier.padding(top = 16.dp))
             else -> {
                 Text(
                     if (mode == SplitMode.ALLOWLIST) {
-                        "Only the checked apps are tunneled; everything else uses the direct connection."
+                        stringResource(R.string.split_desc_allow)
                     } else {
-                        "The checked apps bypass the tunnel; everything else is tunneled."
+                        stringResource(R.string.split_desc_deny)
                     },
                     modifier = Modifier.padding(top = 16.dp, start = 4.dp),
                     style = MaterialTheme.typography.bodySmall,
@@ -809,7 +867,14 @@ private fun SplitTunnelScreen(
                     onValueChange = { query = it },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                    placeholder = { Text("Search apps") },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(Icons.Filled.Clear, contentDescription = stringResource(R.string.a11y_clear_search))
+                            }
+                        }
+                    },
+                    placeholder = { Text(stringResource(R.string.split_search)) },
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 )
@@ -876,14 +941,14 @@ private fun ExternalControlScreen(
 
     fun persist() = store.save(ExternalControlConfig(enabled, token))
 
-    SubScreen(title = "External Control", icon = Icons.Filled.Tune, onBack = onBack) {
+    SubScreen(title = stringResource(R.string.home_link_external), icon = Icons.Filled.Tune, onBack = onBack) {
         SectionCard {
             Column {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Allow outline:// commands", modifier = Modifier.weight(1f))
+                    Text(stringResource(R.string.ext_allow_commands), modifier = Modifier.weight(1f))
                     Switch(checked = enabled, onCheckedChange = { enabled = it; persist() })
                 }
                 OutlinedTextField(
@@ -892,9 +957,9 @@ private fun ExternalControlScreen(
                     enabled = enabled,
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
-                    label = { Text("Token (optional)") },
+                    label = { Text(stringResource(R.string.ext_token)) },
                     supportingText = {
-                        Text("When set, commands without a matching ?token= are ignored.")
+                        Text(stringResource(R.string.ext_token_help))
                     },
                     modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 )
@@ -904,7 +969,7 @@ private fun ExternalControlScreen(
         SectionCard(modifier = Modifier.padding(top = 12.dp)) {
             Column {
                 Text(
-                    "Supported commands",
+                    stringResource(R.string.ext_supported_commands),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -921,9 +986,7 @@ private fun ExternalControlScreen(
                     modifier = Modifier.padding(top = 10.dp),
                 )
                 Text(
-                    "Any app on this device can send these, which is why the switch and " +
-                        "the token are here. Commands never create a server; the profile " +
-                        "must already exist in the list.",
+                    stringResource(R.string.ext_commands_note),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 14.dp),

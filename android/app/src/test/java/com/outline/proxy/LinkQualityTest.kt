@@ -10,22 +10,15 @@ import org.junit.Test
 class LinkQualityTest {
 
     @Test
-    fun `an unmeasured link reads as plain connected`() {
-        assertFalse(LinkQuality.isSlow(null))
-        assertEquals("Connected", LinkQuality.connectedLabel(null))
-    }
-
-    @Test
-    fun `a healthy mobile path is not slow`() {
-        assertFalse(LinkQuality.isSlow(80))
-        assertEquals("Connected", LinkQuality.connectedLabel(300))
-    }
-
-    @Test
-    fun `an edge-class path is called slow`() {
-        assertTrue(LinkQuality.isSlow(LinkQuality.SLOW_LATENCY_MS))
+    fun slowAtOrAboveThreshold() {
+        assertTrue(LinkQuality.isSlow(1000))
         assertTrue(LinkQuality.isSlow(4200))
-        assertEquals("Connected · slow", LinkQuality.connectedLabel(4200))
+    }
+
+    @Test
+    fun notSlowBelowThresholdOrUnknown() {
+        assertFalse(LinkQuality.isSlow(999))
+        assertFalse(LinkQuality.isSlow(null))
     }
 
     @Test

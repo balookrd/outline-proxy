@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shared by SubScreen (UiKit.kt): back button on every sub-screen header. -->
+    <string name="a11y_back">Back</string>
+
+    <!-- Tunnel status, shared by home screen, notification and QS tile. -->
+    <string name="status_connecting">Connecting</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_connected_slow">Connected · slow</string>
+    <string name="status_no_link">No link</string>
+    <string name="status_disconnected">Disconnected</string>
+    <!-- MainActivity: toast shown when the tunnel connect state actually flips. -->
+    <string name="status_toast_connected">Tunnel connected</string>
+    <string name="status_toast_disconnected">Tunnel disconnected</string>
+    <!-- MainActivity.watchConnectResult(): toast when a connect attempt doesn't settle. -->
+    <string name="conn_failed">Couldn\'t connect</string>
+    <string name="conn_failed_reason">Couldn\'t connect: %1$s</string>
+    <!-- Head word of the link summary line, e.g. "Cellular · 180 ms". -->
+    <string name="net_cellular">Cellular</string>
+    <string name="net_network">Network</string>
+
+    <!-- Foreground-service notification: channel names and the one-off "cannot start" alert. -->
+    <string name="notif_channel_status">VPN status</string>
+    <string name="notif_channel_alerts">VPN alerts</string>
+    <string name="notif_alert_cannot_start_title">Tunnel cannot start</string>
+    <string name="notif_alert_cannot_start_text">Open Outline Proxy and connect again.</string>
+
+    <!-- Home screen: status card, when no server is selected. -->
+    <string name="home_no_server">No server</string>
+    <string name="home_add_a_server">Add a server to begin</string>
+    <!-- Home screen: status card, subscription profile. -->
+    <string name="home_subscription">Subscription</string>
+    <string name="home_badge_active">Active</string>
+    <string name="home_sub_updated_every">Updated %1$s · Every %2$dh</string>
+    <!-- Home screen: connect / add-server buttons. -->
+    <string name="btn_add_server">Add Server</string>
+    <string name="btn_connect">Connect</string>
+    <string name="btn_disconnect">Disconnect</string>
+    <!-- Home screen: quick-link shortcuts row. -->
+    <string name="home_link_split">Split Tunneling</string>
+    <string name="home_link_external">External Control</string>
+    <string name="home_link_keepalive">Keeping Alive</string>
+    <!-- Home screen: stats strip column labels. -->
+    <string name="stat_duration">DURATION</string>
+    <string name="stat_traffic">TRAFFIC</string>
+    <string name="stat_protocol">PROTOCOL</string>
+    <!-- Home screen: accessibility content descriptions. -->
+    <string name="a11y_servers">Servers</string>
+    <string name="a11y_uploaded">Uploaded</string>
+    <string name="a11y_downloaded">Downloaded</string>
+    <!-- Home screen: compact "when updated" age, e.g. "3h ago". -->
+    <string name="age_just_now">just now</string>
+    <string name="age_never">never</string>
+    <string name="age_minutes">%1$dm ago</string>
+    <string name="age_hours">%1$dh ago</string>
+    <string name="age_days">%1$dd ago</string>
+
+    <!-- Server list screen: title, add-server button, row actions. -->
+    <string name="srv_title">Servers</string>
+    <string name="srv_add">Add server</string>
+    <string name="a11y_refresh">Refresh</string>
+    <string name="a11y_edit">Edit</string>
+    <string name="a11y_delete">Delete</string>
+    <string name="srv_toast_config_updated">Config updated</string>
+    <string name="srv_refresh_failed">Refresh failed: %1$s</string>
+    <!-- Server list row: placeholder for a server with a blank name. -->
+    <string name="srv_unnamed">(unnamed)</string>
+    <string name="srv_sub_summary">subscription · %1$s · every %2$dh</string>
+    <!-- Shared by the Home screen connect-with-no-config toast and the outline:// quick-connect toast (QuickConnectActivity). -->
+    <string name="srv_no_config_yet">No config yet — refresh the subscription first.</string>
+    <!-- Server list: compact "when updated" age for a subscription row. -->
+    <string name="age_never_updated">never updated</string>
+    <string name="age_updated_just_now">updated just now</string>
+    <string name="age_updated_minutes">updated %1$dm ago</string>
+    <string name="age_updated_hours">updated %1$dh ago</string>
+    <string name="age_updated_days">updated %1$dd ago</string>
+
+    <!-- Server editor dialog (Add/Edit server): title, fields, buttons. -->
+    <string name="dlg_server_title">Server</string>
+    <string name="dlg_name">Name</string>
+    <string name="dlg_config_url">Config URL (subscription)</string>
+    <string name="dlg_config_url_help">HTTPS link to a ready client config; fetched and refreshed automatically.</string>
+    <string name="dlg_transport_vless">VLESS</string>
+    <string name="dlg_transport_ss">Shadowsocks</string>
+    <string name="dlg_vless_link">vless:// share link</string>
+    <string name="dlg_ss_link">ss:// share link</string>
+    <string name="dlg_padding">Padding</string>
+    <string name="dlg_raw_toml">Raw TOML override (optional)</string>
+    <string name="dlg_fetching">Fetching…</string>
+    <string name="btn_save">Save</string>
+    <string name="btn_cancel">Cancel</string>
+    <string name="dlg_could_not_fetch">Could not fetch: %1$s</string>
+
+    <!-- Update dialog (Home screen build tap) and version-footer status. -->
+    <string name="upd_available">Update available</string>
+    <string name="upd_published_for_channel">%1$s is published for this channel.</string>
+    <string name="upd_apk_note">The APK downloads to your Downloads folder; open it to install — the app does not install it for you.</string>
+    <string name="upd_download">Download</string>
+    <string name="upd_later">Later</string>
+    <string name="upd_checking">checking…</string>
+    <string name="upd_up_to_date">up to date</string>
+    <string name="upd_check_failed">check failed: %1$s</string>
+    <string name="upd_downloading_pct">downloading %1$d%%</string>
+    <string name="upd_downloaded_tap">downloaded — tap to install</string>
+    <string name="upd_download_failed">download failed: %1$s</string>
+
+    <!-- Split Tunnel screen: mode selector, per-mode descriptions, app search. -->
+    <string name="split_mode_all">All apps</string>
+    <string name="split_mode_only">Only selected apps</string>
+    <string name="split_mode_except">All apps except selected</string>
+    <string name="split_desc_all">Every app\'s traffic goes through the tunnel.</string>
+    <string name="split_desc_allow">Only the checked apps are tunneled; everything else uses the direct connection.</string>
+    <string name="split_desc_deny">The checked apps bypass the tunnel; everything else is tunneled.</string>
+    <string name="split_loading_apps">Loading apps…</string>
+    <string name="split_search">Search apps</string>
+    <string name="a11y_clear_search">Clear</string>
+
+    <!-- External Control screen: outline:// deep-link toggle, token, supported commands. -->
+    <string name="ext_allow_commands">Allow outline:// commands</string>
+    <string name="ext_token">Token (optional)</string>
+    <string name="ext_token_help">When set, commands without a matching ?token= are ignored.</string>
+    <string name="ext_supported_commands">Supported commands</string>
+    <string name="ext_commands_note">Any app on this device can send these, which is why the switch and the token are here. Commands never create a server; the profile must already exist in the list.</string>
+
+    <!-- ControlActivity / QuickConnectActivity: outline:// external-control and quick-connect Toast messages. -->
+    <string name="ctl_vpn_denied">VPN permission denied</string>
+    <string name="ctl_no_server">No server configured</string>
+    <string name="ctl_unknown_server">Unknown server: %1$s</string>
+    <string name="ctl_not_command">Not an outline:// command</string>
+    <string name="ctl_unknown_command">Unknown outline:// command</string>
+    <string name="ctl_disabled">External control is disabled in Outline Proxy</string>
+    <string name="ctl_wrong_token">External control: wrong token</string>
+
+    <!-- Keep-Alive screen: background-survival permissions checklist. -->
+    <string name="ka_persistent_notif">Persistent notification</string>
+    <string name="ka_persistent_notif_desc">Keep a notification with a Connect/Disconnect button in the status bar, even when the VPN is off.</string>
+    <string name="ka_qs_tile">Quick Settings tile</string>
+    <string name="ka_qs_tile_desc">Toggle the tunnel straight from the Quick Settings panel.</string>
+    <string name="ka_add_tile">Add tile</string>
+    <string name="ka_add_tile_hint">Open Quick Settings, tap edit (pencil), and add the Outline tile.</string>
+    <string name="ka_intro">Android and the phone vendor may stop background apps. These switches are what keeps the tunnel up.</string>
+    <string name="ka_always_on">Always-on VPN</string>
+    <string name="ka_always_on_desc">The strongest option: the system itself keeps the tunnel up and restarts it. Turn on \"Always-on VPN\" for Outline Proxy in the VPN list.</string>
+    <string name="ka_open_vpn_settings">Open VPN settings</string>
+    <string name="ka_ignore_batt">Ignore battery optimisation</string>
+    <string name="ka_ignore_batt_desc">Without it Android may stop the tunnel in the background and refuse to let the watchdog restart it.</string>
+    <string name="ka_exact_alarms">Exact alarms</string>
+    <string name="ka_exact_alarms_desc">The watchdog checks the tunnel through Doze. Without this permission the checks are delayed by the system.</string>
+    <string name="ka_notifications">Notifications</string>
+    <string name="ka_notifications_desc">The tunnel runs as a foreground service. A hidden notification makes some firmware more eager to kill it.</string>
+    <string name="ka_network_type">Network type</string>
+    <string name="ka_network_type_desc">Optional. Lets the home screen name the radio technology (2G / 3G / LTE / 5G) instead of guessing a class from the speed estimate. Nothing the tunnel decides depends on it — the dial timeouts are sized from the speed estimate either way.</string>
+    <string name="ka_vendor_autostart">%1$s autostart</string>
+    <string name="ka_vendor_autostart_desc">%1$s keeps its own list of apps allowed to run in the background. There is no API to read it — open the screen and allow Outline Proxy there.</string>
+    <string name="ka_open_vendor_settings">Open %1$s settings</string>
+    <string name="ka_status_allowed">Allowed</string>
+    <string name="ka_status_needs_action">Needs action</string>
+    <string name="ka_status_check_manually">Check manually</string>
+    <string name="btn_allow">Allow</string>
+</resources>

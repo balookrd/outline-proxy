@@ -33,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -61,7 +62,7 @@ fun KeepAliveScreen(onBack: () -> Unit) {
         ActivityResultContracts.RequestPermission(),
     ) { refresh++ }
 
-    SubScreen(title = "Keeping Alive", icon = Icons.Filled.MonitorHeart, onBack = onBack) {
+    SubScreen(title = stringResource(R.string.home_link_keepalive), icon = Icons.Filled.MonitorHeart, onBack = onBack) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
                 Row(
@@ -70,13 +71,12 @@ fun KeepAliveScreen(onBack: () -> Unit) {
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "Persistent notification",
+                            stringResource(R.string.ka_persistent_notif),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            "Keep a notification with a Connect/Disconnect button in the " +
-                                "status bar, even when the VPN is off.",
+                            stringResource(R.string.ka_persistent_notif_desc),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 4.dp),
@@ -102,12 +102,12 @@ fun KeepAliveScreen(onBack: () -> Unit) {
             SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
                 Column {
                     Text(
-                        "Quick Settings tile",
+                        stringResource(R.string.ka_qs_tile),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        "Toggle the tunnel straight from the Quick Settings panel.",
+                        stringResource(R.string.ka_qs_tile_desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp),
@@ -117,14 +117,13 @@ fun KeepAliveScreen(onBack: () -> Unit) {
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.padding(top = 12.dp),
                     ) {
-                        Text("Add tile")
+                        Text(stringResource(R.string.ka_add_tile))
                     }
                 }
             }
 
             Text(
-                "Android and the phone vendor may stop background apps. These " +
-                    "switches are what keeps the tunnel up.",
+                stringResource(R.string.ka_intro),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 16.dp, start = 4.dp),
@@ -135,28 +134,26 @@ fun KeepAliveScreen(onBack: () -> Unit) {
             refresh
 
             ChecklistItem(
-                title = "Always-on VPN",
+                title = stringResource(R.string.ka_always_on),
                 status = when (KeepAliveState(context).alwaysOnSeen) {
                     true -> GrantStatus.GRANTED
                     false -> GrantStatus.MISSING
                     null -> GrantStatus.UNKNOWN
                 },
-                explanation = "The strongest option: the system itself keeps the tunnel up " +
-                    "and restarts it. Turn on \"Always-on VPN\" for Outline Proxy in the VPN list.",
-                action = "Open VPN settings",
+                explanation = stringResource(R.string.ka_always_on_desc),
+                action = stringResource(R.string.ka_open_vpn_settings),
                 onAction = { context.launchSafely(KeepAliveHelper.vpnSettingsIntent()) },
             )
 
             ChecklistItem(
-                title = "Ignore battery optimisation",
+                title = stringResource(R.string.ka_ignore_batt),
                 status = if (KeepAliveHelper.isIgnoringBatteryOptimizations(context)) {
                     GrantStatus.GRANTED
                 } else {
                     GrantStatus.MISSING
                 },
-                explanation = "Without it Android may stop the tunnel in the background and " +
-                    "refuse to let the watchdog restart it.",
-                action = "Allow",
+                explanation = stringResource(R.string.ka_ignore_batt_desc),
+                action = stringResource(R.string.btn_allow),
                 onAction = {
                     if (!context.launchSafely(KeepAliveHelper.batteryOptimizationIntent(context))) {
                         context.launchSafely(KeepAliveHelper.batteryOptimizationListIntent())
@@ -167,15 +164,14 @@ fun KeepAliveScreen(onBack: () -> Unit) {
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 ChecklistItem(
-                    title = "Exact alarms",
+                    title = stringResource(R.string.ka_exact_alarms),
                     status = if (KeepAliveHelper.canScheduleExactAlarms(context)) {
                         GrantStatus.GRANTED
                     } else {
                         GrantStatus.MISSING
                     },
-                    explanation = "The watchdog checks the tunnel through Doze. Without this " +
-                        "permission the checks are delayed by the system.",
-                    action = "Allow",
+                    explanation = stringResource(R.string.ka_exact_alarms_desc),
+                    action = stringResource(R.string.btn_allow),
                     onAction = {
                         KeepAliveHelper.exactAlarmSettingsIntent(context)?.let { context.launchSafely(it) }
                         refresh++
@@ -189,11 +185,10 @@ fun KeepAliveScreen(onBack: () -> Unit) {
                     Manifest.permission.POST_NOTIFICATIONS,
                 ) == PackageManager.PERMISSION_GRANTED
                 ChecklistItem(
-                    title = "Notifications",
+                    title = stringResource(R.string.ka_notifications),
                     status = if (granted) GrantStatus.GRANTED else GrantStatus.MISSING,
-                    explanation = "The tunnel runs as a foreground service. A hidden notification " +
-                        "makes some firmware more eager to kill it.",
-                    action = "Allow",
+                    explanation = stringResource(R.string.ka_notifications_desc),
+                    action = stringResource(R.string.btn_allow),
                     onAction = { notifications.launch(Manifest.permission.POST_NOTIFICATIONS) },
                 )
             }
@@ -204,25 +199,20 @@ fun KeepAliveScreen(onBack: () -> Unit) {
             run {
                 val granted = LinkProbe.canReadRan(context)
                 ChecklistItem(
-                    title = "Network type",
+                    title = stringResource(R.string.ka_network_type),
                     status = if (granted) GrantStatus.GRANTED else GrantStatus.MISSING,
-                    explanation = "Optional. Lets the home screen name the radio technology " +
-                        "(2G / 3G / LTE / 5G) instead of guessing a class from the speed " +
-                        "estimate. Nothing the tunnel decides depends on it — the dial " +
-                        "timeouts are sized from the speed estimate either way.",
-                    action = "Allow",
+                    explanation = stringResource(R.string.ka_network_type_desc),
+                    action = stringResource(R.string.btn_allow),
                     onAction = { phoneState.launch(Manifest.permission.READ_PHONE_STATE) },
                 )
             }
 
             KeepAliveHelper.vendorLabel(context)?.let { vendor ->
                 ChecklistItem(
-                    title = "$vendor autostart",
+                    title = stringResource(R.string.ka_vendor_autostart, vendor),
                     status = GrantStatus.UNKNOWN,
-                    explanation = "$vendor keeps its own list of apps allowed to run in the " +
-                        "background. There is no API to read it — open the screen and allow " +
-                        "Outline Proxy there.",
-                    action = "Open $vendor settings",
+                    explanation = stringResource(R.string.ka_vendor_autostart_desc, vendor),
+                    action = stringResource(R.string.ka_open_vendor_settings, vendor),
                     onAction = { KeepAliveHelper.autostartIntent(context)?.let { context.launchSafely(it) } },
                 )
             }
@@ -239,9 +229,9 @@ private fun ChecklistItem(
     onAction: () -> Unit,
 ) {
     val statusText = when (status) {
-        GrantStatus.GRANTED -> "Allowed"
-        GrantStatus.MISSING -> "Needs action"
-        GrantStatus.UNKNOWN -> "Check manually"
+        GrantStatus.GRANTED -> stringResource(R.string.ka_status_allowed)
+        GrantStatus.MISSING -> stringResource(R.string.ka_status_needs_action)
+        GrantStatus.UNKNOWN -> stringResource(R.string.ka_status_check_manually)
     }
     val statusColor = when (status) {
         GrantStatus.GRANTED -> StatusGreen
@@ -307,7 +297,7 @@ private fun requestAddQsTile(context: Context) {
     } else {
         Toast.makeText(
             context,
-            "Open Quick Settings, tap edit (pencil), and add the Outline tile.",
+            context.getString(R.string.ka_add_tile_hint),
             Toast.LENGTH_LONG,
         ).show()
     }

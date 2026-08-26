@@ -119,6 +119,15 @@ android {
         // stubbed android.jar calls return defaults instead of throwing.
         unitTests.isReturnDefaultValues = true
     }
+    lint {
+        // This project doesn't otherwise run lint in CI; we enable it solely as a
+        // translation-parity gate. checkOnly limits the run to the two i18n checks,
+        // so it doesn't wake unrelated pre-existing findings (e.g. LinkProbe's
+        // MissingPermission); fatal makes both fail the build — keeping the EN and
+        // RU string sets in exact lockstep as later tasks add keys.
+        checkOnly += setOf("MissingTranslation", "ExtraTranslation")
+        fatal += setOf("MissingTranslation", "ExtraTranslation")
+    }
     // The Rust .so files are dropped here by cargo-ndk; see README.
     // src/main/jniLibs/<abi>/liboutline_android.so
 }
