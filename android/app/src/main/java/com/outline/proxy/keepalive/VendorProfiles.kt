@@ -39,6 +39,14 @@ internal data class VendorScreen(
     val action: String? = null,
     /** Integer extras the screen needs — Samsung picks which list to show with one. */
     val intExtras: Map<String, Int> = emptyMap(),
+    /**
+     * String extras. Values may use the tokens `{self}` (this app's package name)
+     * and `{label}` (its display name), filled at launch. MIUI's per-app battery
+     * screen needs `package_name` to land on our app instead of throwing.
+     */
+    val stringExtras: Map<String, String> = emptyMap(),
+    /** Data URI; supports the same `{self}` token, e.g. `package:{self}`. */
+    val data: String? = null,
 ) {
     init {
         require((className == null) != (action == null)) {
@@ -83,6 +91,22 @@ internal fun vendorProfileFor(manufacturer: String?): VendorProfile? {
  * are only ever *candidates*: the caller probes each one and falls back to the
  * system app-details page, where these toggles also live on most skins.
  */
+/**
+ * Oppo, realme and OnePlus share the ColorOS backend. It renamed `com.coloros.*`
+ * to `com.oplus.*` at Android 12 and moved the list into `com.oplus.battery` at 13,
+ * so every legacy hardcoded target either vanished or turned signature-guarded
+ * (`OPLUS_COMPONENT_SAFE`). canLaunch drops the guarded ones; the Phone Manager
+ * action — the single unguarded entry, on a package ColorOS never renamed — carries,
+ * with app-details behind it. The old coloros class still helps on ColorOS <= 6,
+ * where it is unguarded.
+ */
+private val COLOROS_AUTOSTART = listOf(
+    VendorScreen("com.oplus.battery", "com.oplus.startupapp.view.StartupAppListActivity"),
+    VendorScreen("com.oplus.safecenter", "com.oplus.safecenter.startupapp.view.StartupAppListActivity"),
+    VendorScreen("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"),
+    VendorScreen("com.coloros.phonemanager", action = "oppo.intent.action.SAFE_CENTER_MAIN"),
+)
+
 internal val VENDOR_PROFILES = listOf(
     VendorProfile(
         id = VendorId.XIAOMI,
@@ -92,30 +116,37 @@ internal val VENDOR_PROFILES = listOf(
                 "com.miui.securitycenter",
                 "com.miui.permcenter.autostart.AutoStartManagementActivity",
             ),
+            // Same screen by action, for resilience to a future rename.
+            VendorScreen("com.miui.securitycenter", action = "miui.intent.action.OP_AUTO_START"),
         ),
         battery = listOf(
-            VendorScreen("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"),
+            // The per-app battery-policy screen. It needs package_name, or it reads an
+            // empty bundle, NPEs and finishes — which still returns success to the
+            // caller, so a component-only launch is a silent no-op. package_label
+            // gives the screen our app's name. Absent on HyperOS 3 (powerkeeper UI
+            // was cut), where canLaunch drops it and the app-details fallback carries.
+            VendorScreen(
+                "com.miui.powerkeeper",
+                "com.miui.powerkeeper.ui.HiddenAppsConfigActivity",
+                stringExtras = mapOf("package_name" to "{self}", "package_label" to "{label}"),
+            ),
         ),
         autostartTitle = R.string.ka_vendor_autostart,
         autostartDesc = R.string.ka_vendor_autostart_desc,
-        autostartToggle = R.string.ka_toggle_autostart,
+        autostartToggle = R.string.ka_toggle_background_autostart,
         batteryDesc = R.string.ka_vendor_battery_desc_xiaomi,
     ),
     VendorProfile(
         id = VendorId.HUAWEI,
         manufacturers = listOf("huawei"),
+        // StartupNormalAppListActivity is the unguarded "App launch" list (EMUI 9-11);
+        // the action is its durable twin. ProtectActivity is dead (gone since EMUI 5),
+        // and StartupAppControlActivity is always signature-guarded — both dropped.
         autostart = listOf(
+            VendorScreen("com.huawei.systemmanager", action = "huawei.intent.action.HSM_STARTUPAPP_MANAGER"),
             VendorScreen(
                 "com.huawei.systemmanager",
                 "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
-            ),
-            VendorScreen(
-                "com.huawei.systemmanager",
-                "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity",
-            ),
-            VendorScreen(
-                "com.huawei.systemmanager",
-                "com.huawei.systemmanager.optimize.process.ProtectActivity",
             ),
         ),
         battery = emptyList(),
@@ -139,10 +170,6 @@ internal val VENDOR_PROFILES = listOf(
                 "com.hihonor.systemmanager",
                 "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
             ),
-            VendorScreen(
-                "com.hihonor.systemmanager",
-                "com.hihonor.systemmanager.appcontrol.activity.StartupAppControlActivity",
-            ),
         ),
         battery = emptyList(),
         autostartTitle = R.string.ka_vendor_autostart,
@@ -153,14 +180,7 @@ internal val VENDOR_PROFILES = listOf(
     VendorProfile(
         id = VendorId.OPPO,
         manufacturers = listOf("oppo"),
-        autostart = listOf(
-            VendorScreen(
-                "com.coloros.safecenter",
-                "com.coloros.safecenter.permission.startup.StartupAppListActivity",
-            ),
-            VendorScreen("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"),
-            VendorScreen("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity"),
-        ),
+        autostart = COLOROS_AUTOSTART,
         battery = emptyList(),
         autostartTitle = R.string.ka_vendor_autostart,
         autostartDesc = R.string.ka_vendor_autostart_desc,
@@ -170,13 +190,7 @@ internal val VENDOR_PROFILES = listOf(
     VendorProfile(
         id = VendorId.REALME,
         manufacturers = listOf("realme"),
-        autostart = listOf(
-            VendorScreen(
-                "com.coloros.safecenter",
-                "com.coloros.safecenter.permission.startup.StartupAppListActivity",
-            ),
-            VendorScreen("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity"),
-        ),
+        autostart = COLOROS_AUTOSTART,
         battery = emptyList(),
         autostartTitle = R.string.ka_vendor_autostart,
         autostartDesc = R.string.ka_vendor_autostart_desc,
@@ -204,16 +218,13 @@ internal val VENDOR_PROFILES = listOf(
     VendorProfile(
         id = VendorId.ONEPLUS,
         manufacturers = listOf("oneplus"),
-        autostart = listOf(
-            VendorScreen(
-                "com.oneplus.security",
-                "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity",
-            ),
-        ),
+        // OxygenOS is ColorOS underneath since OS 12; com.oneplus.security is gone and
+        // never carried the ChainLaunch activity we used to name. Same backend as Oppo.
+        autostart = COLOROS_AUTOSTART,
         battery = emptyList(),
         autostartTitle = R.string.ka_vendor_autostart,
         autostartDesc = R.string.ka_vendor_autostart_desc,
-        autostartToggle = R.string.ka_toggle_autostart,
+        autostartToggle = R.string.ka_toggle_allow_autostart,
         batteryDesc = null,
     ),
     VendorProfile(
