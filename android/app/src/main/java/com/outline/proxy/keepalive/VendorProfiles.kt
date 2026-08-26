@@ -129,7 +129,12 @@ internal val VENDOR_PROFILES = listOf(
     VendorProfile(
         id = VendorId.HONOR,
         manufacturers = listOf("honor", "hihonor"),
+        // Verified live on MagicOS 10 (Android 16): StartupNormalAppListActivity is
+        // exported and unguarded and publishes this action, which opens "App launch"
+        // directly. StartupAppControlActivity needs a signature permission
+        // (external_app_settings.USE_COMPONENT) and canLaunch rightly skips it.
         autostart = listOf(
+            VendorScreen("com.hihonor.systemmanager", action = "hihonor.intent.action.HSM_STARTUPAPP_MANAGER"),
             VendorScreen(
                 "com.hihonor.systemmanager",
                 "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
