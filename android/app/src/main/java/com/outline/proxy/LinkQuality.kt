@@ -29,14 +29,6 @@ object LinkQuality {
     fun isSlow(latencyMs: Int?): Boolean = latencyMs != null && latencyMs >= SLOW_LATENCY_MS
 
     /**
-     * Label for a live link. An unmeasured link reads as plain "Connected":
-     * absence of a measurement is not evidence of a bad path, and guessing
-     * would make a freshly-started tunnel look broken.
-     */
-    fun connectedLabel(latencyMs: Int?): String =
-        if (isSlow(latencyMs)) "Connected · slow" else "Connected"
-
-    /**
      * The latency to judge on, given both transports' numbers.
      *
      * The worse of the two, because either one being slow is enough to make the

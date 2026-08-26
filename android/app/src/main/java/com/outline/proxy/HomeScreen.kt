@@ -57,6 +57,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -64,17 +65,35 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import java.util.Locale
 
-/** Compact "when refreshed" for the status card ("1h ago", "3d ago"). */
-private fun ageShort(updatedAt: Long): String {
-    if (updatedAt <= 0L) return "never"
+/** Which bucket a status-card "updated" timestamp falls into, and the number
+ *  (minutes/hours/days) to interpolate into that bucket's string, if any. */
+private enum class AgeBucket { NEVER, JUST_NOW, MINUTES, HOURS, DAYS }
+
+private data class Age(val bucket: AgeBucket, val amount: Long = 0)
+
+private fun ageOf(updatedAt: Long): Age {
+    if (updatedAt <= 0L) return Age(AgeBucket.NEVER)
     val minutes = ((System.currentTimeMillis() - updatedAt).coerceAtLeast(0)) / 60_000
     val hours = minutes / 60
     val days = hours / 24
     return when {
-        minutes < 1 -> "just now"
-        minutes < 60 -> "${minutes}m ago"
-        hours < 24 -> "${hours}h ago"
-        else -> "${days}d ago"
+        minutes < 1 -> Age(AgeBucket.JUST_NOW)
+        minutes < 60 -> Age(AgeBucket.MINUTES, minutes)
+        hours < 24 -> Age(AgeBucket.HOURS, hours)
+        else -> Age(AgeBucket.DAYS, days)
+    }
+}
+
+/** Compact "when refreshed" for the status card ("1h ago", "3d ago"). */
+@Composable
+private fun ageShort(updatedAt: Long): String {
+    val age = ageOf(updatedAt)
+    return when (age.bucket) {
+        AgeBucket.NEVER -> stringResource(R.string.age_never)
+        AgeBucket.JUST_NOW -> stringResource(R.string.age_just_now)
+        AgeBucket.MINUTES -> stringResource(R.string.age_minutes, age.amount)
+        AgeBucket.HOURS -> stringResource(R.string.age_hours, age.amount)
+        AgeBucket.DAYS -> stringResource(R.string.age_days, age.amount)
     }
 }
 
@@ -217,14 +236,18 @@ private fun StatusCard(
                         // flow.
                         val dots = connectingDots(active = connecting)
                         val statusText = when {
-                            !connected -> "Disconnected"
+                            !connected -> stringResource(R.string.status_disconnected)
                             // A live link is not the same as a usable one: on an
                             // edge-class network the tunnel is up while nothing
                             // loads, so the label says so rather than sitting on
                             // a green the user can see is wrong.
-                            hasLiveLink -> LinkQuality.connectedLabel(linkLatencyMs)
-                            connecting -> "Connecting$dots"
-                            else -> "No link"
+                            hasLiveLink -> if (LinkQuality.isSlow(linkLatencyMs)) {
+                                stringResource(R.string.status_connected_slow)
+                            } else {
+                                stringResource(R.string.status_connected)
+                            }
+                            connecting -> stringResource(R.string.status_connecting) + dots
+                            else -> stringResource(R.string.status_no_link)
                         }
                         val statusColor = when {
                             !connected -> MaterialTheme.colorScheme.outline
@@ -248,17 +271,34 @@ private fun StatusCard(
                         // is riding, how fast the platform thinks it is, and what
                         // it costs the tunnel. Absent until there is something to
                         // say — an empty line would only push the layout around.
-                        LinkInfo.summary(link)?.let { summary ->
+                        // The head word is resolved here rather than in LinkInfo:
+                        // "Wi-Fi"/"Ethernet"/RAN labels never translate, but
+                        // "Cellular"/"Network" do, and only this layer has a
+                        // Context to resolve them against string resources.
+                        val head = when (val h = LinkInfo.head(link)) {
+                            LinkInfo.Head.Wifi -> "Wi-Fi"
+                            LinkInfo.Head.Ethernet -> "Ethernet"
+                            is LinkInfo.Head.Ran -> h.label
+                            LinkInfo.Head.Cellular -> stringResource(R.string.net_cellular)
+                            LinkInfo.Head.Network -> stringResource(R.string.net_network)
+                            LinkInfo.Head.None -> null
+                        }
+                        val summary = head?.let {
+                            listOfNotNull(it, LinkInfo.latencyLabel(link?.latencyMs, link?.dialBudgetSecs))
+                                .joinToString(" · ")
+                        }
+                        summary?.let {
                             Spacer(Modifier.height(2.dp))
                             Text(
-                                summary,
+                                it,
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            profile?.name?.takeIf { it.isNotBlank() } ?: "No server",
+                            profile?.name?.takeIf { it.isNotBlank() }
+                                ?: stringResource(R.string.home_no_server),
                             fontSize = 22.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -266,23 +306,26 @@ private fun StatusCard(
                         Spacer(Modifier.height(4.dp))
                         when {
                             profile == null -> Text(
-                                "Add a server to begin",
+                                stringResource(R.string.home_add_a_server),
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             profile.isSubscription -> {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        "Subscription",
+                                        stringResource(R.string.home_subscription),
                                         fontSize = 12.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                     Spacer(Modifier.width(6.dp))
-                                    Badge("Active")
+                                    Badge(stringResource(R.string.home_badge_active))
                                 }
                                 Text(
-                                    "Updated ${ageShort(profile.updatedAt)} · " +
-                                        "Every ${SubscriptionWorker.REFRESH_PERIOD_HOURS}h",
+                                    stringResource(
+                                        R.string.home_sub_updated_every,
+                                        ageShort(profile.updatedAt),
+                                        SubscriptionWorker.REFRESH_PERIOD_HOURS,
+                                    ),
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -296,7 +339,7 @@ private fun StatusCard(
                     }
                     Icon(
                         Icons.Filled.ChevronRight,
-                        contentDescription = "Servers",
+                        contentDescription = stringResource(R.string.a11y_servers),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -339,7 +382,7 @@ private fun StatsStrip(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Top,
     ) {
-        StatColumn(icon = Icons.Filled.Schedule, label = "DURATION") {
+        StatColumn(icon = Icons.Filled.Schedule, label = stringResource(R.string.stat_duration)) {
             if (connectedSinceMs > 0L) {
                 DurationText(connectedSinceMs)
             } else {
@@ -348,11 +391,11 @@ private fun StatsStrip(
             StatCaption("hh:mm:ss")
         }
         StatDivider()
-        StatColumn(icon = Icons.Filled.GraphicEq, label = "TRAFFIC") {
+        StatColumn(icon = Icons.Filled.GraphicEq, label = stringResource(R.string.stat_traffic)) {
             TrafficReadout(connectedSinceMs)
         }
         StatDivider()
-        StatColumn(icon = Icons.Filled.MonitorHeart, label = "PROTOCOL") {
+        StatColumn(icon = Icons.Filled.MonitorHeart, label = stringResource(R.string.stat_protocol)) {
             CarrierLine("TCP", tcpFamily, tcpCarrier)
             CarrierLine("UDP", udpFamily, udpCarrier)
         }
@@ -436,7 +479,7 @@ private fun TrafficReadout(connectedSinceMs: Long) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
             Icons.Filled.ArrowUpward,
-            contentDescription = "Uploaded",
+            contentDescription = stringResource(R.string.a11y_uploaded),
             tint = BrandBlue,
             modifier = Modifier.size(12.dp),
         )
@@ -447,7 +490,7 @@ private fun TrafficReadout(connectedSinceMs: Long) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
             Icons.Filled.ArrowDownward,
-            contentDescription = "Downloaded",
+            contentDescription = stringResource(R.string.a11y_downloaded),
             tint = BrandBlue,
             modifier = Modifier.size(12.dp),
         )
@@ -584,7 +627,7 @@ private fun ActionRow(
         ) {
             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
-            Text("Add Server")
+            Text(stringResource(R.string.btn_add_server))
         }
         // Gradient primary action; a plain Material button cannot take a Brush,
         // so it is a clickable Box. Disabled until a server exists.
@@ -619,7 +662,11 @@ private fun ActionRow(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    if (connected) "Disconnect" else "Connect",
+                    if (connected) {
+                        stringResource(R.string.btn_disconnect)
+                    } else {
+                        stringResource(R.string.btn_connect)
+                    },
                     color = Color.White,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -641,15 +688,15 @@ private fun QuickLinks(
     ) {
         Row(modifier = Modifier.padding(vertical = 16.dp)) {
             QuickLink(
-                Icons.AutoMirrored.Filled.AltRoute, "Split Tunneling",
+                Icons.AutoMirrored.Filled.AltRoute, stringResource(R.string.home_link_split),
                 Modifier.weight(1f), onOpenSplitTunnel,
             )
             QuickLink(
-                Icons.Filled.Tune, "External Control",
+                Icons.Filled.Tune, stringResource(R.string.home_link_external),
                 Modifier.weight(1f), onOpenExternalControl,
             )
             QuickLink(
-                Icons.Filled.MonitorHeart, "Keeping Alive",
+                Icons.Filled.MonitorHeart, stringResource(R.string.home_link_keepalive),
                 Modifier.weight(1f), onOpenKeepAlive,
             )
         }

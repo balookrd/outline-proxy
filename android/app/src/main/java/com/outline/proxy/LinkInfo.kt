@@ -30,8 +30,9 @@ data class LinkReadout(
 )
 
 /**
- * Turns what the platform reports about the current link into the one line the
- * home screen shows under the status.
+ * Turns what the platform reports about the current link into the pieces the
+ * home screen joins into the one line it shows under the status: [head] for
+ * what the link is, [latencyLabel] for what it costs.
  *
  * Only what is actually known is shown: the radio technology, which needs
  * `READ_PHONE_STATE` and is simply omitted without it, and the round-trip the
@@ -40,7 +41,8 @@ data class LinkReadout(
  * explains what each grant buys.
  *
  * Kept free of Android calls (only integer constants are referenced, which the
- * compiler inlines) so it can be unit-tested.
+ * compiler inlines, plus the [Head] tokens the caller resolves against string
+ * resources) so it can be unit-tested.
  */
 object LinkInfo {
 
@@ -103,26 +105,44 @@ object LinkInfo {
     private const val TIMEOUT_SUSPICION_DENOMINATOR = 10
 
     /**
-     * The line itself: what the link is, and what it costs the tunnel.
+     * The first, non-numeric word of the status line: what the link is.
      *
-     * Two facts, both of them measured or named by the platform — no derived
-     * verdicts. The bandwidth estimate and the speed class it fed used to be
-     * here and were removed: the estimate is routinely invented by firmware
-     * (14 kbit/s on a working LTE cell), and a label computed from a lie is a
-     * lie with more confidence. The round-trip is the honest number, so it
-     * carries the line alone.
+     * [Wifi], [Ethernet] and [Ran] carry tokens that are never translated —
+     * "Wi-Fi", "Ethernet" and the radio generation ("2G"/"3G"/"LTE"/"5G") read
+     * the same in every locale. [Cellular] and [Network] are the fallbacks
+     * for when the platform names no more specific technology, and *are*
+     * translated — the caller resolves them against `R.string.net_cellular` /
+     * `R.string.net_network`. This type carries no Android dependency itself;
+     * only the caller (the UI layer) needs a `Context` to resolve those two.
      */
-    fun summary(link: LinkReadout?): String? {
-        if (link == null || link.transport == LinkTransport.NONE) return null
-        val head = when (link.transport) {
-            LinkTransport.WIFI -> "Wi-Fi"
-            LinkTransport.ETHERNET -> "Ethernet"
+    sealed interface Head {
+        data object Wifi : Head
+        data object Ethernet : Head
+        data class Ran(val label: String) : Head
+        data object Cellular : Head
+        data object Network : Head
+        data object None : Head
+    }
+
+    /**
+     * What the link is, as a [Head]: named by the platform where it can be,
+     * translated where it must be.
+     *
+     * Two facts used to be rendered as one baked-in English string here
+     * (`summary`); the head word and the round-trip ([latencyLabel]) are now
+     * resolved and joined separately by the caller, so the translatable
+     * words can go through string resources instead of being hardcoded in
+     * this Android-free object.
+     */
+    fun head(link: LinkReadout?): Head {
+        if (link == null || link.transport == LinkTransport.NONE) return Head.None
+        return when (link.transport) {
+            LinkTransport.WIFI -> Head.Wifi
+            LinkTransport.ETHERNET -> Head.Ethernet
             // The radio technology when it can be read, "Cellular" otherwise.
-            LinkTransport.CELLULAR -> link.ranLabel ?: "Cellular"
-            LinkTransport.OTHER -> "Network"
-            LinkTransport.NONE -> return null
+            LinkTransport.CELLULAR -> link.ranLabel?.let { Head.Ran(it) } ?: Head.Cellular
+            LinkTransport.OTHER -> Head.Network
+            LinkTransport.NONE -> Head.None
         }
-        val parts = listOfNotNull(head, latencyLabel(link.latencyMs, link.dialBudgetSecs))
-        return parts.joinToString(" · ")
     }
 }

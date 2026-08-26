@@ -293,7 +293,10 @@ class OutlineVpnService : VpnService() {
             KeepAliveAction.GIVE_UP -> {
                 state.shouldRun = false
                 WatchdogAlarm.cancel(this)
-                alert("Tunnel cannot start", "Open Outline Proxy and connect again.")
+                alert(
+                    getString(R.string.notif_alert_cannot_start_title),
+                    getString(R.string.notif_alert_cannot_start_text),
+                )
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -321,7 +324,7 @@ class OutlineVpnService : VpnService() {
         manager.createNotificationChannel(
             NotificationChannel(
                 NOTIFICATION_CHANNEL_ALERTS,
-                "VPN alerts",
+                getString(R.string.notif_channel_alerts),
                 NotificationManager.IMPORTANCE_DEFAULT,
             ),
         )
@@ -643,7 +646,10 @@ class OutlineVpnService : VpnService() {
     private fun disconnect() {
         teardownTunnel()
         if (KeepAliveState(this).persistentNotification) {
-            startForeground(NOTIFICATION_ID, buildNotification(running = false, status = "Disconnected"))
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(running = false, status = getString(R.string.status_disconnected)),
+            )
         } else {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -674,13 +680,13 @@ class OutlineVpnService : VpnService() {
 
     private fun buildNotification(
         running: Boolean = true,
-        status: String = "Connecting…",
+        status: String = getString(R.string.status_connecting) + "…",
         detail: String? = null,
     ): Notification {
         val manager = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
-            "VPN status",
+            getString(R.string.notif_channel_status),
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
             // No launcher badge for an always-present status banner: an ongoing
@@ -705,7 +711,7 @@ class OutlineVpnService : VpnService() {
         // exported=false).
         val (actionLabel, actionIcon, actionIntent) = when (NotificationPolicy.toggle(running)) {
             NotifToggle.DISCONNECT -> Triple(
-                "Disconnect",
+                getString(R.string.btn_disconnect),
                 android.R.drawable.ic_menu_close_clear_cancel,
                 PendingIntent.getService(
                     this,
@@ -715,7 +721,7 @@ class OutlineVpnService : VpnService() {
                 ),
             )
             NotifToggle.CONNECT -> Triple(
-                "Connect",
+                getString(R.string.btn_connect),
                 android.R.drawable.ic_media_play,
                 PendingIntent.getActivity(
                     this,
@@ -738,7 +744,7 @@ class OutlineVpnService : VpnService() {
         // empty or padding it with the app name — an empty content line just opens
         // a gap above the action button, and the app name is already in the header.
         val body = detail ?: profile?.let {
-            if (it.isSubscription) "Subscription" else it.transport.ifBlank { null }
+            if (it.isSubscription) getString(R.string.home_subscription) else it.transport.ifBlank { null }
         }
 
         return Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
@@ -811,7 +817,11 @@ class OutlineVpnService : VpnService() {
             // no traffic line — the session counters are meaningless with nothing
             // running (and the baseline may be zero, which would print the whole
             // device total as this session's).
-            return buildNotification(running = false, status = "Disconnected", detail = null)
+            return buildNotification(
+                running = false,
+                status = getString(R.string.status_disconnected),
+                detail = null,
+            )
         }
         val status0 = runCatching { tunnelStatus() }.getOrNull()
         val hasLink = status0?.hasLiveLink ?: false
@@ -827,9 +837,13 @@ class OutlineVpnService : VpnService() {
         val connecting = !hasLink &&
             System.currentTimeMillis() - lastLinkAtMs < NO_LINK_GRACE_MS
         val status = when {
-            hasLink -> LinkQuality.connectedLabel(latencyMs)
-            connecting -> "Connecting…"
-            else -> "No link"
+            hasLink -> if (LinkQuality.isSlow(latencyMs)) {
+                getString(R.string.status_connected_slow)
+            } else {
+                getString(R.string.status_connected)
+            }
+            connecting -> getString(R.string.status_connecting) + "…"
+            else -> getString(R.string.status_no_link)
         }
         val up = (TrafficStats.getTotalTxBytes() - trafficBaseTx).coerceAtLeast(0)
         val down = (TrafficStats.getTotalRxBytes() - trafficBaseRx).coerceAtLeast(0)

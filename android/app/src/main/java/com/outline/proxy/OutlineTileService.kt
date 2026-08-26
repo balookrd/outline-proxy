@@ -68,7 +68,7 @@ class OutlineTileService : TileService() {
             val name = ProfileStore(this).let { store ->
                 store.load().firstOrNull { it.id == store.selectedId }?.name
             }?.takeIf { it.isNotBlank() }
-            tile.subtitle = name ?: if (running) "Connected" else "Disconnected"
+            tile.subtitle = name ?: getString(if (running) R.string.status_connected else R.string.status_disconnected)
         }
         tile.updateTile()
     }

@@ -35,7 +35,7 @@ class QuickConnectActivity : ComponentActivity() {
             if (result.resultCode == Activity.RESULT_OK && config != null) {
                 OutlineVpnService.requestConnect(this, config)
             } else {
-                Toast.makeText(this, "VPN permission denied", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.ctl_vpn_denied), Toast.LENGTH_SHORT).show()
             }
             finish()
         }
@@ -53,7 +53,7 @@ class QuickConnectActivity : ComponentActivity() {
         val store = ProfileStore(this)
         val profile = resolveProfile(store.load(), null, store.selectedId)
         if (profile == null) {
-            Toast.makeText(this, "No server configured", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.ctl_no_server), Toast.LENGTH_SHORT).show()
             finish()
             return
         }
@@ -69,7 +69,7 @@ class QuickConnectActivity : ComponentActivity() {
             if (configToml.isBlank()) {
                 Toast.makeText(
                     this@QuickConnectActivity,
-                    "No config yet — refresh the subscription first.",
+                    getString(R.string.srv_no_config_yet),
                     Toast.LENGTH_LONG,
                 ).show()
                 finish()

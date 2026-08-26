@@ -38,7 +38,7 @@ class ControlActivity : ComponentActivity() {
             if (result.resultCode == Activity.RESULT_OK && config != null) {
                 OutlineVpnService.requestConnect(this, config)
             } else {
-                refuse("VPN permission denied")
+                refuse(getString(R.string.ctl_vpn_denied))
             }
             finish()
         }
@@ -96,8 +96,8 @@ class ControlActivity : ComponentActivity() {
         val profile = resolveProfile(store.load(), selector, store.selectedId)
         if (profile == null) {
             refuse(
-                if (selector == null) "No server configured"
-                else "Unknown server: $selector",
+                if (selector == null) getString(R.string.ctl_no_server)
+                else getString(R.string.ctl_unknown_server, selector),
             )
             finish()
             return
@@ -131,10 +131,10 @@ class ControlActivity : ComponentActivity() {
     }
 
     private fun message(reason: RejectReason): String = when (reason) {
-        RejectReason.NOT_A_CONTROL_URI -> "Not an outline:// command"
-        RejectReason.UNKNOWN_COMMAND -> "Unknown outline:// command"
-        RejectReason.DISABLED -> "External control is disabled in Outline Proxy"
-        RejectReason.BAD_TOKEN -> "External control: wrong token"
+        RejectReason.NOT_A_CONTROL_URI -> getString(R.string.ctl_not_command)
+        RejectReason.UNKNOWN_COMMAND -> getString(R.string.ctl_unknown_command)
+        RejectReason.DISABLED -> getString(R.string.ctl_disabled)
+        RejectReason.BAD_TOKEN -> getString(R.string.ctl_wrong_token)
     }
 
     private companion object {

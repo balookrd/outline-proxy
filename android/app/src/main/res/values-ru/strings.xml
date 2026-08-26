@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shared by SubScreen (UiKit.kt): back button on every sub-screen header. -->
+    <string name="a11y_back">Назад</string>
+
+    <string name="status_connecting">Подключение</string>
+    <string name="status_connected">Подключено</string>
+    <string name="status_connected_slow">Подключено · медленно</string>
+    <string name="status_no_link">Нет связи</string>
+    <string name="status_disconnected">Отключено</string>
+    <!-- MainActivity: toast shown when the tunnel connect state actually flips. -->
+    <string name="status_toast_connected">Туннель подключён</string>
+    <string name="status_toast_disconnected">Туннель отключён</string>
+    <!-- MainActivity.watchConnectResult(): toast when a connect attempt doesn't settle. -->
+    <string name="conn_failed">Не удалось подключиться</string>
+    <string name="conn_failed_reason">Не удалось подключиться: %1$s</string>
+    <string name="net_cellular">Сотовая</string>
+    <string name="net_network">Сеть</string>
+
+    <!-- Foreground-service notification: channel names and the one-off "cannot start" alert. -->
+    <string name="notif_channel_status">Статус VPN</string>
+    <string name="notif_channel_alerts">Оповещения VPN</string>
+    <string name="notif_alert_cannot_start_title">Не удаётся запустить туннель</string>
+    <string name="notif_alert_cannot_start_text">Откройте Outline Proxy и подключитесь снова.</string>
+
+    <string name="home_no_server">Нет сервера</string>
+    <string name="home_add_a_server">Добавьте сервер, чтобы начать</string>
+    <string name="home_subscription">Подписка</string>
+    <string name="home_badge_active">Активна</string>
+    <string name="home_sub_updated_every">Обновлено %1$s · каждые %2$d ч</string>
+    <string name="btn_add_server">Добавить сервер</string>
+    <string name="btn_connect">Подключить</string>
+    <string name="btn_disconnect">Отключить</string>
+    <string name="home_link_split">Раздельный туннель</string>
+    <string name="home_link_external">Внешнее управление</string>
+    <string name="home_link_keepalive">Поддержание связи</string>
+    <string name="stat_duration">Длительность</string>
+    <string name="stat_traffic">Трафик</string>
+    <string name="stat_protocol">Протокол</string>
+    <string name="a11y_servers">Серверы</string>
+    <string name="a11y_uploaded">Отправлено</string>
+    <string name="a11y_downloaded">Получено</string>
+    <string name="age_just_now">только что</string>
+    <string name="age_never">никогда</string>
+    <string name="age_minutes">%1$d мин назад</string>
+    <string name="age_hours">%1$d ч назад</string>
+    <string name="age_days">%1$d дн назад</string>
+
+    <string name="srv_title">Серверы</string>
+    <string name="srv_add">Добавить сервер</string>
+    <string name="a11y_refresh">Обновить</string>
+    <string name="a11y_edit">Изменить</string>
+    <string name="a11y_delete">Удалить</string>
+    <string name="srv_toast_config_updated">Конфигурация обновлена</string>
+    <string name="srv_refresh_failed">Не удалось обновить: %1$s</string>
+    <string name="srv_unnamed">(без названия)</string>
+    <string name="srv_sub_summary">подписка · %1$s · каждые %2$d ч</string>
+    <string name="srv_no_config_yet">Пока нет конфигурации — сначала обновите подписку.</string>
+    <string name="age_never_updated">не обновлялось</string>
+    <string name="age_updated_just_now">обновлено только что</string>
+    <string name="age_updated_minutes">обновлено %1$d мин назад</string>
+    <string name="age_updated_hours">обновлено %1$d ч назад</string>
+    <string name="age_updated_days">обновлено %1$d дн назад</string>
+
+    <string name="dlg_server_title">Сервер</string>
+    <string name="dlg_name">Название</string>
+    <string name="dlg_config_url">URL конфигурации (подписка)</string>
+    <string name="dlg_config_url_help">HTTPS-ссылка на готовую клиентскую конфигурацию; загружается и обновляется автоматически.</string>
+    <string name="dlg_transport_vless">VLESS</string>
+    <string name="dlg_transport_ss">Shadowsocks</string>
+    <string name="dlg_vless_link">Ссылка vless://</string>
+    <string name="dlg_ss_link">Ссылка ss://</string>
+    <string name="dlg_padding">Заполнение</string>
+    <string name="dlg_raw_toml">Ручной TOML (необязательно)</string>
+    <string name="dlg_fetching">Загрузка…</string>
+    <string name="btn_save">Сохранить</string>
+    <string name="btn_cancel">Отмена</string>
+    <string name="dlg_could_not_fetch">Не удалось загрузить: %1$s</string>
+
+    <string name="upd_available">Доступно обновление</string>
+    <string name="upd_published_for_channel">%1$s опубликовано для этого канала.</string>
+    <string name="upd_apk_note">APK скачается в папку «Загрузки»; откройте его для установки — приложение не устанавливает его само.</string>
+    <string name="upd_download">Скачать</string>
+    <string name="upd_later">Позже</string>
+    <string name="upd_checking">проверка…</string>
+    <string name="upd_up_to_date">актуально</string>
+    <string name="upd_check_failed">ошибка проверки: %1$s</string>
+    <string name="upd_downloading_pct">загрузка %1$d%%</string>
+    <string name="upd_downloaded_tap">загружено — нажмите для установки</string>
+    <string name="upd_download_failed">ошибка загрузки: %1$s</string>
+
+    <!-- Split Tunnel screen: mode selector, per-mode descriptions, app search. -->
+    <string name="split_mode_all">Все приложения</string>
+    <string name="split_mode_only">Только выбранные приложения</string>
+    <string name="split_mode_except">Все приложения, кроме выбранных</string>
+    <string name="split_desc_all">Трафик всех приложений идёт через туннель.</string>
+    <string name="split_desc_allow">Через туннель идут только отмеченные приложения; остальные — напрямую.</string>
+    <string name="split_desc_deny">Отмеченные приложения идут мимо туннеля; остальные — через него.</string>
+    <string name="split_loading_apps">Загрузка приложений…</string>
+    <string name="split_search">Поиск приложений</string>
+    <string name="a11y_clear_search">Очистить</string>
+
+    <!-- External Control screen: outline:// deep-link toggle, token, supported commands. -->
+    <string name="ext_allow_commands">Разрешить команды outline://</string>
+    <string name="ext_token">Токен (необязательно)</string>
+    <string name="ext_token_help">Если задан, команды без совпадающего ?token= игнорируются.</string>
+    <string name="ext_supported_commands">Поддерживаемые команды</string>
+    <string name="ext_commands_note">Любое приложение на этом устройстве может отправить эти команды — именно поэтому здесь есть переключатель и токен. Команды никогда не создают сервер; он должен уже быть в списке.</string>
+
+    <!-- ControlActivity / QuickConnectActivity: outline:// external-control and quick-connect Toast messages. -->
+    <string name="ctl_vpn_denied">Доступ к VPN отклонён</string>
+    <string name="ctl_no_server">Сервер не настроен</string>
+    <string name="ctl_unknown_server">Неизвестный сервер: %1$s</string>
+    <string name="ctl_not_command">Не команда outline://</string>
+    <string name="ctl_unknown_command">Неизвестная команда outline://</string>
+    <string name="ctl_disabled">Внешнее управление отключено в Outline Proxy</string>
+    <string name="ctl_wrong_token">Внешнее управление: неверный токен</string>
+
+    <!-- Keep-Alive screen: background-survival permissions checklist. -->
+    <string name="ka_persistent_notif">Постоянное уведомление</string>
+    <string name="ka_persistent_notif_desc">Держать в шторке уведомление с кнопкой подключения/отключения, даже когда VPN выключен.</string>
+    <string name="ka_qs_tile">Плитка быстрых настроек</string>
+    <string name="ka_qs_tile_desc">Переключать туннель прямо из панели быстрых настроек.</string>
+    <string name="ka_add_tile">Добавить плитку</string>
+    <string name="ka_add_tile_hint">Откройте быстрые настройки, нажмите «изменить» (карандаш) и добавьте плитку Outline.</string>
+    <string name="ka_intro">Android и производитель телефона могут останавливать фоновые приложения. Эти переключатели помогают поддерживать туннель.</string>
+    <string name="ka_always_on">Постоянная VPN</string>
+    <string name="ka_always_on_desc">Самый надёжный вариант: система сама поддерживает туннель и перезапускает его. Включите «Постоянная VPN» для Outline Proxy в списке VPN.</string>
+    <string name="ka_open_vpn_settings">Открыть настройки VPN</string>
+    <string name="ka_ignore_batt">Игнорировать оптимизацию батареи</string>
+    <string name="ka_ignore_batt_desc">Без этого Android может останавливать туннель в фоне и не давать сторожу перезапустить его.</string>
+    <string name="ka_exact_alarms">Точные будильники</string>
+    <string name="ka_exact_alarms_desc">Сторож проверяет туннель во время Doze. Без этого разрешения система откладывает проверки.</string>
+    <string name="ka_notifications">Уведомления</string>
+    <string name="ka_notifications_desc">Туннель работает как foreground-сервис. Скрытое уведомление повышает риск того, что некоторые прошивки его завершат.</string>
+    <string name="ka_network_type">Тип сети</string>
+    <string name="ka_network_type_desc">Необязательно. Позволяет главному экрану точно называть поколение мобильной сети (2G/3G/LTE/5G), а не угадывать класс по оценке скорости. На решения туннеля это не влияет — тайм-ауты подключения в любом случае рассчитываются по оценке скорости.</string>
+    <string name="ka_vendor_autostart">Автозапуск %1$s</string>
+    <string name="ka_vendor_autostart_desc">%1$s ведёт собственный список приложений, которым разрешено работать в фоне. Прочитать его через API нельзя — откройте этот экран и разрешите там работу Outline Proxy.</string>
+    <string name="ka_open_vendor_settings">Открыть настройки %1$s</string>
+    <string name="ka_status_allowed">Разрешено</string>
+    <string name="ka_status_needs_action">Требуется действие</string>
+    <string name="ka_status_check_manually">Проверьте вручную</string>
+    <string name="btn_allow">Разрешить</string>
+</resources>

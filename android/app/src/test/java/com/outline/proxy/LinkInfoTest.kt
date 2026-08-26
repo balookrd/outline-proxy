@@ -53,13 +53,28 @@ class LinkInfoTest {
     }
 
     @Test
-    fun `the line names the technology and what it costs`() {
-        assertEquals("LTE · 90 ms", LinkInfo.summary(cellular(ran = "LTE", latencyMs = 90)))
+    fun `head names wifi, ethernet and other transports directly`() {
+        assertEquals(LinkInfo.Head.Wifi, LinkInfo.head(LinkReadout(LinkTransport.WIFI, 90_000, null, 20)))
         assertEquals(
-            "Wi-Fi · 20 ms",
-            LinkInfo.summary(LinkReadout(LinkTransport.WIFI, 90_000, null, 20)),
+            LinkInfo.Head.Ethernet,
+            LinkInfo.head(LinkReadout(LinkTransport.ETHERNET, null, null, null)),
         )
-        assertEquals("Ethernet", LinkInfo.summary(LinkReadout(LinkTransport.ETHERNET, null, null, null)))
+        assertEquals(LinkInfo.Head.Network, LinkInfo.head(LinkReadout(LinkTransport.OTHER, null, null, null)))
+    }
+
+    @Test
+    fun `head reads the radio technology on cellular when it is known`() {
+        assertEquals(LinkInfo.Head.Ran("LTE"), LinkInfo.head(cellular(ran = "LTE", latencyMs = 90)))
+    }
+
+    /** Nothing measured yet, and no radio technology known either: still says something useful. */
+    @Test
+    fun `head falls back to a bare Cellular token when the radio technology is unknown`() {
+        assertEquals(LinkInfo.Head.Cellular, LinkInfo.head(cellular()))
+        assertEquals(
+            LinkInfo.Head.Ran("LTE"),
+            LinkInfo.head(cellular(ran = "LTE", latencyMs = 10_000, budget = 10)),
+        )
     }
 
     /**
@@ -69,21 +84,16 @@ class LinkInfoTest {
      * trust than it buys.
      */
     @Test
-    fun `the bandwidth estimate never reaches the line`() {
-        val line = LinkInfo.summary(cellular(kbps = 14, ran = "LTE", latencyMs = 180))
-        assertEquals("LTE · 180 ms", line)
-    }
-
-    /** Nothing measured yet: the technology alone still says something useful. */
-    @Test
-    fun `a link with no measurement still names itself`() {
-        assertEquals("Cellular", LinkInfo.summary(cellular()))
-        assertEquals("LTE", LinkInfo.summary(cellular(ran = "LTE", latencyMs = 10_000, budget = 10)))
+    fun `the bandwidth estimate never reaches the head`() {
+        assertEquals(
+            LinkInfo.Head.Ran("LTE"),
+            LinkInfo.head(cellular(kbps = 14, ran = "LTE", latencyMs = 180)),
+        )
     }
 
     @Test
-    fun `no link means no line at all`() {
-        assertNull(LinkInfo.summary(null))
-        assertNull(LinkInfo.summary(LinkReadout(LinkTransport.NONE, null, null, null)))
+    fun `no link means no head at all`() {
+        assertEquals(LinkInfo.Head.None, LinkInfo.head(null))
+        assertEquals(LinkInfo.Head.None, LinkInfo.head(LinkReadout(LinkTransport.NONE, null, null, null)))
     }
 }

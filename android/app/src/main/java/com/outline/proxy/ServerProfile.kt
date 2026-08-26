@@ -117,5 +117,46 @@ data class ServerProfile(
                 (0 until arr.length()).map { fromJson(arr.getJSONObject(it)) }
             }.getOrDefault(emptyList())
         }
+
+        /** The `#remark` label of a share link, percent-decoded; null when absent/blank. */
+        fun remarkOf(link: String): String? {
+            val hash = link.lastIndexOf('#')
+            if (hash < 0 || hash == link.length - 1) return null
+            val raw = link.substring(hash + 1)
+            val decoded = runCatching {
+                // A URI fragment's '+' is literal; escape it so URLDecoder's form-decoding
+                // doesn't turn it into a space.
+                java.net.URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8")
+            }.getOrDefault(raw).trim()
+            return decoded.ifBlank { null }
+        }
+
+        /** The host of a share link / URL — pure string parse, no android.net.Uri. */
+        fun hostOf(link: String): String? {
+            var s = link.trim()
+            if (s.isEmpty()) return null
+            val scheme = s.indexOf("://")
+            if (scheme >= 0) s = s.substring(scheme + 3)
+            // Strip fragment/query first — they never precede the authority.
+            s = s.takeWhile { it != '?' && it != '#' }
+            // Drop userinfo (ss:// base64 sits before '@'); take the LAST '@'.
+            val at = s.lastIndexOf('@')
+            if (at >= 0) s = s.substring(at + 1)
+            // Only host[:port][/path] remains — strip the path now, after userinfo is gone,
+            // so a '/' inside a standard-base64 userinfo can't truncate the string early.
+            s = s.takeWhile { it != '/' }
+            // IPv6 literal in brackets.
+            if (s.startsWith("[")) {
+                val end = s.indexOf(']')
+                if (end > 0) return s.substring(1, end)
+            }
+            // Strip :port.
+            val colon = s.indexOf(':')
+            if (colon >= 0) s = s.substring(0, colon)
+            return s.ifBlank { null }
+        }
+
+        /** Name for a server with a blank Name field: the link's remark, else its host. */
+        fun deriveName(link: String): String? = remarkOf(link) ?: hostOf(link)
     }
 }
