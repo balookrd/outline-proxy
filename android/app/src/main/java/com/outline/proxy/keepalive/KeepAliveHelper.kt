@@ -95,7 +95,7 @@ object KeepAliveHelper {
      * come and go between firmware versions, so each is probed before being offered.
      */
     private fun resolvable(context: Context, screens: List<VendorScreen>): List<Intent> =
-        screens.map(::intentFor).filter { canLaunch(context, it) }
+        screens.map { intentFor(context, it) }.filter { canLaunch(context, it) }
 
     /**
      * Whether this app may actually start the screen, not merely whether it exists.
@@ -112,13 +112,20 @@ object KeepAliveHelper {
         return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun intentFor(screen: VendorScreen): Intent {
+    private fun intentFor(context: Context, screen: VendorScreen): Intent {
         val intent = screen.action
             ?.let { Intent(it).setPackage(screen.packageName) }
             ?: Intent().setComponent(ComponentName(screen.packageName, screen.className!!))
+        screen.data?.let { intent.data = Uri.parse(fillTokens(context, it)) }
         screen.intExtras.forEach { (key, value) -> intent.putExtra(key, value) }
+        screen.stringExtras.forEach { (key, value) -> intent.putExtra(key, fillTokens(context, value)) }
         return intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
+
+    /** Fills `{self}` / `{label}` in a data URI or string extra at launch time. */
+    private fun fillTokens(context: Context, raw: String): String =
+        raw.replace("{self}", context.packageName)
+            .replace("{label}", context.applicationInfo.loadLabel(context.packageManager).toString())
 
     /** The system app-details page; present on every Android build. */
     private fun appDetailsIntent(context: Context): Intent =

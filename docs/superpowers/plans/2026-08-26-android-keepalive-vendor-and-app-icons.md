@@ -1093,6 +1093,31 @@ git commit -m "docs(android): changelog for vendor keep-alive cards and app icon
      экран (2172×2352). Активный внешний — по физическому id из `dumpsys display`
      (`state ON`): `screencap -d <physId>`.
 
+9. **Аудит Xiaomi / Huawei / ColorOS по манифестам — применён.**
+   - **Xiaomi (устройство клиента, HOS1) — критический баг:** батарейная кнопка
+     запускала `HiddenAppsConfigActivity` без экстра → активити ловит NPE и
+     закрывается, но `startActivity` успешен → fallback НЕ срабатывал (молчаливый
+     no-op). Модель `VendorScreen` расширена `stringExtras` и `data` с токенами
+     `{self}`/`{label}`; теперь передаём `package_name`/`package_label` и попадаем
+     на политику НАШЕГО приложения (MIUI 12.5–HOS2); на HOS3 (powerkeeper вырезан)
+     `canLaunch` отсекает → app-details. Проверено вживую: на устройстве без MIUI
+     кнопка уходит на app-details, не no-op. Лейблы: «Контроль активности» →
+     «Нет ограничений» (опции «Без ограничений» в MIUI НЕТ); автозапуск на HyperOS —
+     «Автозапуск в фоновом режиме». Добавлен action `miui.intent.action.OP_AUTO_START`.
+   - **Huawei:** `ProtectActivity` мёртв (нет с EMUI 5) — удалён; добавлен action
+     `huawei.intent.action.HSM_STARTUPAPP_MANAGER`; `StartupAppControlActivity`
+     всегда signature-guarded — убран. RU-лейбл «Управлять автоматически» неверен →
+     «Автоматическое управление».
+   - **ColorOS (Oppo/realme/OnePlus):** пакеты переехали `com.coloros.*`→`com.oplus.*`
+     на A12, список — в `com.oplus.battery` на A13; современные экраны
+     signature-guarded. `com.oppo.safe` и OnePlus `ChainLaunchAppListActivity` —
+     фикция/мертвы, удалены. Единый список `COLOROS_AUTOSTART`: oplus/coloros
+     кандидаты (canLaunch отсекает закрытые) + незакрытый Phone Manager
+     `oppo.intent.action.SAFE_CENTER_MAIN` + app-details. Лейбл «Auto launch» /
+     «Автозапуск» (было неверное «Allow auto-launch» / «Разрешить автозапуск»).
+     OnePlus переведён на тот же backend.
+   - Мёртвые компоненты закреплены в тесте `knownDeadComponentsAreGone`.
+
 ## Self-Review (выполнено при написании плана)
 
 - **Покрытие спеки:** F1 (перечитывание при возврате) — Task 5; F2 (вендорская батарея) — Task 1/2/3/6; F3 (автозапуск с конкретикой + перенос Samsung) — Task 1/2/3/6, Samsung получает пустой `autostart` и собственный `batteryDesc`; F4 (иконки) — Task 7-8; F5 (debug-оверрайд) — Task 4, применяется в Task 9. Юнит-тесты из раздела «Тестирование» — Task 2; проверка на эмуляторе — Task 9; гейт и CHANGELOG — Task 10. Отступление от спеки (показ карточки по производителю, а не по резолвингу) вынесено в отдельный раздел «Уточнение к спеке».

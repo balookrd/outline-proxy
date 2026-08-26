@@ -110,6 +110,9 @@ class VendorProfilesTest {
             "com.samsung.android.sm.ui.battery.BatteryActivity", // gone since 2019
             "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity", // never shipped
             "com.meizu.safe.permission.PermissionMainActivity", // wrong screen, dead on Flyme 12
+            "com.huawei.systemmanager.optimize.process.ProtectActivity", // gone since EMUI 5
+            "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity", // never in any manifest
+            "com.oppo.safe.permission.startup.StartupAppListActivity", // com.oppo.safe absent since ColorOS
         )
         val used = VENDOR_PROFILES.flatMap { it.autostart + it.battery }.mapNotNull { it.className }
         for (d in dead) assertFalse("$d must not be referenced", d in used)

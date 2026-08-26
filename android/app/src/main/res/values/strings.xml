@@ -162,16 +162,17 @@
     <string name="ka_vendor_autostart_desc">%1$s keeps its own list of apps allowed to start in the background, separate from Android\'s. There is no API to read it — open \"%2$s\" and allow Outline Proxy there.</string>
     <string name="ka_vendor_autostart_desc_huawei">%1$s manages background apps itself by default. On the settings screen, turn \"Manage automatically\" off for Outline Proxy, then turn on \"Auto-launch\", \"Secondary launch\" and \"Run in background\".</string>
     <string name="ka_toggle_autostart">Autostart</string>
-    <string name="ka_toggle_allow_autostart">Allow auto-launch</string>
+    <string name="ka_toggle_allow_autostart">Auto launch</string>
     <string name="ka_toggle_autostart_manager">Auto-start Manager</string>
     <string name="ka_toggle_run_in_background">Run in background</string>
     <string name="ka_toggle_autostart_management">App Launch</string>
+    <string name="ka_toggle_background_autostart">Background autostart</string>
     <!-- Meizu ships no Russian for this label, so the RU value is the English the user actually sees. -->
     <string name="ka_toggle_autostarts">Auto-starts</string>
     <!-- Keep-Alive: vendor battery-policy card, separate from Android's Doze list. -->
     <string name="ka_vendor_battery">%1$s battery policy</string>
     <string name="ka_vendor_battery_desc">%1$s applies its own per-app battery policy on top of Android\'s. Open it and give Outline Proxy the unrestricted option.</string>
-    <string name="ka_vendor_battery_desc_xiaomi">Not the same as the Android setting above. Open \"Battery saver\" for Outline Proxy and choose \"No restrictions\". %1$s may also reset the Android setting on its own, so check that one again after a reboot.</string>
+    <string name="ka_vendor_battery_desc_xiaomi">Not the same as the Android setting above. In the window that opens, pick \"No restrictions\" for Outline Proxy — or find it under \"App battery saver\" on the app page. %1$s may reset the Android setting on its own, so check that again after a reboot.</string>
     <!-- The button deep-links straight into the allowlist (verified on One UI 8), so
          the copy starts from there; the manual path is the fallback for builds where
          the deeplink is missing. "Never sleeping apps" was its name before One UI 6.1. -->
