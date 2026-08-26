@@ -28,6 +28,42 @@ async fn tcp_probe_reports_progress_on_a_live_socket() {
     assert!(sample.alive, "an established socket is alive");
 }
 
+/// The sampler carries the kernel's own RTT for the path, which is the only
+/// latency here that describes the link rather than the cost of getting onto
+/// it: a dial's elapsed time also contains DNS, the handshakes, and whatever a
+/// failed `h3` attempt burned before the fallback succeeded.
+///
+/// Exercised after a real round trip rather than straight after `connect`: the
+/// estimate exists once something has been acked, and asserting on it any
+/// earlier would be asserting on kernel timing.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn tcp_probe_reports_the_kernel_rtt_after_a_round_trip() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (mut server, _) = listener.accept().await.unwrap();
+
+    client.write_all(b"ping").await.unwrap();
+    let mut buf = [0u8; 4];
+    server.read_exact(&mut buf).await.unwrap();
+    server.write_all(b"pong").await.unwrap();
+    client.read_exact(&mut buf).await.unwrap();
+
+    let probe = CarrierLossProbe::from_tcp_stream(&client).expect("probe from a live socket");
+    let rtt = probe
+        .sample()
+        .expect("TCP_INFO on a live socket")
+        .rtt
+        .expect("the kernel has an RTT estimate once a segment has been acked");
+    assert!(
+        rtt < std::time::Duration::from_secs(1),
+        "a loopback round trip is microseconds, got {rtt:?}",
+    );
+}
+
 /// The probe outlives the carrier: after the peer goes away the socket leaves
 /// ESTABLISHED, and the sampler must say so instead of reporting stale numbers
 /// (this is what evicts the entry from the registry).
@@ -165,7 +201,12 @@ fn quic_probe_over(carrier: &Arc<StubCarrier>, identity: u64) -> CarrierLossProb
 #[cfg(feature = "h3")]
 #[test]
 fn quic_probe_reports_live_counters_unchanged() {
-    let sample = CarrierLossSample { sent: 42, lost: 3, alive: true };
+    let sample = CarrierLossSample {
+        sent: 42,
+        lost: 3,
+        alive: true,
+        rtt: None,
+    };
     let carrier = Arc::new(StubCarrier(sample));
     let probe = quic_probe_over(&carrier, 7);
 
@@ -182,7 +223,12 @@ fn quic_probe_reports_live_counters_unchanged() {
 #[cfg(feature = "h3")]
 #[test]
 fn quic_probe_reports_dead_once_the_last_strong_reference_drops() {
-    let carrier = Arc::new(StubCarrier(CarrierLossSample { sent: 42, lost: 3, alive: true }));
+    let carrier = Arc::new(StubCarrier(CarrierLossSample {
+        sent: 42,
+        lost: 3,
+        alive: true,
+        rtt: None,
+    }));
     let probe = quic_probe_over(&carrier, 7);
 
     drop(carrier);
@@ -199,7 +245,8 @@ fn quic_probe_reports_dead_once_the_last_strong_reference_drops() {
 #[cfg(feature = "h3")]
 #[test]
 fn quic_probe_identity_survives_the_carrier_dying() {
-    let carrier = Arc::new(StubCarrier(CarrierLossSample { sent: 0, lost: 0, alive: true }));
+    let carrier =
+        Arc::new(StubCarrier(CarrierLossSample { sent: 0, lost: 0, alive: true, rtt: None }));
     let probe = quic_probe_over(&carrier, 99);
 
     drop(carrier);

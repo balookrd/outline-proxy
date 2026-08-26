@@ -91,6 +91,56 @@ async fn a_vanished_carrier_contributes_no_window() {
     );
 }
 
+/// The path RTT is read off every *live* carrier, whether or not it moved a
+/// byte this tick — which is the whole reason it can answer for a client that
+/// spends most of its time on a pooled carrier nobody is dialing.
+///
+/// A loss window cannot: `Δsent == 0` produces none by construction, and that
+/// is correct for loss (no traffic, no ratio) and useless for latency.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_idle_carrier_still_reports_its_path_rtt() {
+    let mut registry = CarrierLossRegistry::default();
+    let (probe, _client, _server) = crate::loss::tests_support::live_probe_with_traffic().await;
+    registry.register(crate::types::TransportKind::Tcp, 0, probe);
+
+    // First tick takes the traffic that has already happened; the second sees
+    // an idle carrier — no window, and still a reading.
+    registry.collect_windows();
+    let collection = registry.collect_windows();
+
+    assert!(
+        collection.windows.is_empty(),
+        "an idle carrier moves nothing to measure loss on"
+    );
+    let reading = collection
+        .rtts
+        .iter()
+        .find(|r| r.transport == crate::types::TransportKind::Tcp && r.wire == 0)
+        .expect("an idle but live carrier still measures the path it sits on");
+    assert!(
+        reading.rtt < std::time::Duration::from_secs(1),
+        "a loopback path is microseconds, got {:?}",
+        reading.rtt,
+    );
+}
+
+/// A carrier that has gone away contributes no RTT: its last reading describes
+/// a path that no longer exists, and the wire is reported emptied so the
+/// caller clears the slot rather than leaving a number nothing can refresh.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_vanished_carrier_contributes_no_rtt() {
+    let mut registry = CarrierLossRegistry::default();
+    let probe = crate::loss::tests_support::dead_probe().await;
+    registry.register(crate::types::TransportKind::Tcp, 0, probe);
+
+    let collection = registry.collect_windows();
+
+    assert!(collection.rtts.is_empty(), "a dead carrier measures no path");
+    assert_eq!(collection.emptied_wires, vec![(crate::types::TransportKind::Tcp, 0)]);
+}
+
 /// A carrier that stays alive but produces no traffic is not what the loss
 /// signal exists to measure, and quinn only closes a retained QUIC
 /// connection when every handle to it is dropped — so a registry entry with

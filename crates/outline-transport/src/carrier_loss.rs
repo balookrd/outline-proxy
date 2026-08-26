@@ -13,6 +13,8 @@
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 #[cfg(feature = "h3")]
 use std::sync::Weak;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 /// One reading of a carrier's cumulative loss counters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +29,20 @@ pub struct CarrierLossSample {
     /// Whether the carrier is still established. A `false` here is what evicts
     /// the probe from the registry that holds it.
     pub alive: bool,
+    /// Smoothed round-trip of the path under this carrier, as the transport
+    /// underneath already measures it: TCP's `tcpi_rtt`, QUIC's `PathStats`.
+    ///
+    /// This is the one latency here that describes the *path* rather than the
+    /// cost of getting onto it. A dial's elapsed time cannot: it includes DNS,
+    /// the TLS and HTTP handshakes, and — when a carrier descends `h3 -> h2` —
+    /// the whole budget the failed attempt burned before the fallback
+    /// succeeded, which is how a 100 ms link reports 7 s over an `h2` carrier
+    /// that did nothing wrong. It also keeps being measured while a carrier
+    /// merely sits in the pool, where no dial happens at all.
+    ///
+    /// `None` where the transport cannot answer right now (a kernel that
+    /// reported no RTT yet on a freshly established socket).
+    pub rtt: Option<std::time::Duration>,
 }
 
 /// A carrier that can report its own loss counters. Implemented by the
@@ -200,7 +216,12 @@ impl CarrierLossProbe {
                 // from "could not read it this tick" — see the doc comment
                 // above for why that is reported as a dead sample rather
                 // than as `None`.
-                None => Some(CarrierLossSample { sent: 0, lost: 0, alive: false }),
+                None => Some(CarrierLossSample {
+                    sent: 0,
+                    lost: 0,
+                    alive: false,
+                    rtt: None,
+                }),
             },
             #[cfg(target_os = "linux")]
             Self::Tcp { fd, .. } => sample_tcp_info(fd),
@@ -324,6 +345,13 @@ fn sample_tcp_info(fd: &OwnedFd) -> Option<CarrierLossSample> {
         sent: u64::from(info.tcpi_segs_out),
         lost: u64::from(info.tcpi_total_retrans),
         alive: info.tcpi_state == TCP_STATE_ESTABLISHED,
+        // `tcpi_rtt` is the kernel's own smoothed RTT, in microseconds, and it
+        // sits well before `tcpi_segs_out` in the struct — the length check
+        // above already guarantees it was written. A zero means the kernel has
+        // no estimate yet (nothing has been acked on a freshly established
+        // socket), which is "no reading this tick", not "a zero-millisecond
+        // path".
+        rtt: (info.tcpi_rtt > 0).then(|| Duration::from_micros(u64::from(info.tcpi_rtt))),
     })
 }
 

@@ -120,9 +120,25 @@ pub(crate) struct PerTransportStatus {
     /// derived from live in the manager's registry, not here: they own
     /// duplicated descriptors, and `UplinkStatus` is cloned on every snapshot.
     pub(crate) carrier_loss: crate::loss::LossEwma,
+    /// Path RTT for the primary wire, read off the carrier's own transport
+    /// (TCP's `tcpi_rtt`, QUIC's `PathStats`) by the same loss-sampling pass
+    /// that fills [`Self::carrier_loss`].
+    ///
+    /// Deliberately not the same quantity as [`Self::rtt_ewma`], which is what
+    /// a *dial* costs: DNS, the TLS and HTTP handshakes, and — when a carrier
+    /// descends `h3 -> h2` — the entire budget the failed attempt burned. That
+    /// number is the right input to ranking (a wire expensive to get onto is
+    /// expensive) and the wrong one to show a user, who reads it as the speed
+    /// of their link. This one is measured continuously on the live carrier,
+    /// including while it merely sits in the warm pool, so it neither carries
+    /// another attempt's timeout nor freezes when nothing is being dialed.
+    pub(crate) path_rtt: RttEwma,
     /// Per-fallback-wire loss slots, indexed by `wire_index - 1` exactly like
     /// [`Self::fallback_rtt_ewma`]. Lazily extended on first write.
     pub(crate) fallback_carrier_loss: Vec<crate::loss::LossEwma>,
+    /// Per-fallback-wire path-RTT slots, indexed by `wire_index - 1` exactly
+    /// like [`Self::fallback_carrier_loss`]. Lazily extended on first write.
+    pub(crate) fallback_path_rtt: Vec<RttEwma>,
     /// Start of this transport's current continuous loss-elevated episode:
     /// the active-wire loss ratio ([`Self::active_wire_loss`]) has been
     /// above `LoadBalancingConfig::loss_failover_ratio` on every sampling
@@ -320,45 +336,40 @@ impl UplinkStatus {
     /// The latency to *report to a user* for the wire currently carrying
     /// `transport`, or `None` when nothing recent enough has measured it.
     ///
-    /// Two things separate this from what ranking reads. It follows
-    /// [`PerTransportStatus::active_wire`], so the number describes the same
-    /// wire as the carrier label shown beside it — reading the primary slot
-    /// unconditionally paired one wire's cost with another wire's carrier on
-    /// every uplink that had descended. And it expires: ranking is entitled to
+    /// This is the path's round-trip ([`PerTransportStatus::path_rtt`]), not
+    /// what a dial costs ([`PerTransportStatus::rtt_ewma`]). The distinction is
+    /// the whole point: a dial's elapsed time contains DNS, the TLS and HTTP
+    /// handshakes and, when a carrier descends `h3 -> h2`, the entire budget
+    /// the failed attempt burned — which is how a healthy link reported "7.1 s"
+    /// on a phone over an `xhttp/h2` carrier, the H3 stream budget (7/10 of the
+    /// dial budget) plus a fast H2 handshake. Ranking is entitled to that
+    /// number, because a wire that is expensive to get onto really is
+    /// expensive. A person reading a status line is not: they read it as the
+    /// speed of their connection, and act on it — the Android client sizes its
+    /// dial budget from this very field, so feeding it a burnt timeout widened
+    /// the budget, which widened the next timeout, and so on.
+    ///
+    /// Two further rules, both inherited from what the number is for. It
+    /// follows [`PerTransportStatus::active_wire`], so it describes the same
+    /// wire as the carrier label shown beside it. And it expires: ranking may
     /// weight a stale measurement by its age ([`RttEwma::confidence`]), but a
     /// status line has no such gradation — it either has evidence or it has
-    /// none, and repeating a number nothing refreshes keeps a tunnel labelled
-    /// "slow" long after the dial that earned the label. Nothing routinely
-    /// refreshes it either: a warm-standby acquisition records no latency, so
-    /// a client parked on a pooled carrier takes no fresh samples at all.
+    /// none.
     ///
-    /// `latency` — the probe loop's own sample — stays the fallback it was
-    /// made into for deployments with no `[probe]` section, under both rules:
-    /// the probe writes it for the primary wire alone, so it cannot answer for
-    /// a descended uplink, and its age is the probe cycle's own stamp
-    /// ([`Self::last_checked`]).
+    /// `None` where the carrier family cannot report a path RTT at all
+    /// (`xhttp_h1`, a VLESS-UDP mux with no socket of its own, any non-Linux
+    /// build without `TCP_INFO`). Showing nothing is the honest answer there;
+    /// falling back to the dial cost would reintroduce exactly the number this
+    /// method exists to keep off the screen.
     pub(crate) fn active_wire_latency(
         &self,
         transport: TransportKind,
         halflife: Duration,
         now: Instant,
     ) -> Option<Duration> {
-        let plane = self.of(transport);
-        if let Some(measured) = plane.active_wire_rtt_slot().value_if_unexpired(halflife, now) {
-            return Some(measured);
-        }
-        if plane.active_wire != 0 {
-            return None;
-        }
-        let sampled = plane.latency?;
-        // `halflife == 0` is the documented off switch for decay; mirror what
-        // `RttEwma::confidence` does with it rather than inventing a second
-        // rule for the probe field.
-        if halflife.is_zero() {
-            return Some(sampled);
-        }
-        let expiry = halflife.saturating_mul(crate::rtt::EXPIRY_HALFLIVES);
-        (now.saturating_duration_since(self.last_checked?) < expiry).then_some(sampled)
+        self.of(transport)
+            .active_wire_path_rtt_slot()
+            .value_if_unexpired(halflife, now)
     }
 
     /// `Copy` projection of the fields the selection path reads *after* it has
@@ -836,6 +847,58 @@ impl PerTransportStatus {
             self.fallback_carrier_loss.push(crate::loss::LossEwma::default());
         }
         self.fallback_carrier_loss[slot_idx].record_window(sent, lost, min_packets, alpha)
+    }
+
+    /// Path RTT for the wire new sessions currently land on. Same active-wire
+    /// rule as [`Self::active_wire_rtt_ewma`], so the number a user is shown
+    /// describes the same wire as the carrier label beside it.
+    pub(crate) fn active_wire_path_rtt_slot(&self) -> RttEwma {
+        if self.active_wire == 0 {
+            return self.path_rtt;
+        }
+        let slot_idx = (self.active_wire - 1) as usize;
+        self.fallback_path_rtt.get(slot_idx).copied().unwrap_or_default()
+    }
+
+    /// Fold a path-RTT reading for `wire` into its slot, lazily extending the
+    /// per-fallback-wire vector exactly like
+    /// [`Self::record_wire_loss_window`] does for loss.
+    ///
+    /// Smoothed rather than stored raw even though both transports already
+    /// hand over a smoothed estimate: one EWMA more costs nothing, and it
+    /// buys the slot an age ([`RttEwma`]) — which is what lets the status tell
+    /// "measured, and recently" from "measured once, by a carrier long gone".
+    pub(crate) fn record_wire_path_rtt(
+        &mut self,
+        wire: u8,
+        sample: Option<Duration>,
+        alpha: f64,
+        now: Instant,
+    ) {
+        if wire == 0 {
+            self.path_rtt.record(sample, alpha, now);
+            return;
+        }
+        let slot_idx = (wire - 1) as usize;
+        while self.fallback_path_rtt.len() <= slot_idx {
+            self.fallback_path_rtt.push(RttEwma::default());
+        }
+        self.fallback_path_rtt[slot_idx].record(sample, alpha, now);
+    }
+
+    /// Clear `wire`'s path RTT back to "not measured", for the same reason
+    /// [`Self::reset_wire_loss`] clears its loss: a wire with no carrier left
+    /// has no path to report on, and the last reading describes one that is
+    /// gone.
+    pub(crate) fn reset_wire_path_rtt(&mut self, wire: u8) {
+        if wire == 0 {
+            self.path_rtt = RttEwma::default();
+            return;
+        }
+        let slot_idx = (wire - 1) as usize;
+        if let Some(slot) = self.fallback_path_rtt.get_mut(slot_idx) {
+            *slot = RttEwma::default();
+        }
     }
 
     /// Clear `wire`'s loss verdict back to "not measured". Called by the

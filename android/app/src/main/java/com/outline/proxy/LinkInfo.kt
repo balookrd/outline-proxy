@@ -17,16 +17,15 @@ enum class LinkTransport { WIFI, CELLULAR, ETHERNET, OTHER, NONE }
  * trust than it buys — but it still sizes the dial budget before anything has
  * been measured, so it is carried here.
  *
- * [dialBudgetSecs] is that budget, needed to judge [latencyMs]: a round-trip
- * that reaches the budget is a dial that ran out of time, not a link that is
- * merely slow.
+ * [latencyMs] is the round-trip of the path itself, as the carrier's transport
+ * measures it — not what a dial cost, which also contains the handshakes and
+ * whatever a failed carrier attempt burned before the fallback succeeded.
  */
 data class LinkReadout(
     val transport: LinkTransport,
     val downstreamKbps: Int?,
     val ranLabel: String?,
     val latencyMs: Int?,
-    val dialBudgetSecs: Int? = null,
 )
 
 /**
@@ -82,27 +81,19 @@ object LinkInfo {
     /**
      * `180 ms` / `1.8 s`, or `null` when there is no measurement worth showing.
      *
-     * A round-trip that reaches [dialBudgetSecs] is discarded rather than
-     * printed: that is a dial which ran out of time, and the number it yields is
-     * the budget, not the link. It reads as a precise measurement while being
-     * none — the first probe after a connect produced exactly "10.0 s" on a
-     * 10-second budget — and a wrong number costs more than a missing one.
-     * Values at 80% of the budget and above are treated the same way, since a
-     * dial that nearly expired is equally uninformative.
+     * No timeout-shaped value can arrive here any more, so nothing is filtered
+     * out: the core reports the path's own round-trip, measured continuously on
+     * the live carrier, rather than the elapsed time of a dial. Those were the
+     * numbers that needed guarding — a dial that ran out of time yielded the
+     * budget dressed up as a latency ("10.0 s" on a 10-second budget), and a
+     * dial that descended `h3 -> h2` yielded the burnt attempt plus the
+     * successful one ("7.1 s" over a healthy `h2` carrier).
      */
-    fun latencyLabel(latencyMs: Int?, dialBudgetSecs: Int? = null): String? {
+    fun latencyLabel(latencyMs: Int?): String? {
         val ms = latencyMs ?: return null
         if (ms <= 0) return null
-        val budgetMs = (dialBudgetSecs ?: DEFAULT_DIAL_BUDGET_SECS) * 1000
-        if (ms >= budgetMs * TIMEOUT_SUSPICION_NUMERATOR / TIMEOUT_SUSPICION_DENOMINATOR) return null
         return if (ms < 1000) "$ms ms" else String.format(java.util.Locale.ROOT, "%.1f s", ms / 1000.0)
     }
-
-    /** Mirrors the engine default; used when the app set no budget of its own. */
-    private const val DEFAULT_DIAL_BUDGET_SECS = 10
-
-    private const val TIMEOUT_SUSPICION_NUMERATOR = 8
-    private const val TIMEOUT_SUSPICION_DENOMINATOR = 10
 
     /**
      * The first, non-numeric word of the status line: what the link is.

@@ -9,9 +9,12 @@ package com.outline.proxy
  * a single handshake eats seconds and apps time out before they ever reach the
  * server. A flat green there contradicts everything the user sees.
  *
- * So the label is qualified by the last measured uplink latency, which on this
- * path is the dial round-trip the manager records. Kept free of Android APIs so
- * it can be unit-tested, like [KeepAlivePolicy].
+ * So the label is qualified by the last measured uplink latency: the round-trip
+ * of the path itself, as the carrier's own transport measures it (the kernel's
+ * `tcpi_rtt`, quinn's `PathStats`). Deliberately not what a dial cost — that
+ * number also contains the handshakes and, on a carrier descent, the budget the
+ * failed attempt burned, so it branded healthy links "slow". Kept free of
+ * Android APIs so it can be unit-tested, like [KeepAlivePolicy].
  */
 object LinkQuality {
 

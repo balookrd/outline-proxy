@@ -12,8 +12,7 @@ class LinkInfoTest {
         kbps: Int? = null,
         ran: String? = null,
         latencyMs: Int? = null,
-        budget: Int? = null,
-    ) = LinkReadout(LinkTransport.CELLULAR, kbps, ran, latencyMs, budget)
+    ) = LinkReadout(LinkTransport.CELLULAR, kbps, ran, latencyMs)
 
     @Test
     fun `radio technologies are grouped by generation`() {
@@ -33,23 +32,16 @@ class LinkInfoTest {
     }
 
     /**
-     * The first probe after a connect produced exactly "10.0 s" on a 10-second
-     * budget — a dial that ran out of time, printed as if it were a
-     * measurement. Anything at or near the ceiling is dropped instead.
+     * A genuinely bad path still prints. The label used to drop anything near
+     * the dial budget, because the number it was given *was* a dial — one that
+     * ran out of time, or one that paid for a failed `h3` attempt before its
+     * `h2` fallback succeeded. The core now reports the path's own round-trip,
+     * so a large value means a large round-trip and is the user's to see.
      */
     @Test
-    fun `a round-trip that hit the dial budget is not a measurement`() {
-        assertNull(LinkInfo.latencyLabel(10_000, dialBudgetSecs = 10))
-        assertNull(LinkInfo.latencyLabel(9_000, dialBudgetSecs = 10))
-        // Comfortably inside the budget: a real, if unhappy, number.
-        assertEquals("4.0 s", LinkInfo.latencyLabel(4_000, dialBudgetSecs = 10))
-    }
-
-    /** A widened budget widens what counts as a plausible measurement. */
-    @Test
-    fun `the ceiling follows the budget in force`() {
-        assertEquals("20.0 s", LinkInfo.latencyLabel(20_000, dialBudgetSecs = 60))
-        assertNull(LinkInfo.latencyLabel(55_000, dialBudgetSecs = 60))
+    fun `a slow path prints rather than being filtered out`() {
+        assertEquals("4.0 s", LinkInfo.latencyLabel(4_000))
+        assertEquals("10.0 s", LinkInfo.latencyLabel(10_000))
     }
 
     @Test
@@ -73,7 +65,7 @@ class LinkInfoTest {
         assertEquals(LinkInfo.Head.Cellular, LinkInfo.head(cellular()))
         assertEquals(
             LinkInfo.Head.Ran("LTE"),
-            LinkInfo.head(cellular(ran = "LTE", latencyMs = 10_000, budget = 10)),
+            LinkInfo.head(cellular(ran = "LTE", latencyMs = 10_000)),
         )
     }
 
