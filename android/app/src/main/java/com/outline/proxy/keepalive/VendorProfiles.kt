@@ -26,8 +26,26 @@ internal enum class VendorId {
  * A settings screen owned by the vendor. Held as plain strings rather than a
  * [android.content.ComponentName] so this whole table stays free of Android
  * classes and can be unit-tested on the JVM.
+ *
+ * Prefer [action] over [className] where the vendor publishes one: Samsung
+ * renamed the Activity behind its lists at least twice, while the action stayed
+ * put, and a hardcoded class name simply stops resolving after such a rename.
  */
-internal data class VendorScreen(val packageName: String, val className: String)
+internal data class VendorScreen(
+    val packageName: String,
+    /** Explicit component; null when [action] addresses the screen instead. */
+    val className: String? = null,
+    /** Vendor action, resolved within [packageName]. */
+    val action: String? = null,
+    /** Integer extras the screen needs — Samsung picks which list to show with one. */
+    val intExtras: Map<String, Int> = emptyMap(),
+) {
+    init {
+        require((className == null) != (action == null)) {
+            "VendorScreen needs exactly one of className/action"
+        }
+    }
+}
 
 /**
  * What one vendor skin needs. [autostart] and [battery] are candidate screens,
@@ -195,11 +213,19 @@ internal val VENDOR_PROFILES = listOf(
         id = VendorId.SAMSUNG,
         manufacturers = listOf("samsung"),
         // One UI has no autostart list; these screens are its battery policy,
-        // which is where "Never sleeping apps" lives.
+        // which is where the never-auto-sleeping allowlist lives.
         autostart = emptyList(),
         battery = listOf(
-            VendorScreen("com.samsung.android.lool", "com.samsung.android.sm.ui.battery.BatteryActivity"),
-            VendorScreen("com.samsung.android.lool", "com.samsung.android.sm.battery.ui.BatteryActivity"),
+            // Samsung documents this one, and it lands on the allowlist itself
+            // rather than the Battery screen two taps above it.
+            // activity_type: 0 = sleeping, 1 = deep sleeping, 2 = never auto sleeping.
+            VendorScreen(
+                "com.samsung.android.lool",
+                action = "com.samsung.android.sm.ACTION_OPEN_CHECKABLE_LISTACTIVITY",
+                intExtras = mapOf("activity_type" to 2),
+            ),
+            // Fallback: the Battery screen, by action rather than class name.
+            VendorScreen("com.samsung.android.lool", action = "com.samsung.android.sm.ACTION_BATTERY"),
         ),
         autostartTitle = R.string.ka_vendor_autostart,
         autostartDesc = R.string.ka_vendor_autostart_desc,
