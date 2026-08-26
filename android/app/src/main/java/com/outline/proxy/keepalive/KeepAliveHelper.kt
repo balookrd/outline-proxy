@@ -5,6 +5,7 @@ import android.app.AlarmManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
@@ -94,7 +95,22 @@ object KeepAliveHelper {
      * come and go between firmware versions, so each is probed before being offered.
      */
     private fun resolvable(context: Context, screens: List<VendorScreen>): List<Intent> =
-        screens.map(::intentFor).filter { context.packageManager.resolveActivity(it, 0) != null }
+        screens.map(::intentFor).filter { canLaunch(context, it) }
+
+    /**
+     * Whether this app may actually start the screen, not merely whether it exists.
+     *
+     * `resolveActivity` answers the weaker question: Samsung's own background-limits
+     * Activity resolves perfectly well and then throws, because it is guarded by a
+     * system permission no third-party app holds. Checking `exported` and the guard
+     * up front keeps such entries from being offered at all.
+     */
+    private fun canLaunch(context: Context, intent: Intent): Boolean {
+        val activity = context.packageManager.resolveActivity(intent, 0)?.activityInfo ?: return false
+        if (!activity.exported) return false
+        val permission = activity.permission ?: return true
+        return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+    }
 
     private fun intentFor(screen: VendorScreen): Intent {
         val intent = screen.action
