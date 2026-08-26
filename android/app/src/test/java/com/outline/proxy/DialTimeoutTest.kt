@@ -73,6 +73,31 @@ class DialTimeoutTest {
         )
     }
 
+    /**
+     * The dial budget bar sits above the UX "slow" bar on purpose: a link that
+     * reads slow to a person still dials well inside the core's 10 s default, so
+     * it keeps the default rather than a 30 s window that only slows failover.
+     * Guards the decoupling — before it, both read one shared constant.
+     */
+    @Test
+    fun `a link that is only UX-slow keeps the core default budget`() {
+        assertNull(
+            DialTimeout.secondsFor(
+                isCellular = true,
+                downstreamKbps = 40_000,
+                latencyMs = LinkQuality.SLOW_LATENCY_MS,
+            ),
+        )
+        assertEquals(
+            DialTimeout.SLOW_TIMEOUT_SECS,
+            DialTimeout.secondsFor(
+                isCellular = true,
+                downstreamKbps = 40_000,
+                latencyMs = DialTimeout.SLOW_LATENCY_MS,
+            ),
+        )
+    }
+
     /** Before the first dial completes there is nothing to measure — hence the estimate. */
     @Test
     fun `without a measurement the estimate still covers the cold start`() {

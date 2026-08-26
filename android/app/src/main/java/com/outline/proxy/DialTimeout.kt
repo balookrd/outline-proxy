@@ -45,8 +45,23 @@ object DialTimeout {
      */
     const val EDGE_LATENCY_MS = 3_000
 
-    /** …and the milder threshold, matching what the status calls "slow". */
-    const val SLOW_LATENCY_MS = LinkQuality.SLOW_LATENCY_MS
+    /**
+     * …and the milder threshold, widening the budget one step to
+     * [SLOW_TIMEOUT_SECS].
+     *
+     * Deliberately higher than [LinkQuality.SLOW_LATENCY_MS], which is what the
+     * *status* calls slow. The two ask different questions of the same path RTT.
+     * The status asks whether the link feels slow to a person, and 0.7 s of
+     * round-trip does. This asks whether a *dial* — several round-trips plus the
+     * certificate chain — is at risk of missing the core's 10 s default, and at
+     * 0.7 s it is not (a dial lands in a few seconds with room to spare); only
+     * from about a second does the budget start to matter. Sizing the budget off
+     * the lower, UX bar would hand a working-but-sluggish link a 30 s failover
+     * window it does not need, which is the opposite of what a flaky mobile link
+     * wants. The two were the same constant while both read a dial's elapsed
+     * time; on the path RTT they part.
+     */
+    const val SLOW_LATENCY_MS = 1_000
 
     /** Budget for an edge-class link, in seconds. */
     const val EDGE_TIMEOUT_SECS = 60
