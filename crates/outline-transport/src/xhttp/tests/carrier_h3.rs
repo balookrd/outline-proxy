@@ -68,7 +68,7 @@ mod quic_ownership {
 
     impl CarrierLossCounters for StubCarrier {
         fn loss_counters(&self) -> Option<CarrierLossSample> {
-            Some(CarrierLossSample { sent: 1, lost: 0, alive: true })
+            Some(CarrierLossSample { sent: 1, lost: 0, alive: true, rtt: None })
         }
     }
 

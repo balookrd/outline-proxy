@@ -32,12 +32,16 @@ object DialTimeout {
     const val SLOW_KBPS = 2_000
 
     /**
-     * Measured dial round-trip at or above which the link is treated as
+     * Measured path round-trip at or above which the link is treated as
      * edge-class regardless of what the platform claims about its bandwidth.
      *
-     * A dial is TCP + TLS + the HTTP upgrade, so healthy LTE lands in the low
-     * hundreds of milliseconds and 3G under a second. Seconds mean the
-     * handshake itself is the bottleneck.
+     * Healthy LTE lands in the tens of milliseconds and a loaded 3G path in the
+     * low hundreds, so seconds of round-trip mean the radio itself is the
+     * bottleneck. The threshold reads on the path's own RTT rather than on what
+     * a dial cost, which is what closes a loop this knob used to sit in: a dial
+     * that burned a failed `h3` attempt reported seconds, which widened the
+     * budget, which widened the next attempt's timeout, which reported more
+     * seconds.
      */
     const val EDGE_LATENCY_MS = 3_000
 
@@ -53,19 +57,19 @@ object DialTimeout {
     /**
      * Seconds to request for this link, or `null` to leave the core's default.
      *
-     * [latencyMs] — the round-trip the core measured on its own dials — decides
-     * whenever it exists, and the platform's bandwidth estimate only fills the
-     * gap before the first dial has completed. That order is not a preference,
-     * it is a correction: the estimate is a claim, and some firmware makes it up
-     * entirely. One HONOR device reported 14 kbit/s on a full-signal LTE cell
+     * [latencyMs] — the round-trip the core measures on the live carrier —
+     * decides whenever it exists, and the platform's bandwidth estimate only
+     * fills the gap before anything has been measured. That order is not a
+     * preference, it is a correction: the estimate is a claim, and some
+     * firmware makes it up entirely. One HONOR device reported 14 kbit/s on a full-signal LTE cell
      * that was carrying traffic perfectly well, on both operators — sizing the
      * budget from that would have left a healthy link with a six-fold slower
      * failover for no reason.
      *
      * The estimate is still worth keeping for the cold start: on a genuine 2G
-     * cell the first dial has to survive before there is anything to measure,
-     * and the default 10 s is exactly what it cannot survive. There a wrong
-     * guess costs far less than no guess.
+     * cell the first dial has to survive before a carrier exists to measure a
+     * path on, and the default 10 s is exactly what it cannot survive. There a
+     * wrong guess costs far less than no guess.
      *
      * Only cellular links are widened on the estimate. Wi-Fi and Ethernet report
      * bandwidth too, but a slow Wi-Fi is usually a slow *backhaul*, where the

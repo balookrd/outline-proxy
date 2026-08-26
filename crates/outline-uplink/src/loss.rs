@@ -130,6 +130,21 @@ pub(crate) struct LossWindow {
     pub(crate) lost: u64,
 }
 
+/// One wire's path RTT during a single sampling window: the best reading any
+/// live carrier on that wire offered this tick.
+///
+/// Separate from [`LossWindow`] because the two have different preconditions.
+/// A loss window needs traffic — `Δsent == 0` produces no window at all — while
+/// an RTT is a property of the path that stays readable on a carrier sitting
+/// idle in the warm pool, which is exactly the state a phone spends most of its
+/// time in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WireRtt {
+    pub(crate) transport: TransportKind,
+    pub(crate) wire: u8,
+    pub(crate) rtt: std::time::Duration,
+}
+
 struct ProbeEntry {
     transport: TransportKind,
     wire: u8,
@@ -161,6 +176,10 @@ pub(crate) struct LossCollection {
     /// [`LossEwma::reset`] — so its verdict reads as "not measured" instead
     /// of the last ratio a carrier that no longer exists left behind.
     pub(crate) emptied_wires: Vec<(TransportKind, u8)>,
+    /// Path RTT per (transport, wire) from the carriers alive this tick.
+    /// Unlike [`Self::windows`] this is populated whether or not the carrier
+    /// moved any traffic — see [`WireRtt`].
+    pub(crate) rtts: Vec<WireRtt>,
 }
 
 /// Live probes for one uplink, keyed by (transport, wire).
@@ -268,10 +287,34 @@ impl CarrierLossRegistry {
             self.entries.iter().map(|e| (e.transport, e.wire)).collect();
 
         let mut windows: Vec<LossWindow> = Vec::new();
+        let mut rtts: Vec<WireRtt> = Vec::new();
         self.entries.retain_mut(|entry| {
             let Some(sample) = entry.probe.sample() else {
                 return false;
             };
+            // Read the path RTT before the traffic branch below, and off every
+            // *live* carrier rather than only the ones that moved bytes: a
+            // carrier parked in the warm pool still measures the path it sits
+            // on, and on a client that is what most carriers are doing most of
+            // the time. A dead carrier's reading is skipped — its last RTT
+            // describes a path that no longer exists.
+            if let (true, Some(rtt)) = (sample.alive, sample.rtt) {
+                match rtts
+                    .iter_mut()
+                    .find(|r| r.transport == entry.transport && r.wire == entry.wire)
+                {
+                    // Several carriers on one wire ride the same path, so the
+                    // spread between them is queueing on individual sockets
+                    // rather than a property of the link. The lowest reading is
+                    // the one least contaminated by it.
+                    Some(existing) => existing.rtt = existing.rtt.min(rtt),
+                    None => rtts.push(WireRtt {
+                        transport: entry.transport,
+                        wire: entry.wire,
+                        rtt,
+                    }),
+                }
+            }
             if let Some((prev_sent, prev_lost)) = entry.last {
                 // Counters are cumulative and monotonic within one connection;
                 // `saturating_sub` is belt-and-braces against `tcpi_segs_out`
@@ -316,7 +359,7 @@ impl CarrierLossRegistry {
             .into_iter()
             .filter(|wire| !self.entries.iter().any(|e| (e.transport, e.wire) == *wire))
             .collect();
-        LossCollection { windows, emptied_wires }
+        LossCollection { windows, emptied_wires, rtts }
     }
 }
 

@@ -935,27 +935,26 @@ async fn wire_transport_names_the_family_of_each_wire() {
 ///
 /// `active_latency` used to read the primary wire's slot unconditionally, so an
 /// uplink that had descended onto a fallback paired one wire's carrier label
-/// with another wire's cost — seconds spent on a wire nobody was riding any
-/// more. The Android status showed that as "Connected · slow · 7.1 s" over an
-/// `xhttp/h2` carrier that was doing nothing of the sort: the seconds belonged
-/// to the primary wire nobody was riding any more.
+/// with another wire's cost.
 #[tokio::test]
 async fn active_latency_follows_the_wire_that_carries_traffic() {
     let manager = manager();
     manager.set_active_uplink_by_name("up-a", None, false).await.unwrap();
-    // Primary measures 10 ms; the wire traffic actually rides measures 7.1 s.
-    manager.test_set_tcp_health(0, true, 10).await;
+    // Primary's path measures 10 ms; the wire traffic actually rides, 200 ms.
     manager.inner.with_status_mut(0, |s| {
+        s.tcp.healthy = Some(true);
+        s.tcp.path_rtt =
+            crate::rtt::RttEwma::measured(Duration::from_millis(10), tokio::time::Instant::now());
         s.tcp.active_wire = 1;
-        s.tcp.fallback_rtt_ewma = vec![crate::rtt::RttEwma::measured(
-            Duration::from_millis(7_100),
+        s.tcp.fallback_path_rtt = vec![crate::rtt::RttEwma::measured(
+            Duration::from_millis(200),
             tokio::time::Instant::now(),
         )];
     });
     assert_eq!(
         manager.active_latency(TransportKind::Tcp).await,
-        Some(Duration::from_millis(7_100)),
-        "traffic rides the fallback wire, so its 7.1 s is what the status must report",
+        Some(Duration::from_millis(200)),
+        "traffic rides the fallback wire, so its path RTT is what the status must report",
     );
 
     // Back on primary, the fallback's number must not leak into the status.
@@ -963,7 +962,7 @@ async fn active_latency_follows_the_wire_that_carries_traffic() {
     assert_eq!(
         manager.active_latency(TransportKind::Tcp).await,
         Some(Duration::from_millis(10)),
-        "on the primary wire the status must report primary's 10 ms",
+        "on the primary wire the status must report primary's path RTT",
     );
 }
 
@@ -971,19 +970,20 @@ async fn active_latency_follows_the_wire_that_carries_traffic() {
 ///
 /// The status read `RttEwma::value()`, which is deliberately age-blind — the
 /// snapshot publishes what was observed, and decay applies to *ranking*. That
-/// is the wrong contract for a user-facing verdict: a phone parked on a pooled
-/// carrier takes no fresh samples at all (a warm-standby acquisition records
-/// none), so one expensive cold dial kept the tunnel labelled "slow"
-/// indefinitely. Past the expiry the status must say "no evidence", not repeat
-/// a number from another era.
+/// is the wrong contract for a user-facing verdict: past the expiry the status
+/// must say "no evidence" rather than repeat a number from another era.
 #[tokio::test(start_paused = true)]
 async fn active_latency_drops_a_measurement_nothing_has_refreshed() {
     let manager = manager();
     manager.set_active_uplink_by_name("up-a", None, false).await.unwrap();
-    manager.test_set_tcp_health(0, true, 7_100).await;
+    manager.inner.with_status_mut(0, |s| {
+        s.tcp.healthy = Some(true);
+        s.tcp.path_rtt =
+            crate::rtt::RttEwma::measured(Duration::from_millis(180), tokio::time::Instant::now());
+    });
     assert_eq!(
         manager.active_latency(TransportKind::Tcp).await,
-        Some(Duration::from_millis(7_100)),
+        Some(Duration::from_millis(180)),
         "a fresh sample is still evidence",
     );
 
@@ -996,42 +996,43 @@ async fn active_latency_drops_a_measurement_nothing_has_refreshed() {
     );
 }
 
-/// The probe sample stays the fallback it was made into — but only where it
-/// describes the live wire, and only while it is fresh.
+/// What a *dial* cost must never reach the status, however plausible a
+/// latency it looks like.
 ///
-/// `latency` is written by the probe loop for the primary wire alone, which is
-/// why it may not answer for an uplink that has descended, and why its age is
-/// read off the probe cycle's own stamp.
-#[tokio::test(start_paused = true)]
-async fn active_latency_falls_back_to_a_fresh_primary_probe_sample() {
+/// A dial's elapsed time contains DNS, the handshakes, and — when a carrier
+/// descends `h3 -> h2` — the whole budget the failed attempt burned: 7 s of H3
+/// stream budget plus a fast H2 handshake is where the phone's "7.1 s" over an
+/// `xhttp/h2` carrier came from. Ranking is entitled to that number (a wire
+/// expensive to get onto *is* expensive); a person reading a status line is
+/// not, and the Android client sizes its dial budget from this very field, so
+/// a burnt timeout here widens the next timeout.
+#[tokio::test]
+async fn active_latency_ignores_what_a_dial_cost() {
     let manager = manager();
     manager.set_active_uplink_by_name("up-a", None, false).await.unwrap();
-    // Probe-only status: a sample and its cycle stamp, no EWMA behind it.
+    // Exactly the shape of the field report: a 7.1 s dial EWMA and a 7.1 s
+    // probe sample, on a path that measures 40 ms.
+    manager.test_set_tcp_health(0, true, 7_100).await;
     manager.inner.with_status_mut(0, |s| {
-        s.tcp.healthy = Some(true);
-        s.tcp.latency = Some(Duration::from_millis(120));
         s.last_checked = Some(tokio::time::Instant::now());
+        s.tcp.path_rtt =
+            crate::rtt::RttEwma::measured(Duration::from_millis(40), tokio::time::Instant::now());
     });
     assert_eq!(
         manager.active_latency(TransportKind::Tcp).await,
-        Some(Duration::from_millis(120)),
-        "with no EWMA yet, a fresh probe sample is the only evidence there is",
+        Some(Duration::from_millis(40)),
+        "the path measures 40 ms; the 7.1 s belongs to the dial, not to the link",
     );
 
-    // The same sample must not answer for a wire it never measured.
-    manager.inner.with_status_mut(0, |s| s.tcp.active_wire = 1);
+    // With no path reading at all the honest answer is silence — falling back
+    // to the dial cost is what put the burnt timeout on screen in the first
+    // place.
+    manager
+        .inner
+        .with_status_mut(0, |s| s.tcp.path_rtt = crate::rtt::RttEwma::default());
     assert_eq!(
         manager.active_latency(TransportKind::Tcp).await,
         None,
-        "the probe sample describes primary, so a descended uplink has no number",
-    );
-
-    // Nor once the probe cycle behind it has gone as stale as an expired EWMA.
-    manager.inner.with_status_mut(0, |s| s.tcp.active_wire = 0);
-    tokio::time::advance(Duration::from_secs(300 * 4 + 1)).await;
-    assert_eq!(
-        manager.active_latency(TransportKind::Tcp).await,
-        None,
-        "a probe sample from another era is not evidence either",
+        "an unmeasured path reports nothing rather than borrowing the dial's number",
     );
 }

@@ -10,6 +10,12 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 *Russian version: [CHANGELOG.ru.md](CHANGELOG.ru.md)*
 
+## [Unreleased]
+
+### Changed
+
+- **The status latency is the path's round-trip, not what a dial cost.** `active_latency` — the number an embedder shows beside "connected", and the one the Android client sizes its dial budget from — read the RTT EWMA the dial paths feed. That EWMA is the time a dial took: DNS, the TLS and HTTP handshakes, and, on a carrier descent, the entire budget the failed `h3` attempt burned before `h2` succeeded (7 s of H3 stream budget plus a fast H2 handshake — the field-reported "7.1 s" over a healthy `xhttp/h2` carrier). It is the right input to *ranking*, where a wire expensive to get onto is expensive, and the wrong thing to show a person, who reads it as their link speed and — through the dial-budget feedback the client runs — acts on it. Carriers now also report their transport's own path RTT (the kernel's `tcpi_rtt`, QUIC's `PathStats`), which the loss-sampling pass records per wire every cycle — including for a carrier merely parked in the warm pool, where no dial happens at all. The status reads that instead, off the wire actually carrying traffic and expiring once nothing refreshes it; a carrier family that cannot report one (`xhttp_h1`, VLESS-UDP) surfaces no number rather than falling back to the dial cost.
+
 ## [1.9.0] - 2026-08-24
 
 ### Added

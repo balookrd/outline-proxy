@@ -185,6 +185,9 @@ impl crate::CarrierLossCounters for PooledSession {
             sent: path.sent_packets,
             lost: path.lost_packets,
             alive: self.carrier.connection.close_reason().is_none(),
+            // See `SharedH3Connection::loss_counters`: zero means quinn has no
+            // estimate yet, not a zero-length path.
+            rtt: (!path.rtt.is_zero()).then_some(path.rtt),
         })
     }
 }

@@ -284,7 +284,7 @@ private fun StatusCard(
                             LinkInfo.Head.None -> null
                         }
                         val summary = head?.let {
-                            listOfNotNull(it, LinkInfo.latencyLabel(link?.latencyMs, link?.dialBudgetSecs))
+                            listOfNotNull(it, LinkInfo.latencyLabel(link?.latencyMs))
                                 .joinToString(" · ")
                         }
                         summary?.let {

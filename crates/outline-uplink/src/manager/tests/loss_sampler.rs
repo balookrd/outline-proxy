@@ -2,11 +2,11 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use crate::loss::{LossCollection, LossWindow};
+use crate::loss::{LossCollection, LossWindow, WireRtt};
 use crate::manager::status::{PerTransportStatus, UplinkStatus};
 use crate::types::TransportKind;
 
-use super::apply_loss_collection;
+use super::{LossApplyTuning, apply_loss_collection};
 
 /// A window recorded against the wire that is currently active must be the one
 /// `active_wire_loss` returns — the same active-wire rule the RTT already uses.
@@ -177,6 +177,19 @@ fn window(wire: u8, sent: u64, lost: u64) -> LossCollection {
             lost,
         }],
         emptied_wires: Vec::new(),
+        rtts: Vec::new(),
+    }
+}
+
+/// The loss half of the tuning, with the RTT constant left at a value these
+/// tests never exercise — they carry no RTT readings.
+fn tuning(min_packets: u64, loss_alpha: f64, loss_failover_ratio: f64) -> LossApplyTuning {
+    LossApplyTuning {
+        min_packets,
+        loss_alpha,
+        rtt_alpha: 1.0,
+        loss_failover_ratio,
+        max_staleness: MAX_STALENESS,
     }
 }
 
@@ -190,7 +203,7 @@ fn apply_loss_collection_only_stamps_freshness_for_a_qualifying_active_wire_wind
     let now = Instant::now();
 
     // Wire 1 is lossy, but it is not the active wire (0).
-    apply_loss_collection(&mut status, &window(1, 1_000, 900), 1, 1.0, 0.5, MAX_STALENESS, now);
+    apply_loss_collection(&mut status, &window(1, 1_000, 900), tuning(1, 1.0, 0.5), now);
     assert_eq!(
         status.tcp.loss_last_qualifying_at, None,
         "a non-active wire's window must not stamp freshness for the active wire's episode"
@@ -198,7 +211,7 @@ fn apply_loss_collection_only_stamps_freshness_for_a_qualifying_active_wire_wind
     assert_eq!(status.tcp.loss_elevated_since, None);
 
     // Wire 0 (active) but below min_packets.
-    apply_loss_collection(&mut status, &window(0, 10, 9), 200, 1.0, 0.5, MAX_STALENESS, now);
+    apply_loss_collection(&mut status, &window(0, 10, 9), tuning(200, 1.0, 0.5), now);
     assert_eq!(
         status.tcp.loss_last_qualifying_at, None,
         "a sub-threshold window on the active wire must not qualify as fresh"
@@ -221,13 +234,13 @@ fn a_frozen_ratio_stops_counting_as_evidence_once_it_goes_stale() {
     let t0 = Instant::now();
 
     // t0: a qualifying 90% loss window elevates the episode.
-    apply_loss_collection(&mut status, &window(0, 1_000, 900), 200, 1.0, 0.5, MAX_STALENESS, t0);
+    apply_loss_collection(&mut status, &window(0, 1_000, 900), tuning(200, 1.0, 0.5), t0);
     assert_eq!(status.tcp.loss_elevated_since, Some(t0));
 
     // t0+20s: only light, sub-threshold traffic — well within max_staleness
     // (30s), so the episode must still be trusted.
     let t1 = t0 + Duration::from_secs(20);
-    apply_loss_collection(&mut status, &window(0, 5, 4), 200, 1.0, 0.5, MAX_STALENESS, t1);
+    apply_loss_collection(&mut status, &window(0, 5, 4), tuning(200, 1.0, 0.5), t1);
     assert_eq!(
         status.tcp.loss_elevated_since,
         Some(t0),
@@ -237,7 +250,7 @@ fn a_frozen_ratio_stops_counting_as_evidence_once_it_goes_stale() {
     // t0+40s: still only light traffic — now past max_staleness since the
     // last *qualifying* measurement (t0).
     let t2 = t0 + Duration::from_secs(40);
-    apply_loss_collection(&mut status, &window(0, 5, 4), 200, 1.0, 0.5, MAX_STALENESS, t2);
+    apply_loss_collection(&mut status, &window(0, 5, 4), tuning(200, 1.0, 0.5), t2);
 
     assert_eq!(
         status.tcp.carrier_loss.ratio(),
@@ -266,7 +279,7 @@ fn interrupted_loss_episode_restarts_the_clock() {
     let t3 = t0 + Duration::from_secs(15);
 
     // Tick 1: 90% loss — starts the episode.
-    apply_loss_collection(&mut status, &window(0, 1_000, 900), 1, 1.0, 0.5, MAX_STALENESS, t0);
+    apply_loss_collection(&mut status, &window(0, 1_000, 900), tuning(1, 1.0, 0.5), t0);
     assert!(
         status.tcp.loss_elevated_since.is_some(),
         "a tick above the threshold must start the episode"
@@ -274,7 +287,7 @@ fn interrupted_loss_episode_restarts_the_clock() {
     assert_eq!(status.tcp.loss_elevated_since, Some(t0));
 
     // Tick 2: still 90% loss — the anchor must not move.
-    apply_loss_collection(&mut status, &window(0, 1_000, 900), 1, 1.0, 0.5, MAX_STALENESS, t1);
+    apply_loss_collection(&mut status, &window(0, 1_000, 900), tuning(1, 1.0, 0.5), t1);
     assert_eq!(
         status.tcp.loss_elevated_since,
         Some(t0),
@@ -282,7 +295,7 @@ fn interrupted_loss_episode_restarts_the_clock() {
     );
 
     // Tick 3: ratio drops to 0% — one clean tick clears the episode.
-    apply_loss_collection(&mut status, &window(0, 1_000, 0), 1, 1.0, 0.5, MAX_STALENESS, t2);
+    apply_loss_collection(&mut status, &window(0, 1_000, 0), tuning(1, 1.0, 0.5), t2);
     assert_eq!(
         status.tcp.loss_elevated_since, None,
         "a single clean tick must clear the episode rather than merely pausing it"
@@ -290,7 +303,7 @@ fn interrupted_loss_episode_restarts_the_clock() {
 
     // Tick 4: 90% loss again — a fresh episode, never allowed to inherit
     // tick 1's start.
-    apply_loss_collection(&mut status, &window(0, 1_000, 900), 1, 1.0, 0.5, MAX_STALENESS, t3);
+    apply_loss_collection(&mut status, &window(0, 1_000, 900), tuning(1, 1.0, 0.5), t3);
     assert_eq!(
         status.tcp.loss_elevated_since,
         Some(t3),
@@ -562,5 +575,72 @@ async fn probe_registries_survive_a_manager_rebuild() {
         new.inner.carrier_loss[0].lock().len(),
         0,
         "and it must land on the uplink it belonged to, matched by name rather than by index"
+    );
+}
+
+fn rtt_reading(wire: u8, millis: u64) -> LossCollection {
+    LossCollection {
+        windows: Vec::new(),
+        emptied_wires: Vec::new(),
+        rtts: vec![WireRtt {
+            transport: TransportKind::Tcp,
+            wire,
+            rtt: Duration::from_millis(millis),
+        }],
+    }
+}
+
+/// A path-RTT reading lands in the slot of the wire it was measured on, and
+/// the active-wire accessor reads the same slot the carrier readout names.
+///
+/// Filing every wire's reading under primary is what made the phone show one
+/// wire's number beside another wire's carrier label.
+#[test]
+fn path_rtt_lands_in_the_wire_it_was_measured_on() {
+    let mut status = UplinkStatus::default();
+    let now = Instant::now();
+
+    apply_loss_collection(&mut status, &rtt_reading(1, 200), tuning(1, 1.0, 0.5), now);
+
+    assert_eq!(
+        status.tcp.fallback_path_rtt.first().and_then(|slot| slot.value()),
+        Some(Duration::from_millis(200)),
+        "the reading belongs to the fallback wire it was taken on",
+    );
+    assert_eq!(
+        status.tcp.path_rtt.value(),
+        None,
+        "primary measured nothing this tick and must stay unmeasured",
+    );
+
+    status.tcp.active_wire = 1;
+    assert_eq!(
+        status.tcp.active_wire_path_rtt_slot().value(),
+        Some(Duration::from_millis(200)),
+        "the active-wire accessor must read the wire traffic actually rides",
+    );
+}
+
+/// A wire that loses its last carrier forgets its RTT, exactly as it forgets
+/// its loss verdict: there is no path left to report on, and a reading nothing
+/// can refresh is the stale number this whole signal exists to avoid.
+#[test]
+fn an_emptied_wire_forgets_its_path_rtt() {
+    let mut status = UplinkStatus::default();
+    let now = Instant::now();
+    apply_loss_collection(&mut status, &rtt_reading(0, 40), tuning(1, 1.0, 0.5), now);
+    assert_eq!(status.tcp.path_rtt.value(), Some(Duration::from_millis(40)), "sanity: measured");
+
+    let emptied = LossCollection {
+        windows: Vec::new(),
+        emptied_wires: vec![(TransportKind::Tcp, 0)],
+        rtts: Vec::new(),
+    };
+    apply_loss_collection(&mut status, &emptied, tuning(1, 1.0, 0.5), now);
+
+    assert_eq!(
+        status.tcp.path_rtt.value(),
+        None,
+        "a wire with no carrier left is unmeasured, not last-known-good",
     );
 }

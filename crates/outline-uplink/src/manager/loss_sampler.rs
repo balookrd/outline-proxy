@@ -10,6 +10,21 @@ use crate::loss::{CarrierLossRegistry, LossCollection};
 use crate::manager::status::UplinkStatus;
 use crate::types::{TransportKind, UplinkManager};
 
+/// The knobs [`apply_loss_collection`] reads, gathered so the call stays
+/// readable: five scalars in a row is where a positional signature stops
+/// telling the reader which is which.
+#[derive(Clone, Copy, Debug)]
+struct LossApplyTuning {
+    min_packets: u64,
+    /// EWMA constant for the loss ratio (`loss_ewma_alpha`).
+    loss_alpha: f64,
+    /// EWMA constant for the path RTT (`rtt_ewma_alpha`) — a different signal
+    /// sharing one sampling pass, not one time constant.
+    rtt_alpha: f64,
+    loss_failover_ratio: f64,
+    max_staleness: std::time::Duration,
+}
+
 /// Fold one sampling pass's `collection` into `status`: apply cumulative
 /// loss windows and wire-emptied resets exactly as before, then advance the
 /// loss-elevated episode for both transports. Pure and synchronous — no
@@ -32,20 +47,36 @@ use crate::types::{TransportKind, UplinkManager};
 fn apply_loss_collection(
     status: &mut UplinkStatus,
     collection: &LossCollection,
-    min_packets: u64,
-    alpha: f64,
-    loss_failover_ratio: f64,
-    max_staleness: std::time::Duration,
+    tuning: LossApplyTuning,
     now: Instant,
 ) {
+    let LossApplyTuning {
+        min_packets,
+        loss_alpha,
+        rtt_alpha,
+        loss_failover_ratio,
+        max_staleness,
+    } = tuning;
+    for reading in &collection.rtts {
+        let per = match reading.transport {
+            TransportKind::Tcp => &mut status.tcp,
+            TransportKind::Udp => &mut status.udp,
+        };
+        per.record_wire_path_rtt(reading.wire, Some(reading.rtt), rtt_alpha, now);
+    }
     for window in &collection.windows {
         let per = match window.transport {
             TransportKind::Tcp => &mut status.tcp,
             TransportKind::Udp => &mut status.udp,
         };
         let is_active_wire = window.wire == per.active_wire;
-        let qualified =
-            per.record_wire_loss_window(window.wire, window.sent, window.lost, min_packets, alpha);
+        let qualified = per.record_wire_loss_window(
+            window.wire,
+            window.sent,
+            window.lost,
+            min_packets,
+            loss_alpha,
+        );
         if is_active_wire && qualified {
             per.loss_last_qualifying_at = Some((window.wire, now));
         }
@@ -56,6 +87,7 @@ fn apply_loss_collection(
             TransportKind::Udp => &mut status.udp,
         };
         per.reset_wire_loss(*wire);
+        per.reset_wire_path_rtt(*wire);
     }
     status
         .tcp
@@ -154,11 +186,22 @@ impl UplinkManager {
     pub(crate) async fn sample_carrier_loss_once(&self) {
         let min_packets = self.inner.load_balancing.loss_sample_min_packets;
         let alpha = self.inner.load_balancing.loss_ewma_alpha;
+        // Path RTT is an RTT, so it smooths on the RTT knob rather than the
+        // loss one — the two signals share a sampling pass, not a time
+        // constant.
+        let rtt_alpha = self.inner.load_balancing.rtt_ewma_alpha;
         let loss_failover_ratio = self.inner.load_balancing.loss_failover_ratio;
         // See `LoadBalancingConfig::loss_max_staleness` for what this bounds
         // and why the active-episode and candidate-filter freshness checks
         // share one definition of it.
         let max_staleness = self.inner.load_balancing.loss_max_staleness();
+        let tuning = LossApplyTuning {
+            min_packets,
+            loss_alpha: alpha,
+            rtt_alpha,
+            loss_failover_ratio,
+            max_staleness,
+        };
         let now = Instant::now();
         for index in 0..self.inner.uplinks.len() {
             let Some(slot) = self.inner.carrier_loss.get(index) else {
@@ -171,15 +214,7 @@ impl UplinkManager {
             // qualifying windows) still needs that staleness reassessed
             // every tick, or the episode would freeze instead of aging out.
             self.inner.with_status_mut(index, |status| {
-                apply_loss_collection(
-                    status,
-                    &collection,
-                    min_packets,
-                    alpha,
-                    loss_failover_ratio,
-                    max_staleness,
-                    now,
-                );
+                apply_loss_collection(status, &collection, tuning, now);
             });
             if !collection.windows.is_empty() || !collection.emptied_wires.is_empty() {
                 debug!(

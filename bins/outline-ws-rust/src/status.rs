@@ -61,14 +61,25 @@ pub struct CarrierStatus {
     /// probe cycle or traffic so far) keeps this `true`, so a starting tunnel
     /// reads as connecting rather than flashing "no link".
     pub has_live_link: bool,
-    /// Last measured latency of the uplink carrying each transport.
+    /// Round-trip of the path each transport is riding, as its carrier's own
+    /// transport measures it (TCP's `tcpi_rtt`, QUIC's `PathStats`).
     ///
     /// `has_live_link` is a binary and cannot separate a fibre path from an
     /// edge-class one, where the tunnel is honestly up and equally honestly
     /// useless: a handshake alone eats seconds. Surfacing the number lets the
     /// UI say "connected, but slow" instead of a flat green that contradicts
-    /// what the user sees. `None` where the transport has no resolved active
-    /// uplink or it has never been measured.
+    /// what the user sees.
+    ///
+    /// Deliberately the path's RTT rather than what a dial cost. A dial also
+    /// contains DNS, the handshakes and — on a carrier descent — the budget the
+    /// failed `h3` attempt burned, which reads as several seconds on a link
+    /// that is fine. It is also measured continuously on the live carrier,
+    /// including while it merely sits in the warm pool, so it does not freeze
+    /// on whatever the last cold dial happened to cost.
+    ///
+    /// `None` where the transport has no resolved active uplink, nothing has
+    /// measured it recently, or the carrier family cannot report a path RTT at
+    /// all (`xhttp_h1`, a VLESS-UDP mux).
     pub tcp_latency: Option<std::time::Duration>,
     pub udp_latency: Option<std::time::Duration>,
 }

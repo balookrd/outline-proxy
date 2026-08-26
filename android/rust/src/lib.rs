@@ -225,11 +225,14 @@ pub struct TunnelStatus {
     /// `true` when at least one uplink is healthy on TCP or UDP — the tunnel has
     /// a live path. `false` means the engine is up but no link is alive.
     pub has_live_link: bool,
-    /// Last measured latency of the uplink carrying each transport, in
-    /// milliseconds. A live link says nothing about whether it is usable: on an
-    /// edge-class network the tunnel is up and a handshake still takes seconds,
-    /// so the UI needs the number to qualify its own green. `None` where the
-    /// transport has no active uplink or none has been measured yet.
+    /// Round-trip of the path each transport is riding, in milliseconds, as the
+    /// carrier's own transport measures it — not what a dial cost, which also
+    /// contains the handshakes and any budget a failed carrier attempt burned.
+    /// A live link says nothing about whether it is usable: on an edge-class
+    /// network the tunnel is up while the round-trip runs into seconds, so the
+    /// UI needs the number to qualify its own green. `None` where the transport
+    /// has no active uplink, nothing has measured it recently, or the carrier
+    /// family cannot report a path RTT (`xhttp_h1`, VLESS-UDP).
     pub tcp_latency_ms: Option<u32>,
     pub udp_latency_ms: Option<u32>,
 }

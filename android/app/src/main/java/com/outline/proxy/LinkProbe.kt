@@ -75,13 +75,6 @@ object LinkProbe {
             downstreamKbps = downstreamKbps,
             ranLabel = if (transport == LinkTransport.CELLULAR) ranLabel(context) else null,
             latencyMs = latencyMs,
-            // What a dial on this link is allowed to take. The readout needs it
-            // to tell a slow measurement from one that simply hit the ceiling.
-            dialBudgetSecs = DialTimeout.secondsFor(
-                isCellular = transport == LinkTransport.CELLULAR,
-                downstreamKbps = downstreamKbps,
-                latencyMs = latencyMs,
-            ),
         )
     }
 

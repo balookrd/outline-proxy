@@ -418,6 +418,10 @@ impl crate::CarrierLossCounters for SharedH3Connection {
             sent: path.sent_packets,
             lost: path.lost_packets,
             alive: self.connection.close_reason().is_none(),
+            // quinn keeps its own smoothed RTT for the path; a connection that
+            // has not completed a round trip yet reports zero, which is an
+            // absent reading rather than an instant path.
+            rtt: (!path.rtt.is_zero()).then_some(path.rtt),
         })
     }
 }
