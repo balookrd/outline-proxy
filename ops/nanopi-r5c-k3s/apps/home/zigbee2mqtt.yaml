@@ -12,11 +12,18 @@
 # Singleton, and not merely by convention: the coordinator accepts exactly one
 # client. Two replicas would fight over the session, so replicas: 1 + Recreate.
 #
-# There are deliberately NO environment variables here. configuration.yaml
-# inside the PVC is the single source of truth — it already carries the
-# coordinator address, the MQTT broker (mqtt://198.18.1.102:1883, still on the
-# gateway node) and, critically, network_key / pan_id / ext_pan_id. Duplicating
-# half of it into env is how the two drift apart.
+# Settings live in configuration.yaml inside the volume, not in env: it is the
+# single source of truth for the coordinator address, the MQTT broker
+# (mqtt://mosquitto.home:1883) and, critically, network_key / pan_id /
+# ext_pan_id. Duplicating half of it into env is how the two drift apart.
+#
+# Z2M_WATCHDOG is the one exception, because z2m reads it from env only — it has
+# no configuration.yaml counterpart, so it duplicates nothing. The coordinator
+# hangs off an Ebyte EBT3001 serial-to-Ethernet bridge, and every few hours ASH
+# times out against it: z2m logs "Adapter disconnected, stopping" and exits(2).
+# Without the watchdog that costs a container restart (31 in the 8 days to
+# 2026-08-26) and truncates the log at exactly the interesting moment; with it,
+# z2m reconnects in-process after 2s and the log survives the reconnect.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,6 +59,10 @@ spec:
           image: koenkk/zigbee2mqtt@sha256:1debff565ab6841417bd9f7ce8ad44f8c5f25a8b02a24ce3fd79e4779a4763a5 # 2.12.0
           ports:
             - { containerPort: 8080, name: frontend }
+          env:
+            # "default" = retry the adapter after 2s, then 1/5/15/30/60 min if it
+            # keeps failing; the counter resets on every successful start.
+            - { name: Z2M_WATCHDOG, value: "default" }
           volumeMounts:
             - { name: data, mountPath: /app/data }
           readinessProbe:
