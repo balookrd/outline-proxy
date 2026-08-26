@@ -1050,6 +1050,30 @@ git commit -m "docs(android): changelog for vendor keep-alive cards and app icon
    удалён — на устройстве `resolve-activity` отвечает «No activity found»,
    и по данным дампов его нет ни в одной сборке с 2019 года.
 
+7. **Аудит остальных вендоров по манифестам (частично).** Разобраны реальные
+   `AndroidManifest.xml` из прошивочных дампов. По группе vivo/Asus/Meizu/Transsion:
+   - **vivo:** `com.iqoo.secure/...AddWhiteListActivity` — фикция (нет ни в одной
+     сборке, дословно из AutoStarter). Удалён. Основной вход — action
+     `com.iqoo.secure.BGSTARTUPMANAGER` (переживает переименование пакета в
+     `com.vivo.imanager`), запасной — `BgStartUpManagerActivity`.
+   - **Asus:** компонент верен (жив Android 9–16), но RU-лейбл был украинским
+     («Диспетчер…»); поправлен на «Менеджер автозапуска». Добавлен alias
+     `MainActivity`. Action у ZenUI нет — не выдумывать.
+   - **Meizu:** `PermissionMainActivity` — не тот экран (это «Разрешения») и мёртв
+     на Flyme 12. Заменён на action `com.meizu.safe.security.autostart_manager_settings`
+     + `permission.AutoStartActivity`. RU-ресурса у Flyme нет — печатаем английский
+     лейбл «Auto-starts», как его и видит пользователь.
+   - **Transsion:** был пуст — добавлен реальный Phone Master (action
+     `...AUTO_START_ACTIVITY` + класс `com.cyin.himgr.autostart.AutoStartActivity`).
+   Регрессия закреплена тестом `knownDeadComponentsAreGone`.
+   - **Проверка `canLaunch` до показа** (`exported` + `permission`) — приём из
+     живого проекта MaterialXray; не предлагать экран, который упадёт с
+     `SecurityException` (как Samsung `AppPowerManagementActivity`).
+   - **НЕ завершены:** Xiaomi, Huawei+Honor, Oppo/realme/OnePlus — упали по лимиту
+     сессии, перезапустить.
+   - **Debug-сборка рядом с боевой:** `applicationIdSuffix ".debug"` — ставится
+     отдельным приложением, боевой профиль не трогает.
+
 ## Self-Review (выполнено при написании плана)
 
 - **Покрытие спеки:** F1 (перечитывание при возврате) — Task 5; F2 (вендорская батарея) — Task 1/2/3/6; F3 (автозапуск с конкретикой + перенос Samsung) — Task 1/2/3/6, Samsung получает пустой `autostart` и собственный `batteryDesc`; F4 (иконки) — Task 7-8; F5 (debug-оверрайд) — Task 4, применяется в Task 9. Юнит-тесты из раздела «Тестирование» — Task 2; проверка на эмуляторе — Task 9; гейт и CHANGELOG — Task 10. Отступление от спеки (показ карточки по производителю, а не по резолвингу) вынесено в отдельный раздел «Уточнение к спеке».

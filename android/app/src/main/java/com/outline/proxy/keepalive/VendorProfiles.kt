@@ -182,11 +182,13 @@ internal val VENDOR_PROFILES = listOf(
         id = VendorId.VIVO,
         manufacturers = listOf("vivo", "iqoo"),
         autostart = listOf(
+            // The action outlives the package: OriginOS CN ships i Manager as
+            // com.vivo.imanager while global builds keep com.iqoo.secure.
+            VendorScreen("com.iqoo.secure", action = "com.iqoo.secure.BGSTARTUPMANAGER"),
             VendorScreen(
                 "com.vivo.permissionmanager",
                 "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
             ),
-            VendorScreen("com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"),
         ),
         battery = emptyList(),
         autostartTitle = R.string.ka_vendor_autostart,
@@ -235,8 +237,11 @@ internal val VENDOR_PROFILES = listOf(
     VendorProfile(
         id = VendorId.ASUS,
         manufacturers = listOf("asus"),
+        // ZenUI publishes no action for this one, so the class name is the only
+        // route; verified present and exported from Android 9 through 16.
         autostart = listOf(
             VendorScreen("com.asus.mobilemanager", "com.asus.mobilemanager.autostart.AutoStartActivity"),
+            VendorScreen("com.asus.mobilemanager", "com.asus.mobilemanager.MainActivity"),
         ),
         battery = emptyList(),
         autostartTitle = R.string.ka_vendor_autostart,
@@ -248,20 +253,32 @@ internal val VENDOR_PROFILES = listOf(
         id = VendorId.MEIZU,
         manufacturers = listOf("meizu"),
         autostart = listOf(
-            VendorScreen("com.meizu.safe", "com.meizu.safe.permission.PermissionMainActivity"),
+            // Flyme 10+; the old PermissionMainActivity we used to point at is both
+            // the wrong screen (it is Permissions and Privacy) and gone on Flyme 12.
+            VendorScreen("com.meizu.safe", action = "com.meizu.safe.security.autostart_manager_settings"),
+            VendorScreen("com.meizu.safe", "com.meizu.safe.permission.AutoStartActivity"),
+            // Flyme 8-10 only; removed in Flyme 12.
+            VendorScreen("com.meizu.safe", action = "com.meizu.safe.PERMISSION_SETTING"),
         ),
         battery = emptyList(),
         autostartTitle = R.string.ka_vendor_autostart,
         autostartDesc = R.string.ka_vendor_autostart_desc,
-        autostartToggle = R.string.ka_toggle_run_in_background,
+        autostartToggle = R.string.ka_toggle_autostarts,
         batteryDesc = null,
     ),
     VendorProfile(
         id = VendorId.TRANSSION,
         manufacturers = listOf("tecno", "infinix", "itel"),
-        // HiOS/XOS keep this in Phone Master, whose component differs per model,
-        // so the app-details fallback carries it.
-        autostart = emptyList(),
+        // Tecno/Infinix/itel share Phone Master. The class was renamed
+        // (applicationmanager.view.activities -> autostart) but the action kept the
+        // old path, so it is the durable route; verified exported on HiOS/XOS 11-14.
+        autostart = listOf(
+            VendorScreen(
+                "com.transsion.phonemaster",
+                action = "com.cyin.himgr.applicationmanager.view.activities.AUTO_START_ACTIVITY",
+            ),
+            VendorScreen("com.transsion.phonemaster", "com.cyin.himgr.autostart.AutoStartActivity"),
+        ),
         battery = emptyList(),
         autostartTitle = R.string.ka_vendor_autostart,
         autostartDesc = R.string.ka_vendor_autostart_desc,
