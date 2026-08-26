@@ -19,14 +19,24 @@ package com.outline.proxy
 object LinkQuality {
 
     /**
-     * Latency at or above which the link is called slow.
+     * Path round-trip at or above which the link is called slow.
      *
-     * A second of round-trip is well past anything a healthy mobile network
-     * produces (LTE lands in the tens of milliseconds, a loaded 3G path in the
-     * low hundreds) and squarely in edge-class territory, where TLS alone needs
-     * several of these before a single byte of payload moves.
+     * This judges the path's own RTT (see the class doc), not what a dial cost,
+     * so the bar is where the *round-trip* itself stops being healthy. LTE lands
+     * in the tens of milliseconds and a loaded 3G path in the low hundreds, so
+     * 0.7 s is well past both and squarely in 2G/EDGE territory — where a single
+     * TLS handshake, several of these round-trips, already takes a couple of
+     * seconds before a byte of payload moves and apps begin to feel it.
+     *
+     * It was 1 s while this judged a *dial* (TCP + TLS + upgrade, several round
+     * trips plus the certificate chain), where a full second was only the edge
+     * of healthy and the label barely ever fired for the right reason. On the
+     * path RTT the same class of bad link shows a third to a fifth of that, so
+     * catching it means a lower bar. Kept deliberately below
+     * [DialTimeout.SLOW_LATENCY_MS]: a link can read slow to a person well
+     * before its dials come close to the core's default budget.
      */
-    const val SLOW_LATENCY_MS = 1000
+    const val SLOW_LATENCY_MS = 700
 
     /** `true` when [latencyMs] describes a link that is up but barely usable. */
     fun isSlow(latencyMs: Int?): Boolean = latencyMs != null && latencyMs >= SLOW_LATENCY_MS
