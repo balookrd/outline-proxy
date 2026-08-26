@@ -29,6 +29,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - **The Keeping Alive checklist no longer shows stale statuses.** Grants are re-read every time the screen comes back into view rather than when a button is tapped, so a permission changed in a system or vendor screen — or straight from the notification shade — is reflected on return. Previously the check ran before the user had answered the system dialog, leaving the card showing the old answer.
 - **Samsung devices no longer get an "Autostart" card: One UI has no autostart list.** The screens it pointed at are One UI's battery policy, and they now open from the battery card instead.
+- **"Connected · slow" no longer reports a wire the tunnel left, or a measurement from another era.** The latency behind the status line was read off the uplink's primary wire regardless of which wire was carrying traffic, so an uplink that had descended onto a fallback paired one wire's carrier label with another wire's cost — seconds spent on a wire nobody was riding any more. It also never expired: a client parked on a pooled carrier takes no fresh samples (a warm-standby acquisition records none), so one expensive cold dial kept the tunnel labelled slow indefinitely. The status now follows the active wire and drops a measurement nothing has refreshed, showing no number rather than a stale one.
 
 ## [1.2.0] - 2026-08-24
 
