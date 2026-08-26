@@ -170,10 +170,10 @@
     <string name="ka_vendor_battery">%1$s battery policy</string>
     <string name="ka_vendor_battery_desc">%1$s applies its own per-app battery policy on top of Android\'s. Open it and give Outline Proxy the unrestricted option.</string>
     <string name="ka_vendor_battery_desc_xiaomi">Not the same as the Android setting above. Open \"Battery saver\" for Outline Proxy and choose \"No restrictions\". %1$s may also reset the Android setting on its own, so check that one again after a reboot.</string>
-    <!-- Path verified on One UI 8 (Galaxy Z Flip 7, Android 16). The button can only
-         land on the Battery screen — the allowlist itself sits two taps deeper behind
-         an Activity that requires a system permission — so spell the path out. -->
-    <string name="ka_vendor_battery_desc_samsung">%1$s puts unused apps to sleep. On the battery screen open \"Background usage limits\" → \"Never auto sleeping apps\", then add Outline Proxy with \"+\".</string>
+    <!-- The button deep-links straight into the allowlist (verified on One UI 8), so
+         the copy starts from there; the manual path is the fallback for builds where
+         the deeplink is missing. "Never sleeping apps" was its name before One UI 6.1. -->
+    <string name="ka_vendor_battery_desc_samsung">%1$s puts unused apps to sleep. In the list that opens, tap \"+\" and add Outline Proxy. If it does not open, find it under Battery → \"Background usage limits\" → \"Never auto sleeping apps\" (\"Never sleeping apps\" before One UI 6.1).</string>
     <string name="ka_open_vendor_settings">Open %1$s settings</string>
     <string name="ka_status_allowed">Allowed</string>
     <string name="ka_status_needs_action">Needs action</string>

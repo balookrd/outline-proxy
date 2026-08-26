@@ -69,6 +69,35 @@ class VendorProfilesTest {
         }
     }
 
+    /**
+     * Samsung's screens are addressed by action, not by class: the Activity behind
+     * the allowlist was renamed between One UI versions, and the component name
+     * that libraries still copy around (`sm.ui.battery.BatteryActivity`) resolves
+     * on no current build. The first entry must be the deeplink that opens the
+     * allowlist itself, selected by `activity_type = 2`.
+     */
+    @Test fun samsungUsesDocumentedActionsNotClassNames() {
+        val battery = vendorProfileFor("samsung")!!.battery
+        assertTrue(battery.all { it.className == null && it.action != null })
+        assertEquals(
+            "com.samsung.android.sm.ACTION_OPEN_CHECKABLE_LISTACTIVITY",
+            battery.first().action,
+        )
+        assertEquals(2, battery.first().intExtras["activity_type"])
+    }
+
+    /** A screen is addressed one way or the other, never both and never neither. */
+    @Test fun everyScreenHasExactlyOneAddress() {
+        for (profile in VENDOR_PROFILES) {
+            for (screen in profile.autostart + profile.battery) {
+                assertTrue(
+                    "screen in ${profile.id} must have exactly one of className/action",
+                    (screen.className == null) != (screen.action == null),
+                )
+            }
+        }
+    }
+
     @Test fun manufacturersAreLowercaseAndUnique() {
         val all = VENDOR_PROFILES.flatMap { it.manufacturers }
         assertEquals(all.map { it.lowercase() }, all)
