@@ -135,8 +135,20 @@
     <string name="ka_notifications_desc">Туннель работает как foreground-сервис. Скрытое уведомление повышает риск того, что некоторые прошивки его завершат.</string>
     <string name="ka_network_type">Тип сети</string>
     <string name="ka_network_type_desc">Необязательно. Позволяет главному экрану точно называть поколение мобильной сети (2G/3G/LTE/5G), а не угадывать класс по оценке скорости. На решения туннеля это не влияет — тайм-ауты подключения в любом случае рассчитываются по оценке скорости.</string>
-    <string name="ka_vendor_autostart">Автозапуск %1$s</string>
-    <string name="ka_vendor_autostart_desc">%1$s ведёт собственный список приложений, которым разрешено работать в фоне. Прочитать его через API нельзя — откройте этот экран и разрешите там работу Outline Proxy.</string>
+    <!-- Keep-Alive: карточка вендорского автозапуска. -->
+    <string name="ka_vendor_autostart">Автозапуск: %1$s</string>
+    <string name="ka_vendor_autostart_desc">%1$s ведёт свой список приложений, которым разрешён запуск в фоне, — отдельно от списка Android. Прочитать его нельзя, поэтому откройте «%2$s» и разрешите там работу Outline Proxy.</string>
+    <string name="ka_vendor_autostart_desc_huawei">%1$s по умолчанию управляет фоновыми приложениями сам. На экране настроек выключите «Управлять автоматически» для Outline Proxy, затем включите «Автозапуск», «Косвенный запуск» и «Работа в фоновом режиме».</string>
+    <string name="ka_toggle_autostart">Автозапуск</string>
+    <string name="ka_toggle_allow_autostart">Разрешить автозапуск</string>
+    <string name="ka_toggle_autostart_manager">Диспетчер автозапуска</string>
+    <string name="ka_toggle_run_in_background">Работа в фоновом режиме</string>
+    <string name="ka_toggle_autostart_management">Управление автозапуском</string>
+    <!-- Keep-Alive: карточка вендорской политики батареи. -->
+    <string name="ka_vendor_battery">Батарея: %1$s</string>
+    <string name="ka_vendor_battery_desc">У %1$s есть своя политика батареи для каждого приложения — поверх системной. Откройте её и снимите ограничения для Outline Proxy.</string>
+    <string name="ka_vendor_battery_desc_xiaomi">Это не то же самое, что настройка Android в карточке выше. Откройте «Экономия заряда батареи» для Outline Proxy и выберите «Без ограничений» (в MIUI 12 пункт называется «Контроль активности» → «Нет ограничений»). %1$s может сам сбросить настройку Android — проверяйте и её после перезагрузки.</string>
+    <string name="ka_vendor_battery_desc_samsung">%1$s усыпляет неиспользуемые приложения. Откройте «Ограничения в фоновом режиме» и добавьте Outline Proxy в список приложений, которые нельзя усыплять, — в разных версиях One UI он называется «Неспящие приложения» или «Никогда не отключать».</string>
     <string name="ka_open_vendor_settings">Открыть настройки %1$s</string>
     <string name="ka_status_allowed">Разрешено</string>
     <string name="ka_status_needs_action">Требуется действие</string>
