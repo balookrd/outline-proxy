@@ -97,6 +97,15 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Install a debug build alongside a release one instead of replacing it:
+            // the phones this gets tested on are also the phones it runs on for real,
+            // and an install that wipes the working profile is a bad way to find out
+            // whether a vendor screen opens. Separate applicationId means separate
+            // VPN consent, tile and preferences, so the two never share state.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

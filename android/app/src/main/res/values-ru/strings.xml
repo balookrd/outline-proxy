@@ -141,9 +141,10 @@
     <string name="ka_vendor_autostart_desc_huawei">%1$s по умолчанию управляет фоновыми приложениями сам. На экране настроек выключите «Управлять автоматически» для Outline Proxy, затем включите «Автозапуск», «Косвенный запуск» и «Работа в фоновом режиме».</string>
     <string name="ka_toggle_autostart">Автозапуск</string>
     <string name="ka_toggle_allow_autostart">Разрешить автозапуск</string>
-    <string name="ka_toggle_autostart_manager">Диспетчер автозапуска</string>
+    <string name="ka_toggle_autostart_manager">Менеджер автозапуска</string>
     <string name="ka_toggle_run_in_background">Работа в фоновом режиме</string>
     <string name="ka_toggle_autostart_management">Управление автозапуском</string>
+    <string name="ka_toggle_autostarts">Auto-starts</string>
     <!-- Keep-Alive: карточка вендорской политики батареи. -->
     <string name="ka_vendor_battery">Батарея: %1$s</string>
     <string name="ka_vendor_battery_desc">У %1$s есть своя политика батареи для каждого приложения — поверх системной. Откройте её и снимите ограничения для Outline Proxy.</string>

@@ -1,6 +1,7 @@
 package com.outline.proxy.keepalive
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -96,6 +97,27 @@ class VendorProfilesTest {
                 )
             }
         }
+    }
+
+    /**
+     * Components proven dead or fictional by manifest audit must never come back —
+     * they all trace to the judemanutd/AutoStarter library, which copies them
+     * around unverified. Each string here was checked against real firmware and
+     * found either renamed away or never shipped.
+     */
+    @Test fun knownDeadComponentsAreGone() {
+        val dead = listOf(
+            "com.samsung.android.sm.ui.battery.BatteryActivity", // gone since 2019
+            "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity", // never shipped
+            "com.meizu.safe.permission.PermissionMainActivity", // wrong screen, dead on Flyme 12
+        )
+        val used = VENDOR_PROFILES.flatMap { it.autostart + it.battery }.mapNotNull { it.className }
+        for (d in dead) assertFalse("$d must not be referenced", d in used)
+    }
+
+    /** Transsion has a real Phone Master component; it must not be left empty. */
+    @Test fun transsionCarriesAComponent() {
+        assertTrue(vendorProfileFor("tecno")!!.autostart.isNotEmpty())
     }
 
     @Test fun manufacturersAreLowercaseAndUnique() {

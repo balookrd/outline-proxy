@@ -165,7 +165,9 @@
     <string name="ka_toggle_allow_autostart">Allow auto-launch</string>
     <string name="ka_toggle_autostart_manager">Auto-start Manager</string>
     <string name="ka_toggle_run_in_background">Run in background</string>
-    <string name="ka_toggle_autostart_management">Auto-start management</string>
+    <string name="ka_toggle_autostart_management">App Launch</string>
+    <!-- Meizu ships no Russian for this label, so the RU value is the English the user actually sees. -->
+    <string name="ka_toggle_autostarts">Auto-starts</string>
     <!-- Keep-Alive: vendor battery-policy card, separate from Android's Doze list. -->
     <string name="ka_vendor_battery">%1$s battery policy</string>
     <string name="ka_vendor_battery_desc">%1$s applies its own per-app battery policy on top of Android\'s. Open it and give Outline Proxy the unrestricted option.</string>
