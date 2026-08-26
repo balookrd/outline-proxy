@@ -16,10 +16,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - **A Quick Settings tile that toggles the tunnel.** An "Outline" tile mirrors the notification's toggle — highlighted while connected, dim while off, the selected server as its subtitle — so the VPN flips from the Quick Settings panel without opening the app. The Keeping Alive screen offers an "Add tile" button that asks the system to place it in one tap on Android 13+ (and points at the Quick Settings editor below that).
 - **Localization: the UI now follows the phone's language — Russian on a Russian device, English otherwise.** The system locale picks the string set automatically; there is no in-app language switch.
 - **The Split Tunneling screen's app-search field has a clear (✕) button.** It appears once you start typing and clears the filter in one tap.
+- **The Keeping Alive screen now covers the phone vendor's own restrictions, not just Android's.** Skins that keep a separate autostart list or per-app battery policy (Xiaomi, Huawei, Honor, Oppo, realme, vivo, OnePlus, Samsung, Asus, Meizu, Tecno/Infinix/itel) get their own cards naming the exact setting to change: "Autostart" on Xiaomi, the never-sleeping list on Samsung, the three-step "App launch" sequence on Huawei and Honor. Android's battery-optimisation exemption lifts none of these restrictions: a phone can report that permission as granted and still stop the tunnel, and MIUI — going by the AdGuard and Briar bug trackers — resets the Android grant on its own.
+- **The Split Tunneling picker shows app icons.** They load as rows scroll into view, so the screen opens no slower than before.
 
 ### Changed
 
 - **A server saved with a blank name now takes its name from the link's `#remark`, or its hostname if there is no remark.** Applies whichever link is in play — the subscription config URL, a `vless://` link, or an `ss://` link.
+
+### Fixed
+
+- **The Keeping Alive checklist no longer shows stale statuses.** Grants are re-read every time the screen comes back into view rather than when a button is tapped, so a permission changed in a system or vendor screen — or straight from the notification shade — is reflected on return. Previously the check ran before the user had answered the system dialog, leaving the card showing the old answer.
+- **Samsung devices no longer get an "Autostart" card: One UI has no autostart list.** The screens it pointed at are One UI's battery policy, and they now open from the battery card instead.
 
 ## [1.2.0] - 2026-08-24
 

@@ -15,9 +15,10 @@ import java.util.Locale
  * The parts of staying alive that only the user can grant.
  *
  * Battery-optimisation exemption, exact-alarm access and always-on VPN have real
- * system screens. Vendor autostart whitelists (MagicOS, MIUI, EMUI, ColorOS,
- * FuntouchOS, One UI) have no API at all — the best any app can do is open the
- * right settings screen and say plainly what needs to be switched on there.
+ * system screens. The vendor layers on top of them — autostart whitelists and
+ * per-app battery policies, described in [VendorProfiles] — have no API at all,
+ * neither to read nor to set: the best any app can do is open the right settings
+ * screen and name the switch that has to be flipped there.
  */
 object KeepAliveHelper {
 
@@ -54,57 +55,53 @@ object KeepAliveHelper {
      */
     fun vpnSettingsIntent(): Intent = Intent(Settings.ACTION_VPN_SETTINGS)
 
-    /** Manufacturer name to show in the checklist, or null on stock-ish builds. */
-    fun vendorLabel(context: Context): String? =
-        vendorEntries(context).firstOrNull()?.let { manufacturerLabel() }
+    /** The vendor profile for this device, or null on near-stock skins. */
+    internal fun vendorProfile(context: Context): VendorProfile? =
+        vendorProfileFor(VendorOverride.manufacturer(context))
+
+    /** Manufacturer name to show in the checklist, or null on near-stock skins. */
+    fun vendorLabel(context: Context): String? {
+        if (vendorProfile(context) == null) return null
+        return VendorOverride.manufacturer(context)
+            ?.takeIf { it.isNotBlank() }
+            ?.replaceFirstChar { it.titlecase(Locale.US) }
+    }
 
     /**
-     * The vendor's autostart / protected-apps screen, if one of the known
-     * components resolves on this device.
+     * Where to send the user for the vendor's autostart list, best first.
+     *
+     * A list rather than one intent because resolving an Activity only proves it
+     * exists, not that we may start it: several MIUI builds keep these screens
+     * unexported, so the launch throws and a single-intent button would silently
+     * do nothing. The caller walks the list until one actually starts, and the
+     * last entry is the app-details page — always present, and on most skins
+     * where these per-app switches live anyway.
      */
-    fun autostartIntent(context: Context): Intent? = vendorEntries(context).firstOrNull()
+    fun autostartIntents(context: Context): List<Intent> {
+        val profile = vendorProfile(context) ?: return emptyList()
+        return resolvable(context, profile.autostart) + appDetailsIntent(context)
+    }
 
-    private fun vendorEntries(context: Context): List<Intent> =
-        AUTOSTART_COMPONENTS
-            .map { (pkg, cls) ->
-                Intent().setComponent(ComponentName(pkg, cls))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            .filter { intent -> context.packageManager.resolveActivity(intent, 0) != null }
-
-    private fun manufacturerLabel(): String =
-        Build.MANUFACTURER.replaceFirstChar { it.titlecase(Locale.US) }
+    /** The same, for the vendor's per-app battery policy. */
+    fun vendorBatteryIntents(context: Context): List<Intent> {
+        val profile = vendorProfile(context) ?: return emptyList()
+        if (profile.batteryDesc == null) return emptyList()
+        return resolvable(context, profile.battery) + appDetailsIntent(context)
+    }
 
     /**
-     * Known autostart screens, most specific first. They come and go between
-     * firmware versions, so every one is probed with `resolveActivity` before
-     * being offered.
+     * The candidate screens that exist on this device, in order. Vendor components
+     * come and go between firmware versions, so each is probed before being offered.
      */
-    private val AUTOSTART_COMPONENTS = listOf(
-        // Xiaomi / Redmi / POCO
-        "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity",
-        // Honor (MagicOS) — its own package since the split from Huawei
-        "com.hihonor.systemmanager" to "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
-        "com.hihonor.systemmanager" to "com.hihonor.systemmanager.appcontrol.activity.StartupAppControlActivity",
-        // Huawei (EMUI)
-        "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
-        "com.huawei.systemmanager" to "com.huawei.systemmanager.optimize.process.ProtectActivity",
-        "com.huawei.systemmanager" to "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity",
-        // Oppo / Realme
-        "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
-        "com.coloros.safecenter" to "com.coloros.safecenter.startupapp.StartupAppListActivity",
-        "com.oppo.safe" to "com.oppo.safe.permission.startup.StartupAppListActivity",
-        // Vivo / iQOO
-        "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
-        "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
-        // OnePlus
-        "com.oneplus.security" to "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity",
-        // Samsung
-        "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity",
-        "com.samsung.android.lool" to "com.samsung.android.sm.battery.ui.BatteryActivity",
-        // Asus
-        "com.asus.mobilemanager" to "com.asus.mobilemanager.autostart.AutoStartActivity",
-        // Letv
-        "com.letv.android.letvsafe" to "com.letv.android.letvsafe.AutobootManageActivity",
-    )
+    private fun resolvable(context: Context, screens: List<VendorScreen>): List<Intent> =
+        screens.map { screen ->
+            Intent().setComponent(ComponentName(screen.packageName, screen.className))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }.filter { context.packageManager.resolveActivity(it, 0) != null }
+
+    /** The system app-details page; present on every Android build. */
+    private fun appDetailsIntent(context: Context): Intent =
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            .setData(Uri.parse("package:${context.packageName}"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 }

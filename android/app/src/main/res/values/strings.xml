@@ -150,8 +150,26 @@
     <string name="ka_notifications_desc">The tunnel runs as a foreground service. A hidden notification makes some firmware more eager to kill it.</string>
     <string name="ka_network_type">Network type</string>
     <string name="ka_network_type_desc">Optional. Lets the home screen name the radio technology (2G / 3G / LTE / 5G) instead of guessing a class from the speed estimate. Nothing the tunnel decides depends on it — the dial timeouts are sized from the speed estimate either way.</string>
+    <!-- Keep-Alive: vendor autostart card. The quoted names are what the user sees
+         in the vendor's own UI, so they follow that UI's wording per language
+         rather than being translated literally. -->
     <string name="ka_vendor_autostart">%1$s autostart</string>
-    <string name="ka_vendor_autostart_desc">%1$s keeps its own list of apps allowed to run in the background. There is no API to read it — open the screen and allow Outline Proxy there.</string>
+    <!-- "%2$s" is a toggle on some skins and a whole screen on others (Asus, Tecno),
+         so the wording has to fit both: open it, then allow the app there. -->
+    <string name="ka_vendor_autostart_desc">%1$s keeps its own list of apps allowed to start in the background, separate from Android\'s. There is no API to read it — open \"%2$s\" and allow Outline Proxy there.</string>
+    <string name="ka_vendor_autostart_desc_huawei">%1$s manages background apps itself by default. On the settings screen, turn \"Manage automatically\" off for Outline Proxy, then turn on \"Auto-launch\", \"Secondary launch\" and \"Run in background\".</string>
+    <string name="ka_toggle_autostart">Autostart</string>
+    <string name="ka_toggle_allow_autostart">Allow auto-launch</string>
+    <string name="ka_toggle_autostart_manager">Auto-start Manager</string>
+    <string name="ka_toggle_run_in_background">Run in background</string>
+    <string name="ka_toggle_autostart_management">Auto-start management</string>
+    <!-- Keep-Alive: vendor battery-policy card, separate from Android's Doze list. -->
+    <string name="ka_vendor_battery">%1$s battery policy</string>
+    <string name="ka_vendor_battery_desc">%1$s applies its own per-app battery policy on top of Android\'s. Open it and give Outline Proxy the unrestricted option.</string>
+    <string name="ka_vendor_battery_desc_xiaomi">Not the same as the Android setting above. Open \"Battery saver\" for Outline Proxy and choose \"No restrictions\". %1$s may also reset the Android setting on its own, so check that one again after a reboot.</string>
+    <!-- One UI renames the never-sleeping list between versions, so name the screen
+         (stable) and describe the list rather than quoting one build's label. -->
+    <string name="ka_vendor_battery_desc_samsung">%1$s puts unused apps to sleep. Open \"Background usage limits\" and add Outline Proxy to the list of apps that are never put to sleep — \"Never sleeping apps\" on most builds.</string>
     <string name="ka_open_vendor_settings">Open %1$s settings</string>
     <string name="ka_status_allowed">Allowed</string>
     <string name="ka_status_needs_action">Needs action</string>
