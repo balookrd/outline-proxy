@@ -159,12 +159,19 @@ Name=wan0
 MACAddress=02:00:5e:00:01:12
 EOF
 
-# wan0 — uplink: default route and DNS come from the home DHCP server
+# wan0 — uplink: default route and DNS come from the home DHCP server.
+# KeepConfiguration=dynamic is not cosmetic: the router hands out a 7h lease, its
+# renew (T1) goes unanswered, and at T2 — every 6h07m30s — networkd would drop
+# the address and immediately take it back. That teardown resets every
+# long-lived outbound TCP session of every pod on the node: the reply no longer
+# maps back into the pod and the kernel answers RST. It cost zigbee2mqtt 31
+# restarts in the 8 days to 2026-08-26 before it was found.
 cat > /etc/systemd/network/20-wan0.network <<'EOF'
 [Match]
 Name=wan0
 [Network]
 DHCP=yes
+KeepConfiguration=dynamic
 [DHCP]
 UseDNS=true
 RouteMetric=100
@@ -321,6 +328,17 @@ net.ipv4.ip_forward = 1
 vm.swappiness = 100
 fs.inotify.max_user_instances = 1024
 fs.inotify.max_user_watches = 524288
+EOF
+
+# lan0 (10.10.10.5X/24) and wan0 (198.18.1.5X/24) share one L2 segment, so with
+# the defaults a node answers ARP for either address out of either leg. The
+# router then caches 198.18.1.5X behind lan0's MAC and its unicast DHCPACK never
+# reaches the client bound to wan0 — which is why the lease above never renews.
+cat > /etc/sysctl.d/99-k3s-arp.conf <<'EOF'
+net.ipv4.conf.all.arp_ignore = 1
+net.ipv4.conf.default.arp_ignore = 1
+net.ipv4.conf.all.arp_announce = 2
+net.ipv4.conf.default.arp_announce = 2
 EOF
 sysctl --system
 
