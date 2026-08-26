@@ -143,9 +143,12 @@
     <string name="ka_always_on_desc">The strongest option: the system itself keeps the tunnel up and restarts it. Turn on \"Always-on VPN\" for Outline Proxy in the VPN list.</string>
     <string name="ka_open_vpn_settings">Open VPN settings</string>
     <string name="ka_ignore_batt">Ignore battery optimisation</string>
-    <string name="ka_ignore_batt_desc">Without it Android may stop the tunnel in the background and refuse to let the watchdog restart it.</string>
-    <string name="ka_exact_alarms">Exact alarms</string>
-    <string name="ka_exact_alarms_desc">The watchdog checks the tunnel through Doze. Without this permission the checks are delayed by the system.</string>
+    <string name="ka_ignore_batt_desc">Without it Android may stop the tunnel in the background and refuse to let the app bring it back.</string>
+    <!-- Named for what it does rather than for the API (SCHEDULE_EXACT_ALARM): "exact
+         alarms" reads like a clock app. The system screen's own name is in the body
+         so the button does not land somewhere unexpected. -->
+    <string name="ka_exact_alarms">Background wake-ups</string>
+    <string name="ka_exact_alarms_desc">The app wakes itself every few minutes to check the tunnel and bring it back if the link died. Without this permission Android defers those checks while the phone sleeps, so the tunnel can stay down until you unlock it. Android calls this permission \"Alarms &amp; reminders\".</string>
     <string name="ka_notifications">Notifications</string>
     <string name="ka_notifications_desc">The tunnel runs as a foreground service. A hidden notification makes some firmware more eager to kill it.</string>
     <string name="ka_network_type">Network type</string>
@@ -167,9 +170,10 @@
     <string name="ka_vendor_battery">%1$s battery policy</string>
     <string name="ka_vendor_battery_desc">%1$s applies its own per-app battery policy on top of Android\'s. Open it and give Outline Proxy the unrestricted option.</string>
     <string name="ka_vendor_battery_desc_xiaomi">Not the same as the Android setting above. Open \"Battery saver\" for Outline Proxy and choose \"No restrictions\". %1$s may also reset the Android setting on its own, so check that one again after a reboot.</string>
-    <!-- One UI renames the never-sleeping list between versions, so name the screen
-         (stable) and describe the list rather than quoting one build's label. -->
-    <string name="ka_vendor_battery_desc_samsung">%1$s puts unused apps to sleep. Open \"Background usage limits\" and add Outline Proxy to the list of apps that are never put to sleep — \"Never sleeping apps\" on most builds.</string>
+    <!-- Path verified on One UI 8 (Galaxy Z Flip 7, Android 16). The button can only
+         land on the Battery screen — the allowlist itself sits two taps deeper behind
+         an Activity that requires a system permission — so spell the path out. -->
+    <string name="ka_vendor_battery_desc_samsung">%1$s puts unused apps to sleep. On the battery screen open \"Background usage limits\" → \"Never auto sleeping apps\", then add Outline Proxy with \"+\".</string>
     <string name="ka_open_vendor_settings">Open %1$s settings</string>
     <string name="ka_status_allowed">Allowed</string>
     <string name="ka_status_needs_action">Needs action</string>

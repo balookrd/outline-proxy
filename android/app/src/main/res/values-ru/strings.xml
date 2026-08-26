@@ -128,9 +128,9 @@
     <string name="ka_always_on_desc">Самый надёжный вариант: система сама поддерживает туннель и перезапускает его. Включите «Постоянная VPN» для Outline Proxy в списке VPN.</string>
     <string name="ka_open_vpn_settings">Открыть настройки VPN</string>
     <string name="ka_ignore_batt">Игнорировать оптимизацию батареи</string>
-    <string name="ka_ignore_batt_desc">Без этого Android может останавливать туннель в фоне и не давать сторожу перезапустить его.</string>
-    <string name="ka_exact_alarms">Точные будильники</string>
-    <string name="ka_exact_alarms_desc">Сторож проверяет туннель во время Doze. Без этого разрешения система откладывает проверки.</string>
+    <string name="ka_ignore_batt_desc">Без этого Android может останавливать туннель в фоне и не давать приложению поднять его заново.</string>
+    <string name="ka_exact_alarms">Пробуждение в фоне</string>
+    <string name="ka_exact_alarms_desc">Приложение само просыпается раз в несколько минут, проверяет туннель и поднимает его, если связь пропала. Без этого разрешения Android откладывает проверки, пока телефон спит, — и туннель может остаться выключенным до разблокировки. В настройках Android оно называется «Будильники и напоминания».</string>
     <string name="ka_notifications">Уведомления</string>
     <string name="ka_notifications_desc">Туннель работает как foreground-сервис. Скрытое уведомление повышает риск того, что некоторые прошивки его завершат.</string>
     <string name="ka_network_type">Тип сети</string>
@@ -148,7 +148,7 @@
     <string name="ka_vendor_battery">Батарея: %1$s</string>
     <string name="ka_vendor_battery_desc">У %1$s есть своя политика батареи для каждого приложения — поверх системной. Откройте её и снимите ограничения для Outline Proxy.</string>
     <string name="ka_vendor_battery_desc_xiaomi">Это не то же самое, что настройка Android в карточке выше. Откройте «Экономия заряда батареи» для Outline Proxy и выберите «Без ограничений» (в MIUI 12 пункт называется «Контроль активности» → «Нет ограничений»). %1$s может сам сбросить настройку Android — проверяйте и её после перезагрузки.</string>
-    <string name="ka_vendor_battery_desc_samsung">%1$s усыпляет неиспользуемые приложения. Откройте «Ограничения в фоновом режиме» и добавьте Outline Proxy в список приложений, которые нельзя усыплять, — в разных версиях One UI он называется «Неспящие приложения» или «Никогда не отключать».</string>
+    <string name="ka_vendor_battery_desc_samsung">%1$s усыпляет неиспользуемые приложения. На экране батареи откройте «Ограничения в фоновом режиме» → «Не уходят в сон автоматически», затем добавьте Outline Proxy кнопкой «+».</string>
     <string name="ka_open_vendor_settings">Открыть настройки %1$s</string>
     <string name="ka_status_allowed">Разрешено</string>
     <string name="ka_status_needs_action">Требуется действие</string>
