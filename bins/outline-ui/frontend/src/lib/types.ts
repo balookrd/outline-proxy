@@ -1,14 +1,14 @@
 export interface Instance { name: string; }
 export interface InstancesResponse { instances: Instance[]; refresh_interval_secs: number; }
 
-// SS — fields mirror ss/dashboard.html payload(); server may add more (index signature keeps them).
+// SS — a user is pure credentials since the endpoint-model refactor: it works
+// on every registered endpoint of its kind, so it no longer carries any
+// per-user carrier paths (the server rejects them with deny_unknown_fields).
+// The index signature keeps any extra fields the server may add.
 export interface User {
   id: string; enabled: boolean;
   password?: string | null; vless_id?: string | null; method?: string | null;
-  fwmark?: number | null; ws_path_tcp?: string | null; ws_path_udp?: string | null;
-  ws_path_ss?: string | null; ws_path_vless?: string | null;
-  xhttp_path_tcp?: string | null; xhttp_path_udp?: string | null;
-  xhttp_path_ss?: string | null; xhttp_path_vless?: string | null;
+  fwmark?: number | null;
   aliases?: Record<string, string | string[]> | null;
   // Always present on UserView (server/control/manager.rs) — never the raw
   // secret, just whether one is set. Drives the drawer's edit-mode
@@ -318,18 +318,12 @@ export interface GroupMutationResponse {
   restart_required?: boolean;
 }
 
-// Server-wide fallbacks a user inherits when it carries none of its own —
-// mirrors ServerDefaults in outline-ss-rust's control API. `method`,
-// `ws_path_tcp` and `ws_path_udp` always come back; the rest are omitted
-// when unset (the server skips `None`).
+// Server-wide default a user inherits when it carries none of its own —
+// mirrors ServerDefaults in outline-ss-rust's control API
+// (server/control/manager.rs), which since the endpoint-model refactor
+// carries only the default cipher. The clone form needs it so a
+// default-method template can still generate a password (the UI must not
+// guess a cipher it does not know).
 export interface ServerDefaults {
   method: string;
-  ws_path_tcp: string;
-  ws_path_udp: string;
-  ws_path_ss?: string;
-  ws_path_vless?: string;
-  xhttp_path_tcp?: string;
-  xhttp_path_udp?: string;
-  xhttp_path_ss?: string;
-  xhttp_path_vless?: string;
 }

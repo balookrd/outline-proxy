@@ -114,7 +114,9 @@ spec:
           tolerationSeconds: 60
       containers:
         - name: outline-ui
-          image: registry.k3s.beerloga.su/outline-ui:1.0.8
+          # 1.0.9 / release 1.3.0: SS user form dropped per-user carrier paths
+          # (server endpoint model — users are pure credentials, deny_unknown_fields).
+          image: registry.k3s.beerloga.su/outline-ui:1.0.9
           args: ["--config", "/etc/outline-ui/config.toml"]
           ports:
             - containerPort: 9000
