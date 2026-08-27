@@ -33,6 +33,7 @@ pub(super) struct ListResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct CreateRequest {
     pub id: String,
     #[serde(default)]
@@ -66,6 +67,7 @@ impl From<CreateRequest> for UserEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct UpdateRequest {
     #[serde(default)]
     pub password: FieldPatch<String>,
@@ -204,3 +206,7 @@ async fn set_enabled(state: ControlState, id: String, enabled: bool) -> axum::re
         },
     }
 }
+
+#[cfg(test)]
+#[path = "tests/handlers.rs"]
+mod tests;

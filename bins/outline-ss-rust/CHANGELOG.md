@@ -6,6 +6,12 @@ This changelog covers the git release tags `v1.0.0` through `1.9.0` (the monorep
 
 *Русская версия: [CHANGELOG.ru.md](CHANGELOG.ru.md)*
 
+## Unreleased
+
+### Changed
+
+- **Control API user create/update now rejects unknown fields.** Stale clients sending removed per-user path fields (`ws_path_tcp`, `ws_path_udp`, etc.) get a deserialization error (HTTP 400) instead of silent-ignore, making configuration mismatches visible early.
+
 ## 1.9.0 - 2026-08-24
 
 ### Added
