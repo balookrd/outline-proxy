@@ -297,3 +297,12 @@ ws_path_tcp = "/tcp"
 
     assert!(error.contains("unknown field"));
 }
+
+#[test]
+fn endpoint_array_of_tables_parses_singular_key() {
+    let cfg: FileConfig =
+        toml::from_str("[[endpoint]]\npath = \"/pss\"\nkind = \"ws_ss\"\npadded = true\n").unwrap();
+    let eps = cfg.endpoints.expect("endpoints parsed");
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].path, "/pss");
+}
