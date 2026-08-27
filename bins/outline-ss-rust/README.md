@@ -28,7 +28,7 @@ It supports:
 - Cross-transport session resumption that also covers XHTTP — a parked VLESS upstream re-attaches across an XHTTP reconnect, including a carrier switch (h3→h2 fallback)
 - Multiple users with independent Shadowsocks passwords and/or VLESS UUIDs
 - Per-user cipher selection
-- Per-user TCP, UDP, and VLESS WebSocket paths
+- Shared carrier endpoints (`[[endpoint]]`): any user works on every endpoint matching its kind
 - Per-user Linux `fwmark` on outbound sockets
 - IPv4 and IPv6 listeners, upstream targets, and client URLs
 - Prometheus metrics and a ready-made Grafana dashboard
@@ -44,7 +44,7 @@ It supports:
 | Ciphers | Supported | `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, `2022-blake3-chacha20-poly1305` |
 | Multi-user | Supported | Automatic user identification by successful decryption |
 | Per-user cipher | Supported | Each user may override the global default |
-| Per-user WebSocket paths | Supported | Independent `ws_path_tcp` and `ws_path_udp` |
+| Carrier endpoints | Supported | Global `[[endpoint]]` list (`path`, `kind`, `padded`); every user works on every endpoint of its kind |
 | Per-user `fwmark` | Supported | Linux only, requires privileges for `SO_MARK` |
 | HTTP/1.1 WebSocket | Supported | Plain `ws://` or `wss://` |
 | HTTP/2 WebSocket | Supported | RFC 8441 Extended CONNECT |
@@ -123,7 +123,7 @@ flowchart LR
 
 The TCP endpoint carries a standard Shadowsocks AEAD stream over WebSocket binary frames:
 
-1. The client opens a WebSocket connection on the user-specific or global TCP path.
+1. The client opens a WebSocket connection on a configured `ws_ss_tcp` (or combined `ws_ss`) endpoint.
 2. The client sends encrypted Shadowsocks stream data in binary frames.
 3. The server buffers and decrypts the stream until a complete target address is available.
 4. The server connects to the target and relays bytes bidirectionally.
@@ -134,7 +134,7 @@ WebSocket frame boundaries are ignored. The encrypted stream may be fragmented a
 
 The UDP endpoint expects exactly one Shadowsocks AEAD UDP packet per WebSocket binary frame:
 
-1. The client opens a WebSocket connection on the user-specific or global UDP path.
+1. The client opens a WebSocket connection on a configured `ws_ss_udp` (or combined `ws_ss`) endpoint.
 2. Each binary frame contains one encrypted UDP packet.
 3. The server decrypts the packet, extracts the target address, and forwards the datagram.
 4. Each received upstream response is returned as its own encrypted WebSocket binary frame.
@@ -149,36 +149,72 @@ Each incoming datagram is dispatched to an independent relay task. At most 256 c
 
 NAT entries are evicted after `tuning.udp_nat_idle_timeout_secs` (default 300 seconds under the `large` profile) of no outbound traffic. A background task scans for idle entries every 60 seconds.
 
+## Endpoint Model
+
+Every carrier path the server exposes is one entry in a single global list, `[[endpoint]]`, resolved once at startup:
+
+```toml
+[[endpoint]]
+path = "/tcp"
+kind = "ws_ss_tcp"
+
+[[endpoint]]
+path = "/pss"
+kind = "ws_ss"
+padded = true
+```
+
+Each entry is `{ path, kind, padded }`:
+
+- `path` — the URL path clients dial. Must be unique across every endpoint — two endpoints can never share a path, even of different kinds.
+- `kind` — the protocol and carrier shape (`EndpointKind`), one of:
+
+| `kind` | Carrier | What it carries |
+| --- | --- | --- |
+| `ws_ss` | WebSocket | Combined Shadowsocks — one path, both TCP and UDP legs |
+| `ws_ss_tcp` | WebSocket | Split Shadowsocks — TCP leg only |
+| `ws_ss_udp` | WebSocket | Split Shadowsocks — UDP leg only |
+| `ws_vless` | WebSocket | VLESS — TCP, UDP, and mux.cool, multiplexed on one path |
+| `xhttp_ss` | XHTTP | Combined Shadowsocks — one base path, both legs |
+| `xhttp_ss_tcp` | XHTTP | Split Shadowsocks — TCP leg only |
+| `xhttp_ss_udp` | XHTTP | Split Shadowsocks — UDP leg only |
+| `xhttp_vless` | XHTTP | VLESS — TCP, UDP, and mux.cool, multiplexed on one base path |
+
+  `ws_*` endpoints are reachable over the main TCP listener (HTTP/1.1, HTTP/2) and over HTTP/3 (`h3_listen`), when configured. `xhttp_*` endpoints are reachable over HTTP/1.1, HTTP/2, and HTTP/3 alike. The HTTP version is chosen by which listener the client dials, not by the endpoint itself.
+- `padded` — optional, default `false`. Wraps every chunk on this endpoint in a padding frame; see [Carrier Padding](#carrier-padding).
+
+Endpoints replace the old per-category `ws_path_tcp` / `ws_path_udp` / `ws_path_ss` / `ws_path_vless` / `xhttp_path_*` fields, and the per-user path overrides that used to sit alongside them — see [User Model](#user-model) for what a user carries instead. The list is startup-only, exactly like the H3 path registry (see [Control Plane](#control-plane)): the control plane can manage users on already-configured endpoints, but cannot add, remove, or repath one — a new endpoint needs a restart.
+
 ## Carrier Padding
 
-Optional application-layer padding for the WebSocket / XHTTP carriers that breaks the TLS-record-size correlation "proxy-inside-TLS" (TLS-in-TLS) classifiers key on. Each Shadowsocks chunk on a padded path is wrapped in a `real_len | pad_len | real | pad` frame before it reaches the outer TLS record layer, so the encrypted record size no longer tracks the Shadowsocks payload size — the same idea as AnyTLS's padding, hardened into the carriers already shipped here instead of adopting a second proxy protocol.
+Optional application-layer padding for the WebSocket / XHTTP carriers that breaks the TLS-record-size correlation "proxy-inside-TLS" (TLS-in-TLS) classifiers key on. Each Shadowsocks chunk on a padded endpoint is wrapped in a `real_len | pad_len | real | pad` frame before it reaches the outer TLS record layer, so the encrypted record size no longer tracks the Shadowsocks payload size — the same idea as AnyTLS's padding, hardened into the carriers already shipped here instead of adopting a second proxy protocol.
 
-- **Per-path.** Only the carrier paths listed in `[padding] paths` are padded; every other path keeps the plain Shadowsocks-over-WS / XHTTP wire, so third-party clients (Happ, Outline, xray, sing-box) on other paths are unaffected.
+- **Per-endpoint.** Padding is an attribute of the endpoint itself (`[[endpoint]] padded = true`); every other endpoint keeps the plain Shadowsocks-over-WS / XHTTP wire, so third-party clients (Happ, Outline, xray, sing-box) on unpadded endpoints are unaffected.
 - **Config-synchronised, not negotiated.** There is no on-wire capability bit — the matching `outline-ws-rust` client must enable `[padding]` too, or its plain frames are fed into the padding decoder and the session fails. Off by default, so the wire stays byte-for-byte identical until both ends opt in.
 - **Cover traffic.** With `cover = true` the downlink emits pad-only frames on an idle connection at a jittered interval (`cover_jitter_min_ms` … `cover_jitter_max_ms`), so silence does not leak timing.
 
-Covers SS- and VLESS-over-WebSocket (h1/h2/h3) and -over-XHTTP alike, and UDP is padded per-datagram on every WS carrier — SS-UDP (split: list its path; combined: the shared base path) and VLESS-UDP both. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in `config.toml` lists the knobs.
+Covers SS- and VLESS-over-WebSocket (h1/h2/h3) and -over-XHTTP alike, and UDP is padded per-datagram on every WS carrier — SS-UDP (split: set `padded = true` on its endpoint; combined: on the shared endpoint) and VLESS-UDP both. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in `config.toml` lists the knobs.
 
 ## User Model
 
-Each user can define:
+`[[users]]` entries are pure credentials — a user carries no path of its own. Each user can define:
 
 - `id`
-- `password`
+- `password` (Shadowsocks) and/or `vless_id` (VLESS) — at least one of the two
 - `method`
 - `fwmark`
-- `ws_path_tcp`
-- `ws_path_udp`
 - `aliases` (source-IP → accounting alias map)
 
-If a user does not specify `method`, `ws_path_tcp`, or `ws_path_udp`, the server falls back to the top-level defaults.
+A user with `password` works on **every** `ws_ss` / `ws_ss_tcp` / `ws_ss_udp` / `xhttp_ss` / `xhttp_ss_tcp` / `xhttp_ss_udp` endpoint configured on the server; a user with `vless_id` works on **every** `ws_vless` / `xhttp_vless` endpoint. A single user may hold both fields and use both protocol families at once. If a user does not specify `method`, the server falls back to the top-level default.
 
 This allows deployments such as:
 
-- different users on different WebSocket paths
+- one shared set of endpoints serving every user, distinguished only by Shadowsocks key or VLESS UUID
 - different users on different ciphers
 - different users with different Linux routing policy via `fwmark`
 - splitting one credential into several accounting identities by source IP via `aliases` (see [Per-source-IP aliases](#per-source-ip-aliases))
+
+Which paths exist, and which protocol/carrier shape each one serves, is now entirely a server-wide decision made once in [`[[endpoint]]`](#endpoint-model) — not a per-user setting.
 
 ## Configuration
 
@@ -251,26 +287,13 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `tuning.dns_cache_max_entries` | Process-wide cap on entries in the upstream DNS cache (default depends on profile; `262144` on `large`, ~30-40 MiB worst case at ~120 bytes plus the resolved addresses per entry). The cache key is `(port, prefer_ipv4_upstream, host)` and the host is the client-supplied destination, so without a cap a client resolving unique names grows the map for the whole TTL + stale-fallback window (an hour) — reclaim would only happen on the 5-minute janitor sweep. When full, inserts evict by approximate LRU (expired entries first), so the hot working set survives a flood of one-shot names. `0` disables the cap, restoring the unbounded sweep-only cache |
 | `tuning.ws_data_channel_capacity` | Per-session bounded mpsc capacity (in chunks) for the WebSocket writer fan-in (upstream-reader → WS-writer for TCP relay, NAT-reader → WS-writer for UDP relay). Defaults: `16` / `64` / `128` for `small` / `medium` / `large`. Sized too low and a momentary WS writer stall back-pressures the upstream read, visible as video buffer underrun; sized too high inflates worst-case per-session memory residency (`capacity × 16 KiB` for TCP). Tune up for high-bandwidth single-tenant deployments, down for memory-constrained hosts with many concurrent sessions |
 | `tuning.h2_*` / `tuning.h3_*` | Fine-grained H2/H3 flow-control windows, stream limits and socket buffers — see `TuningProfile` in `src/config/mod.rs` |
-| `ws_path_tcp` | Default **split** TCP WebSocket path (pairs with `ws_path_udp`) |
-| `ws_path_udp` | Default **split** UDP WebSocket path |
-| `ws_path_ss` | Optional **combined** SS-over-WS path: one path carries BOTH legs — the client dials `<base>/<token>` and the token's first character is the hidden TCP/UDP discriminator. Use instead of `ws_path_tcp` + `ws_path_udp`; mutually exclusive with them |
-| `ws_path_vless` | Optional VLESS-over-WebSocket TCP path on the main HTTP/1.1/HTTP/2 listener |
-| `xhttp_path_vless` | Optional VLESS-over-XHTTP base path. Server registers `<base>/{id}` for each base; `{id}` is an opaque per-session token chosen by the client. Distinct from `ws_path_vless` |
-| `xhttp_path_tcp` | Optional **split** SS-over-XHTTP TCP path. Same `<base>/{id}` route shape as `xhttp_path_vless`, but carries the SS AEAD stream. Pairs with `xhttp_path_udp`; one base path serves one protocol |
-| `xhttp_path_udp` | Optional **split** SS-UDP-over-XHTTP path. Pairs with `xhttp_path_tcp`, mirroring `ws_path_tcp` vs `ws_path_udp` |
-| `xhttp_path_ss` | Optional **combined** SS-over-XHTTP path: one path carries BOTH legs, split by the session-id's first-character bit. Use instead of `xhttp_path_tcp` + `xhttp_path_udp`; mutually exclusive with them and distinct from every other path |
+| `[[endpoint]]` | Global list of carrier endpoints. Each entry: `path` (the URL path clients dial, unique across every endpoint), `kind` (`EndpointKind` — see [Endpoint Model](#endpoint-model)), `padded` (optional bool, default `false` — see [Carrier Padding](#carrier-padding)). Startup-only: see [Control Plane](#control-plane) |
 | `http_root_auth` | Enable OpenConnect-style HTTP Basic auth on `/`; after 3 failed passwords it returns `403`, while non-root paths still return `404` |
 | `http_root_realm` | Text shown in the HTTP Basic password prompt for `/`; default is `Authorization required` |
 | `[access_keys]` | Consumed by the external `ops/access-keys` generator, **not** by this binary. The section is parsed for compatibility (every deployed config carries it and the config structs are `deny_unknown_fields`) and then ignored. Fields: `public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`. See [Client Config Generation](#client-config-generation) |
 | `method` | Default Shadowsocks cipher |
 | `users[].password` | Optional per-user Shadowsocks password |
 | `users[].vless_id` | Optional per-user VLESS UUID |
-| `users[].ws_path_vless` | Optional per-user VLESS WebSocket path; falls back to top-level `ws_path_vless` |
-| `users[].xhttp_path_vless` | Optional per-user VLESS XHTTP base path; falls back to top-level `xhttp_path_vless` |
-| `users[].xhttp_path_tcp` | Optional per-user split SS-over-XHTTP TCP path; falls back to top-level `xhttp_path_tcp` |
-| `users[].xhttp_path_udp` | Optional per-user split SS-UDP-over-XHTTP path; falls back to top-level `xhttp_path_udp` |
-| `users[].xhttp_path_ss` | Optional per-user combined SS-over-XHTTP path; falls back to top-level `xhttp_path_ss` |
-| `users[].ws_path_ss` | Optional per-user combined SS-over-WS path; falls back to top-level `ws_path_ss` |
 | `users[].aliases` | Optional source-IP → alias map for **accounting** relabeling (metrics/NAT/logs) — `{ alias = "cidr-or-ip" \| ["cidr", ...] }`. Longest-prefix match, IPv4+IPv6. Alias names must be globally unique vs ids/aliases. Direct connections only. See [Per-source-IP aliases](#per-source-ip-aliases) |
 | `users[].enabled` | Optional `bool` toggle. `false` blocks the user (no routes, no auth) without deleting the entry. Default: `true` |
 | `[control]` | Optional runtime user-management HTTP endpoint (feature `control`, on by default). See [Control Plane](#control-plane) |
@@ -287,11 +310,7 @@ id = "alice"
 password = "change-me"
 fwmark = 1001
 method = "aes-256-gcm"
-ws_path_tcp = "/alice/tcp"
-ws_path_udp = "/alice/udp"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
-ws_path_vless = "/alice/vless"
-xhttp_path_vless = "/alice/xh"
 
 [users.aliases]
 alice-mobile = ["10.0.0.0/8", "203.0.113.5"]
@@ -327,7 +346,7 @@ mobile = ["10.0.0.0/8", "2001:db8::/48"]
 
 ### VLESS over XHTTP
 
-For deployments behind a CDN that blocks WebSocket upgrades, configure VLESS over XHTTP alongside (or instead of) the WS path. The server registers `<xhttp_path_vless>/{id}` for every base; `{id}` is an opaque per-session token chosen by the client. The same `vless_id` works on both carriers — pick whichever has the better path on a given network.
+For deployments behind a CDN that blocks WebSocket upgrades, add an `xhttp_vless` endpoint alongside (or instead of) a `ws_vless` one. The server registers `<path>/{id}` for every `xhttp_vless` endpoint; `{id}` is an opaque per-session token chosen by the client. Any user with a `vless_id` works on both carriers — pick whichever has the better path on a given network.
 
 ```toml
 [server]
@@ -335,18 +354,22 @@ listen = "0.0.0.0:443"
 cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
 key_path  = "/etc/letsencrypt/live/example/privkey.pem"
 
-[websocket]
-# Optional: keep the WS path for clients on direct connections.
-ws_path_vless = "/vless"
-# Required for XHTTP. Distinct from `ws_path_vless`.
-xhttp_path_vless = "/xh"
+# Optional: keep the WS endpoint for clients on direct connections.
+[[endpoint]]
+path = "/vless"
+kind = "ws_vless"
+
+# Required for XHTTP.
+[[endpoint]]
+path = "/xh"
+kind = "xhttp_vless"
 
 [[users]]
 id = "alice"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
 ```
 
-The same `xhttp_path_vless` listener serves both XHTTP wire modes; the client picks the carrier per session via the URL query:
+The same `xhttp_vless` endpoint serves both XHTTP wire modes; the client picks the carrier per session via the URL query:
 
 | Mode | URL the client dials | What goes where |
 | --- | --- | --- |
@@ -357,7 +380,7 @@ Cross-transport session resumption is opt-in (set `[session_resumption].enabled 
 
 A byte-stream session also resumes across **proxy protocols**: a session parked over Shadowsocks reattaches to a VLESS carrier of the same `[[users]]` entry, and the reverse — that entry holds both `password` and `vless_id`, and both legs park under its `id`. This is what keeps sessions alive on a client whose uplink rotates its active wire across a mixed SS/VLESS set. The resuming stream's own authenticated user builds whatever framing it owes its client, so nothing of the parked protocol carries over; crossings are counted on `outline_ss_orphan_resume_cross_protocol_total{parked,resumed}`. Datagram and mux parks stay within their protocol — they hold framing state the other cannot express. Full rules, and what the owner check guarantees once it is the only identity signal on that path, in [`docs/SESSION-RESUMPTION.md`](docs/SESSION-RESUMPTION.md).
 
-The external `ops/access-keys` generator emits both `vless://...?type=xhttp&path=...` URIs per user when `xhttp_path_vless` is set — one for `mode=packet-up` and one for `mode=stream-one` — into that user's generated artifacts (`<user>.json` subscription and `<user>.txt`). xray, sing-box, Hiddify, v2rayNG, and Shadowrocket all accept both URIs as-is, so the user can pick whichever wire mode survives the network they land on. See [Client Config Generation](#client-config-generation).
+The external `ops/access-keys` generator emits both `vless://...?type=xhttp&path=...` URIs for every VLESS user once an `xhttp_vless` endpoint is configured — one for `mode=packet-up` and one for `mode=stream-one` — into that user's generated artifacts (`<user>.json` subscription and `<user>.txt`). xray, sing-box, Hiddify, v2rayNG, and Shadowrocket all accept both URIs as-is, so the user can pick whichever wire mode survives the network they land on. See [Client Config Generation](#client-config-generation).
 
 ### VLESS over WebSocket/TLS
 
@@ -369,24 +392,30 @@ listen = "0.0.0.0:443"
 cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
 key_path  = "/etc/letsencrypt/live/example/privkey.pem"
 
-[websocket]
-ws_path_tcp = "/tcp"
-ws_path_udp = "/udp"
-ws_path_vless = "/vless"
+[[endpoint]]
+path = "/tcp"
+kind = "ws_ss_tcp"
+
+[[endpoint]]
+path = "/udp"
+kind = "ws_ss_udp"
+
+[[endpoint]]
+path = "/vless"
+kind = "ws_vless"
 
 [[users]]
 id = "alice"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
-ws_path_vless = "/alice-vless"
 ```
 
 Example client URI for Happ, v2rayNG, or Hiddify:
 
 ```text
-vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Falice-vless&encryption=none#example:alice
+vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Fvless&encryption=none#example:alice
 ```
 
-Keep VLESS and Shadowsocks WebSocket paths distinct. A `[[users]]` entry may have both `password` for Shadowsocks and `vless_id` for VLESS, or only `vless_id` for a VLESS-only user. `users[].ws_path_vless` overrides the top-level `ws_path_vless`.
+Keep VLESS and Shadowsocks endpoints on distinct paths — configure a separate `[[endpoint]]` entry per kind. A `[[users]]` entry may combine `password` for Shadowsocks and `vless_id` for VLESS, or carry only `vless_id` for a VLESS-only user; either way it works on every endpoint matching its kind(s), not just one path of its own.
 
 ### Control Plane
 
@@ -405,7 +434,7 @@ The multi-instance browser dashboard that used to run on a separate listener her
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/control/users` | List users (metadata only — no secrets in the response) |
-| `POST` | `/control/users` | Create a user. Body: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "ws_path_tcp": "/...", "ws_path_udp": "/...", "ws_path_vless": "/...", "enabled": true }` — at least one of `password`/`vless_id` is required |
+| `POST` | `/control/users` | Create a user. Body: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "enabled": true }` — at least one of `password`/`vless_id` is required |
 | `GET` | `/control/users/{id}` | Get a single user's metadata |
 | `DELETE` | `/control/users/{id}` | Remove the user |
 | `POST` | `/control/users/{id}/block` | Disable a user (`enabled = false`) without deleting |
@@ -424,7 +453,7 @@ When the server was started without a config file (users given via `--user` / `O
 
 Limitations (v1):
 
-- Per-user `ws_path_tcp` / `ws_path_udp` / `ws_path_vless` values must already exist in the startup config — the Axum/H3 routers only register paths known at boot. Introducing a brand-new path still requires a restart.
+- Endpoints (`[[endpoint]]`) are resolved once at startup — the Axum/H3 routers only register paths known at boot — so the control plane can create/block/delete users on those endpoints but cannot add, remove, or repath an endpoint itself. A brand-new endpoint still requires a restart.
 
 When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth challenge. The username is ignored and the password is matched against the configured Shadowsocks users. `http_root_realm` controls the text shown in that password prompt. After three failed password attempts in the same browser session, the server returns `403 Forbidden`. Ordinary HTTP requests to any non-root path still return `404 Not Found`.
 
@@ -446,8 +475,6 @@ When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth 
 - `OUTLINE_SS_OUTBOUND_IPV6_REFRESH_SECS`
 - `OUTLINE_SS_OUTBOUND_IPV6_STICKY`
 - `OUTLINE_SS_OUTBOUND_IPV6_STICKY_TTL_SECS`
-- `OUTLINE_SS_WS_PATH_TCP`
-- `OUTLINE_SS_WS_PATH_UDP`
 - `OUTLINE_SS_HTTP_ROOT_AUTH`
 - `OUTLINE_SS_HTTP_ROOT_REALM`
 - `OUTLINE_SS_METHOD`
@@ -463,7 +490,7 @@ When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth 
 OUTLINE_SS_USERS=alice=secret1,bob=secret2
 ```
 
-Per-user `method`, `fwmark`, `ws_path_tcp`, and `ws_path_udp` are configured in TOML rather than inside `OUTLINE_SS_USERS`.
+Per-user `method` and `fwmark` are configured in TOML rather than inside `OUTLINE_SS_USERS`. Endpoints are TOML-only too — there is no environment-variable equivalent for `[[endpoint]]`.
 
 ## Deployment Modes
 
@@ -475,9 +502,13 @@ Use this for testing or trusted private networks:
 [server]
 listen = "0.0.0.0:3000"
 
-[websocket]
-ws_path_tcp = "/tcp"
-ws_path_udp = "/udp"
+[[endpoint]]
+path = "/tcp"
+kind = "ws_ss_tcp"
+
+[[endpoint]]
+path = "/udp"
+kind = "ws_ss_udp"
 
 [shadowsocks]
 method = "chacha20-ietf-poly1305"
@@ -491,9 +522,13 @@ listen = "0.0.0.0:5443"
 cert_path = "/etc/outline-ss-rust/tls/fullchain.pem"
 key_path  = "/etc/outline-ss-rust/tls/privkey.pem"
 
-[websocket]
-ws_path_tcp = "/tcp"
-ws_path_udp = "/udp"
+[[endpoint]]
+path = "/tcp"
+kind = "ws_ss_tcp"
+
+[[endpoint]]
+path = "/udp"
+kind = "ws_ss_udp"
 ```
 
 This serves `wss://` on the main TCP listener and supports RFC 8441 on the same socket.

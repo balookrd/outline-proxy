@@ -113,22 +113,68 @@ path = "/metrics"
 # `ipv6_sticky = false` to restore per-connect random source selection.
 # ipv6_sticky_ttl_secs = 1800
 
-[websocket]
-# Split paths: TCP and UDP on separate base paths.
-ws_path_tcp = "/tcp"
-ws_path_udp = "/udp"
-# Combined SS paths (opt-in): ONE base path carries both TCP and UDP, told
-# apart by a hidden bit in the URL token (WS) or session-id (XHTTP). The
-# client sets `ss_ws_url` / `ss_xhttp_url` + `ss_mode`. Mutually exclusive
-# with the split fields above — a censor then sees one endpoint, not two.
-# ws_path_ss = "/ss"
-# xhttp_path_ss = "/ssx"
-# Split SS-over-XHTTP paths (alternative to combined; pair tcp + udp):
-# xhttp_path_tcp = "/ssx-tcp"
-# xhttp_path_udp = "/ssx-udp"
-# Optional VLESS over WebSocket path on the main TCP listener.
-# Use with TLS for public deployments. MVP supports TCP CONNECT only.
-# ws_path_vless = "/vless"
+# ── Carrier endpoints ────────────────────────────────────────────────────────
+# The global list of carrier paths. Every entry is `{path, kind, padded}`:
+#   path   - URL path clients dial; unique across every endpoint, any kind
+#   kind   - protocol + carrier shape (see the EndpointKind table in README.md):
+#            ws_ss, ws_ss_tcp, ws_ss_udp, ws_vless,
+#            xhttp_ss, xhttp_ss_tcp, xhttp_ss_udp, xhttp_vless
+#   padded - optional, default false; see `[padding]` below and docs/PADDING.md
+# Users carry no path of their own: a user with `password` works on every
+# ws_ss*/xhttp_ss* endpoint below, and a user with `vless_id` works on every
+# ws_vless/xhttp_vless endpoint — one credential, every matching endpoint.
+# Endpoints are resolved once at startup, like the H3 path registry: adding,
+# removing, or repathing one needs a restart (see AGENTS.md).
+
+# Split SS-over-WS: TCP and UDP on separate paths.
+[[endpoint]]
+path = "/tcp"
+kind = "ws_ss_tcp"
+
+[[endpoint]]
+path = "/udp"
+kind = "ws_ss_udp"
+
+# Combined SS-over-WS (opt-in alternative to the split pair above): ONE path
+# carries both legs, told apart by a hidden bit in the URL token. The client
+# sets `ss_ws_url` + `ss_mode`.
+# [[endpoint]]
+# path = "/ss"
+# kind = "ws_ss"
+
+# Same combined shape, but padded (see `[padding]` below): every chunk on this
+# path is wrapped in a padding frame, so a client dialing it needs padding
+# enabled too.
+# [[endpoint]]
+# path = "/pss"
+# kind = "ws_ss"
+# padded = true
+
+# Split SS-over-XHTTP (alternative to combined; pair tcp + udp):
+# [[endpoint]]
+# path = "/ssx-tcp"
+# kind = "xhttp_ss_tcp"
+#
+# [[endpoint]]
+# path = "/ssx-udp"
+# kind = "xhttp_ss_udp"
+
+# Combined SS-over-XHTTP: one base path carries both legs.
+# [[endpoint]]
+# path = "/ssx"
+# kind = "xhttp_ss"
+
+# Optional VLESS over WebSocket, on the main TCP listener. Use with TLS for
+# public deployments.
+# [[endpoint]]
+# path = "/vless"
+# kind = "ws_vless"
+
+# Optional VLESS over XHTTP — for deployments behind a CDN that blocks
+# WebSocket upgrades.
+# [[endpoint]]
+# path = "/xh"
+# kind = "xhttp_vless"
 
 # Optional OpenConnect-style password prompt on GET /.
 # The browser username is ignored; the password is matched against configured users.
@@ -221,21 +267,22 @@ ws_path_udp = "/udp"
 # proxy_protocol = "v1"
 
 # ── Carrier padding (anti TLS-in-TLS record-size correlation) ────────────────
-# Wraps each Shadowsocks chunk on the listed WS / XHTTP carrier paths in a
-# length-delimited padding frame, so the size of the buffer handed to the outer
-# TLS record no longer tracks the Shadowsocks payload size. This breaks the
-# record-size correlation that "proxy-inside-TLS" / TLS-in-TLS classifiers key
-# on (the goal AnyTLS's padding pursues, done in-house on the carriers we ship).
+# Wraps each Shadowsocks/VLESS chunk on an endpoint with `padded = true` (see
+# `[[endpoint]]` above) in a length-delimited padding frame, so the size of the
+# buffer handed to the outer TLS record no longer tracks the payload size. This
+# breaks the record-size correlation that "proxy-inside-TLS" / TLS-in-TLS
+# classifiers key on (the goal AnyTLS's padding pursues, done in-house on the
+# carriers we ship).
 #
 # Config-synchronised, NOT negotiated on the wire: enable the matching client
 # (`outline-ws-rust` `[padding]`) too, or its plain frames get fed into the
-# padding decoder and the session fails. Only the listed `paths` are padded;
-# every other path keeps the plain wire, so third-party clients (Happ, Outline,
-# xray, sing-box) on other paths are unaffected. Disabled by default.
+# padding decoder and the session fails. This block holds only the scheme's
+# parameters — which endpoints actually pad is each endpoint's own `padded`
+# flag, not a key here. An endpoint with `padded` unset keeps the plain wire,
+# so third-party clients (Happ, Outline, xray, sing-box) on other endpoints are
+# unaffected.
 #
 # [padding]
-# enabled = true
-# paths = ["/SECRET/tcp", "/SECRET/ss"]   # WS/XHTTP carrier paths to pad
 # min_bytes = 0                            # min pad drawn per frame
 # max_bytes = 256                          # max pad per frame (0 = no framing)
 # cover = false                            # idle pad-only cover frames (downlink)
@@ -265,15 +312,18 @@ print = false
 method = "chacha20-ietf-poly1305"
 # For `2022-*` methods, use a base64-encoded raw PSK, e.g. `openssl rand -base64 16`.
 
+# Users are pure credentials — no path of their own. A user with `password`
+# works on every ws_ss*/xhttp_ss* endpoint configured above; a user with
+# `vless_id` works on every ws_vless/xhttp_vless endpoint (a user may set both
+# and use both kinds). Which endpoints exist is a server-wide decision now,
+# made once in `[[endpoint]]` above.
+
 [[users]]
 id = "alice"
 password = "change-me"
 # vless_id = "550e8400-e29b-41d4-a716-446655440000"
-# ws_path_vless = "/alice/vless"
 fwmark = 1001
 method = "aes-128-gcm"
-ws_path_tcp = "/alice/tcp"
-ws_path_udp = "/alice/udp"
 # Per-user source-IP aliases (ACCOUNTING ONLY). After normal authentication a
 # client whose source IP falls into one of these subnets is relabeled to the
 # matching alias in metrics / NAT / logs; otherwise it stays `alice`. Never
@@ -295,22 +345,16 @@ fwmark = 1002
 id = "carol-2022"
 password = "MDEyMzQ1Njc4OWFiY2RlZg=="
 method = "2022-blake3-aes-128-gcm"
-ws_path_tcp = "/carol/tcp"
-ws_path_udp = "/carol/udp"
 
 [[users]]
 id = "dave-2022-chacha"
 password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 method = "2022-blake3-chacha20-poly1305"
-ws_path_tcp = "/dave/tcp"
-ws_path_udp = "/dave/udp"
 
-# Optional VLESS-only user. Requires `[websocket].ws_path_vless` (global) or
-# a per-user `ws_path_vless`.
+# Optional VLESS-only user. Requires a ws_vless or xhttp_vless endpoint above.
 # [[users]]
 # id = "eve-vless"
 # vless_id = "650e8400-e29b-41d4-a716-446655440000"
-# ws_path_vless = "/eve/vless"
 
 # Resource-limit preset. Presets: "small" | "medium" | "large" (default).
 # Each preset defines H2/H3 flow-control windows and stream limits plus

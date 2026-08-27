@@ -57,12 +57,14 @@ disabled, which keeps the wire byte-for-byte identical to the unpadded carrier,
 so third-party clients (Happ, Outline, xray, sing-box) are unaffected until an
 operator turns padding on.
 
-- **Server — per-path.** `[padding] paths` lists the carrier paths that are
-  padded. Only connections whose matched path is in that set are framed; every
-  other path keeps the plain Shadowsocks / VLESS wire. This lets one server pad
-  its own clients on one path (SS *or* VLESS) while serving third-party clients
-  (including third-party VLESS clients such as xray / sing-box) on another,
-  unchanged.
+- **Server — per-endpoint.** Padding is an attribute of the endpoint itself:
+  `[[endpoint]] padded = true` marks one carrier path as padded. Only
+  connections on a `padded` endpoint are framed; every other endpoint keeps
+  the plain Shadowsocks / VLESS wire. `[padding]` itself holds only the
+  scheme's parameters (range / cover / jitter / throttle detection), not which
+  paths pad. This lets one server pad its own clients on one endpoint (SS *or*
+  VLESS) while serving third-party clients (including third-party VLESS
+  clients such as xray / sing-box) on another, unpadded endpoint, unchanged.
 - **Client — global default + per-uplink override.** The global `[padding]`
   block sets the scheme parameters (range / cover / jitter) and a default
   on/off, `enabled`. Each `[[outline.uplinks]]` may override the on/off with
@@ -121,15 +123,16 @@ compose in either combination. See
   command byte *inside* the first frame), so the server cannot tell the legs
   apart before it reads data — a padded VLESS path therefore *must* pad the UDP
   leg too.
-- **Split SS** routes TCP and UDP on *separate* paths. List both in
-  `[padding] paths` to pad the whole uplink. The client's per-uplink switch is
-  all-or-nothing — a padded uplink frames every datagram it sends — so a padded
-  SS uplink expects both its TCP and UDP server paths to be padded.
-- **Combined SS** puts TCP and UDP on one base path, split by a hidden token
-  (WS) / session-id (XHTTP) bit the server decodes at upgrade time. Both legs
-  resolve the same base path, so listing the combined base path in
-  `[padding] paths` pads *both* legs: the UDP leg's `run_udp_relay` resolves the
-  same per-path scheme as the TCP leg's `run_tcp_relay`.
+- **Split SS** routes TCP and UDP on *separate* endpoints (`ws_ss_tcp` /
+  `ws_ss_udp`, or their XHTTP equivalents). Set `padded = true` on both to pad
+  the whole uplink. The client's per-uplink switch is all-or-nothing — a
+  padded uplink frames every datagram it sends — so a padded SS uplink expects
+  both its TCP and UDP server endpoints to be padded.
+- **Combined SS** (`ws_ss` / `xhttp_ss`) puts TCP and UDP on one endpoint,
+  split by a hidden token (WS) / session-id (XHTTP) bit the server decodes at
+  upgrade time. Both legs resolve the same endpoint, so `padded = true` on a
+  combined endpoint pads *both* legs: the UDP leg's `run_udp_relay` resolves
+  the same per-path scheme as the TCP leg's `run_tcp_relay`.
 
 ## Downstream-throttle detection (server → client uplink switch)
 
@@ -154,9 +157,9 @@ health-weighted selection migrates its traffic to another uplink. The cooldown
 is temporary — the uplink recovers automatically once its probe goes green.
 
 Because the signal rides a cover frame, the feature only works on a **padded
-carrier** — only your own clients on a path you listed in `[padding] paths` can
-receive it; third-party (unpadded) SS clients and the unpadded datagram paths
-are never monitored. Both detection (server) and reaction (client) are **off by
+carrier** — only your own clients on an endpoint with `padded = true` can
+receive it; third-party (unpadded) SS clients and unpadded endpoints are never
+monitored. Both detection (server) and reaction (client) are **off by
 default**. "Switch
 uplink" only helps when the other uplink takes a different network path (a
 different server / VPS) — that is the operator's uplink layout, not something
@@ -169,12 +172,27 @@ gates keep false positives down, but tune them to your traffic.
 ### Server (`outline-ss-rust`)
 
 ```toml
+# Mark the endpoints you want padded — SS-TCP, SS-UDP, the combined SS
+# endpoint, and VLESS all use the same `padded` attribute; set it on the
+# SS-UDP endpoint too to pad the UDP leg uniformly.
+[[endpoint]]
+path = "/SECRET/tcp"
+kind = "ws_ss_tcp"
+padded = true
+
+[[endpoint]]
+path = "/SECRET/udp"
+kind = "ws_ss_udp"
+padded = true
+
+[[endpoint]]
+path = "/SECRET/vless"
+kind = "ws_vless"
+padded = true
+
+# Parameters only — an endpoint pads iff its own `padded = true` (above), not
+# a key in this block.
 [padding]
-enabled = true
-# WS/XHTTP carrier paths to pad. SS-TCP, SS-UDP, the combined SS base path, and
-# VLESS all ride the same per-path switch; list the SS-UDP path too to pad the
-# UDP leg uniformly.
-paths = ["/SECRET/tcp", "/SECRET/udp", "/SECRET/vless"]
 min_bytes = 0                            # min pad drawn per frame
 max_bytes = 256                          # max pad per frame (0 = no framing)
 cover = false                            # idle pad-only cover frames (downlink)
@@ -196,8 +214,6 @@ stall detector, which was retired together with the v4 mesh relay (see
 `[padding]` section rejects unknown keys, so removing it from the schema would
 refuse to load a config that still sets it — and a config carrying it logs a
 warning at startup. Remove it; the field itself goes in a later release.
-
-Validation rejects `enabled = true` with an empty `paths`.
 
 ### Client (`outline-ws-rust`)
 

@@ -22,6 +22,16 @@ carrier-padding, TUN GSO / GRO / USO offload и connection sniffing с
 переопределением назначения вышли в этой линейке раньше. Главная недавняя
 работа охватывает всю систему:
 
+- **BREAKING: серверные carrier-эндпоинты объединены (`outline-ss-rust`,
+  ожидает релиза).** Блок `[websocket]`, per-user поля `ws_path_tcp` /
+  `ws_path_udp` / `ws_path_vless` / `xhttp_path_*` и `[padding] enabled` /
+  `paths` удалены и больше не парсятся. Каждый carrier-путь теперь — одна
+  запись `[[endpoint]] { path, kind, padded }` в едином глобальном списке, а
+  пользователи — чистые credentials, работающие на каждом эндпоинте своего
+  kind; padding — атрибут эндпоинта, а не отдельный список путей. См.
+  [`bins/outline-ss-rust/README.ru.md`](bins/outline-ss-rust/README.ru.md#модель-эндпоинтов)
+  и [`docs/PADDING.ru.md`](docs/PADDING.ru.md); перед апгрейдом мигрируйте
+  `config.toml`.
 - **Mesh-кластер серверов.** Edge-узлы релеят сессию клиента на home-узел, что
   ей владеет, с метриками исхода релея и полной миграцией сессии при
   переключении edge — включая single-target UDP и VLESS-mux-бандлы.

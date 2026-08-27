@@ -109,8 +109,24 @@ Prometheus metrics и локально пропатченные копии `h3` 
   path registry, control API, metrics и документация, где применимо. (Browser UI
   и access-key generation вынесены из бинаря — см. `bins/outline-ui` и
   `ops/access-keys`.)
-- H3 path registry сейчас фактически startup-time registry. Control-plane может
-  управлять пользователями только на уже известных путях. Не обещай полноценный
+- Эндпоинты (`[[endpoint]]`) — startup-only реестр, той же природы, что и H3
+  path registry ниже: список `{path, kind, padded}` резолвится один раз при
+  старте в `Config::endpoints`, и control-plane не может добавить, удалить
+  или перепривязать эндпоинт в рантайме — только управлять пользователями на
+  уже известных путях (см. `config::endpoint`, `config/loader.rs`).
+  Пользователи при этом path-independent: `[[users]]` не хранит путей вовсе —
+  пользователь с `password` работает на **каждом** эндпоинте с kind из
+  SS-семейства (`ws_ss`/`ws_ss_tcp`/`ws_ss_udp`/`xhttp_ss`/`xhttp_ss_tcp`/
+  `xhttp_ss_udp`), пользователь с `vless_id` — на каждом эндпоинте с kind из
+  VLESS-семейства (`ws_vless`/`xhttp_vless`); одна запись может держать оба
+  и работать на обоих семействах разом. Padding — атрибут эндпоинта
+  (`padded: bool`), а не отдельный список путей: `[padding]` в файле
+  конфига хранит только параметры схемы (диапазон/cover/jitter/
+  throttle-детект). Какие пути паддятся, решает `padded` каждого
+  `[[endpoint]]` (`padding.padded_paths` в рантайм-конфиге строится из
+  этого же списка эндпоинтов, не из отдельного ключа). H3 path registry
+  сейчас фактически startup-time registry. Control-plane может управлять
+  пользователями только на уже известных путях. Не обещай полноценный
   hot-add новых H3/WS/XHTTP paths без изменения этой модели. Но замораживать в
   per-connection ctx (`H3ConnectionCtx`) допустимо только НАБОРЫ путей
   (`tcp_paths` / `udp_paths` / `vless_paths` / `xhttp_paths`): сами route-записи
