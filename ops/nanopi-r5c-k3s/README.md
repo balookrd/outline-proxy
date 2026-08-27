@@ -160,12 +160,17 @@ MACAddress=02:00:5e:00:01:12
 EOF
 
 # wan0 — uplink: default route and DNS come from the home DHCP server.
-# KeepConfiguration=dynamic is not cosmetic: the router hands out a 7h lease, its
-# renew (T1) goes unanswered, and at T2 — every 6h07m30s — networkd would drop
-# the address and immediately take it back. That teardown resets every
-# long-lived outbound TCP session of every pod on the node: the reply no longer
-# maps back into the pod and the kernel answers RST. It cost zigbee2mqtt 31
-# restarts in the 8 days to 2026-08-26 before it was found.
+# KeepConfiguration=dynamic and the arp_ignore/arp_announce sysctls further down
+# are one fix in two files — keep them together. The ARP sysctls are the root
+# fix: without them the router's unicast DHCPACK never reaches the renewing
+# client (why: at the sysctl block), the 7h lease expires unrenewed, and at T2 —
+# every 6h07m30s — networkd drops the address and re-adds it. That teardown
+# resets every long-lived outbound TCP session of every pod on the node: the
+# reply no longer maps back into the pod and the kernel answers RST — 31
+# zigbee2mqtt restarts in the 8 days to 2026-08-26 before it was found.
+# KeepConfiguration=dynamic is the second line: it pins the leased address
+# (valid_lft forever) so an expired lease can never tear it down, even if renew
+# ever regresses.
 cat > /etc/systemd/network/20-wan0.network <<'EOF'
 [Match]
 Name=wan0
@@ -333,7 +338,10 @@ EOF
 # lan0 (10.10.10.5X/24) and wan0 (198.18.1.5X/24) share one L2 segment, so with
 # the defaults a node answers ARP for either address out of either leg. The
 # router then caches 198.18.1.5X behind lan0's MAC and its unicast DHCPACK never
-# reaches the client bound to wan0 — which is why the lease above never renews.
+# reaches the client bound to wan0 — which is why the wan0 lease above never
+# renews. arp_ignore=1 + arp_announce=2 keep each address answered and sourced
+# only from its own leg; verified fix — renew then completes (REQUEST -> ACK,
+# lease extended), confirmed 2026-08-27.
 cat > /etc/sysctl.d/99-k3s-arp.conf <<'EOF'
 net.ipv4.conf.all.arp_ignore = 1
 net.ipv4.conf.default.arp_ignore = 1
