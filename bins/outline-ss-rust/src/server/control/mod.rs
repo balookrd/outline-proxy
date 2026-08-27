@@ -7,10 +7,10 @@
 //! config file the server was loaded from, so they survive restart.
 //!
 //! Known v1 limitations:
-//! - New per-user `ws_path_tcp`/`ws_path_udp`/`ws_path_vless` values must
-//!   already exist in the startup config (the Axum/H3 routers only register
-//!   paths known at startup). Creating a user on a brand-new path requires a
-//!   restart.
+//! - Endpoints (`{path, kind}`) are startup-only. A mutation adds or changes a
+//!   pure credential, which is then routable on every already-registered
+//!   endpoint of its kind; introducing a brand-new path still needs a restart
+//!   (the Axum/H3 routers only register paths known at startup).
 //! - Plain shadowsocks listeners (`ss_listen`) use a startup snapshot of user
 //!   keys; they are not updated at runtime. WebSocket transports are.
 //! - The implicit user synthesized from the top-level `password` field cannot
@@ -21,5 +21,5 @@ mod manager;
 mod persist;
 mod server;
 
-pub(in crate::server) use manager::{AllowedRoutePaths, UserManager};
+pub(in crate::server) use manager::UserManager;
 pub(in crate::server) use server::spawn_control_server;

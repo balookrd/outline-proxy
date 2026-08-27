@@ -1,7 +1,7 @@
 //! Runtime user manager: canonical list + atomic snapshot publishing.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, HashSet},
     path::PathBuf,
     sync::Arc,
 };
@@ -12,20 +12,13 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::{
-    config::{CipherKind, Config, OneOrManyCidr, UserEntry},
+    config::{CipherKind, Config, EndpointConfig, OneOrManyCidr, UserEntry},
     crypto::UserKey,
-    metrics::Transport,
-    protocol::vless::VlessUser,
 };
 
 use super::super::{
-    setup::{
-        UserRoute, VlessUserRoute, build_transport_route_map, build_vless_transport_route_map,
-    },
-    state::{
-        AuthUsersSnapshot, RouteRegistry, RoutesSnapshot, TransportRoute, UserKeySlice,
-        VlessTransportRoute,
-    },
+    endpoint_routes::{build_route_registry, build_ss_user_pool, build_vless_user_pool},
+    state::{AuthUsersSnapshot, RouteRegistry, RoutesSnapshot, UserKeySlice},
 };
 
 use super::persist::{UserMutation, persist_user_mutation};
@@ -43,23 +36,11 @@ pub(in crate::server) struct UserManager {
     routes: RoutesSnapshot,
     auth_users: AuthUsersSnapshot,
     default_method: CipherKind,
-    default_ws_path_tcp: String,
-    default_ws_path_udp: String,
-    default_ws_path_ss: Option<String>,
-    default_ws_path_vless: Option<String>,
-    default_xhttp_path_vless: Option<String>,
-    default_xhttp_path_tcp: Option<String>,
-    default_xhttp_path_udp: Option<String>,
-    default_xhttp_path_ss: Option<String>,
-    // Paths that exist in the startup Axum/H3 routers. Mutations that
-    // introduce a path outside this set are rejected — the routers cannot
-    // dispatch requests to unknown paths until the next restart.
-    allowed_tcp_paths: BTreeSet<String>,
-    allowed_udp_paths: BTreeSet<String>,
-    allowed_vless_paths: BTreeSet<String>,
-    allowed_xhttp_paths: BTreeSet<String>,
-    allowed_xhttp_ss_paths: BTreeSet<String>,
-    allowed_xhttp_ss_udp_paths: BTreeSet<String>,
+    /// Startup endpoint list. Routes are rebuilt against this same list on
+    /// every mutation, so a user shows up on every endpoint of its kind —
+    /// there are no per-user paths to gate on. Endpoints are startup-only:
+    /// the live axum/h3 routers cannot grow new paths until the next restart.
+    endpoints: Arc<[EndpointConfig]>,
     config_path: Option<PathBuf>,
 }
 
@@ -75,22 +56,6 @@ pub(super) struct UserView {
     pub method: Option<CipherKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fwmark: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ws_path_tcp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ws_path_udp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ws_path_ss: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ws_path_vless: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_vless: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_tcp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_udp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_ss: Option<String>,
     /// Source-IP → alias map. Exposed in full (not a `has_*` flag) — it is
     /// accounting/routing policy, not a secret.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,14 +71,6 @@ impl From<&UserEntry> for UserView {
             enabled: entry.is_enabled(),
             method: entry.method,
             fwmark: entry.fwmark,
-            ws_path_tcp: entry.ws_path_tcp.clone(),
-            ws_path_udp: entry.ws_path_udp.clone(),
-            ws_path_ss: entry.ws_path_ss.clone(),
-            ws_path_vless: entry.ws_path_vless.clone(),
-            xhttp_path_vless: entry.xhttp_path_vless.clone(),
-            xhttp_path_tcp: entry.xhttp_path_tcp.clone(),
-            xhttp_path_udp: entry.xhttp_path_udp.clone(),
-            xhttp_path_ss: entry.xhttp_path_ss.clone(),
             aliases: entry.aliases.clone(),
             has_password: entry.password.is_some(),
             has_vless_id: entry.vless_id.is_some(),
@@ -121,42 +78,15 @@ impl From<&UserEntry> for UserView {
     }
 }
 
-/// The server-wide fallbacks a user inherits when it carries none of its own.
+/// The server-wide fallback a user inherits when it carries none of its own.
 /// Exposed read-only over `GET /control/defaults` so the dashboard can show a
-/// user's *effective* method and paths: cloning a user that runs on these
+/// user's *effective* cipher: cloning a user that runs on the default method
 /// otherwise yields a blank form, and the UI cannot generate a password
-/// without knowing the cipher. Carries no secrets — method and paths only.
+/// without knowing the cipher. Carries no secrets — method only. Paths are no
+/// longer a per-user concern: users work on every endpoint of their kind.
 #[derive(Debug, Serialize)]
 pub(super) struct ServerDefaults {
     pub method: CipherKind,
-    pub ws_path_tcp: String,
-    pub ws_path_udp: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ws_path_ss: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ws_path_vless: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_tcp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_udp: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_ss: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_vless: Option<String>,
-}
-
-/// Startup-registered route paths the control plane may attach new users
-/// to. The live axum/h3 routers cannot grow new paths until the next
-/// process restart, so a hot-reload mutation that names an unregistered
-/// path is rejected. Bundled into one argument to keep `UserManager::new`
-/// within the project's argument-count budget (cf. `H3ServeCtx`).
-pub(in crate::server) struct AllowedRoutePaths {
-    pub(in crate::server) tcp: BTreeSet<String>,
-    pub(in crate::server) udp: BTreeSet<String>,
-    pub(in crate::server) vless: BTreeSet<String>,
-    pub(in crate::server) xhttp_vless: BTreeSet<String>,
-    pub(in crate::server) xhttp_ss: BTreeSet<String>,
-    pub(in crate::server) xhttp_ss_udp: BTreeSet<String>,
 }
 
 impl UserManager {
@@ -164,7 +94,6 @@ impl UserManager {
         config: &Config,
         routes: RoutesSnapshot,
         auth_users: AuthUsersSnapshot,
-        allowed: AllowedRoutePaths,
     ) -> Self {
         if config.config_path.is_none() {
             // Users came from `--user`/env, not a file, so there is nothing to
@@ -180,39 +109,16 @@ impl UserManager {
             routes,
             auth_users,
             default_method: config.method,
-            default_ws_path_tcp: config.ws_path_tcp.clone(),
-            default_ws_path_udp: config.ws_path_udp.clone(),
-            default_ws_path_ss: config.ws_path_ss.clone(),
-            default_ws_path_vless: config.ws_path_vless.clone(),
-            default_xhttp_path_vless: config.xhttp_path_vless.clone(),
-            default_xhttp_path_tcp: config.xhttp_path_tcp.clone(),
-            default_xhttp_path_udp: config.xhttp_path_udp.clone(),
-            default_xhttp_path_ss: config.xhttp_path_ss.clone(),
-            allowed_tcp_paths: allowed.tcp,
-            allowed_udp_paths: allowed.udp,
-            allowed_vless_paths: allowed.vless,
-            allowed_xhttp_paths: allowed.xhttp_vless,
-            allowed_xhttp_ss_paths: allowed.xhttp_ss,
-            allowed_xhttp_ss_udp_paths: allowed.xhttp_ss_udp,
+            endpoints: Arc::from(config.endpoints.clone().into_boxed_slice()),
             config_path: config.config_path.clone(),
         }
     }
 
     /// Snapshot of the server-wide defaults. Not `async` and takes no lock:
-    /// these fields are set once in `new` and never mutate, unlike the user
+    /// `default_method` is set once in `new` and never mutates, unlike the user
     /// list behind `Inner`.
     pub(super) fn defaults(&self) -> ServerDefaults {
-        ServerDefaults {
-            method: self.default_method,
-            ws_path_tcp: self.default_ws_path_tcp.clone(),
-            ws_path_udp: self.default_ws_path_udp.clone(),
-            ws_path_ss: self.default_ws_path_ss.clone(),
-            ws_path_vless: self.default_ws_path_vless.clone(),
-            xhttp_path_tcp: self.default_xhttp_path_tcp.clone(),
-            xhttp_path_udp: self.default_xhttp_path_udp.clone(),
-            xhttp_path_ss: self.default_xhttp_path_ss.clone(),
-            xhttp_path_vless: self.default_xhttp_path_vless.clone(),
-        }
+        ServerDefaults { method: self.default_method }
     }
 
     pub(super) async fn list(&self) -> Vec<UserView> {
@@ -298,154 +204,10 @@ impl UserManager {
         if entry.password.is_none() && entry.vless_id.is_none() {
             bail!("user must have either password or vless_id");
         }
-        if let Some(ss) = entry.effective_ws_path_ss(self.default_ws_path_ss.as_deref()) {
-            // Combined WS path: registered in both the tcp and udp tables at
-            // startup, so it must be present in both allowed sets.
-            if !ss.starts_with('/') {
-                bail!("ws_path_ss must start with '/'");
-            }
-            if !self.allowed_tcp_paths.contains(ss) || !self.allowed_udp_paths.contains(ss) {
-                bail!(
-                    "ws_path_ss {ss:?} was not registered at startup; restart the \
-                     server after adding it to the config file"
-                );
-            }
-        } else {
-            if let Some(path) = entry.ws_path_tcp.as_deref() {
-                if !path.starts_with('/') {
-                    bail!("ws_path_tcp must start with '/'");
-                }
-                if !self.allowed_tcp_paths.contains(path) {
-                    bail!(
-                        "ws_path_tcp {path:?} was not registered at startup; restart the \
-                         server after adding it to [[users]] in the config file"
-                    );
-                }
-            } else {
-                let default = self.default_ws_path_tcp.as_str();
-                if !self.allowed_tcp_paths.contains(default) {
-                    bail!(
-                        "default ws_path_tcp {default:?} is not registered; this user needs \
-                         an explicit ws_path_tcp that matches an existing startup path"
-                    );
-                }
-            }
-            if let Some(path) = entry.ws_path_udp.as_deref() {
-                if !path.starts_with('/') {
-                    bail!("ws_path_udp must start with '/'");
-                }
-                if !self.allowed_udp_paths.contains(path) {
-                    bail!(
-                        "ws_path_udp {path:?} was not registered at startup; restart the \
-                         server after adding it to [[users]] in the config file"
-                    );
-                }
-            } else {
-                let default = self.default_ws_path_udp.as_str();
-                if !self.allowed_udp_paths.contains(default) {
-                    bail!(
-                        "default ws_path_udp {default:?} is not registered; this user needs \
-                         an explicit ws_path_udp that matches an existing startup path"
-                    );
-                }
-            }
-        }
-        if entry.vless_id.is_some() {
-            let ws_path = entry
-                .ws_path_vless
-                .as_deref()
-                .or(self.default_ws_path_vless.as_deref());
-            let xhttp_path = entry
-                .xhttp_path_vless
-                .as_deref()
-                .or(self.default_xhttp_path_vless.as_deref());
-            if ws_path.is_none() && xhttp_path.is_none() {
-                bail!(
-                    "vless_id requires at least one transport: ws_path_vless or xhttp_path_vless"
-                );
-            }
-            if let Some(path) = ws_path {
-                if !path.starts_with('/') {
-                    bail!("ws_path_vless must start with '/'");
-                }
-                if !self.allowed_vless_paths.contains(path) {
-                    bail!(
-                        "ws_path_vless {path:?} was not registered at startup; restart the \
-                         server after adding it to the config file"
-                    );
-                }
-            }
-            if let Some(path) = xhttp_path {
-                if !path.starts_with('/') {
-                    bail!("xhttp_path_vless must start with '/'");
-                }
-                // Symmetric to the ws_path_vless check above —
-                // pre-registered route set is the dispatch contract;
-                // the live router cannot grow new routes until the
-                // next process restart.
-                if !self.allowed_xhttp_paths.contains(path) {
-                    bail!(
-                        "xhttp_path_vless {path:?} was not registered at startup; restart \
-                         the server after adding it to the config file"
-                    );
-                }
-            }
-        }
-        // SS-over-XHTTP: identity is a password, so gate on `password`
-        // and the SS-XHTTP known-path set (symmetric to the vless block).
-        if entry.password.is_some()
-            && let Some(path) = entry
-                .xhttp_path_tcp
-                .as_deref()
-                .or(self.default_xhttp_path_tcp.as_deref())
-        {
-            if !path.starts_with('/') {
-                bail!("xhttp_path_tcp must start with '/'");
-            }
-            if !self.allowed_xhttp_ss_paths.contains(path) {
-                bail!(
-                    "xhttp_path_tcp {path:?} was not registered at startup; restart \
-                     the server after adding it to the config file"
-                );
-            }
-        }
-        // SS-UDP-over-XHTTP: same password gate on the separate UDP path.
-        if entry.password.is_some()
-            && let Some(path) = entry
-                .xhttp_path_udp
-                .as_deref()
-                .or(self.default_xhttp_path_udp.as_deref())
-        {
-            if !path.starts_with('/') {
-                bail!("xhttp_path_udp must start with '/'");
-            }
-            if !self.allowed_xhttp_ss_udp_paths.contains(path) {
-                bail!(
-                    "xhttp_path_udp {path:?} was not registered at startup; restart \
-                     the server after adding it to the config file"
-                );
-            }
-        }
-        // Combined SS-over-XHTTP: one base path for both legs, registered in
-        // both ss tables at startup.
-        if entry.password.is_some()
-            && let Some(path) = entry
-                .xhttp_path_ss
-                .as_deref()
-                .or(self.default_xhttp_path_ss.as_deref())
-        {
-            if !path.starts_with('/') {
-                bail!("xhttp_path_ss must start with '/'");
-            }
-            if !self.allowed_xhttp_ss_paths.contains(path)
-                || !self.allowed_xhttp_ss_udp_paths.contains(path)
-            {
-                bail!(
-                    "xhttp_path_ss {path:?} was not registered at startup; restart \
-                     the server after adding it to the config file"
-                );
-            }
-        }
+        // Users are pure credentials: there are no per-user paths to validate
+        // against the startup route set. A credential is reachable on every
+        // endpoint of its kind; whether any such endpoint exists is a
+        // startup-time concern (see `services::build`), not a per-user one.
         // Per-user alias CIDRs must parse (global uniqueness is enforced in
         // `rebuild_snapshots`, which sees the full user set).
         entry
@@ -480,7 +242,10 @@ impl UserManager {
     }
 
     fn rebuild_snapshots(&self, users: &[UserEntry]) -> Result<(RouteRegistry, Arc<[UserKey]>)> {
-        let enabled: Vec<&UserEntry> = users.iter().filter(|u| u.is_enabled()).collect();
+        // The same set the old per-user-path builders fed on: enabled users,
+        // unique by id. A disabled user contributes to neither pool and so is
+        // not routed — do not silently start routing it here.
+        let enabled: Vec<UserEntry> = users.iter().filter(|u| u.is_enabled()).cloned().collect();
 
         let mut seen_ids = HashSet::new();
         for user in &enabled {
@@ -491,114 +256,20 @@ impl UserManager {
         // Per-source-IP aliases: CIDRs parse and alias names are globally
         // unique vs ids — mirrors the startup `Config::validate` check so a
         // control-plane mutation cannot install config the server would reject
-        // on restart. Runs on the full set (enabled users are the ones whose
-        // aliases become live labels).
-        crate::config::validate_ip_aliases(enabled.iter().copied())?;
+        // on restart. Runs on the full enabled set (enabled users are the ones
+        // whose aliases become live labels).
+        crate::config::validate_ip_aliases(enabled.iter())?;
 
-        let mut user_routes: Vec<UserRoute> = Vec::new();
-        let mut ss_xhttp_routes: Vec<crate::server::setup::SsXhttpUserRoute> = Vec::new();
-        let mut ss_xhttp_udp_routes: Vec<crate::server::setup::SsXhttpUserRoute> = Vec::new();
-        for user in &enabled {
-            let Some(password) = &user.password else { continue };
-            let method = user.effective_method(self.default_method);
-            // A combined ws_path_ss / xhttp_path_ss puts both legs on one path
-            // (mirrors `build_user_routes` / `build_ss_xhttp_*` in setup.rs).
-            let (ws_path_tcp, ws_path_udp): (Arc<str>, Arc<str>) =
-                match user.effective_ws_path_ss(self.default_ws_path_ss.as_deref()) {
-                    Some(ss) => (Arc::from(ss), Arc::from(ss)),
-                    None => (
-                        Arc::from(user.effective_ws_path_tcp(&self.default_ws_path_tcp)),
-                        Arc::from(user.effective_ws_path_udp(&self.default_ws_path_udp)),
-                    ),
-                };
-            let aliases = user
-                .build_ip_aliases()
-                .with_context(|| format!("invalid ip aliases for user {}", user.id))?;
-            let user_key = UserKey::new(user.id.clone(), password, user.fwmark, method, aliases)
-                .with_context(|| format!("failed to derive key for user {}", user.id))?;
-            if let Some(path) = user
-                .effective_xhttp_path_ss(self.default_xhttp_path_ss.as_deref())
-                .or_else(|| user.effective_xhttp_path_tcp(self.default_xhttp_path_tcp.as_deref()))
-            {
-                ss_xhttp_routes.push(crate::server::setup::SsXhttpUserRoute {
-                    user: user_key.clone(),
-                    xhttp_path: Arc::from(path),
-                });
-            }
-            if let Some(path) = user
-                .effective_xhttp_path_ss(self.default_xhttp_path_ss.as_deref())
-                .or_else(|| user.effective_xhttp_path_udp(self.default_xhttp_path_udp.as_deref()))
-            {
-                ss_xhttp_udp_routes.push(crate::server::setup::SsXhttpUserRoute {
-                    user: user_key.clone(),
-                    xhttp_path: Arc::from(path),
-                });
-            }
-            user_routes.push(UserRoute { user: user_key, ws_path_tcp, ws_path_udp });
-        }
-
-        let mut vless_routes: Vec<VlessUserRoute> = Vec::new();
-        let mut xhttp_routes: Vec<crate::server::setup::VlessXhttpUserRoute> = Vec::new();
-        for user in &enabled {
-            let Some(vless_id) = &user.vless_id else { continue };
-            let ws_path = user.effective_ws_path_vless(self.default_ws_path_vless.as_deref());
-            let xhttp_path =
-                user.effective_xhttp_path_vless(self.default_xhttp_path_vless.as_deref());
-            if ws_path.is_none() && xhttp_path.is_none() {
-                bail!("vless user {} requires at least ws_path_vless or xhttp_path_vless", user.id);
-            }
-            let aliases = user
-                .build_ip_aliases()
-                .with_context(|| format!("invalid ip aliases for user {}", user.id))?;
-            let vless_user =
-                VlessUser::new(vless_id.clone(), Arc::from(user.id.as_str()), user.fwmark, aliases)
-                    .with_context(|| format!("failed to parse vless_id for user {}", user.id))?;
-            if let Some(path) = ws_path {
-                vless_routes.push(VlessUserRoute {
-                    user: vless_user.clone(),
-                    ws_path: Arc::from(path),
-                });
-            }
-            if let Some(path) = xhttp_path {
-                xhttp_routes.push(crate::server::setup::VlessXhttpUserRoute {
-                    user: vless_user,
-                    xhttp_path: Arc::from(path),
-                });
-            }
-        }
-
-        let tcp_map: BTreeMap<String, Arc<TransportRoute>> =
-            build_transport_route_map(&user_routes, Transport::Tcp);
-        let udp_map: BTreeMap<String, Arc<TransportRoute>> =
-            build_transport_route_map(&user_routes, Transport::Udp);
-        let vless_map: BTreeMap<String, Arc<VlessTransportRoute>> =
-            build_vless_transport_route_map(&vless_routes);
-        let xhttp_map: BTreeMap<String, Arc<VlessTransportRoute>> =
-            crate::server::setup::build_xhttp_vless_route_map(&xhttp_routes);
-        let xhttp_ss_map: BTreeMap<String, Arc<TransportRoute>> =
-            crate::server::setup::build_xhttp_ss_route_map(&ss_xhttp_routes);
-        let xhttp_ss_udp_map: BTreeMap<String, Arc<TransportRoute>> =
-            crate::server::setup::build_xhttp_ss_route_map(&ss_xhttp_udp_routes);
-
-        let auth_keys: Arc<[UserKey]> = Arc::from(
-            user_routes
-                .iter()
-                .map(|r| r.user.clone())
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-
-        Ok((
-            RouteRegistry {
-                tcp: Arc::new(tcp_map),
-                udp: Arc::new(udp_map),
-                vless: Arc::new(vless_map),
-                xhttp_vless: Arc::new(xhttp_map),
-                xhttp_ss: Arc::new(xhttp_ss_map),
-                xhttp_ss_udp: Arc::new(xhttp_ss_udp_map),
-            },
-            auth_keys,
-        ))
+        // Fan the credential pools across the startup endpoints through the
+        // SAME shared helper the startup path uses (`services::build`), so a
+        // runtime mutation and a fresh start can never disagree on how routes
+        // are shaped. With per-user paths gone, a credential shows up on every
+        // endpoint of its kind.
+        let ss_users = build_ss_user_pool(&enabled, self.default_method)?;
+        let vless_users = build_vless_user_pool(&enabled)?;
+        let registry = build_route_registry(&self.endpoints, &ss_users, &vless_users);
+        let auth_keys: Arc<[UserKey]> = Arc::from(ss_users.into_boxed_slice());
+        Ok((registry, auth_keys))
     }
 }
 
@@ -607,14 +278,6 @@ pub(super) struct UserPatch {
     pub vless_id: FieldPatch<String>,
     pub method: FieldPatch<CipherKind>,
     pub fwmark: FieldPatch<u32>,
-    pub ws_path_tcp: FieldPatch<String>,
-    pub ws_path_udp: FieldPatch<String>,
-    pub ws_path_ss: FieldPatch<String>,
-    pub ws_path_vless: FieldPatch<String>,
-    pub xhttp_path_vless: FieldPatch<String>,
-    pub xhttp_path_tcp: FieldPatch<String>,
-    pub xhttp_path_udp: FieldPatch<String>,
-    pub xhttp_path_ss: FieldPatch<String>,
     pub aliases: FieldPatch<BTreeMap<String, OneOrManyCidr>>,
     pub enabled: Option<bool>,
 }
@@ -632,30 +295,6 @@ impl UserPatch {
         }
         if let FieldPatch::Set(fwmark) = self.fwmark {
             entry.fwmark = fwmark;
-        }
-        if let FieldPatch::Set(ws_path_tcp) = self.ws_path_tcp {
-            entry.ws_path_tcp = ws_path_tcp;
-        }
-        if let FieldPatch::Set(ws_path_udp) = self.ws_path_udp {
-            entry.ws_path_udp = ws_path_udp;
-        }
-        if let FieldPatch::Set(ws_path_ss) = self.ws_path_ss {
-            entry.ws_path_ss = ws_path_ss;
-        }
-        if let FieldPatch::Set(ws_path_vless) = self.ws_path_vless {
-            entry.ws_path_vless = ws_path_vless;
-        }
-        if let FieldPatch::Set(xhttp_path_vless) = self.xhttp_path_vless {
-            entry.xhttp_path_vless = xhttp_path_vless;
-        }
-        if let FieldPatch::Set(xhttp_path_tcp) = self.xhttp_path_tcp {
-            entry.xhttp_path_tcp = xhttp_path_tcp;
-        }
-        if let FieldPatch::Set(xhttp_path_udp) = self.xhttp_path_udp {
-            entry.xhttp_path_udp = xhttp_path_udp;
-        }
-        if let FieldPatch::Set(xhttp_path_ss) = self.xhttp_path_ss {
-            entry.xhttp_path_ss = xhttp_path_ss;
         }
         if let FieldPatch::Set(aliases) = self.aliases {
             entry.aliases = aliases;
