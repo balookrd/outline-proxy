@@ -22,6 +22,16 @@ padding, TUN GSO / GRO / USO offload, and connection sniffing with destination
 override all shipped earlier in this line. The headline recent work spans the
 whole system:
 
+- **BREAKING: server carrier endpoints unified (`outline-ss-rust`, pending
+  release).** The `[websocket]` block, per-user `ws_path_tcp` / `ws_path_udp` /
+  `ws_path_vless` / `xhttp_path_*` fields, and `[padding] enabled` / `paths`
+  are removed and now fail to parse. Every carrier path is a single
+  `[[endpoint]] { path, kind, padded }` entry in one global list, and users
+  are pure credentials that work on every endpoint of their kind — padding is
+  an endpoint attribute, not a separate path list. See
+  [`bins/outline-ss-rust/README.md`](bins/outline-ss-rust/README.md#endpoint-model)
+  and [`docs/PADDING.md`](docs/PADDING.md); migrate `config.toml` before
+  upgrading.
 - **Server mesh cluster.** Edge nodes relay a client's session to the home node
   that owns it, with per-outcome relay metrics and full session migration across
   an edge switch — single-target UDP, VLESS-mux bundles included.

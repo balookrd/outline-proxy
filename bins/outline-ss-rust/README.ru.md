@@ -30,7 +30,7 @@
 - Cross-transport session resumption поверх XHTTP — припаркованный VLESS upstream переподключается через XHTTP reconnect, в том числе при смене carrier'а (h3→h2 fallback)
 - Несколько пользователей с независимыми паролями Shadowsocks и/или VLESS UUID
 - Выбор шифра на уровне пользователя
-- Индивидуальные TCP-, UDP- и VLESS-пути WebSocket на пользователя
+- Общие carrier-эндпоинты (`[[endpoint]]`): любой пользователь работает на каждом эндпоинте своего kind
 - Linux `fwmark` на исходящих сокетах на уровне пользователя
 - IPv4 и IPv6: слушатели, upstream-цели и генерация client URL
 - Метрики Prometheus и готовый дашборд Grafana
@@ -46,7 +46,7 @@
 | Шифры | Поддерживается | `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, `2022-blake3-chacha20-poly1305` |
 | Multi-user | Поддерживается | Автоматическая идентификация по успешной расшифровке |
 | Шифр на пользователя | Поддерживается | Каждый пользователь может переопределить глобальный |
-| WebSocket-пути на пользователя | Поддерживается | Независимые `ws_path_tcp` и `ws_path_udp` |
+| Carrier-эндпоинты | Поддерживается | Глобальный список `[[endpoint]]` (`path`, `kind`, `padded`); каждый пользователь работает на каждом эндпоинте своего kind |
 | `fwmark` на пользователя | Поддерживается | Только Linux, требует привилегий для `SO_MARK` |
 | HTTP/1.1 WebSocket | Поддерживается | Обычный `ws://` или `wss://` |
 | HTTP/2 WebSocket | Поддерживается | RFC 8441 Extended CONNECT |
@@ -125,7 +125,7 @@ flowchart LR
 
 TCP-эндпоинт переносит стандартный Shadowsocks AEAD-поток в бинарных WebSocket-фреймах:
 
-1. Клиент открывает WebSocket-соединение на TCP-пути пользователя или глобальном.
+1. Клиент открывает WebSocket-соединение на настроенном эндпоинте `ws_ss_tcp` (или combined `ws_ss`).
 2. Клиент отправляет зашифрованные данные Shadowsocks-потока в бинарных фреймах.
 3. Сервер буферизует и расшифровывает поток до получения полного целевого адреса.
 4. Сервер подключается к цели и ретранслирует байты в обоих направлениях.
@@ -136,7 +136,7 @@ TCP-эндпоинт переносит стандартный Shadowsocks AEAD-
 
 UDP-эндпоинт ожидает ровно один Shadowsocks AEAD UDP-пакет на бинарный WebSocket-фрейм:
 
-1. Клиент открывает WebSocket-соединение на UDP-пути пользователя или глобальном.
+1. Клиент открывает WebSocket-соединение на настроенном эндпоинте `ws_ss_udp` (или combined `ws_ss`).
 2. Каждый бинарный фрейм содержит один зашифрованный UDP-пакет.
 3. Сервер расшифровывает пакет, извлекает целевой адрес и пересылает датаграмму.
 4. Каждый полученный ответ от upstream возвращается как отдельный зашифрованный WebSocket-фрейм.
@@ -151,36 +151,72 @@ UDP-эндпоинт ожидает ровно один Shadowsocks AEAD UDP-п�
 
 NAT-записи вытесняются через `tuning.udp_nat_idle_timeout_secs` (по умолчанию 300 секунд в профиле `large`) отсутствия исходящего трафика. Фоновая задача сканирует неактивные записи каждые 60 секунд.
 
+## Модель эндпоинтов
+
+Каждый carrier-путь, который отдаёт сервер, — это одна запись в едином глобальном списке `[[endpoint]]`, резолвящемся один раз при старте:
+
+```toml
+[[endpoint]]
+path = "/tcp"
+kind = "ws_ss_tcp"
+
+[[endpoint]]
+path = "/pss"
+kind = "ws_ss"
+padded = true
+```
+
+Каждая запись — это `{ path, kind, padded }`:
+
+- `path` — URL-путь, который дайлит клиент. Должен быть уникален среди всех эндпоинтов — два эндпоинта не могут делить один путь, даже разного kind.
+- `kind` — протокол и форма носителя (`EndpointKind`), один из:
+
+| `kind` | Носитель | Что несёт |
+| --- | --- | --- |
+| `ws_ss` | WebSocket | Combined Shadowsocks — один путь, обе ноги (TCP и UDP) |
+| `ws_ss_tcp` | WebSocket | Split Shadowsocks — только TCP-нога |
+| `ws_ss_udp` | WebSocket | Split Shadowsocks — только UDP-нога |
+| `ws_vless` | WebSocket | VLESS — TCP, UDP и mux.cool, мультиплексированные на одном пути |
+| `xhttp_ss` | XHTTP | Combined Shadowsocks — один base-путь, обе ноги |
+| `xhttp_ss_tcp` | XHTTP | Split Shadowsocks — только TCP-нога |
+| `xhttp_ss_udp` | XHTTP | Split Shadowsocks — только UDP-нога |
+| `xhttp_vless` | XHTTP | VLESS — TCP, UDP и mux.cool, мультиплексированные на одном base-пути |
+
+  Эндпоинты `ws_*` доступны через основной TCP-слушатель (HTTP/1.1, HTTP/2) и через HTTP/3 (`h3_listen`), если он настроен. Эндпоинты `xhttp_*` доступны и через HTTP/1.1, и через HTTP/2, и через HTTP/3. Версию HTTP выбирает слушатель, на который дайлит клиент, а не сам эндпоинт.
+- `padded` — опционально, по умолчанию `false`. Оборачивает каждый chunk на этом эндпоинте в padding-кадр; см. [Carrier-padding](#carrier-padding).
+
+Эндпоинты заменяют старые per-категорийные поля `ws_path_tcp` / `ws_path_udp` / `ws_path_ss` / `ws_path_vless` / `xhttp_path_*` и per-user переопределения путей, которые раньше сидели рядом с ними — что теперь несёт пользователь вместо них, см. [Модель пользователей](#модель-пользователей). Список startup-only, ровно как H3 path registry (см. [Управляющий эндпоинт](#управляющий-эндпоинт)): control-плоскость может управлять пользователями на уже настроенных эндпоинтах, но не может добавить, удалить или перепривязать эндпоинт — новый эндпоинт требует рестарта.
+
 ## Carrier-padding
 
-Опциональный application-layer padding для WebSocket / XHTTP носителей, ломающий корреляцию по размеру TLS-записей, на которую опираются классификаторы «proxy-inside-TLS» (TLS-in-TLS). Каждый Shadowsocks-chunk на padded-пути оборачивается в кадр `real_len | pad_len | real | pad` до попадания во внешний TLS-record, поэтому размер зашифрованной записи больше не повторяет размер Shadowsocks-payload — та же идея, что у padding AnyTLS, но встроенная в уже имеющиеся носители вместо внедрения второго прокси-протокола.
+Опциональный application-layer padding для WebSocket / XHTTP носителей, ломающий корреляцию по размеру TLS-записей, на которую опираются классификаторы «proxy-inside-TLS» (TLS-in-TLS). Каждый Shadowsocks-chunk на padded-эндпоинте оборачивается в кадр `real_len | pad_len | real | pad` до попадания во внешний TLS-record, поэтому размер зашифрованной записи больше не повторяет размер Shadowsocks-payload — та же идея, что у padding AnyTLS, но встроенная в уже имеющиеся носители вместо внедрения второго прокси-протокола.
 
-- **Per-path.** Padding'уются только carrier-пути, перечисленные в `[padding] paths`; остальные пути сохраняют чистый Shadowsocks-over-WS / XHTTP wire, поэтому сторонние клиенты (Happ, Outline, xray, sing-box) на других путях не затронуты.
+- **Per-эндпоинт.** Padding — атрибут самого эндпоинта (`[[endpoint]] padded = true`); все остальные эндпоинты сохраняют чистый Shadowsocks-over-WS / XHTTP wire, поэтому сторонние клиенты (Happ, Outline, xray, sing-box) на непаддированных эндпоинтах не затронуты.
 - **Config-синхронизация, без согласования.** Нет on-wire capability-бита — соответствующий клиент `outline-ws-rust` тоже обязан включить `[padding]`, иначе его обычные кадры попадут в padding-декодер и сессия упадёт. По умолчанию выключено, поэтому wire байт-в-байт неизменен, пока обе стороны не включат опцию.
 - **Cover-трафик.** При `cover = true` downlink отправляет pad-only кадры на простаивающем соединении со случайным интервалом (`cover_jitter_min_ms` … `cover_jitter_max_ms`), чтобы тишина не выдавала тайминг.
 
-Покрывает SS- и VLESS-over-WebSocket (h1/h2/h3) и -over-XHTTP одинаково, а UDP паддится по датаграмме на любом WS-носителе — и SS-UDP (split: внесите его путь; combined: общий base-path), и VLESS-UDP. Полный справочник: [`docs/PADDING.ru.md`](../../docs/PADDING.ru.md); параметры — в блоке `[padding]` в `config.toml`.
+Покрывает SS- и VLESS-over-WebSocket (h1/h2/h3) и -over-XHTTP одинаково, а UDP паддится по датаграмме на любом WS-носителе — и SS-UDP (split: поставьте `padded = true` на его эндпоинт; combined: на общий эндпоинт), и VLESS-UDP. Полный справочник: [`docs/PADDING.ru.md`](../../docs/PADDING.ru.md); параметры — в блоке `[padding]` в `config.toml`.
 
 ## Модель пользователей
 
-Каждый пользователь может задать:
+Записи `[[users]]` — чистые credentials: у пользователя нет собственного пути. Каждый пользователь может задать:
 
 - `id`
-- `password`
+- `password` (Shadowsocks) и/или `vless_id` (VLESS) — хотя бы одно из двух
 - `method`
 - `fwmark`
-- `ws_path_tcp`
-- `ws_path_udp`
 - `aliases` (карта source-IP → учётный alias)
 
-Если пользователь не указывает `method`, `ws_path_tcp` или `ws_path_udp`, сервер использует глобальные значения по умолчанию.
+Пользователь с `password` работает на **каждом** эндпоинте `ws_ss` / `ws_ss_tcp` / `ws_ss_udp` / `xhttp_ss` / `xhttp_ss_tcp` / `xhttp_ss_udp`, настроенном на сервере; пользователь с `vless_id` работает на **каждом** эндпоинте `ws_vless` / `xhttp_vless`. Один пользователь может держать оба поля и использовать оба семейства протоколов разом. Если пользователь не указывает `method`, сервер использует глобальное значение по умолчанию.
 
 Это позволяет организовать:
 
-- разных пользователей на разных WebSocket-путях
+- один общий набор эндпоинтов для всех пользователей, различаемых только ключом Shadowsocks или VLESS UUID
 - разных пользователей с разными шифрами
 - разных пользователей с разной политикой маршрутизации Linux через `fwmark`
 - разделение одного ключа на несколько учётных идентичностей по source IP через `aliases` (см. [Алиасы по source IP](#алиасы-по-source-ip))
+
+Какие пути существуют и какую протокол/carrier-форму несёт каждый из них — теперь целиком серверное решение, принимаемое один раз в [`[[endpoint]]`](#модель-эндпоинтов), а не настройка на уровне пользователя.
 
 ## Конфигурация
 
@@ -253,26 +289,13 @@ cargo release-musl-armv7
 | `tuning.dns_cache_max_entries` | Глобальный cap на число записей в upstream DNS-кэше (по умолчанию зависит от профиля; `262144` для `large` — worst case ~30-40 MiB при ~120 байт плюс разрешённые адреса на запись). Ключ кэша — `(port, prefer_ipv4_upstream, host)`, а host берётся из клиентского destination, поэтому без cap'а клиент, резолвящий уникальные имена, растит мапу на весь TTL + окно stale-fallback (час) — освобождение шло бы только на 5-минутном свипе. При переполнении insert вытесняет по приближённому LRU (сначала протухшие), так что горячий working set переживает поток одноразовых имён. `0` отключает cap, возвращая безлимитный кэш, чистящийся только свипом |
 | `tuning.ws_data_channel_capacity` | Per-session bounded mpsc capacity (в чанках) для WS-writer fan-in (upstream-reader → WS-writer для TCP-relay, NAT-reader → WS-writer для UDP-relay). Дефолты: `16` / `64` / `128` для `small` / `medium` / `large`. Слишком маленькое значение приводит к back-pressure от WS-writer'а на upstream-чтение при кратковременных задержках записи — видно как буферный underrun у видеоплеера; слишком большое — раздувает worst-case per-session residency (`capacity × 16 KiB` для TCP). Поднимайте для high-bandwidth single-tenant деплоев, снижайте для memory-constrained хостов со многими сессиями |
 | `tuning.h2_*` / `tuning.h3_*` | Тонкие настройки flow-control windows, лимитов стримов и сокет-буферов — см. `TuningProfile` в `src/config/mod.rs` |
-| `ws_path_tcp` | Глобальный **split** TCP WebSocket-путь (в паре с `ws_path_udp`) |
-| `ws_path_udp` | Глобальный **split** UDP WebSocket-путь |
-| `ws_path_ss` | Опциональный **combined** SS-over-WS-путь: один путь несёт ОБЕ ноги — клиент дайлит `<base>/<token>`, первый символ токена = скрытый TCP/UDP-дискриминатор. Вместо `ws_path_tcp` + `ws_path_udp`; взаимоисключающ с ними |
-| `ws_path_vless` | Опциональный VLESS-over-WebSocket путь на основном HTTP/1.1/HTTP/2 слушателе |
-| `xhttp_path_vless` | Опциональный VLESS-over-XHTTP base-путь. Сервер регистрирует `<base>/{id}` для каждого base; `{id}` — opaque per-session токен, выбираемый клиентом. Должен отличаться от `ws_path_vless` |
-| `xhttp_path_tcp` | Опциональный **split** SS-over-XHTTP TCP-путь. Та же схема маршрута `<base>/{id}`, что у `xhttp_path_vless`, но несёт SS-AEAD-поток. В паре с `xhttp_path_udp`; один base-путь обслуживает один протокол |
-| `xhttp_path_udp` | Опциональный **split** SS-UDP-over-XHTTP-путь. В паре с `xhttp_path_tcp`, зеркаля `ws_path_tcp` / `ws_path_udp` |
-| `xhttp_path_ss` | Опциональный **combined** SS-over-XHTTP-путь: один путь несёт ОБЕ ноги, разделяемые битом первого символа session-id. Вместо `xhttp_path_tcp` + `xhttp_path_udp`; взаимоисключающ с ними и отличается от всех прочих путей |
+| `[[endpoint]]` | Глобальный список carrier-эндпоинтов. Каждая запись: `path` (URL-путь, который дайлит клиент, уникален среди всех эндпоинтов), `kind` (`EndpointKind` — см. [Модель эндпоинтов](#модель-эндпоинтов)), `padded` (опциональный bool, по умолчанию `false` — см. [Carrier-padding](#carrier-padding)). Startup-only: см. [Управляющий эндпоинт](#управляющий-эндпоинт) |
 | `http_root_auth` | Включить OpenConnect-подобный HTTP Basic challenge на `/`; после 3 неверных паролей сервер отдаёт `403`, а не-корневые пути остаются `404` |
 | `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `Authorization required` |
 | `[access_keys]` | Читается внешним генератором `ops/access-keys`, **не** этим бинарём. Секция парсится ради совместимости (она есть в каждом боевом конфиге, а структуры помечены `deny_unknown_fields`) и игнорируется. Поля: `public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`. См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
 | `method` | Глобальный шифр Shadowsocks по умолчанию |
 | `users[].password` | Опциональный пароль Shadowsocks на пользователя |
 | `users[].vless_id` | Опциональный VLESS UUID на пользователя |
-| `users[].ws_path_vless` | Опциональный VLESS WebSocket-путь на пользователя; при отсутствии используется верхнеуровневый `ws_path_vless` |
-| `users[].xhttp_path_vless` | Опциональный VLESS XHTTP base-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_vless` |
-| `users[].xhttp_path_tcp` | Опциональный split SS-over-XHTTP TCP-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_tcp` |
-| `users[].xhttp_path_udp` | Опциональный split SS-UDP-over-XHTTP-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_udp` |
-| `users[].xhttp_path_ss` | Опциональный combined SS-over-XHTTP-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_ss` |
-| `users[].ws_path_ss` | Опциональный combined SS-over-WS-путь на пользователя; при отсутствии используется верхнеуровневый `ws_path_ss` |
 | `users[].aliases` | Опциональная карта source-IP → alias для **учётного** переименования (метрики/NAT/логи) — `{ alias = "cidr-или-ip" \| ["cidr", ...] }`. Longest-prefix match, IPv4+IPv6. Имена alias должны быть глобально уникальны среди id/alias. Только прямые подключения. См. [Алиасы по source IP](#алиасы-по-source-ip) |
 | `users[].enabled` | Опциональный переключатель. `false` блокирует пользователя (маршруты и аутентификация отключаются), не удаляя запись. По умолчанию `true` |
 | `[control]` | Опциональный HTTP-эндпоинт управления пользователями в рантайме (фича `control`, включена по умолчанию). См. [Управляющий эндпоинт](#управляющий-эндпоинт) |
@@ -289,11 +312,7 @@ id = "alice"
 password = "change-me"
 fwmark = 1001
 method = "aes-256-gcm"
-ws_path_tcp = "/alice/tcp"
-ws_path_udp = "/alice/udp"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
-ws_path_vless = "/alice/vless"
-xhttp_path_vless = "/alice/xh"
 
 [users.aliases]
 alice-mobile = ["10.0.0.0/8", "203.0.113.5"]
@@ -329,7 +348,7 @@ mobile = ["10.0.0.0/8", "2001:db8::/48"]
 
 ### VLESS поверх XHTTP
 
-Для деплойментов за CDN, блокирующим WebSocket-апгрейд, можно настроить VLESS поверх XHTTP рядом с WS-путём (или вместо). Сервер регистрирует `<xhttp_path_vless>/{id}` для каждого base; `{id}` — opaque токен, выбираемый клиентом на сессию. Тот же `vless_id` работает на обоих несущих — клиент сам выбирает, на каком пути ему лучше в данный момент.
+Для деплойментов за CDN, блокирующим WebSocket-апгрейд, добавьте эндпоинт `xhttp_vless` рядом с `ws_vless` (или вместо него). Сервер регистрирует `<path>/{id}` для каждого эндпоинта `xhttp_vless`; `{id}` — opaque токен, выбираемый клиентом на сессию. Любой пользователь с `vless_id` работает на обоих несущих — клиент сам выбирает, на каком пути ему лучше в данный момент.
 
 ```toml
 [server]
@@ -337,18 +356,22 @@ listen = "0.0.0.0:443"
 cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
 key_path  = "/etc/letsencrypt/live/example/privkey.pem"
 
-[websocket]
-# Опционально: оставляем WS-путь для клиентов на прямых соединениях.
-ws_path_vless = "/vless"
-# Обязательно для XHTTP. Должен отличаться от `ws_path_vless`.
-xhttp_path_vless = "/xh"
+# Опционально: оставляем WS-эндпоинт для клиентов на прямых соединениях.
+[[endpoint]]
+path = "/vless"
+kind = "ws_vless"
+
+# Обязательно для XHTTP.
+[[endpoint]]
+path = "/xh"
+kind = "xhttp_vless"
 
 [[users]]
 id = "alice"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
 ```
 
-Один и тот же `xhttp_path_vless` слушатель обслуживает оба XHTTP wire-режима; клиент выбирает carrier на сессию через query-параметр URL:
+Один и тот же эндпоинт `xhttp_vless` обслуживает оба XHTTP wire-режима; клиент выбирает carrier на сессию через query-параметр URL:
 
 | Режим | URL клиента | Что куда |
 | --- | --- | --- |
@@ -359,7 +382,7 @@ Cross-transport session resumption opt-in (`[session_resumption].enabled = true`
 
 Байт-потоковая сессия возобновляется и между **прокси-протоколами**: сессия, припаркованная по Shadowsocks, переприцепляется к VLESS-носителю той же записи `[[users]]`, и наоборот — эта запись держит и `password`, и `vless_id`, а обе ноги паркуют под её `id`. Именно это держит сессии живыми у клиента, чей аплинк перевыбирает активный wire на смешанном SS/VLESS-наборе. Всё, что носитель должен своему клиенту по фреймингу, строится из аутентифицированного пользователя возобновляющего потока, так что от протокола парковки не переносится ничего; переходы считаются на `outline_ss_orphan_resume_cross_protocol_total{parked,resumed}`. Датаграммные и mux-парковки остаются внутри своего протокола — они держат состояние фрейминга, которое другой протокол выразить не может. Полные правила и то, что гарантирует owner check, когда он остаётся единственным сигналом идентичности на этом пути, — в [`docs/SESSION-RESUMPTION.ru.md`](docs/SESSION-RESUMPTION.ru.md).
 
-Внешний генератор `ops/access-keys` выпускает оба URI `vless://...?type=xhttp&path=...` на пользователя, когда `xhttp_path_vless` установлен: один с `mode=packet-up`, второй с `mode=stream-one` — в артефакты этого пользователя (`<user>.json` подписка и `<user>.txt`). xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают оба URI как есть — клиент сам подбирает тот wire-режим, который проходит на его сети. См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов).
+Внешний генератор `ops/access-keys` выпускает оба URI `vless://...?type=xhttp&path=...` для каждого VLESS-пользователя, как только настроен эндпоинт `xhttp_vless`: один с `mode=packet-up`, второй с `mode=stream-one` — в артефакты этого пользователя (`<user>.json` подписка и `<user>.txt`). xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают оба URI как есть — клиент сам подбирает тот wire-режим, который проходит на его сети. См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов).
 
 ### VLESS поверх WebSocket/TLS
 
@@ -371,24 +394,30 @@ listen = "0.0.0.0:443"
 cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
 key_path  = "/etc/letsencrypt/live/example/privkey.pem"
 
-[websocket]
-ws_path_tcp = "/tcp"
-ws_path_udp = "/udp"
-ws_path_vless = "/vless"
+[[endpoint]]
+path = "/tcp"
+kind = "ws_ss_tcp"
+
+[[endpoint]]
+path = "/udp"
+kind = "ws_ss_udp"
+
+[[endpoint]]
+path = "/vless"
+kind = "ws_vless"
 
 [[users]]
 id = "alice"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
-ws_path_vless = "/alice-vless"
 ```
 
 Пример клиентского URI для Happ, v2rayNG или Hiddify:
 
 ```text
-vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Falice-vless&encryption=none#example:alice
+vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Fvless&encryption=none#example:alice
 ```
 
-VLESS- и Shadowsocks-WebSocket-пути должны не пересекаться. Запись `[[users]]` может одновременно содержать `password` для Shadowsocks и `vless_id` для VLESS, либо только `vless_id` для VLESS-only-пользователя. `users[].ws_path_vless` перекрывает верхнеуровневый `ws_path_vless`.
+VLESS- и Shadowsocks-эндпоинты держите на разных путях — заведите отдельную запись `[[endpoint]]` под каждый kind. Запись `[[users]]` может сочетать `password` для Shadowsocks и `vless_id` для VLESS, либо нести только `vless_id` для VLESS-only-пользователя — в обоих случаях она работает на каждом эндпоинте своего kind (или kind'ов), а не на одном закреплённом за ней пути.
 
 ### Управляющий эндпоинт
 
@@ -407,7 +436,7 @@ Multi-instance браузерный дашборд, который раньше 
 | Метод | Путь | Назначение |
 | --- | --- | --- |
 | `GET` | `/control/users` | Список пользователей (только метаданные — секреты не отдаются) |
-| `POST` | `/control/users` | Создать пользователя. Тело: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "ws_path_tcp": "/...", "ws_path_udp": "/...", "ws_path_vless": "/...", "enabled": true }` — требуется хотя бы одно из `password`/`vless_id` |
+| `POST` | `/control/users` | Создать пользователя. Тело: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "enabled": true }` — требуется хотя бы одно из `password`/`vless_id` |
 | `GET` | `/control/users/{id}` | Получить метаданные пользователя |
 | `DELETE` | `/control/users/{id}` | Удалить пользователя |
 | `POST` | `/control/users/{id}/block` | Заблокировать (`enabled = false`) без удаления |
@@ -426,7 +455,7 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 
 Ограничения v1:
 
-- Значения `ws_path_tcp` / `ws_path_udp` / `ws_path_vless` у создаваемого пользователя должны уже присутствовать в стартовом конфиге — Axum/H3 роутеры регистрируют пути только на старте. Ввод совершенно нового пути по-прежнему требует рестарта.
+- Эндпоинты (`[[endpoint]]`) резолвятся один раз при старте — Axum/H3 роутеры регистрируют пути только на старте, — поэтому control-плоскость может создавать/блокировать/удалять пользователей на этих эндпоинтах, но не может добавить, удалить или перепривязать сам эндпоинт. Совершенно новый эндпоинт по-прежнему требует рестарта.
 
 Если `http_root_auth = true`, обычный `GET /` получает HTTP Basic challenge. Имя пользователя игнорируется, а пароль проверяется по настроенным Shadowsocks-пользователям. Параметр `http_root_realm` задаёт текст этого запроса пароля. После трёх неудачных попыток пароля в рамках одной браузерной сессии сервер начинает отвечать `403 Forbidden`. Обычные HTTP-запросы к любым не-корневым путям по-прежнему получают `404 Not Found`.
 
@@ -448,8 +477,6 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 - `OUTLINE_SS_OUTBOUND_IPV6_REFRESH_SECS`
 - `OUTLINE_SS_OUTBOUND_IPV6_STICKY`
 - `OUTLINE_SS_OUTBOUND_IPV6_STICKY_TTL_SECS`
-- `OUTLINE_SS_WS_PATH_TCP`
-- `OUTLINE_SS_WS_PATH_UDP`
 - `OUTLINE_SS_HTTP_ROOT_AUTH`
 - `OUTLINE_SS_HTTP_ROOT_REALM`
 - `OUTLINE_SS_METHOD`
@@ -465,7 +492,7 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 OUTLINE_SS_USERS=alice=secret1,bob=secret2
 ```
 
-Параметры `method`, `fwmark`, `ws_path_tcp` и `ws_path_udp` на уровне пользователя задаются только в TOML.
+Параметры `method` и `fwmark` на уровне пользователя задаются только в TOML. Эндпоинты — тоже только TOML: переменной окружения для `[[endpoint]]` не существует.
 
 ## Режимы развёртывания
 
@@ -477,9 +504,13 @@ OUTLINE_SS_USERS=alice=secret1,bob=secret2
 [server]
 listen = "0.0.0.0:3000"
 
-[websocket]
-ws_path_tcp = "/tcp"
-ws_path_udp = "/udp"
+[[endpoint]]
+path = "/tcp"
+kind = "ws_ss_tcp"
+
+[[endpoint]]
+path = "/udp"
+kind = "ws_ss_udp"
 
 [shadowsocks]
 method = "chacha20-ietf-poly1305"
@@ -493,9 +524,13 @@ listen = "0.0.0.0:5443"
 cert_path = "/etc/outline-ss-rust/tls/fullchain.pem"
 key_path  = "/etc/outline-ss-rust/tls/privkey.pem"
 
-[websocket]
-ws_path_tcp = "/tcp"
-ws_path_udp = "/udp"
+[[endpoint]]
+path = "/tcp"
+kind = "ws_ss_tcp"
+
+[[endpoint]]
+path = "/udp"
+kind = "ws_ss_udp"
 ```
 
 Обслуживает `wss://` на основном TCP-слушателе с поддержкой RFC 8441 на том же сокете.
