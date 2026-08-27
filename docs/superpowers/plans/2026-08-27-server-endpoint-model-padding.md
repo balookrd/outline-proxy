@@ -850,6 +850,7 @@ Now that nothing consumes them, delete the old path fields. This is the breaking
 - Modify: `bins/outline-ss-rust/src/config/user_entry.rs` (delete 8 path fields :46-76 and 8 `effective_*` methods :101-144; keep `id, password, fwmark, method, vless_id, enabled, aliases`, `is_enabled`, `effective_method`, `build_ip_aliases`, `validate_ip_aliases`)
 - Modify: `bins/outline-ss-rust/src/config/resolved.rs` (delete `Config.ws_path_*`/`xhttp_path_*` :112-131)
 - Modify: `bins/outline-ss-rust/src/config/loader.rs` (delete the path-splice :140-153 and the `let websocket = …` unpack :55)
+- Modify: `bins/outline-ss-rust/src/server/setup.rs` + the ~10 test files calling them — Task 2 left `build_user_routes` and `user_keys` `#[cfg(test)]`-gated, and they DEPEND on `UserEntry::effective_*` + `Config.ws_path_*`, both deleted in this task. Migrate the per-user-path routing tests onto the endpoint model (or delete them) and remove these gated builders here, or the crate will not compile. (This is the retirement point flagged in Task 2's review.)
 - Modify: `bins/outline-ss-rust/src/config/tests/*` (any remaining references)
 
 **Interfaces:**
