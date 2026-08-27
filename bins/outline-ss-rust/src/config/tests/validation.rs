@@ -1,10 +1,18 @@
-use super::super::{CipherKind, Config, OneOrManyCidr, default_http_root_realm};
+use super::super::loader::parse;
+use super::super::{
+    CipherKind, Config, EndpointConfig, EndpointKind, OneOrManyCidr, default_http_root_realm,
+};
 
 fn aliases(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, OneOrManyCidr> {
     pairs
         .iter()
         .map(|(name, cidr)| (name.to_string(), OneOrManyCidr::One(cidr.to_string())))
         .collect()
+}
+
+/// One endpoint at `path`, unpadded. `kind` picks the carrier/protocol shape.
+fn ep(path: &str, kind: EndpointKind) -> EndpointConfig {
+    EndpointConfig { path: path.into(), kind, padded: false }
 }
 
 fn base_config() -> Config {
@@ -100,13 +108,51 @@ max_bytes = 128
 id = "a"
 password = "pw"
 "#;
-    let cfg = super::super::loader::parse(toml).unwrap();
+    let cfg = parse(toml).unwrap();
     assert!(cfg.padding.scheme_for_path("/pss").is_enabled(), "padded endpoint pads");
     assert!(
         !cfg.padding.scheme_for_path("/plain").is_enabled(),
         "plain endpoint stays plain"
     );
     assert_eq!(cfg.padding.padded_paths, vec!["/pss".to_string()]);
+}
+
+/// A minimal full-TOML config: `[server]` + `[shadowsocks]` + `endpoints` +
+/// one password user. Feeds `loader::parse`, which merges/defaults/validates
+/// exactly like a real config file, so the endpoint-conflict checks below
+/// (which live in `Config::validate`) run through their real caller.
+fn base(endpoints: &str) -> String {
+    format!(
+        "[server]\nlisten = \"127.0.0.1:0\"\n\
+         [shadowsocks]\nmethod = \"chacha20-ietf-poly1305\"\n\
+         {endpoints}\n\
+         [[users]]\nid = \"a\"\npassword = \"pw\"\n"
+    )
+}
+
+#[test]
+fn duplicate_endpoint_path_is_rejected() {
+    let toml = base(
+        "[[endpoint]]\npath = \"/x\"\nkind = \"ws_ss_tcp\"\n\
+         [[endpoint]]\npath = \"/x\"\nkind = \"ws_vless\"\n",
+    );
+    let err = parse(&toml).unwrap_err();
+    assert!(err.to_string().contains("duplicate") || err.to_string().contains("distinct"));
+}
+
+#[test]
+fn tcp_and_udp_endpoints_may_not_share_a_path() {
+    let toml = base(
+        "[[endpoint]]\npath = \"/x\"\nkind = \"ws_ss_tcp\"\n\
+         [[endpoint]]\npath = \"/x\"\nkind = \"ws_ss_udp\"\n",
+    );
+    assert!(parse(&toml).is_err());
+}
+
+#[test]
+fn combined_ss_endpoint_is_accepted() {
+    let toml = base("[[endpoint]]\npath = \"/pss\"\nkind = \"ws_ss\"\npadded = true\n");
+    assert!(parse(&toml).is_ok());
 }
 
 #[test]
@@ -152,297 +198,169 @@ fn allows_h3_listener_to_share_address_with_tcp_listener() {
 
 #[test]
 fn rejects_http_root_auth_on_root_ws_path() {
-    let error = Config {
-        ws_path_tcp: "/".into(),
-        http_root_auth: true,
-        ..base_config()
-    }
-    .validate()
-    .unwrap_err()
-    .to_string();
+    let mut cfg = base_config();
+    cfg.http_root_auth = true;
+    cfg.endpoints = vec![ep("/", EndpointKind::WsSsTcp)];
+    let error = cfg.validate().unwrap_err().to_string();
 
     assert!(error.contains("http_root_auth requires all websocket paths to differ from '/'"));
 }
 
 #[test]
-fn accepts_xhttp_path_tcp_with_password_user() {
-    // base_config has a password user, so an SS-over-XHTTP base path is valid.
-    Config {
-        xhttp_path_tcp: Some("/ss".into()),
-        ..base_config()
-    }
-    .validate()
-    .unwrap();
-}
-
-#[test]
-fn accepts_combined_ws_path_ss() {
-    // The opt-in combined mode: `ws_path_ss` is one base path for both legs,
-    // told apart by the hidden token bit. Must validate.
-    Config {
-        ws_path_ss: Some("/both".into()),
-        ..base_config()
-    }
-    .validate()
-    .unwrap();
-}
-
-#[test]
-fn accepts_combined_xhttp_path_ss() {
-    // Same on the XHTTP carrier: `xhttp_path_ss` is one base path for both.
-    Config {
-        xhttp_path_ss: Some("/ssc".into()),
-        ..base_config()
-    }
-    .validate()
-    .unwrap();
-}
-
-#[test]
-fn accepts_global_combined_ws_path_ss_with_per_user_split() {
-    // Repro: a GLOBAL combined ws_path_ss must not clash with a user that pins
-    // its own split paths — the per-user split opts that user out of combined.
+fn accepts_xhttp_ss_tcp_endpoint_with_password_user() {
+    // base_config has a password user, so an SS-over-XHTTP endpoint is valid.
     let mut cfg = base_config();
-    cfg.ws_path_ss = Some("/combined".into());
-    cfg.users[0].ws_path_tcp = Some("/u/tcp".into());
-    cfg.users[0].ws_path_udp = Some("/u/udp".into());
+    cfg.endpoints = vec![ep("/ss", EndpointKind::XhttpSsTcp)];
     cfg.validate().unwrap();
 }
 
 #[test]
-fn accepts_global_combined_xhttp_path_ss_with_per_user_split() {
+fn accepts_combined_ws_ss_endpoint() {
+    // The opt-in combined kind: one endpoint path carries both legs, told
+    // apart by the hidden token bit. Must validate.
     let mut cfg = base_config();
-    cfg.xhttp_path_ss = Some("/cmb".into());
-    cfg.users[0].xhttp_path_tcp = Some("/u/xtcp".into());
-    cfg.users[0].xhttp_path_udp = Some("/u/xudp".into());
+    cfg.endpoints = vec![ep("/both", EndpointKind::WsSs)];
     cfg.validate().unwrap();
 }
 
 #[test]
-fn rejects_per_user_ws_path_ss_with_per_user_split() {
-    // But pinning BOTH per-user combined and per-user split on one user is a
-    // conflict.
+fn accepts_combined_xhttp_ss_endpoint() {
+    // Same on the XHTTP carrier: `xhttp_ss` is one endpoint for both legs.
     let mut cfg = base_config();
-    cfg.users[0].ws_path_ss = Some("/u/ss".into());
-    cfg.users[0].ws_path_tcp = Some("/u/tcp".into());
-    let err = cfg.validate().unwrap_err().to_string();
-    assert!(err.contains("pick one"), "got: {err}");
+    cfg.endpoints = vec![ep("/ssc", EndpointKind::XhttpSs)];
+    cfg.validate().unwrap();
 }
 
 #[test]
-fn rejects_combined_ws_path_ss_colliding_with_other_protocol() {
-    // A combined `ws_path_ss` must still be distinct from every other path —
-    // sharing a value with an ss-xhttp base is a conflict.
-    let error = Config {
-        ws_path_ss: Some("/shared".into()),
-        xhttp_path_tcp: Some("/shared".into()),
-        ..base_config()
-    }
-    .validate()
-    .unwrap_err()
-    .to_string();
+fn rejects_two_endpoints_sharing_one_path() {
+    // A path must be claimed by exactly one endpoint — sharing a value across
+    // two different protocol kinds is a conflict, not an implicit combine.
+    let mut cfg = base_config();
+    cfg.endpoints =
+        vec![ep("/shared", EndpointKind::WsSs), ep("/shared", EndpointKind::XhttpSsTcp)];
+    let error = cfg.validate().unwrap_err().to_string();
 
-    assert!(error.contains("must be distinct"), "got: {error}");
+    assert!(error.contains("distinct"), "got: {error}");
 }
 
 #[test]
-fn rejects_xhttp_path_tcp_without_leading_slash() {
-    let error = Config {
-        xhttp_path_tcp: Some("ss".into()),
-        ..base_config()
-    }
-    .validate()
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("xhttp_path_tcp must start with '/'"), "got: {error}");
-}
-
-#[test]
-fn rejects_xhttp_path_tcp_without_password_user() {
-    // A vless-only user (no password) cannot back an SS-over-XHTTP path.
+fn ss_endpoint_without_password_user_still_validates() {
+    // A vless-only user (no password) cannot back an SS endpoint. This used
+    // to be a hard bail; it is now a warning (see `Config::validate`) — the
+    // endpoint is simply unreachable, which by itself is not a config error.
     let mut cfg = base_config();
     cfg.users[0].password = None;
     cfg.users[0].vless_id = Some("00000000-0000-0000-0000-000000000001".into());
-    cfg.xhttp_path_tcp = Some("/ss".into());
-    let error = cfg.validate().unwrap_err().to_string();
-    assert!(error.contains("xhttp_path_tcp requires"), "got: {error}");
+    cfg.endpoints = vec![ep("/ss", EndpointKind::XhttpSsTcp)];
+    cfg.validate()
+        .expect("a password-less SS endpoint warns, it does not bail");
 }
 
 #[test]
-fn rejects_xhttp_path_tcp_equal_to_xhttp_path_vless() {
-    // One base path serves one protocol — a shared base is rejected.
+fn vless_endpoint_without_vless_id_user_still_validates() {
+    // Same downgrade on the VLESS side: an endpoint with no vless_id user
+    // warns instead of bailing. base_config's only user has a password and
+    // no vless_id.
     let mut cfg = base_config();
-    cfg.xhttp_path_vless = Some("/x".into());
-    cfg.xhttp_path_tcp = Some("/x".into());
-    cfg.users[0].vless_id = Some("00000000-0000-0000-0000-000000000001".into());
-    let error = cfg.validate().unwrap_err().to_string();
-    assert!(error.contains("ss-xhttp"), "got: {error}");
+    cfg.endpoints = vec![ep("/vless", EndpointKind::WsVless)];
+    cfg.validate()
+        .expect("a vless_id-less VLESS endpoint warns, it does not bail");
 }
 
 #[test]
-fn accepts_xhttp_path_udp_with_password_user() {
-    Config {
-        xhttp_path_udp: Some("/ssu".into()),
-        xhttp_path_ss: None,
-        ..base_config()
-    }
-    .validate()
-    .unwrap();
+fn rejects_xhttp_ss_tcp_endpoint_sharing_a_path_with_xhttp_vless() {
+    // One path serves one protocol — a shared path is rejected even across
+    // an SS and a VLESS endpoint.
+    let mut cfg = base_config();
+    cfg.users[0].vless_id = Some("00000000-0000-0000-0000-000000000001".into());
+    cfg.endpoints = vec![ep("/x", EndpointKind::XhttpVless), ep("/x", EndpointKind::XhttpSsTcp)];
+    let error = cfg.validate().unwrap_err().to_string();
+    assert!(error.contains("duplicate endpoint path"), "got: {error}");
 }
 
-// Note: combined mode is opted into via the explicit `xhttp_path_ss` /
-// `ws_path_ss` fields — see `accepts_combined_xhttp_path_ss`. Split tcp/udp
-// paths sharing a value is a conflict, not an implicit combine.
+#[test]
+fn accepts_xhttp_ss_udp_endpoint_with_password_user() {
+    let mut cfg = base_config();
+    cfg.endpoints = vec![ep("/ssu", EndpointKind::XhttpSsUdp)];
+    cfg.validate().unwrap();
+}
 
 #[test]
 fn allows_vless_only_users() {
-    Config {
-        ws_path_vless: Some("/vless".into()),
-        xhttp_path_vless: None,
-        xhttp_path_tcp: None,
-        xhttp_path_udp: None,
-        xhttp_path_ss: None,
-        users: vec![super::super::UserEntry {
-            id: "550e8400-e29b-41d4-a716-446655440000".into(),
-            password: None,
-            fwmark: None,
-            method: None,
-            ws_path_tcp: None,
-            ws_path_udp: None,
-            ws_path_ss: None,
-            vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-            ws_path_vless: None,
-            xhttp_path_vless: None,
-            xhttp_path_tcp: None,
-            xhttp_path_udp: None,
-            xhttp_path_ss: None,
-            enabled: None,
-            aliases: None,
-        }],
-        ..base_config()
-    }
-    .validate()
-    .unwrap();
-}
-
-#[test]
-fn rejects_vless_path_conflict_with_tcp_path() {
-    let error = Config {
-        ws_path_vless: Some("/tcp".into()),
-        xhttp_path_vless: None,
-        xhttp_path_tcp: None,
-        xhttp_path_udp: None,
-        xhttp_path_ss: None,
-        users: vec![
-            super::super::UserEntry {
-                id: "alice".into(),
-                password: Some("secret".into()),
-                fwmark: None,
-                method: None,
-                ws_path_tcp: None,
-                ws_path_udp: None,
-                ws_path_ss: None,
-                vless_id: None,
-                ws_path_vless: None,
-                xhttp_path_vless: None,
-                xhttp_path_tcp: None,
-                xhttp_path_udp: None,
-                xhttp_path_ss: None,
-                enabled: None,
-                aliases: None,
-            },
-            super::super::UserEntry {
-                id: "550e8400-e29b-41d4-a716-446655440000".into(),
-                password: None,
-                fwmark: None,
-                method: None,
-                ws_path_tcp: None,
-                ws_path_udp: None,
-                ws_path_ss: None,
-                vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-                ws_path_vless: None,
-                xhttp_path_vless: None,
-                xhttp_path_tcp: None,
-                xhttp_path_udp: None,
-                xhttp_path_ss: None,
-                enabled: None,
-                aliases: None,
-            },
-        ],
-        ..base_config()
-    }
-    .validate()
-    .unwrap_err()
-    .to_string();
-
-    assert!(error.contains("tcp and vless websocket paths must be distinct"));
-}
-
-#[test]
-fn allows_per_user_vless_path_without_global_default() {
-    Config {
+    let mut cfg = base_config();
+    cfg.endpoints = vec![ep("/vless", EndpointKind::WsVless)];
+    cfg.users = vec![super::super::UserEntry {
+        id: "550e8400-e29b-41d4-a716-446655440000".into(),
+        password: None,
+        fwmark: None,
+        method: None,
+        ws_path_tcp: None,
+        ws_path_udp: None,
+        ws_path_ss: None,
+        vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
         ws_path_vless: None,
         xhttp_path_vless: None,
         xhttp_path_tcp: None,
         xhttp_path_udp: None,
         xhttp_path_ss: None,
-        users: vec![super::super::UserEntry {
-            id: "alice".into(),
-            password: None,
-            fwmark: None,
-            method: None,
-            ws_path_tcp: None,
-            ws_path_udp: None,
-            ws_path_ss: None,
-            vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-            ws_path_vless: Some("/alice-vless".into()),
-            xhttp_path_vless: None,
-            xhttp_path_tcp: None,
-            xhttp_path_udp: None,
-            xhttp_path_ss: None,
-            enabled: None,
-            aliases: None,
-        }],
-        ..base_config()
-    }
-    .validate()
-    .unwrap();
+        enabled: None,
+        aliases: None,
+    }];
+    cfg.validate().unwrap();
 }
 
 #[test]
-fn allows_vless_id_without_any_path() {
+fn rejects_vless_endpoint_path_conflict_with_tcp_endpoint_path() {
+    let mut cfg = base_config();
+    cfg.users.push(super::super::UserEntry {
+        id: "550e8400-e29b-41d4-a716-446655440000".into(),
+        password: None,
+        fwmark: None,
+        method: None,
+        ws_path_tcp: None,
+        ws_path_udp: None,
+        ws_path_ss: None,
+        vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+        ws_path_vless: None,
+        xhttp_path_vless: None,
+        xhttp_path_tcp: None,
+        xhttp_path_udp: None,
+        xhttp_path_ss: None,
+        enabled: None,
+        aliases: None,
+    });
+    cfg.endpoints = vec![ep("/tcp", EndpointKind::WsSsTcp), ep("/tcp", EndpointKind::WsVless)];
+    let error = cfg.validate().unwrap_err().to_string();
+
+    assert!(error.contains("duplicate endpoint path"), "got: {error}");
+}
+
+#[test]
+fn allows_vless_id_without_any_endpoint() {
     // Raw VLESS-over-QUIC and the reverse-tunnel dialer were removed, so a
-    // vless_id user with no ws/xhttp path no longer has a forward transport.
-    // That is not a validation error: the user is warned about and skipped at
-    // route-build time (see `services::build`), so an otherwise-valid config
-    // still starts.
-    Config {
+    // vless_id user with no matching endpoint no longer has a forward
+    // transport. That is not a validation error: the user is warned about
+    // and skipped at route-build time (see `services::build`), so an
+    // otherwise-valid config still starts.
+    let mut cfg = base_config();
+    cfg.users = vec![super::super::UserEntry {
+        id: "alice".into(),
+        password: None,
+        fwmark: None,
+        method: None,
+        ws_path_tcp: None,
+        ws_path_udp: None,
+        ws_path_ss: None,
+        vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
         ws_path_vless: None,
         xhttp_path_vless: None,
         xhttp_path_tcp: None,
         xhttp_path_udp: None,
         xhttp_path_ss: None,
-        users: vec![super::super::UserEntry {
-            id: "alice".into(),
-            password: None,
-            fwmark: None,
-            method: None,
-            ws_path_tcp: None,
-            ws_path_udp: None,
-            ws_path_ss: None,
-            vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-            ws_path_vless: None,
-            xhttp_path_vless: None,
-            xhttp_path_tcp: None,
-            xhttp_path_udp: None,
-            xhttp_path_ss: None,
-            enabled: None,
-            aliases: None,
-        }],
-        ..base_config()
-    }
-    .validate()
-    .unwrap();
+        enabled: None,
+        aliases: None,
+    }];
+    cfg.validate().unwrap();
 }
 
 #[test]
