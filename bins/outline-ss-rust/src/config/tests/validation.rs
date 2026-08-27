@@ -140,6 +140,13 @@ fn combined_ss_endpoint_is_accepted() {
 }
 
 #[test]
+fn endpoint_path_without_leading_slash_is_rejected() {
+    let toml = base("[[endpoint]]\npath = \"tcp\"\nkind = \"ws_ss_tcp\"\n");
+    let err = parse(&toml).unwrap_err();
+    assert!(err.to_string().contains("must start with '/'"));
+}
+
+#[test]
 fn requires_at_least_one_data_plane_listener() {
     let error = Config {
         listen: None,

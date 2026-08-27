@@ -65,6 +65,9 @@ impl Config {
         let has_vless_user = self.users.iter().any(|user| user.vless_id.is_some());
         let mut claimed_paths: HashMap<String, EndpointKind> = HashMap::new();
         for ep in &self.endpoints {
+            if !ep.path.starts_with('/') {
+                bail!("endpoint path {:?} must start with '/'", ep.path);
+            }
             if let Some(prev_kind) = claimed_paths.insert(ep.path.clone(), ep.kind) {
                 let path = &ep.path;
                 let kind = ep.kind;
