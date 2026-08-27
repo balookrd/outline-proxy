@@ -21,10 +21,9 @@ use tokio::{
 };
 
 use super::super::nat::NatTable;
-use super::super::setup::{VlessUserRoute, build_vless_transport_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
-use super::super::{DnsCache, H3ServeCtx, build_user_routes, serve_h3_server};
+use super::super::{DnsCache, H3ServeCtx, serve_h3_server};
 use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
 use crate::metrics::Metrics;
 use crate::protocol::TargetAddr;
@@ -46,12 +45,11 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
     let addr = server.local_addr()?;
 
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         metrics,
         nat_table,
         dns_cache,
@@ -111,8 +109,6 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
 #[tokio::test]
 async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
     use super::super::resumption::{OrphanRegistry, ResumptionConfig};
-    use super::super::setup::{build_transport_route_map, user_keys};
-    use crate::metrics::Transport;
 
     let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
     let (tls_config, cert_der) = test_h3_server_tls()?;
@@ -124,8 +120,8 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
     let mut config = sample_config(addr);
     config.session_resumption.enabled = true;
     config.session_resumption.downlink_buffer_bytes = 64 * 1024;
-    let user_routes = build_user_routes(&config)?;
-    let users = super::super::state::UserKeySlice(user_keys(user_routes.as_ref()));
+    let ss_users = super::config_ss_users(&config);
+    let users = super::super::state::UserKeySlice(Arc::from(ss_users.clone().into_boxed_slice()));
     let metrics = Metrics::new(&config);
     let orphan_registry = std::sync::Arc::new(OrphanRegistry::new(
         ResumptionConfig::from(&config.session_resumption),
@@ -133,14 +129,9 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
     ));
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let routes = std::sync::Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp: std::sync::Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp)),
-        udp: std::sync::Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp)),
-        vless: std::sync::Arc::new(build_vless_transport_route_map(&[])),
-        xhttp_vless: std::sync::Arc::new(BTreeMap::new()),
-        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
-        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
-    }));
+    let routes = std::sync::Arc::new(ArcSwap::from_pointee(
+        super::super::endpoint_routes::build_route_registry(&config.endpoints, &ss_users, &[]),
+    ));
     let services = std::sync::Arc::new(Services::new(
         std::sync::Arc::clone(&metrics),
         dns_cache,
@@ -287,10 +278,7 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -452,10 +440,7 @@ async fn ws_h3_send_failure_does_not_collapse_the_shared_connection() -> Result<
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -601,12 +586,11 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
     config.h3_cert_path = Some("cert.pem".into());
     config.h3_key_path = Some("key.pem".into());
     config.http_root_auth = true;
-    let user_routes = build_user_routes(&config)?;
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         metrics,
         nat_table,
         dns_cache,
@@ -677,12 +661,11 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
     config.h3_cert_path = Some("cert.pem".into());
     config.h3_key_path = Some("key.pem".into());
     config.http_root_auth = true;
-    let user_routes = build_user_routes(&config)?;
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         metrics,
         nat_table,
         dns_cache,
@@ -764,10 +747,7 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -908,10 +888,7 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -1046,10 +1023,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -1182,8 +1156,6 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
 /// the process was restarted.
 #[tokio::test]
 async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
-    use super::super::setup::{SsXhttpUserRoute, build_xhttp_ss_route_map, user_keys};
-
     const XHTTP_BASE: &str = "/xhs";
 
     let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
@@ -1194,19 +1166,15 @@ async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
     let addr = server.local_addr()?;
 
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
-    let user = user_routes
-        .first()
-        .context("sample config must define a user")?
-        .user
-        .clone();
+    let ss_users = super::config_ss_users(&config);
+    let user = ss_users.first().context("sample config must define a user")?.clone();
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
 
-    // The registry a rebuild produces once the only user of `XHTTP_BASE` is
-    // gone: `build_xhttp_ss_route_map` groups by user, so the base path
-    // disappears from the map entirely.
+    // The registry a rebuild publishes once `XHTTP_BASE` is no longer served
+    // (its endpoint dropped from the snapshot): the base path is absent from
+    // the map entirely, so the lookup must miss.
     let empty_registry = || RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -1216,10 +1184,7 @@ async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
         xhttp_ss_udp: Arc::new(BTreeMap::new()),
     };
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        xhttp_ss: Arc::new(build_xhttp_ss_route_map(&[SsXhttpUserRoute {
-            user,
-            xhttp_path: Arc::from(XHTTP_BASE),
-        }])),
+        xhttp_ss: super::ss_xhttp_route_map(XHTTP_BASE, std::slice::from_ref(&user)),
         ..empty_registry()
     }));
     let services = Arc::new(Services::new(
@@ -1242,7 +1207,9 @@ async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
     let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(user_keys(user_routes.as_ref())))),
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            ss_users.clone().into_boxed_slice(),
+        )))),
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
     });

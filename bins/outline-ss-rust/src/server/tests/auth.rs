@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
-use super::super::{DnsCache, build_app, build_user_routes};
+use super::super::{DnsCache, build_app};
 use super::{basic_auth_header, build_test_state, sample_config, set_cookie_pair};
 use crate::metrics::Metrics;
 
@@ -22,11 +22,10 @@ async fn root_http_auth_challenges_allows_password_and_hides_other_paths() -> Re
     let mut config = sample_config(addr);
     config.http_root_auth = true;
     config.http_root_realm = "My VPN \"Portal\"".into();
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -115,11 +114,10 @@ async fn root_http_auth_returns_403_after_three_failed_password_attempts() -> Re
 
     let mut config = sample_config(addr);
     config.http_root_auth = true;
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,

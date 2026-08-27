@@ -28,7 +28,6 @@ use crate::protocol::TargetAddr;
 async fn spawn_ss_resumption_server(
     config_mutator: impl FnOnce(&mut crate::config::Config),
 ) -> Result<(ResumptionTestServer, UserKey)> {
-    use super::super::super::build_user_routes;
     use super::super::sample_config;
 
     // sample_config picks 0.0.0.0 — but we'll override `listen` after
@@ -38,7 +37,7 @@ async fn spawn_ss_resumption_server(
     let mut config = sample_config(dummy_listen);
     config.session_resumption.enabled = true;
     config_mutator(&mut config);
-    let user = build_user_routes(&config)?[0].user.clone();
+    let user = super::super::config_ss_users(&config)[0].clone();
     let server = spawn_test_server(config, Vec::new()).await?;
     Ok((server, user))
 }
@@ -48,7 +47,6 @@ async fn spawn_ss_resumption_server(
 /// test to demonstrate that a Session ID issued to one user cannot be
 /// claimed by the other even when they sit on the same route.
 async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, UserKey)> {
-    use super::super::super::build_user_routes;
     use super::super::sample_config_with_users;
 
     let dummy_listen: SocketAddr = (Ipv4Addr::LOCALHOST, 0).into();
@@ -60,15 +58,7 @@ async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, Us
                 password: Some("secret-a".into()),
                 fwmark: None,
                 method: None,
-                ws_path_tcp: None,
-                ws_path_udp: None,
-                ws_path_ss: None,
                 vless_id: None,
-                ws_path_vless: None,
-                xhttp_path_vless: None,
-                xhttp_path_tcp: None,
-                xhttp_path_udp: None,
-                xhttp_path_ss: None,
                 enabled: None,
                 aliases: None,
             },
@@ -77,31 +67,23 @@ async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, Us
                 password: Some("secret-b".into()),
                 fwmark: None,
                 method: None,
-                ws_path_tcp: None,
-                ws_path_udp: None,
-                ws_path_ss: None,
                 vless_id: None,
-                ws_path_vless: None,
-                xhttp_path_vless: None,
-                xhttp_path_tcp: None,
-                xhttp_path_udp: None,
-                xhttp_path_ss: None,
                 enabled: None,
                 aliases: None,
             },
         ],
     );
     config.session_resumption.enabled = true;
-    let routes = build_user_routes(&config)?;
-    let alice = routes
+    let pool = super::super::config_ss_users(&config);
+    let alice = pool
         .iter()
-        .find(|r| r.user.id() == "alice")
-        .map(|r| r.user.clone())
+        .find(|u| u.id() == "alice")
+        .cloned()
         .ok_or_else(|| anyhow::anyhow!("missing alice"))?;
-    let bob = routes
+    let bob = pool
         .iter()
-        .find(|r| r.user.id() == "bob")
-        .map(|r| r.user.clone())
+        .find(|u| u.id() == "bob")
+        .cloned()
         .ok_or_else(|| anyhow::anyhow!("missing bob"))?;
     let server = spawn_test_server(config, Vec::new()).await?;
     Ok((server, alice, bob))
@@ -117,7 +99,6 @@ async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, Us
 async fn spawn_ss_aliased_user_server() -> Result<(ResumptionTestServer, UserKey)> {
     use std::collections::BTreeMap;
 
-    use super::super::super::build_user_routes;
     use super::super::sample_config_with_users;
     use crate::config::OneOrManyCidr;
 
@@ -129,15 +110,7 @@ async fn spawn_ss_aliased_user_server() -> Result<(ResumptionTestServer, UserKey
             password: Some("secret-b".into()),
             fwmark: None,
             method: None,
-            ws_path_tcp: None,
-            ws_path_udp: None,
-            ws_path_ss: None,
             vless_id: None,
-            ws_path_vless: None,
-            xhttp_path_vless: None,
-            xhttp_path_tcp: None,
-            xhttp_path_udp: None,
-            xhttp_path_ss: None,
             enabled: None,
             aliases: Some(BTreeMap::from([(
                 "bob-loopback".to_owned(),
@@ -146,7 +119,7 @@ async fn spawn_ss_aliased_user_server() -> Result<(ResumptionTestServer, UserKey
         }],
     );
     config.session_resumption.enabled = true;
-    let user = build_user_routes(&config)?[0].user.clone();
+    let user = super::super::config_ss_users(&config)[0].clone();
     let server = spawn_test_server(config, Vec::new()).await?;
     Ok((server, user))
 }

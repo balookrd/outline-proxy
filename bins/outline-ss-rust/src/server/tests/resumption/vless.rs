@@ -3,7 +3,7 @@
 
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    sync::{Arc, atomic::Ordering},
+    sync::atomic::Ordering,
     time::Duration,
 };
 
@@ -12,7 +12,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use super::super::super::setup::VlessUserRoute;
 use super::{
     ResumptionTestServer, connect_ws_h1, expect_binary_reply, spawn_echo_target,
     spawn_echo_udp_target, spawn_test_server,
@@ -47,11 +46,7 @@ async fn spawn_vless_resumption_server() -> Result<(ResumptionTestServer, VlessU
         None,
         None,
     )?;
-    let vless_route = VlessUserRoute {
-        user: vless_user.clone(),
-        ws_path: Arc::from("/vless"),
-    };
-    let server = spawn_test_server(config, vec![vless_route]).await?;
+    let server = spawn_test_server(config, vec![vless_user.clone()]).await?;
     Ok((server, vless_user))
 }
 

@@ -31,7 +31,6 @@ use tokio::{
 
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
-use super::super::setup::{VlessXhttpUserRoute, build_xhttp_vless_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::transport::XhttpRegistry;
@@ -67,10 +66,7 @@ pub(super) async fn setup_xhttp_server_with_resumption_v2(
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
     let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
-    let xhttp_routes = Arc::new(build_xhttp_vless_route_map(&[VlessXhttpUserRoute {
-        user: vless_user,
-        xhttp_path: Arc::from(base_path),
-    }]));
+    let xhttp_routes = super::vless_xhttp_route_map(base_path, std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),

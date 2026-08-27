@@ -39,7 +39,7 @@ use super::super::bootstrap::serve_tcp_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
 use super::super::transport::sni_fallback::SniFallbackContext;
-use super::super::{DnsCache, build_app, build_user_routes};
+use super::super::{DnsCache, build_app};
 use super::{build_test_state, sample_config};
 use crate::config::{Config, ProxyProtocolVersion, SniBackend, SniFallbackConfig, SniMatcher};
 use crate::metrics::Metrics;
@@ -200,12 +200,11 @@ async fn matched_sni_terminates_locally() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let (config, _cert_path, _key_path) = make_sample_config_with_tls(addr)?;
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(Duration::from_secs(300));
     let dns_cache = DnsCache::new(Duration::from_secs(30));
     let metrics = Metrics::new(&config);
     let (routes, services_state, auth) = build_test_state(
-        user_routes,
+        &config,
         Arc::clone(&metrics),
         nat_table,
         dns_cache,
@@ -256,12 +255,11 @@ async fn foreign_sni_splices_to_backend_with_clienthello() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let (config, _cert_path, _key_path) = make_sample_config_with_tls(addr)?;
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(Duration::from_secs(300));
     let dns_cache = DnsCache::new(Duration::from_secs(30));
     let metrics = Metrics::new(&config);
     let (routes, services_state, auth) = build_test_state(
-        user_routes,
+        &config,
         Arc::clone(&metrics),
         nat_table,
         dns_cache,
@@ -333,12 +331,11 @@ async fn silent_peer_during_handshake_hits_preauth_timeout() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let (config, _cert_path, _key_path) = make_sample_config_with_tls(addr)?;
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(Duration::from_secs(300));
     let dns_cache = DnsCache::new(Duration::from_secs(30));
     let metrics = Metrics::new(&config);
     let (routes, services_state, auth) = build_test_state(
-        user_routes,
+        &config,
         Arc::clone(&metrics),
         nat_table,
         dns_cache,
@@ -392,12 +389,11 @@ async fn silent_peer_during_sni_peek_hits_preauth_timeout() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let (config, _cert_path, _key_path) = make_sample_config_with_tls(addr)?;
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(Duration::from_secs(300));
     let dns_cache = DnsCache::new(Duration::from_secs(30));
     let metrics = Metrics::new(&config);
     let (routes, services_state, auth) = build_test_state(
-        user_routes,
+        &config,
         Arc::clone(&metrics),
         nat_table,
         dns_cache,
@@ -440,12 +436,11 @@ async fn foreign_sni_with_proxy_protocol_v2_prefixes_header() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let (config, _cert_path, _key_path) = make_sample_config_with_tls(addr)?;
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(Duration::from_secs(300));
     let dns_cache = DnsCache::new(Duration::from_secs(30));
     let metrics = Metrics::new(&config);
     let (routes, services_state, auth) = build_test_state(
-        user_routes,
+        &config,
         Arc::clone(&metrics),
         nat_table,
         dns_cache,

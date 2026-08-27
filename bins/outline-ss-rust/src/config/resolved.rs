@@ -109,36 +109,6 @@ pub struct Config {
     /// TTL (seconds) for sticky source pins. Should exceed the origin's
     /// challenge-clearance lifetime (Cloudflare's is ~30 min). Default 1800.
     pub outbound_ipv6_sticky_ttl_secs: u64,
-    pub ws_path_tcp: String,
-    pub ws_path_udp: String,
-    /// Combined SS-over-WS path: one path carries both TCP and UDP legs (the
-    /// server splits them by the hidden `/{token}` bit). None disables it.
-    ///
-    /// `Config::validate` and the runtime route builders now read
-    /// `Config.endpoints` instead (see `config::endpoint`); this field and
-    /// `xhttp_path_ss` below survive only for `UserEntry::effective_ws_path_ss`
-    /// / `effective_xhttp_path_ss` and the tests still built on them, and are
-    /// deleted together with the rest of the per-user path model in Task 6.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub ws_path_ss: Option<String>,
-    pub ws_path_vless: Option<String>,
-    /// Base path under which the server accepts VLESS-over-XHTTP
-    /// packet-up. The actual axum/h3 routes registered are
-    /// `<base>/{id}` for each base; `id` is the opaque session
-    /// token the client picks. None disables XHTTP.
-    pub xhttp_path_vless: Option<String>,
-    /// Base path under which the server accepts Shadowsocks-over-XHTTP.
-    /// Same route shape as `xhttp_path_vless`; None disables it.
-    pub xhttp_path_tcp: Option<String>,
-    /// Base path under which the server accepts SS-UDP-over-XHTTP.
-    /// Separate from `xhttp_path_tcp` (the TCP path); None disables it.
-    pub xhttp_path_udp: Option<String>,
-    /// Combined SS-over-XHTTP path: one path carries both TCP and UDP legs
-    /// (split by the hidden session-id bit). None disables it. Unlike
-    /// `ws_path_ss` above, no surviving test path reads this one either — see
-    /// `UserEntry::effective_xhttp_path_ss`.
-    #[allow(dead_code)]
-    pub xhttp_path_ss: Option<String>,
     pub http_root_auth: bool,
     pub http_root_realm: String,
     pub users: Vec<UserEntry>,
@@ -414,22 +384,6 @@ impl Config {
         }
 
         Ok(users.into_iter().filter(UserEntry::is_enabled).collect())
-    }
-
-    // `Config::validate` used to call this to collect per-user effective
-    // paths; it now reads `Config.endpoints` instead (see `config::endpoint`)
-    // and no longer needs the password-filtered user list at all. The method
-    // survives only for `server::setup::build_user_routes`, a test-only
-    // helper a large body of integration tests still build routes through —
-    // see the `not(test)` note on `UserEntry::effective_ws_path_tcp`. Deleted
-    // together with the rest of the per-user path model in Task 6.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn user_entries(&self) -> Result<Vec<UserEntry>, ConfigError> {
-        Ok(self
-            .effective_users()?
-            .into_iter()
-            .filter(|user| user.password.is_some())
-            .collect())
     }
 
     pub fn h3_enabled(&self) -> bool {

@@ -15,7 +15,7 @@
 
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    sync::{Arc, atomic::Ordering},
+    sync::atomic::Ordering,
     time::Duration,
 };
 
@@ -23,7 +23,6 @@ use anyhow::{Result, bail};
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use super::super::super::setup::VlessUserRoute;
 use super::{
     ResumptionTestServer, connect_ws_h1, expect_binary_reply, spawn_echo_target, spawn_test_server,
     ss::ss_handshake_frame, vless::vless_tcp_request,
@@ -44,15 +43,7 @@ fn dual_protocol_user(id: &str, password: &str, vless_id: &str) -> UserEntry {
         password: Some(password.into()),
         fwmark: None,
         method: None,
-        ws_path_tcp: None,
-        ws_path_udp: None,
-        ws_path_ss: None,
         vless_id: Some(vless_id.into()),
-        ws_path_vless: None,
-        xhttp_path_vless: None,
-        xhttp_path_tcp: None,
-        xhttp_path_udp: None,
-        xhttp_path_ss: None,
         enabled: None,
         aliases: None,
     }
@@ -60,40 +51,25 @@ fn dual_protocol_user(id: &str, password: &str, vless_id: &str) -> UserEntry {
 
 /// Boots a server whose `users` are `entries`, with every VLESS-capable entry
 /// mounted on `/vless` under **its own config id** as the accounting label —
-/// which is what `build_vless_user_routes` does in production, and what makes
-/// the SS and VLESS legs of one account share an owner label.
+/// which is what `build_vless_user_pool` does in production, and what makes the
+/// SS and VLESS legs of one account share an owner label.
 async fn spawn_dual_protocol_server(
     entries: Vec<UserEntry>,
 ) -> Result<(ResumptionTestServer, Vec<UserKey>)> {
-    use super::super::super::build_user_routes;
+    use super::super::super::endpoint_routes::{build_ss_user_pool, build_vless_user_pool};
     use super::super::sample_config_with_users;
 
     let dummy_listen: SocketAddr = (Ipv4Addr::LOCALHOST, 0).into();
     let mut config = sample_config_with_users(dummy_listen, entries);
     config.session_resumption.enabled = true;
 
-    let vless_routes = config
-        .users
-        .iter()
-        .filter_map(|entry| entry.vless_id.as_ref().map(|id| (entry, id)))
-        .map(|(entry, vless_id)| -> Result<VlessUserRoute> {
-            Ok(VlessUserRoute {
-                user: VlessUser::new(
-                    vless_id.clone(),
-                    Arc::from(entry.id.as_str()),
-                    entry.fwmark,
-                    entry.build_ip_aliases()?,
-                )?,
-                ws_path: Arc::from("/vless"),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let ss_users = build_user_routes(&config)?
-        .iter()
-        .map(|route| route.user.clone())
-        .collect();
-    let server = spawn_test_server(config, vless_routes).await?;
+    // Same derivation as production `services::build`: the VLESS pool labels
+    // each user by its config id, so the SS and VLESS legs of one entry share
+    // an owner label.
+    let effective = config.effective_users()?;
+    let ss_users: Vec<UserKey> = build_ss_user_pool(&effective, config.method)?;
+    let vless_users: Vec<VlessUser> = build_vless_user_pool(&effective)?;
+    let server = spawn_test_server(config, vless_users).await?;
     Ok((server, ss_users))
 }
 

@@ -51,23 +51,14 @@ pub(super) struct CreateRequest {
 
 impl From<CreateRequest> for UserEntry {
     fn from(req: CreateRequest) -> Self {
+        // Users are pure credentials — no per-user paths; routing is driven by
+        // `Config.endpoints`.
         Self {
             id: req.id,
             password: req.password,
             fwmark: req.fwmark,
             method: req.method,
-            // Users are pure credentials — no per-user paths. The path fields
-            // still exist on `UserEntry` (retired in a later task) but the
-            // control API neither accepts nor emits them.
-            ws_path_tcp: None,
-            ws_path_udp: None,
-            ws_path_ss: None,
             vless_id: req.vless_id,
-            ws_path_vless: None,
-            xhttp_path_vless: None,
-            xhttp_path_tcp: None,
-            xhttp_path_udp: None,
-            xhttp_path_ss: None,
             enabled: req.enabled,
             aliases: req.aliases,
         }

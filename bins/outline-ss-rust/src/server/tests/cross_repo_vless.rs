@@ -40,7 +40,6 @@ use outline_transport::{
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::resumption::{OrphanRegistry, ResumptionConfig};
-use super::super::setup::{VlessUserRoute, build_vless_transport_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::{DnsCache, H3ServeCtx, build_app, serve_h3_server};
@@ -88,10 +87,7 @@ async fn setup_vless_ws_server(
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
     let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from(ws_path),
-    }]));
+    let vless_routes = super::vless_ws_route_map(ws_path, std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -261,10 +257,7 @@ async fn setup_vless_ws_h3_server(
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
     let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from(ws_path),
-    }]));
+    let vless_routes = super::vless_ws_route_map(ws_path, std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -403,10 +396,7 @@ async fn setup_vless_ws_server_with_resumption_inner(
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
     let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from(ws_path),
-    }]));
+    let vless_routes = super::vless_ws_route_map(ws_path, std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -915,10 +905,7 @@ async fn setup_vless_ws_h3_server_with_resumption(
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
     let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from(ws_path),
-    }]));
+    let vless_routes = super::vless_ws_route_map(ws_path, std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -1095,10 +1082,7 @@ async fn setup_vless_ws_h2_tls_server_with_resumption(
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
     let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from(ws_path),
-    }]));
+    let vless_routes = super::vless_ws_route_map(ws_path, std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -1267,10 +1251,7 @@ async fn setup_vless_ws_h1_only_server_with_resumption(
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
     let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from(ws_path),
-    }]));
+    let vless_routes = super::vless_ws_route_map(ws_path, std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),

@@ -2,7 +2,7 @@ use std::{net::Ipv4Addr, sync::Arc};
 
 use anyhow::Result;
 use axum::http::{Method, Request, StatusCode, Version, header};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::Empty;
 use hyper::client::conn::http2;
@@ -21,10 +21,9 @@ use tokio_tungstenite::{
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
-use super::super::{DnsCache, build_app, build_user_routes, serve_tcp_listener};
-use super::{build_test_state, sample_config, sample_config_with_users, write_test_h2_tls_cert};
-use crate::config::UserEntry;
-use crate::crypto::{AeadStreamEncryptor, decrypt_udp_packet, encrypt_udp_packet};
+use super::super::{DnsCache, build_app, serve_tcp_listener};
+use super::{build_test_state, config_ss_users, sample_config, write_test_h2_tls_cert};
+use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::Metrics;
 use crate::protocol::TargetAddr;
 
@@ -34,11 +33,10 @@ async fn websocket_rfc8441_http2_connect_smoke() -> Result<()> {
     let addr = listener.local_addr()?;
 
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes.clone(),
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -82,11 +80,10 @@ async fn websocket_http1_connect_still_works_with_root_auth_enabled() -> Result<
 
     let mut config = sample_config(addr);
     config.http_root_auth = true;
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes.clone(),
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -112,11 +109,10 @@ async fn websocket_http2_connect_still_works_with_root_auth_enabled() -> Result<
 
     let mut config = sample_config(addr);
     config.http_root_auth = true;
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes.clone(),
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -167,12 +163,11 @@ async fn websocket_rfc8441_http2_udp_relay_smoke() -> Result<()> {
     let addr = listener.local_addr()?;
 
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
-    let user = user_routes[0].user.clone();
+    let user = config_ss_users(&config)[0].clone();
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes.clone(),
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -233,12 +228,11 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     let addr = listener.local_addr()?;
 
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let metrics = Metrics::new(&config);
     let (routes, services, auth) = build_test_state(
-        user_routes.clone(),
+        &config,
         Arc::clone(&metrics),
         nat_table,
         dns_cache,
@@ -304,107 +298,5 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     let _ = server.await;
     let _ = std::fs::remove_file(cert_path);
     let _ = std::fs::remove_file(key_path);
-    Ok(())
-}
-
-#[tokio::test]
-async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
-    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let upstream_addr = upstream.local_addr()?;
-
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let listen_addr = listener.local_addr()?;
-    let config = sample_config_with_users(
-        listen_addr,
-        vec![
-            UserEntry {
-                id: "alice".into(),
-                password: Some("secret-a".into()),
-                fwmark: None,
-                method: None,
-                ws_path_tcp: Some("/alice-tcp".into()),
-                ws_path_udp: Some("/alice-udp".into()),
-                ws_path_ss: None,
-                vless_id: None,
-                ws_path_vless: None,
-                xhttp_path_vless: None,
-                xhttp_path_tcp: None,
-                xhttp_path_udp: None,
-                xhttp_path_ss: None,
-                enabled: None,
-                aliases: None,
-            },
-            UserEntry {
-                id: "bob".into(),
-                password: Some("secret-b".into()),
-                fwmark: None,
-                method: None,
-                ws_path_tcp: Some("/bob-tcp".into()),
-                ws_path_udp: Some("/bob-udp".into()),
-                ws_path_ss: None,
-                vless_id: None,
-                ws_path_vless: None,
-                xhttp_path_vless: None,
-                xhttp_path_tcp: None,
-                xhttp_path_udp: None,
-                xhttp_path_ss: None,
-                enabled: None,
-                aliases: None,
-            },
-        ],
-    );
-    let user_routes = build_user_routes(&config)?;
-    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let (routes, services, auth) = build_test_state(
-        user_routes.clone(),
-        Metrics::new(&config),
-        nat_table,
-        dns_cache,
-        false,
-        "Authorization required",
-    );
-    let app = build_app(routes, services, auth, None, None);
-    let server =
-        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
-
-    let bob = user_routes
-        .iter()
-        .find(|route| route.user.id() == "bob")
-        .map(|route| route.user.clone())
-        .ok_or_else(|| anyhow::anyhow!("missing bob user"))?;
-    let (mut socket, _) = connect_async(format!("ws://{listen_addr}/alice-tcp")).await?;
-    let mut request = TargetAddr::from(upstream_addr).to_wire_bytes()?;
-    request.extend_from_slice(b"ping");
-    let mut encryptor = AeadStreamEncryptor::new(&bob, None)?;
-    let mut buf = BytesMut::new();
-    encryptor.encrypt_chunk(&request, &mut buf)?;
-    socket.send(WsMessage::Binary(buf.freeze())).await?;
-
-    let client_outcome =
-        tokio::time::timeout(std::time::Duration::from_secs(1), socket.next()).await;
-    // The anti-probing sink (`sink_ws`) deliberately holds an invalid-auth
-    // connection open and drains it for up to SS_TCP_HANDSHAKE_TIMEOUT_SECS
-    // (30s) before sending Close, so within this 1s window a timeout
-    // (`Err(_)` — connection held open / sinking) is the expected outcome; a
-    // fast Close / Err / None is also fine. What must NOT happen is a relay
-    // frame echoed back. The isolation invariant proper is asserted by the
-    // upstream check below.
-    assert!(
-        matches!(
-            client_outcome,
-            Ok(Some(Ok(WsMessage::Close(_)))) | Ok(Some(Err(_))) | Ok(None) | Err(_)
-        ),
-        "unexpected websocket outcome: {client_outcome:?}"
-    );
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(300), upstream.accept())
-            .await
-            .is_err(),
-        "bob key on alice path must not reach upstream"
-    );
-
-    server.abort();
-    let _ = server.await;
     Ok(())
 }

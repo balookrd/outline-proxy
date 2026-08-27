@@ -35,7 +35,7 @@ use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
 use super::super::transport::HttpFallbackContext;
-use super::super::{DnsCache, H3ServeCtx, build_app, build_user_routes, serve_h3_server};
+use super::super::{DnsCache, H3ServeCtx, build_app, serve_h3_server};
 use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
 use crate::config::{BackendProto, H3Alpn, HttpFallbackConfig, ProxyProtocolVersion};
 use crate::metrics::Metrics;
@@ -136,11 +136,10 @@ async fn http_fallback_proxies_unmatched_requests_to_upstream() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -210,11 +209,10 @@ async fn http_fallback_proxies_post_with_body() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -253,11 +251,10 @@ async fn http_fallback_disabled_returns_404_for_unknown_path() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -339,11 +336,10 @@ async fn http_fallback_emits_proxy_protocol_v1_header() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -397,11 +393,10 @@ async fn http_fallback_emits_proxy_protocol_v2_header() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -530,11 +525,10 @@ async fn http_fallback_relays_to_h2_upstream() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -622,12 +616,11 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
     let addr = server.local_addr()?;
 
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         metrics,
         nat_table,
         dns_cache,
@@ -735,12 +728,11 @@ async fn h3_fallback_rejects_oversized_request_body() -> Result<()> {
     let addr = server.local_addr()?;
 
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         metrics,
         nat_table,
         dns_cache,

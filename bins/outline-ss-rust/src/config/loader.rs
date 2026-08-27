@@ -63,7 +63,6 @@ fn resolve(args: ConfigArgs, file: FileConfig, config_path: Option<PathBuf>) -> 
     let server_h3 = server.h3.unwrap_or_default();
     let metrics = file.metrics.unwrap_or_default();
     let outbound = file.outbound.unwrap_or_default();
-    let websocket = file.websocket.unwrap_or_default();
     let http_root = file.http_root.unwrap_or_default();
     // `[access_keys]` is parsed and ignored. The section still lives in
     // every deployed config and feeds ops/access-keys, and the config
@@ -163,20 +162,6 @@ fn resolve(args: ConfigArgs, file: FileConfig, config_path: Option<PathBuf>) -> 
             .outbound_ipv6_sticky_ttl_secs
             .or(outbound.ipv6_sticky_ttl_secs)
             .unwrap_or(1800),
-        ws_path_tcp: args
-            .ws_path_tcp
-            .or(websocket.ws_path_tcp)
-            .unwrap_or_else(|| "/tcp".to_owned()),
-        ws_path_udp: args
-            .ws_path_udp
-            .or(websocket.ws_path_udp)
-            .unwrap_or_else(|| "/udp".to_owned()),
-        ws_path_ss: websocket.ws_path_ss,
-        ws_path_vless: websocket.ws_path_vless,
-        xhttp_path_vless: websocket.xhttp_path_vless,
-        xhttp_path_tcp: websocket.xhttp_path_tcp,
-        xhttp_path_udp: websocket.xhttp_path_udp,
-        xhttp_path_ss: websocket.xhttp_path_ss,
         http_root_auth: args.http_root_auth.or(http_root.auth).unwrap_or(false),
         http_root_realm: args
             .http_root_realm
