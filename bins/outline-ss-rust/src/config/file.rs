@@ -28,7 +28,7 @@ pub(super) struct FileConfig {
     pub shadowsocks: Option<ShadowsocksSection>,
     #[serde(default)]
     pub users: Option<Vec<UserEntry>>,
-    #[serde(default)]
+    #[serde(default, rename = "endpoint")]
     pub endpoints: Option<Vec<EndpointSection>>,
     pub tuning_profile: Option<TuningPreset>,
     #[serde(default)]
