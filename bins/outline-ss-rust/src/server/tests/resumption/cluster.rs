@@ -2724,13 +2724,12 @@ const SS_TCP_PADDED_PATH: &str = "/tcp-pad";
 /// paths so the loser's path simply stays unpadded.
 fn enable_combined_padding_globals() {
     carrier_padding::init(PaddingConfig {
-        enabled: true,
         min_bytes: 4,
         max_bytes: 32,
         cover: false,
         cover_jitter_min_ms: 0,
         cover_jitter_max_ms: 0,
-        paths: vec![COMBINED_PADDED_PATH.to_string(), SS_TCP_PADDED_PATH.to_string()],
+        padded_paths: vec![COMBINED_PADDED_PATH.to_string(), SS_TCP_PADDED_PATH.to_string()],
         throttle_detect_enabled: false,
         throttle_ratio_percent: 200,
         throttle_window_secs: 1,
@@ -4734,13 +4733,12 @@ async fn cluster_edge_throttle_hint_injects_octl_to_client() -> Result<()> {
     const PATH: &str = "/throttle-e2e";
 
     carrier_padding::init(PaddingConfig {
-        enabled: true,
         min_bytes: 1,
         max_bytes: 16,
         cover: false,
         cover_jitter_min_ms: 0,
         cover_jitter_max_ms: 0,
-        paths: vec![PATH.to_string()],
+        padded_paths: vec![PATH.to_string()],
         throttle_detect_enabled: true,
         throttle_ratio_percent: 200,
         // Window is floored at 1s; sustain 1 fires on a single >1s stalled send.
