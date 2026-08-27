@@ -64,6 +64,7 @@ fn base_config() -> Config {
         http_fallback: None,
         sni_fallback: None,
         cluster: None,
+        endpoints: Vec::new(),
     }
 }
 

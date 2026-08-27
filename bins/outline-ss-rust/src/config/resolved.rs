@@ -10,8 +10,8 @@ use anyhow::Result;
 use outline_wire::cluster::ShardId;
 
 use super::{
-    CipherKind, ConfigError, ControlConfig, HttpFallbackConfig, SniFallbackConfig, TlsCertEntry,
-    TuningProfile, UserEntry,
+    CipherKind, ConfigError, ControlConfig, EndpointConfig, HttpFallbackConfig, SniFallbackConfig,
+    TlsCertEntry, TuningProfile, UserEntry,
     file::{PaddingSection, SessionResumptionSection},
 };
 
@@ -161,6 +161,11 @@ pub struct Config {
     /// sessions to their home. `None` keeps the standalone model. See
     /// `docs/CLUSTER.md`.
     pub cluster: Option<ClusterConfig>,
+    /// Carrier endpoints (startup-only). The single source of truth for paths.
+    // Read starting in Task 2, once the route builder switches from the old
+    // per-user path fields to this list; nothing reads it yet.
+    #[allow(dead_code)]
+    pub endpoints: Vec<EndpointConfig>,
 }
 
 /// The shared cluster secret, wrapped so it never appears in `Debug` output.
