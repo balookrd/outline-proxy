@@ -13,9 +13,6 @@ mod validation;
 #[cfg_attr(not(feature = "control"), allow(unused_imports))]
 pub use control::ControlConfig;
 pub use endpoint::EndpointConfig;
-// Surfaced for Tasks 2-5 (route builder, control plane) to name endpoint
-// kinds by; nothing in this binary consumes the re-export yet.
-#[allow(unused_imports)]
 pub use endpoint::EndpointKind;
 pub use fallback::{BackendProto, HttpFallbackConfig, ProxyProtocolVersion};
 pub use loader::AppMode;
