@@ -207,10 +207,10 @@ pub(super) struct EndpointSection {
 }
 ```
 
-And add the field to `FileConfig` (:12-49), next to `users`:
+And add the field to `FileConfig` (:12-49), next to `users`. The TOML key must be singular `[[endpoint]]` (the whole design uses it), so rename it off the plural field name:
 
 ```rust
-    #[serde(default)]
+    #[serde(default, rename = "endpoint")]
     pub endpoints: Option<Vec<EndpointSection>>,
 ```
 
