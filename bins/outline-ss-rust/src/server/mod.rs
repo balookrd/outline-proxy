@@ -29,6 +29,7 @@ mod constants;
 #[cfg(feature = "control")]
 mod control;
 mod dns_cache;
+mod endpoint_routes;
 mod h3;
 mod listeners;
 mod nat;
@@ -67,10 +68,6 @@ use self::{
         serve_tcp_listener,
     },
     h3::{H3ServeCtx, serve_h3_server, spawn_h3_cert_reloader},
-    setup::{
-        describe_ss_xhttp_user_routes, describe_user_routes, describe_vless_user_routes,
-        describe_vless_xhttp_user_routes,
-    },
     shutdown::{shutdown_channel, wait_for_shutdown_signal},
 };
 
@@ -113,6 +110,16 @@ pub async fn run(config: Config) -> Result<()> {
     let xhttp_paths = built.xhttp_vless_routes.keys().cloned().collect::<BTreeSet<_>>();
     let xhttp_ss_paths = built.xhttp_ss_routes.keys().cloned().collect::<BTreeSet<_>>();
     let xhttp_ss_udp_paths = built.xhttp_ss_udp_routes.keys().cloned().collect::<BTreeSet<_>>();
+    // Paths that carry both legs on their own (rather than showing up twice,
+    // once per leg, across the sets above) — the operator-facing complement
+    // of the per-user "tcp=... udp=..." description the endpoint model
+    // retired.
+    let combined_endpoint_paths = config
+        .endpoints
+        .iter()
+        .filter(|e| e.kind.is_combined())
+        .map(|e| e.path.clone())
+        .collect::<BTreeSet<_>>();
 
     #[cfg(feature = "control")]
     if let Some(control_config) = config.control.clone() {
@@ -131,13 +138,6 @@ pub async fn run(config: Config) -> Result<()> {
         ));
         control::spawn_control_server(control_config, manager, shutdown_signal.clone());
     }
-    let user_routes = describe_user_routes(built.user_routes.as_ref());
-    let vless_user_routes = describe_vless_user_routes(built.vless_user_routes.as_ref());
-    let vless_xhttp_user_routes =
-        describe_vless_xhttp_user_routes(built.vless_xhttp_user_routes.as_ref());
-    let ss_xhttp_user_routes = describe_ss_xhttp_user_routes(built.ss_xhttp_user_routes.as_ref());
-    let ss_xhttp_udp_user_routes =
-        describe_ss_xhttp_user_routes(built.ss_xhttp_udp_user_routes.as_ref());
     info!(
         listen = ?config.listen,
         tcp_tls = config.tcp_tls_enabled(),
@@ -156,11 +156,7 @@ pub async fn run(config: Config) -> Result<()> {
         xhttp_paths = ?xhttp_paths,
         xhttp_ss_paths = ?xhttp_ss_paths,
         xhttp_ss_udp_paths = ?xhttp_ss_udp_paths,
-        user_routes = ?user_routes,
-        vless_user_routes = ?vless_user_routes,
-        vless_xhttp_user_routes = ?vless_xhttp_user_routes,
-        ss_xhttp_user_routes = ?ss_xhttp_user_routes,
-        ss_xhttp_udp_user_routes = ?ss_xhttp_udp_user_routes,
+        combined_endpoint_paths = ?combined_endpoint_paths,
         method = ?config.method,
         users = built.users.len(),
         udp_nat_idle_timeout_secs = config.tuning.udp_nat_idle_timeout_secs,

@@ -12,7 +12,7 @@ use super::{
     AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_transport_route_map,
     user_keys,
 };
-use crate::config::{CipherKind, Config, UserEntry};
+use crate::config::{CipherKind, Config, EndpointConfig, EndpointKind, UserEntry};
 use crate::metrics::{Metrics, Transport};
 use arc_swap::ArcSwap;
 
@@ -144,7 +144,22 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         http_fallback: None,
         sni_fallback: None,
         cluster: None,
-        endpoints: Vec::new(),
+        // Mirrors the `ws_path_tcp`/`ws_path_udp` split above, so the (still
+        // unused by these tests, which build routes by hand via
+        // `build_user_routes`) endpoint-driven path stays consistent with the
+        // legacy fields it is replacing.
+        endpoints: vec![
+            EndpointConfig {
+                path: "/tcp".into(),
+                kind: EndpointKind::WsSsTcp,
+                padded: false,
+            },
+            EndpointConfig {
+                path: "/udp".into(),
+                kind: EndpointKind::WsSsUdp,
+                padded: false,
+            },
+        ],
         config_path: None,
         control: None,
     }

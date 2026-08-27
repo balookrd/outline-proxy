@@ -2,15 +2,22 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use anyhow::Result;
 use axum::http::Version;
 
 use crate::{
-    config::Config,
     crypto::UserKey,
     metrics::{Protocol, Transport},
     protocol::vless::VlessUser,
 };
+// `build_user_routes` below is the only consumer of `Config`/`Result` left in
+// this module — the rest of the stage-1 builders (which needed them too) are
+// gone now that `services::build` sources routes from `endpoint_routes`
+// instead. It survives only as a test helper (see its own doc comment), so
+// these go with it.
+#[cfg(test)]
+use crate::config::Config;
+#[cfg(test)]
+use anyhow::Result;
 
 use super::constants::TCP_PEER_USER_CACHE_CAPACITY;
 use super::peer_user_cache::PeerUserCache;
@@ -100,35 +107,14 @@ pub(super) fn build_transport_route_map(
         .collect()
 }
 
-pub(super) fn describe_user_routes(routes: &[UserRoute]) -> Vec<String> {
-    routes
-        .iter()
-        .map(|route| {
-            format!(
-                "{}:{} tcp={} udp={}",
-                route.user.id(),
-                route.user.cipher().as_str(),
-                route.ws_path_tcp,
-                route.ws_path_udp,
-            )
-        })
-        .collect()
-}
-
-pub(super) fn describe_vless_user_routes(routes: &[VlessUserRoute]) -> Vec<String> {
-    routes
-        .iter()
-        .map(|route| format!("{} vless={}", route.user.label(), route.ws_path))
-        .collect()
-}
-
-pub(super) fn describe_vless_xhttp_user_routes(routes: &[VlessXhttpUserRoute]) -> Vec<String> {
-    routes
-        .iter()
-        .map(|route| format!("{} xhttp={}", route.user.label(), route.xhttp_path))
-        .collect()
-}
-
+/// Builds the same per-user, per-path `UserRoute` records `services::build`
+/// used to derive before the endpoint-driven route builder replaced it in
+/// production. Kept as a test-only helper: a lot of narrow integration tests
+/// (`websocket.rs`, `h3.rs`, `fallback.rs`, resumption tests, ...) still want
+/// to hand-assemble a small route table without going through
+/// `services::build`, and several of them exercise the still-live per-user
+/// `ws_path_*` override fields (removed only in Task 6) directly.
+#[cfg(test)]
 pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
     Ok(Arc::from(
         config
@@ -158,64 +144,10 @@ pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
     ))
 }
 
-pub(super) fn build_vless_user_routes(config: &Config) -> Result<Arc<[VlessUserRoute]>> {
-    Ok(Arc::from(
-        config
-            .users
-            .iter()
-            .filter_map(|entry| entry.vless_id.as_ref().map(|vless_id| (entry, vless_id)))
-            // Skip users that only ride raw-quic VLESS or XHTTP and have no
-            // WS path — they belong to those routing tables, not this one.
-            .filter_map(|(entry, vless_id)| {
-                entry
-                    .effective_ws_path_vless(config.ws_path_vless.as_deref())
-                    .map(|path| (entry, vless_id, path))
-            })
-            .map(|(entry, vless_id, ws_path)| -> Result<VlessUserRoute> {
-                let aliases = entry.build_ip_aliases()?;
-                let user = VlessUser::new(
-                    vless_id.clone(),
-                    Arc::from(entry.id.as_str()),
-                    entry.fwmark,
-                    aliases,
-                )?;
-                Ok(VlessUserRoute { user, ws_path: Arc::from(ws_path) })
-            })
-            .collect::<Result<Vec<_>>>()?
-            .into_boxed_slice(),
-    ))
-}
-
 #[derive(Clone)]
 pub(super) struct VlessXhttpUserRoute {
     pub user: VlessUser,
     pub xhttp_path: Arc<str>,
-}
-
-pub(super) fn build_vless_xhttp_user_routes(config: &Config) -> Result<Arc<[VlessXhttpUserRoute]>> {
-    Ok(Arc::from(
-        config
-            .users
-            .iter()
-            .filter_map(|entry| entry.vless_id.as_ref().map(|vless_id| (entry, vless_id)))
-            .filter_map(|(entry, vless_id)| {
-                entry
-                    .effective_xhttp_path_vless(config.xhttp_path_vless.as_deref())
-                    .map(|path| (entry, vless_id, path))
-            })
-            .map(|(entry, vless_id, xhttp_path)| -> Result<VlessXhttpUserRoute> {
-                let aliases = entry.build_ip_aliases()?;
-                let user = VlessUser::new(
-                    vless_id.clone(),
-                    Arc::from(entry.id.as_str()),
-                    entry.fwmark,
-                    aliases,
-                )?;
-                Ok(VlessXhttpUserRoute { user, xhttp_path: Arc::from(xhttp_path) })
-            })
-            .collect::<Result<Vec<_>>>()?
-            .into_boxed_slice(),
-    ))
 }
 
 pub(super) fn build_xhttp_vless_route_map(
@@ -253,87 +185,6 @@ pub(super) struct SsXhttpUserRoute {
     pub xhttp_path: Arc<str>,
 }
 
-pub(super) fn describe_ss_xhttp_user_routes(routes: &[SsXhttpUserRoute]) -> Vec<String> {
-    routes
-        .iter()
-        .map(|route| {
-            format!(
-                "{}:{} ss-xhttp={}",
-                route.user.id(),
-                route.user.cipher().as_str(),
-                route.xhttp_path,
-            )
-        })
-        .collect()
-}
-
-pub(super) fn build_ss_xhttp_user_routes(config: &Config) -> Result<Arc<[SsXhttpUserRoute]>> {
-    Ok(Arc::from(
-        config
-            .user_entries()?
-            .into_iter()
-            // Keep only users that resolve to an SS-over-XHTTP base path
-            // (per-user override or the global `xhttp_path_tcp`). Others
-            // belong to the WS tables, not this one.
-            .filter_map(|entry| {
-                // A combined `xhttp_path_ss` feeds BOTH the tcp and udp maps,
-                // so the base path lands in both tables and the bootstrap tags
-                // it `SsCombined`. The split `xhttp_path_tcp` is the fallback
-                // for non-combined users.
-                let path = entry
-                    .effective_xhttp_path_ss(config.xhttp_path_ss.as_deref())
-                    .or_else(|| entry.effective_xhttp_path_tcp(config.xhttp_path_tcp.as_deref()))?
-                    .to_owned();
-                Some((entry, path))
-            })
-            .map(|(entry, xhttp_path)| -> Result<SsXhttpUserRoute> {
-                let method = entry.effective_method(config.method);
-                let aliases = entry.build_ip_aliases()?;
-                let password = entry.password.expect("user_entries filters passwordless users");
-                let user = UserKey::new(entry.id, &password, entry.fwmark, method, aliases)?;
-                Ok(SsXhttpUserRoute {
-                    user,
-                    xhttp_path: Arc::from(xhttp_path.as_str()),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?
-            .into_boxed_slice(),
-    ))
-}
-
-/// Same as [`build_ss_xhttp_user_routes`] but for the SS-UDP-over-XHTTP
-/// base path (`xhttp_path_udp`). Reuses `SsXhttpUserRoute` /
-/// `build_xhttp_ss_route_map` — the route record is identical; only the
-/// base path resolved per user differs.
-pub(super) fn build_ss_xhttp_udp_user_routes(config: &Config) -> Result<Arc<[SsXhttpUserRoute]>> {
-    Ok(Arc::from(
-        config
-            .user_entries()?
-            .into_iter()
-            .filter_map(|entry| {
-                // Combined `xhttp_path_ss` also feeds the udp map (see the tcp
-                // builder); the split `xhttp_path_udp` is the fallback.
-                let path = entry
-                    .effective_xhttp_path_ss(config.xhttp_path_ss.as_deref())
-                    .or_else(|| entry.effective_xhttp_path_udp(config.xhttp_path_udp.as_deref()))?
-                    .to_owned();
-                Some((entry, path))
-            })
-            .map(|(entry, xhttp_path)| -> Result<SsXhttpUserRoute> {
-                let method = entry.effective_method(config.method);
-                let aliases = entry.build_ip_aliases()?;
-                let password = entry.password.expect("user_entries filters passwordless users");
-                let user = UserKey::new(entry.id, &password, entry.fwmark, method, aliases)?;
-                Ok(SsXhttpUserRoute {
-                    user,
-                    xhttp_path: Arc::from(xhttp_path.as_str()),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?
-            .into_boxed_slice(),
-    ))
-}
-
 pub(super) fn build_xhttp_ss_route_map(
     routes: &[SsXhttpUserRoute],
 ) -> BTreeMap<String, Arc<TransportRoute>> {
@@ -363,6 +214,11 @@ pub(super) fn build_xhttp_ss_route_map(
         .collect()
 }
 
+/// Same situation as [`build_user_routes`]: `control::manager::rebuild_snapshots`
+/// builds its `auth_keys` by hand (it already has the `UserKey`s from
+/// assembling `UserRoute`s) rather than calling this, so it survives only as
+/// a shared test helper.
+#[cfg(test)]
 pub(super) fn user_keys(routes: &[UserRoute]) -> Arc<[UserKey]> {
     Arc::from(
         routes

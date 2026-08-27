@@ -10,11 +10,12 @@ use outline_wire::cluster::ObfuscationKey;
 use crate::{
     config::Config,
     crypto::UserKey,
-    metrics::{Metrics, Transport},
+    metrics::Metrics,
     outbound::{
         self, InterfacePrefixSource, InterfaceSource, OutboundIpv6, OutboundIpv6Source,
         StickyIpv6Cache,
     },
+    protocol::vless::VlessUser,
 };
 
 use super::{
@@ -24,16 +25,9 @@ use super::{
     replay::ReplayStore,
     resumption::{OrphanRegistry, ResumptionConfig},
     salt_replay::SaltReplayStore,
-    setup::{
-        SsXhttpUserRoute, UserRoute, VlessUserRoute, VlessXhttpUserRoute,
-        build_ss_xhttp_udp_user_routes, build_ss_xhttp_user_routes, build_transport_route_map,
-        build_user_routes, build_vless_transport_route_map, build_vless_user_routes,
-        build_vless_xhttp_user_routes, build_xhttp_ss_route_map, build_xhttp_vless_route_map,
-        user_keys,
-    },
     state::{
-        AuthPolicy, AuthUsersSnapshot, RouteRegistry, RoutesSnapshot, Services, TransportRoute,
-        UdpServices, UserKeySlice, VlessTransportRoute,
+        AuthPolicy, AuthUsersSnapshot, RoutesSnapshot, Services, TransportRoute, UdpServices,
+        UserKeySlice, VlessTransportRoute,
     },
     transport::{HttpFallbackContext, XhttpRegistryLimits, sni_fallback::SniFallbackContext},
 };
@@ -41,11 +35,6 @@ use arc_swap::ArcSwap;
 
 pub(super) struct Built {
     pub(super) users: Arc<[UserKey]>,
-    pub(super) user_routes: Arc<[UserRoute]>,
-    pub(super) vless_user_routes: Arc<[VlessUserRoute]>,
-    pub(super) vless_xhttp_user_routes: Arc<[VlessXhttpUserRoute]>,
-    pub(super) ss_xhttp_user_routes: Arc<[SsXhttpUserRoute]>,
-    pub(super) ss_xhttp_udp_user_routes: Arc<[SsXhttpUserRoute]>,
     pub(super) tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) vless_routes: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
@@ -75,41 +64,48 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     // keeps the wire byte-for-byte identical for unlisted paths and for
     // deployments that never opt in). Config-synchronised with the client.
     super::transport::carrier_padding::init(config.padding.clone());
-    let user_routes = build_user_routes(config)?;
-    let vless_user_routes = build_vless_user_routes(config)?;
-    let vless_xhttp_user_routes = build_vless_xhttp_user_routes(config)?;
-    let ss_xhttp_user_routes = build_ss_xhttp_user_routes(config)?;
-    let ss_xhttp_udp_user_routes = build_ss_xhttp_udp_user_routes(config)?;
-    // Raw VLESS-over-QUIC and the reverse-tunnel dialer were removed, so a
-    // vless_id user with neither a ws_path_vless nor an xhttp_path_vless now
-    // has no forward transport. Rather than hard-fail an otherwise-valid
-    // config, warn and skip such users — they are already absent from every
-    // route table built above.
-    for entry in &config.users {
-        if entry.is_enabled()
-            && entry.vless_id.is_some()
-            && entry
-                .effective_ws_path_vless(config.ws_path_vless.as_deref())
-                .is_none()
-            && entry
-                .effective_xhttp_path_vless(config.xhttp_path_vless.as_deref())
-                .is_none()
-        {
-            tracing::warn!(
-                user = %entry.id,
-                "vless_id user has no forward transport (ws_path_vless / xhttp_path_vless); \
-                 skipping — raw VLESS-over-QUIC was removed"
-            );
-        }
+
+    // SS pool: every enabled password-bearing user. VLESS pool: every
+    // enabled vless_id user. Both are path-independent — a user works on
+    // every endpoint of its kind, so the pool is cloned whole into each
+    // matching route (see `endpoint_routes`). This also means a disabled
+    // vless_id user no longer stays routable, unlike the old per-user-path
+    // builders it replaces, which iterated `config.users` directly and
+    // never checked `is_enabled()` for VLESS.
+    let effective = config.effective_users()?;
+    let ss_users: Vec<UserKey> =
+        super::endpoint_routes::build_ss_user_pool(&effective, config.method)?;
+    let vless_users: Vec<VlessUser> = super::endpoint_routes::build_vless_user_pool(&effective)?;
+    let users: Arc<[UserKey]> = Arc::from(ss_users.clone().into_boxed_slice());
+    let registry =
+        super::endpoint_routes::build_route_registry(&config.endpoints, &ss_users, &vless_users);
+    let tcp_routes = Arc::clone(&registry.tcp);
+    let udp_routes = Arc::clone(&registry.udp);
+    let vless_routes = Arc::clone(&registry.vless);
+    let xhttp_vless_routes = Arc::clone(&registry.xhttp_vless);
+    let xhttp_ss_routes = Arc::clone(&registry.xhttp_ss);
+    let xhttp_ss_udp_routes = Arc::clone(&registry.xhttp_ss_udp);
+
+    // A pool with no endpoint of its kind is silently unreachable. The old
+    // per-user "vless_id user has no forward transport" warning this
+    // replaces cannot survive the move to path-independent users (a user is
+    // no longer tied to one path to check), so the equivalent check now
+    // lives at the pool level instead.
+    if !ss_users.is_empty() && !config.endpoints.iter().any(|e| e.kind.is_ss()) {
+        tracing::warn!(
+            users = ss_users.len(),
+            "shadowsocks users are configured but `endpoints` has no ss endpoint; \
+             they are unreachable"
+        );
     }
-    let users = user_keys(user_routes.as_ref());
-    let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
-    let udp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
-    let vless_routes = Arc::new(build_vless_transport_route_map(vless_user_routes.as_ref()));
-    let xhttp_vless_routes =
-        Arc::new(build_xhttp_vless_route_map(vless_xhttp_user_routes.as_ref()));
-    let xhttp_ss_routes = Arc::new(build_xhttp_ss_route_map(ss_xhttp_user_routes.as_ref()));
-    let xhttp_ss_udp_routes = Arc::new(build_xhttp_ss_route_map(ss_xhttp_udp_user_routes.as_ref()));
+    if !vless_users.is_empty() && !config.endpoints.iter().any(|e| e.kind.is_vless()) {
+        tracing::warn!(
+            users = vless_users.len(),
+            "vless users are configured but `endpoints` has no vless endpoint; \
+             they are unreachable"
+        );
+    }
+
     let outbound_ipv6_source: Option<OutboundIpv6Source> =
         if let Some(prefix) = config.outbound_ipv6_prefix {
             Some(OutboundIpv6Source::Prefix(prefix))
@@ -175,14 +171,10 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         Duration::from_secs(UDP_DNS_CACHE_TTL_SECS),
         config.tuning.dns_cache_max_entries,
     );
-    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp: Arc::clone(&tcp_routes),
-        udp: Arc::clone(&udp_routes),
-        vless: Arc::clone(&vless_routes),
-        xhttp_vless: Arc::clone(&xhttp_vless_routes),
-        xhttp_ss: Arc::clone(&xhttp_ss_routes),
-        xhttp_ss_udp: Arc::clone(&xhttp_ss_udp_routes),
-    }));
+    // `tcp_routes`/`udp_routes`/etc. above already hold their own `Arc` clones
+    // for `Built`, so `registry` itself (not a further clone) becomes the
+    // published snapshot.
+    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(registry));
     let auth_users: AuthUsersSnapshot =
         Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::clone(&users))));
     let udp_relay_semaphore = if config.tuning.udp_max_concurrent_relay_tasks == 0 {
@@ -256,11 +248,6 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         .transpose()?;
     Ok(Built {
         users,
-        user_routes,
-        vless_user_routes,
-        vless_xhttp_user_routes,
-        ss_xhttp_user_routes,
-        ss_xhttp_udp_user_routes,
         tcp_routes,
         udp_routes,
         vless_routes,

@@ -30,8 +30,6 @@ pub enum EndpointKind {
     XhttpVless,
 }
 
-// The route builder starts calling these in Task 2; nothing does yet.
-#[allow(dead_code)]
 impl EndpointKind {
     /// True for every Shadowsocks kind (pool = SS `UserKey`s).
     pub fn is_ss(self) -> bool {

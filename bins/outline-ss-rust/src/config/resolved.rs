@@ -162,9 +162,6 @@ pub struct Config {
     /// `docs/CLUSTER.md`.
     pub cluster: Option<ClusterConfig>,
     /// Carrier endpoints (startup-only). The single source of truth for paths.
-    // Read starting in Task 2, once the route builder switches from the old
-    // per-user path fields to this list; nothing reads it yet.
-    #[allow(dead_code)]
     pub endpoints: Vec<EndpointConfig>,
 }
 
