@@ -258,17 +258,18 @@ impl SessionResumptionConfig {
 /// `PaddingSection`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaddingConfig {
-    pub enabled: bool,
     pub min_bytes: u16,
     pub max_bytes: u16,
     pub cover: bool,
     pub cover_jitter_min_ms: u64,
     pub cover_jitter_max_ms: u64,
-    /// Carrier paths padding applies to. A connection is padded only when its
-    /// matched path is in this set, so third-party clients (Happ, Outline,
-    /// xray, sing-box) on other paths stay on the plain SS-over-WS/XHTTP wire.
-    /// Empty when disabled.
-    pub paths: Vec<String>,
+    /// Carrier paths padding applies to: the endpoints with `padded = true`
+    /// (see `Config.endpoints`). A connection is padded only when its matched
+    /// path is in this set, so third-party clients (Happ, Outline, xray,
+    /// sing-box) on other paths stay on the plain SS-over-WS/XHTTP wire.
+    /// Derived by the loader, not read directly from `[padding]`; empty when
+    /// no endpoint opts in.
+    pub padded_paths: Vec<String>,
     /// Downstream-throttle detection on padded VLESS-over-WS carriers. Default
     /// off. The remaining `throttle_*` fields are the detector tunables; see
     /// `throughput_monitor::ThrottleDetectParams`.
@@ -284,17 +285,17 @@ pub struct PaddingConfig {
 
 impl Default for PaddingConfig {
     fn default() -> Self {
-        // Disabled by default; the light profile (0..256) applies once
-        // enabled. Cover off by default — opt in alongside the rolled-out
-        // wire-protocol partner, like session-resumption v2.
+        // No padded endpoints by default; the light profile (0..256) applies
+        // to whichever endpoints opt in. Cover off by default — opt in
+        // alongside the rolled-out wire-protocol partner, like
+        // session-resumption v2.
         Self {
-            enabled: false,
             min_bytes: 0,
             max_bytes: 256,
             cover: false,
             cover_jitter_min_ms: 250,
             cover_jitter_max_ms: 1500,
-            paths: Vec::new(),
+            padded_paths: Vec::new(),
             throttle_detect_enabled: false,
             throttle_ratio_percent: 200,
             throttle_window_secs: 1,
@@ -328,13 +329,14 @@ impl PaddingConfig {
             .unwrap_or(d.cover_jitter_max_ms)
             .max(cover_jitter_min_ms);
         Self {
-            enabled: section.enabled.unwrap_or(d.enabled),
             min_bytes,
             max_bytes,
             cover: section.cover.unwrap_or(d.cover),
             cover_jitter_min_ms,
             cover_jitter_max_ms,
-            paths: section.paths.unwrap_or_default(),
+            // Filled in by the loader from `Config.endpoints` right after this
+            // call returns — `[padding]` itself carries no path list anymore.
+            padded_paths: Vec::new(),
             throttle_detect_enabled: section
                 .throttle_detect_enabled
                 .unwrap_or(d.throttle_detect_enabled),
@@ -354,27 +356,21 @@ impl PaddingConfig {
         }
     }
 
-    /// The wire-codec scheme this resolves to. Disabled → no framing, the
-    /// carrier stays byte-for-byte unchanged; the transport keys off
-    /// [`PaddingScheme::is_enabled`].
+    /// The wire-codec scheme this resolves to. Always the configured range now;
+    /// per-path gating is `scheme_for_path`.
     pub fn scheme(&self) -> outline_wire::padding::PaddingScheme {
-        if self.enabled {
-            outline_wire::padding::PaddingScheme::new(self.min_bytes, self.max_bytes)
-        } else {
-            outline_wire::padding::PaddingScheme::disabled()
-        }
+        outline_wire::padding::PaddingScheme::new(self.min_bytes, self.max_bytes)
     }
 
-    /// Whether to emit idle cover frames: padding on *and* cover requested.
+    /// Whether to emit idle cover frames on a path that pads.
     pub fn cover_enabled(&self) -> bool {
-        self.enabled && self.cover
+        self.cover
     }
 
-    /// Whether padding applies to a connection whose matched carrier path is
-    /// `path`. Only listed paths are padded; everything else (third-party
-    /// clients) stays on the plain wire.
+    /// Whether the endpoint matched at `path` pads. Only listed paths are
+    /// padded; everything else (third-party clients) stays on the plain wire.
     pub fn applies_to(&self, path: &str) -> bool {
-        self.enabled && self.paths.iter().any(|p| p == path)
+        self.padded_paths.iter().any(|p| p == path)
     }
 
     /// The padding scheme a connection on `path` should use: the configured

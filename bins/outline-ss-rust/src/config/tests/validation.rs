@@ -69,21 +69,44 @@ fn base_config() -> Config {
 }
 
 #[test]
-fn padding_enabled_requires_non_empty_paths() {
+fn padding_with_padded_paths_validates() {
     let mut cfg = base_config();
-    cfg.padding.enabled = true;
-    cfg.padding.paths.clear();
-    let error = cfg.validate().unwrap_err().to_string();
-    assert!(error.contains("paths"), "expected a paths requirement, got: {error}");
+    cfg.padding.padded_paths = vec!["/tcp".to_owned()];
+    cfg.validate().expect("a non-empty padded_paths list should validate");
 }
 
 #[test]
-fn padding_enabled_with_paths_validates() {
-    let mut cfg = base_config();
-    cfg.padding.enabled = true;
-    cfg.padding.paths = vec!["/tcp".to_owned()];
-    cfg.validate()
-        .expect("padding with a non-empty paths list should validate");
+fn padding_scheme_resolves_for_padded_endpoints_only() {
+    let toml = r#"
+[server]
+listen = "127.0.0.1:0"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+
+[[endpoint]]
+path = "/pss"
+kind = "ws_ss"
+padded = true
+
+[[endpoint]]
+path = "/plain"
+kind = "ws_ss_tcp"
+
+[padding]
+max_bytes = 128
+
+[[users]]
+id = "a"
+password = "pw"
+"#;
+    let cfg = super::super::loader::parse(toml).unwrap();
+    assert!(cfg.padding.scheme_for_path("/pss").is_enabled(), "padded endpoint pads");
+    assert!(
+        !cfg.padding.scheme_for_path("/plain").is_enabled(),
+        "plain endpoint stays plain"
+    );
+    assert_eq!(cfg.padding.padded_paths, vec!["/pss".to_string()]);
 }
 
 #[test]

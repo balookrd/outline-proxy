@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     time::Duration,
 };
 
@@ -38,159 +39,182 @@ impl AppMode {
             FileConfig::default()
         };
 
-        let mut tuning = args
-            .tuning_profile
-            .or(file.tuning_profile)
-            .unwrap_or_default()
-            .preset();
-        if let Some(overrides) = file.tuning.as_ref() {
-            tuning.apply_overrides(overrides);
-        }
-
-        let control = resolve_control_config(&args, &file)?;
-
-        let server = file.server.unwrap_or_default();
-        let server_h3 = server.h3.unwrap_or_default();
-        let metrics = file.metrics.unwrap_or_default();
-        let outbound = file.outbound.unwrap_or_default();
-        let websocket = file.websocket.unwrap_or_default();
-        let http_root = file.http_root.unwrap_or_default();
-        // `[access_keys]` is parsed and ignored. The section still lives in
-        // every deployed config and feeds ops/access-keys, and the config
-        // structs are `deny_unknown_fields`, so refusing it here would fail
-        // those configs at startup.
-        let _ = file.access_keys;
-        let shadowsocks = file.shadowsocks.unwrap_or_default();
-
-        // Multi-cert arrays. The h3 array only inherits from the TCP
-        // listener's array when the h3 table omits `certs` entirely —
-        // an explicitly empty `certs = []` opts out of inheritance.
-        let tls_certs = parse_tls_cert_array(server.certs, "server.certs")?.unwrap_or_default();
-        let h3_certs = match parse_tls_cert_array(server_h3.certs, "server.h3.certs")? {
-            Some(list) => list,
-            None => tls_certs.clone(),
-        };
-
-        // Default cert pair. CLI flag wins over file; on the h3 side, an
-        // unset h3 cert/key inherits the TCP listener's pair (via either
-        // `[server].cert_path`/`tls_cert_path` or `--tls-cert-path`).
-        let tls_cert_path = args.tls_cert_path.clone().or(server.cert_path);
-        let tls_key_path = args.tls_key_path.clone().or(server.key_path);
-        let h3_cert_path = args
-            .h3_cert_path
-            .or(server_h3.cert_path)
-            .or_else(|| tls_cert_path.clone());
-        let h3_key_path = args
-            .h3_key_path
-            .or(server_h3.key_path)
-            .or_else(|| tls_key_path.clone());
-
-        let config = Config {
-            config_path: config_path.clone(),
-            control,
-            listen: args.listen.or(server.listen),
-            tls_cert_path,
-            tls_key_path,
-            tls_certs,
-            h3_listen: args.h3_listen.or(server_h3.listen),
-            h3_cert_path,
-            h3_key_path,
-            h3_certs,
-            h3_alpn: resolve_h3_alpn(server_h3.alpn.as_deref())?,
-            h3_initial_mtu: resolve_h3_initial_mtu(server_h3.initial_mtu)?,
-            metrics_listen: args.metrics_listen.or(metrics.listen),
-            metrics_path: args
-                .metrics_path
-                .or(metrics.path)
-                .unwrap_or_else(|| "/metrics".to_owned()),
-            prefer_ipv4_upstream: args
-                .prefer_ipv4_upstream
-                .or(outbound.prefer_ipv4)
-                .unwrap_or(false),
-            outbound_ipv6_prefix: match args
-                .outbound_ipv6_prefix
-                .as_deref()
-                .or(outbound.ipv6_prefix.as_deref())
-            {
-                Some(s) => Some(
-                    s.parse::<crate::outbound::Ipv6Prefix>()
-                        .map_err(|e| anyhow::anyhow!("invalid outbound.ipv6_prefix: {e}"))?,
-                ),
-                None => None,
-            },
-            outbound_ipv6_interface: args
-                .outbound_ipv6_interface
-                .clone()
-                .or(outbound.ipv6_interface),
-            outbound_ipv6_prefix_interface: args
-                .outbound_ipv6_prefix_interface
-                .clone()
-                .or(outbound.ipv6_prefix_interface),
-            outbound_ipv6_refresh_secs: args
-                .outbound_ipv6_refresh_secs
-                .or(outbound.ipv6_refresh_secs)
-                .unwrap_or(30),
-            outbound_ipv6_sticky: args
-                .outbound_ipv6_sticky
-                .or(outbound.ipv6_sticky)
-                .unwrap_or(true),
-            outbound_ipv6_sticky_ttl_secs: args
-                .outbound_ipv6_sticky_ttl_secs
-                .or(outbound.ipv6_sticky_ttl_secs)
-                .unwrap_or(1800),
-            ws_path_tcp: args
-                .ws_path_tcp
-                .or(websocket.ws_path_tcp)
-                .unwrap_or_else(|| "/tcp".to_owned()),
-            ws_path_udp: args
-                .ws_path_udp
-                .or(websocket.ws_path_udp)
-                .unwrap_or_else(|| "/udp".to_owned()),
-            ws_path_ss: websocket.ws_path_ss,
-            ws_path_vless: websocket.ws_path_vless,
-            xhttp_path_vless: websocket.xhttp_path_vless,
-            xhttp_path_tcp: websocket.xhttp_path_tcp,
-            xhttp_path_udp: websocket.xhttp_path_udp,
-            xhttp_path_ss: websocket.xhttp_path_ss,
-            http_root_auth: args.http_root_auth.or(http_root.auth).unwrap_or(false),
-            http_root_realm: args
-                .http_root_realm
-                .or(http_root.realm)
-                .unwrap_or_else(default_http_root_realm),
-            users: if args.users.is_empty() {
-                file.users.unwrap_or_default()
-            } else {
-                args.users
-            },
-            method: args
-                .method
-                .or(shadowsocks.method)
-                .unwrap_or(CipherKind::Chacha20IetfPoly1305),
-            tuning,
-            session_resumption: SessionResumptionConfig::from_section(
-                file.session_resumption.unwrap_or_default(),
-            ),
-            padding: PaddingConfig::from_section(file.padding.unwrap_or_default()),
-            http_fallback: HttpFallbackConfig::from_section(
-                file.http_fallback.unwrap_or_default(),
-            )?,
-            sni_fallback: SniFallbackConfig::from_section(file.sni_fallback.unwrap_or_default())?,
-            cluster: resolve_cluster(file.cluster)?,
-            endpoints: file
-                .endpoints
-                .unwrap_or_default()
-                .into_iter()
-                .map(|e| EndpointConfig {
-                    path: e.path,
-                    kind: e.kind,
-                    padded: e.padded,
-                })
-                .collect(),
-        };
-        config.validate()?;
-
-        Ok(AppMode::Serve(config))
+        Ok(AppMode::Serve(resolve(args, file, config_path)?))
     }
+}
+
+/// Resolves CLI args + a parsed config file into a validated [`Config`].
+/// Split out of [`AppMode::load`] so tests can drive the exact same
+/// merge/defaulting/validation logic from an in-memory TOML string via
+/// [`parse`], without touching argv or disk.
+fn resolve(args: ConfigArgs, file: FileConfig, config_path: Option<PathBuf>) -> Result<Config> {
+    let mut tuning = args
+        .tuning_profile
+        .or(file.tuning_profile)
+        .unwrap_or_default()
+        .preset();
+    if let Some(overrides) = file.tuning.as_ref() {
+        tuning.apply_overrides(overrides);
+    }
+
+    let control = resolve_control_config(&args, &file)?;
+
+    let server = file.server.unwrap_or_default();
+    let server_h3 = server.h3.unwrap_or_default();
+    let metrics = file.metrics.unwrap_or_default();
+    let outbound = file.outbound.unwrap_or_default();
+    let websocket = file.websocket.unwrap_or_default();
+    let http_root = file.http_root.unwrap_or_default();
+    // `[access_keys]` is parsed and ignored. The section still lives in
+    // every deployed config and feeds ops/access-keys, and the config
+    // structs are `deny_unknown_fields`, so refusing it here would fail
+    // those configs at startup.
+    let _ = file.access_keys;
+    let shadowsocks = file.shadowsocks.unwrap_or_default();
+
+    // Multi-cert arrays. The h3 array only inherits from the TCP
+    // listener's array when the h3 table omits `certs` entirely —
+    // an explicitly empty `certs = []` opts out of inheritance.
+    let tls_certs = parse_tls_cert_array(server.certs, "server.certs")?.unwrap_or_default();
+    let h3_certs = match parse_tls_cert_array(server_h3.certs, "server.h3.certs")? {
+        Some(list) => list,
+        None => tls_certs.clone(),
+    };
+
+    // Default cert pair. CLI flag wins over file; on the h3 side, an
+    // unset h3 cert/key inherits the TCP listener's pair (via either
+    // `[server].cert_path`/`tls_cert_path` or `--tls-cert-path`).
+    let tls_cert_path = args.tls_cert_path.clone().or(server.cert_path);
+    let tls_key_path = args.tls_key_path.clone().or(server.key_path);
+    let h3_cert_path = args
+        .h3_cert_path
+        .or(server_h3.cert_path)
+        .or_else(|| tls_cert_path.clone());
+    let h3_key_path = args
+        .h3_key_path
+        .or(server_h3.key_path)
+        .or_else(|| tls_key_path.clone());
+
+    // Carrier endpoints: the single source of the paths the config exposes.
+    // `padding.padded_paths` below is derived from this same list, so resolve
+    // it once, ahead of the `Config` literal, and feed both fields from it.
+    let resolved_endpoints: Vec<EndpointConfig> = file
+        .endpoints
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| EndpointConfig {
+            path: e.path,
+            kind: e.kind,
+            padded: e.padded,
+        })
+        .collect();
+
+    let padding = {
+        let mut p = PaddingConfig::from_section(file.padding.unwrap_or_default());
+        p.padded_paths = resolved_endpoints
+            .iter()
+            .filter(|e| e.padded)
+            .map(|e| e.path.clone())
+            .collect();
+        p
+    };
+
+    let config = Config {
+        config_path,
+        control,
+        listen: args.listen.or(server.listen),
+        tls_cert_path,
+        tls_key_path,
+        tls_certs,
+        h3_listen: args.h3_listen.or(server_h3.listen),
+        h3_cert_path,
+        h3_key_path,
+        h3_certs,
+        h3_alpn: resolve_h3_alpn(server_h3.alpn.as_deref())?,
+        h3_initial_mtu: resolve_h3_initial_mtu(server_h3.initial_mtu)?,
+        metrics_listen: args.metrics_listen.or(metrics.listen),
+        metrics_path: args
+            .metrics_path
+            .or(metrics.path)
+            .unwrap_or_else(|| "/metrics".to_owned()),
+        prefer_ipv4_upstream: args.prefer_ipv4_upstream.or(outbound.prefer_ipv4).unwrap_or(false),
+        outbound_ipv6_prefix: match args
+            .outbound_ipv6_prefix
+            .as_deref()
+            .or(outbound.ipv6_prefix.as_deref())
+        {
+            Some(s) => Some(
+                s.parse::<crate::outbound::Ipv6Prefix>()
+                    .map_err(|e| anyhow::anyhow!("invalid outbound.ipv6_prefix: {e}"))?,
+            ),
+            None => None,
+        },
+        outbound_ipv6_interface: args.outbound_ipv6_interface.clone().or(outbound.ipv6_interface),
+        outbound_ipv6_prefix_interface: args
+            .outbound_ipv6_prefix_interface
+            .clone()
+            .or(outbound.ipv6_prefix_interface),
+        outbound_ipv6_refresh_secs: args
+            .outbound_ipv6_refresh_secs
+            .or(outbound.ipv6_refresh_secs)
+            .unwrap_or(30),
+        outbound_ipv6_sticky: args.outbound_ipv6_sticky.or(outbound.ipv6_sticky).unwrap_or(true),
+        outbound_ipv6_sticky_ttl_secs: args
+            .outbound_ipv6_sticky_ttl_secs
+            .or(outbound.ipv6_sticky_ttl_secs)
+            .unwrap_or(1800),
+        ws_path_tcp: args
+            .ws_path_tcp
+            .or(websocket.ws_path_tcp)
+            .unwrap_or_else(|| "/tcp".to_owned()),
+        ws_path_udp: args
+            .ws_path_udp
+            .or(websocket.ws_path_udp)
+            .unwrap_or_else(|| "/udp".to_owned()),
+        ws_path_ss: websocket.ws_path_ss,
+        ws_path_vless: websocket.ws_path_vless,
+        xhttp_path_vless: websocket.xhttp_path_vless,
+        xhttp_path_tcp: websocket.xhttp_path_tcp,
+        xhttp_path_udp: websocket.xhttp_path_udp,
+        xhttp_path_ss: websocket.xhttp_path_ss,
+        http_root_auth: args.http_root_auth.or(http_root.auth).unwrap_or(false),
+        http_root_realm: args
+            .http_root_realm
+            .or(http_root.realm)
+            .unwrap_or_else(default_http_root_realm),
+        users: if args.users.is_empty() {
+            file.users.unwrap_or_default()
+        } else {
+            args.users
+        },
+        method: args
+            .method
+            .or(shadowsocks.method)
+            .unwrap_or(CipherKind::Chacha20IetfPoly1305),
+        tuning,
+        session_resumption: SessionResumptionConfig::from_section(
+            file.session_resumption.unwrap_or_default(),
+        ),
+        padding,
+        http_fallback: HttpFallbackConfig::from_section(file.http_fallback.unwrap_or_default())?,
+        sni_fallback: SniFallbackConfig::from_section(file.sni_fallback.unwrap_or_default())?,
+        cluster: resolve_cluster(file.cluster)?,
+        endpoints: resolved_endpoints,
+    };
+    config.validate()?;
+
+    Ok(config)
+}
+
+/// Test-only: resolves a complete TOML document straight into a validated
+/// [`Config`], bypassing argv/env entirely — every [`ConfigArgs`] field
+/// defaults to empty/`None`, so the TOML text alone drives the result.
+/// Mirrors [`AppMode::load`] minus the CLI-parsing and disk-read steps.
+#[cfg(test)]
+pub(super) fn parse(toml_str: &str) -> Result<Config> {
+    let file: FileConfig = toml::from_str(toml_str).context("parsing test TOML into FileConfig")?;
+    let args = ConfigArgs::parse_from(["outline-ss-rust-test"]);
+    resolve(args, file, None)
 }
 
 fn parse_tls_cert_array(

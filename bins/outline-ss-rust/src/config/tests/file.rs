@@ -133,8 +133,6 @@ fn retired_padding_throttle_edge_floor_is_accepted_and_ignored() {
 listen = "0.0.0.0:3000"
 
 [padding]
-enabled = true
-paths = ["/tcp"]
 throttle_detect_enabled = true
 throttle_edge_min_bytes_per_sec = 12345
 "#,
@@ -146,8 +144,6 @@ throttle_edge_min_bytes_per_sec = 12345
 listen = "0.0.0.0:3000"
 
 [padding]
-enabled = true
-paths = ["/tcp"]
 throttle_detect_enabled = true
 "#,
     )
