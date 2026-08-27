@@ -33,21 +33,28 @@ pub const PATH_SS_WS_COMBINED: &str = "/sscomb";
 
 // ── Server config ────────────────────────────────────────────────────────────
 
+/// One `[[endpoint]]` entry the generated config exposes: a dial path, its
+/// `EndpointKind` (as the on-wire snake_case string —
+/// `bins/outline-ss-rust/src/config/endpoint.rs`), and whether the wire
+/// frames it with the padding scheme.
+struct EndpointEntry {
+    path: String,
+    kind: &'static str,
+    padded: bool,
+}
+
 pub struct ServerConfig {
     listen: SocketAddr,
     method: String,
-    ws_path_tcp: Option<String>,
-    ws_path_udp: Option<String>,
-    ws_path_ss: Option<String>,
-    ws_path_vless: Option<String>,
-    xhttp_path_tcp: Option<String>,
-    xhttp_path_vless: Option<String>,
+    endpoints: Vec<EndpointEntry>,
     user_password: Option<String>,
     user_vless_id: Option<String>,
     session_resumption: bool,
     downlink_buffer_bytes: Option<usize>,
-    /// `(paths, cover)` for the `[padding]` block when carrier padding is on.
-    padding: Option<(Vec<String>, bool)>,
+    /// `cover` toggle for the `[padding]` block. `None` until
+    /// [`Self::with_padding`] is called, in which case no `[padding]` block
+    /// is emitted at all.
+    padding_cover: Option<bool>,
     tls: Option<(String, String)>,
     h3: Option<(SocketAddr, Vec<String>)>,
 }
@@ -57,30 +64,33 @@ impl ServerConfig {
         Self {
             listen,
             method: TEST_METHOD.to_string(),
-            ws_path_tcp: None,
-            ws_path_udp: None,
-            ws_path_ss: None,
-            ws_path_vless: None,
-            xhttp_path_tcp: None,
-            xhttp_path_vless: None,
+            endpoints: Vec::new(),
             user_password: None,
             user_vless_id: None,
             session_resumption: false,
             downlink_buffer_bytes: None,
-            padding: None,
+            padding_cover: None,
             tls: None,
             h3: None,
         }
     }
 
+    fn push_endpoint(&mut self, path: &str, kind: &'static str) {
+        self.endpoints.push(EndpointEntry {
+            path: path.to_string(),
+            kind,
+            padded: false,
+        });
+    }
+
     /// Enable every cleartext path + a user that carries both an SS password
     /// and a VLESS id, so one server serves all four protocol×carrier shapes.
     pub fn all_paths(mut self) -> Self {
-        self.ws_path_tcp = Some(PATH_SS_TCP.into());
-        self.ws_path_udp = Some(PATH_SS_UDP.into());
-        self.ws_path_vless = Some(PATH_VLESS_WS.into());
-        self.xhttp_path_tcp = Some(PATH_SS_XHTTP.into());
-        self.xhttp_path_vless = Some(PATH_VLESS_XHTTP.into());
+        self.push_endpoint(PATH_SS_TCP, "ws_ss_tcp");
+        self.push_endpoint(PATH_SS_UDP, "ws_ss_udp");
+        self.push_endpoint(PATH_VLESS_WS, "ws_vless");
+        self.push_endpoint(PATH_SS_XHTTP, "xhttp_ss_tcp");
+        self.push_endpoint(PATH_VLESS_XHTTP, "xhttp_vless");
         self.user_password = Some(TEST_PASSWORD.into());
         self.user_vless_id = Some(TEST_VLESS_ID.into());
         self
@@ -110,14 +120,35 @@ impl ServerConfig {
     /// requires the combined path differ from the split / vless ones). Pad both
     /// legs by listing the combined path in [`Self::with_padding`].
     pub fn with_combined_ss_ws_path(mut self) -> Self {
-        self.ws_path_ss = Some(PATH_SS_WS_COMBINED.into());
+        self.push_endpoint(PATH_SS_WS_COMBINED, "ws_ss");
         self
     }
 
-    /// Enable carrier padding on the given carrier paths. `cover` toggles idle
-    /// cover frames (with a fast 50–100 ms jitter so tests do not wait long).
+    /// Enable carrier padding on the given carrier paths: flips `padded = true`
+    /// on the matching endpoints and emits a `[padding]` block carrying the
+    /// framing parameters only (`max_bytes`, plus `cover` when idle cover
+    /// frames are wanted) — the server derives *which* paths pad from
+    /// `[[endpoint]] padded`, not from a list in `[padding]` itself.
+    ///
+    /// Every `path` must already be a registered endpoint (added by
+    /// [`Self::all_paths`] / [`Self::with_combined_ss_ws_path`]) — panics
+    /// otherwise, since a stray path here would silently render a `[padding]`
+    /// block that ends up padding nothing.
     pub fn with_padding(mut self, paths: &[&str], cover: bool) -> Self {
-        self.padding = Some((paths.iter().map(|p| p.to_string()).collect(), cover));
+        for path in paths {
+            let ep = self
+                .endpoints
+                .iter_mut()
+                .find(|e| e.path == *path)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "with_padding: {path:?} is not a registered endpoint — call \
+                         all_paths()/with_combined_ss_ws_path() first"
+                    )
+                });
+            ep.padded = true;
+        }
+        self.padding_cover = Some(cover);
         self
     }
 
@@ -136,17 +167,12 @@ impl ServerConfig {
             let _ = writeln!(s, "alpn = [{alpn_list}]");
         }
 
-        let _ = writeln!(s, "\n[websocket]");
-        for (key, val) in [
-            ("ws_path_tcp", &self.ws_path_tcp),
-            ("ws_path_udp", &self.ws_path_udp),
-            ("ws_path_ss", &self.ws_path_ss),
-            ("ws_path_vless", &self.ws_path_vless),
-            ("xhttp_path_tcp", &self.xhttp_path_tcp),
-            ("xhttp_path_vless", &self.xhttp_path_vless),
-        ] {
-            if let Some(v) = val {
-                let _ = writeln!(s, "{key} = \"{v}\"");
+        for ep in &self.endpoints {
+            let _ = writeln!(s, "\n[[endpoint]]");
+            let _ = writeln!(s, "path = \"{}\"", ep.path);
+            let _ = writeln!(s, "kind = \"{}\"", ep.kind);
+            if ep.padded {
+                let _ = writeln!(s, "padded = true");
             }
         }
 
@@ -161,20 +187,14 @@ impl ServerConfig {
             }
         }
 
-        if let Some((paths, cover)) = &self.padding {
-            let list = paths
-                .iter()
-                .map(|p| format!("\"{p}\""))
-                .collect::<Vec<_>>()
-                .join(", ");
+        if let Some(cover) = self.padding_cover
+            && self.endpoints.iter().any(|e| e.padded)
+        {
             let _ = writeln!(s, "\n[padding]");
-            let _ = writeln!(s, "enabled = true");
-            let _ = writeln!(s, "paths = [{list}]");
-            let _ = writeln!(s, "min_bytes = 16");
             let _ = writeln!(s, "max_bytes = 256");
-            let _ = writeln!(s, "cover = {cover}");
-            let _ = writeln!(s, "cover_jitter_min_ms = 50");
-            let _ = writeln!(s, "cover_jitter_max_ms = 100");
+            if cover {
+                let _ = writeln!(s, "cover = true");
+            }
         }
 
         let _ = writeln!(s, "\n[[users]]");
