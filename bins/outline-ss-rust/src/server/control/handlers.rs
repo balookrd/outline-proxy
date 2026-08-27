@@ -44,22 +44,6 @@ pub(super) struct CreateRequest {
     #[serde(default)]
     pub fwmark: Option<u32>,
     #[serde(default)]
-    pub ws_path_tcp: Option<String>,
-    #[serde(default)]
-    pub ws_path_udp: Option<String>,
-    #[serde(default)]
-    pub ws_path_ss: Option<String>,
-    #[serde(default)]
-    pub ws_path_vless: Option<String>,
-    #[serde(default)]
-    pub xhttp_path_vless: Option<String>,
-    #[serde(default)]
-    pub xhttp_path_tcp: Option<String>,
-    #[serde(default)]
-    pub xhttp_path_udp: Option<String>,
-    #[serde(default)]
-    pub xhttp_path_ss: Option<String>,
-    #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
     pub aliases: Option<BTreeMap<String, OneOrManyCidr>>,
@@ -72,15 +56,18 @@ impl From<CreateRequest> for UserEntry {
             password: req.password,
             fwmark: req.fwmark,
             method: req.method,
-            ws_path_tcp: req.ws_path_tcp,
-            ws_path_udp: req.ws_path_udp,
-            ws_path_ss: req.ws_path_ss,
+            // Users are pure credentials — no per-user paths. The path fields
+            // still exist on `UserEntry` (retired in a later task) but the
+            // control API neither accepts nor emits them.
+            ws_path_tcp: None,
+            ws_path_udp: None,
+            ws_path_ss: None,
             vless_id: req.vless_id,
-            ws_path_vless: req.ws_path_vless,
-            xhttp_path_vless: req.xhttp_path_vless,
-            xhttp_path_tcp: req.xhttp_path_tcp,
-            xhttp_path_udp: req.xhttp_path_udp,
-            xhttp_path_ss: req.xhttp_path_ss,
+            ws_path_vless: None,
+            xhttp_path_vless: None,
+            xhttp_path_tcp: None,
+            xhttp_path_udp: None,
+            xhttp_path_ss: None,
             enabled: req.enabled,
             aliases: req.aliases,
         }
@@ -98,22 +85,6 @@ pub(super) struct UpdateRequest {
     #[serde(default)]
     pub fwmark: FieldPatch<u32>,
     #[serde(default)]
-    pub ws_path_tcp: FieldPatch<String>,
-    #[serde(default)]
-    pub ws_path_udp: FieldPatch<String>,
-    #[serde(default)]
-    pub ws_path_ss: FieldPatch<String>,
-    #[serde(default)]
-    pub ws_path_vless: FieldPatch<String>,
-    #[serde(default)]
-    pub xhttp_path_vless: FieldPatch<String>,
-    #[serde(default)]
-    pub xhttp_path_tcp: FieldPatch<String>,
-    #[serde(default)]
-    pub xhttp_path_udp: FieldPatch<String>,
-    #[serde(default)]
-    pub xhttp_path_ss: FieldPatch<String>,
-    #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
     pub aliases: FieldPatch<BTreeMap<String, OneOrManyCidr>>,
@@ -126,14 +97,6 @@ impl From<UpdateRequest> for UserPatch {
             vless_id: req.vless_id,
             method: req.method,
             fwmark: req.fwmark,
-            ws_path_tcp: req.ws_path_tcp,
-            ws_path_udp: req.ws_path_udp,
-            ws_path_ss: req.ws_path_ss,
-            ws_path_vless: req.ws_path_vless,
-            xhttp_path_vless: req.xhttp_path_vless,
-            xhttp_path_tcp: req.xhttp_path_tcp,
-            xhttp_path_udp: req.xhttp_path_udp,
-            xhttp_path_ss: req.xhttp_path_ss,
             enabled: req.enabled,
             aliases: req.aliases,
         }
@@ -152,10 +115,10 @@ pub(super) async fn list_users(State(state): State<ControlState>) -> axum::respo
     ok_json(ListResponse { users: state.manager.list().await })
 }
 
-/// Read-only snapshot of the server-wide defaults (method + paths). The
-/// dashboard needs it to show a user's *effective* configuration: a user that
-/// carries no method of its own runs on `default_method`, and the clone form
-/// cannot generate a password without knowing which cipher that is.
+/// Read-only snapshot of the server-wide default cipher. The dashboard needs
+/// it to show a user's *effective* configuration: a user that carries no
+/// method of its own runs on `default_method`, and the clone form cannot
+/// generate a password without knowing which cipher that is.
 pub(super) async fn get_defaults(State(state): State<ControlState>) -> axum::response::Response {
     ok_json(state.manager.defaults())
 }

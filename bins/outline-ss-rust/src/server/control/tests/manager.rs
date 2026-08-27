@@ -13,31 +13,19 @@ pub(in crate::server::control) fn test_manager() -> UserManager {
 }
 
 fn manager_for(config: Config) -> UserManager {
-    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp: Arc::new(BTreeMap::new()),
-        udp: Arc::new(BTreeMap::new()),
-        vless: Arc::new(BTreeMap::new()),
-        xhttp_vless: Arc::new(BTreeMap::new()),
-        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
-        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
-    }));
+    // Mirror `services::build`: seed the published snapshots from the config's
+    // enabled credentials fanned across its endpoints, through the same shared
+    // builders the production startup path uses. The old empty-registry
+    // shortcut could not exercise the new endpoint-driven routing.
+    let enabled: Vec<UserEntry> = config.users.iter().filter(|u| u.is_enabled()).cloned().collect();
+    let ss_users =
+        build_ss_user_pool(&enabled, config.method).expect("test users build an ss pool");
+    let vless_users = build_vless_user_pool(&enabled).expect("test users build a vless pool");
+    let registry = build_route_registry(&config.endpoints, &ss_users, &vless_users);
+    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(registry));
     let auth: AuthUsersSnapshot =
-        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<UserKey>::new()))));
-    let tcp_paths = BTreeSet::from([config.ws_path_tcp.clone()]);
-    let udp_paths = BTreeSet::from([config.ws_path_udp.clone()]);
-    UserManager::new(
-        &config,
-        routes,
-        auth,
-        AllowedRoutePaths {
-            tcp: tcp_paths,
-            udp: udp_paths,
-            vless: BTreeSet::new(),
-            xhttp_vless: BTreeSet::new(),
-            xhttp_ss: BTreeSet::new(),
-            xhttp_ss_udp: BTreeSet::new(),
-        },
-    )
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(ss_users.into_boxed_slice()))));
+    UserManager::new(&config, routes, auth)
 }
 
 fn vless_only_entry() -> UserEntry {
@@ -61,14 +49,15 @@ fn vless_only_entry() -> UserEntry {
 }
 
 #[test]
-fn vless_id_without_any_transport_is_rejected() {
-    // A `vless_id` user needs a ws_path_vless or xhttp_path_vless. Raw
-    // VLESS-over-QUIC was removed, so no ALPN can satisfy the requirement and
-    // the live control API rejects such a user outright.
+fn vless_id_credential_is_accepted_without_any_path() {
+    // Users are pure credentials now: a `vless_id` with no path is valid on its
+    // own. Whether it is reachable depends on whether a vless endpoint is
+    // configured — a startup-time concern (`services::build` warns on an
+    // endpoint-less pool), not a per-user validation.
     let manager = test_manager();
     assert!(
-        manager.validate_new(&vless_only_entry()).is_err(),
-        "vless_id with no ws/xhttp path must be rejected"
+        manager.validate_new(&vless_only_entry()).is_ok(),
+        "a vless_id credential must be accepted without a per-user path"
     );
 }
 
@@ -117,6 +106,32 @@ fn user_view_exposes_aliases() {
     let view = UserView::from(&entry);
     let aliases = view.aliases.expect("aliases should be exposed in the view");
     assert_eq!(aliases["mobile"].as_slice(), &["10.0.0.0/8".to_string()][..]);
+}
+
+/// With per-user paths gone, one password user is pooled on *every* endpoint of
+/// its kind: the manager's published `RouteRegistry` answers on both `/a` and
+/// `/b` from the single credential, exactly as the shared startup builder does.
+#[test]
+fn user_pool_answers_on_every_endpoint_of_its_kind() {
+    let mut config = sample_config("127.0.0.1:0".parse().unwrap());
+    config.endpoints = vec![
+        crate::config::EndpointConfig {
+            path: "/a".into(),
+            kind: crate::config::EndpointKind::WsSsTcp,
+            padded: false,
+        },
+        crate::config::EndpointConfig {
+            path: "/b".into(),
+            kind: crate::config::EndpointKind::WsSsTcp,
+            padded: false,
+        },
+    ];
+    config.users = vec![ss_entry("solo", "p-solo")];
+
+    let mgr = manager_for(config);
+    let reg = mgr.routes.load();
+    assert_eq!(reg.tcp["/a"].users.len(), 1, "user missing from /a pool");
+    assert_eq!(reg.tcp["/b"].users.len(), 1, "user missing from /b pool");
 }
 
 /// A deployed config: several users, plus sections on both sides of the
@@ -228,14 +243,6 @@ async fn update_patches_only_the_named_user() {
         vless_id: FieldPatch::Missing,
         method: FieldPatch::Missing,
         fwmark: FieldPatch::Missing,
-        ws_path_tcp: FieldPatch::Missing,
-        ws_path_udp: FieldPatch::Missing,
-        ws_path_ss: FieldPatch::Missing,
-        ws_path_vless: FieldPatch::Missing,
-        xhttp_path_vless: FieldPatch::Missing,
-        xhttp_path_tcp: FieldPatch::Missing,
-        xhttp_path_udp: FieldPatch::Missing,
-        xhttp_path_ss: FieldPatch::Missing,
         aliases: FieldPatch::Missing,
         enabled: None,
     };
@@ -295,46 +302,24 @@ async fn a_failed_write_leaves_the_runtime_untouched() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), ON_DISK_CONFIG, "file was touched");
 }
 
-/// The clone-a-user UI needs the server's effective method and paths: a user
-/// that carries none of its own runs on these, and without them the UI cannot
-/// generate a password (it does not know the cipher) or show the real paths.
+/// The clone-a-user UI needs the server's effective cipher: a user that carries
+/// no method of its own runs on it, and without it the UI cannot generate a
+/// password (it does not know the cipher). Paths are no longer a per-user
+/// concern, so the defaults payload is method-only.
 #[test]
-fn defaults_expose_effective_method_and_paths() {
+fn defaults_expose_effective_method() {
     let manager = test_manager();
     let defaults = manager.defaults();
 
     assert_eq!(defaults.method, CipherKind::Chacha20IetfPoly1305);
-    assert_eq!(defaults.ws_path_tcp, "/tcp");
-    assert_eq!(defaults.ws_path_udp, "/udp");
-    assert!(defaults.ws_path_ss.is_none());
-    assert!(defaults.ws_path_vless.is_none());
-    assert!(defaults.xhttp_path_tcp.is_none());
-    assert!(defaults.xhttp_path_udp.is_none());
-    assert!(defaults.xhttp_path_ss.is_none());
-    assert!(defaults.xhttp_path_vless.is_none());
 }
 
 /// Serialization is the wire contract for `GET /control/defaults`: the method
-/// must be a plain cipher string and unset optional paths must be absent (not
-/// `null`), matching how `UserView` already serializes.
+/// must be a plain cipher string, matching how `UserView` already serializes.
 #[test]
-fn server_defaults_serializes_method_as_string_and_omits_unset_paths() {
-    let defaults = ServerDefaults {
-        method: CipherKind::Aes256Gcm,
-        ws_path_tcp: "/tcp".to_string(),
-        ws_path_udp: "/udp".to_string(),
-        ws_path_ss: None,
-        ws_path_vless: Some("/vless".to_string()),
-        xhttp_path_tcp: None,
-        xhttp_path_udp: None,
-        xhttp_path_ss: None,
-        xhttp_path_vless: None,
-    };
+fn server_defaults_serializes_method_as_string() {
+    let defaults = ServerDefaults { method: CipherKind::Aes256Gcm };
 
     let json = serde_json::to_value(&defaults).unwrap();
     assert_eq!(json["method"], "aes-256-gcm");
-    assert_eq!(json["ws_path_tcp"], "/tcp");
-    assert_eq!(json["ws_path_vless"], "/vless");
-    assert!(json.get("ws_path_ss").is_none(), "unset path must be omitted, not null");
-    assert!(json.get("xhttp_path_tcp").is_none(), "unset path must be omitted, not null");
 }

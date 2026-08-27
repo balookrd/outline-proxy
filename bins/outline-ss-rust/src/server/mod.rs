@@ -127,14 +127,6 @@ pub async fn run(config: Config) -> Result<()> {
             config.as_ref(),
             Arc::clone(&built.routes),
             Arc::clone(&built.auth_users),
-            control::AllowedRoutePaths {
-                tcp: tcp_paths.clone(),
-                udp: udp_paths.clone(),
-                vless: vless_paths.clone(),
-                xhttp_vless: xhttp_paths.clone(),
-                xhttp_ss: xhttp_ss_paths.clone(),
-                xhttp_ss_udp: xhttp_ss_udp_paths.clone(),
-            },
         ));
         control::spawn_control_server(control_config, manager, shutdown_signal.clone());
     }

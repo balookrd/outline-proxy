@@ -28,6 +28,14 @@ use super::state::TransportRoute;
 /// Routing is a server-side concern, separate from the crypto identity in
 /// [`UserKey`]; keeping the paths beside the key (and out of it) preserves
 /// that separation.
+// Test-only now that `control::manager::rebuild_snapshots` routes through
+// `endpoint_routes` instead of these per-user-path records: every remaining
+// caller of this struct and the route builders below is `#[cfg(test)]`. Kept
+// (not deleted) because a large body of integration tests still hand-assembles
+// route tables through them; the whole set is retired in Task 6. The `allow`
+// is scoped to `not(test)` so a genuinely unused helper still warns in the
+// test build.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone)]
 pub(super) struct UserRoute {
     pub user: UserKey,
@@ -35,6 +43,7 @@ pub(super) struct UserRoute {
     pub ws_path_udp: Arc<str>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone)]
 pub(super) struct VlessUserRoute {
     pub user: VlessUser,
@@ -48,6 +57,7 @@ pub(super) fn protocol_from_http_version(version: Version) -> Protocol {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn build_vless_transport_route_map(
     routes: &[VlessUserRoute],
 ) -> BTreeMap<String, Arc<super::state::VlessTransportRoute>> {
@@ -75,6 +85,7 @@ pub(super) fn build_vless_transport_route_map(
         .collect()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn build_transport_route_map(
     routes: &[UserRoute],
     transport: Transport,
@@ -144,12 +155,14 @@ pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
     ))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone)]
 pub(super) struct VlessXhttpUserRoute {
     pub user: VlessUser,
     pub xhttp_path: Arc<str>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn build_xhttp_vless_route_map(
     routes: &[VlessXhttpUserRoute],
 ) -> BTreeMap<String, Arc<super::state::VlessTransportRoute>> {
@@ -179,12 +192,14 @@ pub(super) fn build_xhttp_vless_route_map(
 /// A Shadowsocks user reachable over an XHTTP base path. The SS payload is
 /// authenticated by the same [`UserKey`] as SS-over-WS; only the carrier
 /// differs, so the route record is a plain [`TransportRoute`].
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone)]
 pub(super) struct SsXhttpUserRoute {
     pub user: UserKey,
     pub xhttp_path: Arc<str>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn build_xhttp_ss_route_map(
     routes: &[SsXhttpUserRoute],
 ) -> BTreeMap<String, Arc<TransportRoute>> {
