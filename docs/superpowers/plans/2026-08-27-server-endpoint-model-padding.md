@@ -664,7 +664,7 @@ Rewrite `manager.rs` to hold the startup endpoint list, rebuild routes via `buil
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/control/manager.rs` (remove `default_*_path*` :46-53, `allowed_*_path*` :57-62, `AllowedRoutePaths` :153-160; `new` loses the `allowed` arg, gains `endpoints`; `validate_new` drops path checks; `rebuild_snapshots` uses `build_route_registry`; `UserView`/`UserPatch`/`ServerDefaults` drop path fields)
 - Modify: `bins/outline-ss-rust/src/server/mod.rs:110-133` (drop `AllowedRoutePaths` construction; pass `config.endpoints` to `UserManager::new`)
-- Modify: `bins/outline-ss-rust/src/server/setup.rs` (delete the stage-2 builders `build_transport_route_map`, `build_vless_transport_route_map`, `build_xhttp_vless_route_map`, `build_xhttp_ss_route_map`, `user_keys`, the remaining `describe_*_user_routes`, and the `UserRoute`/`VlessUserRoute`/`VlessXhttpUserRoute`/`SsXhttpUserRoute` structs — all dead once manager uses `build_route_registry`. If `setup.rs` is now empty, delete it and its `mod setup;`)
+- Do NOT touch `setup.rs` here. Task 2 left `build_user_routes`/`user_keys` `#[cfg(test)]`-gated and ~10 tests still call them → `build_transport_route_map` (stage-2) and the `UserRoute`/`VlessUserRoute`/`VlessXhttpUserRoute`/`SsXhttpUserRoute` structs stay alive for those tests until Task 6 migrates them. Deleting any of it here breaks the test build. The whole `setup.rs` route machinery is retired in Task 6.
 - Modify: `bins/outline-ss-rust/src/server/control/tests/*` (manager/persist tests: users without paths)
 
 **Interfaces:**
@@ -740,11 +740,9 @@ pub(super) fn new(
 
 `UserView` (:70-100): delete path fields (:79-93) and their copies in `From<&UserEntry>` (:109-116). `UserPatch` (:605-620): delete path fields (:611-617) and their `apply_to` copies (:636-659). `ServerDefaults` (:129-146) + `defaults()` (:204-216): collapse to `{ method }` (or delete the `GET /control/defaults` payload's path fields).
 
-- [ ] **Step 6: Update `mod.rs` caller + delete dead stage-2 builders**
+- [ ] **Step 6: Update the `mod.rs` caller**
 
-`server/mod.rs:110-133`: delete the `AllowedRoutePaths` construction from `built.*.keys()`; call `UserManager::new(config, routes, auth_users)`.
-
-`setup.rs`: delete the stage-2 builders (`build_transport_route_map`, `build_vless_transport_route_map`, `build_xhttp_vless_route_map`, `build_xhttp_ss_route_map`), `user_keys`, the remaining `describe_*_user_routes`, and the `UserRoute`/`VlessUserRoute`/`VlessXhttpUserRoute`/`SsXhttpUserRoute` structs — all now unused. Remove any Task-2 `#[allow(dead_code)]`. If nothing is left in `setup.rs`, delete the file and its `mod setup;` declaration.
+`server/mod.rs:110-133`: delete the `AllowedRoutePaths` construction from `built.*.keys()`; call `UserManager::new(config, routes, auth_users)`. Leave `setup.rs` alone — its route machinery is still used by the `#[cfg(test)]` builders and their tests, and is retired in Task 6. If manager's move to `build_route_registry` makes any `setup.rs` item dead in a `--no-default-features` build, that surfaces as a plain-`cargo check` warning (not the `-D warnings` gate) and clears in Task 6; do not chase it here.
 
 - [ ] **Step 7: Fix control tests + gate**
 
@@ -850,7 +848,7 @@ Now that nothing consumes them, delete the old path fields. This is the breaking
 - Modify: `bins/outline-ss-rust/src/config/user_entry.rs` (delete 8 path fields :46-76 and 8 `effective_*` methods :101-144; keep `id, password, fwmark, method, vless_id, enabled, aliases`, `is_enabled`, `effective_method`, `build_ip_aliases`, `validate_ip_aliases`)
 - Modify: `bins/outline-ss-rust/src/config/resolved.rs` (delete `Config.ws_path_*`/`xhttp_path_*` :112-131)
 - Modify: `bins/outline-ss-rust/src/config/loader.rs` (delete the path-splice :140-153 and the `let websocket = …` unpack :55)
-- Modify: `bins/outline-ss-rust/src/server/setup.rs` + the ~10 test files calling them — Task 2 left `build_user_routes` and `user_keys` `#[cfg(test)]`-gated, and they DEPEND on `UserEntry::effective_*` + `Config.ws_path_*`, both deleted in this task. Migrate the per-user-path routing tests onto the endpoint model (or delete them) and remove these gated builders here, or the crate will not compile. (This is the retirement point flagged in Task 2's review.)
+- Modify/delete `bins/outline-ss-rust/src/server/setup.rs` + the ~10 test files calling into it — this is the **retirement of the whole old route machinery** (flagged in Task 2's review). After Tasks 2+4 nothing in production uses it, but `#[cfg(test)]` `build_user_routes`/`user_keys` and the tests calling them still do, and they DEPEND on `UserEntry::effective_*` + `Config.ws_path_*` (deleted in this task). So here: migrate the per-user-path routing tests onto the endpoint model (or delete them), then remove `build_user_routes`, `user_keys`, the stage-2 builders (`build_transport_route_map`, `build_vless_transport_route_map`, `build_xhttp_vless_route_map`, `build_xhttp_ss_route_map`), the `describe_*_user_routes` helpers, and the `UserRoute`/`VlessUserRoute`/`VlessXhttpUserRoute`/`SsXhttpUserRoute` structs. If `setup.rs` ends up empty, delete it and its `mod setup;`. The crate will not compile until this is done.
 - Modify: `bins/outline-ss-rust/src/config/tests/*` (any remaining references)
 
 **Interfaces:**
