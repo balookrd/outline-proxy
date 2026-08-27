@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import outline_yaml
 import uri
 import ws_toml
-from config_model import AccessKeys, User
+from config_model import AccessKeys, Endpoint, ServerConfig, User, endpoints_of_kind
 
 
 @dataclass(frozen=True)
@@ -39,53 +39,88 @@ def outline_url(user: User, ak: AccessKeys) -> str | None:
     return uri.ssconf_url(url) if url else None
 
 
-def has_subscription(user: User) -> bool:
-    """Whether this user gets a <user>.json — a VLESS id plus a path to reach."""
-    return bool(user.vless_id) and bool(user.ws_path_vless or user.xhttp_path_vless)
+def has_subscription(user: User, server: ServerConfig) -> bool:
+    """Whether this user gets a <user>.json — a VLESS id plus a VLESS endpoint."""
+    return bool(user.vless_id) and bool(endpoints_of_kind(server, "ws_vless", "xhttp_vless"))
 
 
-def happ_url(user: User, ak: AccessKeys) -> str | None:
+def happ_url(user: User, server: ServerConfig) -> str | None:
     """The link handed to xray-family clients: the Xray-JSON subscription.
 
     Always `.json` — `file_extension` applies to the Outline artifact only.
     """
-    if not ak.url_base or not has_subscription(user):
+    ak = server.access_keys
+    if not ak.url_base or not has_subscription(user, server):
         return None
     return uri.join_url(ak.url_base, f"{user.filename}.json")
 
 
-def ws_url(user: User, ak: AccessKeys) -> str | None:
+def ws_url(user: User, server: ServerConfig) -> str | None:
     """The link handed to the Android client: the ws-rust config.
 
     Always `.toml` — `file_extension` applies to the Outline artifact only.
     """
-    if not ak.url_base or not ws_toml.has_wires(user):
+    ak = server.access_keys
+    if not ak.url_base or not ws_toml.has_wires(user, server):
         return None
     return uri.join_url(ak.url_base, f"{user.filename}.toml")
 
 
-def outline_artifact(user: User, ak: AccessKeys) -> str | None:
+def _outline_legs(server: ServerConfig) -> tuple[Endpoint | None, Endpoint | None]:
+    """The first split SS-over-WS TCP and UDP legs, the pair Outline rides.
+
+    Outline is a plain third-party client: it cannot do combined SS or padding,
+    so it dials the split legs (`ws_ss_tcp` / `ws_ss_udp`), which operators keep
+    plain. Their `padded` flag is not consulted here.
+    """
+    tcp = endpoints_of_kind(server, "ws_ss_tcp")
+    udp = endpoints_of_kind(server, "ws_ss_udp")
+    return (tcp[0] if tcp else None, udp[0] if udp else None)
+
+
+def has_outline(user: User, server: ServerConfig) -> bool:
+    """Whether this user gets a <user>.conf — a password plus both split legs.
+
+    Outline needs both the TCP and the UDP leg; without either the artifact is
+    not emitted, and neither is the ssconf link that would point at it.
+    """
+    tcp, udp = _outline_legs(server)
+    return user.password is not None and tcp is not None and udp is not None
+
+
+def outline_artifact(user: User, server: ServerConfig) -> str | None:
     if user.password is None:
         return None
+    tcp, udp = _outline_legs(server)
+    if tcp is None or udp is None:
+        return None
+    ak = server.access_keys
     return outline_yaml.render(
         user.method,
         user.password,
-        outline_yaml.websocket_url(ak.public_scheme, ak.public_host, user.ws_path_tcp),
-        outline_yaml.websocket_url(ak.public_scheme, ak.public_host, user.ws_path_udp),
+        outline_yaml.websocket_url(ak.public_scheme, ak.public_host, tcp.path),
+        outline_yaml.websocket_url(ak.public_scheme, ak.public_host, udp.path),
     )
 
 
-def legacy_artifacts(user: User, ak: AccessKeys, has_h3: bool) -> list[Artifact]:
-    """Every artifact the binary emits for this user, in the binary's order."""
-    out: list[Artifact] = []
-    host, scheme = ak.public_host, ak.public_scheme
+def legacy_artifacts(user: User, server: ServerConfig) -> list[Artifact]:
+    """Every artifact the binary emits for this user, in the binary's order.
 
-    outline = outline_artifact(user, ak)
+    One share link per combined SS (`ws_ss` / `xhttp_ss`) and VLESS
+    (`ws_vless` / `xhttp_vless`) endpoint the user's credential unlocks, in the
+    fixed carrier order the old per-user paths produced. Padding does not enter
+    here: the `.txt` lists every carrier, padded or plain.
+    """
+    out: list[Artifact] = []
+    ak = server.access_keys
+    host, scheme, has_h3 = ak.public_host, ak.public_scheme, server.alpn_has_h3
+
+    outline = outline_artifact(user, server)
     if outline is not None:
         out.append(Artifact(user.filename, outline))
 
     if user.password is not None:
-        if user.ws_path_ss:
+        for endpoint in endpoints_of_kind(server, "ws_ss"):
             out.append(
                 Artifact(
                     f"{user.filename}-ss-ws",
@@ -94,14 +129,14 @@ def legacy_artifacts(user: User, ak: AccessKeys, has_h3: bool) -> list[Artifact]
                         user.password,
                         host,
                         scheme,
-                        user.ws_path_ss,
+                        endpoint.path,
                         user.name,
                         uri.alpn_list(scheme, has_h3, "ws"),
                     )
                     + "\n",
                 )
             )
-        if user.xhttp_path_ss:
+        for endpoint in endpoints_of_kind(server, "xhttp_ss"):
             for mode in ("packet-up", "stream-one"):
                 out.append(
                     Artifact(
@@ -111,7 +146,7 @@ def legacy_artifacts(user: User, ak: AccessKeys, has_h3: bool) -> list[Artifact]
                             user.password,
                             host,
                             scheme,
-                            user.xhttp_path_ss,
+                            endpoint.path,
                             user.name,
                             mode,
                             uri.alpn_list(scheme, has_h3, mode),
@@ -121,7 +156,7 @@ def legacy_artifacts(user: User, ak: AccessKeys, has_h3: bool) -> list[Artifact]
                 )
 
     if user.vless_id is not None:
-        if user.ws_path_vless:
+        for endpoint in endpoints_of_kind(server, "ws_vless"):
             out.append(
                 Artifact(
                     f"{user.filename}-vless-ws",
@@ -129,14 +164,14 @@ def legacy_artifacts(user: User, ak: AccessKeys, has_h3: bool) -> list[Artifact]
                         user.vless_id,
                         host,
                         scheme,
-                        user.ws_path_vless,
+                        endpoint.path,
                         user.name,
                         uri.alpn_list(scheme, has_h3, "ws"),
                     )
                     + "\n",
                 )
             )
-        if user.xhttp_path_vless:
+        for endpoint in endpoints_of_kind(server, "xhttp_vless"):
             for mode in ("packet-up", "stream-one"):
                 out.append(
                     Artifact(
@@ -145,7 +180,7 @@ def legacy_artifacts(user: User, ak: AccessKeys, has_h3: bool) -> list[Artifact]
                             user.vless_id,
                             host,
                             scheme,
-                            user.xhttp_path_vless,
+                            endpoint.path,
                             user.name,
                             mode,
                             uri.alpn_list(scheme, has_h3, mode),
@@ -157,19 +192,21 @@ def legacy_artifacts(user: User, ak: AccessKeys, has_h3: bool) -> list[Artifact]
     return out
 
 
-def user_urls(user: User, ak: AccessKeys, has_h3: bool) -> list[str]:
+def user_urls(user: User, server: ServerConfig) -> list[str]:
     """Lines of <user>.txt: the ssconf link, then every URI in artifact order.
 
     Built by repackaging `legacy_artifacts` rather than re-rendering, so the two
-    can never drift.
+    can never drift. The ssconf line leads only when the Outline `.conf` is
+    actually emitted (password + both split legs).
     """
     lines: list[str] = []
-    ssconf = outline_url(user, ak)
-    if ssconf:
-        lines.append(ssconf)
+    if has_outline(user, server):
+        ssconf = outline_url(user, server.access_keys)
+        if ssconf:
+            lines.append(ssconf)
     lines.extend(
         artifact.content.rstrip("\n")
-        for artifact in legacy_artifacts(user, ak, has_h3)
+        for artifact in legacy_artifacts(user, server)
         if artifact.content.startswith(("ss://", "vless://"))
     )
     return lines

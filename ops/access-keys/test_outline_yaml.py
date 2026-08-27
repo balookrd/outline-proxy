@@ -66,6 +66,9 @@ class GoldenConfTest(unittest.TestCase):
     def test_every_golden_conf_reproduces(self):
         server = cm.load(GOLDEN_CONFIG)
         ak = server.access_keys
+        # Outline rides the split SS legs, resolved from the server's endpoints.
+        tcp_path = cm.endpoints_of_kind(server, "ws_ss_tcp")[0].path
+        udp_path = cm.endpoints_of_kind(server, "ws_ss_udp")[0].path
         for user in server.users:
             path = GOLDEN_DIR / f"{user.filename}{ak.file_extension}"
             with self.subTest(user=user.filename):
@@ -75,12 +78,8 @@ class GoldenConfTest(unittest.TestCase):
                 actual = outline_yaml.render(
                     user.method,
                     user.password,
-                    outline_yaml.websocket_url(
-                        ak.public_scheme, ak.public_host, user.ws_path_tcp
-                    ),
-                    outline_yaml.websocket_url(
-                        ak.public_scheme, ak.public_host, user.ws_path_udp
-                    ),
+                    outline_yaml.websocket_url(ak.public_scheme, ak.public_host, tcp_path),
+                    outline_yaml.websocket_url(ak.public_scheme, ak.public_host, udp_path),
                 )
                 self.assertEqual(actual, path.read_text(encoding="utf-8"))
 

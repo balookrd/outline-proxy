@@ -37,7 +37,7 @@ class GoldenTest(unittest.TestCase):
 
     def test_conf_matches_the_golden_corpus(self):
         for user in self.server.users:
-            content = artifacts.outline_artifact(user, self.ak)
+            content = artifacts.outline_artifact(user, self.server)
             path = EXPECTED / f"{user.filename}{self.ak.file_extension}"
             with self.subTest(user=user.filename):
                 if content is None:
@@ -47,7 +47,7 @@ class GoldenTest(unittest.TestCase):
 
     def test_txt_matches_the_golden_corpus(self):
         for user in self.server.users:
-            urls = artifacts.user_urls(user, self.ak, self.server.alpn_has_h3)
+            urls = artifacts.user_urls(user, self.server)
             path = EXPECTED / f"{user.filename}.txt"
             with self.subTest(user=user.filename):
                 if urls:
@@ -67,7 +67,7 @@ class UserUrlsTest(unittest.TestCase):
         return next(u for u in self.server.users if u.name == name)
 
     def test_txt_starts_with_ssconf_then_lists_every_uri(self):
-        lines = artifacts.user_urls(self.user("both"), self.ak, self.server.alpn_has_h3)
+        lines = artifacts.user_urls(self.user("both"), self.server)
         self.assertTrue(lines[0].startswith("ssconf://"))
         self.assertEqual(len(lines), 7)
         self.assertEqual(
@@ -84,25 +84,23 @@ class UserUrlsTest(unittest.TestCase):
 
     def test_txt_lines_are_exactly_the_legacy_uris(self):
         # The .txt file must be a repackaging, never a re-rendering.
-        user = self.user("own-paths")
-        legacy = artifacts.legacy_artifacts(user, self.ak, self.server.alpn_has_h3)
+        user = self.user("both")
+        legacy = artifacts.legacy_artifacts(user, self.server)
         uris = [
             a.content.rstrip("\n")
             for a in legacy
             if a.content.startswith(("ss://", "vless://"))
         ]
-        lines = artifacts.user_urls(user, self.ak, self.server.alpn_has_h3)
+        lines = artifacts.user_urls(user, self.server)
         self.assertEqual(lines[1:], uris)
 
     def test_vless_only_user_has_no_ssconf_line(self):
-        lines = artifacts.user_urls(
-            self.user("vless-only"), self.ak, self.server.alpn_has_h3
-        )
+        lines = artifacts.user_urls(self.user("vless-only"), self.server)
         self.assertFalse(any(line.startswith("ssconf://") for line in lines))
         self.assertEqual(len(lines), 3)
 
     def test_ss_only_user_has_no_vless_lines(self):
-        lines = artifacts.user_urls(self.user("ss-only"), self.ak, self.server.alpn_has_h3)
+        lines = artifacts.user_urls(self.user("ss-only"), self.server)
         self.assertFalse(any("vless" in line for line in lines))
 
 
@@ -131,27 +129,27 @@ class UrlHelpersTest(unittest.TestCase):
 
     def test_happ_url_points_at_the_json_subscription(self):
         self.assertEqual(
-            artifacts.happ_url(self.user("both"), self.ak),
+            artifacts.happ_url(self.user("both"), self.server),
             "https://keys.example.com/SECRET/both.json",
         )
 
     def test_happ_url_keeps_the_json_extension_regardless_of_file_extension(self):
         # file_extension applies to the Outline artifact only; the subscription
         # is always <user>.json.
-        self.assertTrue(artifacts.happ_url(self.user("both"), self.ak).endswith(".json"))
+        self.assertTrue(artifacts.happ_url(self.user("both"), self.server).endswith(".json"))
 
     def test_happ_url_absent_without_a_vless_subscription(self):
-        self.assertIsNone(artifacts.happ_url(self.user("ss-only"), self.ak))
+        self.assertIsNone(artifacts.happ_url(self.user("ss-only"), self.server))
 
     def test_happ_url_uses_the_sanitised_filename(self):
         self.assertEqual(
-            artifacts.happ_url(self.user("needs sanitising/1"), self.ak),
+            artifacts.happ_url(self.user("needs sanitising/1"), self.server),
             "https://keys.example.com/SECRET/needs_sanitising_1.json",
         )
 
     def test_ws_url_points_at_the_toml_config(self):
         self.assertEqual(
-            artifacts.ws_url(self.user("both"), self.ak),
+            artifacts.ws_url(self.user("both"), self.server),
             "https://keys.example.com/SECRET/both.toml",
         )
 
@@ -159,15 +157,28 @@ class UrlHelpersTest(unittest.TestCase):
         # The ws-rust chain also carries SS wires, so an SS-only user gets a
         # config even though they get no Xray subscription.
         self.assertEqual(
-            artifacts.ws_url(self.user("ss-only"), self.ak),
+            artifacts.ws_url(self.user("ss-only"), self.server),
             "https://keys.example.com/SECRET/ss-only.toml",
         )
 
     def test_no_ws_url_without_wires(self):
-        # Every enabled user in the golden config inherits the global SS/VLESS
-        # paths, so an undialable user has to be built by hand.
+        # A user with no credential dials nothing, whatever endpoints exist.
         bare = replace(self.user("ss-only"), password=None, vless_id=None)
-        self.assertIsNone(artifacts.ws_url(bare, self.ak))
+        self.assertIsNone(artifacts.ws_url(bare, self.server))
+
+    def test_no_outline_without_the_split_legs(self):
+        # Strip the split SS legs: Outline needs both, so the .conf and its
+        # ssconf line disappear even for a password user.
+        legless = replace(
+            self.server,
+            endpoints=tuple(
+                e for e in self.server.endpoints if e.kind not in ("ws_ss_tcp", "ws_ss_udp")
+            ),
+        )
+        self.assertIsNone(artifacts.outline_artifact(self.user("both"), legless))
+        self.assertFalse(artifacts.has_outline(self.user("both"), legless))
+        lines = artifacts.user_urls(self.user("both"), legless)
+        self.assertFalse(any(line.startswith("ssconf://") for line in lines))
 
 
 if __name__ == "__main__":

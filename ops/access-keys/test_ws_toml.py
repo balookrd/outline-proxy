@@ -4,6 +4,7 @@
 import sys
 import tomllib
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -12,7 +13,7 @@ sys.path.insert(0, str(HERE))
 import ws_toml as gen  # noqa: E402
 from config_model import (  # noqa: E402
     AccessKeys,
-    Padding,
+    Endpoint,
     ServerConfig,
     SessionResumption,
     User,
@@ -30,40 +31,34 @@ ACCESS_KEYS = AccessKeys(
     write_dir="/var/www/html/SECRET",
 )
 
-ALL_PADDED = Padding(
-    enabled=True,
-    paths=("/SECRET/xhttp", "/SECRET/vless", "/SECRET/ss", "/SECRET/ssx"),
+# The four chain-eligible carriers, in no particular order (build_wires imposes
+# its own). Split SS legs are omitted: they never join the wire chain.
+FULL_EPS = (
+    Endpoint("/SECRET/xhttp", "xhttp_vless", False),
+    Endpoint("/SECRET/vless", "ws_vless", False),
+    Endpoint("/SECRET/ss", "ws_ss", False),
+    Endpoint("/SECRET/ssx", "xhttp_ss", False),
+)
+ALL_PADDED_EPS = tuple(replace(e, padded=True) for e in FULL_EPS)
+SS_PADDED_EPS = tuple(replace(e, padded=e.kind in ("ws_ss", "xhttp_ss")) for e in FULL_EPS)
+WS_ONLY_EPS = (
+    Endpoint("/SECRET/vless", "ws_vless", False),
+    Endpoint("/SECRET/ss", "ws_ss", False),
+)
+SS_ONLY_EPS = (
+    Endpoint("/SECRET/ss", "ws_ss", False),
+    Endpoint("/SECRET/ssx", "xhttp_ss", False),
 )
 
 
-def make_user(
-    name="alice",
-    password="pw-alice",
-    vless_id=UUID,
-    ws_path_vless="/SECRET/vless",
-    xhttp_path_vless="/SECRET/xhttp",
-    ws_path_ss="/SECRET/ss",
-    xhttp_path_ss="/SECRET/ssx",
-):
-    return User(
-        name=name,
-        filename=name,
-        password=password,
-        method="chacha20-ietf-poly1305",
-        vless_id=vless_id,
-        ws_path_tcp="/SECRET/tcp",
-        ws_path_udp="/SECRET/udp",
-        ws_path_vless=ws_path_vless,
-        ws_path_ss=ws_path_ss,
-        xhttp_path_vless=xhttp_path_vless,
-        xhttp_path_ss=xhttp_path_ss,
-    )
+def make_user(name="alice", password="pw-alice", vless_id=UUID, method="chacha20-ietf-poly1305"):
+    return User(name=name, filename=name, password=password, method=method, vless_id=vless_id)
 
 
 def make_server(
     users=(),
     has_h3=True,
-    padding=Padding(enabled=False, paths=()),
+    endpoints=FULL_EPS,
     resumption=SessionResumption(enabled=False, downlink_buffer_bytes=0),
     cluster_enabled=False,
 ):
@@ -71,7 +66,7 @@ def make_server(
         access_keys=ACCESS_KEYS,
         users=tuple(users),
         alpn_has_h3=has_h3,
-        padding=padding,
+        endpoints=tuple(endpoints),
         session_resumption=resumption,
         cluster_enabled=cluster_enabled,
     )
@@ -79,7 +74,7 @@ def make_server(
 
 class BuildWiresTest(unittest.TestCase):
     def test_full_chain_order(self):
-        wires = gen.build_wires(make_user(), NODE, "wss", has_h3=True)
+        wires = gen.build_wires(make_user(), NODE, make_server(has_h3=True))
         self.assertEqual(
             [w.path for w in wires],
             ["/SECRET/xhttp", "/SECRET/vless", "/SECRET/ss", "/SECRET/ssx", "/SECRET/xhttp"],
@@ -91,37 +86,43 @@ class BuildWiresTest(unittest.TestCase):
         self.assertIn("type=xhttp&mode=packet-up", wires[4].link)
 
     def test_h3_alpn_leads_every_link(self):
-        wires = gen.build_wires(make_user(), NODE, "wss", has_h3=True)
+        wires = gen.build_wires(make_user(), NODE, make_server(has_h3=True))
         self.assertIn("alpn=h3", wires[0].link)
         self.assertIn("alpn=h3", wires[2].link)
 
     def test_without_h3_links_lead_with_h2(self):
-        wires = gen.build_wires(make_user(), NODE, "wss", has_h3=False)
+        wires = gen.build_wires(make_user(), NODE, make_server(has_h3=False))
         for wire in wires:
             self.assertNotIn("alpn=h3", wire.link)
             self.assertIn("alpn=h2", wire.link)
 
     def test_ss_only_user_keeps_ss_wires(self):
-        user = make_user(vless_id=None)
-        wires = gen.build_wires(user, NODE, "wss", has_h3=True)
+        wires = gen.build_wires(make_user(vless_id=None), NODE, make_server())
         self.assertEqual([w.path for w in wires], ["/SECRET/ss", "/SECRET/ssx"])
         self.assertTrue(all(w.link.startswith("ss://") for w in wires))
 
     def test_vless_only_user_keeps_vless_wires(self):
-        user = make_user(password=None)
-        wires = gen.build_wires(user, NODE, "wss", has_h3=True)
+        wires = gen.build_wires(make_user(password=None), NODE, make_server())
         self.assertEqual(
             [w.path for w in wires], ["/SECRET/xhttp", "/SECRET/vless", "/SECRET/xhttp"]
         )
         self.assertTrue(all(w.link.startswith("vless://") for w in wires))
 
-    def test_missing_paths_shrink_the_chain(self):
-        user = make_user(xhttp_path_vless=None, xhttp_path_ss=None)
-        wires = gen.build_wires(user, NODE, "wss", has_h3=True)
+    def test_missing_endpoints_shrink_the_chain(self):
+        # No xhttp_vless / xhttp_ss on the server → those carriers drop out.
+        wires = gen.build_wires(make_user(), NODE, make_server(endpoints=WS_ONLY_EPS))
         self.assertEqual([w.path for w in wires], ["/SECRET/vless", "/SECRET/ss"])
 
+    def test_each_wire_carries_its_endpoint_padded_flag(self):
+        wires = gen.build_wires(make_user(), NODE, make_server(endpoints=SS_PADDED_EPS))
+        padded = {w.path: w.padded for w in wires}
+        self.assertTrue(padded["/SECRET/ss"])
+        self.assertTrue(padded["/SECRET/ssx"])
+        self.assertFalse(padded["/SECRET/vless"])
+        self.assertFalse(padded["/SECRET/xhttp"])
+
     def test_links_address_the_requested_node(self):
-        wires = gen.build_wires(make_user(), "cloud2.beerloga.su", "wss", has_h3=True)
+        wires = gen.build_wires(make_user(), "cloud2.beerloga.su", make_server())
         for wire in wires:
             self.assertIn("@cloud2.beerloga.su:443?", wire.link)
 
@@ -138,13 +139,13 @@ class BuildWiresTest(unittest.TestCase):
             gen.shuffle_timer(alice, NODES[0]), gen.shuffle_timer(alice, NODES[1])
         )
 
-    def test_has_wires_needs_a_credential_and_a_path(self):
-        self.assertTrue(gen.has_wires(make_user()))
-        self.assertFalse(gen.has_wires(make_user(password=None, vless_id=None)))
+    def test_has_wires_needs_a_credential_and_an_endpoint(self):
+        self.assertTrue(gen.has_wires(make_user(), make_server()))
+        # No credential at all.
+        self.assertFalse(gen.has_wires(make_user(password=None, vless_id=None), make_server()))
+        # A VLESS credential but the server offers no VLESS endpoint.
         self.assertFalse(
-            gen.has_wires(
-                make_user(password=None, ws_path_vless=None, xhttp_path_vless=None)
-            )
+            gen.has_wires(make_user(password=None), make_server(endpoints=SS_ONLY_EPS))
         )
 
 
@@ -158,8 +159,7 @@ class BuildConfigTest(unittest.TestCase):
 
     def test_returns_none_without_wires(self):
         user = make_user(password=None, vless_id=None)
-        server = make_server(users=[user])
-        self.assertIsNone(gen.build_config(user, NODES, server))
+        self.assertIsNone(gen.build_config(user, NODES, make_server(users=[user])))
 
     def test_one_uplink_per_node_named_after_it(self):
         doc = self.parsed()
@@ -222,30 +222,27 @@ class BuildConfigTest(unittest.TestCase):
         for section in ("socks5", "metrics", "control", "dashboard"):
             self.assertNotIn(section, doc)
 
-    def test_padding_on_when_the_server_pads_every_path(self):
-        self.assertTrue(self.parsed(padding=ALL_PADDED)["padding"]["enabled"])
+    def test_padding_on_when_any_wire_is_padded(self):
+        self.assertTrue(self.parsed(endpoints=ALL_PADDED_EPS)["padding"]["enabled"])
 
-    def test_padding_off_on_partial_coverage(self):
-        partial = Padding(enabled=True, paths=("/SECRET/ss",))
-        self.assertFalse(self.parsed(padding=partial)["padding"]["enabled"])
-
-    def test_padding_off_when_the_server_does_not_pad(self):
+    def test_padding_off_when_no_wire_is_padded(self):
         self.assertFalse(self.parsed()["padding"]["enabled"])
 
-    def test_pads_every_wire_predicate(self):
+    def test_padded_chain_keeps_only_the_padded_wires(self):
+        # ss_ss/xhttp_ss are padded, the VLESS carriers are not: padding turns on
+        # and the plain VLESS wires are dropped so the chain is one padding class.
+        doc = self.parsed(endpoints=SS_PADDED_EPS)
+        self.assertTrue(doc["padding"]["enabled"])
+        uplink = doc["outline"]["uplinks"][0]
+        self.assertTrue(uplink["link"].startswith("ss://"))
+        self.assertEqual(len(uplink["fallbacks"]), 1)
+        self.assertTrue(uplink["fallbacks"][0]["link"].startswith("ss://"))
+
+    def test_padding_enabled_predicate(self):
         user = make_user()
-        self.assertTrue(
-            gen.pads_every_wire(user, NODES, make_server(users=[user], padding=ALL_PADDED))
-        )
-        self.assertFalse(
-            gen.pads_every_wire(
-                user,
-                NODES,
-                make_server(
-                    users=[user], padding=Padding(enabled=True, paths=("/SECRET/ss",))
-                ),
-            )
-        )
+        self.assertTrue(gen.padding_enabled(user, make_server(endpoints=ALL_PADDED_EPS)))
+        self.assertTrue(gen.padding_enabled(user, make_server(endpoints=SS_PADDED_EPS)))
+        self.assertFalse(gen.padding_enabled(user, make_server(endpoints=FULL_EPS)))
 
     def test_document_is_valid_toml_and_ends_with_a_newline(self):
         text = self.render()
@@ -280,9 +277,9 @@ class GoldenTomlTest(unittest.TestCase):
     """Every `.toml` in the golden corpus is reproducible from build_config.
 
     Broader than FixtureTest: it walks the synthetic config and pins the ws-rust
-    config for every user, and asserts a wireless user (no credential) gets
-    none. NODES equals xray_json.DEFAULT_NODES, the pair the generator used to
-    snapshot the corpus, so the comparison is byte-for-byte.
+    config for every user, and asserts a credential-less user gets none. NODES
+    equals xray_json.DEFAULT_NODES, the pair the generator used to snapshot the
+    corpus, so the comparison is byte-for-byte.
     """
 
     def test_matches_the_golden_corpus(self):
@@ -303,7 +300,7 @@ class GoldenTomlTest(unittest.TestCase):
 class WarningsTest(unittest.TestCase):
     def warn(self, **kwargs):
         user = make_user()
-        return gen.config_warnings(user, NODES, make_server(users=[user], **kwargs))
+        return gen.config_warnings(user, make_server(users=[user], **kwargs))
 
     def test_reports_disabled_resumption(self):
         self.assertIn("session_resumption", " ".join(self.warn()))
@@ -314,12 +311,12 @@ class WarningsTest(unittest.TestCase):
         )
         self.assertIn("downlink_buffer_bytes", text)
 
-    def test_silent_when_every_switch_is_on(self):
+    def test_silent_when_every_switch_is_on_and_the_whole_chain_pads(self):
         text = " ".join(
             self.warn(
                 resumption=SessionResumption(enabled=True, downlink_buffer_bytes=65536),
                 cluster_enabled=True,
-                padding=ALL_PADDED,
+                endpoints=ALL_PADDED_EPS,
             )
         )
         self.assertEqual(text, "")
@@ -327,16 +324,22 @@ class WarningsTest(unittest.TestCase):
     def test_reports_uplink_switch_resets_without_a_cluster(self):
         self.assertIn("cluster", " ".join(self.warn()))
 
-    def test_reports_partial_padding_coverage_with_the_paths(self):
-        text = " ".join(self.warn(padding=Padding(enabled=True, paths=("/SECRET/ss",))))
+    def test_reports_dropped_plain_fallbacks_when_padding_is_on(self):
+        text = " ".join(self.warn(endpoints=SS_PADDED_EPS))
         self.assertIn("padding", text)
+        # The dropped plain VLESS carriers are named by path.
         self.assertIn("/SECRET/vless", text)
+        self.assertIn("/SECRET/xhttp", text)
 
-    def test_silent_about_padding_the_server_does_not_use(self):
+    def test_silent_about_padding_when_nothing_is_padded(self):
         self.assertNotIn("padding", " ".join(self.warn()))
 
+    def test_silent_about_padding_when_the_whole_chain_pads(self):
+        # Padding on, but no plain wire was dropped — nothing to warn about.
+        self.assertNotIn("padding", " ".join(self.warn(endpoints=ALL_PADDED_EPS)))
+
     def test_warnings_never_carry_credentials(self):
-        for line in self.warn(padding=Padding(enabled=True, paths=("/SECRET/ss",))):
+        for line in self.warn(endpoints=SS_PADDED_EPS):
             self.assertNotIn("pw-alice", line)
             self.assertNotIn(UUID, line)
 

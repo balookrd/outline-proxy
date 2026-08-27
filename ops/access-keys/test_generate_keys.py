@@ -67,10 +67,7 @@ class MainTest(unittest.TestCase):
 
         server = cm.load(GOLDEN)
         user = next(u for u in server.users if u.name == "both")
-        expected = (
-            "\n".join(artifacts.user_urls(user, server.access_keys, server.alpn_has_h3))
-            + "\n"
-        )
+        expected = "\n".join(artifacts.user_urls(user, server)) + "\n"
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             run(out)
@@ -360,7 +357,7 @@ class ReportTest(unittest.TestCase):
                 {
                     "user": user.name,
                     "outline_url": artifacts.outline_url(user, ak),
-                    "happ_url": artifacts.happ_url(user, ak),
+                    "happ_url": artifacts.happ_url(user, server),
                 }
             ]
         )

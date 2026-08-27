@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import xray_json as gen  # noqa: E402
-from config_model import User  # noqa: E402
+from config_model import AccessKeys, Endpoint, ServerConfig, User  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 GOLDEN_CONFIG = HERE / "golden" / "config.toml"
@@ -22,21 +22,33 @@ GOLDEN_DIR = HERE / "golden" / "expected"
 NODES = ("cloud1.beerloga.su", "cloud2.beerloga.su")
 UUID = "11111111-1111-4111-8111-111111111111"
 
+AK = AccessKeys(
+    public_host="keys.example.com",
+    public_scheme="wss",
+    url_base=None,
+    file_extension=".conf",
+    write_dir=None,
+)
 
-def make_user(name="alice", xhttp="/OTHER/xhttp", ws="/SECRET/vless"):
+
+def make_user(name="alice"):
     return User(
         name=name,
         filename=name,
         password=None,
         method="chacha20-ietf-poly1305",
         vless_id=UUID,
-        ws_path_tcp="/t",
-        ws_path_udp="/u",
-        ws_path_vless=ws,
-        ws_path_ss=None,
-        xhttp_path_vless=xhttp,
-        xhttp_path_ss=None,
     )
+
+
+def make_server(xhttp="/OTHER/xhttp", ws="/SECRET/vless"):
+    """A server offering (optionally) one xhttp_vless and one ws_vless endpoint."""
+    endpoints = []
+    if xhttp is not None:
+        endpoints.append(Endpoint(xhttp, "xhttp_vless", False))
+    if ws is not None:
+        endpoints.append(Endpoint(ws, "ws_vless", False))
+    return ServerConfig(access_keys=AK, users=(), alpn_has_h3=True, endpoints=tuple(endpoints))
 
 
 def build(xhttp="/OTHER/xhttp", ws="/SECRET/vless"):
@@ -143,7 +155,7 @@ class BuildOutboundsTest(unittest.TestCase):
 class BuildConfigTest(unittest.TestCase):
     def setUp(self):
         self.user = make_user()
-        self.doc = gen.build_config(self.user, NODES)
+        self.doc = gen.build_config(self.user, NODES, make_server())
 
     def test_remarks_name_the_user(self):
         self.assertIn("alice", self.doc["remarks"])
@@ -208,9 +220,8 @@ class BuildConfigTest(unittest.TestCase):
         # AsIs means nothing to resolve locally; Happ owns the tunnel DNS.
         self.assertNotIn("dns", self.doc)
 
-    def test_uses_the_users_own_paths(self):
-        user = make_user(name="nodeuser", xhttp="/OWN/xhttp", ws="/OWN/vless")
-        doc = gen.build_config(user, NODES)
+    def test_uses_the_servers_vless_endpoint_paths(self):
+        doc = gen.build_config(make_user(), NODES, make_server(xhttp="/OWN/xhttp", ws="/OWN/vless"))
         paths = {
             o["streamSettings"].get("xhttpSettings", o["streamSettings"].get("wsSettings", {}))["path"]
             for o in doc["outbounds"][:6]
@@ -236,10 +247,10 @@ class GoldenJsonTest(unittest.TestCase):
         for user in server.users:
             path = GOLDEN_DIR / f"{user.filename}.json"
             with self.subTest(user=user.filename):
-                if not artifacts.has_subscription(user):
+                if not artifacts.has_subscription(user, server):
                     self.assertFalse(path.exists())
                     continue
-                document = gen.build_config(user, NODES)
+                document = gen.build_config(user, NODES, server)
                 actual = json.dumps([document], indent=2, ensure_ascii=False) + "\n"
                 self.assertEqual(actual, path.read_text(encoding="utf-8"))
 

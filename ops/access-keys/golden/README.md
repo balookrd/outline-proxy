@@ -13,7 +13,29 @@
 
 ## Что покрывает конфиг
 
-6 включённых юзеров (`disabled` не попадает никуда, `needs sanitising/1`
+Пользователи — чистые креды (`id`, `password`, `vless_id`, `method`), без
+собственных путей. Носители задаёт глобальный список `[[endpoint]]` со строками
+`{path, kind, padded}`: юзер с `password` работает на каждом SS-эндпоинте, юзер
+с `vless_id` — на каждом VLESS-эндпоинте. Паддинг стал атрибутом эндпоинта
+(`padded = true`), а не отдельным списком `[padding] paths`.
+
+Набор эндпоинтов в синтетическом конфиге:
+
+| Path | Kind | Зачем |
+|---|---|---|
+| `/GLOBAL/tcp` | `ws_ss_tcp` | сплит-нога SS/TCP — на ней едет Outline `.conf` |
+| `/GLOBAL/udp` | `ws_ss_udp` | сплит-нога SS/UDP — вторая нога того же `.conf` |
+| `/GLOBAL/ss` | `ws_ss` | комбинированный SS-носитель, `padded` |
+| `/GLOBAL/ssx` | `xhttp_ss` | комбинированный SS-носитель, `padded` |
+| `/GLOBAL/vless` | `ws_vless` | VLESS-носитель, `padded` |
+| `/GLOBAL/xhttp` | `xhttp_vless` | VLESS-носитель, `padded` |
+
+Комбинированные и VLESS-эндпоинты помечены `padded = true`, поэтому в каждом
+`<user>.toml` клиентский `[padding] enabled = true`, а цепочка носителей держится
+одного класса паддинга (плоские фолбэки отбрасываются). Сплит-ноги остаются
+plain: Outline паддинг не умеет и ездит именно по ним.
+
+5 включённых юзеров (`disabled` не попадает никуда, `needs sanitising/1`
 превращается в `needs_sanitising_1`):
 
 | Юзер | Зачем |
@@ -21,10 +43,12 @@
 | `ss-only` | только `password` — VLESS-артефактов (`.json`) быть не должно |
 | `vless-only` | только `vless_id` — нет ни Outline-конфига (`.conf`), ни `ss://` |
 | `both` | обе половины — все четыре файла |
-| `own-paths` | per-user пути бьют глобальные |
 | `own-method` | per-user `method` бьёт `[shadowsocks].method` |
 | `disabled` | `enabled = false` исключает юзера целиком |
 | `needs sanitising/1` | санитизация имени файла |
+
+Юзер `own-paths` из прежнего конфига убран: per-user путей больше нет — носители
+заданы глобально в `[[endpoint]]`, — и покрывать такой кейс нечем.
 
 ## Раскладка
 

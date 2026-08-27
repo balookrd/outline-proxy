@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from config_model import User
+from config_model import ServerConfig, User, endpoints_of_kind
 
 
 DEFAULT_NODES: tuple[str, ...] = ("cloud1.beerloga.su", "cloud2.beerloga.su")
@@ -130,9 +130,22 @@ PRIVATE_CIDRS = [
 ]
 
 
-def build_config(user: User, nodes: Sequence[str]) -> dict:
-    """One complete Xray config for a single user, using that user's paths."""
+def _vless_path(server: ServerConfig, kind: str) -> str | None:
+    """The first VLESS endpoint path of a kind, or None if the server has none.
+
+    The subscription rides a single ws and a single xhttp path, mirroring the
+    old per-user single-path fields; a server that offers several endpoints of a
+    kind contributes its first, in config order.
+    """
+    endpoints = endpoints_of_kind(server, kind)
+    return endpoints[0].path if endpoints else None
+
+
+def build_config(user: User, nodes: Sequence[str], server: ServerConfig) -> dict:
+    """One complete Xray config for a single user, over the server's VLESS endpoints."""
     selector = [f"{node_tag(node)}-" for node in nodes]
+    xhttp_path = _vless_path(server, "xhttp_vless")
+    ws_path = _vless_path(server, "ws_vless")
 
     return {
         "remarks": f"{user.name} cloud-balancer",
@@ -159,9 +172,7 @@ def build_config(user: User, nodes: Sequence[str]) -> dict:
                 "port": 10809,
             },
         ],
-        "outbounds": build_outbounds(
-            user.vless_id, user.xhttp_path_vless, user.ws_path_vless, nodes
-        ),
+        "outbounds": build_outbounds(user.vless_id, xhttp_path, ws_path, nodes),
         "routing": {
             "domainStrategy": "AsIs",
             "rules": [

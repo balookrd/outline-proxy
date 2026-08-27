@@ -10,7 +10,7 @@ sniffing = true
 carrier_migration = true
 
 [padding]
-enabled = false
+enabled = true
 
 [[uplink_group]]
 name = "main"

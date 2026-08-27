@@ -42,19 +42,38 @@ class LoadTest(unittest.TestCase):
     def test_disabled_user_is_dropped(self):
         self.assertNotIn("disabled", [u.name for u in self.server.users])
 
-    def test_global_paths_apply_when_the_user_has_none(self):
+    def test_users_carry_no_paths(self):
+        # Users are pure credentials now; carriers live in [[endpoint]].
         user = by_name(self.server, "both")
-        self.assertEqual(user.ws_path_vless, "/GLOBAL/vless")
-        self.assertEqual(user.xhttp_path_ss, "/GLOBAL/ssx")
-        self.assertEqual(user.ws_path_tcp, "/GLOBAL/tcp")
-        self.assertEqual(user.ws_path_udp, "/GLOBAL/udp")
+        for field in ("ws_path_tcp", "ws_path_ss", "ws_path_vless", "xhttp_path_ss"):
+            self.assertFalse(hasattr(user, field), field)
 
-    def test_per_user_paths_win(self):
-        user = by_name(self.server, "own-paths")
-        self.assertEqual(user.ws_path_vless, "/OWN/vless")
-        self.assertEqual(user.ws_path_ss, "/OWN/ss")
-        self.assertEqual(user.xhttp_path_vless, "/OWN/xhttp")
-        self.assertEqual(user.xhttp_path_ss, "/OWN/ssx")
+    def test_loads_endpoints_in_config_order(self):
+        self.assertEqual(
+            [(e.kind, e.path) for e in self.server.endpoints],
+            [
+                ("ws_ss_tcp", "/GLOBAL/tcp"),
+                ("ws_ss_udp", "/GLOBAL/udp"),
+                ("ws_ss", "/GLOBAL/ss"),
+                ("xhttp_ss", "/GLOBAL/ssx"),
+                ("ws_vless", "/GLOBAL/vless"),
+                ("xhttp_vless", "/GLOBAL/xhttp"),
+            ],
+        )
+
+    def test_endpoint_padded_flag_is_read(self):
+        by_kind = {e.kind: e for e in self.server.endpoints}
+        # The combined/VLESS carriers are marked padded; the split legs are not.
+        self.assertTrue(by_kind["ws_ss"].padded)
+        self.assertTrue(by_kind["xhttp_vless"].padded)
+        self.assertFalse(by_kind["ws_ss_tcp"].padded)
+        self.assertFalse(by_kind["ws_ss_udp"].padded)
+
+    def test_endpoints_of_kind_filters_and_preserves_order(self):
+        vless = cm.endpoints_of_kind(self.server, "ws_vless", "xhttp_vless")
+        self.assertEqual([e.kind for e in vless], ["ws_vless", "xhttp_vless"])
+        self.assertEqual(cm.endpoints_of_kind(self.server, "ws_ss_tcp")[0].path, "/GLOBAL/tcp")
+        self.assertEqual(cm.endpoints_of_kind(self.server, "nonexistent"), [])
 
     def test_method_falls_back_to_the_shadowsocks_section(self):
         self.assertEqual(by_name(self.server, "both").method, "chacha20-ietf-poly1305")
@@ -255,34 +274,22 @@ password = "pw"
 
     def test_features_default_to_off(self):
         server = self.load_body(self.BASE)
-        self.assertFalse(server.padding.enabled)
-        self.assertEqual(server.padding.paths, ())
+        self.assertEqual(server.endpoints, ())
         self.assertFalse(server.session_resumption.enabled)
         self.assertEqual(server.session_resumption.downlink_buffer_bytes, 0)
         self.assertFalse(server.cluster_enabled)
 
-    def test_reads_padding_paths(self):
+    def test_endpoint_padded_defaults_to_false(self):
         server = self.load_body(
             self.BASE
             + """
-[padding]
-enabled = true
-paths = ["/GLOBAL/ss", "/GLOBAL/ssx"]
+[[endpoint]]
+path = "/ss"
+kind = "ws_ss"
 """
         )
-        self.assertTrue(server.padding.enabled)
-        self.assertEqual(server.padding.paths, ("/GLOBAL/ss", "/GLOBAL/ssx"))
-
-    def test_padding_paths_without_enabled_stay_inactive(self):
-        server = self.load_body(
-            self.BASE
-            + """
-[padding]
-paths = ["/GLOBAL/ss"]
-"""
-        )
-        self.assertFalse(server.padding.enabled)
-        self.assertEqual(server.padding.paths, ("/GLOBAL/ss",))
+        self.assertEqual(len(server.endpoints), 1)
+        self.assertFalse(server.endpoints[0].padded)
 
     def test_reads_session_resumption(self):
         server = self.load_body(

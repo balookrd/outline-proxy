@@ -168,15 +168,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     for user in server.users:
         record: dict = {"user": user.name}
 
-        outline = artifacts.outline_artifact(user, ak)
+        outline = artifacts.outline_artifact(user, server)
         if outline is not None:
             target = out_dir / f"{user.filename}{ak.file_extension}"
             if not args.dry_run:
                 write_atomic(target, outline)
             record["conf"] = str(target)
 
-        if artifacts.has_subscription(user):
-            document = xray_json.build_config(user, nodes)
+        if artifacts.has_subscription(user, server):
+            document = xray_json.build_config(user, nodes, server)
             target = out_dir / f"{user.filename}.json"
             if not args.dry_run:
                 write_atomic(
@@ -190,18 +190,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not args.dry_run:
                 write_atomic(target, document)
             record["toml"] = str(target)
-            record["warnings"] = ws_toml.config_warnings(user, nodes, server)
+            record["warnings"] = ws_toml.config_warnings(user, server)
 
-        urls = artifacts.user_urls(user, ak, server.alpn_has_h3)
+        urls = artifacts.user_urls(user, server)
         if urls:
             target = out_dir / f"{user.filename}.txt"
             if not args.dry_run:
                 write_atomic(target, "\n".join(urls) + "\n")
             record["txt"] = str(target)
 
-        record["outline_url"] = artifacts.outline_url(user, ak)
-        record["happ_url"] = artifacts.happ_url(user, ak)
-        record["ws_url"] = artifacts.ws_url(user, ak)
+        record["outline_url"] = (
+            artifacts.outline_url(user, ak) if artifacts.has_outline(user, server) else None
+        )
+        record["happ_url"] = artifacts.happ_url(user, server)
+        record["ws_url"] = artifacts.ws_url(user, server)
         written.append(record)
 
     # Never a credential: paths and counts only.

@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import uri
-from config_model import ServerConfig, User
+from config_model import ServerConfig, User, endpoints_of_kind
 
 PORT = 443
 GROUP = "main"
@@ -98,127 +98,142 @@ def shuffle_timer(user: User, node: str) -> str:
 class Wire:
     """One dialable carrier of an uplink.
 
-    `path` is the server-side carrier path this link dials. It is kept beside
-    the link because the padding decision needs it: the client's `[padding]`
-    switch is global, so it may only be turned on when every path in the chain
-    is one the server pads.
+    `path` is the server-side carrier path this link dials, kept beside the link
+    for the padding warnings. `padded` is the endpoint's own flag: the client's
+    `[padding]` switch is global, so the chain is filtered to a single padding
+    class (see `padding_enabled`) rather than mixing padded and plain wires.
     """
 
     link: str
     path: str
+    padded: bool
 
 
-def build_wires(user: User, node: str, scheme: str, has_h3: bool) -> list[Wire]:
+def build_wires(user: User, node: str, server: ServerConfig) -> list[Wire]:
     """The uplink's carrier chain for one node, best carrier first.
 
-    Order is fixed and deliberate: xhttp stream-one rides QUIC full-duplex and
-    is our best carrier; ws is the same proxy protocol on a different carrier
-    family; the SS wires are a different proxy protocol entirely, so they
-    survive a block aimed at VLESS; packet-up is the most compatible and the
-    most expensive, hence last resort.
+    One `Wire` per matching endpoint, in a fixed carrier order: xhttp stream-one
+    rides QUIC full-duplex and is our best carrier; ws is the same proxy
+    protocol on a different carrier family; the SS wires are a different proxy
+    protocol entirely, so they survive a block aimed at VLESS; packet-up is the
+    most compatible and the most expensive, hence last resort.
+
+    Carriers come from the server's `[[endpoint]]` list: VLESS kinds need
+    `user.vless_id`, SS kinds need `user.password`. Combined SS (`ws_ss` /
+    `xhttp_ss`) and VLESS (`ws_vless` / `xhttp_vless`) endpoints join the chain;
+    the split SS legs (`ws_ss_tcp` / `ws_ss_udp`) have no share link — `ss://`
+    only expands to a combined path — so they never do. Each wire carries its
+    endpoint's `padded` flag.
 
     ALPN does not multiply wires the way it multiplies xray outbounds: ws-rust
     reads the first token as the requested mode and downgrades inside the wire
     (`ws_h3 -> ws_h2 -> ws_h1`).
-
-    A missing path or credential drops its wire rather than emitting a link
-    that dials nothing. Split SS (`ws_path_tcp` / `ws_path_udp`) has no share
-    link at all — `ss://` only expands to the combined path — so it never
-    joins the chain.
     """
+    scheme = server.access_keys.public_scheme
+    has_h3 = server.alpn_has_h3
     wires: list[Wire] = []
 
-    if user.vless_id and user.xhttp_path_vless:
-        wires.append(
-            Wire(
-                uri.vless_xhttp_uri(
-                    user.vless_id,
-                    node,
-                    scheme,
-                    user.xhttp_path_vless,
-                    user.name,
-                    "stream-one",
-                    uri.alpn_list(scheme, has_h3, "stream-one"),
-                ),
-                user.xhttp_path_vless,
+    if user.vless_id:
+        for endpoint in endpoints_of_kind(server, "xhttp_vless"):
+            wires.append(
+                Wire(
+                    uri.vless_xhttp_uri(
+                        user.vless_id,
+                        node,
+                        scheme,
+                        endpoint.path,
+                        user.name,
+                        "stream-one",
+                        uri.alpn_list(scheme, has_h3, "stream-one"),
+                    ),
+                    endpoint.path,
+                    endpoint.padded,
+                )
             )
-        )
 
-    if user.vless_id and user.ws_path_vless:
-        wires.append(
-            Wire(
-                uri.vless_ws_uri(
-                    user.vless_id,
-                    node,
-                    scheme,
-                    user.ws_path_vless,
-                    user.name,
-                    uri.alpn_list(scheme, has_h3, "ws"),
-                ),
-                user.ws_path_vless,
+    if user.vless_id:
+        for endpoint in endpoints_of_kind(server, "ws_vless"):
+            wires.append(
+                Wire(
+                    uri.vless_ws_uri(
+                        user.vless_id,
+                        node,
+                        scheme,
+                        endpoint.path,
+                        user.name,
+                        uri.alpn_list(scheme, has_h3, "ws"),
+                    ),
+                    endpoint.path,
+                    endpoint.padded,
+                )
             )
-        )
 
-    if user.password is not None and user.ws_path_ss:
-        wires.append(
-            Wire(
-                uri.ss_ws_uri(
-                    user.method,
-                    user.password,
-                    node,
-                    scheme,
-                    user.ws_path_ss,
-                    user.name,
-                    uri.alpn_list(scheme, has_h3, "ws"),
-                ),
-                user.ws_path_ss,
+    if user.password is not None:
+        for endpoint in endpoints_of_kind(server, "ws_ss"):
+            wires.append(
+                Wire(
+                    uri.ss_ws_uri(
+                        user.method,
+                        user.password,
+                        node,
+                        scheme,
+                        endpoint.path,
+                        user.name,
+                        uri.alpn_list(scheme, has_h3, "ws"),
+                    ),
+                    endpoint.path,
+                    endpoint.padded,
+                )
             )
-        )
 
-    if user.password is not None and user.xhttp_path_ss:
-        wires.append(
-            Wire(
-                uri.ss_xhttp_uri(
-                    user.method,
-                    user.password,
-                    node,
-                    scheme,
-                    user.xhttp_path_ss,
-                    user.name,
-                    "stream-one",
-                    uri.alpn_list(scheme, has_h3, "stream-one"),
-                ),
-                user.xhttp_path_ss,
+    if user.password is not None:
+        for endpoint in endpoints_of_kind(server, "xhttp_ss"):
+            wires.append(
+                Wire(
+                    uri.ss_xhttp_uri(
+                        user.method,
+                        user.password,
+                        node,
+                        scheme,
+                        endpoint.path,
+                        user.name,
+                        "stream-one",
+                        uri.alpn_list(scheme, has_h3, "stream-one"),
+                    ),
+                    endpoint.path,
+                    endpoint.padded,
+                )
             )
-        )
 
-    if user.vless_id and user.xhttp_path_vless:
-        wires.append(
-            Wire(
-                uri.vless_xhttp_uri(
-                    user.vless_id,
-                    node,
-                    scheme,
-                    user.xhttp_path_vless,
-                    user.name,
-                    "packet-up",
-                    uri.alpn_list(scheme, has_h3, "packet-up"),
-                ),
-                user.xhttp_path_vless,
+    if user.vless_id:
+        for endpoint in endpoints_of_kind(server, "xhttp_vless"):
+            wires.append(
+                Wire(
+                    uri.vless_xhttp_uri(
+                        user.vless_id,
+                        node,
+                        scheme,
+                        endpoint.path,
+                        user.name,
+                        "packet-up",
+                        uri.alpn_list(scheme, has_h3, "packet-up"),
+                    ),
+                    endpoint.path,
+                    endpoint.padded,
+                )
             )
-        )
 
     return wires
 
 
-def has_wires(user: User) -> bool:
+def has_wires(user: User, server: ServerConfig) -> bool:
     """Whether this user gets a <user>.toml at all.
 
     Asks `build_wires` rather than repeating its conditions, so the predicate
-    and the chain can never disagree about who is dialable. The node and
-    scheme only shape the links, not whether any exist.
+    and the chain can never disagree about who is dialable. The node only shapes
+    the links, not whether any exist.
     """
-    return bool(build_wires(user, "node.invalid", "wss", has_h3=True))
+    return bool(build_wires(user, "node.invalid", server))
 
 
 def quote(value: str) -> str:
@@ -232,34 +247,27 @@ def node_name(node: str) -> str:
     return node.split(".", 1)[0]
 
 
-def _chain_paths(user: User, nodes: Sequence[str], server: ServerConfig) -> set[str]:
-    scheme = server.access_keys.public_scheme
-    return {
-        wire.path
-        for node in nodes
-        for wire in build_wires(user, node, scheme, server.alpn_has_h3)
-    }
+def padding_enabled(user: User, server: ServerConfig) -> bool:
+    """Whether the generated client turns carrier padding on.
 
+    "Only padded, if any": when any wire the user could dial is padded, the
+    client keeps only the padded wires (see `build_config`) and switches padding
+    on; otherwise every wire is plain and the switch stays off. The client
+    `[padding]` knob is global — no per-wire override — and padding is
+    config-synchronised rather than negotiated, so a chain must never mix padded
+    and plain carriers.
 
-def pads_every_wire(user: User, nodes: Sequence[str], server: ServerConfig) -> bool:
-    """Whether the client may switch carrier padding on.
-
-    The client knob is global — there is no per-wire override — and padding is
-    config-synchronised rather than negotiated. Padding a path the server
-    serves plain feeds padded frames into its plain decoder and kills the
-    session, so partial coverage means the whole switch stays off.
+    Padded-ness is a property of the server's endpoints, identical across nodes,
+    so a single synthetic node answers it.
     """
-    if not server.padding.enabled:
-        return False
-    paths = _chain_paths(user, nodes, server)
-    return bool(paths) and paths.issubset(set(server.padding.paths))
+    return any(wire.padded for wire in build_wires(user, "node.invalid", server))
 
 
-def config_warnings(user: User, nodes: Sequence[str], server: ServerConfig) -> list[str]:
+def config_warnings(user: User, server: ServerConfig) -> list[str]:
     """What this node's config costs the generated client, in plain text.
 
-    Each line names a server-side switch that is off and the behaviour the
-    client loses because of it. Paths only — never a credential.
+    Each line names a server-side switch and the behaviour it changes for the
+    client. Paths only — never a credential.
     """
     out: list[str] = []
 
@@ -282,12 +290,15 @@ def config_warnings(user: User, nodes: Sequence[str], server: ServerConfig) -> l
             "switch cannot be soft"
         )
 
-    if server.padding.enabled and not pads_every_wire(user, nodes, server):
-        missing = sorted(_chain_paths(user, nodes, server) - set(server.padding.paths))
-        out.append(
-            "padding stays off: the node pads only some of this user's carrier paths; "
-            "unpadded " + ", ".join(missing)
+    if padding_enabled(user, server):
+        dropped = sorted(
+            {wire.path for wire in build_wires(user, "node.invalid", server) if not wire.padded}
         )
+        if dropped:
+            out.append(
+                "carrier padding is on, so the plain fallbacks were dropped to keep the "
+                "chain one padding class: excluded " + ", ".join(dropped)
+            )
 
     return out
 
@@ -299,9 +310,16 @@ def build_config(user: User, nodes: Sequence[str], server: ServerConfig) -> str 
     `[[outline.uplinks]]` above it, so every flat section is written first and
     the uplinks come last.
     """
-    scheme = server.access_keys.public_scheme
-    chains = [(node, build_wires(user, node, scheme, server.alpn_has_h3)) for node in nodes]
-    chains = [(node, wires) for node, wires in chains if wires]
+    pad = padding_enabled(user, server)
+    chains: list[tuple[str, list[Wire]]] = []
+    for node in nodes:
+        wires = build_wires(user, node, server)
+        # Global client switch: a padded chain drops its plain fallbacks so the
+        # server's padded and plain decoders are never crossed.
+        if pad:
+            wires = [wire for wire in wires if wire.padded]
+        if wires:
+            chains.append((node, wires))
     if not chains:
         return None
 
@@ -323,7 +341,7 @@ def build_config(user: User, nodes: Sequence[str], server: ServerConfig) -> str 
         "carrier_migration = true",
         "",
         "[padding]",
-        f"enabled = {str(pads_every_wire(user, nodes, server)).lower()}",
+        f"enabled = {str(pad).lower()}",
         "",
         "[[uplink_group]]",
         f"name = {quote(GROUP)}",

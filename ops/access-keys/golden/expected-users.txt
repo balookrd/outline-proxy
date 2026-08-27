@@ -27,17 +27,6 @@ ws_url: https://keys.example.com/SECRET/both.toml
 warning: carrier migration is inert: the node has no [session_resumption] enabled, so a flow whose carrier dies is torn down instead of migrating
 warning: switching the active uplink will reset live sessions: the node has no [cluster] enabled, so the group cannot share a resumption id and the switch cannot be soft
 
-user: own-paths
-written_conf: ops/access-keys/golden/expected/own-paths.conf
-written_json: ops/access-keys/golden/expected/own-paths.json
-written_toml: ops/access-keys/golden/expected/own-paths.toml
-written_txt: ops/access-keys/golden/expected/own-paths.txt
-outline_url: ssconf://keys.example.com/SECRET/own-paths.conf
-happ_url: https://keys.example.com/SECRET/own-paths.json
-ws_url: https://keys.example.com/SECRET/own-paths.toml
-warning: carrier migration is inert: the node has no [session_resumption] enabled, so a flow whose carrier dies is torn down instead of migrating
-warning: switching the active uplink will reset live sessions: the node has no [cluster] enabled, so the group cannot share a resumption id and the switch cannot be soft
-
 user: own-method
 written_conf: ops/access-keys/golden/expected/own-method.conf
 written_toml: ops/access-keys/golden/expected/own-method.toml

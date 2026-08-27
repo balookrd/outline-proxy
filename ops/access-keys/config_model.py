@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Parse an outline-ss-rust config.toml into what the access-key artifacts need.
 
-Every fallback here mirrors the Rust side: `UserEntry::effective_*` for the
-per-user overrides, `Config::h3_enabled` + `effective_h3_listen` for the ALPN
-decision. Getting one of them wrong produces artifacts that look right and dial
-a path the server does not serve.
+The model mirrors the Rust side: users are pure credentials, carriers come from
+the global `[[endpoint]]` list (`{path, kind, padded}`), and the ALPN decision
+follows `Config::h3_enabled` + `effective_h3_listen`. Getting one of them wrong
+produces artifacts that look right and dial a path the server does not serve.
 """
 
 from __future__ import annotations
@@ -47,31 +47,40 @@ class AccessKeys:
 
 @dataclass(frozen=True)
 class User:
+    """A pure credential. Users no longer carry paths of their own.
+
+    A user with a `password` works on every SS endpoint of the server; a user
+    with a `vless_id` works on every VLESS endpoint. Which endpoints exist is a
+    server-wide decision — the `[[endpoint]]` list — not a per-user one.
+    """
+
     name: str
     filename: str
     password: str | None
     method: str
     vless_id: str | None
-    ws_path_tcp: str
-    ws_path_udp: str
-    ws_path_vless: str | None
-    ws_path_ss: str | None
-    xhttp_path_vless: str | None
-    xhttp_path_ss: str | None
 
 
 @dataclass(frozen=True)
-class Padding:
-    """The server's `[padding]` block.
+class Endpoint:
+    """One `[[endpoint]]` on the server: a carrier path, its kind, and padding.
 
-    Carrier padding is config-synchronised, not negotiated on the wire: a
-    server that does not pad a path feeds padded frames to its plain decoder
-    and the session dies. `paths` is therefore the exact set the client may
-    turn padding on for.
+    Mirrors the server's `EndpointConfig`. `kind` is the snake_case tag the TOML
+    carries — `ws_ss`, `ws_ss_tcp`, `ws_ss_udp`, `ws_vless`, `xhttp_ss`,
+    `xhttp_ss_tcp`, `xhttp_ss_udp`, `xhttp_vless`. The combined SS kinds
+    (`ws_ss` / `xhttp_ss`) carry both legs on one path; the `*_tcp` / `*_udp`
+    kinds are the split legs.
+
+    `padded` is per-endpoint now, replacing the old global `[padding] paths`
+    list. Padding is config-synchronised, not negotiated on the wire: a client
+    dialing a padded endpoint must enable padding to match, and one dialing a
+    plain endpoint must not, or the frames feed the wrong decoder and the
+    session dies.
     """
 
-    enabled: bool
-    paths: tuple[str, ...]
+    path: str
+    kind: str
+    padded: bool
 
 
 @dataclass(frozen=True)
@@ -94,11 +103,21 @@ class ServerConfig:
     access_keys: AccessKeys
     users: tuple[User, ...]
     alpn_has_h3: bool
-    padding: Padding = Padding(enabled=False, paths=())
+    endpoints: tuple[Endpoint, ...] = ()
     session_resumption: SessionResumption = SessionResumption(
         enabled=False, downlink_buffer_bytes=0
     )
     cluster_enabled: bool = False
+
+
+def endpoints_of_kind(server: ServerConfig, *kinds: str) -> list[Endpoint]:
+    """The server's endpoints of the given kind(s), in config order.
+
+    Order is preserved so "the first `ws_ss_tcp`" is well-defined and the wire
+    chain / share-link order stays stable across regenerations.
+    """
+    wanted = frozenset(kinds)
+    return [endpoint for endpoint in server.endpoints if endpoint.kind in wanted]
 
 
 def sanitize_filename(value: str) -> str:
@@ -163,7 +182,6 @@ def load(path: str | Path) -> ServerConfig:
         raw = tomllib.load(handle)
 
     server = raw.get("server", {})
-    websocket = raw.get("websocket", {})
     ak_section = raw.get("access_keys", {})
 
     public_host = ak_section.get("public_host")
@@ -206,27 +224,26 @@ def load(path: str | Path) -> ServerConfig:
                 password=entry.get("password"),
                 method=entry.get("method") or default_method,
                 vless_id=entry.get("vless_id"),
-                ws_path_tcp=entry.get("ws_path_tcp") or websocket.get("ws_path_tcp", ""),
-                ws_path_udp=entry.get("ws_path_udp") or websocket.get("ws_path_udp", ""),
-                ws_path_vless=entry.get("ws_path_vless") or websocket.get("ws_path_vless"),
-                ws_path_ss=entry.get("ws_path_ss") or websocket.get("ws_path_ss"),
-                xhttp_path_vless=entry.get("xhttp_path_vless")
-                or websocket.get("xhttp_path_vless"),
-                xhttp_path_ss=entry.get("xhttp_path_ss") or websocket.get("xhttp_path_ss"),
             )
         )
 
-    padding_section = raw.get("padding", {})
+    # TOML `[[endpoint]]` tables land under the `endpoint` key. Padding is a
+    # per-endpoint flag now, so there is no `[padding] paths` list to read.
+    endpoints: list[Endpoint] = []
+    for entry in raw.get("endpoint", []):
+        path = entry.get("path")
+        kind = entry.get("kind")
+        if not path or not kind:
+            continue
+        endpoints.append(Endpoint(path=path, kind=kind, padded=bool(entry.get("padded", False))))
+
     resumption_section = raw.get("session_resumption", {})
 
     return ServerConfig(
         access_keys=access_keys,
         users=tuple(users),
         alpn_has_h3=_h3_in_alpn(server),
-        padding=Padding(
-            enabled=bool(padding_section.get("enabled", False)),
-            paths=tuple(padding_section.get("paths", ())),
-        ),
+        endpoints=tuple(endpoints),
         session_resumption=SessionResumption(
             enabled=bool(resumption_section.get("enabled", False)),
             downlink_buffer_bytes=int(resumption_section.get("downlink_buffer_bytes", 0)),
