@@ -98,26 +98,42 @@ impl UserEntry {
         self.method.unwrap_or(default)
     }
 
+    // `Config::validate` stopped calling these per-user path resolvers (config
+    // paths now come from `Config.endpoints` — see `config::endpoint`), but the
+    // methods themselves are not deleted until Task 6 retires the per-user path
+    // fields they read: a large body of integration tests still hand-assembles
+    // route tables through `server::setup::build_user_routes`, which calls the
+    // three still-live ones below. The `allow` is scoped to `not(test)` so a
+    // genuinely unused helper still warns in the test build (mirrors
+    // `server::setup::UserRoute`).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn effective_ws_path_tcp<'a>(&'a self, default: &'a str) -> &'a str {
         self.ws_path_tcp.as_deref().unwrap_or(default)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn effective_ws_path_udp<'a>(&'a self, default: &'a str) -> &'a str {
         self.ws_path_udp.as_deref().unwrap_or(default)
     }
 
+    // These four have no caller left at all, test or not — `setup.rs`'s
+    // surviving test helper only rebuilds WS tcp/udp/combined routes.
+    #[allow(dead_code)]
     pub fn effective_ws_path_vless<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
         self.ws_path_vless.as_deref().or(default)
     }
 
+    #[allow(dead_code)]
     pub fn effective_xhttp_path_vless<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
         self.xhttp_path_vless.as_deref().or(default)
     }
 
+    #[allow(dead_code)]
     pub fn effective_xhttp_path_tcp<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
         self.xhttp_path_tcp.as_deref().or(default)
     }
 
+    #[allow(dead_code)]
     pub fn effective_xhttp_path_udp<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
         self.xhttp_path_udp.as_deref().or(default)
     }
@@ -127,6 +143,7 @@ impl UserEntry {
     /// `ws_path_ss` — specific beats general, so a global combined default does
     /// not clash with users that pin their own split paths. A per-user
     /// `ws_path_ss` still wins over the global split defaults.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn effective_ws_path_ss<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
         if self.ws_path_tcp.is_some() || self.ws_path_udp.is_some() {
             return None;
@@ -136,6 +153,7 @@ impl UserEntry {
 
     /// Combined SS-over-XHTTP path for this user. Same per-user-split-wins rule
     /// as [`Self::effective_ws_path_ss`].
+    #[allow(dead_code)]
     pub fn effective_xhttp_path_ss<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
         if self.xhttp_path_tcp.is_some() || self.xhttp_path_udp.is_some() {
             return None;
