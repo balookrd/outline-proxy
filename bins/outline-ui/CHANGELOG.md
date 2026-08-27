@@ -9,6 +9,12 @@ commit.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.0] - 2026-08-27
+
+### Changed
+
+- **The SS user form follows the server's endpoint model: a user is pure credentials.** The server refactor made carrier paths a startup-only `[[endpoint]]` list and turned users into credentials that work on every endpoint of their kind, so the per-user path fields no longer exist — and the control API now rejects them with `deny_unknown_fields`. The user drawer drops its "WS paths" and "XHTTP paths" fieldsets, and create/edit send only `id`, `password` / `vless_id`, `method`, `fwmark`, `aliases`, and `enabled`. Without this, the dashboard's create and update calls fail with 400 against a server on the new model. Clone still fetches the instance's server default — now just the cipher — so a default-method template can still generate a matching password.
+
 ## [1.2.0] - 2026-08-24
 
 ### Added

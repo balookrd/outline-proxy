@@ -57,14 +57,6 @@ export interface UserFormFields {
   vlessId: string;
   method: string;
   fwmark: number | null;
-  wsPathTcp: string;
-  wsPathUdp: string;
-  wsPathSs: string;
-  wsPathVless: string;
-  xhttpPathTcp: string;
-  xhttpPathUdp: string;
-  xhttpPathSs: string;
-  xhttpPathVless: string;
   aliases: string;
   enabled: boolean;
 }
@@ -78,14 +70,6 @@ export function emptyUserFields(): UserFormFields {
     vlessId: '',
     method: '',
     fwmark: null,
-    wsPathTcp: '',
-    wsPathUdp: '',
-    wsPathSs: '',
-    wsPathVless: '',
-    xhttpPathTcp: '',
-    xhttpPathUdp: '',
-    xhttpPathSs: '',
-    xhttpPathVless: '',
     aliases: '',
     enabled: true,
   };
@@ -102,32 +86,23 @@ export function fieldsFromUser(user: User): UserFormFields {
     vlessId: '',
     method: user.method ?? '',
     fwmark: user.fwmark ?? null,
-    wsPathTcp: user.ws_path_tcp ?? '',
-    wsPathUdp: user.ws_path_udp ?? '',
-    wsPathSs: user.ws_path_ss ?? '',
-    wsPathVless: user.ws_path_vless ?? '',
-    xhttpPathTcp: user.xhttp_path_tcp ?? '',
-    xhttpPathUdp: user.xhttp_path_udp ?? '',
-    xhttpPathSs: user.xhttp_path_ss ?? '',
-    xhttpPathVless: user.xhttp_path_vless ?? '',
     aliases: aliasesToText(user.aliases),
     enabled: user.enabled,
   };
 }
 
 // Build create-form fields from an existing user as a template ("clone a
-// similar account"): the carrier (method, fwmark, all ws/xhttp paths, enabled)
-// is copied verbatim via fieldsFromUser; `id` and `aliases` are blanked (id
-// must be unique; alias names are globally unique server-side, so they cannot
-// be duplicated); fresh secrets are generated only for the identities the
-// template actually has.
+// similar account"): the carrier (method, fwmark, enabled) is copied verbatim
+// via fieldsFromUser; `id` and `aliases` are blanked (id must be unique; alias
+// names are globally unique server-side, so they cannot be duplicated); fresh
+// secrets are generated only for the identities the template actually has.
 //
-// `defaults` are the server's effective fallbacks (GET /control/defaults). A
-// user that carries no method/paths of its own runs on them, so a clone that
-// ignored them would show a blank form — and, with no method, could not
-// generate a password at all. They are applied only where the template is
-// silent, and only for the identities it has: filling ss paths for a
-// VLESS-only user would attach it to routes it never used.
+// `defaults` is the server's effective default (GET /control/defaults) — only
+// the cipher since the endpoint-model refactor. A user that carries no method
+// of its own runs on it, so a clone that ignored it could not generate a
+// password at all (the UI must not guess a cipher it does not know). It is
+// applied only where the template is silent, and only when the template has a
+// password identity.
 export function cloneUserFields(
   template: User,
   defaults: ServerDefaults | null = null,
@@ -137,49 +112,8 @@ export function cloneUserFields(
   const base = fieldsFromUser(template);
   const out: UserFormFields = { ...base, id: '', aliases: '' };
 
-  if (defaults) {
-    if (template.has_password) {
-      out.method = base.method || defaults.method;
-      // The server runs ss either combined (one path carrying tcp+udp) or
-      // split, and picks per-user with a specific-beats-general rule (see
-      // user_entry.rs::effective_ws_path_ss / effective_xhttp_path_ss): an
-      // owned split path (tcp and/or udp) suppresses a combined path
-      // entirely, even when a combined string is also present. Deciding the
-      // shape from the default alone would fill both shapes on a template
-      // that owns one of them and silently change the user's effective
-      // routing server-side — so decide from what the template itself
-      // already owns first, and only mirror the default's shape when the
-      // template owns neither half of the family.
-      if (base.wsPathTcp || base.wsPathUdp) {
-        out.wsPathTcp = base.wsPathTcp || defaults.ws_path_tcp;
-        out.wsPathUdp = base.wsPathUdp || defaults.ws_path_udp;
-      } else if (!base.wsPathSs) {
-        if (defaults.ws_path_ss) {
-          out.wsPathSs = defaults.ws_path_ss;
-        } else {
-          out.wsPathTcp = defaults.ws_path_tcp;
-          out.wsPathUdp = defaults.ws_path_udp;
-        }
-      }
-      // else: base.wsPathSs is owned -> combined shape, keep it verbatim
-      // and leave wsPathTcp/wsPathUdp untouched (filling them would
-      // suppress the combined path server-side).
-      if (base.xhttpPathTcp || base.xhttpPathUdp) {
-        out.xhttpPathTcp = base.xhttpPathTcp || defaults.xhttp_path_tcp || '';
-        out.xhttpPathUdp = base.xhttpPathUdp || defaults.xhttp_path_udp || '';
-      } else if (!base.xhttpPathSs) {
-        if (defaults.xhttp_path_ss) {
-          out.xhttpPathSs = defaults.xhttp_path_ss;
-        } else {
-          out.xhttpPathTcp = defaults.xhttp_path_tcp || '';
-          out.xhttpPathUdp = defaults.xhttp_path_udp || '';
-        }
-      }
-    }
-    if (template.has_vless_id) {
-      out.wsPathVless = base.wsPathVless || defaults.ws_path_vless || '';
-      out.xhttpPathVless = base.xhttpPathVless || defaults.xhttp_path_vless || '';
-    }
+  if (defaults && template.has_password) {
+    out.method = base.method || defaults.method;
   }
 
   out.password = template.has_password ? (generatePassword(out.method, rand) ?? '') : '';
@@ -203,7 +137,7 @@ export function validateUserForm(fields: UserFormFields, editing: boolean): stri
 //     `id` is included (trimmed).
 //   - edit: empty password/vless_id are omitted too — omission means "leave
 //     unchanged" server-side, since blanking a credential to null makes no
-//     sense. Empty method/fwmark/ws_path_* are instead sent as an explicit
+//     sense. Empty method/fwmark are instead sent as an explicit
 //     `null`, which the server treats as "reset to default". `id` is never
 //     sent on edit (immutable once created).
 //   - aliases: non-empty text parses to a name->CIDRs map (`{ name: [cidr,
@@ -228,14 +162,6 @@ export function buildUserPayload(fields: UserFormFields, editing: boolean): NewU
   keepUnlessProvided('password', fields.password);
   keepUnlessProvided('vless_id', fields.vlessId);
   resettable('method', fields.method);
-  resettable('ws_path_tcp', fields.wsPathTcp);
-  resettable('ws_path_udp', fields.wsPathUdp);
-  resettable('ws_path_ss', fields.wsPathSs);
-  resettable('ws_path_vless', fields.wsPathVless);
-  resettable('xhttp_path_tcp', fields.xhttpPathTcp);
-  resettable('xhttp_path_udp', fields.xhttpPathUdp);
-  resettable('xhttp_path_ss', fields.xhttpPathSs);
-  resettable('xhttp_path_vless', fields.xhttpPathVless);
 
   if (fields.fwmark !== null) out.fwmark = fields.fwmark;
   else if (editing) out.fwmark = null;

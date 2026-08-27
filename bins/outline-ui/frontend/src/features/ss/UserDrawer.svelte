@@ -198,44 +198,6 @@
         <option value="2022-blake3-chacha20-poly1305">2022-blake3-chacha20-poly1305</option>
       </select>
     </div>
-    <fieldset class="fieldset">
-      <legend>WS paths</legend>
-      <div class="fieldrow">
-        <label for="user-ws-tcp">TCP</label>
-        <input id="user-ws-tcp" class="field-mono" type="text" bind:value={fields.wsPathTcp} placeholder="/tcp" />
-      </div>
-      <div class="fieldrow">
-        <label for="user-ws-udp">UDP</label>
-        <input id="user-ws-udp" class="field-mono" type="text" bind:value={fields.wsPathUdp} placeholder="/udp" />
-      </div>
-      <div class="fieldrow">
-        <label for="user-ws-ss">SS</label>
-        <input id="user-ws-ss" class="field-mono" type="text" bind:value={fields.wsPathSs} placeholder="/ss" />
-      </div>
-      <div class="fieldrow">
-        <label for="user-ws-vless">VLESS</label>
-        <input id="user-ws-vless" class="field-mono" type="text" bind:value={fields.wsPathVless} placeholder="/vless" />
-      </div>
-    </fieldset>
-    <fieldset class="fieldset">
-      <legend>XHTTP paths</legend>
-      <div class="fieldrow">
-        <label for="user-xhttp-tcp">TCP</label>
-        <input id="user-xhttp-tcp" class="field-mono" type="text" bind:value={fields.xhttpPathTcp} placeholder="/tcp" />
-      </div>
-      <div class="fieldrow">
-        <label for="user-xhttp-udp">UDP</label>
-        <input id="user-xhttp-udp" class="field-mono" type="text" bind:value={fields.xhttpPathUdp} placeholder="/udp" />
-      </div>
-      <div class="fieldrow">
-        <label for="user-xhttp-ss">SS</label>
-        <input id="user-xhttp-ss" class="field-mono" type="text" bind:value={fields.xhttpPathSs} placeholder="/ss" />
-      </div>
-      <div class="fieldrow">
-        <label for="user-xhttp-vless">VLESS</label>
-        <input id="user-xhttp-vless" class="field-mono" type="text" bind:value={fields.xhttpPathVless} placeholder="/vless" />
-      </div>
-    </fieldset>
     <div class="fieldrow">
       <label for="user-fwmark">fwmark</label>
       <input id="user-fwmark" class="field-mono" type="number" min="0" step="1" bind:value={fields.fwmark} placeholder="default" />
@@ -256,7 +218,7 @@
       <label for="user-enabled">Enabled</label>
     </div>
     {#if editing}
-      <span class="hint">Leave password/UUID blank to keep them. Empty method, fwmark, paths, and aliases reset to default.</span>
+      <span class="hint">Leave password/UUID blank to keep them. Empty method, fwmark, and aliases reset to default.</span>
     {/if}
   </form>
   <div class="foot">

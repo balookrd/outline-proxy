@@ -1,13 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { buildUserPayload, validateUserForm, fieldsFromUser, emptyUserFields } from './userForm';
-import type { User } from './types';
+import {
+  buildUserPayload, validateUserForm, fieldsFromUser, emptyUserFields,
+  generatePassword, generateVlessId, cloneUserFields,
+} from './userForm';
+import type { User, ServerDefaults } from './types';
 
-// Mirrors ss/dashboard.html's payload(form, editing) / saveUser() exactly —
-// see that file's lines ~1105-1152 for the behavior these tests pin down.
-// The eight per-transport path fields (ws_path_{tcp,udp,ss,vless} +
-// xhttp_path_{tcp,udp,ss,vless}) all share the "resettable" semantics of
-// ws_path_tcp: a non-empty value is sent as-is, an empty one is omitted on
-// create and sent as explicit null (reset to default) on edit.
+// A user is pure credentials since the endpoint-model refactor — it carries no
+// per-user carrier paths, so the form (and every payload built from it) is just
+// id/password/vless_id/method/fwmark/aliases/enabled. The server rejects the
+// old ws_path_*/xhttp_path_* fields with deny_unknown_fields, so buildUserPayload
+// must never emit them.
 
 describe('validateUserForm', () => {
   it('create requires password or vless_id', () => {
@@ -41,11 +43,18 @@ describe('buildUserPayload — create', () => {
     expect(out).toEqual({ id: 'x', vless_id: 'uuid', enabled: true });
     expect(out).not.toHaveProperty('method');
     expect(out).not.toHaveProperty('fwmark');
-    expect(out).not.toHaveProperty('ws_path_tcp');
-    expect(out).not.toHaveProperty('ws_path_ss');
-    expect(out).not.toHaveProperty('xhttp_path_tcp');
-    expect(out).not.toHaveProperty('xhttp_path_vless');
     expect(out).not.toHaveProperty('aliases');
+  });
+
+  it('never emits removed per-user path fields', () => {
+    const fields = { ...emptyUserFields(), id: 'x', password: 'p', method: 'aes-256-gcm' };
+    const out = buildUserPayload(fields, false);
+    for (const key of [
+      'ws_path_tcp', 'ws_path_udp', 'ws_path_ss', 'ws_path_vless',
+      'xhttp_path_tcp', 'xhttp_path_udp', 'xhttp_path_ss', 'xhttp_path_vless',
+    ]) {
+      expect(out).not.toHaveProperty(key);
+    }
   });
 
   it('fwmark 0 is sent (numeric zero is a provided value, not empty)', () => {
@@ -60,14 +69,6 @@ describe('buildUserPayload — create', () => {
       vlessId: 'v',
       method: 'aes-256-gcm',
       fwmark: 7,
-      wsPathTcp: '/tcp',
-      wsPathUdp: '/udp',
-      wsPathSs: '/pss',
-      wsPathVless: '/vless',
-      xhttpPathTcp: '/pxtcp',
-      xhttpPathUdp: '/pxudp',
-      xhttpPathSs: '/pssx',
-      xhttpPathVless: '/pxhttp',
       aliases: 'mobile = 10.0.0.0/8',
       enabled: false,
     };
@@ -77,14 +78,6 @@ describe('buildUserPayload — create', () => {
       vless_id: 'v',
       method: 'aes-256-gcm',
       fwmark: 7,
-      ws_path_tcp: '/tcp',
-      ws_path_udp: '/udp',
-      ws_path_ss: '/pss',
-      ws_path_vless: '/vless',
-      xhttp_path_tcp: '/pxtcp',
-      xhttp_path_udp: '/pxudp',
-      xhttp_path_ss: '/pssx',
-      xhttp_path_vless: '/pxhttp',
       aliases: { mobile: ['10.0.0.0/8'] },
       enabled: false,
     });
@@ -103,19 +96,11 @@ describe('buildUserPayload — edit', () => {
     expect(out).not.toHaveProperty('vless_id');
   });
 
-  it('empty method/fwmark/ws_path_*/xhttp_path_*/aliases reset to explicit null', () => {
+  it('empty method/fwmark/aliases reset to explicit null', () => {
     const out = buildUserPayload(emptyUserFields(), true);
     expect(out).toEqual({
       method: null,
       fwmark: null,
-      ws_path_tcp: null,
-      ws_path_udp: null,
-      ws_path_ss: null,
-      ws_path_vless: null,
-      xhttp_path_tcp: null,
-      xhttp_path_udp: null,
-      xhttp_path_ss: null,
-      xhttp_path_vless: null,
       aliases: null,
       enabled: true,
     });
@@ -126,16 +111,12 @@ describe('buildUserPayload — edit', () => {
       ...emptyUserFields(),
       method: 'aes-128-gcm',
       fwmark: 3,
-      wsPathSs: '/pss',
-      xhttpPathVless: '/pxhttp',
       aliases: 'mobile = 10.0.0.0/8',
     };
     const out = buildUserPayload(fields, true);
     expect(out).toMatchObject({
       method: 'aes-128-gcm',
       fwmark: 3,
-      ws_path_ss: '/pss',
-      xhttp_path_vless: '/pxhttp',
       aliases: { mobile: ['10.0.0.0/8'] },
     });
   });
@@ -160,11 +141,6 @@ describe('fieldsFromUser', () => {
       enabled: true,
       method: 'aes-256-gcm',
       fwmark: 5,
-      ws_path_tcp: '/tcp',
-      ws_path_udp: null,
-      ws_path_ss: '/pss',
-      xhttp_path_ss: '/pssx',
-      xhttp_path_vless: '/pxhttp',
       aliases: { mobile: '10.0.0.0/8', office: ['192.0.2.0/24', '203.0.113.5'] },
     };
     expect(fieldsFromUser(user)).toEqual({
@@ -173,14 +149,6 @@ describe('fieldsFromUser', () => {
       vlessId: '',
       method: 'aes-256-gcm',
       fwmark: 5,
-      wsPathTcp: '/tcp',
-      wsPathUdp: '',
-      wsPathSs: '/pss',
-      wsPathVless: '',
-      xhttpPathTcp: '',
-      xhttpPathUdp: '',
-      xhttpPathSs: '/pssx',
-      xhttpPathVless: '/pxhttp',
       aliases: 'mobile = 10.0.0.0/8\noffice = 192.0.2.0/24, 203.0.113.5',
       enabled: true,
     });
@@ -194,14 +162,6 @@ describe('fieldsFromUser', () => {
       vlessId: '',
       method: '',
       fwmark: null,
-      wsPathTcp: '',
-      wsPathUdp: '',
-      wsPathSs: '',
-      wsPathVless: '',
-      xhttpPathTcp: '',
-      xhttpPathUdp: '',
-      xhttpPathSs: '',
-      xhttpPathVless: '',
       aliases: '',
       enabled: false,
     });
@@ -216,25 +176,11 @@ describe('emptyUserFields', () => {
       vlessId: '',
       method: '',
       fwmark: null,
-      wsPathTcp: '',
-      wsPathUdp: '',
-      wsPathSs: '',
-      wsPathVless: '',
-      xhttpPathTcp: '',
-      xhttpPathUdp: '',
-      xhttpPathSs: '',
-      xhttpPathVless: '',
       aliases: '',
       enabled: true,
     });
   });
 });
-
-import {
-  generatePassword,
-  generateVlessId,
-  cloneUserFields,
-} from './userForm';
 
 // Deterministic byte source: n bytes all equal to 0x07. Lets us assert the
 // decoded master-key length without depending on real randomness.
@@ -284,9 +230,6 @@ describe('cloneUserFields', () => {
       enabled: true,
       method: '2022-blake3-aes-256-gcm',
       fwmark: 7,
-      ws_path_tcp: '/tcp',
-      ws_path_ss: '/pss',
-      xhttp_path_vless: '/pxhttp',
       aliases: { mobile: '10.0.0.0/8' },
       has_password: true,
     };
@@ -295,9 +238,6 @@ describe('cloneUserFields', () => {
     expect(out.aliases).toBe('');
     expect(out.method).toBe('2022-blake3-aes-256-gcm');
     expect(out.fwmark).toBe(7);
-    expect(out.wsPathTcp).toBe('/tcp');
-    expect(out.wsPathSs).toBe('/pss');
-    expect(out.xhttpPathVless).toBe('/pxhttp');
     expect(out.enabled).toBe(true);
     expect(atob(out.password).length).toBe(32);
     expect(out.vlessId).toBe(''); // no has_vless_id on the template
@@ -305,8 +245,7 @@ describe('cloneUserFields', () => {
 
   it('generates vless_id only when the template has one', () => {
     const template: User = {
-      id: 'v-only', enabled: true, method: '2022-blake3-aes-256-gcm',
-      ws_path_vless: '/vless', has_vless_id: true,
+      id: 'v-only', enabled: true, method: '2022-blake3-aes-256-gcm', has_vless_id: true,
     };
     const out = cloneUserFields(template, null, fixedBytes, fixedUuid);
     expect(out.vlessId).toBe('uuid-fixed');
@@ -316,7 +255,6 @@ describe('cloneUserFields', () => {
   it('generates both secrets when the template has both identities', () => {
     const template: User = {
       id: 'both', enabled: false, method: '2022-blake3-aes-128-gcm',
-      ws_path_ss: '/pss', ws_path_vless: '/vless',
       has_password: true, has_vless_id: true,
     };
     const out = cloneUserFields(template, null, fixedBytes, fixedUuid);
@@ -327,7 +265,7 @@ describe('cloneUserFields', () => {
 
   it('default-method template: password stays blank (not guessed)', () => {
     const template: User = {
-      id: 'def', enabled: true, ws_path_ss: '/pss', has_password: true,
+      id: 'def', enabled: true, has_password: true,
     };
     const out = cloneUserFields(template, null, fixedBytes, fixedUuid);
     expect(out.method).toBe('');
@@ -335,14 +273,8 @@ describe('cloneUserFields', () => {
   });
 });
 
-import type { ServerDefaults } from './types';
-
 const srvDefaults: ServerDefaults = {
   method: '2022-blake3-aes-256-gcm',
-  ws_path_tcp: '/dtcp',
-  ws_path_udp: '/dudp',
-  ws_path_vless: '/dvless',
-  xhttp_path_vless: '/dxvless',
 };
 
 describe('cloneUserFields with server defaults', () => {
@@ -353,93 +285,26 @@ describe('cloneUserFields with server defaults', () => {
     expect(atob(out.password).length).toBe(32);
   });
 
-  it('fills split ss paths from defaults when the template has none', () => {
-    const template: User = { id: 'plain', enabled: true, has_password: true };
-    const out = cloneUserFields(template, srvDefaults, fixedBytes, () => 'uuid-fixed');
-    expect(out.wsPathTcp).toBe('/dtcp');
-    expect(out.wsPathUdp).toBe('/dudp');
-    expect(out.wsPathSs).toBe('');
-  });
-
-  it('prefers a combined ss path when the server default is combined', () => {
-    const combined: ServerDefaults = { ...srvDefaults, ws_path_ss: '/dss' };
-    const template: User = { id: 'plain', enabled: true, has_password: true };
-    const out = cloneUserFields(template, combined, fixedBytes, () => 'uuid-fixed');
-    expect(out.wsPathSs).toBe('/dss');
-    expect(out.wsPathTcp).toBe('');
-    expect(out.wsPathUdp).toBe('');
-  });
-
-  it("never overrides the template's own explicit values", () => {
+  it("never overrides the template's own explicit method", () => {
     const template: User = {
-      id: 'explicit', enabled: true, method: 'aes-256-gcm',
-      ws_path_tcp: '/own-tcp', has_password: true,
+      id: 'explicit', enabled: true, method: 'aes-256-gcm', has_password: true,
     };
     const out = cloneUserFields(template, srvDefaults, fixedBytes, () => 'uuid-fixed');
     expect(out.method).toBe('aes-256-gcm');
-    expect(out.wsPathTcp).toBe('/own-tcp');
-    expect(out.wsPathUdp).toBe('/dudp'); // unset on the template -> default
   });
 
-  it('fills vless paths only for a template that has a vless identity', () => {
+  it('only fills the method for a template that has a password identity', () => {
     const vlessOnly: User = { id: 'v', enabled: true, has_vless_id: true };
     const out = cloneUserFields(vlessOnly, srvDefaults, fixedBytes, () => 'uuid-fixed');
-    expect(out.wsPathVless).toBe('/dvless');
-    expect(out.xhttpPathVless).toBe('/dxvless');
-    expect(out.wsPathTcp).toBe(''); // no ss identity -> no ss paths
+    expect(out.method).toBe(''); // no password identity -> default method not applied
     expect(out.password).toBe('');
     expect(out.vlessId).toBe('uuid-fixed');
   });
 
-  it('without defaults behaves exactly as before (no password for a default method)', () => {
+  it('without defaults, a default-method template gets no password (unchanged)', () => {
     const template: User = { id: 'plain', enabled: true, has_password: true };
     const out = cloneUserFields(template, null, fixedBytes, () => 'uuid-fixed');
     expect(out.method).toBe('');
     expect(out.password).toBe('');
-    expect(out.wsPathTcp).toBe('');
-  });
-
-  // Shape precedence must come from what the template itself already owns,
-  // mirroring the server's specific-beats-general rule
-  // (user_entry.rs::effective_ws_path_ss / effective_xhttp_path_ss): an
-  // owned split path (tcp and/or udp) suppresses a combined path entirely.
-  // Deciding purely from the default's shape — the previous bug — could
-  // populate both shapes at once and silently change the user's effective
-  // routing server-side.
-  it("keeps a template-owned combined ss path when the default is split-only (doesn't also fill split)", () => {
-    const template: User = {
-      id: 'clone-combined', enabled: true, ws_path_ss: '/own-ss', has_password: true,
-    };
-    // srvDefaults is split-only: ws_path_tcp/ws_path_udp set, no ws_path_ss.
-    const out = cloneUserFields(template, srvDefaults, fixedBytes, () => 'uuid-fixed');
-    expect(out.wsPathSs).toBe('/own-ss');
-    expect(out.wsPathTcp).toBe('');
-    expect(out.wsPathUdp).toBe('');
-  });
-
-  it('keeps a template-owned split ss path when the default is combined, filling only the missing peer', () => {
-    const combined: ServerDefaults = { ...srvDefaults, ws_path_ss: '/dss' };
-    const template: User = {
-      id: 'clone-split', enabled: true, ws_path_tcp: '/own-tcp', has_password: true,
-    };
-    const out = cloneUserFields(template, combined, fixedBytes, () => 'uuid-fixed');
-    expect(out.wsPathTcp).toBe('/own-tcp');
-    expect(out.wsPathUdp).toBe('/dudp'); // missing peer filled from the split default
-    expect(out.wsPathSs).toBe(''); // owned split suppresses combined -> never filled
-  });
-
-  it('mirrors the same precedence for xhttp: template-owned combined path beats split xhttp defaults', () => {
-    const splitXhttpDefaults: ServerDefaults = {
-      ...srvDefaults,
-      xhttp_path_tcp: '/dxtcp',
-      xhttp_path_udp: '/dxudp',
-    };
-    const template: User = {
-      id: 'clone-xhttp-combined', enabled: true, xhttp_path_ss: '/own-xss', has_password: true,
-    };
-    const out = cloneUserFields(template, splitXhttpDefaults, fixedBytes, () => 'uuid-fixed');
-    expect(out.xhttpPathSs).toBe('/own-xss');
-    expect(out.xhttpPathTcp).toBe('');
-    expect(out.xhttpPathUdp).toBe('');
   });
 });

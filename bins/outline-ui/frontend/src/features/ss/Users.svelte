@@ -85,9 +85,9 @@
     const generation = ++drawerGeneration;
     // Snapshot the template into seed fields (fresh secrets, blank id/aliases);
     // create-mode drawer (editingUser stays null) prefilled from it. The
-    // server's defaults fill whatever the template leaves unset — without them
-    // a user running on defaults would clone into a blank form with no
-    // password (the UI cannot pick a cipher it does not know).
+    // server's default method fills a template that carries none of its own —
+    // without it a default-method user would clone into a form whose password
+    // cannot be generated (the UI cannot pick a cipher it does not know).
     editingUser = null;
     seedNeedsPassword = Boolean(user.has_password);
     let defaults: ServerDefaults | null = null;
