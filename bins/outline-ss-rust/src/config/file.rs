@@ -28,6 +28,8 @@ pub(super) struct FileConfig {
     pub shadowsocks: Option<ShadowsocksSection>,
     #[serde(default)]
     pub users: Option<Vec<UserEntry>>,
+    #[serde(default)]
+    pub endpoints: Option<Vec<EndpointSection>>,
     pub tuning_profile: Option<TuningPreset>,
     #[serde(default)]
     pub tuning: Option<TuningOverrides>,
@@ -153,6 +155,16 @@ pub(super) struct TlsCertSection {
     /// the certificate's SAN (and CN as a last-resort fallback).
     #[serde(default)]
     pub sni: Option<Vec<String>>,
+}
+
+/// One `[[endpoint]]` entry: a carrier path, its kind, and whether it pads.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct EndpointSection {
+    pub path: String,
+    pub kind: super::endpoint::EndpointKind,
+    #[serde(default)]
+    pub padded: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -11,6 +11,7 @@ use outline_wire::cluster::ShardId;
 use super::{
     cli::ConfigArgs,
     control::resolve_control_config,
+    endpoint::EndpointConfig,
     fallback::HttpFallbackConfig,
     file::{
         ClusterSection, FileConfig, TlsCertSection, default_config_path_if_exists, load_file_config,
@@ -175,6 +176,16 @@ impl AppMode {
             )?,
             sni_fallback: SniFallbackConfig::from_section(file.sni_fallback.unwrap_or_default())?,
             cluster: resolve_cluster(file.cluster)?,
+            endpoints: file
+                .endpoints
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| EndpointConfig {
+                    path: e.path,
+                    kind: e.kind,
+                    padded: e.padded,
+                })
+                .collect(),
         };
         config.validate()?;
 

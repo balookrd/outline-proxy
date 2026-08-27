@@ -81,6 +81,7 @@ async fn drops_oversized_socket_udp_response_and_records_metric() -> Result<()> 
         http_fallback: None,
         sni_fallback: None,
         cluster: None,
+        endpoints: Vec::new(),
         config_path: None,
         control: None,
     };
@@ -143,6 +144,7 @@ fn ignores_non_socket_or_in_range_udp_response_sizes() -> Result<()> {
         http_fallback: None,
         sni_fallback: None,
         cluster: None,
+        endpoints: Vec::new(),
         config_path: None,
         control: None,
     };
@@ -207,6 +209,7 @@ async fn deduplicates_concurrent_nat_entry_creation() -> Result<()> {
         http_fallback: None,
         sni_fallback: None,
         cluster: None,
+        endpoints: Vec::new(),
         config_path: None,
         control: None,
     };
@@ -286,6 +289,7 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
         http_fallback: None,
         sni_fallback: None,
         cluster: None,
+        endpoints: Vec::new(),
         config_path: None,
         control: None,
     };

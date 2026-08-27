@@ -144,6 +144,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         http_fallback: None,
         sni_fallback: None,
         cluster: None,
+        endpoints: Vec::new(),
         config_path: None,
         control: None,
     }
