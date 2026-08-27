@@ -23,8 +23,10 @@ use tokio_tungstenite::{
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
-use super::super::{DnsCache, H3ServeCtx, build_app, build_user_routes, serve_h3_server};
-use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
+use super::super::{DnsCache, H3ServeCtx, build_app, serve_h3_server};
+use super::{
+    build_test_state, config_ss_users, sample_config, test_h3_client_config, test_h3_server_tls,
+};
 use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::Metrics;
 use crate::protocol::TargetAddr;
@@ -53,12 +55,11 @@ async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
-    let user = user_routes[0].user.clone();
+    let user = config_ss_users(&config)[0].clone();
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -153,13 +154,12 @@ async fn websocket_rfc9220_http3_udp_reuses_nat_entry_after_client_reconnect() -
     let addr = server.local_addr()?;
 
     let config = sample_config(addr);
-    let user_routes = build_user_routes(&config)?;
-    let user = user_routes[0].user.clone();
+    let user = config_ss_users(&config)[0].clone();
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        user_routes,
+        &config,
         metrics,
         nat_table,
         dns_cache,

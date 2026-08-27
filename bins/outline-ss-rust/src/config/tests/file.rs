@@ -1,16 +1,35 @@
 use super::FileConfig;
 
+// The per-user path model and the `[websocket]` section are gone: paths now
+// come only from `[[endpoint]]`. Because the config structs are
+// `deny_unknown_fields`, the retired keys must now fail to parse — that is the
+// intended breaking behaviour of the endpoint refactor.
 #[test]
-fn parses_sectioned_ws_paths() {
+fn legacy_websocket_paths_are_rejected() {
+    let toml = "[websocket]\nws_path_tcp = \"/tcp\"\n";
+    assert!(toml::from_str::<FileConfig>(toml).is_err());
+}
+
+#[test]
+fn legacy_user_path_is_rejected() {
+    let toml = "[[users]]\nid = \"a\"\npassword = \"p\"\nws_path_tcp = \"/a\"\n";
+    assert!(toml::from_str::<FileConfig>(toml).is_err());
+}
+
+#[test]
+fn legacy_padding_paths_key_is_rejected() {
+    let toml = "[padding]\npaths = [\"/x\"]\n";
+    assert!(toml::from_str::<FileConfig>(toml).is_err());
+}
+
+/// The `[http_root]` section and `[[users]]` still parse after the per-user
+/// path model was retired — only the path keys are gone.
+#[test]
+fn parses_http_root_and_users_without_paths() {
     let config: FileConfig = toml::from_str(
         r#"
 [server]
 listen = "0.0.0.0:3000"
-
-[websocket]
-ws_path_tcp = "/custom-tcp"
-ws_path_udp = "/custom-udp"
-ws_path_vless = "/vless"
 
 [http_root]
 auth = true
@@ -19,22 +38,16 @@ realm = "VPN"
 [[users]]
 id = "alice"
 password = "secret"
-ws_path_tcp = "/alice-tcp"
-ws_path_udp = "/alice-udp"
 "#,
     )
     .unwrap();
 
-    let ws = config.websocket.unwrap();
-    assert_eq!(ws.ws_path_tcp.as_deref(), Some("/custom-tcp"));
-    assert_eq!(ws.ws_path_udp.as_deref(), Some("/custom-udp"));
-    assert_eq!(ws.ws_path_vless.as_deref(), Some("/vless"));
     let http_root = config.http_root.unwrap();
     assert_eq!(http_root.auth, Some(true));
     assert_eq!(http_root.realm.as_deref(), Some("VPN"));
     let users = config.users.unwrap();
-    assert_eq!(users[0].ws_path_tcp.as_deref(), Some("/alice-tcp"));
-    assert_eq!(users[0].ws_path_udp.as_deref(), Some("/alice-udp"));
+    assert_eq!(users[0].id, "alice");
+    assert_eq!(users[0].password.as_deref(), Some("secret"));
 }
 
 #[test]

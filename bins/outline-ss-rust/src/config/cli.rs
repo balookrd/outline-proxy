@@ -90,16 +90,6 @@ pub(super) struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_OUTBOUND_IPV6_STICKY_TTL_SECS")]
     pub outbound_ipv6_sticky_ttl_secs: Option<u64>,
 
-    #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
-    pub ws_path_tcp: Option<String>,
-
-    #[arg(
-        long = "ws-path-udp",
-        visible_alias = "udp-ws-path",
-        env = "OUTLINE_SS_WS_PATH_UDP"
-    )]
-    pub ws_path_udp: Option<String>,
-
     #[arg(
         long,
         env = "OUTLINE_SS_HTTP_ROOT_AUTH",
@@ -156,15 +146,7 @@ pub(super) fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
         password: Some(password.to_owned()),
         fwmark: None,
         method: None,
-        ws_path_tcp: None,
-        ws_path_udp: None,
-        ws_path_ss: None,
         vless_id: None,
-        ws_path_vless: None,
-        xhttp_path_vless: None,
-        xhttp_path_tcp: None,
-        xhttp_path_udp: None,
-        xhttp_path_ss: None,
         enabled: None,
         aliases: None,
     })

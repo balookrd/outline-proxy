@@ -17,7 +17,7 @@
 //! hit reuses the parked socket and leaves it unchanged.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     net::{Ipv4Addr, SocketAddr},
     sync::{Arc, atomic::Ordering},
     time::Duration,
@@ -57,22 +57,19 @@ use url::Url;
 
 use super::super::super::bootstrap::serve_listener;
 use super::super::super::cluster::ClusterCtx;
+use super::super::super::endpoint_routes::{build_route_registry, build_ss_user_pool};
 use super::super::super::nat::NatTable;
 use super::super::super::replay::ReplayStore;
 use super::super::super::resumption::{
     OrphanRegistry, Parked, ParkedVlessMux, ResumptionConfig, SessionId,
-};
-use super::super::super::setup::{
-    SsXhttpUserRoute, VlessUserRoute, build_vless_transport_route_map, build_xhttp_ss_route_map,
 };
 use super::super::super::shutdown::ShutdownSignal;
 use super::super::super::state::{RoutesSnapshot, UserKeySlice};
 use super::super::super::transport::carrier_padding;
 use super::super::super::transport::mesh_relay::run_mesh_listener;
 use super::super::super::{
-    AuthPolicy, DnsCache, H3ServeCtx, RouteRegistry, Services, UdpServices, build_app,
-    build_transport_route_map, build_user_routes, ensure_rustls_provider_installed,
-    serve_h3_server, user_keys,
+    AuthPolicy, DnsCache, H3ServeCtx, Services, UdpServices, build_app,
+    ensure_rustls_provider_installed, serve_h3_server,
 };
 use super::super::xhttp::http_client;
 use super::super::{
@@ -89,11 +86,12 @@ use super::{
     connect_ws_h1, connect_ws_h1_ack_prefix, connect_ws_h1_symmetric_replay, expect_binary_reply,
     read_ss_plaintext, spawn_delayed_echo_udp_target, spawn_echo_target, spawn_echo_udp_target,
 };
+use crate::config::EndpointKind;
 use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn, PaddingConfig};
 use crate::crypto::{
     AeadStreamDecryptor, AeadStreamEncryptor, UserKey, decrypt_udp_packet, encrypt_udp_packet,
 };
-use crate::metrics::{Metrics, Transport};
+use crate::metrics::Metrics;
 use crate::protocol::TargetAddr;
 use crate::protocol::vless::{VERSION as VLESS_VERSION, VlessUser};
 
@@ -195,11 +193,6 @@ fn build_cluster_parts(
     // node's *own* negotiation (`OrphanRegistry::symmetric_replay_enabled`).
     // Zero — every node but the v2 edge — leaves v2 off, as before.
     config.session_resumption.downlink_buffer_bytes = downlink_buffer_bytes;
-    // The throttle e2e serves SS on its own padded path so enabling padding for
-    // it (a process-global) never touches the other tests' `/tcp` carriers.
-    if let Some(path) = ss_tcp_path {
-        config.ws_path_tcp = path.to_string();
-    }
     // A per-node SS password. Deliberately *not* the user label, which stays
     // "bob" on every node: the label is the park's owner and the home checks it
     // against the name the edge attests, so it must denote the same person
@@ -209,15 +202,48 @@ fn build_cluster_parts(
     if let Some(password) = ss_password {
         config.users[0].password = Some(password.to_string());
     }
-    // A combined WS-SS base: `ws_path_ss` routes both the TCP and UDP legs onto
-    // one path, so it lands in both WS route tables and `build_app` registers a
-    // combined `<base>/{token}` upgrade (mirrors the owner's `ws_path_ss` config).
-    if let Some(path) = ws_ss_path {
-        config.ws_path_ss = Some(path.to_string());
+
+    // Endpoint list for this node. The throttle e2e serves SS on its own
+    // `ss_tcp_path` so enabling padding there (a process-global) never touches
+    // the other tests' `/tcp` carriers. A combined `ws_ss_path` puts both legs
+    // on one base (a `ws_ss` endpoint → `<base>/{token}` upgrade); otherwise the
+    // split TCP + `/udp` endpoints carry the legs. A single SS-over-XHTTP base
+    // (TCP and/or UDP leg) is added when requested, and a fixed VLESS base last.
+    let mut endpoints = match ws_ss_path {
+        Some(base) => vec![super::super::test_endpoint(base, EndpointKind::WsSs)],
+        None => vec![
+            super::super::test_endpoint(ss_tcp_path.unwrap_or("/tcp"), EndpointKind::WsSsTcp),
+            super::super::test_endpoint("/udp", EndpointKind::WsSsUdp),
+        ],
+    };
+    if let Some(p) = xhttp_ss_path {
+        endpoints.push(super::super::test_endpoint(p, EndpointKind::XhttpSsTcp));
     }
-    let user_routes = build_user_routes(&config)?;
-    let user = user_routes[0].user.clone();
-    let users = user_keys(user_routes.as_ref());
+    if let Some(p) = xhttp_ss_udp_path {
+        endpoints.push(super::super::test_endpoint(p, EndpointKind::XhttpSsUdp));
+    }
+    // A fixed VLESS user, shared across nodes (like the SS user), so the
+    // VLESS(-UDP) cluster e2e can encrypt once and any home authenticates it.
+    // SS-only tests never hit it, so it is harmless to them.
+    //
+    // `vless_route` overrides the *path, UUID and accounting label* for one
+    // node. The first two are how a test proves the mesh carries VLESS payload
+    // rather than the VLESS handshake: each node authenticates its client
+    // against its own credentials. The label is the park's **owner**, and the
+    // home checks it against the name the edge attests, so it must denote the
+    // same person cluster-wide — every VLESS-only case leaves it at the default.
+    // A cross-protocol case overrides it to the SS user's own label, which is
+    // what one `[[users]]` entry carrying both `password` and `vless_id` looks
+    // like in production.
+    let (vless_path, vless_uuid, vless_label) =
+        vless_route.unwrap_or(("/vless", CLUSTER_VLESS_UUID, "cluster-vless"));
+    endpoints.push(super::super::test_endpoint(vless_path, EndpointKind::WsVless));
+
+    // SS pool = this node's single user; VLESS pool = the fixed cluster user.
+    let ss_users = build_ss_user_pool(&config.effective_users()?, config.method)?;
+    let user = ss_users[0].clone();
+    let users = Arc::from(ss_users.clone().into_boxed_slice());
+    let vless_users = vec![VlessUser::new(vless_uuid.into(), Arc::from(vless_label), None, None)?];
 
     let metrics = Metrics::new(&config);
     let shard = ShardId::new(shard).unwrap();
@@ -232,47 +258,8 @@ fn build_cluster_parts(
 
     let nat_table = NatTable::new(Duration::from_secs(300));
     let dns_cache = DnsCache::new(Duration::from_secs(30));
-    let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
-    let udp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
-    // Registers a single SS-over-XHTTP base path for the shared user, or an
-    // empty table when the path is unset. Used for both the TCP (`xhttp_ss`) and
-    // UDP (`xhttp_ss_udp`) route tables.
-    let build_ss_xhttp = |path: Option<&str>| match path {
-        Some(p) => Arc::new(build_xhttp_ss_route_map(&[SsXhttpUserRoute {
-            user: user_routes[0].user.clone(),
-            xhttp_path: Arc::from(p),
-        }])),
-        None => Arc::new(BTreeMap::new()),
-    };
-    let xhttp_ss = build_ss_xhttp(xhttp_ss_path);
-    let xhttp_ss_udp = build_ss_xhttp(xhttp_ss_udp_path);
-    // A fixed VLESS user on `/vless`, shared across nodes (like the SS user), so
-    // the VLESS(-UDP) cluster e2e can encrypt once and any home authenticates
-    // it. SS-only tests never hit `/vless`, so this is harmless to them.
-    //
-    // `vless_route` overrides the *path, UUID and accounting label* for one
-    // node. The first two are how a test proves the mesh carries VLESS payload
-    // rather than the VLESS handshake: each node authenticates its client
-    // against its own credentials. The label is the park's **owner**, and the
-    // home checks it against the name the edge attests, so it must denote the
-    // same person cluster-wide — every VLESS-only case leaves it at the default.
-    // A cross-protocol case overrides it to the SS user's own label, which is
-    // what one `[[users]]` entry carrying both `password` and `vless_id` looks
-    // like in production.
-    let (vless_path, vless_uuid, vless_label) =
-        vless_route.unwrap_or(("/vless", CLUSTER_VLESS_UUID, "cluster-vless"));
-    let vless = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: VlessUser::new(vless_uuid.into(), Arc::from(vless_label), None, None)?,
-        ws_path: Arc::from(vless_path),
-    }]));
-    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp: tcp_routes,
-        udp: udp_routes,
-        vless,
-        xhttp_vless: Arc::new(BTreeMap::new()),
-        xhttp_ss,
-        xhttp_ss_udp,
-    }));
+    let routes: RoutesSnapshot =
+        Arc::new(ArcSwap::from_pointee(build_route_registry(&endpoints, &ss_users, &vless_users)));
     let services = Arc::new(Services::new(
         Arc::clone(&metrics),
         dns_cache,

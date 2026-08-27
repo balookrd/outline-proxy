@@ -19,8 +19,6 @@ pub(super) struct FileConfig {
     #[serde(default)]
     pub outbound: Option<OutboundSection>,
     #[serde(default)]
-    pub websocket: Option<WebsocketSection>,
-    #[serde(default)]
     pub http_root: Option<HttpRootSection>,
     #[serde(default)]
     pub access_keys: Option<AccessKeysSection>,
@@ -184,41 +182,6 @@ pub(super) struct OutboundSection {
     pub ipv6_refresh_secs: Option<u64>,
     pub ipv6_sticky: Option<bool>,
     pub ipv6_sticky_ttl_secs: Option<u64>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct WebsocketSection {
-    /// Split SS-over-WebSocket TCP path. Pair with `ws_path_udp` for a
-    /// separate UDP path. For one combined path use `ws_path_ss` instead.
-    pub ws_path_tcp: Option<String>,
-    /// Split SS-over-WebSocket UDP path. Pairs with `ws_path_tcp`.
-    pub ws_path_udp: Option<String>,
-    /// Combined SS-over-WebSocket path: ONE path carries BOTH the TCP and UDP
-    /// legs, with the server telling them apart by a hidden bit in the
-    /// `/{token}` URL segment the client appends. The split alternative is
-    /// `ws_path_tcp` + `ws_path_udp` on distinct paths; mutually exclusive
-    /// with those.
-    pub ws_path_ss: Option<String>,
-    pub ws_path_vless: Option<String>,
-    /// Base path for VLESS-over-XHTTP packet-up. The server registers
-    /// `<base>/{id}` for every advertised base, where `{id}` is an
-    /// opaque per-session token chosen by the client. Absent (the
-    /// default) disables XHTTP.
-    pub xhttp_path_vless: Option<String>,
-    /// Split SS-over-XHTTP TCP path. Same `<base>/{id}` route shape as
-    /// `xhttp_path_vless`, but carries the SS AEAD stream. Pair with
-    /// `xhttp_path_udp` for a separate UDP path; for one combined path use
-    /// `xhttp_path_ss` instead.
-    pub xhttp_path_tcp: Option<String>,
-    /// Split SS-UDP-over-XHTTP path. Pairs with `xhttp_path_tcp`, mirroring
-    /// `ws_path_tcp` vs `ws_path_udp`.
-    pub xhttp_path_udp: Option<String>,
-    /// Combined SS-over-XHTTP path: ONE path carries BOTH the TCP and UDP
-    /// legs, told apart by the hidden bit in the session-id's first
-    /// character. The split alternative is `xhttp_path_tcp` +
-    /// `xhttp_path_udp`; mutually exclusive with those.
-    pub xhttp_path_ss: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -38,16 +38,16 @@ use tokio_tungstenite::{
 };
 
 use super::super::bootstrap::serve_listener;
+use super::super::endpoint_routes::{build_route_registry, build_ss_user_pool};
 use super::super::nat::NatTable;
 use super::super::resumption::{OrphanRegistry, ResumptionConfig, SessionId};
-use super::super::setup::{VlessUserRoute, build_vless_transport_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::UserKeySlice;
-use super::super::{
-    AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_app,
-    build_transport_route_map, build_user_routes, user_keys,
-};
-use crate::metrics::{Metrics, Transport};
+use super::super::{AuthPolicy, DnsCache, Services, UdpServices, build_app};
+use crate::config::{EndpointConfig, EndpointKind};
+use crate::crypto::UserKey;
+use crate::metrics::Metrics;
+use crate::protocol::vless::VlessUser;
 
 mod cluster;
 mod cross_protocol;
@@ -158,13 +158,14 @@ impl Drop for ResumptionTestServer {
 /// to flip the resumption flag and tweak TTL / caps as needed.
 async fn spawn_test_server(
     config: crate::config::Config,
-    vless_routes: Vec<VlessUserRoute>,
+    vless_users: Vec<VlessUser>,
 ) -> Result<ResumptionTestServer> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
 
-    let user_routes = build_user_routes(&config)?;
-    let users = user_keys(user_routes.as_ref());
+    let effective = config.effective_users()?;
+    let ss_users = build_ss_user_pool(&effective, config.method)?;
+    let users: Arc<[UserKey]> = Arc::from(ss_users.clone().into_boxed_slice());
 
     let metrics = Metrics::new(&config);
     let orphan_registry = Arc::new(OrphanRegistry::new(
@@ -175,17 +176,18 @@ async fn spawn_test_server(
     let nat_table = NatTable::new(Duration::from_secs(300));
     let dns_cache = DnsCache::new(Duration::from_secs(30));
 
-    let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
-    let udp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
-    let vless_table = Arc::new(build_vless_transport_route_map(&vless_routes));
-    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp: tcp_routes,
-        udp: udp_routes,
-        vless: vless_table,
-        xhttp_vless: Arc::new(std::collections::BTreeMap::new()),
-        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
-        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
-    }));
+    // `sample_config` carries the `/tcp` + `/udp` SS endpoints; a VLESS test
+    // mounts its user(s) on `/vless`, so add that endpoint when any are given.
+    let mut endpoints = config.endpoints.clone();
+    if !vless_users.is_empty() {
+        endpoints.push(EndpointConfig {
+            path: "/vless".to_owned(),
+            kind: EndpointKind::WsVless,
+            padded: false,
+        });
+    }
+    let routes =
+        Arc::new(ArcSwap::from_pointee(build_route_registry(&endpoints, &ss_users, &vless_users)));
     let services = Arc::new(Services::new(
         Arc::clone(&metrics),
         dns_cache,

@@ -6,15 +6,15 @@
 //! falls through to 404 / fallback. The lookup cases pin that a matched
 //! base resolves against the live route snapshot.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
 use super::{RoutesSnapshot, XhttpRoute, match_xhttp_path, resolve_xhttp_h3_route};
-use crate::config::CipherKind;
+use crate::config::{CipherKind, EndpointConfig, EndpointKind};
 use crate::crypto::UserKey;
-use crate::server::setup::{SsXhttpUserRoute, build_xhttp_ss_route_map};
+use crate::server::endpoint_routes::build_route_registry;
 use crate::server::state::RouteRegistry;
 
 fn paths(entries: &[&str]) -> BTreeSet<String> {
@@ -23,24 +23,25 @@ fn paths(entries: &[&str]) -> BTreeSet<String> {
 
 /// A registry carrying exactly one XHTTP-SS base path, served by `users`
 /// — the shape `rebuild_snapshots` publishes after a control-plane
-/// mutation.
+/// mutation. Built through the endpoint model: one `XhttpSsTcp` endpoint at
+/// `base`, pooling `users`.
 fn ss_registry(base: &str, users: &[(&str, &str)]) -> RouteRegistry {
-    let routes: Vec<SsXhttpUserRoute> = users
+    let ss_users: Vec<UserKey> = users
         .iter()
-        .map(|(id, password)| SsXhttpUserRoute {
-            user: UserKey::new(*id, password, None, CipherKind::Chacha20IetfPoly1305, None)
-                .expect("test user key"),
-            xhttp_path: Arc::from(base),
+        .map(|(id, password)| {
+            UserKey::new(*id, password, None, CipherKind::Chacha20IetfPoly1305, None)
+                .expect("test user key")
         })
         .collect();
-    RouteRegistry {
-        tcp: Arc::new(BTreeMap::new()),
-        udp: Arc::new(BTreeMap::new()),
-        vless: Arc::new(BTreeMap::new()),
-        xhttp_vless: Arc::new(BTreeMap::new()),
-        xhttp_ss: Arc::new(build_xhttp_ss_route_map(&routes)),
-        xhttp_ss_udp: Arc::new(BTreeMap::new()),
-    }
+    build_route_registry(
+        &[EndpointConfig {
+            path: base.to_owned(),
+            kind: EndpointKind::XhttpSsTcp,
+            padded: false,
+        }],
+        &ss_users,
+        &[],
+    )
 }
 
 fn ss_user_ids(route: Option<XhttpRoute>) -> Vec<String> {
@@ -76,18 +77,20 @@ fn route_users_come_from_the_live_snapshot() {
 
 #[test]
 fn route_disappears_once_the_snapshot_drops_the_base() {
-    // Deleting the last user of a base path removes it from the rebuilt
-    // map; the lookup must then miss so the request falls through to
-    // 404 / fallback.
+    // Dropping a base path from the published snapshot (its endpoint gone)
+    // removes it from the rebuilt map; the lookup must then miss so the
+    // request falls through to 404 / fallback. Users are path-independent in
+    // the endpoint model, so a base is dropped by removing its endpoint — an
+    // empty registry here — not by removing its last user.
     let routes: RoutesSnapshot =
         Arc::new(ArcSwap::from_pointee(ss_registry("/xhs", &[("bob", "secret-b")])));
     assert!(resolve_xhttp_h3_route(&routes, "/xhs", Some("session-one")).is_some());
 
-    routes.store(Arc::new(ss_registry("/xhs", &[])));
+    routes.store(Arc::new(build_route_registry(&[], &[], &[])));
 
     assert!(
         resolve_xhttp_h3_route(&routes, "/xhs", Some("session-two")).is_none(),
-        "a base path with no users left must not resolve"
+        "a base path absent from the snapshot must not resolve"
     );
 }
 

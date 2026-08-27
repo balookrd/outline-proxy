@@ -10,7 +10,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
-use super::super::setup::{VlessUserRoute, build_vless_transport_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::{DnsCache, build_app};
@@ -48,10 +47,7 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -140,10 +136,7 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -239,10 +232,7 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -332,10 +322,7 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -446,10 +433,7 @@ async fn vless_websocket_invalid_version_sinks_then_closes() -> Result<()> {
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -544,10 +528,7 @@ async fn vless_websocket_probe_sink_byte_cap_short_circuits() -> Result<()> {
         None,
         None,
     )?;
-    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
-        user: vless_user,
-        ws_path: Arc::from("/vless"),
-    }]));
+    let vless_routes = super::vless_ws_route_map("/vless", std::slice::from_ref(&vless_user));
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),

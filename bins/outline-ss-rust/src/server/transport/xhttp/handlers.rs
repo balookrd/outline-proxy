@@ -78,7 +78,7 @@ pub(in crate::server) enum XhttpAppProtocol {
     Vless,
     Ss,
     /// SS-UDP-over-XHTTP. A separate base path from `Ss` (the TCP path),
-    /// mirroring the WS `ws_path_tcp` / `ws_path_udp` split.
+    /// mirroring the split WS SS endpoints (`ws_ss_tcp` / `ws_ss_udp`).
     SsUdp,
     /// Combined SS path: one base path carries both TCP and UDP, and the
     /// session-id's first character encodes which (see

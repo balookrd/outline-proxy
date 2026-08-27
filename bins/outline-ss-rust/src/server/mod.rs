@@ -58,8 +58,7 @@ pub(crate) use self::cluster::mesh::MAX_USER_LEN;
 #[cfg(test)]
 use self::{
     dns_cache::DnsCache,
-    setup::{build_transport_route_map, build_user_routes, user_keys},
-    state::{AuthPolicy, RouteRegistry, Services, UdpServices},
+    state::{AuthPolicy, Services, UdpServices},
 };
 
 use self::{
@@ -136,12 +135,6 @@ pub async fn run(config: Config) -> Result<()> {
         h3_listen = ?config.effective_h3_listen(),
         metrics_listen = ?config.metrics_listen,
         metrics_path = %config.metrics_path,
-        default_tcp_ws_path = %config.ws_path_tcp,
-        default_udp_ws_path = %config.ws_path_udp,
-        ws_path_vless = ?config.ws_path_vless,
-        xhttp_path_vless = ?config.xhttp_path_vless,
-        xhttp_path_tcp = ?config.xhttp_path_tcp,
-        xhttp_path_udp = ?config.xhttp_path_udp,
         tcp_ws_paths = ?tcp_paths,
         udp_ws_paths = ?udp_paths,
         vless_paths = ?vless_paths,

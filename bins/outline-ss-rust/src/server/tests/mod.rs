@@ -1,19 +1,18 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::http::header;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
+use super::endpoint_routes::{build_route_registry, build_ss_user_pool, build_vless_user_pool};
 use super::nat::NatTable;
-use super::setup::{UserRoute, build_vless_transport_route_map};
-use super::state::{RoutesSnapshot, UserKeySlice};
-use super::{
-    AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_transport_route_map,
-    user_keys,
-};
+use super::state::{RoutesSnapshot, TransportRoute, UserKeySlice, VlessTransportRoute};
+use super::{AuthPolicy, DnsCache, Services, UdpServices};
 use crate::config::{CipherKind, Config, EndpointConfig, EndpointKind, UserEntry};
-use crate::metrics::{Metrics, Transport};
+use crate::crypto::UserKey;
+use crate::metrics::Metrics;
+use crate::protocol::vless::VlessUser;
 use arc_swap::ArcSwap;
 
 mod auth;
@@ -32,29 +31,25 @@ mod vless;
 mod websocket;
 mod xhttp;
 
+/// Builds the shared app state from a parsed `Config`, driving routes off
+/// `config.endpoints` exactly as `services::build` does — the SS/VLESS pools
+/// are path-independent, and the endpoint list decides which route maps a user
+/// lands in.
 fn build_test_state(
-    user_routes: Arc<[UserRoute]>,
+    config: &Config,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
     dns_cache: Arc<DnsCache>,
     http_root_auth: bool,
     http_root_realm: impl Into<Arc<str>>,
 ) -> (RoutesSnapshot, Arc<Services>, Arc<AuthPolicy>) {
-    let users = user_keys(user_routes.as_ref());
-    let tcp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
-    let udp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
-    let vless = Arc::new(build_vless_transport_route_map(&[]));
-    let xhttp_vless = Arc::new(std::collections::BTreeMap::new());
-    let xhttp_ss = Arc::new(std::collections::BTreeMap::new());
-    let xhttp_ss_udp = Arc::new(std::collections::BTreeMap::new());
-    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp,
-        udp,
-        vless,
-        xhttp_vless,
-        xhttp_ss,
-        xhttp_ss_udp,
-    }));
+    let effective = config.effective_users().expect("test config resolves to valid users");
+    let ss_users =
+        build_ss_user_pool(&effective, config.method).expect("test config builds an ss pool");
+    let vless_users = build_vless_user_pool(&effective).expect("test config builds a vless pool");
+    let registry = build_route_registry(&config.endpoints, &ss_users, &vless_users);
+    let users: Arc<[UserKey]> = Arc::from(ss_users.into_boxed_slice());
+    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(registry));
     let services = Arc::new(Services::new(
         metrics,
         dns_cache,
@@ -82,6 +77,50 @@ fn build_test_state(
     (routes, services, auth)
 }
 
+/// The SS `UserKey`s a config resolves to (password-bearing, enabled users),
+/// in config order. Tests that used to reach into `build_user_routes(..)[i].user`
+/// for a client-side SS key now derive it from the config the same way
+/// `services::build` does.
+fn config_ss_users(config: &Config) -> Vec<UserKey> {
+    let effective = config.effective_users().expect("test config resolves to valid users");
+    build_ss_user_pool(&effective, config.method).expect("test config builds an ss pool")
+}
+
+/// One unpadded endpoint record — the building block for the single-path
+/// route-map helpers below.
+fn test_endpoint(path: &str, kind: EndpointKind) -> EndpointConfig {
+    EndpointConfig {
+        path: path.to_owned(),
+        kind,
+        padded: false,
+    }
+}
+
+/// A one-path VLESS-over-WS route map carrying `users`, extracted from a
+/// freshly built registry. Replaces the retired
+/// `build_vless_transport_route_map(&[VlessUserRoute { .. }])` that the many
+/// single-path VLESS tests used to hand-assemble.
+fn vless_ws_route_map(
+    path: &str,
+    users: &[VlessUser],
+) -> Arc<BTreeMap<String, Arc<VlessTransportRoute>>> {
+    build_route_registry(&[test_endpoint(path, EndpointKind::WsVless)], &[], users).vless
+}
+
+/// A one-path VLESS-over-XHTTP route map. XHTTP analogue of
+/// [`vless_ws_route_map`].
+fn vless_xhttp_route_map(
+    path: &str,
+    users: &[VlessUser],
+) -> Arc<BTreeMap<String, Arc<VlessTransportRoute>>> {
+    build_route_registry(&[test_endpoint(path, EndpointKind::XhttpVless)], &[], users).xhttp_vless
+}
+
+/// A one-path SS-over-XHTTP (TCP-leg) route map carrying `users`.
+fn ss_xhttp_route_map(path: &str, users: &[UserKey]) -> Arc<BTreeMap<String, Arc<TransportRoute>>> {
+    build_route_registry(&[test_endpoint(path, EndpointKind::XhttpSsTcp)], users, &[]).xhttp_ss
+}
+
 pub(in crate::server) fn sample_config(listen: SocketAddr) -> Config {
     sample_config_with_users(
         listen,
@@ -90,15 +129,7 @@ pub(in crate::server) fn sample_config(listen: SocketAddr) -> Config {
             password: Some("secret-b".into()),
             fwmark: None,
             method: None,
-            ws_path_tcp: None,
-            ws_path_udp: None,
-            ws_path_ss: None,
             vless_id: None,
-            ws_path_vless: None,
-            xhttp_path_vless: None,
-            xhttp_path_tcp: None,
-            xhttp_path_udp: None,
-            xhttp_path_ss: None,
             enabled: None,
             aliases: None,
         }],
@@ -126,14 +157,6 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         outbound_ipv6_refresh_secs: 30,
         outbound_ipv6_sticky: false,
         outbound_ipv6_sticky_ttl_secs: 1800,
-        ws_path_tcp: "/tcp".into(),
-        ws_path_udp: "/udp".into(),
-        ws_path_ss: None,
-        ws_path_vless: None,
-        xhttp_path_vless: None,
-        xhttp_path_tcp: None,
-        xhttp_path_udp: None,
-        xhttp_path_ss: None,
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
         users,
@@ -144,10 +167,9 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         http_fallback: None,
         sni_fallback: None,
         cluster: None,
-        // Mirrors the `ws_path_tcp`/`ws_path_udp` split above, so the (still
-        // unused by these tests, which build routes by hand via
-        // `build_user_routes`) endpoint-driven path stays consistent with the
-        // legacy fields it is replacing.
+        // The default SS-over-WS split: `/tcp` carries the TCP leg, `/udp` the
+        // UDP leg. `build_test_state` and the resumption harness derive their
+        // route tables from this endpoint list.
         endpoints: vec![
             EndpointConfig {
                 path: "/tcp".into(),
