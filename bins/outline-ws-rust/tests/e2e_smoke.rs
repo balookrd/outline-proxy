@@ -79,7 +79,7 @@ fn smoke_ss_ws_h1_roundtrip_and_control_planes() -> Result<(), BoxError> {
 
     // ── Metrics plane: scrape returns Prometheus text ──
     let m = metrics_scrape(metrics)?;
-    assert!(m.raw().contains("outline_ws_rust"), "metrics scrape looked empty");
+    assert!(m.raw().contains("outline_ws_build_info"), "metrics scrape looked empty");
 
     client.stop()?;
     server.kill()?;
