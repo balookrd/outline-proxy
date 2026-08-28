@@ -166,7 +166,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum *.tar.gz > SHA256SUMS.txt
+          sha256sum -- *.tar.gz > SHA256SUMS.txt
 
       - name: Delete old nightly assets
         if: ${{ inputs.rolling_tag }}
