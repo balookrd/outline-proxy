@@ -16,15 +16,20 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.Add
@@ -400,11 +405,39 @@ class MainActivity : ComponentActivity() {
                         onDismissRequest = { update = null },
                         title = { Text(stringResource(R.string.upd_available)) },
                         text = {
-                            Text(
-                                stringResource(R.string.upd_published_for_channel, available.label) +
-                                    "\n\n" +
-                                    stringResource(R.string.upd_apk_note),
-                            )
+                            val notes = remember(available) { ReleaseNotes.format(available.notes) }
+                            Column {
+                                Text(stringResource(R.string.upd_published_for_channel, available.label))
+                                if (notes.isNotEmpty()) {
+                                    Spacer(Modifier.height(12.dp))
+                                    Text(
+                                        stringResource(R.string.upd_whats_new),
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    // A long body scrolls inside the dialog instead of
+                                    // pushing the buttons off-screen.
+                                    Column(
+                                        Modifier
+                                            .heightIn(max = 260.dp)
+                                            .verticalScroll(rememberScrollState()),
+                                    ) {
+                                        notes.forEach { line ->
+                                            when (line) {
+                                                is NoteLine.Header -> Text(
+                                                    line.text,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                                                )
+                                                is NoteLine.Bullet -> Text("•  ${line.text}")
+                                                is NoteLine.Text -> Text(line.text)
+                                            }
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(12.dp))
+                                Text(stringResource(R.string.upd_apk_note))
+                            }
                         },
                         confirmButton = {
                             TextButton(onClick = {
