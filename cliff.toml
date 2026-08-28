@@ -1,0 +1,53 @@
+# git-cliff configuration for outline-proxy.
+# One config for the whole repo; per-component filtering (include-path, tag
+# pattern, commit range) is passed on the CLI by
+# .github/scripts/gen-release-notes.sh. This file only decides how commits map
+# to release-notes sections and how each line is rendered.
+
+[changelog]
+# No global title/footer: the output is a GitHub release body, not a CHANGELOG
+# file. The compare-link footer is appended by the script, from the exact
+# PREV/TAG it computed — more reliable than git-cliff's tag resolution.
+header = ""
+body = """
+{% if version %}## What's Changed in {{ version }}{% else %}## Unreleased{% endif %}
+{% set breaking = commits | filter(attribute="breaking", value=true) -%}
+{% if breaking | length > 0 %}
+### ⚠️ BREAKING CHANGES
+{% for commit in breaking -%}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.breaking_description | default(value=commit.message) | upper_first }}
+{% endfor -%}
+{% endif -%}
+{% for group, group_commits in commits | filter(attribute="breaking", value=false) | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in group_commits -%}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }}
+{% endfor -%}
+{% endfor -%}
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits  = true
+filter_unconventional = true   # release:/Merge/non-conventional subjects are dropped
+protect_breaking_commits = true # feat!/refactor! survive even when the type is skipped
+filter_commits        = true   # commits not matched into a kept group are dropped
+topo_order            = false
+sort_commits          = "oldest"
+# Sort keys "<!-- N -->" order the sections; `striptags` strips them in the body.
+commit_parsers = [
+  { message = "^feat", group = "<!-- 1 -->⭐ Features" },
+  { message = "^fix",  group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "^perf", group = "<!-- 3 -->⚡ Performance" },
+  { message = "^refactor", skip = true },
+  { message = "^docs",  skip = true },
+  { message = "^test",  skip = true },
+  { message = "^chore", skip = true },
+  { message = "^ci",    skip = true },
+  { message = "^build", skip = true },
+  { message = "^style", skip = true },
+  { message = "^ops",   skip = true },
+  { message = "^Merge", skip = true },
+  { message = ".*",     skip = true },
+]
