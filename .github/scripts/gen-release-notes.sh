@@ -58,7 +58,7 @@ else
   # the current one by semver (not just "the greatest other tag"). Insert the
   # tag into the sorted list and take the line before it. bash 3.2-safe: no
   # `mapfile` (macOS ships bash 3.2), plain awk instead.
-  prev="$(printf '%s\n' $(git tag -l "${prefix}-v*" | grep -vx "$tag") "$tag" \
+  prev="$( { git tag -l "${prefix}-v*" | grep -vx "$tag"; printf '%s\n' "$tag"; } \
             | sort -V | awk -v t="$tag" '$0 == t { print p; exit } { p = $0 }')"
   end_ref="$tag"
   compare_to="$tag"
