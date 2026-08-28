@@ -30,6 +30,21 @@ class KeepAliveState(context: Context) {
         set(value) = prefs.edit().putLong(KEY_CONNECTED_SINCE, value).apply()
 
     /**
+     * The device-wide `TrafficStats` byte totals captured when the current
+     * session came up, or 0 when down. Bytes-this-session is the live total minus
+     * these. Persisted for the same reason as [connectedSince]: so the Home
+     * screen's traffic figure survives an Activity recreate or a reconnect
+     * instead of restarting from zero. See [SessionTraffic].
+     */
+    var trafficBaselineTx: Long
+        get() = prefs.getLong(KEY_TRAFFIC_BASE_TX, 0L)
+        set(value) = prefs.edit().putLong(KEY_TRAFFIC_BASE_TX, value).apply()
+
+    var trafficBaselineRx: Long
+        get() = prefs.getLong(KEY_TRAFFIC_BASE_RX, 0L)
+        set(value) = prefs.edit().putLong(KEY_TRAFFIC_BASE_RX, value).apply()
+
+    /**
      * Last known `VpnService.isAlwaysOn()`, or null before the tunnel has ever
      * come up. Only the service can read it, so the UI shows what was recorded
      * rather than guessing.
@@ -65,6 +80,8 @@ class KeepAliveState(context: Context) {
         const val KEY_FAILURES = "consecutive_failures"
         const val KEY_ALWAYS_ON = "always_on_seen"
         const val KEY_CONNECTED_SINCE = "connected_since"
+        const val KEY_TRAFFIC_BASE_TX = "traffic_base_tx"
+        const val KEY_TRAFFIC_BASE_RX = "traffic_base_rx"
         const val KEY_PERSISTENT_NOTIFICATION = "persistent_notification"
         const val ALWAYS_ON_UNKNOWN = -1
     }

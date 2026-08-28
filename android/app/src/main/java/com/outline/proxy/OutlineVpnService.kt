@@ -82,11 +82,6 @@ class OutlineVpnService : VpnService() {
     private val notifScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var notifJob: Job? = null
 
-    /** `TrafficStats` byte counters captured at connect, so the banner can show
-     *  bytes moved this session. */
-    private var trafficBaseTx = 0L
-    private var trafficBaseRx = 0L
-
     /** When the tunnel last had a live link (or the session start). Debounces the
      *  status: a brief drop below the grace window reads "Connecting…", not the
      *  jarring "No link" flash. */
@@ -281,7 +276,9 @@ class OutlineVpnService : VpnService() {
                 // Core already alive (e.g. a revived process): keep the banner
                 // refreshing if nothing is doing so yet.
                 if (notifJob == null) {
-                    captureTrafficBaseline()
+                    // The session (and its baseline) is already live here; only the
+                    // banner refresh needs restarting, not a fresh baseline.
+                    seedLinkGrace()
                     startNotificationUpdates()
                 }
             }
@@ -387,8 +384,13 @@ class OutlineVpnService : VpnService() {
             start(withDialBudget(configToml), filesDir.absolutePath, tun.fd)
             Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
             state.clearFailures()
-            if (state.connectedSince == 0L) state.connectedSince = System.currentTimeMillis()
-            captureTrafficBaseline()
+            // Capture the session baseline once, together with the connect time —
+            // a reconnect that keeps the session must not restart the counters.
+            if (SessionTraffic.shouldCaptureBaseline(state.connectedSince)) {
+                state.connectedSince = System.currentTimeMillis()
+                captureTrafficBaseline(state)
+            }
+            seedLinkGrace()
             startNotificationUpdates()
             registerNetworkCallback()
         } catch (e: Exception) {
@@ -766,12 +768,19 @@ class OutlineVpnService : VpnService() {
             .build()
     }
 
-    /** Capture the current TrafficStats counters as the session baseline, and
-     *  seed the link-grace clock so the connect itself gets a "Connecting…"
-     *  window before any "No link". */
-    private fun captureTrafficBaseline() {
-        trafficBaseTx = TrafficStats.getTotalTxBytes().coerceAtLeast(0)
-        trafficBaseRx = TrafficStats.getTotalRxBytes().coerceAtLeast(0)
+    /** Capture the current TrafficStats totals as this session's baseline, stored
+     *  durably (see [KeepAliveState.trafficBaselineTx]) so the byte counters
+     *  survive an Activity recreate or a reconnect. Taken once per session,
+     *  alongside [KeepAliveState.connectedSince]. */
+    private fun captureTrafficBaseline(state: KeepAliveState) {
+        state.trafficBaselineTx = TrafficStats.getTotalTxBytes().coerceAtLeast(0)
+        state.trafficBaselineRx = TrafficStats.getTotalRxBytes().coerceAtLeast(0)
+    }
+
+    /** Seed the link-grace clock so a fresh connect (or a service revive) gets a
+     *  "Connecting…" window before any "No link". Unlike the baseline, this fires
+     *  on every connect, not only at session start. */
+    private fun seedLinkGrace() {
         lastLinkAtMs = System.currentTimeMillis()
     }
 
@@ -845,8 +854,9 @@ class OutlineVpnService : VpnService() {
             connecting -> getString(R.string.status_connecting) + "…"
             else -> getString(R.string.status_no_link)
         }
-        val up = (TrafficStats.getTotalTxBytes() - trafficBaseTx).coerceAtLeast(0)
-        val down = (TrafficStats.getTotalRxBytes() - trafficBaseRx).coerceAtLeast(0)
+        val baseline = KeepAliveState(this)
+        val up = SessionTraffic.sinceBaseline(TrafficStats.getTotalTxBytes(), baseline.trafficBaselineTx)
+        val down = SessionTraffic.sinceBaseline(TrafficStats.getTotalRxBytes(), baseline.trafficBaselineRx)
         return buildNotification(
             running = true,
             status = status,
