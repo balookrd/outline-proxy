@@ -21,8 +21,8 @@ on:
         default: false
       make_latest:
         required: false
-        type: string
-        default: "true"
+        type: boolean
+        default: true
       release_name:
         required: false
         type: string
