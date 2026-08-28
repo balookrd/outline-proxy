@@ -31,7 +31,7 @@ jobs:
       tag: ui-nightly
       checkout_ref: ${{ github.sha }}
       prerelease: true
-      make_latest: "false"
+      make_latest: false
       release_name: UI Nightly
       artifact_version: nightly-${{ github.sha }}
       rolling_tag: true

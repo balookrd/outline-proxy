@@ -37,7 +37,7 @@ jobs:
       tag: android-nightly
       checkout_ref: ${{ github.sha }}
       prerelease: true
-      make_latest: "false"
+      make_latest: false
       release_name: Android Nightly
       version_name: 0.1.0-nightly
       rolling_tag: true

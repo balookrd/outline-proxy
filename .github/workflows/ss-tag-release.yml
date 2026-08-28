@@ -19,4 +19,4 @@ jobs:
     with:
       tag: ${{ github.ref_name }}
       prerelease: false
-      make_latest: "true"
+      make_latest: true
