@@ -123,6 +123,14 @@ class VendorProfilesTest {
         assertTrue(vendorProfileFor("tecno")!!.autostart.isNotEmpty())
     }
 
+    /** Only MIUI is known to revoke the Doze exemption when the VPN starts. */
+    @Test fun onlyXiaomiRevokesDoze() {
+        assertTrue(vendorProfileFor("xiaomi")!!.revokesDoze)
+        assertFalse(vendorProfileFor("samsung")!!.revokesDoze)
+        assertFalse(vendorProfileFor("honor")!!.revokesDoze)
+        assertFalse(vendorProfileFor("oppo")!!.revokesDoze)
+    }
+
     @Test fun manufacturersAreLowercaseAndUnique() {
         val all = VENDOR_PROFILES.flatMap { it.manufacturers }
         assertEquals(all.map { it.lowercase() }, all)

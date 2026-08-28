@@ -77,6 +77,13 @@ internal data class VendorProfile(
     /** Body of the battery card; takes the vendor name as `%1$s`. Null when the
      *  skin adds no battery policy of its own. */
     @StringRes val batteryDesc: Int?,
+    /**
+     * The skin revokes Android's own battery-optimisation exemption when the VPN
+     * service starts, so the standard "Ignore battery optimisation" card would go
+     * red the moment the user connects and could never be satisfied. On such skins
+     * that card is hidden; the vendor battery/autostart cards carry the real levers.
+     */
+    val revokesDoze: Boolean = false,
 )
 
 /** The profile for this device's manufacturer, or null on near-stock skins. */
@@ -86,11 +93,6 @@ internal fun vendorProfileFor(manufacturer: String?): VendorProfile? {
     return VENDOR_PROFILES.firstOrNull { key in it.manufacturers }
 }
 
-/**
- * Known vendor skins. Components come and go between firmware versions, so they
- * are only ever *candidates*: the caller probes each one and falls back to the
- * system app-details page, where these toggles also live on most skins.
- */
 /**
  * Oppo, realme and OnePlus share the ColorOS backend. It renamed `com.coloros.*`
  * to `com.oplus.*` at Android 12 and moved the list into `com.oplus.battery` at 13,
@@ -135,6 +137,10 @@ internal val VENDOR_PROFILES = listOf(
         autostartDesc = R.string.ka_vendor_autostart_desc,
         autostartToggle = R.string.ka_toggle_background_autostart,
         batteryDesc = R.string.ka_vendor_battery_desc_xiaomi,
+        // MIUI/HyperOS pulls the Android exemption the instant the VPN service
+        // starts — verified via the reporting user (green while off, red once
+        // connected). Hide the standard Doze card there.
+        revokesDoze = true,
     ),
     VendorProfile(
         id = VendorId.HUAWEI,
