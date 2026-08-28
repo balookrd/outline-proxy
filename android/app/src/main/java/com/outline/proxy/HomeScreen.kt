@@ -56,6 +56,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -459,20 +460,23 @@ private fun StatCaption(text: String) {
 }
 
 /**
- * Up/down bytes moved since [connectedSinceMs], sampled from [TrafficStats] once
- * a second. The baseline is captured the first time this composition sees the
- * tunnel up and reset whenever the connect timestamp changes (a reconnect).
+ * Up/down bytes moved this session, sampled from [TrafficStats] once a second.
+ * The baseline is the service's persisted session baseline (captured at connect,
+ * see [KeepAliveState.trafficBaselineTx]), not one taken here, so the figure
+ * survives an Activity recreate (rotation, fold, carrier/`mcc` change) or a
+ * reconnect instead of restarting from zero — mirroring the duration timer.
+ * [connectedSinceMs] keys the sampler so a new session re-reads the new baseline.
  */
 @Composable
 private fun TrafficReadout(connectedSinceMs: Long) {
+    val context = LocalContext.current
     var tx by remember { mutableStateOf(0L) }
     var rx by remember { mutableStateOf(0L) }
     LaunchedEffect(connectedSinceMs) {
-        val baseTx = TrafficStats.getTotalTxBytes().coerceAtLeast(0)
-        val baseRx = TrafficStats.getTotalRxBytes().coerceAtLeast(0)
+        val state = KeepAliveState(context)
         while (true) {
-            tx = (TrafficStats.getTotalTxBytes() - baseTx).coerceAtLeast(0)
-            rx = (TrafficStats.getTotalRxBytes() - baseRx).coerceAtLeast(0)
+            tx = SessionTraffic.sinceBaseline(TrafficStats.getTotalTxBytes(), state.trafficBaselineTx)
+            rx = SessionTraffic.sinceBaseline(TrafficStats.getTotalRxBytes(), state.trafficBaselineRx)
             delay(1000)
         }
     }
