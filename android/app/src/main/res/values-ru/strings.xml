@@ -80,6 +80,7 @@
     <string name="upd_available">Доступно обновление</string>
     <string name="upd_published_for_channel">%1$s опубликовано для этого канала.</string>
     <string name="upd_apk_note">APK скачается в папку «Загрузки»; откройте его для установки — приложение не устанавливает его само.</string>
+    <string name="upd_whats_new">Что нового</string>
     <string name="upd_download">Скачать</string>
     <string name="upd_later">Позже</string>
     <string name="upd_checking">проверка…</string>

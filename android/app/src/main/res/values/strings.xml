@@ -95,6 +95,7 @@
     <string name="upd_available">Update available</string>
     <string name="upd_published_for_channel">%1$s is published for this channel.</string>
     <string name="upd_apk_note">The APK downloads to your Downloads folder; open it to install — the app does not install it for you.</string>
+    <string name="upd_whats_new">What\'s new</string>
     <string name="upd_download">Download</string>
     <string name="upd_later">Later</string>
     <string name="upd_checking">checking…</string>

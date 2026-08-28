@@ -18,6 +18,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - **The Split Tunneling screen's app-search field has a clear (✕) button.** It appears once you start typing and clears the filter in one tap.
 - **The Keeping Alive screen now covers the phone vendor's own restrictions, not just Android's.** Skins that keep a separate autostart list or per-app battery policy (Xiaomi, Huawei, Honor, Oppo, realme, vivo, OnePlus, Samsung, Asus, Meizu, Tecno/Infinix/itel) get their own cards naming the exact setting to change: "Autostart" on Xiaomi, the never-sleeping list on Samsung, the three-step "App launch" sequence on Huawei and Honor. Android's battery-optimisation exemption lifts none of these restrictions: a phone can report that permission as granted and still stop the tunnel, and MIUI — going by the AdGuard and Briar bug trackers — resets the Android grant on its own.
 - **The Split Tunneling picker shows app icons.** They load as rows scroll into view, so the screen opens no slower than before.
+- **The update dialog now shows what changed.** When a newer build is found, the dialog lists the release's changes — features, fixes and any breaking changes — above the download note, taken from the published release's notes and shown as a scrollable "What's new" section. A release without notes (or a build channel that publishes none) shows the dialog exactly as before.
 
 ### Changed
 

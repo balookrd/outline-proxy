@@ -46,7 +46,13 @@ object UpdateChecker {
         data object UpToDate : Result
 
         /** A newer build exists; [label] names it the way its channel does. */
-        data class Available(val label: String, val assetName: String, val url: String) : Result
+        data class Available(
+            val label: String,
+            val assetName: String,
+            val url: String,
+            /** Raw GitHub release body (Markdown); "" when the release has none. */
+            val notes: String,
+        ) : Result
 
         data class Failed(val reason: String) : Result
     }
@@ -80,7 +86,12 @@ object UpdateChecker {
         return if (sha.isNotEmpty() && sha == BuildConfig.GIT_SHA) {
             Result.UpToDate
         } else {
-            Result.Available("nightly · $sha", name, asset.getString("browser_download_url"))
+            Result.Available(
+                "nightly · $sha",
+                name,
+                asset.getString("browser_download_url"),
+                release.optString("body"),
+            )
         }
     }
 
@@ -113,6 +124,7 @@ object UpdateChecker {
             "v${release.optString("tag_name").removePrefix(RELEASE_TAG_PREFIX)}",
             asset.getString("name"),
             asset.getString("browser_download_url"),
+            release.optString("body"),
         )
     }
 
