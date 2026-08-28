@@ -162,29 +162,34 @@ fun KeepAliveScreen(onBack: () -> Unit) {
                 onAction = { context.launchSafely(KeepAliveHelper.vpnSettingsIntent()) },
             )
 
-            ChecklistItem(
-                title = stringResource(R.string.ka_ignore_batt),
-                status = if (KeepAliveHelper.isIgnoringBatteryOptimizations(context)) {
-                    GrantStatus.GRANTED
-                } else {
-                    GrantStatus.MISSING
-                },
-                explanation = stringResource(R.string.ka_ignore_batt_desc),
-                action = stringResource(R.string.btn_allow),
-                onAction = {
-                    if (!context.launchSafely(KeepAliveHelper.batteryOptimizationIntent(context))) {
-                        context.launchSafely(KeepAliveHelper.batteryOptimizationListIntent())
-                    }
-                },
-            )
-
             val vendorProfile = KeepAliveHelper.vendorProfile(context)
             val vendorName = KeepAliveHelper.vendorLabel(context)
 
-            // The vendor's own battery policy, which the exemption above does not
-            // touch. It sits right here because these two are what users conflate:
-            // a skin can report the Android grant as held, apply its own limits on
-            // top, and even reset that grant behind the user's back.
+            // Skins that revoke the exemption the moment the VPN starts (MIUI) would
+            // show this card red from the instant the user connects, with nothing
+            // they can do about it — so it is hidden there and the vendor battery
+            // card below carries the battery story.
+            if (vendorProfile?.revokesDoze != true) {
+                ChecklistItem(
+                    title = stringResource(R.string.ka_ignore_batt),
+                    status = if (KeepAliveHelper.isIgnoringBatteryOptimizations(context)) {
+                        GrantStatus.GRANTED
+                    } else {
+                        GrantStatus.MISSING
+                    },
+                    explanation = stringResource(R.string.ka_ignore_batt_desc),
+                    action = stringResource(R.string.btn_allow),
+                    onAction = {
+                        if (!context.launchSafely(KeepAliveHelper.batteryOptimizationIntent(context))) {
+                            context.launchSafely(KeepAliveHelper.batteryOptimizationListIntent())
+                        }
+                    },
+                )
+            }
+
+            // The vendor's own battery policy. On skins that keep Android's exemption
+            // it sits right after it because users conflate the two; on skins that
+            // revoke it (MIUI) this is the only battery control shown.
             if (vendorProfile?.batteryDesc != null && vendorName != null) {
                 ChecklistItem(
                     title = stringResource(R.string.ka_vendor_battery, vendorName),

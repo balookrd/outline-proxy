@@ -173,7 +173,7 @@
     <!-- Keep-Alive: vendor battery-policy card, separate from Android's Doze list. -->
     <string name="ka_vendor_battery">%1$s battery policy</string>
     <string name="ka_vendor_battery_desc">%1$s applies its own per-app battery policy on top of Android\'s. Open it and give Outline Proxy the unrestricted option.</string>
-    <string name="ka_vendor_battery_desc_xiaomi">Not the same as the Android setting above. In the window that opens, pick \"No restrictions\" for Outline Proxy — or find it under \"App battery saver\" on the app page. %1$s may reset the Android setting on its own, so check that again after a reboot.</string>
+    <string name="ka_vendor_battery_desc_xiaomi">%1$s keeps its own battery policy, separate from Android\'s. In the window that opens, pick \"No restrictions\" for Outline Proxy — or find it under \"App battery saver\" on the app page.</string>
     <!-- The button deep-links straight into the allowlist (verified on One UI 8), so
          the copy starts from there; the manual path is the fallback for builds where
          the deeplink is missing. "Never sleeping apps" was its name before One UI 6.1. -->
