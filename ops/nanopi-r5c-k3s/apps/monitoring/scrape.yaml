@@ -1,0 +1,173 @@
+scrape_configs:
+- job_name: grafana
+  static_configs:
+  - targets:
+    # ClusterIP, не ingress: обращение из пода на MetalLB-VIP своего же
+    # кластера уходит наружу и возвращается (hairpin), и Traefik отвечает 5xx.
+    - grafana.monitoring:3000
+    labels:
+      hostname: 'ubuntu'
+  relabel_configs:
+    - source_labels: [hostname]
+      target_label: instance
+- job_name: victoriametrics
+  static_configs:
+  - targets:
+    - 127.0.0.1:8428
+    labels:
+      hostname: 'ubuntu'
+  relabel_configs:
+    - source_labels: [hostname]
+      target_label: instance
+- job_name: node-exporter
+  static_configs:
+  - targets:
+    - 198.18.1.102:9100
+    labels:
+      hostname: 'ubuntu'
+  - targets:
+    - 198.18.1.104:9100
+    labels:
+      hostname: 'debian'
+  - targets:
+    - 198.18.1.51:9100
+    labels:
+      hostname: 'k3s-1'
+  - targets:
+    - 198.18.1.52:9100
+    labels:
+      hostname: 'k3s-2'
+  - targets:
+    - 198.18.1.53:9100
+    labels:
+      hostname: 'k3s-3'
+  - targets:
+    - https://cloud1.beerloga.su/node-exporter/metrics
+    labels:
+      hostname: 'cloud1'
+  - targets:
+    - https://cloud2.beerloga.su/node-exporter/metrics
+    labels:
+      hostname: 'cloud2'
+  - targets:
+    - https://nuxt.beerloga.su/node-exporter/metrics
+    labels:
+      hostname: 'nuxt'
+  - targets:
+    - https://nuxt2.beerloga.su/node-exporter/metrics
+    labels:
+      hostname: 'nuxt2'
+  - targets:
+    - https://sebek.beerloga.su/node-exporter/metrics
+    labels:
+      hostname: 'sebek'
+  relabel_configs:
+    - source_labels: [hostname]
+      target_label: instance
+- job_name: oc-exporter
+  static_configs:
+  - targets:
+    - 198.18.1.102:9486
+    labels:
+      hostname: 'ubuntu'
+  - targets:
+    - 198.18.1.104:9486
+    labels:
+      hostname: 'debian'
+  - targets:
+    - https://cloud1.beerloga.su/ocserv-exporter/metrics
+    labels:
+      hostname: 'cloud1'
+  - targets:
+    - https://cloud2.beerloga.su/ocserv-exporter/metrics
+    labels:
+      hostname: 'cloud2'
+  relabel_configs:
+    - source_labels: [hostname]
+      target_label: instance
+- job_name: rust-ss-exporter
+  # VM otherwise keeps idle scrape sockets open; outline-ss-rust logs them as
+  # HeaderTimeout on .102/.104. Close after every scrape instead. This is only
+  # HTTP connection reuse for scraping, not the Grafana dead-man heartbeat.
+  disable_keepalive: true
+  static_configs:
+  - targets:
+    - 198.18.1.102:9090
+    labels:
+      hostname: 'ubuntu'
+  - targets:
+    - 198.18.1.104:9090
+    labels:
+      hostname: 'debian'
+  - targets:
+    - https://cloud1.beerloga.su/rust-ss-exporter/metrics
+    labels:
+      hostname: 'cloud1'
+  - targets:
+    - https://cloud2.beerloga.su/rust-ss-exporter/metrics
+    labels:
+      hostname: 'cloud2'
+  - targets:
+    - https://nuxt.beerloga.su/rust-ss-exporter/metrics
+    labels:
+      hostname: 'nuxt'
+  - targets:
+    - https://nuxt2.beerloga.su/rust-ss-exporter/metrics
+    labels:
+      hostname: 'nuxt2'
+  - targets:
+    - https://sebek.beerloga.su/rust-ss-exporter/metrics
+    labels:
+      hostname: 'sebek'
+  relabel_configs:
+    - source_labels: [hostname]
+      target_label: instance
+- job_name: rust-ws-exporter
+  # Keep the client-side metrics probes consistent with rust-ss-exporter. This
+  # does not affect Grafana's alert/heartbeat webhooks.
+  disable_keepalive: true
+  static_configs:
+  - targets:
+    - 198.18.1.102:9091
+    labels:
+      hostname: 'ubuntu'
+  - targets:
+    - 198.18.1.104:9091
+    labels:
+      hostname: 'debian'
+  - targets:
+    - https://cloud1.beerloga.su/rust-ws-exporter/metrics
+    labels:
+      hostname: 'cloud1'
+  - targets:
+    - https://cloud2.beerloga.su/rust-ws-exporter/metrics
+    labels:
+      hostname: 'cloud2'
+  relabel_configs:
+    - source_labels: [hostname]
+      target_label: instance
+- job_name: unbound-exporter
+  static_configs:
+  - targets:
+    - https://cloud1.beerloga.su/unbound-exporter/metrics
+    labels:
+      hostname: 'cloud1'
+  - targets:
+    - https://cloud2.beerloga.su/unbound-exporter/metrics
+    labels:
+      hostname: 'cloud2'
+  - targets:
+    - https://nuxt.beerloga.su/unbound-exporter/metrics
+    labels:
+      hostname: 'nuxt'
+  - targets:
+    - https://nuxt2.beerloga.su/unbound-exporter/metrics
+    labels:
+      hostname: 'nuxt2'
+  - targets:
+    - https://sebek.beerloga.su/unbound-exporter/metrics
+    labels:
+      hostname: 'sebek'
+  relabel_configs:
+    - source_labels: [hostname]
+      target_label: instance
