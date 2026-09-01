@@ -85,6 +85,9 @@ pub(super) struct TunUdpEngineInner {
     /// [`TunConfig::route_by_sni`](crate::TunConfig). Implies `sniff_quic`
     /// (enforced at config load).
     pub(super) route_by_sni: bool,
+    /// Domain suffixes included for QUIC sniff destination-override. See
+    /// [`TunConfig::sniff_override_include`](crate::TunConfig).
+    pub(super) sniff_override_include: std::sync::Arc<[Box<str>]>,
     /// Domain suffixes excluded from QUIC sniff destination-override. See
     /// [`TunConfig::sniff_override_exclude`](crate::TunConfig).
     pub(super) sniff_override_exclude: std::sync::Arc<[Box<str>]>,
@@ -132,6 +135,7 @@ impl TunUdpEngine {
         pmtud_emit_below_quic_initial: bool,
         sniff_quic: bool,
         route_by_sni: bool,
+        sniff_override_include: std::sync::Arc<[Box<str>]>,
         sniff_override_exclude: std::sync::Arc<[Box<str>]>,
         udp_gso: bool,
     ) -> Self {
@@ -152,6 +156,7 @@ impl TunUdpEngine {
                 pmtud_emit_below_quic_initial,
                 sniff_quic,
                 route_by_sni,
+                sniff_override_include,
                 sniff_override_exclude,
                 sni_route_cache: route_by_sni.then(|| {
                     parking_lot::Mutex::new(SniRouteCache::new(
@@ -386,7 +391,11 @@ impl TunUdpEngine {
         }
         match crate::quic_sniff::sniff_quic_sni(payload) {
             crate::sniff::SniffOutcome::Found(host) => {
-                if crate::sniff::host_is_excluded(&host, &self.inner.sniff_override_exclude) {
+                if !crate::sniff::should_override_host(
+                    &host,
+                    &self.inner.sniff_override_include,
+                    &self.inner.sniff_override_exclude,
+                ) {
                     metrics::record_tun_udp_sniff("excluded");
                     debug!(host, "TUN UDP sniff: QUIC host excluded from override, framing by IP");
                     return None;

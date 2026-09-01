@@ -270,12 +270,26 @@ pub(super) struct TunSection {
     /// fallback), not just by the literal destination IP. Requires
     /// `sniff_quic`. Default `false`.
     pub(super) route_by_sni: Option<bool>,
+    /// Domain suffixes included for sniff destination-override (TCP + QUIC):
+    /// when set and non-empty, only a sniffed host matching at least one suffix
+    /// is rewritten to a domain target (so the exit node resolves it); all other
+    /// hosts keep the literal IP the client dialled. Default empty (all hosts
+    /// eligible for override).
+    pub(super) sniff_override_include: Option<Vec<String>>,
+    /// File containing domain suffixes to include for destination-override (one per line).
+    pub(super) sniff_override_include_file: Option<PathBuf>,
+    /// Multiple files containing domain suffixes to include for destination-override.
+    pub(super) sniff_override_include_files: Option<Vec<PathBuf>>,
     /// Domain suffixes excluded from sniff destination-override (TCP + QUIC):
     /// a sniffed host matching any suffix keeps the literal IP instead of being
     /// rewritten to a domain. Suffix match (`strava.com` covers
     /// `graphql.strava.com`). Use for sites where the client's own DNS beats
     /// the exit re-resolving (geo-wrong CDN edge). Default empty.
     pub(super) sniff_override_exclude: Option<Vec<String>>,
+    /// File containing domain suffixes to exclude from destination-override (one per line).
+    pub(super) sniff_override_exclude_file: Option<PathBuf>,
+    /// Multiple files containing domain suffixes to exclude from destination-override.
+    pub(super) sniff_override_exclude_files: Option<Vec<PathBuf>>,
     /// Open the TUN device with `IFF_VNET_HDR` and write downlink data as TSO
     /// super-segments the kernel splits per MSS (Linux). Default `true`. Cuts
     /// the per-packet routing / nftables / conntrack / WireGuard cost on the

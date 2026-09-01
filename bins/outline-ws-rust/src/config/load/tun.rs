@@ -1,13 +1,69 @@
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 use outline_tun::{TunConfig, TunTcpConfig};
 
 use super::super::args::Args;
 use super::super::schema::TunSection;
 
-pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunConfig>> {
+fn load_domain_suffixes(
+    list: Option<&[String]>,
+    single_file: Option<&Path>,
+    multi_files: Option<&[PathBuf]>,
+    config_dir: &Path,
+) -> Result<std::sync::Arc<[Box<str>]>> {
+    let mut suffixes = Vec::new();
+    if let Some(items) = list {
+        for s in items {
+            let normalized = s
+                .trim()
+                .trim_start_matches('*')
+                .trim_start_matches('.')
+                .trim_end_matches('.')
+                .to_ascii_lowercase();
+            if !normalized.is_empty() {
+                suffixes.push(normalized.into_boxed_str());
+            }
+        }
+    }
+    let mut file_paths = Vec::new();
+    if let Some(p) = single_file {
+        file_paths.push(super::routing::resolve_config_path(p, config_dir)?);
+    }
+    if let Some(files) = multi_files {
+        for p in files {
+            file_paths.push(super::routing::resolve_config_path(p, config_dir)?);
+        }
+    }
+    for file_path in file_paths {
+        let content = std::fs::read_to_string(&file_path).with_context(|| {
+            format!("failed to read domain suffix file {}", file_path.display())
+        })?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let normalized = line
+                .trim_start_matches('*')
+                .trim_start_matches('.')
+                .trim_end_matches('.')
+                .to_ascii_lowercase();
+            if !normalized.is_empty() {
+                suffixes.push(normalized.into_boxed_str());
+            }
+        }
+    }
+    Ok(suffixes.into())
+}
+
+pub(super) fn load_tun_config(
+    tun: Option<&TunSection>,
+    args: &Args,
+    config_dir: &Path,
+) -> Result<Option<TunConfig>> {
     let path = args
         .tun_path
         .clone()
@@ -64,20 +120,21 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         bail!("tun idle_timeout_secs must be at least 5");
     }
 
-    // Normalize the override-exclude suffixes once: lowercase + strip leading
-    // dots / surrounding whitespace, drop empties. Shared by the TCP and QUIC
-    // sniff paths (cheap Arc clone into both configs).
-    let sniff_override_exclude: std::sync::Arc<[Box<str>]> = tun
-        .and_then(|section| section.sniff_override_exclude.as_ref())
-        .map(|list| {
-            list.iter()
-                .map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase())
-                .filter(|s| !s.is_empty())
-                .map(String::into_boxed_str)
-                .collect::<Vec<_>>()
-                .into()
-        })
-        .unwrap_or_else(|| Vec::new().into());
+    // Normalize override include and exclude domain suffixes once. Shared by
+    // the TCP and QUIC sniff paths (cheap Arc clone into both configs).
+    let sniff_override_include = load_domain_suffixes(
+        tun.and_then(|section| section.sniff_override_include.as_deref()),
+        tun.and_then(|section| section.sniff_override_include_file.as_deref()),
+        tun.and_then(|section| section.sniff_override_include_files.as_deref()),
+        config_dir,
+    )?;
+
+    let sniff_override_exclude = load_domain_suffixes(
+        tun.and_then(|section| section.sniff_override_exclude.as_deref()),
+        tun.and_then(|section| section.sniff_override_exclude_file.as_deref()),
+        tun.and_then(|section| section.sniff_override_exclude_files.as_deref()),
+        config_dir,
+    )?;
 
     let tcp_section = tun.and_then(|section| section.tcp.as_ref());
     // `route_by_sni` is a top-level `[tun]` flag but is consumed by both the UDP
@@ -172,6 +229,7 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
                 .and_then(|section| section.sniff_timeout_ms)
                 .unwrap_or(300),
         ),
+        sniff_override_include: sniff_override_include.clone(),
         sniff_override_exclude: sniff_override_exclude.clone(),
         sniff_direct_reresolve: tcp_section
             .and_then(|section| section.sniff_direct_reresolve)
@@ -321,6 +379,7 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         pmtud_emit_below_quic_initial,
         sniff_quic,
         route_by_sni,
+        sniff_override_include,
         sniff_override_exclude,
         gso,
         gro,

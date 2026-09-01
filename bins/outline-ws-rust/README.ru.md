@@ -422,11 +422,16 @@ listen = "[::1]:9090"
 # Достаёт SNI из ClientHello в QUIC Initial первой датаграммы и отправляет
 # наружу домен (а не IP), чтобы его резолвил выходной узел. Зеркалит [tun.tcp]
 # sniffing для QUIC.
-# sniff_quic = true
+# Домены включения в sniff-override (TCP + QUIC): когда задано и не пусто, ТОЛЬКО
+# хосты, совпавшие с суффиксом, перезаписываются в домен (чтобы их резолвил exit);
+# остальные сохраняют литеральный IP. По умолчанию пусто (override для всех, кроме исключений).
+# sniff_override_include = ["youtube.com", "instagram.com"]
+# sniff_override_include_file = "lists/override-include.lst"
 # Домены-исключения из sniff-override (TCP + QUIC): sniff-хост, совпавший с
 # суффиксом, оставляет литеральный IP вместо домена. Для сайтов, где DNS самого
 # клиента лучше, чем ре-резолв на exit (гео-битый CDN edge). По умолчанию пусто.
 # sniff_override_exclude = ["strava.com"]
+# sniff_override_exclude_file = "lists/override-exclude.lst"
 
 # [tun.tcp]
 # connect_timeout_secs = 10

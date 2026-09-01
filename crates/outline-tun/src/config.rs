@@ -90,6 +90,12 @@ pub struct TunConfig {
     /// drives destination-override framing regardless. Off by default: routing
     /// stays purely IP-based unless opted in.
     pub route_by_sni: bool,
+    /// Domain suffixes included for sniff destination-override. When non-empty,
+    /// only sniffed hosts matching at least one suffix are rewritten to a domain
+    /// target (so the exit node resolves them); all other hosts keep their literal IP.
+    /// When empty (default), all sniffed hosts are eligible for override (unless
+    /// matched by [`sniff_override_exclude`](Self::sniff_override_exclude)).
+    pub sniff_override_include: Arc<[Box<str>]>,
     /// Domain suffixes excluded from sniff destination-override (Xray
     /// `domainsExcluded`). A sniffed host matching any suffix keeps the literal
     /// IP the client dialled instead of being rewritten to a domain — for sites
@@ -188,6 +194,9 @@ pub struct TunTcpConfig {
     /// timeout only bounds the wait for server-speaks-first protocols that
     /// never send a sniffable preface.
     pub sniff_timeout: Duration,
+    /// Domain suffixes included for sniff destination-override. Shared with the
+    /// QUIC path; see [`TunConfig::sniff_override_include`].
+    pub sniff_override_include: Arc<[Box<str>]>,
     /// Domain suffixes excluded from sniff destination-override. Shared with the
     /// QUIC path; see [`TunConfig::sniff_override_exclude`].
     pub sniff_override_exclude: Arc<[Box<str>]>,

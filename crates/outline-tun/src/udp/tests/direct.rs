@@ -103,6 +103,7 @@ async fn direct_engine(writer: SharedTunWriter) -> TunUdpEngine {
         false,
         false,
         Vec::new().into(),
+        Vec::new().into(),
         false,
     )
 }

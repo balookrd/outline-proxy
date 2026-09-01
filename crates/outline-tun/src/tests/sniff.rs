@@ -1,4 +1,4 @@
-use super::{SniffOutcome, host_is_excluded, sniff_host};
+use super::{SniffOutcome, host_is_excluded, host_is_included, should_override_host, sniff_host};
 
 #[test]
 fn host_exclusion_matches_suffixes_case_insensitively() {
@@ -14,6 +14,48 @@ fn host_exclusion_matches_suffixes_case_insensitively() {
     assert!(!host_is_excluded("strava.com.evil.net", &ex));
     assert!(!host_is_excluded("youtube.com", &ex));
     assert!(!host_is_excluded("graphql.strava.com", &[]));
+}
+
+#[test]
+fn host_inclusion_matches_suffixes_case_insensitively() {
+    let inc: Vec<Box<str>> = vec!["youtube.com".into(), "instagram.com".into()];
+    // When include list is empty, every host is included.
+    assert!(host_is_included("anything.com", &[]));
+    assert!(host_is_included("strava.com", &[]));
+
+    // When include list is non-empty, only matching suffixes are included.
+    assert!(host_is_included("youtube.com", &inc));
+    assert!(host_is_included("googlevideo.youtube.com", &inc));
+    assert!(host_is_included("instagram.com", &inc));
+    assert!(host_is_included("cdn.instagram.com.", &inc));
+    assert!(!host_is_included("notyoutube.com", &inc));
+    assert!(host_is_included("YOUTUBE.COM", &inc));
+    assert!(!host_is_included("google.com", &inc));
+    assert!(!host_is_included("strava.com", &inc));
+}
+
+#[test]
+fn should_override_host_evaluates_include_and_exclude() {
+    let inc: Vec<Box<str>> = vec!["google.com".into()];
+    let ex: Vec<Box<str>> = vec!["fonts.google.com".into()];
+
+    // Included and not excluded -> true
+    assert!(should_override_host("google.com", &inc, &ex));
+    assert!(should_override_host("mail.google.com", &inc, &ex));
+
+    // Included but excluded -> false
+    assert!(!should_override_host("fonts.google.com", &inc, &ex));
+    assert!(!should_override_host("sub.fonts.google.com", &inc, &ex));
+
+    // Not included -> false
+    assert!(!should_override_host("youtube.com", &inc, &ex));
+
+    // Empty include + empty exclude -> all true
+    assert!(should_override_host("example.com", &[], &[]));
+
+    // Empty include + exclude -> only excluded is false
+    assert!(!should_override_host("fonts.google.com", &[], &ex));
+    assert!(should_override_host("google.com", &[], &ex));
 }
 
 /// Build a minimal but well-formed TLS 1.2/1.3 ClientHello record carrying a

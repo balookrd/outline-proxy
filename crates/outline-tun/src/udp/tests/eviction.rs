@@ -304,6 +304,7 @@ async fn build_engine_with_carrier_cap(max_flows: usize, max_carrier_flows: usiz
         false,
         false,
         Vec::new().into(),
+        Vec::new().into(),
         false,
     );
     // The cap lives in the budget shared with the TCP engine, so the engine has
@@ -343,6 +344,7 @@ async fn build_direct_engine(max_flows: usize, max_carrier_flows: usize) -> TunU
         false,
         false,
         false,
+        Vec::new().into(),
         Vec::new().into(),
         false,
     )
