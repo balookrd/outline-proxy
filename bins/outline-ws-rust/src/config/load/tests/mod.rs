@@ -168,7 +168,7 @@ fn load_tun_config_normalizes_sniff_override_include_and_exclude() {
 
     let tun = TunSection {
         path: Some("/dev/net/tun".into()),
-        name: None,
+        name: Some("tun0".into()),
         mtu: None,
         max_flows: None,
         max_carrier_flows: None,
@@ -229,7 +229,7 @@ fn load_tun_config_reads_sniff_override_from_files() {
 
     let tun = TunSection {
         path: Some("/dev/net/tun".into()),
-        name: None,
+        name: Some("tun0".into()),
         mtu: None,
         max_flows: None,
         max_carrier_flows: None,
