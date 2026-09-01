@@ -204,6 +204,7 @@ async fn build_engine(manager: outline_uplink::UplinkManager) -> TunUdpEngine {
         true,
         false,
         Vec::new().into(),
+        Vec::new().into(),
         false,
     )
 }

@@ -94,7 +94,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         );
     }
     #[cfg(feature = "tun")]
-    let tun = tun::load_tun_config(tun_section, args)?;
+    let tun = tun::load_tun_config(tun_section, args, config_dir)?;
     let h2 = h2::load_h2_config(h2_section);
     let quic = quic::load_quic_config(file.as_ref().and_then(|f| f.quic.as_ref()));
     let tcp_timeouts =

@@ -166,6 +166,17 @@ listen = "[::1]:9090"
 # both off is rejected at startup. Default false (routing stays purely IP-based
 # unless opted in).
 # route_by_sni = false
+# Domains included for sniff destination-override (TCP + QUIC).
+# When non-empty, ONLY sniffed hosts matching at least one suffix are rewritten
+# to a domain target so the exit node resolves them; all other hosts keep the
+# literal IP the client dialled (resolved on the client side). Suffix match:
+# "youtube.com" covers "googlevideo.youtube.com". Use this when you only want
+# specific blocked or CDN-sensitive domains to be resolved on the proxy server.
+# Default empty (all sniffed hosts are overridden to domain targets, unless
+# matching `sniff_override_exclude`).
+# sniff_override_include = ["youtube.com", "instagram.com"]
+# sniff_override_include_file = "lists/override-include.lst"
+# sniff_override_include_files = ["lists/include-1.lst", "lists/include-2.lst"]
 #
 # Domains excluded from sniff destination-override (TCP + QUIC), Xray-style
 # `domainsExcluded`. A sniffed host matching any suffix keeps the literal IP the
@@ -176,6 +187,8 @@ listen = "[::1]:9090"
 # sites benefit from override (the exit's resolution reaches IPs the client's
 # can't); list only the few that regress. Default empty.
 # sniff_override_exclude = ["strava.com"]
+# sniff_override_exclude_file = "lists/override-exclude.lst"
+# sniff_override_exclude_files = ["lists/exclude-1.lst", "lists/exclude-2.lst"]
 #
 # Open the TUN device with IFF_VNET_HDR and write downlink data as TSO
 # super-segments (Linux only). Default true. The kernel splits one large

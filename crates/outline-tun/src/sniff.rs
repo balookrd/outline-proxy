@@ -285,17 +285,17 @@ fn strip_host_port(value: &str) -> &str {
 /// A sniffed host is usable only if it is a real domain name: non-empty,
 /// length-bounded, made of host-legal characters, and not an IP literal
 /// (overriding an IP target with the same IP buys nothing).
-/// Whether `host` falls under any excluded domain suffix (case-insensitive).
+/// Whether `host` falls under any suffix in `list` (case-insensitive, label-boundary).
 /// A suffix `s` matches when `host == s` or `host` ends with `.s`, so
-/// `strava.com` excludes `graphql.strava.com` / `cdn-1.strava.com` but not
-/// `notstrava.com`. Excluded hosts keep their literal IP (no override). Entries
-/// are pre-normalized (lowercased, leading dots stripped) at config load.
-pub(crate) fn host_is_excluded(host: &str, exclude: &[Box<str>]) -> bool {
-    if exclude.is_empty() {
+/// `strava.com` matches `strava.com`, `graphql.strava.com` and `cdn-1.strava.com`
+/// but not `notstrava.com`. Entries in `list` are pre-normalized
+/// (lowercased, leading dots stripped) at config load.
+pub(crate) fn host_matches_any(host: &str, list: &[Box<str>]) -> bool {
+    if list.is_empty() {
         return false;
     }
     let host = host.trim_end_matches('.');
-    exclude.iter().any(|suffix| {
+    list.iter().any(|suffix| {
         let s: &str = suffix;
         if host.len() == s.len() {
             host.eq_ignore_ascii_case(s)
@@ -306,6 +306,28 @@ pub(crate) fn host_is_excluded(host: &str, exclude: &[Box<str>]) -> bool {
             false
         }
     })
+}
+
+/// Whether `host` falls under any excluded domain suffix (case-insensitive).
+/// Excluded hosts keep their literal IP (no override).
+pub(crate) fn host_is_excluded(host: &str, exclude: &[Box<str>]) -> bool {
+    host_matches_any(host, exclude)
+}
+
+/// Whether `host` is included for destination override (case-insensitive).
+/// When `include` is empty, all hosts are included by default. When non-empty,
+/// `host` must match at least one suffix.
+pub(crate) fn host_is_included(host: &str, include: &[Box<str>]) -> bool {
+    include.is_empty() || host_matches_any(host, include)
+}
+
+/// Decide whether a sniffed `host` should be rewritten into a `TargetAddr::Domain`
+/// so the exit node resolves it.
+///
+/// Returns `true` if `host` satisfies `include` (or `include` is empty) and is not
+/// excluded by `exclude`.
+pub(crate) fn should_override_host(host: &str, include: &[Box<str>], exclude: &[Box<str>]) -> bool {
+    host_is_included(host, include) && !host_is_excluded(host, exclude)
 }
 
 pub(crate) fn is_valid_sniffed_host(host: &str) -> bool {

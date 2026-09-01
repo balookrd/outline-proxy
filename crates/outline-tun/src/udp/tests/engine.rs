@@ -165,6 +165,7 @@ async fn build_engine(
         true,
         route_by_sni,
         Vec::new().into(),
+        Vec::new().into(),
         false,
     );
     (engine, table)

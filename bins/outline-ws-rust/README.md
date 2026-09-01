@@ -423,11 +423,16 @@ listen = "[::1]:9090"
 # QUIC connection sniffing (Xray-style destOverride; default on). Recovers the
 # SNI from the first datagram's QUIC Initial ClientHello and sends the domain
 # (not the IP) upstream so the exit node resolves it. Mirrors [tun.tcp] sniffing.
-# sniff_quic = true
+# Domains included for sniff override (TCP + QUIC): when non-empty, ONLY hosts
+# matching at least one suffix are rewritten to a domain target; all other hosts
+# keep the literal IP. Default empty (override all, except sniff_override_exclude).
+# sniff_override_include = ["youtube.com", "instagram.com"]
+# sniff_override_include_file = "lists/override-include.lst"
 # Domains excluded from sniff override (TCP + QUIC): a sniffed host matching any
 # suffix keeps the literal IP instead of a domain. For sites where the client's
 # own DNS beats the exit re-resolving (geo-wrong CDN edge). Default empty.
 # sniff_override_exclude = ["strava.com"]
+# sniff_override_exclude_file = "lists/override-exclude.lst"
 
 # [tun.tcp]
 # connect_timeout_secs = 10

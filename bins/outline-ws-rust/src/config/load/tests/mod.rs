@@ -157,3 +157,111 @@ fn resolve_config_path_joins_relative_with_config_dir() {
     let p = resolve_config_path(Path::new("lists/ru.lst"), Path::new("/etc/outline")).unwrap();
     assert_eq!(p, PathBuf::from("/etc/outline/lists/ru.lst"));
 }
+
+#[cfg(feature = "tun")]
+#[test]
+fn load_tun_config_normalizes_sniff_override_include_and_exclude() {
+    use super::super::schema::TunSection;
+    use super::tun::load_tun_config;
+    use crate::config::args::Args;
+    use clap::Parser;
+
+    let tun = TunSection {
+        path: Some("/dev/net/tun".into()),
+        name: None,
+        mtu: None,
+        max_flows: None,
+        max_carrier_flows: None,
+        idle_timeout_secs: None,
+        max_concurrent_upstream_dials: None,
+        tcp: None,
+        defrag_max_fragment_sets: None,
+        defrag_max_fragments_per_set: None,
+        defrag_max_total_bytes: None,
+        defrag_max_bytes_per_set: None,
+        ipsec_bypass: None,
+        pmtud_emit_below_quic_initial: None,
+        sniff_quic: None,
+        route_by_sni: None,
+        sniff_override_include: Some(vec![
+            "*.YOUTUBE.COM".into(),
+            ".instagram.com.".into(),
+            "".into(),
+        ]),
+        sniff_override_include_file: None,
+        sniff_override_include_files: None,
+        sniff_override_exclude: Some(vec!["strava.com".into()]),
+        sniff_override_exclude_file: None,
+        sniff_override_exclude_files: None,
+        gso: None,
+        gro: None,
+        uso: None,
+    };
+
+    let args = Args::parse_from(["test"]);
+    let cfg = load_tun_config(Some(&tun), &args, Path::new(".")).unwrap().unwrap();
+    assert_eq!(
+        cfg.sniff_override_include.as_ref(),
+        &["youtube.com".into(), "instagram.com".into()][..]
+    );
+    assert_eq!(cfg.sniff_override_exclude.as_ref(), &["strava.com".into()][..]);
+    assert_eq!(
+        cfg.tcp.sniff_override_include.as_ref(),
+        &["youtube.com".into(), "instagram.com".into()][..]
+    );
+}
+
+#[cfg(feature = "tun")]
+#[test]
+fn load_tun_config_reads_sniff_override_from_files() {
+    use super::super::schema::TunSection;
+    use super::tun::load_tun_config;
+    use crate::config::args::Args;
+    use clap::Parser;
+
+    let tmp_dir =
+        std::env::temp_dir().join(format!("outline-tun-cfg-test-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let inc_file = tmp_dir.join("include.lst");
+    std::fs::write(&inc_file, "# blocked domains\n*.example.com\n\nsub.domain.org.\n").unwrap();
+    let exc_file = tmp_dir.join("exclude.lst");
+    std::fs::write(&exc_file, "cdn.example.com\n").unwrap();
+
+    let tun = TunSection {
+        path: Some("/dev/net/tun".into()),
+        name: None,
+        mtu: None,
+        max_flows: None,
+        max_carrier_flows: None,
+        idle_timeout_secs: None,
+        max_concurrent_upstream_dials: None,
+        tcp: None,
+        defrag_max_fragment_sets: None,
+        defrag_max_fragments_per_set: None,
+        defrag_max_total_bytes: None,
+        defrag_max_bytes_per_set: None,
+        ipsec_bypass: None,
+        pmtud_emit_below_quic_initial: None,
+        sniff_quic: None,
+        route_by_sni: None,
+        sniff_override_include: Some(vec!["inline.net".into()]),
+        sniff_override_include_file: Some("include.lst".into()),
+        sniff_override_include_files: None,
+        sniff_override_exclude: None,
+        sniff_override_exclude_file: Some("exclude.lst".into()),
+        sniff_override_exclude_files: None,
+        gso: None,
+        gro: None,
+        uso: None,
+    };
+
+    let args = Args::parse_from(["test"]);
+    let cfg = load_tun_config(Some(&tun), &args, &tmp_dir).unwrap().unwrap();
+    assert_eq!(
+        cfg.sniff_override_include.as_ref(),
+        &["inline.net".into(), "example.com".into(), "sub.domain.org".into()][..]
+    );
+    assert_eq!(cfg.sniff_override_exclude.as_ref(), &["cdn.example.com".into()][..]);
+
+    let _ = std::fs::remove_dir_all(tmp_dir);
+}

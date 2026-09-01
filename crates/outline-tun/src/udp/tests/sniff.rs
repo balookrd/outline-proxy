@@ -95,6 +95,7 @@ async fn build_engine(upstream_url: Url, sniff_quic: bool) -> TunUdpEngine {
         sniff_quic,
         false,
         Vec::new().into(),
+        Vec::new().into(),
         false,
     )
 }
@@ -192,12 +193,61 @@ async fn tun_udp_quic_excluded_host_keeps_ip_target() {
         false,
         true,
         false,
+        Vec::new().into(),
         exclude,
         false,
     );
 
     // Sniffing is on, but example.com is excluded → keep the literal IP.
     send_client_datagram(&engine, 40040, &quic_initial("example.com")).await;
+    let (target, _) = upstream.expect_decoded().await;
+    assert_eq!(target, TargetAddr::IpV4(REMOTE_IP, REMOTE_PORT));
+}
+
+#[tokio::test]
+async fn tun_udp_quic_included_host_overrides_target_with_domain() {
+    let upstream = TestUdpUpstream::start().await;
+    let manager = build_test_manager_with_urls(None, Some(upstream.url.clone())).await;
+    let include: std::sync::Arc<[Box<str>]> = vec!["youtube.com".into()].into();
+    let engine = TunUdpEngine::new(
+        test_tun_writer(),
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        0,
+        Duration::from_secs(60),
+        false,
+        true,
+        false,
+        include,
+        Vec::new().into(),
+        false,
+    );
+
+    send_client_datagram(&engine, 40042, &quic_initial("youtube.com")).await;
+    let (target, _) = upstream.expect_decoded().await;
+    assert_eq!(target, TargetAddr::Domain("youtube.com".to_string(), REMOTE_PORT));
+}
+
+#[tokio::test]
+async fn tun_udp_quic_non_included_host_keeps_ip_target() {
+    let upstream = TestUdpUpstream::start().await;
+    let manager = build_test_manager_with_urls(None, Some(upstream.url.clone())).await;
+    let include: std::sync::Arc<[Box<str>]> = vec!["youtube.com".into()].into();
+    let engine = TunUdpEngine::new(
+        test_tun_writer(),
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        0,
+        Duration::from_secs(60),
+        false,
+        true,
+        false,
+        include,
+        Vec::new().into(),
+        false,
+    );
+
+    send_client_datagram(&engine, 40044, &quic_initial("example.com")).await;
     let (target, _) = upstream.expect_decoded().await;
     assert_eq!(target, TargetAddr::IpV4(REMOTE_IP, REMOTE_PORT));
 }

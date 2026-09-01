@@ -2750,6 +2750,7 @@ pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
         keepalive_max_probes: 6,
         sniffing: true,
         sniff_timeout: Duration::from_millis(300),
+        sniff_override_include: Vec::new().into(),
         sniff_override_exclude: Vec::new().into(),
         sniff_direct_reresolve: false,
         route_by_sni: false,

@@ -104,6 +104,7 @@ pub async fn spawn_tun_loop(
         config.pmtud_emit_below_quic_initial,
         config.sniff_quic,
         config.route_by_sni,
+        config.sniff_override_include.clone(),
         config.sniff_override_exclude.clone(),
         gso.udp_gso,
     );
