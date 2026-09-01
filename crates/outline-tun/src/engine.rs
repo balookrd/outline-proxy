@@ -135,6 +135,19 @@ pub async fn spawn_tun_loop(
     udp_engine.set_carrier_slots(Arc::clone(&carrier_slots));
     tcp_engine.set_carrier_slots(carrier_slots);
     metrics::set_tun_config(max_flows, max_carrier_flows, idle_timeout);
+    if !config.sniff_override_include_files.is_empty()
+        || !config.sniff_override_exclude_files.is_empty()
+    {
+        std::mem::forget(crate::sniff::spawn_sniff_override_watcher(
+            config.sniff_override_include_files.clone(),
+            config.sniff_override_inline_include.clone(),
+            config.sniff_override_include.clone(),
+            config.sniff_override_exclude_files.clone(),
+            config.sniff_override_inline_exclude.clone(),
+            config.sniff_override_exclude.clone(),
+            config.file_poll,
+        ));
+    }
     // Kernel-side netdev counters: the only place a packet dropped *by the
     // kernel* (rather than by us) is visible from inside the process. sysfs is
     // Linux-only; elsewhere the engine simply runs without this series.

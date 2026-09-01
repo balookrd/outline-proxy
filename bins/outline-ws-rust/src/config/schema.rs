@@ -290,6 +290,8 @@ pub(super) struct TunSection {
     pub(super) sniff_override_exclude_file: Option<PathBuf>,
     /// Multiple files containing domain suffixes to exclude from destination-override.
     pub(super) sniff_override_exclude_files: Option<Vec<PathBuf>>,
+    /// Poll interval in seconds for destination-override domain files on mtime change. Default `60`.
+    pub(super) file_poll_secs: Option<u64>,
     /// Open the TUN device with `IFF_VNET_HDR` and write downlink data as TSO
     /// super-segments the kernel splits per MSS (Linux). Default `true`. Cuts
     /// the per-packet routing / nftables / conntrack / WireGuard cost on the

@@ -193,6 +193,7 @@ fn load_tun_config_normalizes_sniff_override_include_and_exclude() {
         sniff_override_exclude: Some(vec!["strava.com".into()]),
         sniff_override_exclude_file: None,
         sniff_override_exclude_files: None,
+        file_poll_secs: None,
         gso: None,
         gro: None,
         uso: None,
@@ -201,12 +202,12 @@ fn load_tun_config_normalizes_sniff_override_include_and_exclude() {
     let args = Args::parse_from(["test"]);
     let cfg = load_tun_config(Some(&tun), &args, Path::new(".")).unwrap().unwrap();
     assert_eq!(
-        cfg.sniff_override_include.as_ref(),
+        cfg.sniff_override_include.load().as_slice(),
         &["youtube.com".into(), "instagram.com".into()][..]
     );
-    assert_eq!(cfg.sniff_override_exclude.as_ref(), &["strava.com".into()][..]);
+    assert_eq!(cfg.sniff_override_exclude.load().as_slice(), &["strava.com".into()][..]);
     assert_eq!(
-        cfg.tcp.sniff_override_include.as_ref(),
+        cfg.tcp.sniff_override_include.load().as_slice(),
         &["youtube.com".into(), "instagram.com".into()][..]
     );
 }
@@ -250,6 +251,7 @@ fn load_tun_config_reads_sniff_override_from_files() {
         sniff_override_exclude: None,
         sniff_override_exclude_file: Some("exclude.lst".into()),
         sniff_override_exclude_files: None,
+        file_poll_secs: None,
         gso: None,
         gro: None,
         uso: None,
@@ -258,10 +260,10 @@ fn load_tun_config_reads_sniff_override_from_files() {
     let args = Args::parse_from(["test"]);
     let cfg = load_tun_config(Some(&tun), &args, &tmp_dir).unwrap().unwrap();
     assert_eq!(
-        cfg.sniff_override_include.as_ref(),
+        cfg.sniff_override_include.load().as_slice(),
         &["inline.net".into(), "example.com".into(), "sub.domain.org".into()][..]
     );
-    assert_eq!(cfg.sniff_override_exclude.as_ref(), &["cdn.example.com".into()][..]);
+    assert_eq!(cfg.sniff_override_exclude.load().as_slice(), &["cdn.example.com".into()][..]);
 
     let _ = std::fs::remove_dir_all(tmp_dir);
 }

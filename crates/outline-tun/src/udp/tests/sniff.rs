@@ -94,8 +94,8 @@ async fn build_engine(upstream_url: Url, sniff_quic: bool) -> TunUdpEngine {
         false,
         sniff_quic,
         false,
-        Vec::new().into(),
-        Vec::new().into(),
+        crate::empty_sniff_override(),
+        crate::empty_sniff_override(),
         false,
     )
 }
@@ -182,7 +182,7 @@ async fn tun_udp_non_quic_first_datagram_keeps_ip_target() {
 async fn tun_udp_quic_excluded_host_keeps_ip_target() {
     let upstream = TestUdpUpstream::start().await;
     let manager = build_test_manager_with_urls(None, Some(upstream.url.clone())).await;
-    let exclude: std::sync::Arc<[Box<str>]> = vec!["example.com".into()].into();
+    let exclude = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec!["example.com".into()]));
     let engine = TunUdpEngine::new(
         test_tun_writer(),
         crate::TunRouting::from_single_manager(manager),
@@ -193,7 +193,7 @@ async fn tun_udp_quic_excluded_host_keeps_ip_target() {
         false,
         true,
         false,
-        Vec::new().into(),
+        std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(Vec::new())),
         exclude,
         false,
     );
@@ -208,7 +208,7 @@ async fn tun_udp_quic_excluded_host_keeps_ip_target() {
 async fn tun_udp_quic_included_host_overrides_target_with_domain() {
     let upstream = TestUdpUpstream::start().await;
     let manager = build_test_manager_with_urls(None, Some(upstream.url.clone())).await;
-    let include: std::sync::Arc<[Box<str>]> = vec!["youtube.com".into()].into();
+    let include = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec!["youtube.com".into()]));
     let engine = TunUdpEngine::new(
         test_tun_writer(),
         crate::TunRouting::from_single_manager(manager),
@@ -219,7 +219,7 @@ async fn tun_udp_quic_included_host_overrides_target_with_domain() {
         true,
         false,
         include,
-        Vec::new().into(),
+        std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(Vec::new())),
         false,
     );
 
@@ -232,7 +232,7 @@ async fn tun_udp_quic_included_host_overrides_target_with_domain() {
 async fn tun_udp_quic_non_included_host_keeps_ip_target() {
     let upstream = TestUdpUpstream::start().await;
     let manager = build_test_manager_with_urls(None, Some(upstream.url.clone())).await;
-    let include: std::sync::Arc<[Box<str>]> = vec!["youtube.com".into()].into();
+    let include = std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec!["youtube.com".into()]));
     let engine = TunUdpEngine::new(
         test_tun_writer(),
         crate::TunRouting::from_single_manager(manager),
@@ -243,7 +243,7 @@ async fn tun_udp_quic_non_included_host_keeps_ip_target() {
         true,
         false,
         include,
-        Vec::new().into(),
+        std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(Vec::new())),
         false,
     );
 

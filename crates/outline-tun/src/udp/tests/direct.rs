@@ -102,8 +102,8 @@ async fn direct_engine(writer: SharedTunWriter) -> TunUdpEngine {
         false,
         false,
         false,
-        Vec::new().into(),
-        Vec::new().into(),
+        crate::empty_sniff_override(),
+        crate::empty_sniff_override(),
         false,
     )
 }

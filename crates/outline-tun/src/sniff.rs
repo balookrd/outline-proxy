@@ -321,6 +321,169 @@ pub(crate) fn host_is_included(host: &str, include: &[Box<str>]) -> bool {
     include.is_empty() || host_matches_any(host, include)
 }
 
+/// Normalize a domain suffix for matching (trim whitespace, wildcards, leading/trailing dots, lowercase).
+pub fn normalize_domain_suffix(s: &str) -> Option<Box<str>> {
+    let normalized = s
+        .trim()
+        .trim_start_matches('*')
+        .trim_start_matches('.')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if !normalized.is_empty() {
+        Some(normalized.into_boxed_str())
+    } else {
+        None
+    }
+}
+
+/// Parse domain suffixes from string content (one per line, skipping blank lines and comments).
+pub fn parse_domain_suffixes_from_str(content: &str) -> Vec<Box<str>> {
+    let mut suffixes = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(norm) = normalize_domain_suffix(line) {
+            suffixes.push(norm);
+        }
+    }
+    suffixes
+}
+
+/// Read and parse domain suffixes from multiple files, appending any inline suffixes.
+pub fn reload_domain_suffixes_from_files(
+    files: &[std::path::PathBuf],
+    inline: &[String],
+) -> std::io::Result<Vec<Box<str>>> {
+    let mut suffixes = Vec::new();
+    for s in inline {
+        if let Some(norm) = normalize_domain_suffix(s) {
+            suffixes.push(norm);
+        }
+    }
+    for file_path in files {
+        let content = std::fs::read_to_string(file_path)?;
+        suffixes.extend(parse_domain_suffixes_from_str(&content));
+    }
+    Ok(suffixes)
+}
+
+/// Guard returned by [`spawn_sniff_override_watcher`]. Dropping it signals every watcher task to terminate.
+pub struct SniffOverrideWatcherGuard {
+    shutdown: tokio::sync::watch::Sender<bool>,
+}
+
+impl Drop for SniffOverrideWatcherGuard {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
+    }
+}
+
+/// Spawn a background task that polls the mtime of include and exclude domain files every
+/// `poll_interval` and atomically swaps `ArcSwap<Vec<Box<str>>>` on change.
+pub fn spawn_sniff_override_watcher(
+    include_files: Vec<std::path::PathBuf>,
+    inline_include: Vec<String>,
+    include_target: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
+    exclude_files: Vec<std::path::PathBuf>,
+    inline_exclude: Vec<String>,
+    exclude_target: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
+    poll_interval: std::time::Duration,
+) -> SniffOverrideWatcherGuard {
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    if include_files.is_empty() && exclude_files.is_empty() {
+        return SniffOverrideWatcherGuard { shutdown: shutdown_tx };
+    }
+
+    tokio::spawn(async move {
+        let mut last_include_mtimes: Vec<Option<std::time::SystemTime>> =
+            Vec::with_capacity(include_files.len());
+        for f in &include_files {
+            last_include_mtimes
+                .push(tokio::fs::metadata(f).await.ok().and_then(|m| m.modified().ok()));
+        }
+        let mut last_exclude_mtimes: Vec<Option<std::time::SystemTime>> =
+            Vec::with_capacity(exclude_files.len());
+        for f in &exclude_files {
+            last_exclude_mtimes
+                .push(tokio::fs::metadata(f).await.ok().and_then(|m| m.modified().ok()));
+        }
+
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(poll_interval) => {},
+                res = shutdown_rx.changed() => {
+                    if res.is_err() || *shutdown_rx.borrow() {
+                        break;
+                    }
+                    continue;
+                }
+            }
+
+            // Check include files
+            let mut include_changed = false;
+            for (i, f) in include_files.iter().enumerate() {
+                let mtime = tokio::fs::metadata(f).await.ok().and_then(|m| m.modified().ok());
+                if mtime != last_include_mtimes[i] {
+                    last_include_mtimes[i] = mtime;
+                    include_changed = true;
+                }
+            }
+            if include_changed {
+                match reload_domain_suffixes_from_files(&include_files, &inline_include) {
+                    Ok(new_suffixes) => {
+                        tracing::info!(
+                            count = new_suffixes.len(),
+                            files = ?include_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                            "reloaded TUN sniff_override_include domain suffixes"
+                        );
+                        include_target.store(std::sync::Arc::new(new_suffixes));
+                    },
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            files = ?include_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                            "failed to reload TUN sniff_override_include files; keeping previous"
+                        );
+                    },
+                }
+            }
+
+            // Check exclude files
+            let mut exclude_changed = false;
+            for (i, f) in exclude_files.iter().enumerate() {
+                let mtime = tokio::fs::metadata(f).await.ok().and_then(|m| m.modified().ok());
+                if mtime != last_exclude_mtimes[i] {
+                    last_exclude_mtimes[i] = mtime;
+                    exclude_changed = true;
+                }
+            }
+            if exclude_changed {
+                match reload_domain_suffixes_from_files(&exclude_files, &inline_exclude) {
+                    Ok(new_suffixes) => {
+                        tracing::info!(
+                            count = new_suffixes.len(),
+                            files = ?exclude_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                            "reloaded TUN sniff_override_exclude domain suffixes"
+                        );
+                        exclude_target.store(std::sync::Arc::new(new_suffixes));
+                    },
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            files = ?exclude_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                            "failed to reload TUN sniff_override_exclude files; keeping previous"
+                        );
+                    },
+                }
+            }
+        }
+    });
+
+    SniffOverrideWatcherGuard { shutdown: shutdown_tx }
+}
+
 /// Decide whether a sniffed `host` should be rewritten into a `TargetAddr::Domain`
 /// so the exit node resolves it.
 ///

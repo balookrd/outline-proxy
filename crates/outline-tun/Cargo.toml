@@ -19,6 +19,7 @@ quic = ["outline-transport/quic", "outline-uplink/quic"]
 aes = "0.8"
 aes-gcm = "0.10"
 anyhow = "1.0"
+arc-swap = "1.7"
 bytes = "1.10"
 dashmap = "6.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

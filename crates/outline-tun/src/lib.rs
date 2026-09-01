@@ -33,9 +33,13 @@ mod writer;
 #[cfg(test)]
 mod tests;
 
-pub use config::{TunConfig, TunTcpConfig};
+pub use config::{TunConfig, TunTcpConfig, empty_sniff_override};
 pub use engine::spawn_tun_loop;
 pub use routing::{TunRoute, TunRouting};
+pub use sniff::{
+    SniffOverrideWatcherGuard, normalize_domain_suffix, parse_domain_suffixes_from_str,
+    reload_domain_suffixes_from_files, spawn_sniff_override_watcher,
+};
 pub use tcp::TunTcpEngine;
 
 pub(crate) use writer::SharedTunWriter;

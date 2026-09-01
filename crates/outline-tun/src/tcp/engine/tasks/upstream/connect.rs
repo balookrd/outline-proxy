@@ -682,11 +682,9 @@ impl TunTcpEngine {
 
             match sniff_host(&peeked) {
                 SniffOutcome::Found(host) => {
-                    if !crate::sniff::should_override_host(
-                        &host,
-                        &self.inner.tcp.sniff_override_include,
-                        &self.inner.tcp.sniff_override_exclude,
-                    ) {
+                    let include = self.inner.tcp.sniff_override_include.load();
+                    let exclude = self.inner.tcp.sniff_override_exclude.load();
+                    if !crate::sniff::should_override_host(&host, &include, &exclude) {
                         metrics::record_tun_tcp_sniff("excluded");
                         debug!(host, original = %target, "TUN TCP sniff: host excluded from override, dialing by IP");
                         return Some(target);
