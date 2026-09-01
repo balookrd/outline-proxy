@@ -65,7 +65,7 @@ libc = "0.2"
 libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"], optional = true }
 lru = { version = "0.18", default-features = false }
 mimalloc = { version = "0.1", default-features = false, optional = true }
-tikv-jemallocator = { version = "0.6", default-features = false, features = ["background_threads", "stats"], optional = true }
+tikv-jemallocator = { version = "0.6", default-features = false, features = ["background_threads", "stats", "unprefixed_malloc_on_supported_platforms"], optional = true }
 tikv-jemalloc-ctl = { version = "0.6", default-features = false, features = ["stats"], optional = true }
 outline-metrics = { path = "../../crates/outline-metrics", default-features = false }
 outline-net = { path = "../../crates/outline-net" }
