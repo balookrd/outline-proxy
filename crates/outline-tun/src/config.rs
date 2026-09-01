@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
+
 #[derive(Debug, Clone)]
 pub struct TunConfig {
     pub path: PathBuf,
@@ -95,7 +97,7 @@ pub struct TunConfig {
     /// target (so the exit node resolves them); all other hosts keep their literal IP.
     /// When empty (default), all sniffed hosts are eligible for override (unless
     /// matched by [`sniff_override_exclude`](Self::sniff_override_exclude)).
-    pub sniff_override_include: Arc<[Box<str>]>,
+    pub sniff_override_include: Arc<ArcSwap<Vec<Box<str>>>>,
     /// Domain suffixes excluded from sniff destination-override (Xray
     /// `domainsExcluded`). A sniffed host matching any suffix keeps the literal
     /// IP the client dialled instead of being rewritten to a domain — for sites
@@ -104,7 +106,17 @@ pub struct TunConfig {
     /// `strava.com` excludes `graphql.strava.com` and `cdn-1.strava.com`.
     /// Applies to both the TCP and QUIC sniff paths. Entries are pre-normalized
     /// (lowercased, leading dots stripped) at config load.
-    pub sniff_override_exclude: Arc<[Box<str>]>,
+    pub sniff_override_exclude: Arc<ArcSwap<Vec<Box<str>>>>,
+    /// File paths for destination-override include domains (watched for hot-reload on mtime).
+    pub sniff_override_include_files: Vec<PathBuf>,
+    /// Inline domain suffixes for destination-override include (preserved across file reloads).
+    pub sniff_override_inline_include: Vec<String>,
+    /// File paths for destination-override exclude domains (watched for hot-reload on mtime).
+    pub sniff_override_exclude_files: Vec<PathBuf>,
+    /// Inline domain suffixes for destination-override exclude (preserved across file reloads).
+    pub sniff_override_inline_exclude: Vec<String>,
+    /// Poll interval for checking file mtime changes. Default `60s`.
+    pub file_poll: Duration,
     /// Open the TUN device with `IFF_VNET_HDR` so every `read(2)` / `write(2)`
     /// carries a 10-byte `virtio_net_hdr` prefix (Linux only). Default `true`.
     ///
@@ -196,10 +208,10 @@ pub struct TunTcpConfig {
     pub sniff_timeout: Duration,
     /// Domain suffixes included for sniff destination-override. Shared with the
     /// QUIC path; see [`TunConfig::sniff_override_include`].
-    pub sniff_override_include: Arc<[Box<str>]>,
+    pub sniff_override_include: Arc<ArcSwap<Vec<Box<str>>>>,
     /// Domain suffixes excluded from sniff destination-override. Shared with the
     /// QUIC path; see [`TunConfig::sniff_override_exclude`].
-    pub sniff_override_exclude: Arc<[Box<str>]>,
+    pub sniff_override_exclude: Arc<ArcSwap<Vec<Box<str>>>>,
     /// SNI bypass for the *direct* (`via = "direct"`) path. When `true` and a
     /// direct flow's first bytes carry a TLS SNI / HTTP Host, the host is
     /// re-resolved through this node's own (local) resolver and the connection
@@ -249,4 +261,8 @@ impl TunTcpConfig {
             self.initial_receive_window_bytes.min(self.max_buffered_client_bytes)
         }
     }
+}
+
+pub fn empty_sniff_override() -> Arc<ArcSwap<Vec<Box<str>>>> {
+    Arc::new(ArcSwap::from_pointee(Vec::new()))
 }

@@ -372,7 +372,9 @@ async fn tun_tcp_sniffed_excluded_host_dials_by_ip() {
     let manager = build_test_manager(upstream.url()).await;
     let (writer, mut capture) = TunCapture::new().await;
     let config = crate::config::TunTcpConfig {
-        sniff_override_exclude: vec!["example.com".into()].into(),
+        sniff_override_exclude: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![
+            "example.com".into(),
+        ])),
         ..test_tun_tcp_config()
     };
     let engine = super::TunTcpEngine::new(
@@ -418,7 +420,9 @@ async fn tun_tcp_sniffed_included_host_dials_by_domain() {
     let manager = build_test_manager(upstream.url()).await;
     let (writer, mut capture) = TunCapture::new().await;
     let config = crate::config::TunTcpConfig {
-        sniff_override_include: vec!["youtube.com".into()].into(),
+        sniff_override_include: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![
+            "youtube.com".into(),
+        ])),
         ..test_tun_tcp_config()
     };
     let engine = super::TunTcpEngine::new(
@@ -462,7 +466,9 @@ async fn tun_tcp_sniffed_non_included_host_dials_by_ip() {
     let manager = build_test_manager(upstream.url()).await;
     let (writer, mut capture) = TunCapture::new().await;
     let config = crate::config::TunTcpConfig {
-        sniff_override_include: vec!["youtube.com".into()].into(),
+        sniff_override_include: std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(vec![
+            "youtube.com".into(),
+        ])),
         ..test_tun_tcp_config()
     };
     let engine = super::TunTcpEngine::new(

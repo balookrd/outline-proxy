@@ -1,5 +1,6 @@
 mod icmp_ptb;
 mod ipsec_bypass;
+mod sniff_watcher;
 
 use super::{
     EBUSY_OS_ERROR, IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_MIN_PATH_MTU, IPV6_NEXT_HEADER_FRAGMENT,

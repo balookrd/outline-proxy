@@ -203,8 +203,8 @@ async fn build_engine(manager: outline_uplink::UplinkManager) -> TunUdpEngine {
         false,
         true,
         false,
-        Vec::new().into(),
-        Vec::new().into(),
+        crate::empty_sniff_override(),
+        crate::empty_sniff_override(),
         false,
     )
 }

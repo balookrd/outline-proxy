@@ -433,6 +433,7 @@ listen = "[::1]:9090"
 # own DNS beats the exit re-resolving (geo-wrong CDN edge). Default empty.
 # sniff_override_exclude = ["strava.com"]
 # sniff_override_exclude_file = "lists/override-exclude.lst"
+# file_poll_secs = 60 # Polling interval in seconds to auto-reload domain files on mtime change
 
 # [tun.tcp]
 # connect_timeout_secs = 10

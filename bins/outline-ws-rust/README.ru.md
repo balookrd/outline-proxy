@@ -432,6 +432,7 @@ listen = "[::1]:9090"
 # клиента лучше, чем ре-резолв на exit (гео-битый CDN edge). По умолчанию пусто.
 # sniff_override_exclude = ["strava.com"]
 # sniff_override_exclude_file = "lists/override-exclude.lst"
+# file_poll_secs = 60 # Интервал опроса файлов доменов в секундах для автоперезагрузки по изменению mtime
 
 # [tun.tcp]
 # connect_timeout_secs = 10

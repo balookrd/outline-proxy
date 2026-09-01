@@ -190,6 +190,10 @@ listen = "[::1]:9090"
 # sniff_override_exclude_file = "lists/override-exclude.lst"
 # sniff_override_exclude_files = ["lists/exclude-1.lst", "lists/exclude-2.lst"]
 #
+# Polling interval in seconds to detect mtime changes on sniff override domain list files.
+# When a file changes, the domain list is atomically reloaded in memory without restarting. Default 60.
+# file_poll_secs = 60
+#
 # Open the TUN device with IFF_VNET_HDR and write downlink data as TSO
 # super-segments (Linux only). Default true. The kernel splits one large
 # super-segment (up to ~60 KB) into MSS packets, so the per-packet routing /

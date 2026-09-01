@@ -87,10 +87,10 @@ pub(super) struct TunUdpEngineInner {
     pub(super) route_by_sni: bool,
     /// Domain suffixes included for QUIC sniff destination-override. See
     /// [`TunConfig::sniff_override_include`](crate::TunConfig).
-    pub(super) sniff_override_include: std::sync::Arc<[Box<str>]>,
+    pub(super) sniff_override_include: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
     /// Domain suffixes excluded from QUIC sniff destination-override. See
     /// [`TunConfig::sniff_override_exclude`](crate::TunConfig).
-    pub(super) sniff_override_exclude: std::sync::Arc<[Box<str>]>,
+    pub(super) sniff_override_exclude: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
     /// Domain sniffed per `(client, destination)` pair, consulted when a new
     /// flow's first datagram carries no ClientHello — see [`SniRouteCache`].
     /// `None` unless `route_by_sni` is on, so the feature-off path allocates
@@ -135,8 +135,8 @@ impl TunUdpEngine {
         pmtud_emit_below_quic_initial: bool,
         sniff_quic: bool,
         route_by_sni: bool,
-        sniff_override_include: std::sync::Arc<[Box<str>]>,
-        sniff_override_exclude: std::sync::Arc<[Box<str>]>,
+        sniff_override_include: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
+        sniff_override_exclude: std::sync::Arc<arc_swap::ArcSwap<Vec<Box<str>>>>,
         udp_gso: bool,
     ) -> Self {
         let (close_tx, close_rx) = mpsc::unbounded_channel();
@@ -391,11 +391,9 @@ impl TunUdpEngine {
         }
         match crate::quic_sniff::sniff_quic_sni(payload) {
             crate::sniff::SniffOutcome::Found(host) => {
-                if !crate::sniff::should_override_host(
-                    &host,
-                    &self.inner.sniff_override_include,
-                    &self.inner.sniff_override_exclude,
-                ) {
+                let include = self.inner.sniff_override_include.load();
+                let exclude = self.inner.sniff_override_exclude.load();
+                if !crate::sniff::should_override_host(&host, &include, &exclude) {
                     metrics::record_tun_udp_sniff("excluded");
                     debug!(host, "TUN UDP sniff: QUIC host excluded from override, framing by IP");
                     return None;
