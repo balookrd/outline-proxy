@@ -162,8 +162,16 @@ impl DnsCache {
 
     /// Removes entries whose expiry is older than `stale_grace` — callers that
     /// want to keep stale entries around for fallback should pass a grace
-    /// period longer than the cache TTL. Returns the number of purged entries.
+    /// period longer than the cache TTL. Also purges dead `Weak` handles from
+    /// the singleflight in-flight map that were left behind by cancelled queries.
+    /// Returns the number of purged cache entries.
     pub(super) fn sweep_expired(&self, stale_grace: Duration) -> usize {
+        self.in_flight.lock().retain(|_, weak| weak.upgrade().is_some());
         self.core.sweep_expired(stale_grace)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_flight_len(&self) -> usize {
+        self.in_flight.lock().len()
     }
 }

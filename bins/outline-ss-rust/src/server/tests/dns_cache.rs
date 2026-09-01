@@ -150,3 +150,36 @@ async fn dns_cache_singleflight_propagates_errors() {
         .expect("second call succeeds");
     assert_eq!(ok.as_ref(), resolved.as_ref());
 }
+
+#[tokio::test]
+async fn dns_cache_singleflight_cancelled_lookup_swept_by_janitor() {
+    let cache = DnsCache::new(std::time::Duration::from_secs(30));
+
+    let started = Arc::new(tokio::sync::Notify::new());
+    let started_clone = Arc::clone(&started);
+    let task = tokio::spawn({
+        let cache = Arc::clone(&cache);
+        async move {
+            cache
+                .resolve_or_join("cancelled.example", 443, false, move |_| {
+                    let started = Arc::clone(&started_clone);
+                    async move {
+                        started.notify_one();
+                        std::future::pending::<anyhow::Result<Arc<[SocketAddr]>>>().await
+                    }
+                })
+                .await
+        }
+    });
+
+    started.notified().await;
+    assert_eq!(cache.in_flight_len(), 1, "in-flight entry must be registered");
+
+    task.abort();
+    let _ = task.await;
+
+    assert_eq!(cache.in_flight_len(), 1, "dead weak entry remains before sweep");
+
+    cache.sweep_expired(std::time::Duration::from_secs(0));
+    assert_eq!(cache.in_flight_len(), 0, "janitor sweep must purge dead weak in-flight entries");
+}
