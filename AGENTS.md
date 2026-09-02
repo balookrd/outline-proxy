@@ -8,6 +8,10 @@
 - [`bins/outline-ss-rust/AGENTS.md`](bins/outline-ss-rust/AGENTS.md) — server data plane.
 - [`bins/outline-ws-rust/AGENTS.md`](bins/outline-ws-rust/AGENTS.md) — client (SOCKS5/TUN ingress).
 
+Память проекта и база знаний (топология, история инцидентов, боевые узлы):
+- `~/.claude/projects/-Users-mvmalykh-IdeaProjects-outline-proxy/memory/` (главный индекс в `MEMORY.md`).
+  Сверяться с ней перед операциями на боевом парке, деплоем, изменениями топологии и архитектурными решениями.
+
 При конфликте корневые монорепо-правила имеют приоритет над тем, что в
 per-bin файлах относится к старой раздельной раскладке репозиториев.
 

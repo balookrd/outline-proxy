@@ -8,3 +8,7 @@
 
 - [`bins/outline-ss-rust/AGENTS.md`](bins/outline-ss-rust/AGENTS.md) — server data plane.
 - [`bins/outline-ws-rust/AGENTS.md`](bins/outline-ws-rust/AGENTS.md) — client (SOCKS5/TUN ingress).
+
+Память проекта:
+- `~/.claude/projects/-Users-mvmalykh-IdeaProjects-outline-proxy/memory/` (индекс в `MEMORY.md`).
+
