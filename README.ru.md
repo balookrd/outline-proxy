@@ -117,6 +117,11 @@ TUN PMTUD).
 [mesh-кластер серверов](docs/CLUSTER.ru.md) ·
 [развёртывание кластера](docs/CLUSTER-DEPLOY.ru.md).
 
+Для навигации по коду с меньшим расходом токенов можно сгенерировать локальную
+структурную карту репозитория через
+[`scripts/code-index.py`](scripts/code-index.py); использование описано в
+[`docs/CODE-INDEX.ru.md`](docs/CODE-INDEX.ru.md).
+
 ## Сборка
 
 Оба бинаря — Rust edition 2024.

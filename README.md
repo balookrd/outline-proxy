@@ -115,6 +115,10 @@ Cross-cutting topics under [`docs/`](docs/):
 [server mesh cluster](docs/CLUSTER.md) ·
 [cluster deployment](docs/CLUSTER-DEPLOY.md).
 
+For low-token code navigation, generate a local structural repo map with
+[`scripts/code-index.py`](scripts/code-index.py); usage is documented in
+[`docs/CODE-INDEX.md`](docs/CODE-INDEX.md).
+
 ## Build
 
 Both binaries are Rust edition 2024.
