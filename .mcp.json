@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ast-grep": {
+      "command": "/opt/homebrew/bin/ast-grep-mcp",
+      "args": []
+    }
+  }
+}
