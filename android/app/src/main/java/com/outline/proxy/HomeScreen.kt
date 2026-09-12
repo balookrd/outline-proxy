@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -142,7 +143,13 @@ fun HomeScreen(
             tcpFamily, tcpCarrier, udpFamily, udpCarrier, onOpenProfiles,
         )
         Spacer(Modifier.height(16.dp))
-        ActionRow(canConnect = profile != null, connected = connected, onAddServer, onToggle)
+        ActionRow(
+            canConnect = profile != null,
+            connected = connected,
+            connecting = connecting,
+            onAddServer = onAddServer,
+            onToggle = onToggle,
+        )
         Spacer(Modifier.height(16.dp))
         QuickLinks(onOpenSplitTunnel, onOpenExternalControl, onOpenKeepAlive)
         Spacer(Modifier.height(16.dp))
@@ -181,14 +188,29 @@ private fun VersionFooter(onCheckForUpdates: () -> Unit, updateStatus: String?) 
 
 @Composable
 private fun Header() {
-    // The full-width brand banner, per theme.
-    val logo = if (isSystemInDarkTheme()) R.drawable.brand_logo_dark else R.drawable.brand_logo_light
-    Image(
-        painter = painterResource(logo),
-        contentDescription = "outline-proxy",
-        contentScale = ContentScale.FillWidth,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
-    )
+    // The full-width brand banner with smooth Material 3 rounded corners
+    val isDark = isSystemInDarkTheme()
+    val logo = if (isDark) R.drawable.brand_logo_dark else R.drawable.brand_logo_light
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.35f else 0.65f),
+        ),
+    ) {
+        Image(
+            painter = painterResource(logo),
+            contentDescription = "outline-proxy",
+            contentScale = ContentScale.FillWidth,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp)),
+        )
+    }
 }
 
 @Composable
@@ -206,12 +228,16 @@ private fun StatusCard(
     udpCarrier: String?,
     onClick: () -> Unit,
 ) {
-    val dotColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
+    val dotColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
         tonalElevation = 2.dp,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+        ),
     ) {
         Box {
             // Dotted world map bleeding off the right edge, tinted to the theme.
@@ -226,7 +252,7 @@ private fun StatusCard(
                     .fillMaxWidth(0.62f)
                     .height(150.dp),
             )
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     EmblemRing()
                     Spacer(Modifier.width(16.dp))
@@ -253,19 +279,19 @@ private fun StatusCard(
                         val statusColor = when {
                             !connected -> MaterialTheme.colorScheme.outline
                             hasLiveLink -> StatusGreen
-                            connecting -> BrandBlue
+                            connecting -> MaterialTheme.colorScheme.primary
                             else -> StatusAmber
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
-                                Modifier.size(9.dp).clip(CircleShape).background(statusColor),
+                                Modifier.size(10.dp).clip(CircleShape).background(statusColor),
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
                                 statusText,
                                 color = if (connected) statusColor else MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
+                                fontWeight = FontWeight.SemiBold,
                             )
                         }
                         // Why the status reads the way it does: what the phone
@@ -415,7 +441,7 @@ private fun StatColumn(
             Icon(
                 icon,
                 contentDescription = null,
-                tint = BrandBlue,
+                tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(13.dp),
             )
             Spacer(Modifier.width(4.dp))
@@ -484,7 +510,7 @@ private fun TrafficReadout(connectedSinceMs: Long) {
         Icon(
             Icons.Filled.ArrowUpward,
             contentDescription = stringResource(R.string.a11y_uploaded),
-            tint = BrandBlue,
+            tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(12.dp),
         )
         Spacer(Modifier.width(2.dp))
@@ -495,7 +521,7 @@ private fun TrafficReadout(connectedSinceMs: Long) {
         Icon(
             Icons.Filled.ArrowDownward,
             contentDescription = stringResource(R.string.a11y_downloaded),
-            tint = BrandBlue,
+            tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(12.dp),
         )
         Spacer(Modifier.width(2.dp))
@@ -602,13 +628,16 @@ private fun connectingDots(active: Boolean): String {
 
 @Composable
 private fun Badge(text: String) {
-    Surface(shape = RoundedCornerShape(8.dp), color = BrandBlue.copy(alpha = 0.18f)) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+    ) {
         Text(
             text,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
             fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
-            color = BrandBlue,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary,
         )
     }
 }
@@ -617,6 +646,7 @@ private fun Badge(text: String) {
 private fun ActionRow(
     canConnect: Boolean,
     connected: Boolean,
+    connecting: Boolean,
     onAddServer: () -> Unit,
     onToggle: () -> Unit,
 ) {
@@ -627,7 +657,7 @@ private fun ActionRow(
         OutlinedButton(
             onClick = onAddServer,
             modifier = Modifier.weight(1f).height(56.dp),
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(20.dp),
         ) {
             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
@@ -636,8 +666,7 @@ private fun ActionRow(
         // Gradient primary action; a plain Material button cannot take a Brush,
         // so it is a clickable Box. Disabled until a server exists.
         val enabled = canConnect || connected
-        // Blue to connect, red to disconnect — the colour tells the current state
-        // apart from the label.
+        // Primary to connect, red/error to disconnect — clear semantic states in M3
         val gradient = when {
             !enabled -> Brush.horizontalGradient(
                 listOf(
@@ -645,33 +674,54 @@ private fun ActionRow(
                     MaterialTheme.colorScheme.surfaceVariant,
                 ),
             )
-            connected -> Brush.horizontalGradient(listOf(Color(0xFFE53935), Color(0xFFFF6B6B)))
-            else -> Brush.horizontalGradient(listOf(BrandBlue, Color(0xFF6C7BFF)))
+            connected -> Brush.horizontalGradient(
+                listOf(
+                    MaterialTheme.colorScheme.error,
+                    Color(0xFFEF4444),
+                ),
+            )
+            else -> Brush.horizontalGradient(
+                listOf(
+                    MaterialTheme.colorScheme.primary,
+                    MaterialTheme.colorScheme.secondary,
+                ),
+            )
         }
+        val contentColor = if (enabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
         Box(
             modifier = Modifier
                 .weight(1f)
                 .height(56.dp)
-                .clip(RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(20.dp))
                 .background(gradient)
                 .clickable(enabled = enabled, onClick = onToggle),
             contentAlignment = Alignment.Center,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.PowerSettingsNew,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp),
-                )
+                if (connecting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.5.dp,
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.PowerSettingsNew,
+                        contentDescription = null,
+                        tint = contentColor,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
                 Spacer(Modifier.width(8.dp))
                 Text(
                     if (connected) {
                         stringResource(R.string.btn_disconnect)
+                    } else if (connecting) {
+                        stringResource(R.string.status_connecting)
                     } else {
                         stringResource(R.string.btn_connect)
                     },
-                    color = Color.White,
+                    color = contentColor,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
@@ -687,8 +737,13 @@ private fun QuickLinks(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 2.dp,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+        ),
     ) {
         Row(modifier = Modifier.padding(vertical = 16.dp)) {
             QuickLink(
@@ -720,10 +775,10 @@ private fun QuickLink(
     ) {
         Box(
             modifier = Modifier.size(44.dp).clip(CircleShape)
-                .background(BrandBlue.copy(alpha = 0.14f)),
+                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, tint = BrandBlue, modifier = Modifier.size(22.dp))
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
         }
         Spacer(Modifier.height(8.dp))
         Text(
