@@ -9,6 +9,12 @@ commit.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.2] - 2026-09-12
+
+### Changed
+
+- **Vibrant Electric Blue squircle badge for universal contrast.** Replaced low-contrast disc backings with a high-luminance electric blue squircle badge (`#0284C7` → `#2563EB` → `#1D4ED8`) featuring a crisp white shield and tunnel arrow symbol. The middle-spectrum luminance provides sharp contrast on both pure dark (`#020617`, dark tabs) and pure light (`#FFFFFF`, light tabs) surfaces with zero risk of blending into background chrome.
+
 ## [1.9.1] - 2026-09-12
 
 ### Changed
