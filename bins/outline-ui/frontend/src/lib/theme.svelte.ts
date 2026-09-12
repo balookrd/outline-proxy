@@ -34,11 +34,20 @@ function applyThemeColor(mode: Mode) {
   meta.setAttribute('content', THEME_COLORS[mode]);
 }
 
+function updateFavicon(mode: Mode) {
+  const fav = document.getElementById('favicon') as HTMLLinkElement | null;
+  if (fav) {
+    fav.href = mode === 'dark' ? '/favicon-dark.png' : '/favicon-light.png';
+  }
+}
+
 export function applyTheme() {
   const root = document.documentElement;
   if (theme.mode) root.dataset.theme = theme.mode;
   else root.removeAttribute('data-theme'); // let @media (prefers-color-scheme) decide
-  applyThemeColor(effectiveMode());
+  const eff = effectiveMode();
+  applyThemeColor(eff);
+  updateFavicon(eff);
 }
 
 export function toggleTheme() {

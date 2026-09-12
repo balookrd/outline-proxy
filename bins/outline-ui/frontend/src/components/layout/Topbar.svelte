@@ -1,6 +1,7 @@
 <script lang="ts">
   import { toggleTheme, theme } from '../../lib/theme.svelte';
-  import logo from '../../assets/outline-logo.png';
+  import logoDark from '../../assets/outline-logo-dark.png';
+  import logoLight from '../../assets/outline-logo-light.png';
 
   // The prototype hardcodes an example prod hostname here ("ui.k3s.beerloga.su");
   // the real app shows wherever it is actually being served from (dev proxy,
@@ -25,7 +26,8 @@
 <div class="topbar">
   <div class="brand">
     <span class="logo" aria-hidden="true">
-      <img src={logo} alt="outline" width="22" height="22" />
+      <img class="light" src={logoLight} alt="outline" width="22" height="22" />
+      <img class="dark" src={logoDark} alt="outline" width="22" height="22" />
     </span>
     outline <small>fleet UI</small>
   </div>

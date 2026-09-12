@@ -9,6 +9,14 @@ commit.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.1] - 2026-09-12
+
+### Changed
+
+- **Theme-adaptive icons and favicons for enhanced contrast.** Separate dark and light variants of the brand emblem and favicon are now served:
+  - Topbar branding displays `outline-logo-light.png` on light themes and `outline-logo-dark.png` on dark themes with zero layout flicker via CSS theme selectors.
+  - Page favicon adapts to browser color scheme preferences (`prefers-color-scheme: dark`/`light`) and dynamically synchronizes with in-app manual theme toggling in `theme.svelte.ts`.
+
 ## [1.3.0] - 2026-08-27
 
 ### Changed

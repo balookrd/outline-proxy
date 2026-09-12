@@ -114,8 +114,8 @@ spec:
           tolerationSeconds: 60
       containers:
         - name: outline-ui
-          # 1.9.0: new Material Design & branding assets (shield tunnel icon & banners)
-          image: registry.k3s.beerloga.su/outline-ui:1.9.0
+          # 1.9.1: theme-adaptive icons (dark/light emblem for topbar & adaptive dark/light favicon)
+          image: registry.k3s.beerloga.su/outline-ui:1.9.1
           args: ["--config", "/etc/outline-ui/config.toml"]
           ports:
             - containerPort: 9000
