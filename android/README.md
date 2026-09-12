@@ -1,16 +1,22 @@
+<picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../docs/logo-dark.png">
+    <img src="../docs/logo-light.png" alt="outline-proxy logo" width="100%">
+</picture>
+
 # Outline Proxy — Android client
 
 Android VPN client that connects to your servers using the full `outline-ws-rust`
 uplink stack (padding + VLESS / SS / WS / TLS, failover). The Rust core is reused
-unchanged; Android only adds a thin `VpnService` + UI layer on top.
+unchanged; Android adds a modern Material Design 3 (Material You) UI + `VpnService` layer.
 
 > Status: **feature-complete client, not yet run against a live server**.
 > Increments 1–5 are done — Rust⇄Kotlin bridge, a native `outline-tun` engine
 > attached to the `VpnService` fd, QUIC/HTTP-3 carriers, a persisted server-list
 > UI, Wi-Fi⇄cellular handover, per-app split tunneling, and `outline://`
-> external control — plus a run of later work: config-over-URL subscriptions, a
-> system light/dark theme, a launcher icon, signed release builds, a single
-> connect/disconnect button, keep-the-tunnel-alive across kills / reboot / OEM
+> external control — plus a run of later work: config-over-URL subscriptions,
+> full Material Design 3 (Material You dynamic theming on Android 12+, themed monochrome launcher icons on Android 13+),
+> new brand identity (shield & speed stream tunnel), signed release builds, a unified
+> connect/disconnect action with connecting indicators, keep-the-tunnel-alive across kills / reboot / OEM
 > cleanup, a profile-named foreground notification, and system-back navigation.
 > The whole Rust stack (incl. quinn + h3) cross-compiles under NDK r29, and the
 > Gradle/Kotlin app builds (debug APK, minified release APK, green JVM unit

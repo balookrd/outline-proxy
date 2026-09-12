@@ -34,17 +34,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// Brand accents drawn from the emblem, used regardless of the (dynamic) theme so
-// the primary action and highlights keep their identity across the app.
-internal val BrandBlue = Color(0xFF3B5BFF)
-internal val BrandCyan = Color(0xFF40C4FF)
-internal val BrandOrange = Color(0xFFF57C1F)
-internal val StatusGreen = Color(0xFF2ECC71)
+// Brand accents updated to match Material 3 modern palette
+internal val BrandBlue = Color(0xFF2563EB)
+internal val BrandCyan = Color(0xFF38BDF8)
+internal val BrandOrange = Color(0xFFF97316)
+internal val StatusGreen = Color(0xFF22C55E)
 
 /** Tunnel is up but no uplink is healthy yet — the "No link" state. */
-internal val StatusAmber = Color(0xFFF5A623)
+internal val StatusAmber = Color(0xFFF59E0B)
 
-/** Rounded translucent card, the surface every grouped block sits on. */
+/** Rounded Material 3 card, the surface every grouped block sits on. */
 @Composable
 internal fun SectionCard(
     modifier: Modifier = Modifier,
@@ -53,9 +52,13 @@ internal fun SectionCard(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
         tonalElevation = 2.dp,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+        ),
     ) {
         Box(Modifier.padding(padding)) { content() }
     }
@@ -88,7 +91,7 @@ internal fun SubScreen(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
             ) {
                 Icon(
                     Icons.AutoMirrored.Filled.ArrowBack,
@@ -102,13 +105,13 @@ internal fun SubScreen(
                     modifier = Modifier
                         .size(44.dp)
                         .clip(CircleShape)
-                        .background(BrandBlue.copy(alpha = 0.14f)),
+                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         it,
                         contentDescription = null,
-                        tint = BrandBlue,
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(22.dp),
                     )
                 }
