@@ -1937,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "outline-ui"
-version = "1.9.1"
+version = "1.9.2"
 dependencies = [
  "anyhow",
  "axum",
