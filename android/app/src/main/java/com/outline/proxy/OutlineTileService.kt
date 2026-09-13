@@ -2,6 +2,7 @@ package com.outline.proxy
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
@@ -64,6 +65,7 @@ class OutlineTileService : TileService() {
         val tile = qsTile ?: return
         tile.state = if (running) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.label = "Outline"
+        tile.icon = Icon.createWithResource(this, R.drawable.ic_stat_tunnel)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val name = ProfileStore(this).let { store ->
                 store.load().firstOrNull { it.id == store.selectedId }?.name
