@@ -228,7 +228,8 @@ private fun StatusCard(
     udpCarrier: String?,
     onClick: () -> Unit,
 ) {
-    val dotColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+    val isDark = isSystemInDarkTheme()
+    val dotColor = MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.35f else 0.22f)
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         shape = RoundedCornerShape(28.dp),
@@ -240,17 +241,14 @@ private fun StatusCard(
         ),
     ) {
         Box {
-            // Dotted world map bleeding off the right edge, tinted to the theme.
+            // Full dotted world map across the card, tinted to the theme.
             Image(
                 painter = painterResource(R.drawable.ic_worldmap),
                 contentDescription = null,
                 colorFilter = ColorFilter.tint(dotColor),
-                alignment = Alignment.TopEnd,
-                contentScale = ContentScale.FillHeight,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .fillMaxWidth(0.62f)
-                    .height(150.dp),
+                alignment = Alignment.Center,
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier.matchParentSize(),
             )
             Column(modifier = Modifier.padding(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
