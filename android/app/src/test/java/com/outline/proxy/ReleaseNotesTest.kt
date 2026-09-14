@@ -17,6 +17,9 @@ class ReleaseNotesTest {
             ### 🐛 Bug Fixes
             - **android**: Keep the session traffic counter
 
+            ### 🎨 Styling & UI
+            - **android**: Preserve original breathing room in launcher icons
+
             **Full Changelog**: https://github.com/balookrd/outline-proxy/compare/android-v1.2.0...android-v1.3.0
         """.trimIndent()
 
@@ -29,6 +32,8 @@ class ReleaseNotesTest {
                 NoteLine.Bullet("android: Persistent notification you can keep"),
                 NoteLine.Header("🐛 Bug Fixes"),
                 NoteLine.Bullet("android: Keep the session traffic counter"),
+                NoteLine.Header("🎨 Styling & UI"),
+                NoteLine.Bullet("android: Preserve original breathing room in launcher icons"),
             ),
             out,
         )
