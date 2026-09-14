@@ -9,6 +9,12 @@ commit.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.3] - 2026-09-14
+
+### Changed
+
+- **Seamless vector brand banners for landing hero.** Replaced `banner-dark.png` and `banner-light.png` with clean, vector-rendered banners featuring crisp typography and refined shield gradients, completely eliminating background seam artifacts and bounding box discoloration in both light and dark landing themes.
+
 ## [1.9.2] - 2026-09-12
 
 ### Changed
