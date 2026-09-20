@@ -3,6 +3,7 @@ package com.outline.proxy
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -11,6 +12,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
+import androidx.core.location.LocationManagerCompat
 
 /**
  * Reads the link underneath the tunnel off the platform — the Android-facing
@@ -105,21 +107,33 @@ object LinkProbe {
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
+    /** Whether system location services (GPS/Location master switch) are enabled on the device. */
+    fun isLocationServicesEnabled(context: Context): Boolean {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
+        return LocationManagerCompat.isLocationEnabled(lm)
+    }
+
     /**
-     * Extracts and normalizes the Wi-Fi SSID from given [NetworkCapabilities],
-     * or returns null if not connected to Wi-Fi / unable to read.
+     * Extracts and normalizes the Wi-Fi SSID from given [NetworkCapabilities] or [WifiManager],
+     * returning null if not connected to Wi-Fi, without permission, or if SSID is unknown.
      */
     fun extractWifiSsid(context: Context, caps: NetworkCapabilities?): String? {
-        if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return null
-        val wifiInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            caps.transportInfo as? WifiInfo
-        } else {
+        if (caps != null && !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return null
+
+        var rawSsid: String? = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && caps != null) {
+            val wifiInfo = caps.transportInfo as? WifiInfo
+            rawSsid = wifiInfo?.ssid
+        }
+
+        if (AutomationPolicy.normalizeSsid(rawSsid) == null) {
             @Suppress("DEPRECATION")
             val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             @Suppress("DEPRECATION")
-            wm?.connectionInfo
+            rawSsid = wm?.connectionInfo?.ssid
         }
-        return AutomationPolicy.normalizeSsid(wifiInfo?.ssid)
+
+        return AutomationPolicy.normalizeSsid(rawSsid)
     }
 
     /**
@@ -127,9 +141,15 @@ object LinkProbe {
      * or without location permission / unknown SSID.
      */
     fun currentWifiSsid(context: Context): String? {
-        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
-        val network = bestNonVpn(cm) ?: cm.activeNetwork ?: return null
-        val caps = cm.getNetworkCapabilities(network) ?: return null
-        return extractWifiSsid(context, caps)
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val network = cm?.let { bestNonVpn(it) ?: it.activeNetwork }
+        val caps = network?.let { cm.getNetworkCapabilities(it) }
+        val ssidFromCaps = extractWifiSsid(context, caps)
+        if (ssidFromCaps != null) return ssidFromCaps
+
+        @Suppress("DEPRECATION")
+        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        @Suppress("DEPRECATION")
+        return AutomationPolicy.normalizeSsid(wm?.connectionInfo?.ssid)
     }
 }

@@ -117,6 +117,18 @@ class AutomationPolicyTest {
         )
         assertEquals(AutomationAction.PAUSE_TUNNEL, actionEnter)
 
+        // Starting VPN while already on trusted Wi-Fi -> PAUSE immediately
+        val actionStartOnTrusted = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            currentSsid = "Home-5G",
+            trustedSsids = trusted,
+            tunnelActive = false,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.PAUSE_TUNNEL, actionStartOnTrusted)
+
         // Manual override for this SSID suppresses pause
         val actionOverride = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,

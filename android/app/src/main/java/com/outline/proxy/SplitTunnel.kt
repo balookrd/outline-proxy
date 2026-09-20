@@ -24,6 +24,9 @@ data class SplitTunnelConfig(
     val denyPackages: Set<String> = emptySet(),
 )
 
+const val PACKAGE_GEMINI = "com.google.android.apps.bard"
+const val PACKAGE_GOOGLE_APP = "com.google.android.googlequicksearchbox"
+
 /** A user-facing installed app. */
 data class AppInfo(val packageName: String, val label: String)
 
@@ -126,9 +129,10 @@ fun loadNetworkApps(context: Context): List<AppInfo> {
     }
     val raw = packages.mapNotNull { pi ->
         val hasInternet = pi.requestedPermissions?.contains(Manifest.permission.INTERNET) == true
-        // Skip the label lookup (which reads the app's resources) for apps that
-        // can never carry traffic — they are dropped anyway.
-        if (!hasInternet) return@mapNotNull null
+        // Some apps (like Google Gemini: com.google.android.apps.bard) are launcher-facing stubs
+        // that route their network traffic via the Google App without declaring INTERNET directly.
+        val isLauncher = pm.getLaunchIntentForPackage(pi.packageName) != null
+        if (!hasInternet && !isLauncher) return@mapNotNull null
         val appInfo = pi.applicationInfo ?: return@mapNotNull null
         RawApp(pi.packageName, appInfo.loadLabel(pm).toString(), true)
     }
