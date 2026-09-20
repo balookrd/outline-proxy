@@ -1,8 +1,10 @@
 package com.outline.proxy
 
 import android.net.TrafficStats
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -193,25 +195,40 @@ private fun Header() {
     // The full-width brand banner with smooth Material 3 rounded corners
     val isDark = isSystemInDarkTheme()
     val logo = if (isDark) R.drawable.brand_logo_dark else R.drawable.brand_logo_light
+    val shape = RoundedCornerShape(20.dp)
+    val borderStroke = androidx.compose.foundation.BorderStroke(
+        1.dp,
+        if (isDark) {
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)
+        } else {
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f)
+        },
+    )
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp),
-        shape = RoundedCornerShape(20.dp),
+        shape = shape,
         color = MaterialTheme.colorScheme.surface,
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.35f else 0.65f),
-        ),
     ) {
-        Image(
-            painter = painterResource(logo),
-            contentDescription = "outline-proxy",
-            contentScale = ContentScale.FillWidth,
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp)),
-        )
+                .clip(shape),
+        ) {
+            Image(
+                painter = painterResource(logo),
+                contentDescription = "outline-proxy",
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            // Overlay border drawn on top of the image so raster pixels never overwrite the outline
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .border(borderStroke, shape),
+            )
+        }
     }
 }
 
