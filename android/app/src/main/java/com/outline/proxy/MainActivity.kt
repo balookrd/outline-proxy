@@ -10,6 +10,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -63,9 +64,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -877,12 +882,9 @@ private fun SplitTunnelScreen(
         icon = Icons.AutoMirrored.Filled.AltRoute,
         onBack = onBack,
     ) {
-        SectionCard(padding = PaddingValues(vertical = 4.dp)) {
-            Column {
-                ModeOption(stringResource(R.string.split_mode_all), SplitMode.OFF, mode) { mode = it; persist() }
-                ModeOption(stringResource(R.string.split_mode_only), SplitMode.ALLOWLIST, mode) { mode = it; persist() }
-                ModeOption(stringResource(R.string.split_mode_except), SplitMode.DENYLIST, mode) { mode = it; persist() }
-            }
+        SplitModeSelector(mode) {
+            mode = it
+            persist()
         }
 
         when {
@@ -922,18 +924,6 @@ private fun SplitTunnelScreen(
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 )
-                if (selected.contains(PACKAGE_GEMINI)) {
-                    SectionCard(
-                        modifier = Modifier.padding(top = 8.dp),
-                        padding = PaddingValues(12.dp),
-                    ) {
-                        Text(
-                            stringResource(R.string.split_gemini_banner),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
                 // Filter by name, then float the checked apps to the top so the
                 // current selection is always in view.
                 val visible = apps
@@ -1087,22 +1077,53 @@ private fun ExternalControlScreen(
 }
 
 @Composable
-private fun ModeOption(
-    label: String,
-    value: SplitMode,
+private fun SplitModeSelector(
     current: SplitMode,
     onSelect: (SplitMode) -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable { onSelect(value) }
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    val options = listOf(
+        SplitMode.OFF to stringResource(R.string.split_mode_all),
+        SplitMode.ALLOWLIST to stringResource(R.string.split_mode_only),
+        SplitMode.DENYLIST to stringResource(R.string.split_mode_except),
+    )
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        border = outlineCardBorder(),
     ) {
-        RadioButton(selected = current == value, onClick = { onSelect(value) })
-        Text(
-            label,
-            fontWeight = if (current == value) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (current == value) BrandBlue else MaterialTheme.colorScheme.onSurface,
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            options.forEach { (mode, label) ->
+                val selected = current == mode
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primaryContainer
+                            else Color.Transparent,
+                        )
+                        .clickable { onSelect(mode) }
+                        .padding(vertical = 10.dp, horizontal = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
     }
 }

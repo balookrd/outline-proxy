@@ -31,6 +31,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **Compact split-tunnel mode selector and streamlined layout.** Replaced the bulky vertical 3-row radio card with a sleek horizontal segmented selector ("All", "Selected", "Bypass"), and removed the redundant top banner for Google/Gemini in favour of the existing inline hint under the Gemini list entry, freeing up substantial vertical screen space for the application list.
 - **A server saved with a blank name now takes its name from the link's `#remark`, or its hostname if there is no remark.** Applies whichever link is in play — the subscription config URL, a `vless://` link, or an `ss://` link.
 - **The keep-alive checklist is worded for people, not for the APIs behind it.** "Exact alarms" is now "Background wake-ups" and says what the app actually does with the permission — wake every few minutes, check the tunnel, bring it back — naming the system screen ("Alarms & reminders") so the button lands somewhere recognisable. References to the watchdog and to Doze are gone from the user-facing text.
 - **Samsung's card opens the never-auto-sleeping list directly.** It uses the deeplink Samsung documents for it, so the button lands on the list itself instead of the Battery screen two taps above; all that is left is "+" to add the app. The manual path is still spelled out for builds without the deeplink. The earlier wording quoted a list name ("Never sleeping apps") that One UI renamed in 6.1, which is why it sent people hunting for a menu entry their phone does not have.

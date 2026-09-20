@@ -106,9 +106,9 @@
     <string name="upd_download_failed">download failed: %1$s</string>
 
     <!-- Split Tunnel screen: mode selector, per-mode descriptions, app search. -->
-    <string name="split_mode_all">All apps</string>
-    <string name="split_mode_only">Only selected apps</string>
-    <string name="split_mode_except">All apps except selected</string>
+    <string name="split_mode_all">All</string>
+    <string name="split_mode_only">Selected</string>
+    <string name="split_mode_except">Bypass</string>
     <string name="split_desc_all">Every app\'s traffic goes through the tunnel.</string>
     <string name="split_desc_allow">Only the checked apps are tunneled; everything else uses the direct connection.</string>
     <string name="split_desc_deny">The checked apps bypass the tunnel; everything else is tunneled.</string>
