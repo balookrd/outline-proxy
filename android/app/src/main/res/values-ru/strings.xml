@@ -157,4 +157,31 @@
     <string name="ka_status_needs_action">Требуется действие</string>
     <string name="ka_status_check_manually">Проверьте вручную</string>
     <string name="btn_allow">Разрешить</string>
+
+    <!-- Автоматизация сети: статус, быстрые ссылки, авиарежим и правила Wi-Fi. -->
+    <string name="status_paused_airplane">На паузе · Авиарежим</string>
+    <string name="status_paused_wifi">На паузе · Доверенный Wi-Fi</string>
+    <string name="status_paused_wifi_named">На паузе · %1$s</string>
+    <string name="home_link_rules">Правила сети</string>
+    <string name="auto_pause_airplane">Приостанавливать в авиарежиме</string>
+    <string name="auto_pause_airplane_desc">Приостанавливать туннель при включении авиарежима и восстанавливать при выключении для экономии батареи.</string>
+    <string name="auto_wifi_title">Правила сети</string>
+    <string name="auto_wifi_enabled">Автоматизация по Wi-Fi</string>
+    <string name="auto_wifi_enabled_desc">Автоматически управлять подключением VPN в зависимости от текущей Wi-Fi сети.</string>
+    <string name="auto_wifi_mode_title">При подключении к выбранным сетям:</string>
+    <string name="auto_wifi_mode_pause">Отключать VPN</string>
+    <string name="auto_wifi_mode_pause_desc">VPN ставится на паузу в доверенных сетях (дом, офис) и автоматически включается на мобильной связи или неизвестном Wi-Fi.</string>
+    <string name="auto_wifi_mode_connect">Включать VPN</string>
+    <string name="auto_wifi_mode_connect_desc">VPN подключается только в этих сетях и отключается во всех остальных.</string>
+    <string name="auto_wifi_networks_header">Выбранные сети</string>
+    <string name="auto_wifi_current_network">Текущая сеть: %1$s</string>
+    <string name="auto_wifi_current_none">Текущая сеть: не Wi-Fi</string>
+    <string name="auto_wifi_current_unknown">Текущая сеть: неизвестна</string>
+    <string name="auto_wifi_add_current">Добавить текущую сеть</string>
+    <string name="auto_wifi_add_manual_hint">Имя сети (SSID)</string>
+    <string name="auto_wifi_btn_add">Добавить</string>
+    <string name="auto_wifi_empty_list">Нет добавленных сетей. Добавьте домашнюю или офисную сеть выше.</string>
+    <string name="auto_wifi_permission_title">Требуется доступ к местоположению</string>
+    <string name="auto_wifi_permission_desc">Android требует доступ к местоположению для чтения имени Wi-Fi сети (SSID). Outline Proxy никогда не отслеживает и не передает ваше местоположение.</string>
+    <string name="auto_wifi_permission_btn">Разрешить доступ</string>
 </resources>

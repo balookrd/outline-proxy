@@ -6,6 +6,9 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
+import android.os.Build
 import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
 
@@ -95,5 +98,38 @@ object LinkProbe {
         if (!canReadRan(context)) return null
         val tm = context.getSystemService(TelephonyManager::class.java) ?: return null
         return runCatching { LinkInfo.ranLabel(tm.dataNetworkType) }.getOrNull()
+    }
+
+    /** Whether location permission is granted, which Android requires to read Wi-Fi SSID. */
+    fun canReadWifiSsid(context: Context): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Extracts and normalizes the Wi-Fi SSID from given [NetworkCapabilities],
+     * or returns null if not connected to Wi-Fi / unable to read.
+     */
+    fun extractWifiSsid(context: Context, caps: NetworkCapabilities?): String? {
+        if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return null
+        val wifiInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            caps.transportInfo as? WifiInfo
+        } else {
+            @Suppress("DEPRECATION")
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            @Suppress("DEPRECATION")
+            wm?.connectionInfo
+        }
+        return AutomationPolicy.normalizeSsid(wifiInfo?.ssid)
+    }
+
+    /**
+     * The normalized SSID of the current Wi-Fi network, or `null` if not on Wi-Fi
+     * or without location permission / unknown SSID.
+     */
+    fun currentWifiSsid(context: Context): String? {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
+        val network = bestNonVpn(cm) ?: cm.activeNetwork ?: return null
+        val caps = cm.getNetworkCapabilities(network) ?: return null
+        return extractWifiSsid(context, caps)
     }
 }

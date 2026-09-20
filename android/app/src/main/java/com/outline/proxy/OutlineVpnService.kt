@@ -4,9 +4,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.provider.Settings
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -53,6 +56,12 @@ class OutlineVpnService : VpnService() {
 
     private var tunInterface: ParcelFileDescriptor? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var airplaneReceiver: BroadcastReceiver? = null
+
+    private enum class PauseReason {
+        AIRPLANE_MODE,
+        WIFI_NETWORK,
+    }
 
     /**
      * Whether the app owns the carrier-dial budget for this session — true when
@@ -192,10 +201,21 @@ class OutlineVpnService : VpnService() {
         }
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        registerAirplaneReceiver()
+        if (AutomationStore(this).load().wifiAutomationEnabled) {
+            ensureNetworkCallback()
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_DISCONNECT -> {
                 KeepAliveState(this).shouldRun = false
+                val autoState = AutomationState(this)
+                autoState.clearPauseFlags()
+                autoState.manualOverrideSsid = null
                 WatchdogAlarm.cancel(this)
                 WatchdogWorker.cancel(this)
                 disconnect()
@@ -209,6 +229,9 @@ class OutlineVpnService : VpnService() {
                     return START_NOT_STICKY
                 }
                 KeepAliveState(this).shouldRun = true
+                val autoState = AutomationState(this)
+                autoState.clearPauseFlags()
+                autoState.manualOverrideSsid = LinkProbe.currentWifiSsid(this)
                 WatchdogWorker.schedule(this)
                 connect(configToml)
                 return START_STICKY
@@ -259,6 +282,33 @@ class OutlineVpnService : VpnService() {
         val store = ProfileStore(this)
         val profile = store.load().firstOrNull { it.id == store.selectedId }
 
+        val autoConfig = AutomationStore(this).load()
+        val autoState = AutomationState(this)
+
+        if (autoConfig.pauseOnAirplaneMode && isAirplaneModeOn(this)) {
+            Log.i(TAG, "ensure: airplane mode is on; entering pause")
+            pauseTunnel(PauseReason.AIRPLANE_MODE)
+            return
+        }
+
+        val currentSsid = LinkProbe.currentWifiSsid(this)
+        val wifiAction = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = autoConfig.wifiAutomationEnabled,
+            wifiMode = autoConfig.wifiMode,
+            currentSsid = currentSsid,
+            trustedSsids = autoConfig.trustedSsids,
+            tunnelActive = false,
+            pausedByWifi = false,
+            userIntentShouldRun = state.shouldRun,
+            manualOverrideSsid = autoState.manualOverrideSsid,
+        )
+        if (wifiAction == AutomationAction.PAUSE_TUNNEL) {
+            Log.i(TAG, "ensure: on selected wifi ($currentSsid); entering pause")
+            pauseTunnel(PauseReason.WIFI_NETWORK, currentSsid)
+            return
+        }
+
+        val isPaused = autoState.pausedByAirplane || autoState.pausedByWifi
         val decision = KeepAlivePolicy.decide(
             shouldRun = state.shouldRun,
             coreAlive = isActive(),
@@ -267,6 +317,7 @@ class OutlineVpnService : VpnService() {
             consentGranted = prepare(this) == null,
             hasProfile = profile != null && profile.toToml().isNotBlank(),
             consecutiveFailures = state.consecutiveFailures,
+            isPaused = isPaused,
         )
         Log.i(TAG, "ensure: ${decision.action}")
 
@@ -483,6 +534,7 @@ class OutlineVpnService : VpnService() {
             override fun onAvailable(network: Network) {
                 if (bestMatching) bind(network) else bind(LinkProbe.bestNonVpn(cm))
                 refreshDialBudget()
+                cm.getNetworkCapabilities(network)?.let { checkNetworkAutomation(network, it) }
             }
 
             /**
@@ -498,6 +550,7 @@ class OutlineVpnService : VpnService() {
                 networkCapabilities: NetworkCapabilities,
             ) {
                 refreshDialBudget()
+                checkNetworkAutomation(network, networkCapabilities)
             }
 
             /**
@@ -513,6 +566,7 @@ class OutlineVpnService : VpnService() {
                     bind(LinkProbe.bestNonVpn(cm))
                 }
                 refreshDialBudget()
+                checkNetworkAutomation(null, null)
             }
         }
         // Losing the handover watch is not worth losing the tunnel over: the
@@ -627,10 +681,12 @@ class OutlineVpnService : VpnService() {
      * without deciding the service's fate. Shared by the deliberate-disconnect
      * path and by [onDestroy].
      */
-    private fun teardownTunnel() {
+    private fun teardownTunnel(keepUnderlyingWatch: Boolean = false) {
         stopNotificationUpdates()
         KeepAliveState(this).connectedSince = 0L
-        unregisterNetworkCallback()
+        if (!keepUnderlyingWatch) {
+            unregisterNetworkCallback()
+        }
         try {
             if (isRunning()) stop()
         } catch (e: Exception) {
@@ -671,6 +727,7 @@ class OutlineVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        unregisterAirplaneReceiver()
         // A deliberate disconnect clears shouldRun first, so this only fires
         // when something else killed us.
         if (KeepAliveState(this).shouldRun) {
@@ -678,6 +735,131 @@ class OutlineVpnService : VpnService() {
         }
         teardownTunnel()
         super.onDestroy()
+    }
+
+    private fun isAirplaneModeOn(context: Context): Boolean =
+        Settings.Global.getInt(
+            context.contentResolver,
+            Settings.Global.AIRPLANE_MODE_ON,
+            0,
+        ) != 0
+
+    private fun registerAirplaneReceiver() {
+        if (airplaneReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_AIRPLANE_MODE_CHANGED) {
+                    val isAirplaneOn = intent.getBooleanExtra("state", false)
+                    handleAirplaneModeChange(isAirplaneOn)
+                }
+            }
+        }
+        val filter = IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED)
+        ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        airplaneReceiver = receiver
+    }
+
+    private fun unregisterAirplaneReceiver() {
+        airplaneReceiver?.let {
+            runCatching { unregisterReceiver(it) }
+        }
+        airplaneReceiver = null
+    }
+
+    private fun handleAirplaneModeChange(isAirplaneOn: Boolean) {
+        val autoConfig = AutomationStore(this).load()
+        val autoState = AutomationState(this)
+        val keepAlive = KeepAliveState(this)
+
+        val action = AutomationPolicy.decideAirplaneMode(
+            airplaneModeEnabled = isAirplaneOn,
+            pauseOnAirplaneMode = autoConfig.pauseOnAirplaneMode,
+            tunnelActive = isActive(),
+            pausedByAirplane = autoState.pausedByAirplane,
+            userIntentShouldRun = keepAlive.shouldRun,
+        )
+        Log.i(TAG, "airplane mode changed (on=$isAirplaneOn) -> action=$action")
+        when (action) {
+            AutomationAction.PAUSE_TUNNEL -> pauseTunnel(PauseReason.AIRPLANE_MODE)
+            AutomationAction.RESUME_TUNNEL -> resumeTunnel()
+            AutomationAction.DO_NOTHING -> Unit
+        }
+    }
+
+    private fun checkNetworkAutomation(network: Network?, caps: NetworkCapabilities?) {
+        val autoConfig = AutomationStore(this).load()
+        if (!autoConfig.wifiAutomationEnabled) return
+
+        val currentSsid = LinkProbe.extractWifiSsid(this, caps)
+        val autoState = AutomationState(this)
+        val keepAlive = KeepAliveState(this)
+
+        if (autoState.manualOverrideSsid != null && autoState.manualOverrideSsid != currentSsid) {
+            autoState.manualOverrideSsid = null
+        }
+
+        val action = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = autoConfig.wifiAutomationEnabled,
+            wifiMode = autoConfig.wifiMode,
+            currentSsid = currentSsid,
+            trustedSsids = autoConfig.trustedSsids,
+            tunnelActive = isActive(),
+            pausedByWifi = autoState.pausedByWifi,
+            userIntentShouldRun = keepAlive.shouldRun,
+            manualOverrideSsid = autoState.manualOverrideSsid,
+        )
+
+        when (action) {
+            AutomationAction.PAUSE_TUNNEL -> {
+                Log.i(TAG, "wifi automation: pausing tunnel on SSID: $currentSsid")
+                pauseTunnel(PauseReason.WIFI_NETWORK, currentSsid)
+            }
+            AutomationAction.RESUME_TUNNEL -> {
+                Log.i(TAG, "wifi automation: resuming tunnel outside trusted Wi-Fi (SSID: $currentSsid)")
+                resumeTunnel()
+            }
+            AutomationAction.DO_NOTHING -> Unit
+        }
+    }
+
+    private fun ensureNetworkCallback() {
+        if (networkCallback == null) {
+            registerNetworkCallback()
+        }
+    }
+
+    private fun pauseTunnel(reason: PauseReason, extra: String? = null) {
+        val autoState = AutomationState(this)
+        val statusText = when (reason) {
+            PauseReason.AIRPLANE_MODE -> {
+                autoState.pausedByAirplane = true
+                getString(R.string.status_paused_airplane)
+            }
+            PauseReason.WIFI_NETWORK -> {
+                autoState.pausedByWifi = true
+                if (extra != null) {
+                    getString(R.string.status_paused_wifi_named, extra)
+                } else {
+                    getString(R.string.status_paused_wifi)
+                }
+            }
+        }
+        WatchdogAlarm.cancel(this)
+        teardownTunnel(keepUnderlyingWatch = (reason == PauseReason.WIFI_NETWORK))
+        if (reason == PauseReason.WIFI_NETWORK) {
+            ensureNetworkCallback()
+        }
+        startForeground(
+            NOTIFICATION_ID,
+            buildNotification(running = false, status = statusText),
+        )
+    }
+
+    private fun resumeTunnel() {
+        Log.i(TAG, "resuming tunnel from automation pause")
+        val autoState = AutomationState(this)
+        autoState.clearPauseFlags()
+        ensureTunnel()
     }
 
     private fun buildNotification(
@@ -822,13 +1004,22 @@ class OutlineVpnService : VpnService() {
     private fun currentNotification(): Notification {
         val running = runCatching { isRunning() }.getOrDefault(false)
         if (!running) {
-            // Standby: a static "Disconnected" banner with a Connect action and
-            // no traffic line — the session counters are meaningless with nothing
-            // running (and the baseline may be zero, which would print the whole
-            // device total as this session's).
+            val autoState = AutomationState(this)
+            val pausedStatus = when {
+                autoState.pausedByAirplane -> getString(R.string.status_paused_airplane)
+                autoState.pausedByWifi -> {
+                    val currentSsid = LinkProbe.currentWifiSsid(this)
+                    if (currentSsid != null) {
+                        getString(R.string.status_paused_wifi_named, currentSsid)
+                    } else {
+                        getString(R.string.status_paused_wifi)
+                    }
+                }
+                else -> getString(R.string.status_disconnected)
+            }
             return buildNotification(
                 running = false,
-                status = getString(R.string.status_disconnected),
+                status = pausedStatus,
                 detail = null,
             )
         }

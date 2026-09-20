@@ -183,4 +183,31 @@
     <string name="ka_status_needs_action">Needs action</string>
     <string name="ka_status_check_manually">Check manually</string>
     <string name="btn_allow">Allow</string>
+
+    <!-- Network automation: status, quick links, airplane mode and Wi-Fi rules. -->
+    <string name="status_paused_airplane">Paused · Airplane mode</string>
+    <string name="status_paused_wifi">Paused · Trusted Wi-Fi</string>
+    <string name="status_paused_wifi_named">Paused · %1$s</string>
+    <string name="home_link_rules">Network Rules</string>
+    <string name="auto_pause_airplane">Pause in Airplane Mode</string>
+    <string name="auto_pause_airplane_desc">Temporarily disconnect the tunnel while Airplane Mode is active and restore it when disabled, saving battery.</string>
+    <string name="auto_wifi_title">Network Rules</string>
+    <string name="auto_wifi_enabled">Automate by Wi-Fi network</string>
+    <string name="auto_wifi_enabled_desc">Automatically control VPN connection based on the current Wi-Fi network.</string>
+    <string name="auto_wifi_mode_title">When connected to selected networks:</string>
+    <string name="auto_wifi_mode_pause">Pause VPN</string>
+    <string name="auto_wifi_mode_pause_desc">VPN stays paused on trusted networks (e.g. home, office) and auto-connects on cellular or unknown Wi-Fi.</string>
+    <string name="auto_wifi_mode_connect">Connect VPN</string>
+    <string name="auto_wifi_mode_connect_desc">VPN connects only on these networks and disconnects elsewhere.</string>
+    <string name="auto_wifi_networks_header">Configured Networks</string>
+    <string name="auto_wifi_current_network">Current network: %1$s</string>
+    <string name="auto_wifi_current_none">Current network: not on Wi-Fi</string>
+    <string name="auto_wifi_current_unknown">Current network: unknown</string>
+    <string name="auto_wifi_add_current">Add current network</string>
+    <string name="auto_wifi_add_manual_hint">Network name (SSID)</string>
+    <string name="auto_wifi_btn_add">Add</string>
+    <string name="auto_wifi_empty_list">No networks added. Add your home or office Wi-Fi above.</string>
+    <string name="auto_wifi_permission_title">Location permission required</string>
+    <string name="auto_wifi_permission_desc">Android requires location permission to read the Wi-Fi network name (SSID). Outline Proxy never tracks or shares your location.</string>
+    <string name="auto_wifi_permission_btn">Allow location</string>
 </resources>
