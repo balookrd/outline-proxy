@@ -212,4 +212,34 @@ class AutomationPolicyTest {
         )
         assertEquals(AutomationAction.PAUSE_TUNNEL, actionLeave)
     }
+
+    @Test
+    fun `wifi pause on selected - idempotent when already paused`() {
+        val trusted = setOf("Home-5G")
+        val action = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            currentSsid = "Home-5G",
+            trustedSsids = trusted,
+            tunnelActive = false,
+            pausedByWifi = true,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, action)
+    }
+
+    @Test
+    fun `wifi connect on selected - idempotent when already paused outside`() {
+        val trusted = setOf("Office")
+        val action = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.CONNECT_ON_SELECTED,
+            currentSsid = "CoffeeShop",
+            trustedSsids = trusted,
+            tunnelActive = false,
+            pausedByWifi = true,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, action)
+    }
 }
