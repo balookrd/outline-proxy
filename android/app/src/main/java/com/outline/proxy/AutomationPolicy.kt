@@ -120,14 +120,15 @@ object AutomationPolicy {
                     // Suppress pausing if user explicitly connected on this exact network
                     if (normalized == manualOverrideSsid) {
                         AutomationAction.DO_NOTHING
-                    } else if (tunnelActive || userIntentShouldRun) {
+                    } else if (tunnelActive || (!pausedByWifi && userIntentShouldRun)) {
                         AutomationAction.PAUSE_TUNNEL
                     } else {
+                        // Already paused and inactive -> do nothing
                         AutomationAction.DO_NOTHING
                     }
                 } else {
                     // Left the selected/trusted network
-                    if (pausedByWifi && userIntentShouldRun) {
+                    if (pausedByWifi && userIntentShouldRun && !tunnelActive) {
                         AutomationAction.RESUME_TUNNEL
                     } else {
                         AutomationAction.DO_NOTHING
@@ -137,15 +138,16 @@ object AutomationPolicy {
 
             WifiRuleMode.CONNECT_ON_SELECTED -> {
                 if (isTarget) {
-                    if ((!tunnelActive || pausedByWifi) && userIntentShouldRun) {
+                    if ((pausedByWifi || !tunnelActive) && userIntentShouldRun) {
                         AutomationAction.RESUME_TUNNEL
                     } else {
                         AutomationAction.DO_NOTHING
                     }
                 } else {
-                    if (tunnelActive || userIntentShouldRun) {
+                    if (tunnelActive || (!pausedByWifi && userIntentShouldRun)) {
                         AutomationAction.PAUSE_TUNNEL
                     } else {
+                        // Already paused outside selected -> do nothing
                         AutomationAction.DO_NOTHING
                     }
                 }

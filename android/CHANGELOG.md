@@ -37,6 +37,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Fix tunnel flapping and connection instability on Wi-Fi.** Resolved an issue where the VPN tunnel would flap (repeatedly pause and resume every few seconds) when connected to Wi-Fi:
+  - Separated the Wi-Fi automation callback from the underlying default-network callback, ensuring cellular network capability changes never falsely trigger Wi-Fi automation logic with null SSIDs.
+  - Made `AutomationPolicy.decideWifiChange()` strictly idempotent: it never repeatedly issues `PAUSE_TUNNEL` when already paused and inactive, and never issues `RESUME_TUNNEL` when already active.
+  - Retained the last known SSID across transient capability updates while the physical Wi-Fi connection remains alive.
+  - Prevented premature clearing of manual connect overrides on trusted networks.
+
 - **Unified card border contrast and harmonization across themes.** All cards, surfaces, and header banners (`Header`, `StatusCard`, `QuickLinks`, `SectionCard`, `OutlinedButton`) now share a unified border styling via `outlineCardBorder()` (slate `outlineVariant` at 0.55 alpha in dark mode, 0.75 in light mode). The header banner draws its border as an overlay above the raster image, ensuring crisp, visible side borders on OLED displays (such as Honor Magic V6) while maintaining visual harmony and preventing borders from appearing overly bright or mismatched with the rest of the UI.
 - **Xiaomi no longer shows a battery-optimisation card that turns red the moment you connect.** MIUI/HyperOS pulls Android's battery-optimisation exemption the instant the VPN foreground service starts, so the "Ignore battery optimisation" card flipped from green to red on every connect with nothing the user could do about it — the flip that started this whole thread. On Xiaomi that card is now hidden; the vendor battery card («No restrictions») and autostart are the controls that actually hold the tunnel there. Other skins, where the exemption is stable, keep the card.
 - **The Keeping Alive checklist no longer shows stale statuses.** Grants are re-read every time the screen comes back into view rather than when a button is tapped, so a permission changed in a system or vendor screen — or straight from the notification shade — is reflected on return. Previously the check ran before the user had answered the system dialog, leaving the card showing the old answer.

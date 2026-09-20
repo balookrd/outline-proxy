@@ -56,6 +56,11 @@ class OutlineVpnService : VpnService() {
 
     private var tunInterface: ParcelFileDescriptor? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var wifiCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile
+    private var activeWifiNetwork: Network? = null
+    @Volatile
+    private var currentWifiSsid: String? = null
     private var airplaneReceiver: BroadcastReceiver? = null
 
     private enum class PauseReason {
@@ -217,7 +222,7 @@ class OutlineVpnService : VpnService() {
         super.onCreate()
         registerAirplaneReceiver()
         if (AutomationStore(this).load().wifiAutomationEnabled) {
-            ensureNetworkCallback()
+            registerWifiAutomationCallback()
         }
     }
 
@@ -243,7 +248,7 @@ class OutlineVpnService : VpnService() {
                 KeepAliveState(this).shouldRun = true
                 val autoState = AutomationState(this)
                 if (autoState.pausedByWifi) {
-                    autoState.manualOverrideSsid = LinkProbe.currentWifiSsid(this)
+                    autoState.manualOverrideSsid = currentWifiSsid ?: LinkProbe.currentWifiSsid(this)
                 }
                 autoState.clearPauseFlags()
                 WatchdogWorker.schedule(this)
@@ -251,7 +256,20 @@ class OutlineVpnService : VpnService() {
                 return START_STICKY
             }
             ACTION_CHECK_AUTOMATION -> {
-                checkNetworkAutomation(null, null)
+                val autoConfig = AutomationStore(this).load()
+                if (autoConfig.wifiAutomationEnabled) {
+                    registerWifiAutomationCallback()
+                    evaluateWifiAutomation()
+                } else {
+                    unregisterWifiAutomationCallback()
+                    val autoState = AutomationState(this)
+                    if (autoState.pausedByWifi) {
+                        autoState.clearPauseFlags()
+                        if (KeepAliveState(this).shouldRun) {
+                            resumeTunnel()
+                        }
+                    }
+                }
                 return if (isRunning()) START_STICKY else START_NOT_STICKY
             }
             ACTION_STANDBY -> {
@@ -309,20 +327,20 @@ class OutlineVpnService : VpnService() {
             return
         }
 
-        val currentSsid = LinkProbe.currentWifiSsid(this)
+        val ssid = currentWifiSsid ?: LinkProbe.currentWifiSsid(this)
         val wifiAction = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = autoConfig.wifiAutomationEnabled,
             wifiMode = autoConfig.wifiMode,
-            currentSsid = currentSsid,
+            currentSsid = ssid,
             trustedSsids = autoConfig.trustedSsids,
-            tunnelActive = false,
-            pausedByWifi = false,
+            tunnelActive = isActive(),
+            pausedByWifi = autoState.pausedByWifi,
             userIntentShouldRun = state.shouldRun,
             manualOverrideSsid = autoState.manualOverrideSsid,
         )
         if (wifiAction == AutomationAction.PAUSE_TUNNEL) {
-            Log.i(TAG, "ensure: on selected wifi ($currentSsid); entering pause")
-            pauseTunnel(PauseReason.WIFI_NETWORK, currentSsid)
+            Log.i(TAG, "ensure: on selected wifi ($ssid); entering pause")
+            pauseTunnel(PauseReason.WIFI_NETWORK, ssid)
             return
         }
 
@@ -539,6 +557,7 @@ class OutlineVpnService : VpnService() {
      *    networks.
      */
     private fun registerNetworkCallback() {
+        if (networkCallback != null) return
         val cm = getSystemService(ConnectivityManager::class.java) ?: return
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -548,57 +567,26 @@ class OutlineVpnService : VpnService() {
         // on handover, so we follow it verbatim. Below that, every match is
         // delivered, so we pick the best one ourselves on each change.
         val bestMatching = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-        val cb = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
-                override fun onAvailable(network: Network) {
-                    if (bestMatching) bind(network) else bind(LinkProbe.bestNonVpn(cm))
-                    refreshDialBudget()
-                    cm.getNetworkCapabilities(network)?.let { checkNetworkAutomation(network, it) }
-                }
-
-                override fun onCapabilitiesChanged(
-                    network: Network,
-                    networkCapabilities: NetworkCapabilities,
-                ) {
-                    refreshDialBudget()
-                    checkNetworkAutomation(network, networkCapabilities)
-                }
-
-                override fun onLost(network: Network) {
-                    if (bestMatching) {
-                        if (underlyingNetwork == network) bind(null)
-                    } else {
-                        bind(LinkProbe.bestNonVpn(cm))
-                    }
-                    refreshDialBudget()
-                    checkNetworkAutomation(null, null)
-                }
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (bestMatching) bind(network) else bind(LinkProbe.bestNonVpn(cm))
+                refreshDialBudget()
             }
-        } else {
-            object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) {
-                    if (bestMatching) bind(network) else bind(LinkProbe.bestNonVpn(cm))
-                    refreshDialBudget()
-                    cm.getNetworkCapabilities(network)?.let { checkNetworkAutomation(network, it) }
-                }
 
-                override fun onCapabilitiesChanged(
-                    network: Network,
-                    networkCapabilities: NetworkCapabilities,
-                ) {
-                    refreshDialBudget()
-                    checkNetworkAutomation(network, networkCapabilities)
-                }
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities,
+            ) {
+                refreshDialBudget()
+            }
 
-                override fun onLost(network: Network) {
-                    if (bestMatching) {
-                        if (underlyingNetwork == network) bind(null)
-                    } else {
-                        bind(LinkProbe.bestNonVpn(cm))
-                    }
-                    refreshDialBudget()
-                    checkNetworkAutomation(null, null)
+            override fun onLost(network: Network) {
+                if (bestMatching) {
+                    if (underlyingNetwork == network) bind(null)
+                } else {
+                    bind(LinkProbe.bestNonVpn(cm))
                 }
+                refreshDialBudget()
             }
         }
         // Losing the handover watch is not worth losing the tunnel over: the
@@ -738,7 +726,7 @@ class OutlineVpnService : VpnService() {
         val keepStandby = KeepAliveState(this).persistentNotification || autoConfig.wifiAutomationEnabled
         teardownTunnel(keepUnderlyingWatch = keepStandby)
         if (keepStandby) {
-            ensureNetworkCallback()
+            if (autoConfig.wifiAutomationEnabled) registerWifiAutomationCallback()
             val autoState = AutomationState(this)
             val statusText = if (autoState.pausedByWifi) {
                 val lastSsid = autoState.lastSeenWifiSsid
@@ -755,6 +743,7 @@ class OutlineVpnService : VpnService() {
                 buildNotification(running = false, status = statusText),
             )
         } else {
+            unregisterWifiAutomationCallback()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
@@ -774,6 +763,7 @@ class OutlineVpnService : VpnService() {
 
     override fun onDestroy() {
         unregisterAirplaneReceiver()
+        unregisterWifiAutomationCallback()
         // A deliberate disconnect clears shouldRun first, so this only fires
         // when something else killed us.
         if (KeepAliveState(this).shouldRun) {
@@ -832,51 +822,128 @@ class OutlineVpnService : VpnService() {
         }
     }
 
-    private fun checkNetworkAutomation(network: Network?, caps: NetworkCapabilities?) {
+    private fun registerWifiAutomationCallback() {
+        if (wifiCallback != null) return
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        val cb = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
+                override fun onAvailable(network: Network) {
+                    activeWifiNetwork = network
+                    cm.getNetworkCapabilities(network)?.let { caps ->
+                        LinkProbe.extractWifiSsid(this@OutlineVpnService, caps)?.let { ssid ->
+                            currentWifiSsid = ssid
+                        }
+                    }
+                    evaluateWifiAutomation()
+                }
+
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    networkCapabilities: NetworkCapabilities,
+                ) {
+                    activeWifiNetwork = network
+                    LinkProbe.extractWifiSsid(this@OutlineVpnService, networkCapabilities)?.let { ssid ->
+                        currentWifiSsid = ssid
+                    }
+                    evaluateWifiAutomation()
+                }
+
+                override fun onLost(network: Network) {
+                    if (activeWifiNetwork == network) {
+                        activeWifiNetwork = null
+                        currentWifiSsid = null
+                    }
+                    evaluateWifiAutomation()
+                }
+            }
+        } else {
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    activeWifiNetwork = network
+                    cm.getNetworkCapabilities(network)?.let { caps ->
+                        LinkProbe.extractWifiSsid(this@OutlineVpnService, caps)?.let { ssid ->
+                            currentWifiSsid = ssid
+                        }
+                    }
+                    evaluateWifiAutomation()
+                }
+
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    networkCapabilities: NetworkCapabilities,
+                ) {
+                    activeWifiNetwork = network
+                    LinkProbe.extractWifiSsid(this@OutlineVpnService, networkCapabilities)?.let { ssid ->
+                        currentWifiSsid = ssid
+                    }
+                    evaluateWifiAutomation()
+                }
+
+                override fun onLost(network: Network) {
+                    if (activeWifiNetwork == network) {
+                        activeWifiNetwork = null
+                        currentWifiSsid = null
+                    }
+                    evaluateWifiAutomation()
+                }
+            }
+        }
+        runCatching {
+            cm.registerNetworkCallback(request, cb, Handler(Looper.getMainLooper()))
+        }
+            .onSuccess { wifiCallback = cb }
+            .onFailure { Log.w(TAG, "cannot watch wifi for automation", it) }
+    }
+
+    private fun unregisterWifiAutomationCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        wifiCallback?.let { cb ->
+            runCatching { cm?.unregisterNetworkCallback(cb) }
+        }
+        wifiCallback = null
+        activeWifiNetwork = null
+        currentWifiSsid = null
+    }
+
+    @Synchronized
+    private fun evaluateWifiAutomation() {
         val autoConfig = AutomationStore(this).load()
         if (!autoConfig.wifiAutomationEnabled) return
 
-        val resolvedCaps = caps ?: run {
-            val cm = getSystemService(ConnectivityManager::class.java)
-            val net = network ?: (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) underlyingNetwork else cm?.let { LinkProbe.bestNonVpn(it) })
-            net?.let { cm?.getNetworkCapabilities(it) }
-        }
-        val currentSsid = LinkProbe.extractWifiSsid(this, resolvedCaps) ?: LinkProbe.currentWifiSsid(this)
+        val ssid = currentWifiSsid ?: LinkProbe.currentWifiSsid(this)
         val autoState = AutomationState(this)
         val keepAlive = KeepAliveState(this)
 
-        if (autoState.manualOverrideSsid != null && autoState.manualOverrideSsid != currentSsid) {
+        if (autoState.manualOverrideSsid != null && ssid != null && autoState.manualOverrideSsid != ssid) {
             autoState.manualOverrideSsid = null
         }
 
         val action = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = autoConfig.wifiAutomationEnabled,
             wifiMode = autoConfig.wifiMode,
-            currentSsid = currentSsid,
+            currentSsid = ssid,
             trustedSsids = autoConfig.trustedSsids,
             tunnelActive = isActive(),
             pausedByWifi = autoState.pausedByWifi,
             userIntentShouldRun = keepAlive.shouldRun,
             manualOverrideSsid = autoState.manualOverrideSsid,
         )
-        Log.i(TAG, "wifi automation: ssid='$currentSsid', action=$action, pausedByWifi=${autoState.pausedByWifi}, active=${isActive()}, shouldRun=${keepAlive.shouldRun}")
+        Log.i(TAG, "wifi automation: ssid='$ssid', action=$action, pausedByWifi=${autoState.pausedByWifi}, active=${isActive()}, shouldRun=${keepAlive.shouldRun}")
 
         when (action) {
             AutomationAction.PAUSE_TUNNEL -> {
-                Log.i(TAG, "wifi automation: pausing tunnel on SSID: $currentSsid")
-                pauseTunnel(PauseReason.WIFI_NETWORK, currentSsid)
+                Log.i(TAG, "wifi automation: pausing tunnel on SSID: $ssid")
+                pauseTunnel(PauseReason.WIFI_NETWORK, ssid)
             }
             AutomationAction.RESUME_TUNNEL -> {
-                Log.i(TAG, "wifi automation: resuming tunnel outside trusted Wi-Fi (SSID: $currentSsid)")
+                Log.i(TAG, "wifi automation: resuming tunnel outside trusted Wi-Fi (SSID: $ssid)")
                 resumeTunnel()
             }
             AutomationAction.DO_NOTHING -> Unit
-        }
-    }
-
-    private fun ensureNetworkCallback() {
-        if (networkCallback == null) {
-            registerNetworkCallback()
         }
     }
 
@@ -898,10 +965,7 @@ class OutlineVpnService : VpnService() {
             }
         }
         WatchdogAlarm.cancel(this)
-        teardownTunnel(keepUnderlyingWatch = (reason == PauseReason.WIFI_NETWORK))
-        if (reason == PauseReason.WIFI_NETWORK) {
-            ensureNetworkCallback()
-        }
+        teardownTunnel(keepUnderlyingWatch = true)
         startForeground(
             NOTIFICATION_ID,
             buildNotification(running = false, status = statusText),
