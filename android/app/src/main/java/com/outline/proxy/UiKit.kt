@@ -1,5 +1,6 @@
 package com.outline.proxy
-
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -43,6 +44,20 @@ internal val StatusGreen = Color(0xFF22C55E)
 /** Tunnel is up but no uplink is healthy yet — the "No link" state. */
 internal val StatusAmber = Color(0xFFF59E0B)
 
+/**
+ * Standard border stroke for all cards, sections and surfaces across the app,
+ * calibrated for unified, balanced contrast across OLED and LCD displays.
+ */
+@Composable
+internal fun outlineCardBorder(isDark: Boolean = isSystemInDarkTheme()): BorderStroke {
+    val color = if (isDark) {
+        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+    } else {
+        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f)
+    }
+    return BorderStroke(1.dp, color)
+}
+
 /** Rounded Material 3 card, the surface every grouped block sits on. */
 @Composable
 internal fun SectionCard(
@@ -55,10 +70,7 @@ internal fun SectionCard(
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
         tonalElevation = 2.dp,
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-        ),
+        border = outlineCardBorder(),
     ) {
         Box(Modifier.padding(padding)) { content() }
     }
