@@ -91,9 +91,9 @@
     <string name="upd_download_failed">ошибка загрузки: %1$s</string>
 
     <!-- Split Tunnel screen: mode selector, per-mode descriptions, app search. -->
-    <string name="split_mode_all">Все приложения</string>
-    <string name="split_mode_only">Только выбранные приложения</string>
-    <string name="split_mode_except">Все приложения, кроме выбранных</string>
+    <string name="split_mode_all">Все</string>
+    <string name="split_mode_only">Выбранные</string>
+    <string name="split_mode_except">Исключения</string>
     <string name="split_desc_all">Трафик всех приложений идёт через туннель.</string>
     <string name="split_desc_allow">Через туннель идут только отмеченные приложения; остальные — напрямую.</string>
     <string name="split_desc_deny">Отмеченные приложения идут мимо туннеля; остальные — через него.</string>
