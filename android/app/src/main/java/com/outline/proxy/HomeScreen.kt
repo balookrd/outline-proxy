@@ -1,7 +1,6 @@
 package com.outline.proxy
 
 import android.net.TrafficStats
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -196,14 +195,7 @@ private fun Header() {
     val isDark = isSystemInDarkTheme()
     val logo = if (isDark) R.drawable.brand_logo_dark else R.drawable.brand_logo_light
     val shape = RoundedCornerShape(20.dp)
-    val borderStroke = androidx.compose.foundation.BorderStroke(
-        1.dp,
-        if (isDark) {
-            MaterialTheme.colorScheme.outline.copy(alpha = 0.85f)
-        } else {
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f)
-        },
-    )
+    val borderStroke = outlineCardBorder(isDark)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -254,10 +246,7 @@ private fun StatusCard(
         shape = RoundedCornerShape(28.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
         tonalElevation = 2.dp,
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-        ),
+        border = outlineCardBorder(isDark),
     ) {
         Box {
             // Full dotted world map across the card, tinted to the theme.
@@ -690,6 +679,7 @@ private fun ActionRow(
             onClick = onAddServer,
             modifier = Modifier.weight(1f).height(56.dp),
             shape = RoundedCornerShape(20.dp),
+            border = outlineCardBorder(),
         ) {
             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
@@ -773,10 +763,7 @@ private fun QuickLinks(
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
         tonalElevation = 2.dp,
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-        ),
+        border = outlineCardBorder(),
     ) {
         Row(modifier = Modifier.padding(vertical = 16.dp)) {
             QuickLink(
