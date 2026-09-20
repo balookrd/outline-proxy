@@ -922,6 +922,18 @@ private fun SplitTunnelScreen(
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 )
+                if (selected.contains(PACKAGE_GEMINI)) {
+                    SectionCard(
+                        modifier = Modifier.padding(top = 8.dp),
+                        padding = PaddingValues(12.dp),
+                    ) {
+                        Text(
+                            stringResource(R.string.split_gemini_banner),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
                 // Filter by name, then float the checked apps to the top so the
                 // current selection is always in view.
                 val visible = apps
@@ -940,7 +952,14 @@ private fun SplitTunnelScreen(
                         SectionCard(padding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth().clickable {
-                                    if (checked) selected.remove(app.packageName) else selected.add(app.packageName)
+                                    if (checked) {
+                                        selected.remove(app.packageName)
+                                    } else {
+                                        selected.add(app.packageName)
+                                        if (app.packageName == PACKAGE_GEMINI && !selected.contains(PACKAGE_GOOGLE_APP)) {
+                                            selected.add(PACKAGE_GOOGLE_APP)
+                                        }
+                                    }
                                     persist()
                                 },
                                 verticalAlignment = Alignment.CenterVertically,
@@ -948,7 +967,14 @@ private fun SplitTunnelScreen(
                                 Checkbox(
                                     checked = checked,
                                     onCheckedChange = {
-                                        if (it) selected.add(app.packageName) else selected.remove(app.packageName)
+                                        if (it) {
+                                            selected.add(app.packageName)
+                                            if (app.packageName == PACKAGE_GEMINI && !selected.contains(PACKAGE_GOOGLE_APP)) {
+                                                selected.add(PACKAGE_GOOGLE_APP)
+                                            }
+                                        } else {
+                                            selected.remove(app.packageName)
+                                        }
                                         persist()
                                     },
                                 )
@@ -971,6 +997,14 @@ private fun SplitTunnelScreen(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
+                                    if (app.packageName == PACKAGE_GEMINI) {
+                                        Text(
+                                            stringResource(R.string.split_gemini_hint),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(top = 2.dp),
+                                        )
+                                    }
                                 }
                             }
                         }

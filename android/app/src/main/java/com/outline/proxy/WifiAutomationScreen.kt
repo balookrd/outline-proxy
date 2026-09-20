@@ -1,6 +1,8 @@
 package com.outline.proxy
 
 import android.Manifest
+import android.content.Intent
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -79,6 +81,7 @@ fun WifiAutomationScreen(
     @Suppress("UNUSED_EXPRESSION")
     refresh
     val hasLocationPermission = LinkProbe.canReadWifiSsid(context)
+    val isLocationServicesOn = LinkProbe.isLocationServicesEnabled(context)
     val currentSsid = LinkProbe.currentWifiSsid(context)
 
     fun persist() {
@@ -90,6 +93,7 @@ fun WifiAutomationScreen(
                 trustedSsids = ssids.toSet(),
             ),
         )
+        OutlineVpnService.requestCheckAutomation(context)
     }
 
     SubScreen(
@@ -189,6 +193,33 @@ fun WifiAutomationScreen(
                             }
                         }
                     }
+                } else if (!isLocationServicesOn) {
+                    SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
+                        Column {
+                            Text(
+                                stringResource(R.string.auto_wifi_location_off_title),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Text(
+                                stringResource(R.string.auto_wifi_location_off_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    runCatching {
+                                        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                                    }
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                            ) {
+                                Text(stringResource(R.string.auto_wifi_location_off_btn))
+                            }
+                        }
+                    }
                 }
 
                 // Add network card
@@ -196,8 +227,8 @@ fun WifiAutomationScreen(
                     Column {
                         val currentText = when {
                             currentSsid != null -> stringResource(R.string.auto_wifi_current_network, currentSsid)
-                            hasLocationPermission -> stringResource(R.string.auto_wifi_current_none)
-                            else -> stringResource(R.string.auto_wifi_current_unknown)
+                            !hasLocationPermission || !isLocationServicesOn -> stringResource(R.string.auto_wifi_current_unknown)
+                            else -> stringResource(R.string.auto_wifi_current_none)
                         }
 
                         Text(

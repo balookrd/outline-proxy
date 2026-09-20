@@ -120,7 +120,7 @@ object AutomationPolicy {
                     // Suppress pausing if user explicitly connected on this exact network
                     if (normalized == manualOverrideSsid) {
                         AutomationAction.DO_NOTHING
-                    } else if (tunnelActive) {
+                    } else if (tunnelActive || userIntentShouldRun) {
                         AutomationAction.PAUSE_TUNNEL
                     } else {
                         AutomationAction.DO_NOTHING
@@ -137,13 +137,13 @@ object AutomationPolicy {
 
             WifiRuleMode.CONNECT_ON_SELECTED -> {
                 if (isTarget) {
-                    if (!tunnelActive && userIntentShouldRun) {
+                    if ((!tunnelActive || pausedByWifi) && userIntentShouldRun) {
                         AutomationAction.RESUME_TUNNEL
                     } else {
                         AutomationAction.DO_NOTHING
                     }
                 } else {
-                    if (tunnelActive) {
+                    if (tunnelActive || userIntentShouldRun) {
                         AutomationAction.PAUSE_TUNNEL
                     } else {
                         AutomationAction.DO_NOTHING

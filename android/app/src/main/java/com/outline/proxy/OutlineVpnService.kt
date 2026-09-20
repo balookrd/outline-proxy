@@ -104,6 +104,7 @@ class OutlineVpnService : VpnService() {
         const val ACTION_ENSURE = "com.outline.proxy.ENSURE"
         const val ACTION_STANDBY = "com.outline.proxy.STANDBY"
         const val ACTION_STOP_STANDBY = "com.outline.proxy.STOP_STANDBY"
+        const val ACTION_CHECK_AUTOMATION = "com.outline.proxy.CHECK_AUTOMATION"
         const val EXTRA_CONFIG_TOML = "config_toml"
 
         // Bumped from the original "outline_vpn": a channel's badge setting is
@@ -153,6 +154,17 @@ class OutlineVpnService : VpnService() {
                     action = ACTION_DISCONNECT
                 },
             )
+        }
+
+        /** Ask the service to evaluate Wi-Fi automation rules immediately. */
+        fun requestCheckAutomation(context: Context) {
+            runCatching {
+                context.startService(
+                    Intent(context, OutlineVpnService::class.java).apply {
+                        action = ACTION_CHECK_AUTOMATION
+                    },
+                )
+            }
         }
 
         /**
@@ -230,11 +242,17 @@ class OutlineVpnService : VpnService() {
                 }
                 KeepAliveState(this).shouldRun = true
                 val autoState = AutomationState(this)
+                if (autoState.pausedByWifi) {
+                    autoState.manualOverrideSsid = LinkProbe.currentWifiSsid(this)
+                }
                 autoState.clearPauseFlags()
-                autoState.manualOverrideSsid = LinkProbe.currentWifiSsid(this)
                 WatchdogWorker.schedule(this)
                 connect(configToml)
                 return START_STICKY
+            }
+            ACTION_CHECK_AUTOMATION -> {
+                checkNetworkAutomation(null, null)
+                return if (isRunning()) START_STICKY else START_NOT_STICKY
             }
             ACTION_STANDBY -> {
                 // Persistent-notification mode wants the banner up even with the
@@ -530,43 +548,57 @@ class OutlineVpnService : VpnService() {
         // on handover, so we follow it verbatim. Below that, every match is
         // delivered, so we pick the best one ourselves on each change.
         val bestMatching = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-        val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                if (bestMatching) bind(network) else bind(LinkProbe.bestNonVpn(cm))
-                refreshDialBudget()
-                cm.getNetworkCapabilities(network)?.let { checkNetworkAutomation(network, it) }
-            }
-
-            /**
-             * A handover between cells — and, on many devices, a data-SIM switch
-             * — arrives here rather than as `onAvailable`/`onLost`: the `Network`
-             * stays the same object while its properties change underneath,
-             * including the bandwidth estimate the dial budget is sized from.
-             * Watching only the two coarse callbacks would leave the tunnel on a
-             * budget picked for a network that no longer exists.
-             */
-            override fun onCapabilitiesChanged(
-                network: Network,
-                networkCapabilities: NetworkCapabilities,
-            ) {
-                refreshDialBudget()
-                checkNetworkAutomation(network, networkCapabilities)
-            }
-
-            /**
-             * A handover can deliver `onAvailable(new)` before `onLost(old)`, so
-             * an unconditional reset here would undo the binding just made and
-             * drop the tunnel back to the system default. Only the loss of the
-             * network actually in use matters.
-             */
-            override fun onLost(network: Network) {
-                if (bestMatching) {
-                    if (underlyingNetwork == network) bind(null)
-                } else {
-                    bind(LinkProbe.bestNonVpn(cm))
+        val cb = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
+                override fun onAvailable(network: Network) {
+                    if (bestMatching) bind(network) else bind(LinkProbe.bestNonVpn(cm))
+                    refreshDialBudget()
+                    cm.getNetworkCapabilities(network)?.let { checkNetworkAutomation(network, it) }
                 }
-                refreshDialBudget()
-                checkNetworkAutomation(null, null)
+
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    networkCapabilities: NetworkCapabilities,
+                ) {
+                    refreshDialBudget()
+                    checkNetworkAutomation(network, networkCapabilities)
+                }
+
+                override fun onLost(network: Network) {
+                    if (bestMatching) {
+                        if (underlyingNetwork == network) bind(null)
+                    } else {
+                        bind(LinkProbe.bestNonVpn(cm))
+                    }
+                    refreshDialBudget()
+                    checkNetworkAutomation(null, null)
+                }
+            }
+        } else {
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    if (bestMatching) bind(network) else bind(LinkProbe.bestNonVpn(cm))
+                    refreshDialBudget()
+                    cm.getNetworkCapabilities(network)?.let { checkNetworkAutomation(network, it) }
+                }
+
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    networkCapabilities: NetworkCapabilities,
+                ) {
+                    refreshDialBudget()
+                    checkNetworkAutomation(network, networkCapabilities)
+                }
+
+                override fun onLost(network: Network) {
+                    if (bestMatching) {
+                        if (underlyingNetwork == network) bind(null)
+                    } else {
+                        bind(LinkProbe.bestNonVpn(cm))
+                    }
+                    refreshDialBudget()
+                    checkNetworkAutomation(null, null)
+                }
             }
         }
         // Losing the handover watch is not worth losing the tunnel over: the
@@ -702,11 +734,25 @@ class OutlineVpnService : VpnService() {
      * button) or stops the service outright (the default, unchanged behaviour).
      */
     private fun disconnect() {
-        teardownTunnel()
-        if (KeepAliveState(this).persistentNotification) {
+        val autoConfig = AutomationStore(this).load()
+        val keepStandby = KeepAliveState(this).persistentNotification || autoConfig.wifiAutomationEnabled
+        teardownTunnel(keepUnderlyingWatch = keepStandby)
+        if (keepStandby) {
+            ensureNetworkCallback()
+            val autoState = AutomationState(this)
+            val statusText = if (autoState.pausedByWifi) {
+                val lastSsid = autoState.lastSeenWifiSsid
+                if (lastSsid != null) {
+                    getString(R.string.status_paused_wifi_named, lastSsid)
+                } else {
+                    getString(R.string.status_paused_wifi)
+                }
+            } else {
+                getString(R.string.status_disconnected)
+            }
             startForeground(
                 NOTIFICATION_ID,
-                buildNotification(running = false, status = getString(R.string.status_disconnected)),
+                buildNotification(running = false, status = statusText),
             )
         } else {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -790,7 +836,12 @@ class OutlineVpnService : VpnService() {
         val autoConfig = AutomationStore(this).load()
         if (!autoConfig.wifiAutomationEnabled) return
 
-        val currentSsid = LinkProbe.extractWifiSsid(this, caps)
+        val resolvedCaps = caps ?: run {
+            val cm = getSystemService(ConnectivityManager::class.java)
+            val net = network ?: (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) underlyingNetwork else cm?.let { LinkProbe.bestNonVpn(it) })
+            net?.let { cm?.getNetworkCapabilities(it) }
+        }
+        val currentSsid = LinkProbe.extractWifiSsid(this, resolvedCaps) ?: LinkProbe.currentWifiSsid(this)
         val autoState = AutomationState(this)
         val keepAlive = KeepAliveState(this)
 
@@ -808,6 +859,7 @@ class OutlineVpnService : VpnService() {
             userIntentShouldRun = keepAlive.shouldRun,
             manualOverrideSsid = autoState.manualOverrideSsid,
         )
+        Log.i(TAG, "wifi automation: ssid='$currentSsid', action=$action, pausedByWifi=${autoState.pausedByWifi}, active=${isActive()}, shouldRun=${keepAlive.shouldRun}")
 
         when (action) {
             AutomationAction.PAUSE_TUNNEL -> {
@@ -837,6 +889,7 @@ class OutlineVpnService : VpnService() {
             }
             PauseReason.WIFI_NETWORK -> {
                 autoState.pausedByWifi = true
+                autoState.lastSeenWifiSsid = extra
                 if (extra != null) {
                     getString(R.string.status_paused_wifi_named, extra)
                 } else {

@@ -184,4 +184,9 @@
     <string name="auto_wifi_permission_title">Требуется доступ к местоположению</string>
     <string name="auto_wifi_permission_desc">Android требует доступ к местоположению для чтения имени Wi-Fi сети (SSID). Outline Proxy никогда не отслеживает и не передает ваше местоположение.</string>
     <string name="auto_wifi_permission_btn">Разрешить доступ</string>
+    <string name="auto_wifi_location_off_title">Геолокация выключена в системе</string>
+    <string name="auto_wifi_location_off_desc">Android требует включения службы геолокации в настройках устройства для определения имени Wi-Fi сети (SSID).</string>
+    <string name="auto_wifi_location_off_btn">Включить геолокацию</string>
+    <string name="split_gemini_hint">Передаёт сетевой трафик через приложение Google</string>
+    <string name="split_gemini_banner">Gemini передаёт трафик через сервисы Google. Приложение Google также включено в список.</string>
 </resources>
