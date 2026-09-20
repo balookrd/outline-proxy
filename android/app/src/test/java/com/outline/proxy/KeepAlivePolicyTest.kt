@@ -12,11 +12,17 @@ class KeepAlivePolicyTest {
         consentGranted: Boolean = true,
         hasProfile: Boolean = true,
         failures: Int = 0,
-    ) = KeepAlivePolicy.decide(shouldRun, coreAlive, consentGranted, hasProfile, failures)
+        isPaused: Boolean = false,
+    ) = KeepAlivePolicy.decide(shouldRun, coreAlive, consentGranted, hasProfile, failures, isPaused)
 
     @Test
     fun `user turned it off - the chain dies here`() {
         assertEquals(KeepAliveAction.STOP, decide(shouldRun = false).action)
+    }
+
+    @Test
+    fun `paused tunnel - watchdog does nothing`() {
+        assertEquals(KeepAliveAction.NOTHING, decide(isPaused = true).action)
     }
 
     @Test

@@ -42,9 +42,10 @@ android/
       ExternalControl.kt / ControlActivity.kt   # outline:// grammar + entry point
       AppTheme.kt            # system light/dark theme
       KeepAlivePolicy.kt / KeepAliveState.kt / KeepAliveScreen.kt
+      AutomationPolicy.kt / AutomationStore.kt / AutomationState.kt / WifiAutomationScreen.kt
       keepalive/             # BootReceiver, WatchdogAlarm/Worker/Receiver, helper
     src/test/java/com/outline/proxy/
-      ExternalControlTest.kt, KeepAlivePolicyTest.kt,   # JVM unit tests
+      ExternalControlTest.kt, KeepAlivePolicyTest.kt, AutomationPolicyTest.kt,   # JVM unit tests
       SubscriptionProfileTest.kt, ConfigValidationTest.kt
 ```
 

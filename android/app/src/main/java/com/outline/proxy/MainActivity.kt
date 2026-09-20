@@ -222,6 +222,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 var showSplit by remember { mutableStateOf(false) }
+                var showRules by remember { mutableStateOf(false) }
                 var showExternal by remember { mutableStateOf(false) }
                 var showKeepAlive by remember { mutableStateOf(false) }
                 var showProfiles by remember { mutableStateOf(false) }
@@ -244,8 +245,9 @@ class MainActivity : ComponentActivity() {
                 // Home, not leave the app. The top "‹ Back" button already does
                 // this; without a handler the gesture falls through to the
                 // Activity and finishes it.
-                BackHandler(enabled = showSplit || showExternal || showKeepAlive || showProfiles) {
+                BackHandler(enabled = showSplit || showRules || showExternal || showKeepAlive || showProfiles) {
                     showSplit = false
+                    showRules = false
                     showExternal = false
                     showKeepAlive = false
                     showProfiles = false
@@ -260,6 +262,11 @@ class MainActivity : ComponentActivity() {
                         store = SplitTunnelStore(this@MainActivity),
                         loadApps = { loadNetworkApps(this@MainActivity) },
                         onBack = { showSplit = false },
+                    )
+                } else if (showRules) {
+                    WifiAutomationScreen(
+                        store = AutomationStore(this@MainActivity),
+                        onBack = { showRules = false },
                     )
                 } else if (showExternal) {
                     ExternalControlScreen(
@@ -369,6 +376,7 @@ class MainActivity : ComponentActivity() {
                         onAddServer = { showProfiles = true },
                         onOpenProfiles = { showProfiles = true },
                         onOpenSplitTunnel = { showSplit = true },
+                        onOpenRules = { showRules = true },
                         onOpenExternalControl = { showExternal = true },
                         onOpenKeepAlive = { showKeepAlive = true },
                         onCheckForUpdates = {

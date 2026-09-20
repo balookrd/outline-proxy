@@ -35,8 +35,10 @@ object KeepAlivePolicy {
         consentGranted: Boolean,
         hasProfile: Boolean,
         consecutiveFailures: Int,
+        isPaused: Boolean = false,
     ): KeepAliveDecision = when {
         !shouldRun -> KeepAliveDecision(KeepAliveAction.STOP, 0)
+        isPaused -> KeepAliveDecision(KeepAliveAction.NOTHING, BASE_DELAY_MS)
         coreAlive -> KeepAliveDecision(KeepAliveAction.NOTHING, BASE_DELAY_MS)
         !consentGranted -> KeepAliveDecision(KeepAliveAction.GIVE_UP, 0)
         !hasProfile -> KeepAliveDecision(KeepAliveAction.GIVE_UP, 0)

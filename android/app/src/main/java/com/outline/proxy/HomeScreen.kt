@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -121,6 +122,7 @@ fun HomeScreen(
     onAddServer: () -> Unit,
     onOpenProfiles: () -> Unit,
     onOpenSplitTunnel: () -> Unit,
+    onOpenRules: () -> Unit,
     onOpenExternalControl: () -> Unit,
     onOpenKeepAlive: () -> Unit,
     onCheckForUpdates: () -> Unit,
@@ -151,7 +153,7 @@ fun HomeScreen(
             onToggle = onToggle,
         )
         Spacer(Modifier.height(16.dp))
-        QuickLinks(onOpenSplitTunnel, onOpenExternalControl, onOpenKeepAlive)
+        QuickLinks(onOpenSplitTunnel, onOpenRules, onOpenExternalControl, onOpenKeepAlive)
         Spacer(Modifier.height(16.dp))
         VersionFooter(onCheckForUpdates, updateStatus)
     }
@@ -259,9 +261,23 @@ private fun StatusCard(
                         // link not established yet), connected (a live uplink), and
                         // "No link" — up but no uplink is healthy, so traffic can't
                         // flow.
+                        val context = LocalContext.current
+                        val autoState = remember { AutomationState(context) }
+                        val isPaused = !connected && (autoState.pausedByAirplane || autoState.pausedByWifi)
                         val dots = connectingDots(active = connecting)
                         val statusText = when {
-                            !connected -> stringResource(R.string.status_disconnected)
+                            !connected -> when {
+                                autoState.pausedByAirplane -> stringResource(R.string.status_paused_airplane)
+                                autoState.pausedByWifi -> {
+                                    val currentSsid = LinkProbe.currentWifiSsid(context)
+                                    if (currentSsid != null) {
+                                        stringResource(R.string.status_paused_wifi_named, currentSsid)
+                                    } else {
+                                        stringResource(R.string.status_paused_wifi)
+                                    }
+                                }
+                                else -> stringResource(R.string.status_disconnected)
+                            }
                             // A live link is not the same as a usable one: on an
                             // edge-class network the tunnel is up while nothing
                             // loads, so the label says so rather than sitting on
@@ -275,6 +291,7 @@ private fun StatusCard(
                             else -> stringResource(R.string.status_no_link)
                         }
                         val statusColor = when {
+                            isPaused -> StatusAmber
                             !connected -> MaterialTheme.colorScheme.outline
                             hasLiveLink -> StatusGreen
                             connecting -> MaterialTheme.colorScheme.primary
@@ -730,6 +747,7 @@ private fun ActionRow(
 @Composable
 private fun QuickLinks(
     onOpenSplitTunnel: () -> Unit,
+    onOpenRules: () -> Unit,
     onOpenExternalControl: () -> Unit,
     onOpenKeepAlive: () -> Unit,
 ) {
@@ -747,6 +765,10 @@ private fun QuickLinks(
             QuickLink(
                 Icons.AutoMirrored.Filled.AltRoute, stringResource(R.string.home_link_split),
                 Modifier.weight(1f), onOpenSplitTunnel,
+            )
+            QuickLink(
+                Icons.Filled.Wifi, stringResource(R.string.home_link_rules),
+                Modifier.weight(1f), onOpenRules,
             )
             QuickLink(
                 Icons.Filled.Tune, stringResource(R.string.home_link_external),
