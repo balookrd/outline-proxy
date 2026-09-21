@@ -213,6 +213,9 @@
     <string name="auto_wifi_location_off_title">Location services are off</string>
     <string name="auto_wifi_location_off_desc">Android requires device location services to be turned on to detect the Wi-Fi network name (SSID).</string>
     <string name="auto_wifi_location_off_btn">Turn on location</string>
+    <string name="auto_wifi_bg_permission_title">Background location required</string>
+    <string name="auto_wifi_bg_permission_desc">To automatically pause or connect VPN in the background when your screen is off or the app is closed, Android requires location permission set to \"Allow all the time\".</string>
+    <string name="auto_wifi_bg_permission_btn">Allow all the time</string>
     <string name="split_gemini_hint">Routes network traffic through the Google App</string>
     <string name="split_gemini_banner">Gemini sends network traffic through the Google App. The Google App was also selected.</string>
 </resources>
