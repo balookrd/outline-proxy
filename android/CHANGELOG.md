@@ -38,6 +38,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Fix automatic VPN pause when connecting to trusted Wi-Fi in background.** Resolved an issue where connecting to a trusted Wi-Fi network while the VPN was active did not automatically pause the tunnel until the app was brought to the foreground:
+  - Configured `OutlineVpnService` with `FOREGROUND_SERVICE_TYPE_LOCATION` (and declared `FOREGROUND_SERVICE_LOCATION` + `ACCESS_BACKGROUND_LOCATION` in the manifest), granting lawful access to Wi-Fi SSID details in background network callbacks on Android 14+ (API 34+).
+  - Dynamically assert foreground service types based on granted location permissions with automatic fallback to prevent security exceptions.
+  - Added a 1.5-second retry mechanism on Wi-Fi connection if the platform's initial network callback arrives before `WifiInfo` capabilities are fully populated.
+
 - **Fix tunnel flapping and connection instability on Wi-Fi.** Resolved an issue where the VPN tunnel would flap (repeatedly pause and resume every few seconds) when connected to Wi-Fi:
   - Separated the Wi-Fi automation callback from the underlying default-network callback, ensuring cellular network capability changes never falsely trigger Wi-Fi automation logic with null SSIDs.
   - Made `AutomationPolicy.decideWifiChange()` strictly idempotent: it never repeatedly issues `PAUSE_TUNNEL` when already paused and inactive, and never issues `RESUME_TUNNEL` when already active.
