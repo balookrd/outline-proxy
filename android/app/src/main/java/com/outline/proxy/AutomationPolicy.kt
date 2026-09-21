@@ -92,7 +92,8 @@ object AutomationPolicy {
      *
      * @param wifiAutomationEnabled whether Wi-Fi rule automation is enabled in settings.
      * @param wifiMode whether to pause or connect on selected networks.
-     * @param currentSsid the normalized SSID of the current Wi-Fi network, or null if cellular/no-wifi.
+     * @param isOnWifi whether the device is currently connected to a Wi-Fi network.
+     * @param currentSsid the normalized SSID of the current Wi-Fi network, or null if cellular/disconnected/unknown.
      * @param trustedSsids the set of user-selected SSIDs (normalized).
      * @param tunnelActive whether the native tunnel is currently running.
      * @param pausedByWifi whether the tunnel is currently in a paused state due to Wi-Fi automation.
@@ -102,6 +103,7 @@ object AutomationPolicy {
     fun decideWifiChange(
         wifiAutomationEnabled: Boolean,
         wifiMode: WifiRuleMode,
+        isOnWifi: Boolean,
         currentSsid: String?,
         trustedSsids: Set<String>,
         tunnelActive: Boolean,
@@ -112,22 +114,37 @@ object AutomationPolicy {
         if (!wifiAutomationEnabled) return AutomationAction.DO_NOTHING
 
         val normalized = normalizeSsid(currentSsid)
-        val isTarget = normalized != null && trustedSsids.contains(normalized)
 
         return when (wifiMode) {
             WifiRuleMode.PAUSE_ON_SELECTED -> {
-                if (isTarget) {
-                    // Suppress pausing if user explicitly connected on this exact network
-                    if (normalized == manualOverrideSsid) {
-                        AutomationAction.DO_NOTHING
-                    } else if (tunnelActive || (!pausedByWifi && userIntentShouldRun)) {
-                        AutomationAction.PAUSE_TUNNEL
+                if (isOnWifi) {
+                    if (normalized != null) {
+                        if (trustedSsids.contains(normalized)) {
+                            // Suppress pausing if user explicitly connected on this exact network
+                            if (normalized == manualOverrideSsid) {
+                                AutomationAction.DO_NOTHING
+                            } else if (tunnelActive || (!pausedByWifi && userIntentShouldRun)) {
+                                AutomationAction.PAUSE_TUNNEL
+                            } else {
+                                // Already paused and inactive -> do nothing
+                                AutomationAction.DO_NOTHING
+                            }
+                        } else {
+                            // Explicitly connected to an untrusted / foreign Wi-Fi network
+                            if (pausedByWifi && userIntentShouldRun && !tunnelActive) {
+                                AutomationAction.RESUME_TUNNEL
+                            } else {
+                                AutomationAction.DO_NOTHING
+                            }
+                        }
                     } else {
-                        // Already paused and inactive -> do nothing
+                        // Connected to Wi-Fi, but SSID is hidden/unknown (background restrictions,
+                        // screen off, Doze mode, or pending handshake).
+                        // Keep current pause state to avoid falsely resuming while still on trusted Wi-Fi.
                         AutomationAction.DO_NOTHING
                     }
                 } else {
-                    // Left the selected/trusted network
+                    // Completely left Wi-Fi (switched to cellular or no network)
                     if (pausedByWifi && userIntentShouldRun && !tunnelActive) {
                         AutomationAction.RESUME_TUNNEL
                     } else {
@@ -137,17 +154,32 @@ object AutomationPolicy {
             }
 
             WifiRuleMode.CONNECT_ON_SELECTED -> {
-                if (isTarget) {
-                    if ((pausedByWifi || !tunnelActive) && userIntentShouldRun) {
-                        AutomationAction.RESUME_TUNNEL
+                if (isOnWifi) {
+                    if (normalized != null) {
+                        if (trustedSsids.contains(normalized)) {
+                            // On selected Wi-Fi where VPN is required
+                            if ((pausedByWifi || !tunnelActive) && userIntentShouldRun) {
+                                AutomationAction.RESUME_TUNNEL
+                            } else {
+                                AutomationAction.DO_NOTHING
+                            }
+                        } else {
+                            // On an unselected Wi-Fi network -> pause tunnel
+                            if (tunnelActive || (!pausedByWifi && userIntentShouldRun)) {
+                                AutomationAction.PAUSE_TUNNEL
+                            } else {
+                                AutomationAction.DO_NOTHING
+                            }
+                        }
                     } else {
+                        // Connected to Wi-Fi, but SSID is unknown: preserve existing state
                         AutomationAction.DO_NOTHING
                     }
                 } else {
+                    // Off Wi-Fi -> pause tunnel outside selected networks
                     if (tunnelActive || (!pausedByWifi && userIntentShouldRun)) {
                         AutomationAction.PAUSE_TUNNEL
                     } else {
-                        // Already paused outside selected -> do nothing
                         AutomationAction.DO_NOTHING
                     }
                 }

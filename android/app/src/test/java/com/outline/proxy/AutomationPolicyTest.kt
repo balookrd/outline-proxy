@@ -109,6 +109,7 @@ class AutomationPolicyTest {
         val actionEnter = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,
             wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = true,
             currentSsid = "\"Home-5G\"",
             trustedSsids = trusted,
             tunnelActive = true,
@@ -121,6 +122,7 @@ class AutomationPolicyTest {
         val actionStartOnTrusted = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,
             wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = true,
             currentSsid = "Home-5G",
             trustedSsids = trusted,
             tunnelActive = false,
@@ -133,6 +135,7 @@ class AutomationPolicyTest {
         val actionOverride = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,
             wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = true,
             currentSsid = "Home-5G",
             trustedSsids = trusted,
             tunnelActive = true,
@@ -144,13 +147,58 @@ class AutomationPolicyTest {
     }
 
     @Test
+    fun `wifi pause on selected - preserves pause when on wifi with unknown ssid (night standby doze)`() {
+        val trusted = setOf("Home-5G")
+
+        // Phone is in Doze/standby on the nightstand, connected to Wi-Fi, but OS redacts SSID to null
+        val actionUnknownNull = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = true,
+            currentSsid = null,
+            trustedSsids = trusted,
+            tunnelActive = false,
+            pausedByWifi = true,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, actionUnknownNull)
+
+        // Same when raw SSID is "<unknown ssid>" placeholder
+        val actionUnknownPlaceholder = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = true,
+            currentSsid = "<unknown ssid>",
+            trustedSsids = trusted,
+            tunnelActive = false,
+            pausedByWifi = true,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, actionUnknownPlaceholder)
+
+        // When tunnel is running and connected to Wi-Fi with unknown SSID, do not falsely pause either
+        val actionRunningUnknown = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = true,
+            currentSsid = null,
+            trustedSsids = trusted,
+            tunnelActive = true,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, actionRunningUnknown)
+    }
+
+    @Test
     fun `wifi pause on selected - resumes when leaving trusted network`() {
         val trusted = setOf("Home-5G")
 
-        // Leaving Home-5G to cellular (currentSsid = null)
+        // Leaving Home-5G to cellular (isOnWifi = false, currentSsid = null)
         val actionLeaveToCellular = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,
             wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = false,
             currentSsid = null,
             trustedSsids = trusted,
             tunnelActive = false,
@@ -159,10 +207,11 @@ class AutomationPolicyTest {
         )
         assertEquals(AutomationAction.RESUME_TUNNEL, actionLeaveToCellular)
 
-        // Leaving Home-5G to public Wi-Fi
+        // Leaving Home-5G to public Wi-Fi (isOnWifi = true, unknown/untrusted SSID)
         val actionLeaveToPublic = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,
             wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = true,
             currentSsid = "Airport_Free_Wifi",
             trustedSsids = trusted,
             tunnelActive = false,
@@ -175,6 +224,7 @@ class AutomationPolicyTest {
         val actionNoIntent = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,
             wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = false,
             currentSsid = null,
             trustedSsids = trusted,
             tunnelActive = false,
@@ -192,6 +242,7 @@ class AutomationPolicyTest {
         val actionEnter = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,
             wifiMode = WifiRuleMode.CONNECT_ON_SELECTED,
+            isOnWifi = true,
             currentSsid = "Office",
             trustedSsids = trusted,
             tunnelActive = false,
@@ -200,10 +251,11 @@ class AutomationPolicyTest {
         )
         assertEquals(AutomationAction.RESUME_TUNNEL, actionEnter)
 
-        // Pause when leaving
+        // Pause when leaving to unselected Wi-Fi
         val actionLeave = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,
             wifiMode = WifiRuleMode.CONNECT_ON_SELECTED,
+            isOnWifi = true,
             currentSsid = "CoffeeShop",
             trustedSsids = trusted,
             tunnelActive = true,
@@ -211,6 +263,32 @@ class AutomationPolicyTest {
             userIntentShouldRun = true,
         )
         assertEquals(AutomationAction.PAUSE_TUNNEL, actionLeave)
+
+        // Pause when leaving to cellular
+        val actionLeaveToCellular = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.CONNECT_ON_SELECTED,
+            isOnWifi = false,
+            currentSsid = null,
+            trustedSsids = trusted,
+            tunnelActive = true,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.PAUSE_TUNNEL, actionLeaveToCellular)
+
+        // Unknown SSID while on Wi-Fi keeps current state
+        val actionUnknownSsid = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.CONNECT_ON_SELECTED,
+            isOnWifi = true,
+            currentSsid = null,
+            trustedSsids = trusted,
+            tunnelActive = true,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, actionUnknownSsid)
     }
 
     @Test
@@ -219,6 +297,7 @@ class AutomationPolicyTest {
         val action = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,
             wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = true,
             currentSsid = "Home-5G",
             trustedSsids = trusted,
             tunnelActive = false,
@@ -234,6 +313,7 @@ class AutomationPolicyTest {
         val action = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = true,
             wifiMode = WifiRuleMode.CONNECT_ON_SELECTED,
+            isOnWifi = true,
             currentSsid = "CoffeeShop",
             trustedSsids = trusted,
             tunnelActive = false,
