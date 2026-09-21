@@ -107,6 +107,19 @@ object LinkProbe {
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
 
+    /**
+     * Whether background location permission is granted.
+     * Required on Android 10+ (API 29+) to read the Wi-Fi SSID when the app is in the background.
+     */
+    fun canReadWifiSsidInBackground(context: Context): Boolean {
+        if (!canReadWifiSsid(context)) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
     /** Whether system location services (GPS/Location master switch) are enabled on the device. */
     fun isLocationServicesEnabled(context: Context): Boolean {
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false

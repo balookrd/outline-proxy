@@ -2,6 +2,8 @@ package com.outline.proxy
 
 import android.Manifest
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -81,6 +83,7 @@ fun WifiAutomationScreen(
     @Suppress("UNUSED_EXPRESSION")
     refresh
     val hasLocationPermission = LinkProbe.canReadWifiSsid(context)
+    val hasBackgroundLocationPermission = LinkProbe.canReadWifiSsidInBackground(context)
     val isLocationServicesOn = LinkProbe.isLocationServicesEnabled(context)
     val currentSsid = LinkProbe.currentWifiSsid(context)
 
@@ -217,6 +220,38 @@ fun WifiAutomationScreen(
                                 shape = RoundedCornerShape(16.dp),
                             ) {
                                 Text(stringResource(R.string.auto_wifi_location_off_btn))
+                            }
+                        }
+                    }
+                } else if (!hasBackgroundLocationPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
+                        Column {
+                            Text(
+                                stringResource(R.string.auto_wifi_bg_permission_title),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Text(
+                                stringResource(R.string.auto_wifi_bg_permission_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    runCatching {
+                                        locationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                                    }.onFailure {
+                                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                            data = Uri.fromParts("package", context.packageName, null)
+                                        }
+                                        context.startActivity(intent)
+                                    }
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                            ) {
+                                Text(stringResource(R.string.auto_wifi_bg_permission_btn))
                             }
                         }
                     }

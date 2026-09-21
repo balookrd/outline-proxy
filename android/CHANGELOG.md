@@ -42,6 +42,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   - Configured `OutlineVpnService` with `FOREGROUND_SERVICE_TYPE_LOCATION` (and declared `FOREGROUND_SERVICE_LOCATION` + `ACCESS_BACKGROUND_LOCATION` in the manifest), granting lawful access to Wi-Fi SSID details in background network callbacks on Android 14+ (API 34+).
   - Dynamically assert foreground service types based on granted location permissions with automatic fallback to prevent security exceptions.
   - Added a 1.5-second retry mechanism on Wi-Fi connection if the platform's initial network callback arrives before `WifiInfo` capabilities are fully populated.
+  - Added a dedicated background location permission card to the Network Rules screen with one-tap navigation to grant "Allow all the time", guiding users when background SSID detection is blocked by the OS.
 
 - **Fix tunnel flapping and connection instability on Wi-Fi.** Resolved an issue where the VPN tunnel would flap (repeatedly pause and resume every few seconds) when connected to Wi-Fi:
   - Separated the Wi-Fi automation callback from the underlying default-network callback, ensuring cellular network capability changes never falsely trigger Wi-Fi automation logic with null SSIDs.
