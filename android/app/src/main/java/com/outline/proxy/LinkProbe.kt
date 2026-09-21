@@ -152,4 +152,15 @@ object LinkProbe {
         @Suppress("DEPRECATION")
         return AutomationPolicy.normalizeSsid(wm?.connectionInfo?.ssid)
     }
+
+    /**
+     * Whether the device currently has an active non-VPN Wi-Fi connection,
+     * regardless of whether the SSID is known or hidden by Android.
+     */
+    fun isOnWifi(context: Context): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val network = bestNonVpn(cm) ?: cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
 }
