@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.provider.Settings
 import android.net.ConnectivityManager
 import android.net.Network
@@ -64,6 +65,7 @@ class OutlineVpnService : VpnService() {
     private var airplaneReceiver: BroadcastReceiver? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var wifiLostRunnable: Runnable? = null
+    private var wifiSsidRetryRunnable: Runnable? = null
 
     private enum class PauseReason {
         AIRPLANE_MODE,
@@ -136,6 +138,7 @@ class OutlineVpnService : VpnService() {
         private const val TASK_REMOVED_DELAY_MS = 1_000L
         private const val DESTROY_DELAY_MS = 2_000L
         private const val WIFI_LOST_DEBOUNCE_MS = 3_000L
+        private const val WIFI_SSID_RETRY_DELAY_MS = 1_500L
 
         /**
          * Whether the tunnel is up, as reported by the Rust core (same process,
@@ -255,6 +258,9 @@ class OutlineVpnService : VpnService() {
                 }
                 autoState.clearPauseFlags()
                 WatchdogWorker.schedule(this)
+                if (AutomationStore(this).load().wifiAutomationEnabled) {
+                    registerWifiAutomationCallback()
+                }
                 connect(configToml)
                 return START_STICKY
             }
@@ -262,6 +268,7 @@ class OutlineVpnService : VpnService() {
                 val autoConfig = AutomationStore(this).load()
                 if (autoConfig.wifiAutomationEnabled) {
                     registerWifiAutomationCallback()
+                    startServiceForeground(currentNotification())
                     evaluateWifiAutomation()
                 } else {
                     unregisterWifiAutomationCallback()
@@ -272,6 +279,7 @@ class OutlineVpnService : VpnService() {
                             resumeTunnel()
                         }
                     }
+                    startServiceForeground(currentNotification())
                 }
                 return if (isRunning()) START_STICKY else START_NOT_STICKY
             }
@@ -282,7 +290,7 @@ class OutlineVpnService : VpnService() {
                 // the app is next opened, not via a sticky restart (the chosen
                 // scope). If the tunnel is somehow already up (a race), keep it
                 // sticky so we do not weaken a running tunnel's keep-alive.
-                startForeground(NOTIFICATION_ID, currentNotification())
+                startServiceForeground(currentNotification())
                 return if (isRunning()) START_STICKY else START_NOT_STICKY
             }
             ACTION_STOP_STANDBY -> {
@@ -315,7 +323,7 @@ class OutlineVpnService : VpnService() {
      * the paths where the answer turns out to be "do nothing".
      */
     private fun ensureTunnel() {
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startServiceForeground(buildNotification())
 
         val state = KeepAliveState(this)
         val store = ProfileStore(this)
@@ -323,6 +331,10 @@ class OutlineVpnService : VpnService() {
 
         val autoConfig = AutomationStore(this).load()
         val autoState = AutomationState(this)
+
+        if (autoConfig.wifiAutomationEnabled) {
+            registerWifiAutomationCallback()
+        }
 
         if (autoConfig.pauseOnAirplaneMode && isAirplaneModeOn(this)) {
             Log.i(TAG, "ensure: airplane mode is on; entering pause")
@@ -469,8 +481,7 @@ class OutlineVpnService : VpnService() {
             return
         }
         tunInterface = tun
-
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startServiceForeground(buildNotification())
 
         val state = KeepAliveState(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -747,8 +758,7 @@ class OutlineVpnService : VpnService() {
             } else {
                 getString(R.string.status_disconnected)
             }
-            startForeground(
-                NOTIFICATION_ID,
+            startServiceForeground(
                 buildNotification(running = false, status = statusText),
             )
         } else {
@@ -848,8 +858,33 @@ class OutlineVpnService : VpnService() {
         wifiLostRunnable = null
     }
 
+    private fun scheduleWifiSsidRetry() {
+        if (wifiSsidRetryRunnable != null) return
+        wifiSsidRetryRunnable = Runnable {
+            wifiSsidRetryRunnable = null
+            if (activeWifiNetwork != null && currentWifiSsid == null) {
+                val cm = getSystemService(ConnectivityManager::class.java)
+                val caps = activeWifiNetwork?.let { cm?.getNetworkCapabilities(it) }
+                val ssid = LinkProbe.extractWifiSsid(this, caps) ?: LinkProbe.currentWifiSsid(this)
+                if (ssid != null) {
+                    Log.i(TAG, "wifi automation: retrieved SSID on retry: '$ssid'")
+                    currentWifiSsid = ssid
+                    evaluateWifiAutomation()
+                }
+            }
+        }.also { runnable ->
+            mainHandler.postDelayed(runnable, WIFI_SSID_RETRY_DELAY_MS)
+        }
+    }
+
+    private fun cancelWifiSsidRetry() {
+        wifiSsidRetryRunnable?.let { mainHandler.removeCallbacks(it) }
+        wifiSsidRetryRunnable = null
+    }
+
     private fun registerWifiAutomationCallback() {
         if (wifiCallback != null) return
+        startServiceForeground(currentNotification())
         val cm = getSystemService(ConnectivityManager::class.java) ?: return
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -864,6 +899,11 @@ class OutlineVpnService : VpnService() {
                     currentWifiSsid = ssid
                 }
             }
+            if (currentWifiSsid != null) {
+                cancelWifiSsidRetry()
+            } else {
+                scheduleWifiSsidRetry()
+            }
             evaluateWifiAutomation()
         }
 
@@ -873,11 +913,17 @@ class OutlineVpnService : VpnService() {
             LinkProbe.extractWifiSsid(this@OutlineVpnService, networkCapabilities)?.let { ssid ->
                 currentWifiSsid = ssid
             }
+            if (currentWifiSsid != null) {
+                cancelWifiSsidRetry()
+            } else {
+                scheduleWifiSsidRetry()
+            }
             evaluateWifiAutomation()
         }
 
         fun handleLost(network: Network) {
             if (activeWifiNetwork == network) {
+                cancelWifiSsidRetry()
                 scheduleWifiLostDebounce()
             }
         }
@@ -906,6 +952,7 @@ class OutlineVpnService : VpnService() {
 
     private fun unregisterWifiAutomationCallback() {
         cancelWifiLostDebounce()
+        cancelWifiSsidRetry()
         val cm = getSystemService(ConnectivityManager::class.java)
         wifiCallback?.let { cb ->
             runCatching { cm?.unregisterNetworkCallback(cb) }
@@ -922,6 +969,10 @@ class OutlineVpnService : VpnService() {
 
         val isOnWifi = activeWifiNetwork != null || LinkProbe.isOnWifi(this)
         val ssid = currentWifiSsid ?: LinkProbe.currentWifiSsid(this)
+        if (currentWifiSsid == null && ssid != null) {
+            currentWifiSsid = ssid
+            cancelWifiSsidRetry()
+        }
         val autoState = AutomationState(this)
         val keepAlive = KeepAliveState(this)
 
@@ -974,8 +1025,7 @@ class OutlineVpnService : VpnService() {
         }
         WatchdogAlarm.cancel(this)
         teardownTunnel(keepUnderlyingWatch = true)
-        startForeground(
-            NOTIFICATION_ID,
+        startServiceForeground(
             buildNotification(running = false, status = statusText),
         )
     }
@@ -985,6 +1035,39 @@ class OutlineVpnService : VpnService() {
         val autoState = AutomationState(this)
         autoState.clearPauseFlags()
         ensureTunnel()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun startServiceForeground(
+        notification: Notification,
+        id: Int = NOTIFICATION_ID,
+    ) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val types = if (LinkProbe.canReadWifiSsid(this)) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                }
+                startForeground(id, notification, types)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val types = if (LinkProbe.canReadWifiSsid(this)) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE
+                }
+                startForeground(id, notification, types)
+            } else {
+                startForeground(id, notification)
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "failed to start foreground with requested types", e)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                runCatching {
+                    startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                }.onFailure { Log.e(TAG, "fallback startForeground also failed", it) }
+            }
+        }
     }
 
     private fun buildNotification(

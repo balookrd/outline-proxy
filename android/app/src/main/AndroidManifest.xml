@@ -14,8 +14,13 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Needed so users can grant "Allow all the time" for robust background Wi-Fi automation. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Needed on Android 14+ (targetSdk 34+) so OutlineVpnService can read the Wi-Fi SSID
+         in background network callbacks while running as a foreground service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Keep-alive: an exact alarm pierces Doze and is one of the exemptions
          that make starting a foreground service from the background legal; boot
@@ -92,12 +97,13 @@
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <!-- The VPN tunnel service. BIND_VPN_SERVICE is granted to the system
-             only; the special-use foreground type keeps the tunnel alive. -->
+             only; specialUse keeps the tunnel alive, and location allows reading
+             the connected Wi-Fi SSID in background network callbacks on Android 14+. -->
         <service
             android:name=".OutlineVpnService"
             android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE"
-            android:foregroundServiceType="specialUse"
+            android:foregroundServiceType="specialUse|location"
             android:stopWithTask="false">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
