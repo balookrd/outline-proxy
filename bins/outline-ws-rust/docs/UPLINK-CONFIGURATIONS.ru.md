@@ -686,7 +686,7 @@ abort watcher не срабатывает. Кому нужна посессио�
 abort — оставайтесь на `active_active` + `per_flow`.
 
 **Soft switch (миграция вместо RST).** На кластерной группе
-(`shared_resume = true`, т.е. аплинки — это edge'ы одного серверного
+(`shared_resume = true`, т. е. аплинки — это edge'ы одного серверного
 mesh-`[cluster]`) операторский *soft*-switch мигрирует живые SOCKS5
 TCP-сессии на новый активный аплинк, а не рвёт их. Pinned-relay watcher
 при переключении передайливает новый активный edge с групповым
@@ -959,7 +959,7 @@ Mid-session retry (Ack-Prefix Protocol v1):
 
 - Когда у запинённой SOCKS TCP-сессии mid-stream обрывается upstream
   транспорт (H3 APPLICATION_CLOSE, NAT eviction, server-initiated
-  reset и т.п.), relay может прозрачно сделать одну попытку
+  reset и т. п.), relay может прозрачно сделать одну попытку
   re-dial на тот же SS-WS аплинк. Новый dial объявляет
   `X-Outline-Resume-Ack-Prefix: 1`; outline-ss-rust сервер с
   включённой фичей шлёт 14-байтный control-frame на resume-hit, в
@@ -2475,7 +2475,7 @@ wire продолжает нести трафик внутри сессии и �
 независимо. No-op для аплинков без fallbacks.
 
 Интервал виден в JSON snapshot как `shuffle_timer_secs:
-Option<u64>`, а транспорт, который реально рерольнулся (т.е. у него
+Option<u64>`, а транспорт, который реально рерольнулся (т. е. у него
 была живая альтернатива), пишет метрику
 `outline_ws_uplink_failover_total{transport="tcp_shuffle_timer"}`
 (и UDP аналог) — тик, оставивший транспорт нетронутым за
@@ -2626,7 +2626,7 @@ probe-цикле (~30 секунд при `min_failures = 2`) молча отм�
 
 ### Inline-стенограмма `[outline]`
 
-Inline-форма (`tcp_ws_url` и т.п. прямо на `[outline]`) **не**
+Inline-форма (`tcp_ws_url` и т. п. прямо на `[outline]`) **не**
 поддерживает fallback'и — для них объявите явный массив
 `[[outline.uplinks]]`.
 

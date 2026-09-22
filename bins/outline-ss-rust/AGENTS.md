@@ -13,7 +13,7 @@
 
 ## Кратко о проекте
 
-`outline-ss-rust` - production-ориентированный Rust-сервер data plane для
+`outline-ss-rust` — production-ориентированный Rust-сервер data plane для
 Shadowsocks AEAD и VLESS поверх WebSocket, XHTTP и HTTP/3. Это не
 реализация Outline management API.
 

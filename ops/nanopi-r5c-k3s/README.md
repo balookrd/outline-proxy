@@ -23,7 +23,7 @@
 
 FriendlyElec отпадает: FriendlyWrt — это OpenWrt без systemd, FriendlyCore — Ubuntu с
 замороженным BSP 6.1, где ядро не обновляется через apt, а `CONFIG_DEBUG_INFO_BTF` и
-полный набор cgroup/netfilter-опций у вендорных ядер негарантированы. Armbian рабочий
+полный набор cgroup/netfilter-опций у вендорных ядер не гарантированы. Armbian рабочий
 и даже полезный (см. «Известные риски»), но ядро приходит rolling из стороннего репо —
 `apt upgrade` на трёх нодах сразу играет против кворума etcd.
 
