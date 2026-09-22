@@ -128,7 +128,7 @@ vendored-крейты, которые держим в upstream-стиле.
   машина состояний `queue_send`/`poll_drain`/`queue_grease`/`poll_quic_finish`,
   она же даёт FIN вместо RESET_STREAM на закрытии — иначе
   `H3_INTERNAL_ERROR` рвёт всё QUIC-соединение; плюс h3-read-buf-capacity:
-  эагерный `read_buf` живых H3-стримов 64 KiB → 32 KiB в `from_h3_client` /
+  eager `read_buf` живых H3-стримов 64 KiB → 32 KiB в `from_h3_client` /
   `from_h3_server`, тогда как `from_h2` и `from_quic` остаются vanilla).
   Ищешь close-логику — она в
   `transport_stream.rs::poll_shutdown`, а НЕ в `protocol.rs`: там ни у нас, ни

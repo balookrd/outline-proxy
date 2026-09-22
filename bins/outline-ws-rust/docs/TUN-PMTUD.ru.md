@@ -154,7 +154,7 @@ pmtud_emit_below_quic_initial = false
 
 `pmtud_emit_below_quic_initial = true` возвращает безусловную
 отправку PTB для любого oversize-дропа с известным transport limit
-(`None`-limit остаётся permissive при обоих настройках — см.
+(`None`-limit остаётся permissive при обеих настройках — см.
 `should_emit_ptb_for_limit`). Используйте на инсталляциях, где
 вытеснение QUIC не проблема, а явный PMTUD-сигнал на каждом дропе
 важнее: каноничный пример — чистый VoWiFi / IKEv2 концентратор,
