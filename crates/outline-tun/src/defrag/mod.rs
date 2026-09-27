@@ -19,7 +19,7 @@ mod v6;
 mod tests;
 
 const REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(15);
-const CLEANUP_INTERVAL: Duration = Duration::from_secs(1);
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_FRAGMENT_SETS: usize = 1024;
 const MAX_FRAGMENTS_PER_SET: usize = 64;
 const MAX_BYTES_PER_SET: usize = 128 * 1024;
