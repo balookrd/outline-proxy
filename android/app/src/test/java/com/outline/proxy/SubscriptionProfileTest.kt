@@ -55,6 +55,13 @@ class SubscriptionProfileTest {
         assertTrue(profile.toToml().contains("vless://x"))
     }
 
+    @Test
+    fun `standard profile emits battery saving load balancing settings`() {
+        val toml = ServerProfile(transport = "vless", vlessLink = "vless://x").toToml()
+        assertTrue(toml.contains("loss_sample_interval_secs = 0"))
+        assertTrue(toml.contains("tcp_active_keepalive_secs = 60"))
+    }
+
     // JSON round-trip is not unit-testable here: org.json is a stubbed android.jar
     // class under `isReturnDefaultValues`, so put/opt are no-ops on the JVM. The
     // new fields' serialization is verified on-device instead.

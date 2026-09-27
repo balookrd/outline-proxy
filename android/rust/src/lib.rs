@@ -127,7 +127,11 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
         outline_ws_rust::config::Args::try_parse_from(["outline-ws-rust", "--config", &cfg_arg])
             .map_err(|e| VpnError::Config { msg: format!("args: {e}") })?;
 
+    // Sized for mobile battery efficiency: 2 worker threads comfortably handle the
+    // native TUN read/write loop and transport crypto without spinning up 8 threads
+    // across all CPU clusters on modern octa-core mobile SoCs.
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
         .map_err(|e| VpnError::Runtime { msg: format!("tokio runtime: {e}") })?;

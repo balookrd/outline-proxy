@@ -26,7 +26,10 @@ data class KeepAliveDecision(val action: KeepAliveAction, val retryDelayMs: Long
  */
 object KeepAlivePolicy {
 
-    /** Watchdog period while things are healthy. */
+    /** Watchdog period while things are healthy (15 min reduces Doze wakeups). */
+    const val HEALTHY_DELAY_MS = 15 * 60_000L
+
+    /** Watchdog base period when attempting revival or reconnecting. */
     const val BASE_DELAY_MS = 5 * 60_000L
 
     fun decide(
@@ -38,8 +41,8 @@ object KeepAlivePolicy {
         isPaused: Boolean = false,
     ): KeepAliveDecision = when {
         !shouldRun -> KeepAliveDecision(KeepAliveAction.STOP, 0)
-        isPaused -> KeepAliveDecision(KeepAliveAction.NOTHING, BASE_DELAY_MS)
-        coreAlive -> KeepAliveDecision(KeepAliveAction.NOTHING, BASE_DELAY_MS)
+        isPaused -> KeepAliveDecision(KeepAliveAction.NOTHING, HEALTHY_DELAY_MS)
+        coreAlive -> KeepAliveDecision(KeepAliveAction.NOTHING, HEALTHY_DELAY_MS)
         !consentGranted -> KeepAliveDecision(KeepAliveAction.GIVE_UP, 0)
         !hasProfile -> KeepAliveDecision(KeepAliveAction.GIVE_UP, 0)
         else -> KeepAliveDecision(KeepAliveAction.CONNECT, backoffFor(consecutiveFailures))

@@ -22,6 +22,7 @@ import android.os.Handler
 import android.os.Looper
 import android.graphics.drawable.Icon
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.outline.proxy.keepalive.WatchdogAlarm
@@ -63,6 +64,13 @@ class OutlineVpnService : VpnService() {
     @Volatile
     private var currentWifiSsid: String? = null
     private var airplaneReceiver: BroadcastReceiver? = null
+    private var screenReceiver: BroadcastReceiver? = null
+    @Volatile
+    private var isScreenInteractive: Boolean = true
+    @Volatile
+    private var lastNotifStatus: String? = null
+    @Volatile
+    private var lastNotifDetail: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var wifiLostRunnable: Runnable? = null
     private var wifiSsidRetryRunnable: Runnable? = null
@@ -128,8 +136,8 @@ class OutlineVpnService : VpnService() {
          *  so a brief blip does not flash "No link". Mirrors the home screen. */
         private const val NO_LINK_GRACE_MS = 2_000L
 
-        /** How often the ongoing notification refreshes its status and traffic. */
-        private const val NOTIFICATION_REFRESH_MS = 2_000L
+        /** How often the ongoing notification refreshes its status and traffic while screen is on. */
+        private const val NOTIFICATION_REFRESH_MS = 4_000L
 
         /** Channel for revival failures; separate from the ongoing tunnel notification. */
         const val NOTIFICATION_CHANNEL_ALERTS = "outline_vpn_alerts"
@@ -226,7 +234,9 @@ class OutlineVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        ensureNotificationChannels()
         registerAirplaneReceiver()
+        registerScreenReceiver()
         if (AutomationStore(this).load().wifiAutomationEnabled) {
             registerWifiAutomationCallback()
         }
@@ -781,6 +791,7 @@ class OutlineVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        unregisterScreenReceiver()
         unregisterAirplaneReceiver()
         unregisterWifiAutomationCallback()
         // A deliberate disconnect clears shouldRun first, so this only fires
@@ -798,6 +809,42 @@ class OutlineVpnService : VpnService() {
             Settings.Global.AIRPLANE_MODE_ON,
             0,
         ) != 0
+
+    private fun registerScreenReceiver() {
+        if (screenReceiver != null) return
+        val powerManager = getSystemService(PowerManager::class.java)
+        isScreenInteractive = powerManager?.isInteractive ?: true
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_OFF -> {
+                        isScreenInteractive = false
+                        stopNotificationUpdates()
+                    }
+                    Intent.ACTION_SCREEN_ON -> {
+                        isScreenInteractive = true
+                        if (isActive()) {
+                            updateNotificationOnce()
+                            startNotificationUpdates()
+                        }
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        screenReceiver = receiver
+    }
+
+    private fun unregisterScreenReceiver() {
+        screenReceiver?.let {
+            runCatching { unregisterReceiver(it) }
+        }
+        screenReceiver = null
+    }
 
     private fun registerAirplaneReceiver() {
         if (airplaneReceiver != null) return
@@ -1042,6 +1089,7 @@ class OutlineVpnService : VpnService() {
         notification: Notification,
         id: Int = NOTIFICATION_ID,
     ) {
+        ensureNotificationChannels()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 val types = if (LinkProbe.canReadWifiSsid(this)) {
@@ -1070,26 +1118,24 @@ class OutlineVpnService : VpnService() {
         }
     }
 
-    private fun buildNotification(
-        running: Boolean = true,
-        status: String = getString(R.string.status_connecting) + "…",
-        detail: String? = null,
-    ): Notification {
-        val manager = getSystemService(NotificationManager::class.java)
+    private fun ensureNotificationChannels() {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
         val channel = NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
             getString(R.string.notif_channel_status),
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            // No launcher badge for an always-present status banner: an ongoing
-            // notification is not an unread alert, and the dot on the app icon
-            // reads as one. Only meaningful on the channel's first creation.
             setShowBadge(false)
         }
         manager.createNotificationChannel(channel)
-        // Retire the pre-badge-fix channel so it does not linger in settings.
         manager.deleteNotificationChannel(LEGACY_NOTIFICATION_CHANNEL_ID)
+    }
 
+    private fun buildNotification(
+        running: Boolean = true,
+        status: String = getString(R.string.status_connecting) + "…",
+        detail: String? = null,
+    ): Notification {
         val openApp = PendingIntent.getActivity(
             this,
             0,
@@ -1178,22 +1224,20 @@ class OutlineVpnService : VpnService() {
      * Refresh the ongoing notification with the live status and traffic until
      * the tunnel goes down. Runs off the main thread — `tunnelStatus()` blocks
      * briefly on the core's runtime.
+     *
+     * Only runs while the screen is interactive ([isScreenInteractive]): when the screen
+     * is off, updates are halted so the CPU can stay in deep sleep.
      */
     private fun startNotificationUpdates() {
+        if (!isScreenInteractive) {
+            // Screen is off: do not run the loop; device should sleep in Deep Sleep.
+            return
+        }
         notifJob?.cancel()
         notifJob = notifScope.launch {
             val manager = getSystemService(NotificationManager::class.java)
-            while (isActive) {
-                // Safety net for the dial budget. A generation change
-                // (2G -> 3G -> LTE and back) normally arrives as
-                // `onCapabilitiesChanged` on the same Network, but not every
-                // firmware reports the bandwidth estimate again when the radio
-                // technology changes, and a missed event would strand the
-                // tunnel on a budget sized for a network it left. The check is
-                // a capability read plus a comparison against the value already
-                // applied, so a tick that changes nothing costs nothing.
-                refreshDialBudget()
-                runCatching { manager?.notify(NOTIFICATION_ID, currentNotification()) }
+            while (isActive && isScreenInteractive) {
+                updateNotificationIfChanged(manager)
                 delay(NOTIFICATION_REFRESH_MS)
             }
         }
@@ -1202,6 +1246,22 @@ class OutlineVpnService : VpnService() {
     private fun stopNotificationUpdates() {
         notifJob?.cancel()
         notifJob = null
+        lastNotifStatus = null
+        lastNotifDetail = null
+    }
+
+    private fun updateNotificationOnce() {
+        val manager = getSystemService(NotificationManager::class.java)
+        updateNotificationIfChanged(manager, force = true)
+    }
+
+    private fun updateNotificationIfChanged(manager: NotificationManager?, force: Boolean = false) {
+        val (notification, status, detail) = buildCurrentNotificationWithPayload()
+        if (force || status != lastNotifStatus || detail != lastNotifDetail) {
+            lastNotifStatus = status
+            lastNotifDetail = detail
+            runCatching { manager?.notify(NOTIFICATION_ID, notification) }
+        }
     }
 
     /**
@@ -1209,7 +1269,10 @@ class OutlineVpnService : VpnService() {
      * home screen (Connecting… / Connected / No link) and the bytes moved this
      * session.
      */
-    private fun currentNotification(): Notification {
+    private fun currentNotification(): Notification =
+        buildCurrentNotificationWithPayload().first
+
+    private fun buildCurrentNotificationWithPayload(): Triple<Notification, String, String?> {
         val running = runCatching { isRunning() }.getOrDefault(false)
         if (!running) {
             val autoState = AutomationState(this)
@@ -1225,10 +1288,14 @@ class OutlineVpnService : VpnService() {
                 }
                 else -> getString(R.string.status_disconnected)
             }
-            return buildNotification(
-                running = false,
-                status = pausedStatus,
-                detail = null,
+            return Triple(
+                buildNotification(
+                    running = false,
+                    status = pausedStatus,
+                    detail = null,
+                ),
+                pausedStatus,
+                null,
             )
         }
         val status0 = runCatching { tunnelStatus() }.getOrNull()
@@ -1256,10 +1323,15 @@ class OutlineVpnService : VpnService() {
         val baseline = KeepAliveState(this)
         val up = SessionTraffic.sinceBaseline(TrafficStats.getTotalTxBytes(), baseline.trafficBaselineTx)
         val down = SessionTraffic.sinceBaseline(TrafficStats.getTotalRxBytes(), baseline.trafficBaselineRx)
-        return buildNotification(
-            running = true,
-            status = status,
-            detail = "↑ ${formatBytes(up)}   ↓ ${formatBytes(down)}",
+        val detail = "↑ ${formatBytes(up)}   ↓ ${formatBytes(down)}"
+        return Triple(
+            buildNotification(
+                running = true,
+                status = status,
+                detail = detail,
+            ),
+            status,
+            detail,
         )
     }
 

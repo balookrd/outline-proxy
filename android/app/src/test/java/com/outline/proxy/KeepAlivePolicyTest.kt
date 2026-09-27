@@ -69,8 +69,8 @@ class KeepAlivePolicyTest {
     }
 
     @Test
-    fun `a healthy tunnel is re-checked at the base interval`() {
-        // Failures are stale once the core is up: do not stretch the watchdog.
-        assertEquals(KeepAlivePolicy.BASE_DELAY_MS, decide(coreAlive = true, failures = 9).retryDelayMs)
+    fun `a healthy tunnel is re-checked at the healthy interval`() {
+        // Failures are stale once the core is up: do not stretch the watchdog past healthy interval.
+        assertEquals(KeepAlivePolicy.HEALTHY_DELAY_MS, decide(coreAlive = true, failures = 9).retryDelayMs)
     }
 }
