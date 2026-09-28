@@ -333,7 +333,7 @@ class OutlineVpnService : VpnService() {
      * the paths where the answer turns out to be "do nothing".
      */
     private fun ensureTunnel() {
-        startServiceForeground(buildNotification())
+        startServiceForeground(currentNotification())
 
         val state = KeepAliveState(this)
         val store = ProfileStore(this)
@@ -393,7 +393,7 @@ class OutlineVpnService : VpnService() {
                 WatchdogAlarm.schedule(this, decision.retryDelayMs)
                 // Core already alive (e.g. a revived process): keep the banner
                 // refreshing if nothing is doing so yet.
-                if (notifJob == null) {
+                if (isActive() && notifJob == null) {
                     // The session (and its baseline) is already live here; only the
                     // banner refresh needs restarting, not a fresh baseline.
                     seedLinkGrace()
@@ -420,6 +420,7 @@ class OutlineVpnService : VpnService() {
                 // nobody's now, so tear the tunnel down before rebuilding it.
                 tunInterface?.close()
                 tunInterface = null
+                startServiceForeground(buildNotification())
                 WatchdogAlarm.schedule(this, decision.retryDelayMs)
                 // A revive can happen long after the last refresh (boot, an OEM
                 // kill days later), so bring an expired subscription up to date
@@ -823,8 +824,8 @@ class OutlineVpnService : VpnService() {
                     }
                     Intent.ACTION_SCREEN_ON -> {
                         isScreenInteractive = true
+                        updateNotificationOnce()
                         if (isActive()) {
-                            updateNotificationOnce()
                             startNotificationUpdates()
                         }
                     }
@@ -1070,7 +1071,7 @@ class OutlineVpnService : VpnService() {
                 }
             }
         }
-        WatchdogAlarm.cancel(this)
+        WatchdogAlarm.schedule(this, KeepAlivePolicy.HEALTHY_DELAY_MS)
         teardownTunnel(keepUnderlyingWatch = true)
         startServiceForeground(
             buildNotification(running = false, status = statusText),
@@ -1089,6 +1090,8 @@ class OutlineVpnService : VpnService() {
         notification: Notification,
         id: Int = NOTIFICATION_ID,
     ) {
+        lastNotifStatus = null
+        lastNotifDetail = null
         ensureNotificationChannels()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -1279,7 +1282,9 @@ class OutlineVpnService : VpnService() {
             val pausedStatus = when {
                 autoState.pausedByAirplane -> getString(R.string.status_paused_airplane)
                 autoState.pausedByWifi -> {
-                    val currentSsid = LinkProbe.currentWifiSsid(this)
+                    val currentSsid = currentWifiSsid
+                        ?: LinkProbe.currentWifiSsid(this)
+                        ?: autoState.lastSeenWifiSsid
                     if (currentSsid != null) {
                         getString(R.string.status_paused_wifi_named, currentSsid)
                     } else {
