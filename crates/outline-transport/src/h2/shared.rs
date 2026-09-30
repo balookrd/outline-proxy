@@ -471,8 +471,7 @@ impl crate::shared_dial::WsDialer for H2Dialer {
 pub(crate) async fn connect_websocket_h2(
     cache: &DnsCache,
     url: &Url,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
+    network: crate::dial_plan::DialNetworkOptions,
     source: &'static str,
     resume: crate::dial_plan::DialResumeOptions,
 ) -> Result<TransportStream> {
@@ -496,16 +495,12 @@ pub(crate) async fn connect_websocket_h2(
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
-        crate::shared_dial::connect_ws_reused(
-            &dialer, cache, host, port, &path, fwmark, ipv6_first, source,
-        )
-        .await
+        crate::shared_dial::connect_ws_reused(&dialer, cache, host, port, &path, network, source)
+            .await
     } else {
         // Probes never share connections; fresh dial with no cache interaction.
-        crate::shared_dial::connect_ws_probe(
-            &dialer, cache, host, port, &path, fwmark, ipv6_first, source,
-        )
-        .await
+        crate::shared_dial::connect_ws_probe(&dialer, cache, host, port, &path, network, source)
+            .await
     }
 }
 

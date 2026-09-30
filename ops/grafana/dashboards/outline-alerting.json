@@ -562,7 +562,7 @@
       "type": "timeseries",
       "id": 11,
       "title": "UplinkFailoverStorm — failover за 15 минут",
-      "description": "Порог 30 выбран по пикам недели (63 на debian, 50 на cloud1), а не по среднему: при пороге 10 правило было бы истинным больше половины времени.",
+      "description": "Порог 20 (без учёта планового shuffle_timer): при пороге 20 правило срабатывает только при реальном шторме переключений.",
       "datasource": {
         "type": "prometheus",
         "uid": "adnsc1wi03doga"
@@ -576,7 +576,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (instance) (increase(outline_ws_uplink_failovers_total{job=\"rust-ws-exporter\"}[15m]))",
+          "expr": "sum by (instance) (increase(outline_ws_uplink_failovers_total{job=\"rust-ws-exporter\",transport!~\".*_shuffle_timer\"}[15m]))",
           "legendFormat": "{{instance}}"
         }
       ],
@@ -602,7 +602,7 @@
               },
               {
                 "color": "red",
-                "value": 30
+                "value": 20
               }
             ]
           }

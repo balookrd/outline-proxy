@@ -163,19 +163,17 @@ groups:
         condition: C
         for: 0s
         # Same flapping shape as the loss rule, and usually the same cause: the
-        # failover count crosses 30-per-15-minutes, drops under it, crosses
-        # again. 113 notifications on the night of 2026-08-09 for what was one
-        # sustained episode on nuxt2.
+        # failover count crosses the threshold, drops under it, crosses again.
+        # Background `shuffle_timer` rotations are excluded so that only actual
+        # data-plane failovers and wire exhaustions are counted.
         keep_firing_for: 30m
         labels:
           severity: warning
         annotations:
           summary: '{{ $labels.instance }} is churning through uplinks'
           description: >-
-            More than 30 failovers in 15 minutes. Peaks over the last week were
-            63 (debian), 50 (cloud1), 28 (ubuntu) and 24 (cloud2); at a threshold
-            of 10 this rule would have been true for over half the week on two
-            nodes. No `for` is needed — the 15-minute window is the sustain.
+            More than 20 non-scheduled failovers in 15 minutes. Scheduled
+            background `shuffle_timer` wire rotations are excluded.
         noDataState: OK
         execErrState: OK
         data:
@@ -186,7 +184,7 @@ groups:
               refId: A
               editorMode: code
               instant: true
-              expr: 'sum by (instance) (increase(outline_ws_uplink_failovers_total{job="rust-ws-exporter"}[15m])) > bool 30'
+              expr: 'sum by (instance) (increase(outline_ws_uplink_failovers_total{job="rust-ws-exporter",transport!~".*_shuffle_timer"}[15m])) > bool 20'
           - refId: C
             datasourceUid: __expr__
             model:

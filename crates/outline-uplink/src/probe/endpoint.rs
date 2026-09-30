@@ -43,6 +43,7 @@ pub(crate) struct Endpoint {
     pub(crate) host: String,
     pub(crate) port: u16,
     pub(crate) ipv6_first: bool,
+    pub(crate) ipv4_only: bool,
     pub(crate) fwmark: Option<u32>,
 }
 
@@ -64,7 +65,7 @@ impl Endpoint {
 pub(crate) fn wire_endpoints(uplink: &UplinkConfig, keep: impl Fn(&str) -> bool) -> Vec<Endpoint> {
     let mut seen: HashSet<Endpoint> = HashSet::new();
     let mut endpoints: Vec<Endpoint> = Vec::new();
-    let mut push = |url: Option<&Url>, ipv6_first: bool, fwmark: Option<u32>| {
+    let mut push = |url: Option<&Url>, ipv6_first: bool, ipv4_only: bool, fwmark: Option<u32>| {
         if let Some(url) = url
             && keep(url.scheme())
             && let Some(host) = url.host_str()
@@ -74,6 +75,7 @@ pub(crate) fn wire_endpoints(uplink: &UplinkConfig, keep: impl Fn(&str) -> bool)
                 host: host.to_string(),
                 port,
                 ipv6_first,
+                ipv4_only,
                 fwmark,
             };
             if seen.insert(endpoint.clone()) {
@@ -81,11 +83,21 @@ pub(crate) fn wire_endpoints(uplink: &UplinkConfig, keep: impl Fn(&str) -> bool)
             }
         }
     };
-    push(uplink.tcp_dial_url(), uplink.ipv6_first, uplink.fwmark);
-    push(uplink.udp_dial_url(), uplink.ipv6_first, uplink.fwmark);
+    push(uplink.tcp_dial_url(), uplink.ipv6_first, uplink.ipv4_only, uplink.fwmark);
+    push(uplink.udp_dial_url(), uplink.ipv6_first, uplink.ipv4_only, uplink.fwmark);
     for fallback in &uplink.fallbacks {
-        push(fallback.tcp_dial_url(), fallback.ipv6_first, fallback.fwmark);
-        push(fallback.udp_dial_url(), fallback.ipv6_first, fallback.fwmark);
+        push(
+            fallback.tcp_dial_url(),
+            fallback.ipv6_first,
+            fallback.ipv4_only,
+            fallback.fwmark,
+        );
+        push(
+            fallback.udp_dial_url(),
+            fallback.ipv6_first,
+            fallback.ipv4_only,
+            fallback.fwmark,
+        );
     }
     endpoints
 }
@@ -125,6 +137,7 @@ async fn endpoint_reachable(
             endpoint.port,
             "endpoint reachability check",
             endpoint.ipv6_first,
+            endpoint.ipv4_only,
         )
         .await
         .ok()?;

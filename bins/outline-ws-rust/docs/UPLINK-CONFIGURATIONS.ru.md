@@ -518,7 +518,7 @@ dial снимает блок раньше срока.
 **1. Inline-стенограмма для одного аплинка.** Если поля `transport`,
 `tcp_ws_url`, `udp_ws_url`, `vless_ws_url`, `vless_xhttp_url`,
 `tcp_mode` / `udp_mode` / `vless_mode`, `link`,
-`method`, `password`, `fwmark`, `ipv6_first` написаны прямо под
+`method`, `password`, `fwmark`, `ipv6_first`, `ipv4_only` написаны прямо под
 `[outline]` (или, для обратной совместимости, на верхнем уровне) —
 описан один неявный аплинк. CLI-флаги (`--tcp-ws-url`, `--password`, …)
 работают именно с этой формой. Удобно для тривиальных деплойментов; не
@@ -2035,7 +2035,7 @@ password        = "BASE64=="
   udp_ws_url  = "wss://ws.example.com/udp"
   tcp_mode    = "ws_h2"
   udp_mode    = "ws_h1"
-  # method / password / fwmark / ipv6_first / fingerprint_profile
+  # method / password / fwmark / ipv6_first / ipv4_only / fingerprint_profile
   # наследуются от родительского аплинка, если не указаны явно.
 
   [[outline.uplinks.fallbacks]]
@@ -2058,7 +2058,7 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` обязателен; `udp_ws_url` опционален (UDP-fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL должен соответствовать `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws\_\* → `vless_ws_url`). `vless_id` per-wire и **не наследуется** от родителя — у разных VLESS-эндпоинтов разные uuid'ы. |
 | `method`, `password` | наследуются | По умолчанию — значение родителя. Переопределите тут, если fallback использует другой shared secret. Wire, заданный `ss://`-ссылкой, берёт их из URI и к родительским никогда не откатывается. |
-| `fwmark`, `ipv6_first`, `fingerprint_profile` | наследуются | То же самое: дефолтятся к родителю, можно переопределить per-fallback. `link` на наследование не влияет — это свойства дайла, а не wire-форма. |
+| `fwmark`, `ipv6_first`, `ipv4_only`, `fingerprint_profile` | наследуются | То же самое: дефолтятся к родителю, можно переопределить per-fallback. При `ipv4_only = true` фильтруются IPv6-адреса и параметр `ipv6_first` игнорируется. `link` на наследование не влияет — это свойства дайла, а не wire-форма. |
 
 Аплинк, у которого все wire заданы ссылками — форма, в которую складывается
 конфиг, собранный из подписки:
@@ -2080,7 +2080,7 @@ link   = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=
 Креды едут внутри каждой ссылки, поэтому `method` / `password` родителя для
 этих wire не читаются — `ss://`-fallback под VLESS-родителем не требует явного
 секрета. Всё, что не относится к wire-форме, по-прежнему приходит от родителя:
-`fwmark`, `ipv6_first` и `fingerprint_profile` наследуются ровно так же, как у
+`fwmark`, `ipv6_first`, `ipv4_only` и `fingerprint_profile` наследуются ровно так же, как у
 рукописного fallback'а.
 
 ### Поведение

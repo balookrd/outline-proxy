@@ -37,6 +37,7 @@ fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> 
         weight: Some(1.0),
         fwmark: None,
         ipv6_first: None,
+        ipv4_only: None,
         vless_id: None,
         group: None,
         fingerprint_profile: None,
@@ -74,6 +75,7 @@ fn vless_uplink_section(
         weight: Some(1.0),
         fwmark: Some(99),
         ipv6_first: Some(true),
+        ipv4_only: None,
         vless_id: Some("00000000-0000-0000-0000-000000000000".to_string()),
         group: None,
         fingerprint_profile: None,
@@ -105,13 +107,14 @@ fn empty_fallback() -> FallbackSection {
         password: None,
         fwmark: None,
         ipv6_first: None,
+        ipv4_only: None,
         vless_id: None,
         fingerprint_profile: None,
     }
 }
 
 fn resolve(section: UplinkSection) -> Result<UplinkConfig, anyhow::Error> {
-    ResolvedUplinkInput::from_section(0, &section).try_into()
+    ResolvedUplinkInput::from_section(0, &section, None).try_into()
 }
 
 /// Resolve a single section AND run the per-group shuffle pass on
@@ -121,7 +124,7 @@ fn resolve(section: UplinkSection) -> Result<UplinkConfig, anyhow::Error> {
 /// of `TryFrom<ResolvedUplinkInput>` into the group-aware loader.
 fn resolve_and_shuffle(section: UplinkSection) -> Result<UplinkConfig, anyhow::Error> {
     let group = section.group.clone();
-    let cfg: UplinkConfig = ResolvedUplinkInput::from_section(0, &section).try_into()?;
+    let cfg: UplinkConfig = ResolvedUplinkInput::from_section(0, &section, None).try_into()?;
     let mut buf = [cfg];
     super::super::uplinks::shuffle_wire_chains_per_group(&mut buf, &[group]);
     let [cfg] = buf;
@@ -180,6 +183,7 @@ fn fallback_can_override_inherited_password_and_fwmark() {
         password: Some("override-secret".to_string()),
         fwmark: Some(7),
         ipv6_first: Some(false),
+        ipv4_only: None,
         ..empty_fallback()
     };
     let cfg =
@@ -190,6 +194,43 @@ fn fallback_can_override_inherited_password_and_fwmark() {
     assert_eq!(fb.password, "override-secret");
     assert_eq!(fb.fwmark, Some(7));
     assert!(!fb.ipv6_first);
+}
+
+#[test]
+fn fallback_inherits_ipv4_only_from_parent() {
+    let ws_fb = FallbackSection {
+        transport: Some(UplinkTransport::Ss),
+        tcp_ws_url: Some(Url::parse("wss://fb.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
+        ..empty_fallback()
+    };
+    let mut uplink =
+        vless_uplink_section("edge", "https://cdn.example.com/SECRET/xhttp", vec![ws_fb]);
+    uplink.ipv4_only = Some(true);
+    let cfg = resolve(uplink).unwrap();
+
+    assert!(cfg.ipv4_only, "parent has ipv4_only = true");
+    assert_eq!(cfg.fallbacks.len(), 1);
+    assert!(cfg.fallbacks[0].ipv4_only, "fallback must inherit ipv4_only = true from parent");
+}
+
+#[test]
+fn fallback_can_override_inherited_ipv4_only() {
+    let ws_fb = FallbackSection {
+        transport: Some(UplinkTransport::Ss),
+        tcp_ws_url: Some(Url::parse("wss://fb.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
+        ipv4_only: Some(false),
+        ..empty_fallback()
+    };
+    let mut uplink =
+        vless_uplink_section("edge", "https://cdn.example.com/SECRET/xhttp", vec![ws_fb]);
+    uplink.ipv4_only = Some(true);
+    let cfg = resolve(uplink).unwrap();
+
+    assert!(cfg.ipv4_only, "parent has ipv4_only = true");
+    assert_eq!(cfg.fallbacks.len(), 1);
+    assert!(!cfg.fallbacks[0].ipv4_only, "fallback explicitly overrides ipv4_only to false");
 }
 
 // ── Error paths ─────────────────────────────────────────────────────────────
@@ -583,7 +624,7 @@ fn shuffle_wires_per_group_avoids_collisions_in_the_same_group() {
         let mut resolved: Vec<UplinkConfig> = sections
             .iter()
             .enumerate()
-            .map(|(i, s)| ResolvedUplinkInput::from_section(i, s).try_into().unwrap())
+            .map(|(i, s)| ResolvedUplinkInput::from_section(i, s, None).try_into().unwrap())
             .collect();
         super::super::uplinks::shuffle_wire_chains_per_group(&mut resolved, &group_labels);
 
@@ -647,7 +688,7 @@ fn shuffle_wires_per_group_isolates_groups() {
     let mut resolved: Vec<UplinkConfig> = sections
         .iter()
         .enumerate()
-        .map(|(i, s)| ResolvedUplinkInput::from_section(i, s).try_into().unwrap())
+        .map(|(i, s)| ResolvedUplinkInput::from_section(i, s, None).try_into().unwrap())
         .collect();
     super::super::uplinks::shuffle_wire_chains_per_group(&mut resolved, &group_labels);
     // No panic, both uplinks still have all three wires.
@@ -682,6 +723,7 @@ fn ss_xhttp_uplink_section(name: &str, xhttp_url: &str, mode: TransportMode) -> 
         weight: Some(1.0),
         fwmark: None,
         ipv6_first: None,
+        ipv4_only: None,
         vless_id: None,
         group: None,
         fingerprint_profile: None,
@@ -1086,4 +1128,56 @@ fn share_link_fallback_keeps_inherited_non_wire_fields() {
     let wire = &cfg.fallbacks[0];
     assert_eq!(wire.fwmark, Some(99), "fwmark must still be inherited");
     assert!(wire.ipv6_first, "ipv6_first must still be inherited");
+}
+
+#[test]
+fn uplink_section_inherits_ipv4_only_from_outline() {
+    use super::super::super::schema::OutlineSection;
+
+    let outline = OutlineSection {
+        transport: None,
+        tcp_ws_url: None,
+        tcp_xhttp_url: None,
+        tcp_mode: None,
+        udp_ws_url: None,
+        udp_xhttp_url: None,
+        udp_mode: None,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: None,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        link: None,
+        method: None,
+        password: None,
+        fwmark: Some(42),
+        ipv6_first: Some(true),
+        ipv4_only: Some(true),
+        uplinks: None,
+        probe: None,
+        load_balancing: None,
+    };
+
+    let section = ws_uplink_section("primary", "wss://example.com/ss", Vec::new());
+    let cfg: UplinkConfig = ResolvedUplinkInput::from_section(0, &section, Some(&outline))
+        .try_into()
+        .unwrap();
+
+    assert_eq!(cfg.fwmark, Some(42));
+    assert!(cfg.ipv6_first);
+    assert!(cfg.ipv4_only);
+
+    // Explicit override in uplink takes precedence over [outline]
+    let mut overridden = section;
+    overridden.ipv4_only = Some(false);
+    overridden.ipv6_first = Some(false);
+    overridden.fwmark = Some(77);
+    let cfg2: UplinkConfig = ResolvedUplinkInput::from_section(0, &overridden, Some(&outline))
+        .try_into()
+        .unwrap();
+
+    assert_eq!(cfg2.fwmark, Some(77));
+    assert!(!cfg2.ipv6_first);
+    assert!(!cfg2.ipv4_only);
 }

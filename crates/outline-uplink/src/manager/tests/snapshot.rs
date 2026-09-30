@@ -33,6 +33,7 @@ fn uplink() -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -63,6 +64,7 @@ fn ss_fallback() -> crate::config::FallbackTransport {
         password: "Secret0".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }

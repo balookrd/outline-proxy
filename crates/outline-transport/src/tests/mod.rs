@@ -351,6 +351,7 @@ async fn vless_udp_mux_invokes_on_downgrade_hook_after_clamp_and_latches() {
         [0u8; 16],
         None,
         false,
+        false,
         "test_vless_downgrade",
         None,
     )
@@ -405,6 +406,7 @@ async fn vless_udp_mux_resets_downgrade_latch_after_recovery_dial() {
         TransportMode::WsH3,
         [0u8; 16],
         None,
+        false,
         false,
         "test_vless_recovery",
         None,
@@ -533,6 +535,7 @@ async fn vless_udp_mux_re_presents_durable_resume_id_across_recreation() {
             TransportMode::WsH2,
             [0u8; 16],
             None,
+            false,
             false,
             "test_vless_durable_resume",
             None,

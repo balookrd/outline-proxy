@@ -47,6 +47,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             weight,
             fwmark,
             ipv6_first,
+            ipv4_only,
             vless_id,
             link,
             fingerprint_profile,
@@ -123,6 +124,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             weight,
             fwmark,
             ipv6_first: ipv6_first.unwrap_or(false),
+            ipv4_only: ipv4_only.unwrap_or(false),
             vless_id: credentials.vless_id,
             fingerprint_profile,
             fallbacks: Vec::new(),
@@ -218,6 +220,7 @@ fn primary_to_fallback_shape(uplink: &UplinkConfig) -> FallbackTransport {
         password: uplink.password.clone(),
         fwmark: uplink.fwmark,
         ipv6_first: uplink.ipv6_first,
+        ipv4_only: uplink.ipv4_only,
         fingerprint_profile: uplink.fingerprint_profile,
     }
 }
@@ -249,6 +252,7 @@ fn apply_fallback_shape_to_primary(uplink: &mut UplinkConfig, wire: FallbackTran
     uplink.password = wire.password;
     uplink.fwmark = wire.fwmark;
     uplink.ipv6_first = wire.ipv6_first;
+    uplink.ipv4_only = wire.ipv4_only;
     uplink.fingerprint_profile = wire.fingerprint_profile;
 }
 
@@ -283,7 +287,7 @@ pub(super) fn load_uplinks(
     let mut resolved: Vec<UplinkConfig> = uplinks
         .iter()
         .enumerate()
-        .map(|(index, uplink)| ResolvedUplinkInput::from_section(index, uplink).try_into())
+        .map(|(index, uplink)| ResolvedUplinkInput::from_section(index, uplink, outline).try_into())
         .collect::<Result<_>>()?;
     shuffle_wire_chains_per_group(&mut resolved, &group_labels);
     Ok(resolved)
@@ -361,7 +365,7 @@ pub(crate) fn validate_uplink_section(
     section: &UplinkSection,
     index: usize,
 ) -> Result<UplinkConfig> {
-    ResolvedUplinkInput::from_section(index, section).try_into()
+    ResolvedUplinkInput::from_section(index, section, None).try_into()
 }
 
 /// Parse a human-readable duration string into a [`Duration`].

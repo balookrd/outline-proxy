@@ -224,7 +224,7 @@ deleteRules:
 | `TargetDown` | нет скрейпа 5 мин | critical |
 | `AllUplinksDown` | сумма `health_effective` = 0, 3 мин | critical |
 | `UplinkCarrierLossHigh` | потери > 5% в течение 10 мин **на активном плече** | warning |
-| `UplinkFailoverStorm` | > 30 failover за 15 мин | warning |
+| `UplinkFailoverStorm` | > 20 реальных failover за 15 мин (исключая плановые `*_shuffle_timer`) | warning |
 | `UplinkCertExpiringSoon` | сертификат < 14 дней | info |
 | `ClientRestarted` | сброс счётчика `selected_total` | info |
 | `DeadMansSwitch` | всегда firing — это пульс, не алерт | — |

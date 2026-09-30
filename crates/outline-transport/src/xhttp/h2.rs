@@ -78,8 +78,7 @@ pub(super) async fn connect_xhttp_h2(
     cache: &DnsCache,
     url: &Url,
     mode: TransportMode,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
+    network: crate::dial_plan::DialNetworkOptions,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
@@ -111,13 +110,15 @@ pub(super) async fn connect_xhttp_h2(
             &host,
             port,
             "failed to resolve xhttp host",
-            ipv6_first,
+            network.ipv6_first,
+            network.ipv4_only,
         )
         .await?;
         let server_addr = *addrs.first().ok_or_else(|| {
             anyhow::Error::new(TransportOperation::DnsResolveNoAddresses { host: host.clone() })
         })?;
-        let (send_request, loss_probe) = h2_handshake(server_addr, &host, use_tls, fwmark).await?;
+        let (send_request, loss_probe) =
+            h2_handshake(server_addr, &host, use_tls, network.fwmark).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
         let (in_tx, in_rx) = inbound_channel();

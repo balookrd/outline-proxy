@@ -2016,3 +2016,55 @@ async fn load_config_rejects_a_zero_dial_timeout() {
         "error should name the offending key, got: {err:#}"
     );
 }
+
+#[tokio::test]
+async fn load_config_parses_and_propagates_ipv4_only() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [outline]
+        ipv4_only = true
+
+        [[outline.uplinks]]
+        name = "up-v4"
+        transport = "vless"
+        vless_ws_url = "wss://example.com/vless"
+        vless_id = "00000000-0000-0000-0000-000000000000"
+
+        [[outline.uplinks.fallbacks]]
+        transport = "ss"
+        tcp_ws_url = "wss://example.com/fb"
+        method = "chacha20-ietf-poly1305"
+        password = "secret"
+
+        [[outline.uplinks]]
+        name = "up-dual"
+        transport = "ss"
+        tcp_ws_url = "wss://example.com/ss"
+        method = "chacha20-ietf-poly1305"
+        password = "secret"
+        ipv4_only = false
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert_eq!(config.groups.len(), 1);
+    let uplinks = &config.groups[0].uplinks;
+    assert_eq!(uplinks.len(), 2);
+
+    // up-v4 inherited ipv4_only = true from [outline]
+    assert!(uplinks[0].ipv4_only);
+    assert_eq!(uplinks[0].fallbacks.len(), 1);
+    // fallback inherited ipv4_only = true from parent up-v4
+    assert!(uplinks[0].fallbacks[0].ipv4_only);
+
+    // up-dual explicitly overrode ipv4_only to false
+    assert!(!uplinks[1].ipv4_only);
+}

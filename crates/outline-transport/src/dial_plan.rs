@@ -28,6 +28,7 @@ use crate::dial_timeouts::fresh_connect_timeout as http1_ws_connect_timeout;
 pub struct DialNetworkOptions {
     pub fwmark: Option<u32>,
     pub ipv6_first: bool,
+    pub ipv4_only: bool,
 }
 
 /// Cross-transport resumption and retry-negotiation headers for a dial.
@@ -228,8 +229,7 @@ impl DialPlan {
         match connect_websocket_h2(
             options.cache,
             options.url,
-            options.network.fwmark,
-            options.network.ipv6_first,
+            options.network,
             options.source,
             options.resume,
         )
@@ -267,8 +267,7 @@ impl DialPlan {
         match connect_websocket_h3(
             options.cache,
             options.url,
-            options.network.fwmark,
-            options.network.ipv6_first,
+            options.network,
             options.source,
             options.resume,
         )
@@ -290,8 +289,7 @@ impl DialPlan {
                 match connect_websocket_h2(
                     options.cache,
                     options.url,
-                    options.network.fwmark,
-                    options.network.ipv6_first,
+                    options.network,
                     options.source,
                     options.resume,
                 )
@@ -335,8 +333,7 @@ impl DialPlan {
         match connect_websocket_h2(
             options.cache,
             options.url,
-            options.network.fwmark,
-            options.network.ipv6_first,
+            options.network,
             options.source,
             options.resume,
         )
@@ -372,8 +369,7 @@ impl DialPlan {
             options.cache,
             options.url,
             self.selected,
-            options.network.fwmark,
-            options.network.ipv6_first,
+            options.network,
             options.resume.resume_request,
             options.resume.ack_prefix_requested,
             options.resume.symmetric_replay_requested,
@@ -413,8 +409,7 @@ impl DialPlan {
             options.cache,
             options.url,
             TransportMode::XhttpH2,
-            options.network.fwmark,
-            options.network.ipv6_first,
+            options.network,
             options.resume.resume_request,
             options.resume.ack_prefix_requested,
             options.resume.symmetric_replay_requested,
@@ -454,8 +449,7 @@ impl DialPlan {
                         options.cache,
                         options.url,
                         TransportMode::XhttpH1,
-                        options.network.fwmark,
-                        options.network.ipv6_first,
+                        options.network,
                         options.resume.resume_request,
                         options.resume.ack_prefix_requested,
                         options.resume.symmetric_replay_requested,
@@ -485,8 +479,7 @@ impl DialPlan {
                 options.cache,
                 options.url,
                 self.selected,
-                options.network.fwmark,
-                options.network.ipv6_first,
+                options.network,
                 options.resume.resume_request,
                 options.resume.ack_prefix_requested,
                 options.resume.symmetric_replay_requested,
@@ -544,6 +537,7 @@ async fn connect_websocket_http1(
         port,
         "failed to resolve websocket host",
         options.network.ipv6_first,
+        options.network.ipv4_only,
     )
     .await?
     .first()

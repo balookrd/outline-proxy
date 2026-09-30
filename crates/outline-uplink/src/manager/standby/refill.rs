@@ -68,6 +68,7 @@ impl<'a> StandbyCtx<'a> {
         DialNetworkOptions {
             fwmark: self.fwmark,
             ipv6_first: self.ipv6_first,
+            ipv4_only: self.ipv4_only,
         }
     }
 

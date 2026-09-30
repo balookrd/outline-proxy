@@ -29,6 +29,7 @@ use url::Url;
 
 use crate::DnsCache;
 use crate::config::TransportMode;
+use crate::dial_plan::DialNetworkOptions;
 use crate::guards::AbortOnDrop;
 use crate::xhttp::{XhttpStream, connect_xhttp};
 
@@ -145,8 +146,7 @@ async fn session_with_one_pending_post(server: &mut SilentServer) -> XhttpStream
         &cache,
         &url,
         TransportMode::XhttpH2,
-        None,
-        false,
+        DialNetworkOptions::default(),
         None,
         false,
         false,

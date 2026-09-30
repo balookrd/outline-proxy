@@ -31,6 +31,7 @@ pub(crate) fn vless_xhttp_primary() -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: Some([0u8; 16]),
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -65,6 +66,7 @@ fn ws_tcp_only_primary() -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -99,6 +101,7 @@ fn ws_fallback(udp: bool) -> FallbackTransport {
         password: "secret".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -138,6 +141,7 @@ fn ws_floor_primary(udp: bool) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -178,6 +182,7 @@ fn ws_alt_floor_fallback(udp: bool) -> FallbackTransport {
         password: "secret".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -209,6 +214,7 @@ fn ws_floor_fallback(udp: bool) -> FallbackTransport {
         password: "secret".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -1607,6 +1613,7 @@ fn ws_h3_primary() -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -1745,6 +1752,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -2562,6 +2570,7 @@ async fn fallback_wire_downgrade_is_monotonic_within_window() {
         password: "secret".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     };
     let _ = &mut vless_xhttp_fb; // keep mutable for clarity even if unused

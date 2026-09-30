@@ -42,6 +42,7 @@ fn h3_uplink() -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -210,6 +211,7 @@ pub(super) fn fallback_wire_at(url: &Url) -> FallbackTransport {
         password: "shared".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -237,6 +239,7 @@ fn uplink_with_two_fallbacks(closed_url: &Url, wire1_url: &Url, wire2_url: &Url)
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: vec![fallback_wire_at(wire1_url), fallback_wire_at(wire2_url)],
@@ -293,6 +296,7 @@ fn vless_fallback_wire_at(url: &Url, uuid: [u8; 16]) -> FallbackTransport {
         password: String::new(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -325,6 +329,7 @@ fn uplink_with_vless_fallback(closed_url: &Url, vless_url: &Url, uuid: [u8; 16])
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: vec![vless_fallback_wire_at(vless_url, uuid)],
@@ -425,6 +430,7 @@ async fn sample_manager_with_three_fallbacks_and_lb(lb: LoadBalancingConfig) -> 
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: vec![
@@ -464,6 +470,7 @@ fn combined_ss_fallback_wire_at(url: &Url) -> FallbackTransport {
         password: "shared".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -496,6 +503,7 @@ pub(super) async fn sample_manager_with_combined_ss_fallback() -> UplinkManager 
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: vec![combined_ss_fallback_wire_at(&closed_url)],
@@ -534,6 +542,7 @@ fn ss_xhttp_h3_fallback_wire_at(url: &Url) -> FallbackTransport {
         // sides would make a regression to the parent's unobservable.
         fwmark: Some(0x12),
         ipv6_first: true,
+        ipv4_only: false,
         // Same reasoning as `fwmark` / `ipv6_first` above, for the TLS
         // fingerprint strategy: the parent pins nothing, this wire pins a
         // strategy, so a dial that scopes the parent's is observable (it
@@ -574,6 +583,7 @@ pub(super) async fn sample_manager_with_vless_primary_and_ss_fallback() -> Uplin
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: Some([9u8; 16]),
         fingerprint_profile: None,
         fallbacks: vec![ss_xhttp_h3_fallback_wire_at(&closed_url)],

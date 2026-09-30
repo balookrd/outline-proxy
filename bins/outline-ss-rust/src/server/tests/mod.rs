@@ -323,7 +323,7 @@ async fn connect_websocket_with_resume(
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
 ) -> Result<outline_transport::TransportStream> {
-    let network = outline_transport::DialNetworkOptions { fwmark, ipv6_first };
+    let network = outline_transport::DialNetworkOptions { fwmark, ipv6_first, ipv4_only: false };
     let resume = outline_transport::DialResumeOptions {
         resume_request,
         ack_prefix_requested,

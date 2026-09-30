@@ -68,8 +68,7 @@ pub(super) async fn connect_xhttp_h1(
     cache: &DnsCache,
     url: &Url,
     submode: XhttpSubmode,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
+    network: crate::dial_plan::DialNetworkOptions,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
@@ -104,7 +103,8 @@ pub(super) async fn connect_xhttp_h1(
             &host,
             port,
             "failed to resolve xhttp/h1 host",
-            ipv6_first,
+            network.ipv6_first,
+            network.ipv4_only,
         )
         .await?;
         let server_addr = *addrs.first().ok_or_else(|| {
@@ -115,8 +115,8 @@ pub(super) async fn connect_xhttp_h1(
         // serialised uplink POSTs on `up_send`. They cost two TCP
         // connections (and two TLS handshakes) per session — the
         // explicit price h1 charges for not multiplexing.
-        let down_send = h1_handshake(server_addr, &host, use_tls, fwmark).await?;
-        let up_send = h1_handshake(server_addr, &host, use_tls, fwmark).await?;
+        let down_send = h1_handshake(server_addr, &host, use_tls, network.fwmark).await?;
+        let up_send = h1_handshake(server_addr, &host, use_tls, network.fwmark).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
         let authority = if port == default_port_for(use_tls) {

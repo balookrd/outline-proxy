@@ -47,6 +47,7 @@ pub(crate) struct ConfigFile {
     pub(super) password: Option<String>,
     pub(super) fwmark: Option<u32>,
     pub(super) ipv6_first: Option<bool>,
+    pub(super) ipv4_only: Option<bool>,
     pub(super) uplinks: Option<Vec<UplinkSection>>,
     pub(super) probe: Option<ProbeSection>,
     pub(super) load_balancing: Option<LoadBalancingSection>,
@@ -203,6 +204,7 @@ pub(crate) struct OutlineSection {
     pub(super) password: Option<String>,
     pub(super) fwmark: Option<u32>,
     pub(super) ipv6_first: Option<bool>,
+    pub(super) ipv4_only: Option<bool>,
     pub(super) uplinks: Option<Vec<UplinkSection>>,
     pub(super) probe: Option<ProbeSection>,
     pub(super) load_balancing: Option<LoadBalancingSection>,
@@ -431,6 +433,7 @@ pub(crate) struct UplinkSection {
     pub(crate) weight: Option<f64>,
     pub(crate) fwmark: Option<u32>,
     pub(crate) ipv6_first: Option<bool>,
+    pub(crate) ipv4_only: Option<bool>,
     /// VLESS user id (hex/dashed), required when `transport = "vless"`.
     pub(crate) vless_id: Option<String>,
     /// New: group this uplink belongs to. Required when `[[uplink_group]]` is
@@ -560,6 +563,7 @@ pub(crate) struct FallbackSection {
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,
     pub(crate) ipv6_first: Option<bool>,
+    pub(crate) ipv4_only: Option<bool>,
     pub(crate) vless_id: Option<String>,
     pub(crate) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }

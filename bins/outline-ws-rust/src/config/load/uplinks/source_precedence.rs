@@ -28,6 +28,7 @@ pub(in crate::config::load) struct ResolvedUplinkInput {
     pub(super) weight: Option<f64>,
     pub(super) fwmark: Option<u32>,
     pub(super) ipv6_first: Option<bool>,
+    pub(super) ipv4_only: Option<bool>,
     pub(super) vless_id: Option<String>,
     /// Optional `vless://` share-link URI. When set, expands during
     /// `TryFrom<ResolvedUplinkInput>` into the matching VLESS fields and
@@ -113,6 +114,9 @@ impl ResolvedUplinkInput {
             ipv6_first: args
                 .ipv6_first
                 .or_else(|| outline.and_then(|section| section.ipv6_first)),
+            ipv4_only: args
+                .ipv4_only
+                .or_else(|| outline.and_then(|section| section.ipv4_only)),
             vless_id: None,
             link: args
                 .vless_link
@@ -138,7 +142,11 @@ impl ResolvedUplinkInput {
         }
     }
 
-    pub(in crate::config::load) fn from_section(index: usize, uplink: &UplinkSection) -> Self {
+    pub(in crate::config::load) fn from_section(
+        index: usize,
+        uplink: &UplinkSection,
+        outline: Option<&OutlineSection>,
+    ) -> Self {
         Self {
             name: uplink.name.clone().unwrap_or_else(|| format!("uplink-{}", index + 1)),
             transport: uplink.transport,
@@ -157,8 +165,13 @@ impl ResolvedUplinkInput {
             cipher: uplink.method,
             password: uplink.password.clone(),
             weight: uplink.weight,
-            fwmark: uplink.fwmark,
-            ipv6_first: uplink.ipv6_first,
+            fwmark: uplink.fwmark.or_else(|| outline.and_then(|section| section.fwmark)),
+            ipv6_first: uplink
+                .ipv6_first
+                .or_else(|| outline.and_then(|section| section.ipv6_first)),
+            ipv4_only: uplink
+                .ipv4_only
+                .or_else(|| outline.and_then(|section| section.ipv4_only)),
             vless_id: uplink.vless_id.clone(),
             link: uplink.link.clone(),
             fingerprint_profile: uplink.fingerprint_profile,
@@ -187,4 +200,5 @@ pub(in crate::config::load) fn cli_uplink_override_requested(args: &Args) -> boo
         || args.password.is_some()
         || args.fwmark.is_some()
         || args.ipv6_first.is_some()
+        || args.ipv4_only.is_some()
 }

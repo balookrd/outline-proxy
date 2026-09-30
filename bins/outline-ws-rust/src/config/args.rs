@@ -102,6 +102,9 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_IPV6_FIRST")]
     pub ipv6_first: Option<bool>,
 
+    #[arg(long, env = "OUTLINE_IPV4_ONLY")]
+    pub ipv4_only: Option<bool>,
+
     #[arg(long, env = "METRICS_LISTEN")]
     pub metrics_listen: Option<SocketAddr>,
 

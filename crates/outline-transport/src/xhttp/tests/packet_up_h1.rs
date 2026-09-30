@@ -33,6 +33,7 @@ use url::Url;
 
 use crate::DnsCache;
 use crate::config::TransportMode;
+use crate::dial_plan::DialNetworkOptions;
 
 #[derive(Default)]
 struct CapturedPosts {
@@ -61,8 +62,7 @@ async fn xhttp_h1_client_round_trip_through_mock_server() -> Result<()> {
         &cache,
         &base_url,
         TransportMode::XhttpH1,
-        None,
-        false,
+        DialNetworkOptions::default(),
         None,
         false,
         false,
@@ -125,8 +125,7 @@ async fn xhttp_h1_close_sends_fin_post_after_the_uplink() -> Result<()> {
         &cache,
         &base_url,
         TransportMode::XhttpH1,
-        None,
-        false,
+        DialNetworkOptions::default(),
         None,
         false,
         false,
@@ -202,8 +201,7 @@ async fn xhttp_h1_silently_coerces_stream_one_to_packet_up() -> Result<()> {
         &cache,
         &base_url,
         TransportMode::XhttpH1,
-        None,
-        false,
+        DialNetworkOptions::default(),
         None,
         false,
         false,

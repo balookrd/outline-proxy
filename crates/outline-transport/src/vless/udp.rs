@@ -147,15 +147,17 @@ impl VlessUdpTransport {
         target: &TargetAddr,
         fwmark: Option<u32>,
         ipv6_first: bool,
+        ipv4_only: bool,
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
-        let ws_stream = connect_transport(
-            TransportDialOptions::new(cache, url, mode, source)
-                .with_network(DialNetworkOptions { fwmark, ipv6_first }),
-        )
-        .await
-        .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+        let ws_stream =
+            connect_transport(
+                TransportDialOptions::new(cache, url, mode, source)
+                    .with_network(DialNetworkOptions { fwmark, ipv6_first, ipv4_only }),
+            )
+            .await
+            .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
         Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval)
     }
 
@@ -183,6 +185,7 @@ impl VlessUdpTransport {
         target: &TargetAddr,
         fwmark: Option<u32>,
         ipv6_first: bool,
+        ipv4_only: bool,
         source: &'static str,
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
@@ -190,7 +193,7 @@ impl VlessUdpTransport {
     {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
-                .with_network(DialNetworkOptions { fwmark, ipv6_first })
+                .with_network(DialNetworkOptions { fwmark, ipv6_first, ipv4_only })
                 .with_resume(DialResumeOptions {
                     resume_request,
                     // VLESS-UDP carriers do not advertise Ack-Prefix; the server

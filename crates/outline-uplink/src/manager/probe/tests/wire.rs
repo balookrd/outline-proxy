@@ -40,6 +40,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: Some([0u8; 16]),
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -70,6 +71,7 @@ fn ws_fallback() -> FallbackTransport {
         password: "shared".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -94,6 +96,7 @@ fn vless_fallback() -> FallbackTransport {
         password: "shared".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
