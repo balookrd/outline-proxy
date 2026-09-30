@@ -70,8 +70,7 @@ pub(super) async fn connect_xhttp_h3(
     cache: &DnsCache,
     url: &Url,
     submode: XhttpSubmode,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
+    network: crate::dial_plan::DialNetworkOptions,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
@@ -107,7 +106,8 @@ pub(super) async fn connect_xhttp_h3(
             &host,
             port,
             "failed to resolve xhttp/h3 host",
-            ipv6_first,
+            network.ipv6_first,
+            network.ipv4_only,
         )
         .await?;
         let server_addr = *addrs.first().ok_or_else(|| {
@@ -118,7 +118,7 @@ pub(super) async fn connect_xhttp_h3(
             send_request,
             loss_probe,
             carrier: quic_carrier,
-        } = super::h3_pool::acquire(server_addr, &host, port, fwmark).await?;
+        } = super::h3_pool::acquire(server_addr, &host, port, network.fwmark).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
         let authority = if port == 443 {

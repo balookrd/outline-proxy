@@ -67,6 +67,7 @@ async fn manager_with_no_pool(
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: (0..fallback_wires).map(|_| fallback_wire_at(&closed_wire)).collect(),

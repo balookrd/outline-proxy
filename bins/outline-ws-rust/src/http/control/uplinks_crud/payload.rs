@@ -48,6 +48,7 @@ pub(crate) struct UplinkPayload {
     pub(crate) weight: Option<f64>,
     pub(crate) fwmark: Option<u32>,
     pub(crate) ipv6_first: Option<bool>,
+    pub(crate) ipv4_only: Option<bool>,
     pub(crate) vless_id: Option<String>,
     /// Per-uplink fallback transports — the wire-shape list rendered as
     /// `[[outline.uplinks.fallbacks]]` in the TOML config. When set in a
@@ -93,6 +94,7 @@ pub(crate) struct FallbackPayload {
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,
     pub(crate) ipv6_first: Option<bool>,
+    pub(crate) ipv4_only: Option<bool>,
     pub(crate) vless_id: Option<String>,
 }
 
@@ -202,6 +204,9 @@ pub(super) fn payload_to_table(payload: &UplinkPayload) -> Table {
     if let Some(v) = payload.ipv6_first {
         tbl.insert("ipv6_first", Item::Value(Value::from(v)));
     }
+    if let Some(v) = payload.ipv4_only {
+        tbl.insert("ipv4_only", Item::Value(Value::from(v)));
+    }
     set_str(&mut tbl, "vless_id", payload.vless_id.as_deref());
     if let Some(fallbacks) = payload.fallbacks.as_ref() {
         tbl.insert("fallbacks", Item::ArrayOfTables(fallbacks_to_array(fallbacks)));
@@ -243,6 +248,9 @@ fn fallbacks_to_array(fallbacks: &[FallbackPayload]) -> ArrayOfTables {
         }
         if let Some(v) = fb.ipv6_first {
             sub.insert("ipv6_first", Item::Value(Value::from(v)));
+        }
+        if let Some(v) = fb.ipv4_only {
+            sub.insert("ipv4_only", Item::Value(Value::from(v)));
         }
         set_str(&mut sub, "vless_id", fb.vless_id.as_deref());
         arr.push(sub);
@@ -315,6 +323,9 @@ pub(super) fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
     }
     if let Some(v) = patch.ipv6_first {
         tbl.insert("ipv6_first", Item::Value(Value::from(v)));
+    }
+    if let Some(v) = patch.ipv4_only {
+        tbl.insert("ipv4_only", Item::Value(Value::from(v)));
     }
     if let Some(v) = patch.vless_id.as_deref() {
         set_str(tbl, "vless_id", Some(v));

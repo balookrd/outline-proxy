@@ -119,6 +119,7 @@ pub struct FallbackTransport {
     pub password: String,
     pub fwmark: Option<u32>,
     pub ipv6_first: bool,
+    pub ipv4_only: bool,
     pub fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }
 
@@ -247,6 +248,7 @@ pub struct UplinkConfig {
     pub weight: f64,
     pub fwmark: Option<u32>,
     pub ipv6_first: bool,
+    pub ipv4_only: bool,
     /// Present when `transport = "vless"`. Raw 16-byte user id; parsed from
     /// the config string via `outline_transport::vless::parse_uuid`.
     pub vless_id: Option<[u8; 16]>,
@@ -440,6 +442,7 @@ impl UplinkConfig {
             weight: self.weight,
             fwmark: fb.fwmark,
             ipv6_first: fb.ipv6_first,
+            ipv4_only: fb.ipv4_only,
             vless_id: fb.vless_id,
             fingerprint_profile: fb.fingerprint_profile,
             fallbacks: Vec::new(),

@@ -607,8 +607,7 @@ impl crate::shared_dial::WsDialer for H3Dialer {
 pub(crate) async fn connect_websocket_h3(
     cache: &DnsCache,
     url: &Url,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
+    network: crate::dial_plan::DialNetworkOptions,
     source: &'static str,
     resume: crate::dial_plan::DialResumeOptions,
 ) -> Result<TransportStream> {
@@ -622,22 +621,18 @@ pub(crate) async fn connect_websocket_h3(
         .ok_or_else(|| anyhow!("URL is missing port"))?;
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
-    let slot = pick_h3_carrier_slot(host, port, fwmark).await;
+    let slot = pick_h3_carrier_slot(host, port, network.fwmark).await;
     let dialer = H3Dialer { resume, profile, slot };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
-        crate::shared_dial::connect_ws_reused(
-            &dialer, cache, host, port, &path, fwmark, ipv6_first, source,
-        )
-        .await
+        crate::shared_dial::connect_ws_reused(&dialer, cache, host, port, &path, network, source)
+            .await
     } else {
         // Probes never share connections; resolve DNS upfront and try each address.
-        crate::shared_dial::connect_ws_probe(
-            &dialer, cache, host, port, &path, fwmark, ipv6_first, source,
-        )
-        .await
+        crate::shared_dial::connect_ws_probe(&dialer, cache, host, port, &path, network, source)
+            .await
     }
 }
 

@@ -40,6 +40,7 @@ pub(super) async fn relay_tcp_direct(
             *port,
             &format!("failed to resolve {target}"),
             false,
+            false,
         )
         .await?
         .first()

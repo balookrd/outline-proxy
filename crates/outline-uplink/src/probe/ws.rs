@@ -37,7 +37,11 @@ pub(super) async fn run_ws_probe(
     // data-path is checked by the http / dns sub-probes that follow.
     let mut ws_stream = connect_transport(
         TransportDialOptions::new(cache, url, mode, "probe_ws")
-            .with_network(DialNetworkOptions { fwmark, ipv6_first: false })
+            .with_network(DialNetworkOptions {
+                fwmark,
+                ipv6_first: false,
+                ipv4_only: false,
+            })
             .with_combined_ss_kind(combined_ss_kind),
     )
     .await

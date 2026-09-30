@@ -128,6 +128,7 @@ pub async fn fetch_leaf_cert_not_after_unix_ms(
     port: u16,
     fwmark: Option<u32>,
     ipv6_first: bool,
+    ipv4_only: bool,
 ) -> Result<u64> {
     timeout(CERT_CHECK_TIMEOUT, async move {
         let addrs = resolve_host_with_preference(
@@ -136,6 +137,7 @@ pub async fn fetch_leaf_cert_not_after_unix_ms(
             port,
             &format!("cert check: failed to resolve {host}:{port}"),
             ipv6_first,
+            ipv4_only,
         )
         .await?;
         let addr = addrs

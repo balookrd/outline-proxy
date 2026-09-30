@@ -322,6 +322,7 @@ impl TunTcpEngine {
                             *port,
                             "tun_direct_sni",
                             false,
+                            false,
                         )
                         .await
                         {

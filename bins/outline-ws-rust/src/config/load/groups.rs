@@ -99,7 +99,7 @@ pub(super) fn load_groups(
             anyhow!("[[uplinks]] entry {} references unknown group \"{group_name}\"", index + 1)
         })?;
         let resolved: UplinkConfig =
-            super::uplinks::ResolvedUplinkInput::from_section(index, uplink).try_into()?;
+            super::uplinks::ResolvedUplinkInput::from_section(index, uplink, outline).try_into()?;
         buckets[group_index].push(resolved);
     }
     for (name, bucket) in names.iter().zip(&buckets) {

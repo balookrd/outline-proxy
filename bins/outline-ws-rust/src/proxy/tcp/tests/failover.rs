@@ -109,6 +109,7 @@ fn h3_uplink_on(port: u16) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -266,6 +267,7 @@ fn ss_fallback_wire_at(addr: std::net::SocketAddr) -> FallbackTransport {
         password: "secret".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -307,6 +309,7 @@ fn ss_uplink_with_dead_primary(
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: vec![fallback],

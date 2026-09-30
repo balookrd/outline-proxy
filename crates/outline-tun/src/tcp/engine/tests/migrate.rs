@@ -1351,6 +1351,7 @@ fn wire_fallback(url: Url) -> outline_uplink::FallbackTransport {
         password: "Secret0".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -1376,6 +1377,7 @@ fn uplink_with_wire_fallback(primary_url: Url, fallback_url: Url) -> outline_upl
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: vec![wire_fallback(fallback_url)],

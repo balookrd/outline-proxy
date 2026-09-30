@@ -161,6 +161,7 @@ pub(crate) fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -194,6 +195,7 @@ pub(crate) fn sample_uplink_config() -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: Some([7u8; 16]),
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -1918,7 +1920,11 @@ async fn standby_tcp_keepalive_sends_ping_and_preserves_pool_entry() {
 
     let ws = connect_transport(
         TransportDialOptions::new(manager.dns_cache(), &url, TransportMode::WsH1, "test_standby")
-            .with_network(DialNetworkOptions { fwmark: None, ipv6_first: false }),
+            .with_network(DialNetworkOptions {
+                fwmark: None,
+                ipv6_first: false,
+                ipv4_only: false,
+            }),
     )
     .await
     .unwrap();
@@ -1997,6 +2003,7 @@ fn make_ws_uplink_with_modes(
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -2028,6 +2035,7 @@ fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: Some([0u8; 16]),
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -2063,6 +2071,7 @@ fn make_ss_over_ws_uplink(name: &str) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -2190,6 +2199,7 @@ fn make_vless_xhttp_uplink_with_mode(
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: Some([0u8; 16]),
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -2599,6 +2609,7 @@ fn dead_fallback() -> FallbackTransport {
         password: "Secret0".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }

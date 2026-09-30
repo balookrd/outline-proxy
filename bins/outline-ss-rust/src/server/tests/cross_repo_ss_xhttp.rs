@@ -220,6 +220,7 @@ async fn cross_repo_ss_udp_xhttp_packet_up_h2_round_trip() -> Result<()> {
         TEST_PASSWORD,
         None,
         false,
+        false,
         "cross-repo-ss-udp-test",
         None,
         // Split UDP path in this test, so no combined-path discriminator.
@@ -423,6 +424,7 @@ async fn cross_repo_ss_combined_xhttp_both_legs_one_path() -> Result<()> {
         TEST_CIPHER,
         TEST_PASSWORD,
         None,
+        false,
         false,
         "combined-udp",
         None,

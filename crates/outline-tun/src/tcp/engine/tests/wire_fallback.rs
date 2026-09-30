@@ -56,6 +56,7 @@ fn ss_fallback(url: Url) -> FallbackTransport {
         password: "Secret0".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -81,6 +82,7 @@ fn ss_uplink(name: &str, primary_url: Url, fallbacks: Vec<FallbackTransport>) ->
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks,

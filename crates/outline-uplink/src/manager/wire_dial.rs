@@ -232,6 +232,7 @@ fn fallback_wire(tag: &str) -> crate::config::FallbackTransport {
         password: "Secret0".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -264,6 +265,7 @@ fn uplink_with_three_fallbacks() -> crate::config::UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: vec![fallback_wire("fb1"), fallback_wire("fb2"), fallback_wire("fb3")],

@@ -55,7 +55,46 @@ pub const DEFAULT_DNS_CACHE_CAPACITY: usize = 4096;
 /// while evicting "old enough" entries with high probability.
 const EVICTION_SAMPLE: usize = 8;
 
-type CacheKey = (u16, bool, Box<str>);
+/// Address ordering and filtering preference used as part of the DNS cache key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub struct AddrPreference(u8);
+
+impl AddrPreference {
+    pub const IPV4_FIRST: Self = Self(0);
+    pub const IPV6_FIRST: Self = Self(1);
+    pub const IPV4_ONLY: Self = Self(2);
+    pub const SERVER_DEFAULT: Self = Self(10);
+    pub const SERVER_PREFER_IPV4: Self = Self(11);
+
+    #[inline]
+    pub const fn from_client_flags(ipv6_first: bool, ipv4_only: bool) -> Self {
+        if ipv4_only {
+            Self::IPV4_ONLY
+        } else if ipv6_first {
+            Self::IPV6_FIRST
+        } else {
+            Self::IPV4_FIRST
+        }
+    }
+
+    #[inline]
+    pub const fn from_server_pref(prefer_ipv4: bool) -> Self {
+        if prefer_ipv4 {
+            Self::SERVER_PREFER_IPV4
+        } else {
+            Self::SERVER_DEFAULT
+        }
+    }
+}
+
+impl From<bool> for AddrPreference {
+    #[inline]
+    fn from(b: bool) -> Self {
+        if b { Self::IPV6_FIRST } else { Self::IPV4_FIRST }
+    }
+}
+
+type CacheKey = (u16, AddrPreference, Box<str>);
 
 #[derive(Debug)]
 struct Entry {
@@ -109,13 +148,13 @@ impl Store {
     }
 
     #[inline]
-    fn hash_key(&self, port: u16, addr_pref: bool, host: &str) -> u64 {
+    fn hash_key(&self, port: u16, addr_pref: AddrPreference, host: &str) -> u64 {
         make_hash(&self.hasher, port, addr_pref, host)
     }
 
     /// Slot index for the key, or `None`.
     #[inline]
-    fn find(&self, hash: u64, port: u16, addr_pref: bool, host: &str) -> Option<usize> {
+    fn find(&self, hash: u64, port: u16, addr_pref: AddrPreference, host: &str) -> Option<usize> {
         self.index
             .find(hash, |&i| key_eq(&self.slots[i].key, port, addr_pref, host))
             .copied()
@@ -180,7 +219,7 @@ pub struct DnsCache {
 }
 
 #[inline]
-fn make_hash(bh: &impl BuildHasher, port: u16, addr_pref: bool, host: &str) -> u64 {
+fn make_hash(bh: &impl BuildHasher, port: u16, addr_pref: AddrPreference, host: &str) -> u64 {
     let mut h = bh.build_hasher();
     port.hash(&mut h);
     addr_pref.hash(&mut h);
@@ -189,7 +228,7 @@ fn make_hash(bh: &impl BuildHasher, port: u16, addr_pref: bool, host: &str) -> u
 }
 
 #[inline]
-fn key_eq(k: &CacheKey, port: u16, addr_pref: bool, host: &str) -> bool {
+fn key_eq(k: &CacheKey, port: u16, addr_pref: AddrPreference, host: &str) -> bool {
     k.0 == port && k.1 == addr_pref && k.2.as_ref() == host
 }
 
@@ -224,7 +263,13 @@ impl DnsCache {
     }
 
     /// Returns the cached addresses when the entry is still fresh.
-    pub fn get(&self, host: &str, port: u16, addr_pref: bool) -> Option<Arc<[SocketAddr]>> {
+    pub fn get(
+        &self,
+        host: &str,
+        port: u16,
+        addr_pref: impl Into<AddrPreference>,
+    ) -> Option<Arc<[SocketAddr]>> {
+        let addr_pref = addr_pref.into();
         let store = self.inner.read();
         let hash = store.hash_key(port, addr_pref, host);
         let entry = &store.slots[store.find(hash, port, addr_pref, host)?].entry;
@@ -239,7 +284,13 @@ impl DnsCache {
     /// Returns cached addresses regardless of expiry. Intended as a
     /// last-ditch fallback when the upstream resolver fails — prefer
     /// [`DnsCache::get`] for the hot path.
-    pub fn get_stale(&self, host: &str, port: u16, addr_pref: bool) -> Option<Arc<[SocketAddr]>> {
+    pub fn get_stale(
+        &self,
+        host: &str,
+        port: u16,
+        addr_pref: impl Into<AddrPreference>,
+    ) -> Option<Arc<[SocketAddr]>> {
+        let addr_pref = addr_pref.into();
         let store = self.inner.read();
         let hash = store.hash_key(port, addr_pref, host);
         let entry = &store.slots[store.find(hash, port, addr_pref, host)?].entry;
@@ -250,7 +301,14 @@ impl DnsCache {
     /// Upserts the resolution for the key, stamping `now + ttl` as expiry.
     /// On a bounded cache, evicts past-capacity entries (expired first,
     /// then approximate-LRU).
-    pub fn insert(&self, host: &str, port: u16, addr_pref: bool, addrs: Arc<[SocketAddr]>) {
+    pub fn insert(
+        &self,
+        host: &str,
+        port: u16,
+        addr_pref: impl Into<AddrPreference>,
+        addrs: Arc<[SocketAddr]>,
+    ) {
+        let addr_pref = addr_pref.into();
         let mut store = self.inner.write();
         let hash = store.hash_key(port, addr_pref, host);
         let tick = self.next_tick();

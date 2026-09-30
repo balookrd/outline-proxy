@@ -110,6 +110,7 @@ fn uplink_with_fallback(udp_capable: bool) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: vec![FallbackTransport {
@@ -132,6 +133,7 @@ fn uplink_with_fallback(udp_capable: bool) -> UplinkConfig {
             password: "secret".to_string(),
             fwmark: None,
             ipv6_first: false,
+            ipv4_only: false,
             fingerprint_profile: None,
         }],
         shuffle_wires: true,

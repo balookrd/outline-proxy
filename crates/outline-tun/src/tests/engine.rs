@@ -47,6 +47,7 @@ fn icmp_gate_manager_with_probes(
             weight: 1.0,
             fwmark: None,
             ipv6_first: false,
+            ipv4_only: false,
             vless_id: None,
             fingerprint_profile: None,
             fallbacks: Vec::new(),

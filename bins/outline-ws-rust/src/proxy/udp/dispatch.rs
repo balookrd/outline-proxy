@@ -55,6 +55,7 @@ pub(super) async fn send_udp_direct(
                 *port,
                 "UDP direct resolve",
                 false,
+                false,
             )
             .await
             .with_context(|| format!("UDP direct: failed to resolve {target}"))?;

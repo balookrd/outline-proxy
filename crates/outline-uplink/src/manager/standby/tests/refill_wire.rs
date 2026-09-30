@@ -113,7 +113,11 @@ async fn a_refill_dials_with_the_wires_own_network_options() {
 
     assert_eq!(
         ctx.dial_network_options(),
-        DialNetworkOptions { fwmark: Some(0x12), ipv6_first: true },
+        DialNetworkOptions {
+            fwmark: Some(0x12),
+            ipv6_first: true,
+            ipv4_only: false
+        },
         "wire 1 pins its own mark and prefers v6; the parent pins neither",
     );
 }

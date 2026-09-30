@@ -519,7 +519,7 @@ supported.
 **1. Inline single-uplink shorthand.** Writing `transport`, `tcp_ws_url`,
 `udp_ws_url`, `vless_ws_url`, `vless_xhttp_url`, `tcp_mode` / `udp_mode` /
 `vless_mode`, `link`, `method`, `password`,
-`fwmark`, `ipv6_first` directly under `[outline]` (or — for backward
+`fwmark`, `ipv6_first`, `ipv4_only` directly under `[outline]` (or — for backward
 compatibility — at the top level) declares a single implicit uplink. CLI
 flags (`--tcp-ws-url`, `--password`, …) target this shape. Convenient for
 trivial deployments; not used together with `[[outline.uplinks]]` /
@@ -2007,7 +2007,7 @@ password        = "BASE64=="
   udp_ws_url  = "wss://ws.example.com/udp"
   tcp_mode    = "ws_h2"
   udp_mode    = "ws_h1"
-  # method / password / fwmark / ipv6_first / fingerprint_profile
+  # method / password / fwmark / ipv6_first / ipv4_only / fingerprint_profile
   # are inherited from the parent uplink unless overridden here.
 
   [[outline.uplinks.fallbacks]]
@@ -2030,7 +2030,7 @@ that belong to the parent (`name`, `weight`, `group`):
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws\_\* → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
 | `method`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. A wire configured by an `ss://` `link` takes them from the URI instead, and never falls back to the parent's. |
-| `fwmark`, `ipv6_first`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. Inheritance is unaffected by `link` — these are dial properties, not wire shape. |
+| `fwmark`, `ipv6_first`, `ipv4_only`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. When `ipv4_only = true`, IPv6 addresses are filtered out and `ipv6_first` is ignored. Inheritance is unaffected by `link` — these are dial properties, not wire shape. |
 
 An uplink whose wires are all share links — the shape a subscription-driven
 config takes:
@@ -2052,7 +2052,7 @@ link   = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=
 Credentials ride inside each URI, so the parent's `method` / `password` are not
 consulted for these wires — an `ss://` fallback under a VLESS parent needs no
 explicit secret. Everything that is *not* wire shape still comes from the
-parent: `fwmark`, `ipv6_first` and `fingerprint_profile` are inherited exactly
+parent: `fwmark`, `ipv6_first`, `ipv4_only` and `fingerprint_profile` are inherited exactly
 as they are for a hand-written fallback.
 
 ### Behaviour

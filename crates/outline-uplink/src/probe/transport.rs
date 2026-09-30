@@ -94,6 +94,7 @@ async fn connect_probe_tcp_inner(
                     .with_network(DialNetworkOptions {
                         fwmark: uplink.fwmark,
                         ipv6_first: uplink.ipv6_first,
+                        ipv4_only: uplink.ipv4_only,
                     })
                     .with_combined_ss_kind(uplink.combined_ss_kind(SsPathKind::Tcp)),
                 ),
@@ -144,6 +145,7 @@ async fn connect_probe_tcp_inner(
                     .with_network(DialNetworkOptions {
                         fwmark: uplink.fwmark,
                         ipv6_first: uplink.ipv6_first,
+                        ipv4_only: uplink.ipv4_only,
                     }),
                 ),
             )

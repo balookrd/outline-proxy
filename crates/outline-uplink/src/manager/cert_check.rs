@@ -88,6 +88,7 @@ impl UplinkManager {
                     ep.port,
                     ep.fwmark,
                     ep.ipv6_first,
+                    ep.ipv4_only,
                 )
                 .await
                 {

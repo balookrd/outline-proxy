@@ -36,6 +36,7 @@ fn ss_ws_uplink(tcp_url: &str) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -66,6 +67,7 @@ fn ws_fallback(tcp_url: &str) -> FallbackTransport {
         password: "secret".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -149,4 +151,17 @@ async fn one_live_endpoint_spares_the_uplink() {
             .await;
 
     assert!(verdict.is_none());
+}
+
+#[test]
+fn a_fallback_with_different_ipv4_only_is_its_own_endpoint() {
+    let mut cfg = ss_ws_uplink("wss://edge.example.com:6443/ws");
+    let mut fb = ws_fallback("wss://edge.example.com:6443/ws2");
+    fb.ipv4_only = true;
+    cfg.fallbacks = vec![fb];
+
+    let endpoints = uplink_endpoints(&cfg);
+    assert_eq!(endpoints.len(), 2, "different ipv4_only must yield distinct endpoints");
+    assert!(!endpoints[0].ipv4_only);
+    assert!(endpoints[1].ipv4_only);
 }

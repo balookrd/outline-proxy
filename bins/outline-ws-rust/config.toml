@@ -581,6 +581,9 @@ tcp_mode = "h3"
 # fwmark = 100
 # Prefer IPv6 addresses first for this uplink
 # ipv6_first = true
+# Filter out IPv6 addresses during DNS resolution (IPv4 only; suppresses AAAA records).
+# When true, ignores ipv6_first. Inherited by fallbacks unless explicitly overridden.
+# ipv4_only = true
 udp_ws_url = "wss://example.com/SECRET/udp"
 udp_mode = "h3"
 method = "chacha20-ietf-poly1305"
@@ -642,8 +645,8 @@ password = "Secret0"
 # server. See docs/UPLINK-CONFIGURATIONS.md "Per-uplink fallback transports".
 #
 # Inheritance: `cipher` / `password` / `fwmark` / `ipv6_first` /
-# `fingerprint_profile` default to the parent uplink's value when
-# omitted; `vless_id` is per-wire and NOT inherited.
+# `ipv4_only` / `fingerprint_profile` default to the parent uplink's value
+# when omitted; `vless_id` is per-wire and NOT inherited.
 #
 # [[outline.uplinks]]
 # name = "edge-1"

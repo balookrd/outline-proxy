@@ -27,6 +27,7 @@ fn ws_uplink(name: &str, tcp_url: &str, udp_url: &str) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -70,6 +71,7 @@ fn vless_ws_fallback(host: &str) -> FallbackTransport {
         password: String::new(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -80,6 +82,7 @@ fn endpoint(host: &str, port: u16) -> Endpoint {
         port,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
     }
 }
 

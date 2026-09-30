@@ -38,6 +38,7 @@ fn from_fallback_projects_the_fallback_wire_but_keeps_the_parent_name() {
         password: "fallback-secret".to_string(),
         fwmark: Some(42),
         ipv6_first: true,
+        ipv4_only: false,
         fingerprint_profile: None,
     };
     uplink.fallbacks.push(fallback);
@@ -78,6 +79,7 @@ fn combined_ss_discriminator_comes_from_the_wire_not_the_parent() {
         password: "split".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     });
 

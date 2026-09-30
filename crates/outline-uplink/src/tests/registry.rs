@@ -30,6 +30,7 @@ fn make_uplink(name: &str) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
@@ -62,6 +63,7 @@ fn make_fallback(host: &str) -> FallbackTransport {
         password: "s3cr3t_password".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }

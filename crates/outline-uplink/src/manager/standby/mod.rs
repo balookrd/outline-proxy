@@ -558,6 +558,7 @@ impl UplinkManager {
                     .with_network(DialNetworkOptions {
                         fwmark: spec.fwmark,
                         ipv6_first: spec.ipv6_first,
+                        ipv4_only: spec.ipv4_only,
                     })
                     .with_combined_ss_kind(spec.combined_ss_kind(SsPathKind::Tcp))
                     .with_resume(resume_options(&dial)),
@@ -744,6 +745,7 @@ impl UplinkManager {
                 uuid,
                 spec.fwmark,
                 spec.ipv6_first,
+                spec.ipv4_only,
                 source,
                 self.inner.load_balancing.udp_ws_keepalive_interval,
                 self.inner.load_balancing.vless_udp_mux_limits,
@@ -839,6 +841,7 @@ impl UplinkManager {
             spec.password,
             spec.fwmark,
             spec.ipv6_first,
+            spec.ipv4_only,
             source,
             self.inner.load_balancing.udp_ws_keepalive_interval,
             udp_resume_request,

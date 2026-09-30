@@ -115,6 +115,7 @@ fn resolve_fallback(
     let cipher = section.method.unwrap_or(parent.cipher);
     let fwmark = section.fwmark.or(parent.fwmark);
     let ipv6_first = section.ipv6_first.unwrap_or(parent.ipv6_first);
+    let ipv4_only = section.ipv4_only.unwrap_or(parent.ipv4_only);
     let fingerprint_profile = section.fingerprint_profile.or(parent.fingerprint_profile);
     let password_inherited = section.password.clone().unwrap_or_else(|| parent.password.clone());
 
@@ -388,6 +389,7 @@ fn resolve_fallback(
         password: final_password,
         fwmark,
         ipv6_first,
+        ipv4_only,
         fingerprint_profile,
     })
 }

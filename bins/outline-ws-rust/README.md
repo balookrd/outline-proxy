@@ -551,6 +551,7 @@ weight = 1.0
 tcp_mode = "h3"
 # fwmark = 100
 # ipv6_first = true
+# ipv4_only = true
 udp_ws_url = "wss://example.com/SECRET/udp"
 udp_mode = "h3"
 method = "chacha20-ietf-poly1305"
@@ -615,6 +616,7 @@ via = "main"
 - At least one ingress must be configured: `--listen` / `[socks5].listen` and/or `[tun]`. If neither is present, the process exits with an error instead of silently binding `127.0.0.1:1080`.
 - `tcp_mode` / `udp_mode` (`transport = "ss"`) and `vless_mode` (`transport = "vless"`) pick the per-direction transport carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade), or `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (VLESS-only XHTTP packet-up). See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) for per-shape config blocks, dial-time fallback chains, and resume behaviour.
 - `ipv6_first` (default `false`) changes resolved-address preference for that uplink from IPv4-first to IPv6-first for TCP, UDP, H1, H2, and H3 connections.
+- `ipv4_only` (default `false`) filters out IPv6 (AAAA records) during DNS resolution for uplink servers and endpoints, keeping only IPv4 addresses. Useful on hosts without IPv6 connectivity to prevent `NetworkUnreachable (OS 101)` failures and link-flapping storms. When `ipv4_only = true`, `ipv6_first` is ignored. Inherited from `[outline]` down to `[[outline.uplinks]]` and `[[outline.uplinks.fallbacks]]` unless explicitly overridden.
 - `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
 - `[[socks5.users]]` enables local SOCKS5 username/password auth for multiple users. Each entry must include both `username` and `password`.
 - `[socks5] username` + `password` is still accepted as a shorthand for a single user.
@@ -659,6 +661,8 @@ via = "main"
 - `--tun-name` / `TUN_NAME`
 - `--tun-mtu` / `TUN_MTU`
 - `--fwmark` / `OUTLINE_FWMARK`
+- `--ipv6-first` / `OUTLINE_IPV6_FIRST`
+- `--ipv4-only` / `OUTLINE_IPV4_ONLY`
 - `--state-path` / `STATE_PATH`
 
 ## Policy routing

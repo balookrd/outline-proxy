@@ -116,6 +116,25 @@ fn addr_pref_bit_is_part_of_the_key() {
 }
 
 #[test]
+fn addr_pref_ipv4_only_is_distinct_key() {
+    use crate::dns_cache::AddrPreference;
+
+    let cache = DnsCache::new(Duration::from_secs(60));
+    let pref_v4_first = AddrPreference::from_client_flags(false, false);
+    let pref_v6_first = AddrPreference::from_client_flags(true, false);
+    let pref_v4_only = AddrPreference::from_client_flags(false, true);
+
+    cache.insert("h", 80, pref_v4_first, addr(1));
+    cache.insert("h", 80, pref_v6_first, addr(2));
+    cache.insert("h", 80, pref_v4_only, addr(3));
+
+    assert_eq!(cache.len(), 3);
+    assert_eq!(cache.get("h", 80, pref_v4_first).unwrap()[0].ip(), Ipv4Addr::new(127, 0, 0, 1));
+    assert_eq!(cache.get("h", 80, pref_v6_first).unwrap()[0].ip(), Ipv4Addr::new(127, 0, 0, 2));
+    assert_eq!(cache.get("h", 80, pref_v4_only).unwrap()[0].ip(), Ipv4Addr::new(127, 0, 0, 3));
+}
+
+#[test]
 fn sweep_expired_purges_only_past_grace() {
     // Entries expire instantly (1 ns TTL); a sweep with a generous grace
     // keeps them around for stale fallback, a zero grace purges them.

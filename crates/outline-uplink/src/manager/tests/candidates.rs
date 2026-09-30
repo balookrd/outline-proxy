@@ -46,6 +46,7 @@ fn ss_fallback(tag: &str) -> FallbackTransport {
         password: "Secret0".to_string(),
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         fingerprint_profile: None,
     }
 }
@@ -73,6 +74,7 @@ fn dead_uplink(name: &str, weight: f64) -> UplinkConfig {
         weight,
         fwmark: None,
         ipv6_first: false,
+        ipv4_only: false,
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: vec![ss_fallback("fb1"), ss_fallback("fb2")],

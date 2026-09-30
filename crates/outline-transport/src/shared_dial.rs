@@ -58,21 +58,21 @@ pub(crate) trait WsDialer: 'static {
     ) -> Result<TransportStream>;
 }
 
+use crate::dial_plan::DialNetworkOptions;
+
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Reuse-or-dial path for non-probe connections.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_ws_reused<D: WsDialer>(
     dialer: &D,
     cache: &DnsCache,
     server_name: &str,
     server_port: u16,
     path: &str,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
+    network: DialNetworkOptions,
     source: &'static str,
 ) -> Result<TransportStream> {
-    let key = dialer.make_key(server_name, server_port, fwmark);
+    let key = dialer.make_key(server_name, server_port, network.fwmark);
     let label = dialer.metric_label();
 
     with_reuse(
@@ -96,36 +96,25 @@ pub(crate) async fn connect_ws_reused<D: WsDialer>(
             }
         },
         || async move {
-            resolve_and_dial(dialer, cache, server_name, server_port, path, fwmark, ipv6_first, source, Some(key)).await
+            resolve_and_dial(dialer, cache, server_name, server_port, path, network, source, Some(key)).await
         },
     )
     .await
 }
 
 /// Fresh-connection (probe) path — bypasses the shared-connection cache.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_ws_probe<D: WsDialer>(
     dialer: &D,
     cache: &DnsCache,
     server_name: &str,
     server_port: u16,
     path: &str,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
+    network: DialNetworkOptions,
     source: &'static str,
 ) -> Result<TransportStream> {
-    let (_shared, ws) = resolve_and_dial(
-        dialer,
-        cache,
-        server_name,
-        server_port,
-        path,
-        fwmark,
-        ipv6_first,
-        source,
-        None,
-    )
-    .await?;
+    let (_shared, ws) =
+        resolve_and_dial(dialer, cache, server_name, server_port, path, network, source, None)
+            .await?;
     Ok(ws)
 }
 
@@ -141,15 +130,21 @@ async fn resolve_and_dial<D: WsDialer>(
     server_name: &str,
     server_port: u16,
     path: &str,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
+    network: DialNetworkOptions,
     source: &'static str,
     cache_key: Option<D::Key>,
 ) -> Result<(Arc<D::Conn>, TransportStream)> {
     let label = dialer.metric_label();
     let context = format!("failed to resolve {label} websocket host");
-    let server_addrs =
-        resolve_host_with_preference(cache, server_name, server_port, &context, ipv6_first).await?;
+    let server_addrs = resolve_host_with_preference(
+        cache,
+        server_name,
+        server_port,
+        &context,
+        network.ipv6_first,
+        network.ipv4_only,
+    )
+    .await?;
     if server_addrs.is_empty() {
         return Err(anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
             host: format!("{server_name}:{server_port}"),
@@ -165,7 +160,10 @@ async fn resolve_and_dial<D: WsDialer>(
     let mut last_error = None;
     for &addr in addrs {
         let mut guard = TransportConnectGuard::new(source, label);
-        match dialer.establish(addr, server_name, fwmark, cache_key.clone()).await {
+        match dialer
+            .establish(addr, server_name, network.fwmark, cache_key.clone())
+            .await
+        {
             Ok(conn) => match dialer.open_on(&conn, server_name, server_port, path).await {
                 Ok(ws) => {
                     guard.finish("success");

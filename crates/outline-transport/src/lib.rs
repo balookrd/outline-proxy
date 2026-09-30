@@ -227,7 +227,7 @@ pub use tls::build_https_probe_client_config;
 
 // DNS cache: shared by every resolve path in the main binary.
 pub use dns::resolve_host_with_preference;
-pub use dns_cache::{DEFAULT_DNS_CACHE_CAPACITY, DEFAULT_DNS_CACHE_TTL, DnsCache};
+pub use dns_cache::{AddrPreference, DEFAULT_DNS_CACHE_CAPACITY, DEFAULT_DNS_CACHE_TTL, DnsCache};
 
 // Entry points — connection constructors for TCP/UDP/HTTP-family transports.
 pub use carrier_loss::{CarrierLossCounters, CarrierLossProbe, CarrierLossSample};

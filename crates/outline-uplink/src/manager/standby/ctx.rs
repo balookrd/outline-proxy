@@ -79,6 +79,7 @@ pub(super) struct StandbyCtx<'a> {
     /// This wire's address-family preference, per-wire for the same reason as
     /// [`Self::fwmark`].
     pub(super) ipv6_first: bool,
+    pub(super) ipv4_only: bool,
     /// This wire's TLS fingerprint-profile strategy, `None` meaning "inherit
     /// the process-wide default". Per-wire because a fallback may pin its own
     /// (the loader inherits the parent's when the key is omitted), and a pool
@@ -131,6 +132,7 @@ impl UplinkManager {
                 combined_ss: spec.combined_ss_kind(SsPathKind::Tcp),
                 fwmark: spec.fwmark,
                 ipv6_first: spec.ipv6_first,
+                ipv4_only: spec.ipv4_only,
                 fingerprint_profile: spec.fingerprint_profile,
             },
             TransportKind::Udp => StandbyCtx {
@@ -150,6 +152,7 @@ impl UplinkManager {
                 combined_ss: spec.combined_ss_kind(SsPathKind::Udp),
                 fwmark: spec.fwmark,
                 ipv6_first: spec.ipv6_first,
+                ipv4_only: spec.ipv4_only,
                 fingerprint_profile: spec.fingerprint_profile,
             },
         }

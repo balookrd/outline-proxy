@@ -894,7 +894,7 @@ async fn park_udp_client_session_on_home(
 ) -> Result<ClientSessionId> {
     let cache = ClientDnsCache::new(Duration::from_secs(30));
     let (transport, issued, _downgraded) = UdpWsTransport::connect_with_resume(
-        &cache, url, mode, cipher, password, None, false, tag, None, None, kind,
+        &cache, url, mode, cipher, password, None, false, false, tag, None, None, kind,
     )
     .await?;
     let issued = issued.context("a resume-capable dial must be issued a session id")?;
@@ -2375,6 +2375,7 @@ async fn cluster_node_udp_combined_xhttp_no_resume_roundtrips() -> Result<()> {
         "secret-b",
         None,
         false,
+        false,
         "cluster-udp-combined-xhttp-test",
         None,
         // Cold start: no resume id to present.
@@ -2459,6 +2460,7 @@ async fn xhttp_udp_client_drop_parks_session() -> Result<()> {
         "secret-b",
         None,
         false,
+        false,
         "xhttp-udp-drop-park",
         None,
         None,
@@ -2499,6 +2501,7 @@ async fn xhttp_h3_udp_client_close_parks_session() -> Result<()> {
         CipherKind::Chacha20IetfPoly1305,
         "secret-b",
         None,
+        false,
         false,
         "xhttp-h3-udp-close-park",
         None,
@@ -2560,6 +2563,7 @@ async fn cluster_udp_combined_xhttp_relays_to_home() -> Result<()> {
         "secret-b",
         None,
         false,
+        false,
         "cluster-udp-combined-xhttp-relay-test",
         None,
         Some(client_resume),
@@ -2606,6 +2610,7 @@ async fn cluster_node_udp_combined_ws_no_resume_roundtrips() -> Result<()> {
         CipherKind::Chacha20IetfPoly1305,
         "secret-b",
         None,
+        false,
         false,
         "cluster-udp-combined-ws-test",
         None,
@@ -2666,6 +2671,7 @@ async fn cluster_udp_combined_ws_relays_to_home() -> Result<()> {
         CipherKind::Chacha20IetfPoly1305,
         "secret-b",
         None,
+        false,
         false,
         "cluster-udp-combined-ws-relay-test",
         None,
@@ -2776,6 +2782,7 @@ async fn cluster_node_udp_combined_xhttp_padded_no_resume_roundtrips() -> Result
                 "secret-b",
                 None,
                 false,
+                false,
                 "cluster-udp-combined-xhttp-pad-test",
                 None,
                 None,
@@ -2830,6 +2837,7 @@ async fn cluster_node_udp_combined_ws_padded_no_resume_roundtrips() -> Result<()
                 "secret-b",
                 None,
                 false,
+                false,
                 "cluster-udp-combined-ws-pad-test",
                 None,
                 None,
@@ -2878,6 +2886,7 @@ async fn cluster_node_udp_combined_xhttp_h3_no_resume_roundtrips() -> Result<()>
         CipherKind::Chacha20IetfPoly1305,
         "secret-b",
         None,
+        false,
         false,
         "cluster-udp-combined-xhttp-h3-test",
         None,
@@ -3284,6 +3293,7 @@ async fn ss2022_udp_client(
         SS2022_PSK,
         None,
         false,
+        false,
         "cluster-udp-handover-test",
         None,
         resume,
@@ -3345,6 +3355,7 @@ async fn cluster_udp_xhttp_relays_to_home() -> Result<()> {
         // sample_config's shared user "bob".
         "secret-b",
         None,
+        false,
         false,
         "cluster-udp-xhttp-test",
         None,
