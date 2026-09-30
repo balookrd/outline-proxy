@@ -7,6 +7,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.outline.proxy.AutomationState
 import com.outline.proxy.KeepAliveState
 import com.outline.proxy.OutlineVpnService
 import java.util.concurrent.TimeUnit
@@ -23,6 +24,10 @@ class WatchdogWorker(
 
     override suspend fun doWork(): Result {
         if (KeepAliveState(applicationContext).shouldRun) {
+            val autoState = AutomationState(applicationContext)
+            if (autoState.pausedByWifi || autoState.pausedByAirplane) {
+                return Result.success()
+            }
             OutlineVpnService.ensure(applicationContext)
             // Alarms do not survive every OEM cleanup; re-arm from here as well.
             WatchdogAlarm.schedule(applicationContext)

@@ -390,7 +390,11 @@ class OutlineVpnService : VpnService() {
 
         when (decision.action) {
             KeepAliveAction.NOTHING -> {
-                WatchdogAlarm.schedule(this, decision.retryDelayMs)
+                if (decision.retryDelayMs > 0) {
+                    WatchdogAlarm.schedule(this, decision.retryDelayMs)
+                } else {
+                    WatchdogAlarm.cancel(this)
+                }
                 // Core already alive (e.g. a revived process): keep the banner
                 // refreshing if nothing is doing so yet.
                 if (isActive() && notifJob == null) {
@@ -730,14 +734,12 @@ class OutlineVpnService : VpnService() {
     /**
      * Tear the tunnel down — core, TUN, network callbacks, notification updates —
      * without deciding the service's fate. Shared by the deliberate-disconnect
-     * path and by [onDestroy].
+     * path, pause path, and by [onDestroy].
      */
-    private fun teardownTunnel(keepUnderlyingWatch: Boolean = false) {
+    private fun teardownTunnel() {
         stopNotificationUpdates()
         KeepAliveState(this).connectedSince = 0L
-        if (!keepUnderlyingWatch) {
-            unregisterNetworkCallback()
-        }
+        unregisterNetworkCallback()
         try {
             if (isRunning()) stop()
         } catch (e: Exception) {
@@ -755,7 +757,7 @@ class OutlineVpnService : VpnService() {
     private fun disconnect() {
         val autoConfig = AutomationStore(this).load()
         val keepStandby = KeepAliveState(this).persistentNotification || autoConfig.wifiAutomationEnabled
-        teardownTunnel(keepUnderlyingWatch = keepStandby)
+        teardownTunnel()
         if (keepStandby) {
             if (autoConfig.wifiAutomationEnabled) registerWifiAutomationCallback()
             val autoState = AutomationState(this)
@@ -785,7 +787,9 @@ class OutlineVpnService : VpnService() {
      * check right behind it.
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
-        if (KeepAliveState(this).shouldRun) {
+        val autoState = AutomationState(this)
+        val isPaused = autoState.pausedByAirplane || autoState.pausedByWifi
+        if (KeepAliveState(this).shouldRun && !isPaused) {
             WatchdogAlarm.schedule(this, TASK_REMOVED_DELAY_MS)
         }
         super.onTaskRemoved(rootIntent)
@@ -795,9 +799,11 @@ class OutlineVpnService : VpnService() {
         unregisterScreenReceiver()
         unregisterAirplaneReceiver()
         unregisterWifiAutomationCallback()
+        val autoState = AutomationState(this)
+        val isPaused = autoState.pausedByAirplane || autoState.pausedByWifi
         // A deliberate disconnect clears shouldRun first, so this only fires
         // when something else killed us.
-        if (KeepAliveState(this).shouldRun) {
+        if (KeepAliveState(this).shouldRun && !isPaused) {
             WatchdogAlarm.schedule(this, DESTROY_DELAY_MS)
         }
         teardownTunnel()
@@ -821,12 +827,19 @@ class OutlineVpnService : VpnService() {
                     Intent.ACTION_SCREEN_OFF -> {
                         isScreenInteractive = false
                         stopNotificationUpdates()
+                        cancelWifiSsidRetry()
                     }
                     Intent.ACTION_SCREEN_ON -> {
                         isScreenInteractive = true
                         updateNotificationOnce()
                         if (isActive()) {
                             startNotificationUpdates()
+                        } else {
+                            val autoConfig = AutomationStore(this@OutlineVpnService).load()
+                            val autoState = AutomationState(this@OutlineVpnService)
+                            if (autoConfig.wifiAutomationEnabled && (autoState.pausedByWifi || activeWifiNetwork != null)) {
+                                evaluateWifiAutomation()
+                            }
                         }
                     }
                 }
@@ -907,6 +920,7 @@ class OutlineVpnService : VpnService() {
     }
 
     private fun scheduleWifiSsidRetry() {
+        if (!isScreenInteractive) return
         if (wifiSsidRetryRunnable != null) return
         wifiSsidRetryRunnable = Runnable {
             wifiSsidRetryRunnable = null
@@ -941,32 +955,51 @@ class OutlineVpnService : VpnService() {
 
         fun handleAvailable(network: Network) {
             cancelWifiLostDebounce()
+            val networkChanged = activeWifiNetwork != network
             activeWifiNetwork = network
-            cm.getNetworkCapabilities(network)?.let { caps ->
-                LinkProbe.extractWifiSsid(this@OutlineVpnService, caps)?.let { ssid ->
-                    currentWifiSsid = ssid
-                }
+            val extractedSsid = cm.getNetworkCapabilities(network)?.let { caps ->
+                LinkProbe.extractWifiSsid(this@OutlineVpnService, caps)
             }
-            if (currentWifiSsid != null) {
+            if (extractedSsid != null) {
+                currentWifiSsid = extractedSsid
                 cancelWifiSsidRetry()
-            } else {
-                scheduleWifiSsidRetry()
+            } else if (networkChanged) {
+                currentWifiSsid = null
+                if (isScreenInteractive) {
+                    scheduleWifiSsidRetry()
+                }
             }
             evaluateWifiAutomation()
         }
 
         fun handleCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
             cancelWifiLostDebounce()
+            val networkChanged = activeWifiNetwork != network
             activeWifiNetwork = network
-            LinkProbe.extractWifiSsid(this@OutlineVpnService, networkCapabilities)?.let { ssid ->
-                currentWifiSsid = ssid
-            }
-            if (currentWifiSsid != null) {
+
+            val extractedSsid = LinkProbe.extractWifiSsid(this@OutlineVpnService, networkCapabilities)
+            if (extractedSsid != null) {
+                val ssidChanged = currentWifiSsid != extractedSsid
+                currentWifiSsid = extractedSsid
                 cancelWifiSsidRetry()
-            } else {
+                if (networkChanged || ssidChanged) {
+                    evaluateWifiAutomation()
+                }
+                return
+            }
+
+            // If we already know the SSID for this active network, ignore pure RSSI / signal fluctuations.
+            if (!networkChanged && currentWifiSsid != null) {
+                return
+            }
+
+            // SSID unknown for this network
+            if (isScreenInteractive) {
                 scheduleWifiSsidRetry()
             }
-            evaluateWifiAutomation()
+            if (networkChanged) {
+                evaluateWifiAutomation()
+            }
         }
 
         fun handleLost(network: Network) {
@@ -1071,8 +1104,8 @@ class OutlineVpnService : VpnService() {
                 }
             }
         }
-        WatchdogAlarm.schedule(this, KeepAlivePolicy.HEALTHY_DELAY_MS)
-        teardownTunnel(keepUnderlyingWatch = true)
+        WatchdogAlarm.cancel(this)
+        teardownTunnel()
         startServiceForeground(
             buildNotification(running = false, status = statusText),
         )
@@ -1093,16 +1126,18 @@ class OutlineVpnService : VpnService() {
         lastNotifStatus = null
         lastNotifDetail = null
         ensureNotificationChannels()
+        val autoConfig = AutomationStore(this).load()
+        val needsLocation = autoConfig.wifiAutomationEnabled && LinkProbe.canReadWifiSsid(this)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                val types = if (LinkProbe.canReadWifiSsid(this)) {
+                val types = if (needsLocation) {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
                 } else {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                 }
                 startForeground(id, notification, types)
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val types = if (LinkProbe.canReadWifiSsid(this)) {
+                val types = if (needsLocation) {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
                 } else {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE

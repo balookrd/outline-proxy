@@ -22,7 +22,9 @@ class KeepAlivePolicyTest {
 
     @Test
     fun `paused tunnel - watchdog does nothing`() {
-        assertEquals(KeepAliveAction.NOTHING, decide(isPaused = true).action)
+        val decision = decide(isPaused = true)
+        assertEquals(KeepAliveAction.NOTHING, decision.action)
+        assertEquals(0L, decision.retryDelayMs)
     }
 
     @Test
