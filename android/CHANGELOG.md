@@ -38,6 +38,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Eliminate idle battery drain when tunnel is paused on Wi-Fi.** Fixed excessive background battery consumption when the VPN is paused on trusted Wi-Fi or idle:
+  - Unregistered underlying network callbacks and carrier-dial budget refresh on pause and disconnect, eliminating redundant background Binder IPC calls and Rust status queries on signal changes.
+  - Filtered Wi-Fi capability updates in `registerWifiAutomationCallback`: RSSI and link speed fluctuations on the same network no longer trigger redundant automation evaluations or Binder IPC lookups when the SSID is already known.
+  - Cancelled exact wakeup alarms (`WatchdogAlarm`) while the tunnel is paused, allowing Android to remain in Deep Doze uninterrupted instead of waking up every 15 minutes.
+  - Short-circuited `WatchdogWorker` during automation pause, preventing periodic background WorkManager wakeups from reviving the tunnel or re-arming alarms.
+  - Suppressed SSID retry loops when the screen is turned off (`!isScreenInteractive`), refreshing once on screen turn-on.
+  - Avoided requesting `FOREGROUND_SERVICE_TYPE_LOCATION` when Wi-Fi automation is disabled in settings.
+
 - **Fix automatic VPN pause when connecting to trusted Wi-Fi in background.** Resolved an issue where connecting to a trusted Wi-Fi network while the VPN was active did not automatically pause the tunnel until the app was brought to the foreground:
   - Configured `OutlineVpnService` with `FOREGROUND_SERVICE_TYPE_LOCATION` (and declared `FOREGROUND_SERVICE_LOCATION` + `ACCESS_BACKGROUND_LOCATION` in the manifest), granting lawful access to Wi-Fi SSID details in background network callbacks on Android 14+ (API 34+).
   - Dynamically assert foreground service types based on granted location permissions with automatic fallback to prevent security exceptions.

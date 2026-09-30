@@ -41,7 +41,7 @@ object KeepAlivePolicy {
         isPaused: Boolean = false,
     ): KeepAliveDecision = when {
         !shouldRun -> KeepAliveDecision(KeepAliveAction.STOP, 0)
-        isPaused -> KeepAliveDecision(KeepAliveAction.NOTHING, HEALTHY_DELAY_MS)
+        isPaused -> KeepAliveDecision(KeepAliveAction.NOTHING, 0)
         coreAlive -> KeepAliveDecision(KeepAliveAction.NOTHING, HEALTHY_DELAY_MS)
         !consentGranted -> KeepAliveDecision(KeepAliveAction.GIVE_UP, 0)
         !hasProfile -> KeepAliveDecision(KeepAliveAction.GIVE_UP, 0)
