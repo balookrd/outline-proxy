@@ -13,6 +13,9 @@ publish = false
 # Detach from the parent workspace.
 [workspace]
 
+[lints.clippy]
+double_must_use = "allow"
+
 # The HTTP/3 WebSocket carrier (vendored sockudo-ws) depends on a patched `h3`
 # fork. The root workspace applies this patch; a detached workspace must repeat
 # it or the upstream `h3` resolves and sockudo-ws fails to compile.

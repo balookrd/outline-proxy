@@ -27,6 +27,8 @@ members = [
 # remaining wide constructors carry targeted `#[allow]`s at the definition.
 [workspace.lints.clippy]
 type_complexity = "allow"
+# async_trait generates #[must_use] on futures that Clippy 1.99+ flags as double_must_use.
+double_must_use = "allow"
 # Every `unsafe` block/impl in our packages carries a `// SAFETY:` comment
 # stating the invariant that makes it sound (fd borrowed for the syscall,
 # length checked before the write, libc contract, …). Warn so CI catches a
