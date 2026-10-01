@@ -71,7 +71,7 @@ impl CarrierSlots {
             metrics::set_tun_carrier_flows_active(taken);
             return Some(CarrierSlot { slots: Arc::clone(self) });
         }
-        match self.used.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+        match self.used.try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
             (used < self.cap).then_some(used + 1)
         }) {
             Ok(previous) => {
@@ -102,7 +102,7 @@ impl CarrierSlots {
     fn release(&self) {
         if let Ok(previous) = self
             .used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| Some(used.saturating_sub(1)))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| Some(used.saturating_sub(1)))
         {
             metrics::set_tun_carrier_flows_active(previous.saturating_sub(1));
         }
