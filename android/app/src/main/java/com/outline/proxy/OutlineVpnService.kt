@@ -1127,7 +1127,10 @@ class OutlineVpnService : VpnService() {
         lastNotifDetail = null
         ensureNotificationChannels()
         val autoConfig = AutomationStore(this).load()
-        val needsLocation = autoConfig.wifiAutomationEnabled && LinkProbe.canReadWifiSsid(this)
+        val autoState = AutomationState(this)
+        val isPaused = autoState.pausedByAirplane || autoState.pausedByWifi
+        val shouldRun = KeepAliveState(this).shouldRun
+        val needsLocation = shouldRun && !isPaused && autoConfig.wifiAutomationEnabled && LinkProbe.canReadWifiSsid(this)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 val types = if (needsLocation) {
