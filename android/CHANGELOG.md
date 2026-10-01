@@ -44,7 +44,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   - Cancelled exact wakeup alarms (`WatchdogAlarm`) while the tunnel is paused, allowing Android to remain in Deep Doze uninterrupted instead of waking up every 15 minutes.
   - Short-circuited `WatchdogWorker` during automation pause, preventing periodic background WorkManager wakeups from reviving the tunnel or re-arming alarms.
   - Suppressed SSID retry loops when the screen is turned off (`!isScreenInteractive`), refreshing once on screen turn-on.
-  - Avoided requesting `FOREGROUND_SERVICE_TYPE_LOCATION` when Wi-Fi automation is disabled in settings.
+  - Avoided requesting `FOREGROUND_SERVICE_TYPE_LOCATION` when Wi-Fi automation is disabled or while the tunnel is paused/disconnected, preventing vendor battery managers (e.g. MagicOS) from penalizing the app as an active background location service.
 
 - **Fix automatic VPN pause when connecting to trusted Wi-Fi in background.** Resolved an issue where connecting to a trusted Wi-Fi network while the VPN was active did not automatically pause the tunnel until the app was brought to the foreground:
   - Configured `OutlineVpnService` with `FOREGROUND_SERVICE_TYPE_LOCATION` (and declared `FOREGROUND_SERVICE_LOCATION` + `ACCESS_BACKGROUND_LOCATION` in the manifest), granting lawful access to Wi-Fi SSID details in background network callbacks on Android 14+ (API 34+).
