@@ -149,7 +149,7 @@ impl UplinkManager {
                 );
             }
             // TCP keepalive.
-            if let Some(request) = probe.http.as_ref().and_then(&build_http_request) {
+            if let Some(request) = probe.http.as_ref().and_then(build_http_request) {
                 let slot = self.inner.warm_tcp_probe_slot(index);
                 let rtt = tokio::time::timeout(
                     keepalive_per_tick_timeout(probe.timeout),
