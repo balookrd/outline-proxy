@@ -42,7 +42,7 @@ object KeepAlivePolicy {
     ): KeepAliveDecision = when {
         !shouldRun -> KeepAliveDecision(KeepAliveAction.STOP, 0)
         isPaused -> KeepAliveDecision(KeepAliveAction.NOTHING, 0)
-        coreAlive -> KeepAliveDecision(KeepAliveAction.NOTHING, HEALTHY_DELAY_MS)
+        coreAlive -> KeepAliveDecision(KeepAliveAction.NOTHING, 0)
         !consentGranted -> KeepAliveDecision(KeepAliveAction.GIVE_UP, 0)
         !hasProfile -> KeepAliveDecision(KeepAliveAction.GIVE_UP, 0)
         else -> KeepAliveDecision(KeepAliveAction.CONNECT, backoffFor(consecutiveFailures))

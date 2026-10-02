@@ -40,6 +40,7 @@ pub use outline_transport::set_dial_timeout;
 pub use status::{Carrier, CarrierStatus, active_carriers, clear_active_registry};
 
 use std::os::fd::RawFd;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use rustls::crypto::aws_lc_rs;
@@ -76,11 +77,29 @@ pub async fn run_with_options(args: Args, opts: RunOptions) -> Result<()> {
         config.h2.initial_stream_window_size,
         config.h2.initial_connection_window_size,
     );
+    if config.h2.keepalive_interval_secs.is_some() || config.h2.keepalive_timeout_secs.is_some() {
+        let interval = Duration::from_secs(config.h2.keepalive_interval_secs.unwrap_or(10));
+        let timeout = Duration::from_secs(config.h2.keepalive_timeout_secs.unwrap_or(10));
+        outline_transport::init_h2_keepalive(interval, timeout);
+    }
     #[cfg(feature = "h3")]
-    outline_transport::init_quic_window_sizes(
-        config.quic.stream_receive_window,
-        config.quic.receive_window,
-    );
+    {
+        outline_transport::init_quic_window_sizes(
+            config.quic.stream_receive_window,
+            config.quic.receive_window,
+        );
+        if config.quic.keepalive_secs.is_some() || config.quic.idle_timeout_secs.is_some() {
+            let keepalive = config.quic.keepalive_secs.unwrap_or(25);
+            let idle = config
+                .quic
+                .idle_timeout_secs
+                .unwrap_or_else(|| keepalive.saturating_mul(2).max(60));
+            outline_transport::init_quic_keepalive(
+                Duration::from_secs(keepalive),
+                Duration::from_secs(idle),
+            );
+        }
+    }
     outline_transport::init_dial_timeout(config.dial_timeout);
     outline_net::init_udp_socket_bufs(config.udp_recv_buf_bytes, config.udp_send_buf_bytes);
     outline_net::init_prefer_public_ipv6_src(config.prefer_public_ipv6_src.unwrap_or(true));

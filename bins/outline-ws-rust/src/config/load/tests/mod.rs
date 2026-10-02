@@ -267,3 +267,28 @@ fn load_tun_config_reads_sniff_override_from_files() {
 
     let _ = std::fs::remove_dir_all(tmp_dir);
 }
+
+#[test]
+fn h2_and_quic_keepalive_config_roundtrip() {
+    use super::super::schema::ConfigFile;
+    use super::h2::load_h2_config;
+    use super::quic::load_quic_config;
+
+    let toml = r#"
+[h2]
+keepalive_interval_secs = 60
+keepalive_timeout_secs = 20
+
+[quic]
+keepalive_secs = 25
+idle_timeout_secs = 60
+"#;
+    let parsed: ConfigFile = toml::from_str(toml).unwrap();
+    let h2 = load_h2_config(parsed.h2.as_ref());
+    assert_eq!(h2.keepalive_interval_secs, Some(60));
+    assert_eq!(h2.keepalive_timeout_secs, Some(20));
+
+    let quic = load_quic_config(parsed.quic.as_ref());
+    assert_eq!(quic.keepalive_secs, Some(25));
+    assert_eq!(quic.idle_timeout_secs, Some(60));
+}

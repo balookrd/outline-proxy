@@ -7,8 +7,8 @@
 
 mod shared;
 
-pub use shared::init_h2_window_sizes;
 pub(crate) use shared::{connect_websocket_h2, gc_shared_h2_connections};
+pub use shared::{init_h2_keepalive, init_h2_window_sizes};
 
 use std::sync::Arc;
 

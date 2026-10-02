@@ -59,7 +59,10 @@ class SubscriptionProfileTest {
     fun `standard profile emits battery saving load balancing settings`() {
         val toml = ServerProfile(transport = "vless", vlessLink = "vless://x").toToml()
         assertTrue(toml.contains("loss_sample_interval_secs = 0"))
-        assertTrue(toml.contains("tcp_active_keepalive_secs = 60"))
+        assertTrue(toml.contains("warm_standby_tcp = 0"))
+        assertTrue(toml.contains("tcp_active_keepalive_secs = 120"))
+        assertTrue(toml.contains("keepalive_interval_secs = 60"))
+        assertTrue(toml.contains("keepalive_secs = 25"))
     }
 
     // JSON round-trip is not unit-testable here: org.json is a stubbed android.jar

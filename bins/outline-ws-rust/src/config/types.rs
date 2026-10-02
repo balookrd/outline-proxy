@@ -125,13 +125,17 @@ impl PaddingConfig {
     }
 }
 
-/// HTTP/2 flow-control window sizes for WebSocket transports.
+/// HTTP/2 flow-control window sizes and keepalive for WebSocket transports.
 #[derive(Debug, Clone)]
 pub struct H2Config {
     /// Per-stream initial window size in bytes (default: 8 MiB).
     pub initial_stream_window_size: u32,
     /// Per-connection initial window size in bytes (default: 32 MiB).
     pub initial_connection_window_size: u32,
+    /// HTTP/2 PING keepalive interval in seconds (default: 10s).
+    pub keepalive_interval_secs: Option<u64>,
+    /// HTTP/2 PING keepalive timeout in seconds (default: 10s).
+    pub keepalive_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +144,10 @@ pub struct QuicConfig {
     pub stream_receive_window: u32,
     /// Per-connection QUIC receive window in bytes (default: 64 MiB).
     pub receive_window: u32,
+    /// Outbound QUIC PING keepalive interval in seconds (default: jittered 8..=12s).
+    pub keepalive_secs: Option<u64>,
+    /// QUIC idle timeout in seconds (default: jittered 28..=35s).
+    pub idle_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone)]

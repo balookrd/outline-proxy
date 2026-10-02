@@ -36,7 +36,7 @@ use crate::{AbortOnDrop, DnsCache, SharedConnectionHealth, TransportStream, conn
 
 use super::H2WsStream;
 
-// ── Window sizes ──────────────────────────────────────────────────────────────
+// ── Window sizes & Keepalive ──────────────────────────────────────────────────
 
 // HTTP/2 flow-control window sizes.  Defaults match the sizing used by
 // sockudo-ws so the long-lived CONNECT stream carrying UDP datagrams does not
@@ -44,6 +44,8 @@ use super::H2WsStream;
 // On memory-constrained routers these can be reduced via [h2] in config.toml.
 static H2_INITIAL_STREAM_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
 static H2_INITIAL_CONNECTION_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
+static H2_KEEPALIVE_INTERVAL: OnceLock<Duration> = OnceLock::new();
+static H2_KEEPALIVE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
 
 /// Initialise H2 window sizes from config.  Must be called before the first
 /// outbound H2 connection is opened.  Safe to call multiple times with the same
@@ -51,6 +53,21 @@ static H2_INITIAL_CONNECTION_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
 pub fn init_h2_window_sizes(stream: u32, connection: u32) {
     H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| stream);
     H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| connection);
+}
+
+/// Initialise H2 keepalive interval and timeout from config. Must be called before
+/// the first outbound H2 connection is opened.
+pub fn init_h2_keepalive(interval: Duration, timeout: Duration) {
+    H2_KEEPALIVE_INTERVAL.get_or_init(|| interval);
+    H2_KEEPALIVE_TIMEOUT.get_or_init(|| timeout);
+}
+
+fn h2_keepalive_interval() -> Duration {
+    *H2_KEEPALIVE_INTERVAL.get_or_init(|| Duration::from_secs(10))
+}
+
+fn h2_keepalive_timeout() -> Duration {
+    *H2_KEEPALIVE_TIMEOUT.get_or_init(|| Duration::from_secs(10))
 }
 
 fn h2_stream_window_size() -> u32 {
@@ -530,8 +547,8 @@ async fn connect_h2_connection(
             // hev-socks5-tunnel loses the TCP mapping) is detected within ~20s
             // instead of ~40s, bounding how long new SOCKS sessions stall on
             // the dead cache entry before failover can pick a fresh uplink.
-            .keep_alive_interval(Some(Duration::from_secs(10)))
-            .keep_alive_timeout(Duration::from_secs(10))
+            .keep_alive_interval(Some(h2_keepalive_interval()))
+            .keep_alive_timeout(h2_keepalive_timeout())
             .handshake::<_, Empty<Bytes>>(TokioIo::new(io))
             .await
             .context("HTTP/2 handshake failed")?;

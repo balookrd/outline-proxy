@@ -13,5 +13,7 @@ pub(super) fn load_h2_config(h2: Option<&H2Section>) -> H2Config {
         initial_connection_window_size: h2
             .and_then(|s| s.initial_connection_window_size)
             .unwrap_or(32 * 1024 * 1024),
+        keepalive_interval_secs: h2.and_then(|s| s.keepalive_interval_secs),
+        keepalive_timeout_secs: h2.and_then(|s| s.keepalive_timeout_secs),
     }
 }

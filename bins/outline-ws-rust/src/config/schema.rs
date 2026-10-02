@@ -321,9 +321,11 @@ pub(super) struct TunSection {
 pub(super) struct H2Section {
     pub(super) initial_stream_window_size: Option<u32>,
     pub(super) initial_connection_window_size: Option<u32>,
+    pub(super) keepalive_interval_secs: Option<u64>,
+    pub(super) keepalive_timeout_secs: Option<u64>,
 }
 
-/// QUIC carrier flow-control windows (raw-QUIC and HTTP/3 carriers). Larger
+/// QUIC carrier flow-control windows (raw-QUIC and HTTP/3 carriers) and keepalive. Larger
 /// windows lift the single-stream `window / RTT` throughput ceiling on
 /// long-RTT tunnels; reduce on memory-tight hosts.
 #[derive(Debug, Deserialize)]
@@ -333,6 +335,10 @@ pub(super) struct QuicSection {
     pub(super) stream_receive_window: Option<u32>,
     /// Per-connection receive window in bytes (default 64 MiB).
     pub(super) receive_window: Option<u32>,
+    /// Outbound QUIC PING keepalive interval in seconds (default: jittered 8..=12s).
+    pub(super) keepalive_secs: Option<u64>,
+    /// QUIC idle timeout in seconds (default: jittered 28..=35s).
+    pub(super) idle_timeout_secs: Option<u64>,
 }
 
 #[cfg(feature = "tun")]

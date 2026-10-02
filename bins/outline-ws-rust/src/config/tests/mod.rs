@@ -1933,7 +1933,12 @@ async fn generated_android_config_fixture_loads() {
     assert_eq!(group.load_balancing.routing_scope, RoutingScope::Global);
     assert!(!group.load_balancing.shared_resume);
     assert!(group.load_balancing.tun_wire_dial);
-    assert_eq!(group.load_balancing.warm_standby_tcp, 1);
+    assert_eq!(group.load_balancing.warm_standby_tcp, 0);
+    assert_eq!(group.load_balancing.warm_standby_udp, 0);
+    assert_eq!(config.h2.keepalive_interval_secs, Some(60));
+    assert_eq!(config.h2.keepalive_timeout_secs, Some(20));
+    assert_eq!(config.quic.keepalive_secs, Some(25));
+    assert_eq!(config.quic.idle_timeout_secs, Some(60));
 }
 
 /// The dial budget is what a 2 G deployment reaches for: the default 10 s

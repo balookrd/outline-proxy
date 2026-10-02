@@ -503,7 +503,8 @@ class OutlineVpnService : VpnService() {
             state.alwaysOnSeen = isAlwaysOn
         }
         try {
-            start(withDialBudget(configToml), filesDir.absolutePath, tun.fd)
+            val powerOptimizedToml = MobilePowerConfig.sanitize(withDialBudget(configToml))
+            start(powerOptimizedToml, filesDir.absolutePath, tun.fd)
             Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
             state.clearFailures()
             // Capture the session baseline once, together with the connect time —
