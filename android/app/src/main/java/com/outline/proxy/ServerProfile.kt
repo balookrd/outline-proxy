@@ -56,12 +56,23 @@ data class ServerProfile(
         sb.append("[tun.tcp]\n")
         sb.append("sniffing = true\n\n")
 
-        // Mobile battery efficiency: disable periodic carrier loss sampling on
-        // single-uplink phone profiles and stretch idle TCP active keepalive so the
-        // cellular baseband modem can sleep in RRC Idle.
+        // Mobile battery efficiency: disable warm standby, periodic loss sampling,
+        // and tune keepalive intervals so the cellular baseband modem can sleep in RRC Idle.
         sb.append("[outline.load_balancing]\n")
+        sb.append("warm_standby_tcp = 0\n")
+        sb.append("warm_standby_udp = 0\n")
         sb.append("loss_sample_interval_secs = 0\n")
-        sb.append("tcp_active_keepalive_secs = 60\n\n")
+        sb.append("tcp_ws_standby_keepalive_secs = 0\n")
+        sb.append("warm_probe_keepalive_secs = 0\n")
+        sb.append("tcp_active_keepalive_secs = 120\n\n")
+
+        sb.append("[h2]\n")
+        sb.append("keepalive_interval_secs = 60\n")
+        sb.append("keepalive_timeout_secs = 20\n\n")
+
+        sb.append("[quic]\n")
+        sb.append("keepalive_secs = 25\n")
+        sb.append("idle_timeout_secs = 60\n\n")
 
         sb.append("[[outline.uplinks]]\n")
         sb.append("name = \"").append(name.ifBlank { "primary" }).append("\"\n")

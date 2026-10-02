@@ -266,12 +266,12 @@ pub use error_classify::{
     payload_integrity_cause,
 };
 
-// HTTP/2 window-size tuning: called once during startup from the main binary.
-pub use h2::init_h2_window_sizes;
+// HTTP/2 tuning: called once during startup from the main binary.
+pub use h2::{init_h2_keepalive, init_h2_window_sizes};
 
-// QUIC receive-window tuning: called once during startup from the main binary.
+// QUIC tuning: called once during startup from the main binary.
 #[cfg(feature = "quic")]
-pub use quic::init_quic_window_sizes;
+pub use quic::{init_quic_keepalive, init_quic_window_sizes};
 
 // Per-host downgrade cache TTL: called once during startup from the
 // main binary, fed from the `mode_downgrade_secs` config knob. All

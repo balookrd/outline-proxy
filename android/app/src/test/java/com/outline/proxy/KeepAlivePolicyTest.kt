@@ -37,7 +37,9 @@ class KeepAlivePolicyTest {
 
     @Test
     fun `core alive - nothing to do`() {
-        assertEquals(KeepAliveAction.NOTHING, decide(coreAlive = true).action)
+        val decision = decide(coreAlive = true)
+        assertEquals(KeepAliveAction.NOTHING, decision.action)
+        assertEquals(0L, decision.retryDelayMs)
     }
 
     @Test
@@ -71,8 +73,8 @@ class KeepAlivePolicyTest {
     }
 
     @Test
-    fun `a healthy tunnel is re-checked at the healthy interval`() {
-        // Failures are stale once the core is up: do not stretch the watchdog past healthy interval.
-        assertEquals(KeepAlivePolicy.HEALTHY_DELAY_MS, decide(coreAlive = true, failures = 9).retryDelayMs)
+    fun `a healthy tunnel is not re-checked via exact alarms`() {
+        // Core is alive: no repeating alarm wakeup needed.
+        assertEquals(0L, decide(coreAlive = true, failures = 9).retryDelayMs)
     }
 }

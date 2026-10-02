@@ -38,6 +38,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Eliminate cellular idle battery drain and continuous Doze wakeups.** Fixed heavy overnight background battery drain on cellular data when the phone is idle without Wi-Fi:
+  - Cancelled repeating exact alarms (`WatchdogAlarm`) whenever the tunnel is healthy (`coreAlive == true`). Android now stays uninterrupted in Deep Doze instead of waking up every 15 minutes to re-check a running tunnel.
+  - Short-circuited `WatchdogWorker` so it does not re-arm exact alarms when `OutlineVpnService.isActive()`.
+  - Added `MobilePowerConfig` runtime sanitizer: automatically enforces power-optimized settings on all loaded client TOML profiles (raw, subscription, and generated):
+    - Disables warm standby pools (`warm_standby_tcp = 0`, `warm_standby_udp = 0`), eliminating periodic 15s pool refills and 20s carrier pings.
+    - Disables periodic carrier loss sampling (`loss_sample_interval_secs = 0`).
+    - Disables standby keepalives (`tcp_ws_standby_keepalive_secs = 0`, `warm_probe_keepalive_secs = 0`) and relaxes active TCP keepalive to 120s.
+    - Stretches background health probe interval to at least 300s (`interval_secs >= 300`).
+    - Stretches carrier keepalive intervals to `[h2]` (60s interval / 20s timeout) and `[quic]` (25s keepalive / 60s idle timeout), allowing the mobile cellular radio modem to drop into low-power RRC Idle instead of staying in active RRC connected state around the clock.
+
 - **Eliminate idle battery drain when tunnel is paused on Wi-Fi.** Fixed excessive background battery consumption when the VPN is paused on trusted Wi-Fi or idle:
   - Unregistered underlying network callbacks and carrier-dial budget refresh on pause and disconnect, eliminating redundant background Binder IPC calls and Rust status queries on signal changes.
   - Filtered Wi-Fi capability updates in `registerWifiAutomationCallback`: RSSI and link speed fluctuations on the same network no longer trigger redundant automation evaluations or Binder IPC lookups when the SSID is already known.

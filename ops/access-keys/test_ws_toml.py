@@ -200,9 +200,26 @@ class BuildConfigTest(unittest.TestCase):
         self.assertEqual(group["reselect_interval"], "6h")
         self.assertTrue(group["tun_wire_dial"])
         self.assertTrue(group["health_weighted_selection"])
-        self.assertEqual(group["warm_standby_tcp"], 1)
-        self.assertEqual(group["warm_standby_udp"], 1)
+        self.assertEqual(group["warm_standby_tcp"], 0)
+        self.assertEqual(group["warm_standby_udp"], 0)
         self.assertNotIn("auto_failback", group)
+
+        doc = self.parsed()
+        lb = doc["outline"]["load_balancing"]
+        self.assertEqual(lb["warm_standby_tcp"], 0)
+        self.assertEqual(lb["warm_standby_udp"], 0)
+        self.assertEqual(lb["loss_sample_interval_secs"], 0)
+        self.assertEqual(lb["tcp_ws_standby_keepalive_secs"], 0)
+        self.assertEqual(lb["warm_probe_keepalive_secs"], 0)
+        self.assertEqual(lb["tcp_active_keepalive_secs"], 120)
+
+        self.assertEqual(doc["h2"]["keepalive_interval_secs"], 60)
+        self.assertEqual(doc["h2"]["keepalive_timeout_secs"], 20)
+
+        self.assertEqual(doc["quic"]["keepalive_secs"], 25)
+        self.assertEqual(doc["quic"]["idle_timeout_secs"], 60)
+
+        self.assertEqual(doc["outline"]["probe"]["interval_secs"], 300)
 
     def test_shared_resume_follows_the_server_cluster(self):
         self.assertFalse(self.parsed()["uplink_group"][0]["shared_resume"])

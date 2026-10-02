@@ -45,7 +45,7 @@ SHUFFLE_WIRES = True
 # very bandwidth the tunnel needs. 60 s is the floor ws-rust itself recommends
 # (below it, bursts of handshakes trip upstream rate limits), and it still finds
 # a recovered uplink inside a minute without any traffic to prompt it.
-PROBE_INTERVAL_SECS = 60
+PROBE_INTERVAL_SECS = 300
 PROBE_TIMEOUT_SECS = 10
 # Two consecutive failures before a verdict: one probe cycle can lose to a
 # handover or a moment of congestion, which on mobile is normal rather than a
@@ -357,8 +357,24 @@ def build_config(user: User, nodes: Sequence[str], server: ServerConfig) -> str 
         # below is decoration. Android is TUN, so it is mandatory here.
         "tun_wire_dial = true",
         "health_weighted_selection = true",
-        "warm_standby_tcp = 1",
-        "warm_standby_udp = 1",
+        "warm_standby_tcp = 0",
+        "warm_standby_udp = 0",
+        "",
+        "[outline.load_balancing]",
+        "warm_standby_tcp = 0",
+        "warm_standby_udp = 0",
+        "loss_sample_interval_secs = 0",
+        "tcp_ws_standby_keepalive_secs = 0",
+        "warm_probe_keepalive_secs = 0",
+        "tcp_active_keepalive_secs = 120",
+        "",
+        "[h2]",
+        "keepalive_interval_secs = 60",
+        "keepalive_timeout_secs = 20",
+        "",
+        "[quic]",
+        "keepalive_secs = 25",
+        "idle_timeout_secs = 60",
         "",
         "[outline.probe]",
         f"interval_secs = {PROBE_INTERVAL_SECS}",

@@ -20,11 +20,27 @@ shared_resume = false
 reselect_interval = "6h"
 tun_wire_dial = true
 health_weighted_selection = true
-warm_standby_tcp = 1
-warm_standby_udp = 1
+warm_standby_tcp = 0
+warm_standby_udp = 0
+
+[outline.load_balancing]
+warm_standby_tcp = 0
+warm_standby_udp = 0
+loss_sample_interval_secs = 0
+tcp_ws_standby_keepalive_secs = 0
+warm_probe_keepalive_secs = 0
+tcp_active_keepalive_secs = 120
+
+[h2]
+keepalive_interval_secs = 60
+keepalive_timeout_secs = 20
+
+[quic]
+keepalive_secs = 25
+idle_timeout_secs = 60
 
 [outline.probe]
-interval_secs = 60
+interval_secs = 300
 timeout_secs = 10
 min_failures = 2
 attempts = 1

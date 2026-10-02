@@ -12,5 +12,7 @@ pub(super) fn load_quic_config(quic: Option<&QuicSection>) -> QuicConfig {
             .and_then(|q| q.stream_receive_window)
             .unwrap_or(8 * 1024 * 1024),
         receive_window: quic.and_then(|q| q.receive_window).unwrap_or(64 * 1024 * 1024),
+        keepalive_secs: quic.and_then(|q| q.keepalive_secs),
+        idle_timeout_secs: quic.and_then(|q| q.idle_timeout_secs),
     }
 }

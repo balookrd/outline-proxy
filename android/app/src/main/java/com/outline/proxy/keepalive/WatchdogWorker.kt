@@ -29,8 +29,10 @@ class WatchdogWorker(
                 return Result.success()
             }
             OutlineVpnService.ensure(applicationContext)
-            // Alarms do not survive every OEM cleanup; re-arm from here as well.
-            WatchdogAlarm.schedule(applicationContext)
+            // Alarms do not survive every OEM cleanup; re-arm only if the tunnel is dead/not active.
+            if (!OutlineVpnService.isActive()) {
+                WatchdogAlarm.schedule(applicationContext)
+            }
         }
         return Result.success()
     }

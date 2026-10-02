@@ -371,7 +371,8 @@ watchdog alarm, the WorkManager job, `onDestroy` — routes through a single
 set on connect, cleared on an explicit disconnect) and the live core state
 (`isRunning()`), and `KeepAlivePolicy.decide(...)` — a pure, unit-tested function —
 returns one of: do nothing, stop, give up (and notify), or connect. A failing
-connect backs off 5 → 15 → 30 min; a healthy tunnel is re-checked every 5 min.
+connect backs off 5 → 15 → 30 min; a healthy tunnel cancels exact alarms to prevent
+waking the device from Deep Doze.
 
 Four ways the tunnel comes back:
 
@@ -381,10 +382,10 @@ Four ways the tunnel comes back:
 - **Boot / app update** — `BootReceiver` (BOOT_COMPLETED, MY_PACKAGE_REPLACED),
   after unlock. Not direct-boot aware on purpose: profiles hold credentials and
   stay in credential-protected storage.
-- **Watchdog pair** — an alarm (`WatchdogAlarm`, pierces Doze, re-arms itself)
-  and a 15-minute WorkManager job (`WatchdogWorker`, its schedule survives
-  reboot); each calls `ensure()`. The alarm is exact only once
-  `SCHEDULE_EXACT_ALARM` is granted, otherwise the system batches it at its own
+- **Watchdog pair** — an exact alarm (`WatchdogAlarm`, pierces Doze during
+  reconnection backoff, cancels while the tunnel is healthy) and a 15-minute
+  WorkManager job (`WatchdogWorker`, its schedule survives reboot); each calls
+  `ensure()`. The alarm is exact only once `SCHEDULE_EXACT_ALARM` is granted, otherwise the system batches it at its own
   discretion; `USE_EXACT_ALARM`, which would grant that without asking, is
   deliberately left out — the manifest comment says why.
 - **Swipe / kill** — `stopWithTask="false"` plus `onTaskRemoved`/`onDestroy`

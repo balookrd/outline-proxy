@@ -32,6 +32,15 @@ fn quic_param_seed() -> u16 {
     *QUIC_PARAM_SEED.get_or_init(rand::random::<u16>)
 }
 
+static QUIC_CUSTOM_KEEPALIVE: OnceLock<Duration> = OnceLock::new();
+static QUIC_CUSTOM_IDLE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+/// Initialise QUIC keepalive interval and idle timeout from config.
+pub fn init_quic_keepalive(keepalive: Duration, idle_timeout: Duration) {
+    QUIC_CUSTOM_KEEPALIVE.get_or_init(|| keepalive);
+    QUIC_CUSTOM_IDLE_TIMEOUT.get_or_init(|| idle_timeout);
+}
+
 /// Apply the shared per-process keep-alive / idle-timeout jitter to a client
 /// QUIC transport config, so different client instances produce distinct timing
 /// fingerprints. The same seed drives the raw-QUIC and H3 carriers, so both
@@ -39,16 +48,20 @@ fn quic_param_seed() -> u16 {
 /// keep `idle_timeout > 2 × keep_alive_interval`:
 ///   keep_alive:   8..=12 s  (seed bits [2:0])
 ///   idle_timeout: 28..=35 s  (seed bits [6:3])
+/// If custom keepalive parameters are initialized via [`init_quic_keepalive`],
+/// those are used instead.
 pub(crate) fn apply_quic_jitter(transport: &mut quinn::TransportConfig) {
-    let seed = quic_param_seed();
-    let keepalive_secs = 8u64 + (seed as u64 % 5);
-    let idle_secs = 28u64 + ((seed >> 4) as u64 % 8);
-    transport.keep_alive_interval(Some(Duration::from_secs(keepalive_secs)));
-    transport.max_idle_timeout(Some(
-        Duration::from_secs(idle_secs)
-            .try_into()
-            .expect("valid client idle timeout"),
-    ));
+    let (keepalive, idle) = match (QUIC_CUSTOM_KEEPALIVE.get(), QUIC_CUSTOM_IDLE_TIMEOUT.get()) {
+        (Some(&k), Some(&i)) => (k, i),
+        _ => {
+            let seed = quic_param_seed();
+            let keepalive_secs = 8u64 + (seed as u64 % 5);
+            let idle_secs = 28u64 + ((seed >> 4) as u64 % 8);
+            (Duration::from_secs(keepalive_secs), Duration::from_secs(idle_secs))
+        },
+    };
+    transport.keep_alive_interval(Some(keepalive));
+    transport.max_idle_timeout(Some(idle.try_into().expect("valid client idle timeout")));
 }
 
 // ── QUIC flow-control windows ───────────────────────────────────────────────
