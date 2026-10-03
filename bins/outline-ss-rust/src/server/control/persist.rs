@@ -219,6 +219,213 @@ fn inline_to_table(inline: InlineTable) -> Table {
     table
 }
 
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct ServerConfigPatch {
+    #[serde(default)]
+    pub cluster: Option<ClusterConfigPatch>,
+    #[serde(default)]
+    pub server: Option<ServerListenerPatch>,
+    #[serde(default)]
+    pub session_resumption: Option<SessionResumptionPatch>,
+    #[serde(default)]
+    pub outbound: Option<OutboundPatch>,
+    #[serde(default)]
+    pub tuning_profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct ClusterConfigPatch {
+    pub enabled: Option<bool>,
+    pub shard_id: Option<u8>,
+    pub cluster_psk: Option<String>,
+    pub mesh_listen: Option<String>,
+    pub mesh_relay_budget_ms: Option<u64>,
+    pub peers: Option<Vec<ClusterPeerPatch>>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub(super) struct ClusterPeerPatch {
+    pub shard: u8,
+    pub addr: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct ServerListenerPatch {
+    pub listen: Option<String>,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
+    pub h3_listen: Option<String>,
+    pub h3_cert_path: Option<String>,
+    pub h3_key_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct SessionResumptionPatch {
+    pub enabled: Option<bool>,
+    pub orphan_ttl_tcp_secs: Option<u64>,
+    pub orphan_ttl_udp_secs: Option<u64>,
+    pub orphan_per_user_cap: Option<usize>,
+    pub orphan_global_cap: Option<usize>,
+    pub downlink_buffer_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct OutboundPatch {
+    pub prefer_ipv4: Option<bool>,
+    pub ipv6_prefix: Option<String>,
+    pub ipv6_interface: Option<String>,
+    pub ipv6_sticky: Option<bool>,
+    pub ipv6_sticky_ttl_secs: Option<u64>,
+}
+
+pub(super) fn persist_config_patch(path: &Path, patch: &ServerConfigPatch) -> Result<()> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read config file {}", path.display()))?;
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let new_contents = match ext {
+        "toml" | "" => patch_toml_config(&contents, patch)?,
+        other => bail!("unsupported config file extension: {other:?}"),
+    };
+    if new_contents == contents {
+        return Ok(());
+    }
+    atomic_write(path, new_contents.as_bytes())
+}
+
+fn patch_toml_config(original: &str, patch: &ServerConfigPatch) -> Result<String> {
+    let mut doc: DocumentMut = original.parse().context("failed to parse existing TOML config")?;
+
+    // 1. Cluster
+    if let Some(cluster) = &patch.cluster {
+        ensure_table(&mut doc, "cluster");
+        let table = doc["cluster"].as_table_mut().expect("table ensured");
+        if let Some(enabled) = cluster.enabled {
+            table.insert("enabled", Item::Value(enabled.into()));
+        }
+        if let Some(shard_id) = cluster.shard_id {
+            table.insert("shard_id", Item::Value((shard_id as i64).into()));
+        }
+        if let Some(psk) = &cluster.cluster_psk {
+            let trimmed = psk.trim();
+            if !trimmed.is_empty() && trimmed != "********" {
+                table.insert("cluster_psk", Item::Value(trimmed.into()));
+            }
+        }
+        if let Some(listen) = &cluster.mesh_listen {
+            table.insert("mesh_listen", Item::Value(listen.trim().into()));
+        }
+        if let Some(budget) = cluster.mesh_relay_budget_ms {
+            table.insert("mesh_relay_budget_ms", Item::Value((budget as i64).into()));
+        }
+        if let Some(peers) = &cluster.peers {
+            let mut arr = Array::new();
+            for p in peers {
+                let mut inline = InlineTable::new();
+                inline.insert("shard", (p.shard as i64).into());
+                inline.insert("addr", p.addr.trim().into());
+                arr.push(Value::InlineTable(inline));
+            }
+            table.insert("peers", Item::Value(Value::Array(arr)));
+        }
+    }
+
+    // 2. Server & H3
+    if let Some(server) = &patch.server {
+        ensure_table(&mut doc, "server");
+        let table = doc["server"].as_table_mut().expect("table ensured");
+        if let Some(listen) = &server.listen {
+            table.insert("listen", Item::Value(listen.trim().into()));
+        }
+        if let Some(cert) = &server.cert_path {
+            table.insert("cert_path", Item::Value(cert.trim().into()));
+        }
+        if let Some(key) = &server.key_path {
+            table.insert("key_path", Item::Value(key.trim().into()));
+        }
+
+        if server.h3_listen.is_some()
+            || server.h3_cert_path.is_some()
+            || server.h3_key_path.is_some()
+        {
+            if !table.contains_key("h3") || !table["h3"].is_table() {
+                let mut h3_tbl = Table::new();
+                h3_tbl.set_implicit(false);
+                table.insert("h3", Item::Table(h3_tbl));
+            }
+            let h3_table = table["h3"].as_table_mut().expect("h3 table ensured");
+            if let Some(h3_listen) = &server.h3_listen {
+                h3_table.insert("listen", Item::Value(h3_listen.trim().into()));
+            }
+            if let Some(cert) = &server.h3_cert_path {
+                h3_table.insert("cert_path", Item::Value(cert.trim().into()));
+            }
+            if let Some(key) = &server.h3_key_path {
+                h3_table.insert("key_path", Item::Value(key.trim().into()));
+            }
+        }
+    }
+
+    // 3. Session Resumption
+    if let Some(sr) = &patch.session_resumption {
+        ensure_table(&mut doc, "session_resumption");
+        let table = doc["session_resumption"].as_table_mut().expect("table ensured");
+        if let Some(enabled) = sr.enabled {
+            table.insert("enabled", Item::Value(enabled.into()));
+        }
+        if let Some(ttl) = sr.orphan_ttl_tcp_secs {
+            table.insert("orphan_ttl_tcp_secs", Item::Value((ttl as i64).into()));
+        }
+        if let Some(ttl) = sr.orphan_ttl_udp_secs {
+            table.insert("orphan_ttl_udp_secs", Item::Value((ttl as i64).into()));
+        }
+        if let Some(cap) = sr.orphan_per_user_cap {
+            table.insert("orphan_per_user_cap", Item::Value((cap as i64).into()));
+        }
+        if let Some(cap) = sr.orphan_global_cap {
+            table.insert("orphan_global_cap", Item::Value((cap as i64).into()));
+        }
+        if let Some(buf) = sr.downlink_buffer_bytes {
+            table.insert("downlink_buffer_bytes", Item::Value((buf as i64).into()));
+        }
+    }
+
+    // 4. Outbound
+    if let Some(outbound) = &patch.outbound {
+        ensure_table(&mut doc, "outbound");
+        let table = doc["outbound"].as_table_mut().expect("table ensured");
+        if let Some(ipv4) = outbound.prefer_ipv4 {
+            table.insert("prefer_ipv4", Item::Value(ipv4.into()));
+        }
+        if let Some(prefix) = &outbound.ipv6_prefix {
+            table.insert("ipv6_prefix", Item::Value(prefix.trim().into()));
+        }
+        if let Some(iface) = &outbound.ipv6_interface {
+            table.insert("ipv6_interface", Item::Value(iface.trim().into()));
+        }
+        if let Some(sticky) = outbound.ipv6_sticky {
+            table.insert("ipv6_sticky", Item::Value(sticky.into()));
+        }
+        if let Some(ttl) = outbound.ipv6_sticky_ttl_secs {
+            table.insert("ipv6_sticky_ttl_secs", Item::Value((ttl as i64).into()));
+        }
+    }
+
+    // 5. Tuning Profile
+    if let Some(profile) = &patch.tuning_profile {
+        doc.insert("tuning_profile", Item::Value(profile.trim().into()));
+    }
+
+    Ok(doc.to_string())
+}
+
+fn ensure_table(doc: &mut DocumentMut, name: &str) {
+    if !doc.contains_key(name) || !doc[name].is_table() {
+        let mut tbl = Table::new();
+        tbl.set_implicit(false);
+        doc.insert(name, Item::Table(tbl));
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/persist.rs"]
 mod tests;

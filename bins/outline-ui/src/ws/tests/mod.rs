@@ -46,6 +46,22 @@ async fn topology_for_an_unknown_instance_is_reported() {
     assert!(String::from_utf8(body.to_vec()).unwrap().contains("unknown instance"));
 }
 
+#[tokio::test]
+async fn config_for_an_unknown_instance_is_reported() {
+    let response = router(state())
+        .oneshot(
+            Request::get("/dashboard/api/config?instance=nope")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(String::from_utf8(body.to_vec()).unwrap().contains("unknown instance"));
+}
+
 /// One request captured by `spawn_recorder` below.
 #[derive(Debug)]
 struct Recorded {

@@ -1052,6 +1052,7 @@ If `[control]` is configured the process serves mutating endpoints on a
 - `GET`/`POST`/`PATCH`/`DELETE /control/uplinks` - stage `[[outline.uplinks]]` edits in the config file
 - `GET`/`POST`/`PATCH`/`DELETE /control/routes` - stage `[[route]]` edits in the config file
 - `POST /control/routes/reorder` - move a rule to a new position in the first-match-wins list
+- `GET`/`PATCH /control/config` - read and modify client subsystem configuration in-place (`[probe]`, `[socks5]`, `[tun]`, `[dial]`, `[padding]`, `[quic]`, `[h2]`, `[tcp_timeouts]`, `fingerprint_profile`, `prefer_public_ipv6_src`, `direct_fwmark`). Returns `{ "status": "ok", "apply_required": true, "restart_required": bool }`
 - `POST /control/apply` - hot-apply staged uplink edits, and staged route edits when routing was already configured at startup, without a process restart
 - `POST /switch` - manual active-uplink override
 

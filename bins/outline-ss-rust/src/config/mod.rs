@@ -29,4 +29,6 @@ pub use user_entry::{CipherKind, ConfigError, UserEntry, validate_ip_aliases};
 // Surfaced for the control plane and tests; under `--no-default-features`
 // (control off) nothing in the binary consumes this re-export.
 #[cfg_attr(not(feature = "control"), allow(unused_imports))]
+pub(crate) use file::FileConfig;
+#[cfg_attr(not(feature = "control"), allow(unused_imports))]
 pub use user_entry::OneOrManyCidr;

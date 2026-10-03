@@ -1052,6 +1052,7 @@ curl http://[::1]:9090/metrics
 - `GET`/`POST`/`PATCH`/`DELETE /control/uplinks` — staged-правки `[[outline.uplinks]]` в файле конфигурации
 - `GET`/`POST`/`PATCH`/`DELETE /control/routes` — staged-правки `[[route]]` в файле конфигурации
 - `POST /control/routes/reorder` — переместить правило на новую позицию в списке first-match-wins
+- `GET`/`PATCH /control/config` — чтение и in-place модификация конфигурации подсистем клиента (`[probe]`, `[socks5]`, `[tun]`, `[dial]`, `[padding]`, `[quic]`, `[h2]`, `[tcp_timeouts]`, `fingerprint_profile`, `prefer_public_ipv6_src`, `direct_fwmark`). Возвращает `{ "status": "ok", "apply_required": true, "restart_required": bool }`
 - `POST /control/apply` — hot-apply staged-правок аплинков, а также staged-правок маршрутов (если routing уже был настроен при старте), без рестарта процесса
 - `POST /switch` — ручное переключение активного аплинка
 

@@ -40,3 +40,8 @@ logs/
 # Python bytecode from the ops/ helper scripts
 __pycache__/
 *.py[cod]
+
+# Local uncommitted fleet & environment docs
+FLEET.local.md
+FLEET.md
+*.local.md

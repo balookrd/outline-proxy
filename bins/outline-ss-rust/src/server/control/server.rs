@@ -25,18 +25,19 @@ use crate::config::{ControlConfig, TuningProfile};
 use super::super::bootstrap::serve_plain_listener;
 use super::super::shutdown::ShutdownSignal;
 use super::handlers::{
-    ControlState, block_user, create_user, delete_user, get_defaults, get_user, list_users,
-    unblock_user, update_user,
+    ControlState, block_user, create_user, delete_user, get_config, get_defaults, get_user,
+    list_users, patch_config, unblock_user, update_user,
 };
 use super::manager::UserManager;
 
 pub(in crate::server) fn spawn_control_server(
     config: ControlConfig,
+    server_config: Arc<crate::config::Config>,
     manager: Arc<UserManager>,
     shutdown: ShutdownSignal,
 ) {
     tokio::spawn(async move {
-        if let Err(error) = run(config, manager, shutdown).await {
+        if let Err(error) = run(config, server_config, manager, shutdown).await {
             warn!(error = %format!("{error:#}"), "control server stopped");
         }
     });
@@ -44,6 +45,7 @@ pub(in crate::server) fn spawn_control_server(
 
 async fn run(
     config: ControlConfig,
+    server_config: Arc<crate::config::Config>,
     manager: Arc<UserManager>,
     shutdown: ShutdownSignal,
 ) -> Result<()> {
@@ -52,7 +54,11 @@ async fn run(
         .with_context(|| format!("failed to bind control listener {}", config.listen))?;
     info!(listen = %config.listen, "control server started");
 
-    let state = ControlState { manager, token: Arc::from(config.token) };
+    let state = ControlState {
+        manager,
+        config: server_config,
+        token: Arc::from(config.token),
+    };
 
     let router = Router::new()
         .route("/control/users", get(list_users).post(create_user))
@@ -60,6 +66,7 @@ async fn run(
         .route("/control/users/{id}/block", post(block_user))
         .route("/control/users/{id}/unblock", post(unblock_user))
         .route("/control/defaults", get(get_defaults))
+        .route("/control/config", get(get_config).patch(patch_config))
         .fallback(any(not_found))
         .layer(middleware::from_fn_with_state(state.clone(), require_bearer_token))
         .with_state(state);

@@ -127,7 +127,12 @@ pub async fn run(config: Config) -> Result<()> {
             Arc::clone(&built.routes),
             Arc::clone(&built.auth_users),
         ));
-        control::spawn_control_server(control_config, manager, shutdown_signal.clone());
+        control::spawn_control_server(
+            control_config,
+            Arc::clone(&config),
+            manager,
+            shutdown_signal.clone(),
+        );
     }
     info!(
         listen = ?config.listen,

@@ -121,6 +121,14 @@ impl UserManager {
         ServerDefaults { method: self.default_method }
     }
 
+    pub(super) fn config_path(&self) -> Option<&std::path::Path> {
+        self.config_path.as_deref()
+    }
+
+    pub(super) fn endpoints(&self) -> &[EndpointConfig] {
+        &self.endpoints
+    }
+
     pub(super) async fn list(&self) -> Vec<UserView> {
         self.inner.lock().await.users.iter().map(UserView::from).collect()
     }

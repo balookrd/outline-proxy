@@ -65,6 +65,21 @@ pub async fn defaults(
     forward(&state, &query.instance, Method::GET, "/control/defaults", None).await
 }
 
+pub async fn get_config(
+    State(state): State<SsState>,
+    Query(query): Query<InstanceQuery>,
+) -> Response {
+    forward(&state, &query.instance, Method::GET, "/control/config", None).await
+}
+
+pub async fn patch_config(
+    State(state): State<SsState>,
+    Query(query): Query<InstanceQuery>,
+    body: Bytes,
+) -> Response {
+    forward(&state, &query.instance, Method::PATCH, "/control/config", Some(body)).await
+}
+
 pub async fn create_user(
     State(state): State<SsState>,
     Query(query): Query<InstanceQuery>,

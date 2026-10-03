@@ -14,6 +14,30 @@ describe('api urls', () => {
     await api.updateUser('beelink102', 'a/b', { enabled: false });
     expect((fetch as any).mock.calls[0][0]).toBe('/ss/dashboard/api/users/a%2Fb?instance=beelink102');
   });
+  it('getServerConfig passes instance in query', async () => {
+    await api.getServerConfig('cloud1');
+    expect((fetch as any).mock.calls[0][0]).toBe('/ss/dashboard/api/config?instance=cloud1');
+  });
+  it('patchServerConfig sends PATCH with content-type and body', async () => {
+    await api.patchServerConfig('cloud1', { cluster: { enabled: true, shard_id: 1 } });
+    const [url, init] = (fetch as any).mock.calls[0];
+    expect(url).toBe('/ss/dashboard/api/config?instance=cloud1');
+    expect(init.method).toBe('PATCH');
+    expect(init.headers['content-type']).toBe('application/json');
+    expect(JSON.parse(init.body)).toEqual({ cluster: { enabled: true, shard_id: 1 } });
+  });
+  it('getWsConfig passes instance in query', async () => {
+    await api.getWsConfig('beelink102');
+    expect((fetch as any).mock.calls[0][0]).toBe('/ws/dashboard/api/config?instance=beelink102');
+  });
+  it('patchWsConfig sends PATCH with content-type and body', async () => {
+    await api.patchWsConfig('beelink102', { probe: { interval_secs: 15 } });
+    const [url, init] = (fetch as any).mock.calls[0];
+    expect(url).toBe('/ws/dashboard/api/config?instance=beelink102');
+    expect(init.method).toBe('PATCH');
+    expect(init.headers['content-type']).toBe('application/json');
+    expect(JSON.parse(init.body)).toEqual({ probe: { interval_secs: 15 } });
+  });
 });
 
 describe('mutating calls always carry a JSON content-type', () => {

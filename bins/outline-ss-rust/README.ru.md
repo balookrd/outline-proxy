@@ -441,6 +441,8 @@ Multi-instance браузерный дашборд, который раньше 
 | `DELETE` | `/control/users/{id}` | Удалить пользователя |
 | `POST` | `/control/users/{id}/block` | Заблокировать (`enabled = false`) без удаления |
 | `POST` | `/control/users/{id}/unblock` | Разблокировать |
+| `GET` | `/control/config` | Просмотр конфигурации сервера (mesh-кластер, листенеры/TLS, session resumption, outbound, тюнинг, эндпоинты) |
+| `PATCH` | `/control/config` | Атомарный патч секций конфигурации сервера в `config.toml` |
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/users
