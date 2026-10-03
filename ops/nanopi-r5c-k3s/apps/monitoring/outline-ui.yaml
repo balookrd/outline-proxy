@@ -69,11 +69,6 @@ data:
     name = "nuxt2"
     control_url = "https://nuxt2.beerloga.su/rust-ss-exporter"
     token_file = "/etc/outline-ui/secrets/ss-nuxt2"
-
-    [[ss.instances]]
-    name = "sebek"
-    control_url = "https://sebek.beerloga.su/rust-ss-exporter"
-    token_file = "/etc/outline-ui/secrets/ss-sebek"
 ---
 apiVersion: apps/v1
 kind: Deployment

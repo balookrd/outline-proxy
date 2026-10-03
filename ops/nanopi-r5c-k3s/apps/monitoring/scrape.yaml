@@ -57,10 +57,6 @@ scrape_configs:
     - https://nuxt2.beerloga.su/node-exporter/metrics
     labels:
       hostname: 'nuxt2'
-  - targets:
-    - https://sebek.beerloga.su/node-exporter/metrics
-    labels:
-      hostname: 'sebek'
   relabel_configs:
     - source_labels: [hostname]
       target_label: instance
@@ -115,10 +111,6 @@ scrape_configs:
     - https://nuxt2.beerloga.su/rust-ss-exporter/metrics
     labels:
       hostname: 'nuxt2'
-  - targets:
-    - https://sebek.beerloga.su/rust-ss-exporter/metrics
-    labels:
-      hostname: 'sebek'
   relabel_configs:
     - source_labels: [hostname]
       target_label: instance
@@ -164,10 +156,6 @@ scrape_configs:
     - https://nuxt2.beerloga.su/unbound-exporter/metrics
     labels:
       hostname: 'nuxt2'
-  - targets:
-    - https://sebek.beerloga.su/unbound-exporter/metrics
-    labels:
-      hostname: 'sebek'
   relabel_configs:
     - source_labels: [hostname]
       target_label: instance
