@@ -11,7 +11,7 @@ use super::{CipherKind, TuningOverrides, TuningPreset, UserEntry};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct FileConfig {
+pub(crate) struct FileConfig {
     #[serde(default)]
     pub server: Option<ServerSection>,
     #[serde(default)]
@@ -54,7 +54,7 @@ pub(super) struct FileConfig {
 /// (no CA / certificates to distribute).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ClusterSection {
+pub(crate) struct ClusterSection {
     /// Master switch. When absent or `false`, the server behaves as standalone
     /// (session ids stay plain random, no mesh listener, no relay).
     #[serde(default)]
@@ -82,7 +82,7 @@ pub(super) struct ClusterSection {
 /// One peer home in the cluster: which shard it owns and where to dial it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ClusterPeerSection {
+pub(crate) struct ClusterPeerSection {
     pub shard: u8,
     /// `host:port` of the peer's mesh listener.
     pub addr: String,
@@ -90,7 +90,7 @@ pub(super) struct ClusterPeerSection {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ServerSection {
+pub(crate) struct ServerSection {
     pub listen: Option<SocketAddr>,
     /// Default TLS cert for the TCP listener. Legacy alias `tls_cert_path`
     /// is accepted for backward compat with older configs.
@@ -110,7 +110,7 @@ pub(super) struct ServerSection {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ServerH3Section {
+pub(crate) struct ServerH3Section {
     pub listen: Option<SocketAddr>,
     /// Default TLS cert for the QUIC/HTTP-3 listener. When unset, falls
     /// back to `[server].cert_path` so a single config block can serve
@@ -143,7 +143,7 @@ pub(super) struct ServerH3Section {
 /// to one `CertifiedKey` selected at TLS handshake time by SNI.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TlsCertSection {
+pub(crate) struct TlsCertSection {
     pub cert_path: PathBuf,
     pub key_path: PathBuf,
     /// Explicit list of SNIs this cert serves. Each entry must be an
@@ -158,7 +158,7 @@ pub(super) struct TlsCertSection {
 /// One `[[endpoint]]` entry: a carrier path, its kind, and whether it pads.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct EndpointSection {
+pub(crate) struct EndpointSection {
     pub path: String,
     pub kind: super::endpoint::EndpointKind,
     #[serde(default)]
@@ -167,14 +167,14 @@ pub(super) struct EndpointSection {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct MetricsSection {
+pub(crate) struct MetricsSection {
     pub listen: Option<SocketAddr>,
     pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct OutboundSection {
+pub(crate) struct OutboundSection {
     pub prefer_ipv4: Option<bool>,
     pub ipv6_prefix: Option<String>,
     pub ipv6_interface: Option<String>,
@@ -186,7 +186,7 @@ pub(super) struct OutboundSection {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct HttpRootSection {
+pub(crate) struct HttpRootSection {
     pub auth: Option<bool>,
     pub realm: Option<String>,
 }
@@ -207,7 +207,7 @@ pub(super) struct HttpRootSection {
     dead_code,
     reason = "parsed for config compatibility; ops/access-keys owns the section"
 )]
-pub(super) struct AccessKeysSection {
+pub(crate) struct AccessKeysSection {
     pub public_host: Option<String>,
     pub public_scheme: Option<String>,
     pub url_base: Option<String>,
@@ -218,13 +218,13 @@ pub(super) struct AccessKeysSection {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ShadowsocksSection {
+pub(crate) struct ShadowsocksSection {
     pub method: Option<CipherKind>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ControlFileConfig {
+pub(crate) struct ControlFileConfig {
     pub listen: Option<SocketAddr>,
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
@@ -236,7 +236,7 @@ pub(super) struct ControlFileConfig {
 /// regular web service in front of nginx / haproxy / caddy.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct HttpFallbackSection {
+pub(crate) struct HttpFallbackSection {
     /// `http://host:port` of the upstream backend. HTTPS, unix sockets,
     /// and path prefixes are not supported in this MVP.
     pub backend: Option<String>,
@@ -288,7 +288,7 @@ pub(super) struct HttpFallbackSection {
 /// catch-all and must be the last entry.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SniFallbackSection {
+pub(crate) struct SniFallbackSection {
     /// Single-backend mode: `host:port` of the upstream. Mutually
     /// exclusive with `backends`.
     pub backend: Option<String>,
@@ -315,7 +315,7 @@ pub(super) struct SniFallbackSection {
 /// One entry in `[[sni_fallback.backends]]`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SniBackendSection {
+pub(crate) struct SniBackendSection {
     /// `host:port` of this backend.
     pub backend: String,
     /// SNIs routed to this backend. Absent or empty = catch-all.
@@ -329,7 +329,7 @@ pub(super) struct SniBackendSection {
 /// and recommended values.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SessionResumptionSection {
+pub(crate) struct SessionResumptionSection {
     pub enabled: Option<bool>,
     pub orphan_ttl_tcp_secs: Option<u64>,
     pub orphan_ttl_udp_secs: Option<u64>,
@@ -355,7 +355,7 @@ pub(super) struct SessionResumptionSection {
 /// must enable it together.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct PaddingSection {
+pub(crate) struct PaddingSection {
     /// Minimum pad bytes drawn per frame. Default 0.
     pub min_bytes: Option<u16>,
     /// Maximum pad bytes drawn per frame (clamped up to `min_bytes` if

@@ -49,6 +49,7 @@ async fn control_listener_drops_silent_preauth_peer() {
 fn test_control_state() -> ControlState {
     ControlState {
         manager: Arc::new(crate::server::control::manager::test_manager()),
+        config: Arc::new(crate::server::tests::sample_config("127.0.0.1:0".parse().unwrap())),
         token: Arc::from("test-token"),
     }
 }
@@ -99,4 +100,41 @@ async fn defaults_route_requires_the_bearer_token_and_answers_json() {
     assert!(json["method"].is_string(), "method must be present as a string");
     assert!(json.get("password").is_none(), "defaults must never carry secrets");
     assert!(json.get("vless_id").is_none(), "defaults must never carry secrets");
+}
+
+#[tokio::test]
+async fn config_route_requires_bearer_and_returns_config_response() {
+    use tower::ServiceExt;
+
+    let state = test_control_state();
+    let router = Router::new()
+        .route("/control/config", get(get_config).patch(patch_config))
+        .fallback(any(not_found))
+        .layer(middleware::from_fn_with_state(state.clone(), require_bearer_token))
+        .with_state(state);
+
+    let unauthorized = router
+        .clone()
+        .oneshot(Request::builder().uri("/control/config").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let authorized = router
+        .oneshot(
+            Request::builder()
+                .uri("/control/config")
+                .header(AUTHORIZATION, "Bearer test-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authorized.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(authorized.into_body(), 64 * 1024).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json.get("cluster").is_some());
+    assert!(json.get("server").is_some());
+    assert!(json.get("session_resumption").is_some());
 }

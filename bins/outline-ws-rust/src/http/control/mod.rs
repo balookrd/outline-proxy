@@ -7,6 +7,7 @@
 
 mod alloc;
 mod apply;
+mod config_crud;
 mod config_edit;
 mod groups_crud;
 mod handlers;

@@ -12,6 +12,11 @@ import type {
   RouteMutationResponse,
   GroupsListResponse,
   GroupMutationResponse,
+  ServerConfigResponse,
+  ServerConfigPatch,
+  WsConfigResponse,
+  WsConfigPatch,
+  WsConfigMutationResponse,
 } from './types';
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -49,6 +54,9 @@ export const deleteUser  = (i: string, id: string) =>
   json<unknown>(`/ss/dashboard/api/users/${seg(id)}?${q(i)}`, mutate('DELETE'));
 export const blockUser   = (i: string, id: string) => json<User>(`/ss/dashboard/api/users/${seg(id)}/block?${q(i)}`, mutate('POST', {}));
 export const unblockUser = (i: string, id: string) => json<User>(`/ss/dashboard/api/users/${seg(id)}/unblock?${q(i)}`, mutate('POST', {}));
+export const getServerConfig = (i: string) => json<ServerConfigResponse>(`/ss/dashboard/api/config?${q(i)}`);
+export const patchServerConfig = (i: string, patch: ServerConfigPatch) =>
+  json<{ ok: boolean; message: string; requires_restart: boolean }>(`/ss/dashboard/api/config?${q(i)}`, mutate('PATCH', patch));
 
 // WS
 export const topology  = (i: string) => json<TopologyResponse>(`/ws/dashboard/api/topology?${q(i)}`);
@@ -96,3 +104,7 @@ export const groupsMutate = (method: 'POST' | 'PATCH' | 'DELETE', i: string, bod
   json<GroupMutationResponse>(`/ws/dashboard/api/groups`, mutate(method, { instance: i, body }));
 export const groupsReorder = (i: string, body: { name: string; to: number }) =>
   json<GroupMutationResponse>(`/ws/dashboard/api/groups/reorder`, mutate('POST', { instance: i, body }));
+
+export const getWsConfig = (i: string) => json<WsConfigResponse>(`/ws/dashboard/api/config?${q(i)}`);
+export const patchWsConfig = (i: string, patch: WsConfigPatch) =>
+  json<WsConfigMutationResponse>(`/ws/dashboard/api/config?${q(i)}`, mutate('PATCH', patch));

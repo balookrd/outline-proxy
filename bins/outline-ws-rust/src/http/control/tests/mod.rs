@@ -880,3 +880,254 @@ async fn send_raw_http(raw_request: &str, uplinks: UplinkRegistry, token: &str) 
         .unwrap_or(0);
     (status, body)
 }
+
+#[tokio::test]
+async fn test_control_config_get_and_patch() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+    let initial_toml = r#"
+[probe]
+interval_secs = 30
+timeout_secs = 5
+min_failures = 3
+
+[socks5]
+listen = "127.0.0.1:1080"
+
+[dial]
+timeout_secs = 10
+"#;
+    tokio::fs::write(&cfg_path, initial_toml).await.unwrap();
+
+    let state = Arc::new(ControlState {
+        token: "token".to_string(),
+        uplinks: test_registry(),
+        config_path: Some(cfg_path.clone()),
+        config_write_lock: tokio::sync::Mutex::new(()),
+        apply: None,
+    });
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // 1. GET /control/config
+    let state_clone = Arc::clone(&state);
+    let srv_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        handle_connection(stream, state_clone).await.unwrap();
+    });
+
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client
+        .write_all(b"GET /control/config HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut resp = Vec::new();
+    client.read_to_end(&mut resp).await.unwrap();
+    srv_task.await.unwrap();
+
+    let resp_str = String::from_utf8(resp).unwrap();
+    assert!(resp_str.contains("200 OK"));
+    assert!(resp_str.contains("\"interval_secs\":30"));
+    assert!(resp_str.contains("\"listen\":\"127.0.0.1:1080\""));
+
+    // 2. PATCH /control/config
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state_clone = Arc::clone(&state);
+    let srv_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        handle_connection(stream, state_clone).await.unwrap();
+    });
+
+    let patch_body = r#"{"probe":{"interval_secs":60,"http_urls":["https://example.com/204"]},"dial":{"timeout_secs":15}}"#;
+    let req = format!(
+        "PATCH /control/config HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        patch_body.len(),
+        patch_body
+    );
+
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client.write_all(req.as_bytes()).await.unwrap();
+    let mut resp = Vec::new();
+    client.read_to_end(&mut resp).await.unwrap();
+    srv_task.await.unwrap();
+
+    let resp_str = String::from_utf8(resp).unwrap();
+    assert!(resp_str.contains("200 OK"));
+
+    let updated_file = tokio::fs::read_to_string(&cfg_path).await.unwrap();
+    assert!(updated_file.contains("interval_secs = 60"));
+    assert!(updated_file.contains("https://example.com/204"));
+    assert!(updated_file.contains("timeout_secs = 15"));
+}
+
+#[tokio::test]
+async fn test_control_config_extract_and_patch_outline_probe_tls() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+    let initial_toml = r#"
+[outline.probe]
+interval_secs = 30
+timeout_secs = 5
+
+[outline.probe.tls]
+targets = [
+  "www.instagram.com",
+  "www.youtube.com",
+  "api.telegram.org",
+]
+"#;
+    tokio::fs::write(&cfg_path, initial_toml).await.unwrap();
+
+    let state = Arc::new(ControlState {
+        token: "token".to_string(),
+        uplinks: test_registry(),
+        config_path: Some(cfg_path.clone()),
+        config_write_lock: tokio::sync::Mutex::new(()),
+        apply: None,
+    });
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // 1. GET /control/config
+    let state_clone = Arc::clone(&state);
+    let srv_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        handle_connection(stream, state_clone).await.unwrap();
+    });
+
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client
+        .write_all(b"GET /control/config HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut resp = Vec::new();
+    client.read_to_end(&mut resp).await.unwrap();
+    srv_task.await.unwrap();
+
+    let resp_str = String::from_utf8(resp).unwrap();
+    assert!(resp_str.contains("200 OK"));
+    assert!(resp_str.contains("www.instagram.com"));
+    assert!(resp_str.contains("www.youtube.com"));
+    assert!(resp_str.contains("api.telegram.org"));
+
+    // 2. PATCH /control/config
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state_clone = Arc::clone(&state);
+    let srv_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        handle_connection(stream, state_clone).await.unwrap();
+    });
+
+    let patch_body =
+        r#"{"probe":{"tls_targets":["www.instagram.com","api.telegram.org","new-target.org"]}}"#;
+    let req = format!(
+        "PATCH /control/config HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        patch_body.len(),
+        patch_body
+    );
+
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client.write_all(req.as_bytes()).await.unwrap();
+    let mut resp = Vec::new();
+    client.read_to_end(&mut resp).await.unwrap();
+    srv_task.await.unwrap();
+
+    let resp_str = String::from_utf8(resp).unwrap();
+    assert!(resp_str.contains("200 OK"));
+
+    let updated_file = tokio::fs::read_to_string(&cfg_path).await.unwrap();
+    assert!(updated_file.contains("new-target.org"));
+    // Ensure it remained under [outline.probe.tls] or outline table, not root
+    assert!(!updated_file.starts_with("[probe.tls]"));
+}
+
+#[tokio::test]
+async fn control_config_socks5_users_crud() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+
+    let initial_toml = r#"
+[socks5]
+listen = "127.0.0.1:1080"
+
+[[socks5.users]]
+username = "existing_user"
+password = "secret_password"
+"#;
+    tokio::fs::write(&cfg_path, initial_toml).await.unwrap();
+
+    let state = Arc::new(ControlState {
+        token: "token".to_string(),
+        uplinks: test_registry(),
+        config_path: Some(cfg_path.clone()),
+        config_write_lock: tokio::sync::Mutex::new(()),
+        apply: None,
+    });
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // 1. GET /control/config
+    let state_clone = Arc::clone(&state);
+    let srv_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        handle_connection(stream, state_clone).await.unwrap();
+    });
+
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client
+        .write_all(b"GET /control/config HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut resp = Vec::new();
+    client.read_to_end(&mut resp).await.unwrap();
+    srv_task.await.unwrap();
+
+    let resp_str = String::from_utf8(resp).unwrap();
+    assert!(resp_str.contains("200 OK"));
+    assert!(resp_str.contains(r#""username":"existing_user""#));
+    assert!(resp_str.contains(r#""has_password":true"#));
+    assert!(!resp_str.contains("secret_password")); // passwords are never exposed
+
+    // 2. PATCH /control/config: preserve existing user's password with "********" and add new user
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state_clone = Arc::clone(&state);
+    let srv_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        handle_connection(stream, state_clone).await.unwrap();
+    });
+
+    let patch_body = r#"{
+        "socks5": {
+            "users": [
+                { "username": "existing_user", "password": "********" },
+                { "username": "new_user", "password": "new_secret_123" }
+            ]
+        }
+    }"#;
+    let req = format!(
+        "PATCH /control/config HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        patch_body.len(),
+        patch_body
+    );
+
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client.write_all(req.as_bytes()).await.unwrap();
+    let mut resp = Vec::new();
+    client.read_to_end(&mut resp).await.unwrap();
+    srv_task.await.unwrap();
+
+    let resp_str = String::from_utf8(resp).unwrap();
+    assert!(resp_str.contains("200 OK"));
+
+    let updated_file = tokio::fs::read_to_string(&cfg_path).await.unwrap();
+    assert!(updated_file.contains("username = \"existing_user\""));
+    assert!(updated_file.contains("password = \"secret_password\""));
+    assert!(updated_file.contains("username = \"new_user\""));
+    assert!(updated_file.contains("password = \"new_secret_123\""));
+}

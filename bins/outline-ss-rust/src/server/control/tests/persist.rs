@@ -295,3 +295,75 @@ fn method_change_round_trips() {
     assert!(out.contains(r#"method = "aes-256-gcm""#), "method not written:\n{out}");
     assert_eq!(ids(&out), vec!["alice", "mmv-mac", "beerloga"]);
 }
+
+#[test]
+fn patch_toml_config_updates_cluster_and_preserves_comments() {
+    let patch = ServerConfigPatch {
+        cluster: Some(ClusterConfigPatch {
+            enabled: Some(true),
+            shard_id: Some(2),
+            cluster_psk: Some("k5O0r1S0t3U4v5W6x7Y8z9A0b1C2d3E4f5G6h7I8j9K=".to_string()),
+            mesh_listen: Some("[::]:9443".to_string()),
+            mesh_relay_budget_ms: Some(5000),
+            peers: Some(vec![
+                ClusterPeerPatch { shard: 0, addr: "node0:9443".to_string() },
+                ClusterPeerPatch { shard: 1, addr: "node1:9443".to_string() },
+            ]),
+        }),
+        session_resumption: Some(SessionResumptionPatch {
+            enabled: Some(true),
+            orphan_ttl_tcp_secs: Some(300),
+            orphan_ttl_udp_secs: Some(120),
+            ..Default::default()
+        }),
+        tuning_profile: Some("throughput".to_string()),
+        ..Default::default()
+    };
+
+    let out = patch_toml_config(FLEET_CONFIG, &patch).expect("patch config");
+    assert!(out.contains("enabled = true"), "cluster.enabled missing:\n{out}");
+    assert!(out.contains("shard_id = 2"), "shard_id missing:\n{out}");
+    assert!(
+        out.contains(r#"cluster_psk = "k5O0r1S0t3U4v5W6x7Y8z9A0b1C2d3E4f5G6h7I8j9K=""#),
+        "psk missing:\n{out}"
+    );
+    assert!(out.contains(r#"mesh_listen = "[::]:9443""#), "mesh_listen missing:\n{out}");
+    assert!(out.contains("mesh_relay_budget_ms = 5000"), "relay budget missing:\n{out}");
+    assert!(
+        out.contains(r#"tuning_profile = "throughput""#),
+        "tuning profile missing:\n{out}"
+    );
+    assert!(out.contains("[session_resumption]"), "session_resumption missing:\n{out}");
+    // Verify comments and users are intact
+    assert!(out.contains("# Users start here."));
+    assert!(out.contains("# The owner's laptop."));
+    assert!(out.contains("alice"));
+    assert!(out.contains("beerloga"));
+}
+
+#[test]
+fn patch_toml_config_updates_server_listeners_and_outbound() {
+    let patch = ServerConfigPatch {
+        server: Some(ServerListenerPatch {
+            listen: Some("0.0.0.0:8443".to_string()),
+            cert_path: Some("/etc/ssl/cert.pem".to_string()),
+            key_path: Some("/etc/ssl/key.pem".to_string()),
+            h3_listen: Some("0.0.0.0:8443".to_string()),
+            ..Default::default()
+        }),
+        outbound: Some(OutboundPatch {
+            prefer_ipv4: Some(true),
+            ipv6_prefix: Some("2001:db8::/64".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let original = "[server]\nlisten = \"0.0.0.0:443\"\n";
+    let out = patch_toml_config(original, &patch).expect("patch server");
+    assert!(out.contains(r#"listen = "0.0.0.0:8443""#), "listen updated:\n{out}");
+    assert!(out.contains(r#"cert_path = "/etc/ssl/cert.pem""#), "cert_path updated:\n{out}");
+    assert!(out.contains(r#"prefer_ipv4 = true"#), "prefer_ipv4 updated:\n{out}");
+    assert!(out.contains(r#"ipv6_prefix = "2001:db8::/64""#), "ipv6_prefix updated:\n{out}");
+    assert!(out.contains("[server.h3]"), "h3 subtable created:\n{out}");
+}

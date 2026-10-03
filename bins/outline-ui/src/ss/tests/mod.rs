@@ -35,3 +35,17 @@ async fn users_for_an_unknown_instance_is_reported() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn config_for_an_unknown_instance_is_reported() {
+    let response = router(state())
+        .oneshot(
+            Request::get("/dashboard/api/config?instance=nope")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

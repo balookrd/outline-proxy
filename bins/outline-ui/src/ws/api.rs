@@ -499,3 +499,47 @@ fn parse_or_raw(body: &Bytes) -> Value {
     serde_json::from_slice(body)
         .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(body) }))
 }
+
+pub async fn get_config(State(state): State<WsState>, RawQuery(query): RawQuery) -> Response {
+    let Some(name) = instance_param(query.as_deref()) else {
+        return json_error(StatusCode::BAD_REQUEST, "missing instance query");
+    };
+    let Some(instance) = find(&state, &name) else {
+        return json_error(StatusCode::NOT_FOUND, "unknown instance");
+    };
+    match state
+        .backend
+        .request(instance, Method::GET, "/control/config", None)
+        .await
+    {
+        Ok(response) => json_response(response.status, &parse_or_raw(&response.body)),
+        Err(error) => json_response(
+            StatusCode::BAD_GATEWAY,
+            &serde_json::json!({ "error": format!("{error:#}") }),
+        ),
+    }
+}
+
+pub async fn patch_config(
+    State(state): State<WsState>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
+    let Some(name) = instance_param(query.as_deref()) else {
+        return json_error(StatusCode::BAD_REQUEST, "missing instance query");
+    };
+    let Some(instance) = find(&state, &name) else {
+        return json_error(StatusCode::NOT_FOUND, "unknown instance");
+    };
+    match state
+        .backend
+        .request(instance, Method::PATCH, "/control/config", Some(body))
+        .await
+    {
+        Ok(response) => json_response(response.status, &parse_or_raw(&response.body)),
+        Err(error) => json_response(
+            StatusCode::BAD_GATEWAY,
+            &serde_json::json!({ "error": format!("{error:#}") }),
+        ),
+    }
+}

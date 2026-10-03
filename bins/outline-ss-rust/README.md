@@ -439,6 +439,8 @@ The multi-instance browser dashboard that used to run on a separate listener her
 | `DELETE` | `/control/users/{id}` | Remove the user |
 | `POST` | `/control/users/{id}/block` | Disable a user (`enabled = false`) without deleting |
 | `POST` | `/control/users/{id}/unblock` | Re-enable a blocked user |
+| `GET` | `/control/config` | View server configuration (mesh cluster, listeners/TLS, session resumption, outbound, tuning, endpoints) |
+| `PATCH` | `/control/config` | Atomically patch server configuration sections in `config.toml` |
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/users

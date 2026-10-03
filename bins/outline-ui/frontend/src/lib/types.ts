@@ -20,6 +20,73 @@ export interface User {
 export type NewUser = Partial<User> & { id: string; enabled: boolean };
 export type PatchUser = Partial<User>;
 
+// SS — Server & Cluster Configuration
+export interface ClusterPeer {
+  shard: number;
+  addr: string;
+}
+
+export interface ClusterConfig {
+  enabled: boolean;
+  shard_id: number | null;
+  cluster_psk?: string | null;
+  has_cluster_psk?: boolean;
+  mesh_listen: string | null;
+  mesh_relay_budget_ms: number | null;
+  peers: ClusterPeer[];
+}
+
+export interface ServerListenersConfig {
+  listen: string | null;
+  cert_path: string | null;
+  key_path: string | null;
+  h3_listen: string | null;
+  h3_cert_path: string | null;
+  h3_key_path: string | null;
+}
+
+export interface SessionResumptionConfig {
+  enabled: boolean;
+  orphan_ttl_tcp_secs: number | null;
+  orphan_ttl_udp_secs: number | null;
+  orphan_per_user_cap: number | null;
+  orphan_global_cap: number | null;
+  downlink_buffer_bytes: number | null;
+}
+
+export interface OutboundConfig {
+  prefer_ipv4: boolean | null;
+  ipv6_prefix: string | null;
+  ipv6_interface: string | null;
+  ipv6_sticky: boolean | null;
+  ipv6_sticky_ttl_secs: number | null;
+}
+
+export interface EndpointConfigItem {
+  path: string;
+  protocol: string;
+  transport: string;
+  padded: boolean;
+}
+
+export interface ServerConfigResponse {
+  config_path: string | null;
+  cluster: ClusterConfig | null;
+  server: ServerListenersConfig | null;
+  session_resumption: SessionResumptionConfig | null;
+  outbound: OutboundConfig | null;
+  tuning_profile: string | null;
+  endpoints: EndpointConfigItem[];
+}
+
+export interface ServerConfigPatch {
+  cluster?: Partial<ClusterConfig> | null;
+  server?: Partial<ServerListenersConfig> | null;
+  session_resumption?: Partial<SessionResumptionConfig> | null;
+  outbound?: Partial<OutboundConfig> | null;
+  tuning_profile?: string | null;
+}
+
 // WS — topology envelope from ws/api.rs InstanceView.
 export interface TopologyResponse {
   name: string; ok: boolean; error?: string | null;
@@ -326,4 +393,130 @@ export interface GroupMutationResponse {
 // guess a cipher it does not know).
 export interface ServerDefaults {
   method: string;
+}
+
+// WS — Client & Subsystems Configuration (/control/config)
+export interface WsProbeConfig {
+  interval_secs?: number | null;
+  timeout_secs?: number | null;
+  max_concurrent?: number | null;
+  max_dials?: number | null;
+  min_failures?: number | null;
+  attempts?: number | null;
+  skip_when_active?: boolean | null;
+  liveness_interval_secs?: number | null;
+  endpoint_check?: boolean | null;
+  endpoint_check_timeout_ms?: number | null;
+  http_urls?: string[] | null;
+  tls_targets?: string[] | null;
+  dns_server?: string | null;
+  dns_port?: number | null;
+  dns_name?: string | null;
+  tcp_host?: string | null;
+  tcp_port?: number | null;
+  ws_enabled?: boolean | null;
+}
+
+export interface WsSocks5User {
+  username: string;
+  has_password?: boolean;
+  password?: string | null;
+}
+
+export interface WsSocks5Config {
+  listen?: string | null;
+  username?: string | null;
+  has_password?: boolean;
+  users?: WsSocks5User[];
+  users_count?: number;
+}
+
+export interface WsTunConfig {
+  name?: string | null;
+  mtu?: number | null;
+  max_flows?: number | null;
+  max_carrier_flows?: number | null;
+  idle_timeout_secs?: number | null;
+  max_concurrent_upstream_dials?: number | null;
+  ipsec_bypass?: boolean | null;
+  sniff_quic?: boolean | null;
+  route_by_sni?: boolean | null;
+  gso?: boolean | null;
+  gro?: boolean | null;
+  uso?: boolean | null;
+}
+
+export interface WsDialConfig {
+  timeout_secs?: number | null;
+}
+
+export interface WsPaddingConfig {
+  enabled?: boolean | null;
+  min_bytes?: number | null;
+  max_bytes?: number | null;
+  cover?: boolean | null;
+  cover_jitter_min_ms?: number | null;
+  cover_jitter_max_ms?: number | null;
+  react_to_throttle?: boolean | null;
+}
+
+export interface WsQuicConfig {
+  stream_receive_window?: number | null;
+  receive_window?: number | null;
+  keepalive_secs?: number | null;
+  idle_timeout_secs?: number | null;
+}
+
+export interface WsH2Config {
+  initial_stream_window_size?: number | null;
+  initial_connection_window_size?: number | null;
+  keepalive_interval_secs?: number | null;
+  keepalive_timeout_secs?: number | null;
+}
+
+export interface WsTcpTimeoutsConfig {
+  post_client_eof_downstream_secs?: number | null;
+  upstream_response_secs?: number | null;
+  socks_upstream_idle_secs?: number | null;
+  direct_idle_secs?: number | null;
+}
+
+export interface WsConfigResponse {
+  config_path?: string | null;
+  probe?: WsProbeConfig | null;
+  socks5?: WsSocks5Config | null;
+  tun?: WsTunConfig | null;
+  dial?: WsDialConfig | null;
+  padding?: WsPaddingConfig | null;
+  quic?: WsQuicConfig | null;
+  h2?: WsH2Config | null;
+  tcp_timeouts?: WsTcpTimeoutsConfig | null;
+  fingerprint_profile?: string | null;
+  prefer_public_ipv6_src?: boolean | null;
+  direct_fwmark?: number | null;
+}
+
+export interface WsConfigPatch {
+  probe?: WsProbeConfig | null;
+  socks5?: {
+    listen?: string | null;
+    username?: string | null;
+    password?: string | null;
+    users?: Array<{ username: string; password?: string | null }> | null;
+  } | null;
+  tun?: WsTunConfig | null;
+  dial?: WsDialConfig | null;
+  padding?: WsPaddingConfig | null;
+  quic?: WsQuicConfig | null;
+  h2?: WsH2Config | null;
+  tcp_timeouts?: WsTcpTimeoutsConfig | null;
+  fingerprint_profile?: string | null;
+  prefer_public_ipv6_src?: boolean | null;
+  direct_fwmark?: number | null;
+}
+
+export interface WsConfigMutationResponse {
+  status: string;
+  apply_required: boolean;
+  restart_required: boolean;
 }

@@ -13,23 +13,29 @@ answers. This binary is those two dashboards with the data plane unhooked.
 
 | Path | Dashboard | Source |
 |---|---|---|
-| `/ws` | uplinks, routing, topology, carrier loss | client control API (`:9191`) |
-| `/ss` | user CRUD | server control API (`:9190`) |
+| `/ws` | uplinks, routing, groups, settings, topology, carrier loss | client control API (`:9191`) |
+| `/ss` | users, mesh cluster, server settings | server control API (`:9190`) |
 | `/` | index linking both | — |
 
 It holds no state, keeps nothing on disk, and stores no credentials of its own
 beyond what its config points at.
 
-The `/ws` dashboard's Uplink groups tab (`/ws/groups`) — CRUD editor for `[[uplink_group]]` policy
-(mode, routing scope, reselect, warm standby, cluster resume, and the advanced
-scoring/failover/keepalive knobs). Staged → **Apply now**, hot-applied without
-a node restart. A group is created empty; add its uplinks in the Uplinks tab.
-Delete is only allowed for a group with no uplinks.
+The `/ss` dashboard provides:
+- **Users** (`/ss`): CRUD access key management (Shadowsocks AEAD / VLESS), blocking, cloning, and credential generation.
+- **Mesh cluster** (`/ss/cluster`): multi-node anycast cluster and shard relay configuration (`[cluster]`). Allows viewing and configuring local Shard ID (0..15), QUIC mesh listening socket, cluster PSK (ChaCha20-Poly1305 / Blake3 KDF), relay budget, and remote peer shards.
+- **Server settings** (`/ss/settings`): server listening sockets (TCP & HTTP/3 QUIC), TLS certificates/keys, session resumption (0-RTT reconnect limits, TTL, downlink buffer), outbound IP routing (prefer IPv4, IPv6 rotation pool prefix, sticky sessions, egress interface), tuning profiles, and carrier endpoint pathways.
 
-The `/ws` dashboard's Routing tab edits an instance's `[[route]]` policy
-rules — create, update, delete, and reorder, since first-match-wins means the
-order of rules is itself part of what they do — and hot-applies them through
-the same "Apply now" button the Uplinks tab uses.
+The `/ws` dashboard provides:
+- **Topology** (`/ws`): active wires, live EWMA RTT latencies, carrier packet loss ratios, and manual active uplink selection.
+- **Uplinks** (`/ws/uplinks`): CRUD editor for `[[outline.uplinks]]` entries, fallback wire chains, and reordering.
+- **Routing** (`/ws/routing`): dynamic rule matching (`[[route]]`) — create, update, delete, reorder, and hot-apply without a restart.
+- **Uplink groups** (`/ws/groups`): CRUD editor for `[[uplink_group]]` policy (mode, routing scope, reselect, warm standby, cluster resume, scoring/failover/keepalive knobs).
+- **Client settings** (`/ws/settings`): in-place editor for client configuration:
+  - Quality and liveness probes (`[probe]`): intervals, timeouts, min failures, attempts, max concurrent probes, endpoint pre-check, HTTP rotation URLs, TLS target hosts, DNS/TCP tests.
+  - Ingress and local interfaces: SOCKS5 listen address and credentials (`[socks5]`, multi-user `[[socks5.users]]` list), TUN interface device parameters, MTU, max flows, SNI routing, QUIC sniffing, IPsec bypass, and Linux GSO/GRO/USO offloads (`[tun]`).
+  - Carrier & dial policies: dial timeout (`[dial]`), TLS fingerprint profile diversification (`off`, `stable`, `random`), direct fwmark, prefer public IPv6 source, and wire padding obfuscation (`[padding]`: min/max bytes, cover traffic jitter, throttle reactivity).
+  - Transport buffers & timeouts: QUIC stream/connection receive windows and keepalive (`[quic]`), HTTP/2 stream/connection window sizes and ping keepalive (`[h2]`), TCP idle and upstream response timeouts (`[tcp_timeouts]`).
+  - Instant hot-apply via **Apply now** or graceful restart notification when socket/device parameters are modified.
 
 ## Why it exists
 

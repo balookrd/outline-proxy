@@ -141,6 +141,7 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/control/routes/reorder" => "/control/routes/reorder",
         "/control/apply" => "/control/apply",
         "/control/alloc" => "/control/alloc",
+        "/control/config" => "/control/config",
         _ => "other",
     };
 
@@ -230,6 +231,11 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
                 ),
             };
             record_metrics_http_request("/control/apply", response.status().as_u16());
+            response
+        },
+        "/control/config" => {
+            let response = super::config_crud::handle_config(request, Arc::clone(&state)).await;
+            record_metrics_http_request("/control/config", response.status().as_u16());
             response
         },
         _ => {
