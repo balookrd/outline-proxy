@@ -9,6 +9,7 @@
     WsSocks5Config,
     WsSocks5User,
     WsTunConfig,
+    WsTunTcpConfig,
     WsDialConfig,
     WsPaddingConfig,
     WsQuicConfig,
@@ -84,11 +85,30 @@
   let tunIdleTimeoutSecs = $state<number>(120);
   let tunMaxConcurrentUpstreamDials = $state<number>(128);
   let tunIpsecBypass = $state<boolean>(false);
+  let tunPmtudEmitBelowQuicInitial = $state<boolean>(false);
   let tunSniffQuic = $state<boolean>(true);
   let tunRouteBySni = $state<boolean>(false);
   let tunGso = $state<boolean>(true);
   let tunGro = $state<boolean>(true);
   let tunUso = $state<boolean>(true);
+
+  // TUN TCP Engine ([tun.tcp])
+  let tunTcpSniffing = $state<boolean>(true);
+  let tunTcpSniffTimeoutMs = $state<number>(500);
+  let tunTcpSniffDirectReresolve = $state<boolean>(true);
+  let tunTcpCarrierMigration = $state<boolean>(true);
+  let tunTcpDownlinkMaxMbit = $state<number | null>(null);
+  let tunTcpPendingServerBudgetBytes = $state<number | null>(null);
+  let tunTcpInitialReceiveWindowBytes = $state<number | null>(null);
+  let tunTcpConnectTimeoutSecs = $state<number>(10);
+  let tunTcpHandshakeTimeoutSecs = $state<number>(15);
+
+  // Network & IP Policy
+  let ipv4Only = $state<boolean>(false);
+  let ipv6First = $state<boolean>(false);
+  let directIpv6PrefixInterface = $state<string>('');
+  let udpRecvBufBytes = $state<number | null>(null);
+  let udpSendBufBytes = $state<number | null>(null);
 
   // Dial & Obfuscation
   let dialTimeoutSecs = $state<number>(10);
@@ -190,12 +210,39 @@
         tunIdleTimeoutSecs = config.tun.idle_timeout_secs ?? 120;
         tunMaxConcurrentUpstreamDials = config.tun.max_concurrent_upstream_dials ?? 128;
         tunIpsecBypass = config.tun.ipsec_bypass ?? false;
+        tunPmtudEmitBelowQuicInitial = config.tun.pmtud_emit_below_quic_initial ?? false;
         tunSniffQuic = config.tun.sniff_quic ?? true;
         tunRouteBySni = config.tun.route_by_sni ?? false;
         tunGso = config.tun.gso ?? true;
         tunGro = config.tun.gro ?? tunGso;
         tunUso = config.tun.uso ?? tunGso;
+        if (config.tun.tcp) {
+          tunTcpSniffing = config.tun.tcp.sniffing ?? true;
+          tunTcpSniffTimeoutMs = config.tun.tcp.sniff_timeout_ms ?? 500;
+          tunTcpSniffDirectReresolve = config.tun.tcp.sniff_direct_reresolve ?? true;
+          tunTcpCarrierMigration = config.tun.tcp.carrier_migration ?? true;
+          tunTcpDownlinkMaxMbit = config.tun.tcp.downlink_max_mbit ?? null;
+          tunTcpPendingServerBudgetBytes = config.tun.tcp.pending_server_budget_bytes ?? null;
+          tunTcpInitialReceiveWindowBytes = config.tun.tcp.initial_receive_window_bytes ?? null;
+          tunTcpConnectTimeoutSecs = config.tun.tcp.connect_timeout_secs ?? 10;
+          tunTcpHandshakeTimeoutSecs = config.tun.tcp.handshake_timeout_secs ?? 15;
+        } else {
+          tunTcpSniffing = true;
+          tunTcpSniffTimeoutMs = 500;
+          tunTcpSniffDirectReresolve = true;
+          tunTcpCarrierMigration = true;
+          tunTcpDownlinkMaxMbit = null;
+          tunTcpPendingServerBudgetBytes = null;
+          tunTcpInitialReceiveWindowBytes = null;
+          tunTcpConnectTimeoutSecs = 10;
+          tunTcpHandshakeTimeoutSecs = 15;
+        }
       }
+      ipv4Only = config.ipv4_only ?? false;
+      ipv6First = config.ipv6_first ?? false;
+      directIpv6PrefixInterface = config.direct_ipv6_prefix_interface ?? '';
+      udpRecvBufBytes = config.udp_recv_buf_bytes ?? null;
+      udpSendBufBytes = config.udp_send_buf_bytes ?? null;
       if (config.dial) {
         dialTimeoutSecs = config.dial.timeout_secs ?? 10;
       }
@@ -466,6 +513,55 @@
         tunPatch.uso = tunUso;
         tunChanged = true;
       }
+      if (tunPmtudEmitBelowQuicInitial !== (orig.tun?.pmtud_emit_below_quic_initial ?? false)) {
+        tunPatch.pmtud_emit_below_quic_initial = tunPmtudEmitBelowQuicInitial;
+        tunChanged = true;
+      }
+
+      const origTcp = orig.tun?.tcp ?? {};
+      const tcpPatch: WsTunTcpConfig = {};
+      let tcpChanged = false;
+      if (tunTcpSniffing !== (origTcp.sniffing ?? true)) {
+        tcpPatch.sniffing = tunTcpSniffing;
+        tcpChanged = true;
+      }
+      if (tunTcpSniffTimeoutMs !== (origTcp.sniff_timeout_ms ?? 500)) {
+        tcpPatch.sniff_timeout_ms = tunTcpSniffTimeoutMs;
+        tcpChanged = true;
+      }
+      if (tunTcpSniffDirectReresolve !== (origTcp.sniff_direct_reresolve ?? true)) {
+        tcpPatch.sniff_direct_reresolve = tunTcpSniffDirectReresolve;
+        tcpChanged = true;
+      }
+      if (tunTcpCarrierMigration !== (origTcp.carrier_migration ?? true)) {
+        tcpPatch.carrier_migration = tunTcpCarrierMigration;
+        tcpChanged = true;
+      }
+      if (tunTcpDownlinkMaxMbit !== (origTcp.downlink_max_mbit ?? null)) {
+        tcpPatch.downlink_max_mbit = tunTcpDownlinkMaxMbit && tunTcpDownlinkMaxMbit > 0 ? tunTcpDownlinkMaxMbit : null;
+        tcpChanged = true;
+      }
+      if (tunTcpPendingServerBudgetBytes !== (origTcp.pending_server_budget_bytes ?? null)) {
+        tcpPatch.pending_server_budget_bytes = tunTcpPendingServerBudgetBytes && tunTcpPendingServerBudgetBytes > 0 ? tunTcpPendingServerBudgetBytes : null;
+        tcpChanged = true;
+      }
+      if (tunTcpInitialReceiveWindowBytes !== (origTcp.initial_receive_window_bytes ?? null)) {
+        tcpPatch.initial_receive_window_bytes = tunTcpInitialReceiveWindowBytes && tunTcpInitialReceiveWindowBytes > 0 ? tunTcpInitialReceiveWindowBytes : null;
+        tcpChanged = true;
+      }
+      if (tunTcpConnectTimeoutSecs !== (origTcp.connect_timeout_secs ?? 10)) {
+        tcpPatch.connect_timeout_secs = tunTcpConnectTimeoutSecs;
+        tcpChanged = true;
+      }
+      if (tunTcpHandshakeTimeoutSecs !== (origTcp.handshake_timeout_secs ?? 15)) {
+        tcpPatch.handshake_timeout_secs = tunTcpHandshakeTimeoutSecs;
+        tcpChanged = true;
+      }
+      if (tcpChanged) {
+        tunPatch.tcp = tcpPatch;
+        tunChanged = true;
+      }
+
       if (tunChanged) {
         patch.tun = tunPatch;
       }
@@ -596,6 +692,22 @@
       }
       if (directFwmark !== (orig.direct_fwmark ?? null)) {
         patch.direct_fwmark = directFwmark;
+      }
+      if (ipv4Only !== (orig.ipv4_only ?? false)) {
+        patch.ipv4_only = ipv4Only;
+      }
+      if (ipv6First !== (orig.ipv6_first ?? false)) {
+        patch.ipv6_first = ipv6First;
+      }
+      const newDirectIpv6Iface = directIpv6PrefixInterface.trim() || null;
+      if (newDirectIpv6Iface !== (orig.direct_ipv6_prefix_interface ?? null)) {
+        patch.direct_ipv6_prefix_interface = newDirectIpv6Iface;
+      }
+      if (udpRecvBufBytes !== (orig.udp_recv_buf_bytes ?? null)) {
+        patch.udp_recv_buf_bytes = udpRecvBufBytes && udpRecvBufBytes > 0 ? udpRecvBufBytes : null;
+      }
+      if (udpSendBufBytes !== (orig.udp_send_buf_bytes ?? null)) {
+        patch.udp_send_buf_bytes = udpSendBufBytes && udpSendBufBytes > 0 ? udpSendBufBytes : null;
       }
 
       if (Object.keys(patch).length === 0) {
@@ -1069,6 +1181,123 @@
                 </label>
               </div>
             </div>
+
+            <div class="fieldrow">
+              <label class="switch">
+                <input type="checkbox" bind:checked={tunPmtudEmitBelowQuicInitial} onchange={markDirty} />
+                <span>PMTUD below QUIC initial (allow PTB ICMP packets &lt; 1200 bytes)</span>
+              </label>
+              <span class="hint">Emits Path-MTU Packet Too Big notifications even below QUIC minimum initial MTU.</span>
+            </div>
+
+            <div style="border-top: 1px solid var(--border-soft); margin: var(--sp-2) 0;"></div>
+            <h4 style="font-size: 13px; font-weight: 600; margin: 0 0 var(--sp-2) 0;">TUN TCP Engine Settings</h4>
+            <div style="display: flex; flex-direction: column; gap: var(--sp-2);">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+                <div class="fieldrow">
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={tunTcpSniffing} onchange={markDirty} />
+                    <span>Payload sniffing</span>
+                  </label>
+                  <span class="hint">Sniff TLS ClientHello & HTTP Host on TCP flows.</span>
+                </div>
+                <div class="fieldrow">
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={tunTcpSniffDirectReresolve} onchange={markDirty} />
+                    <span>Re-resolve direct bypass</span>
+                  </label>
+                  <span class="hint">Re-resolve target IP via system DNS for direct flows.</span>
+                </div>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+                <div class="fieldrow">
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={tunTcpCarrierMigration} onchange={markDirty} />
+                    <span>Carrier migration</span>
+                  </label>
+                  <span class="hint">Permit active TCP sessions to migrate carrier transparently.</span>
+                </div>
+                <div class="fieldrow">
+                  <label for="tun-tcp-sniff-timeout">Sniff Timeout (ms)</label>
+                  <input
+                    id="tun-tcp-sniff-timeout"
+                    type="number"
+                    min="50"
+                    max="5000"
+                    bind:value={tunTcpSniffTimeoutMs}
+                    oninput={markDirty}
+                    class="field-mono"
+                  />
+                </div>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+                <div class="fieldrow">
+                  <label for="tun-tcp-connect-timeout">Connect Timeout (s)</label>
+                  <input
+                    id="tun-tcp-connect-timeout"
+                    type="number"
+                    min="1"
+                    max="120"
+                    bind:value={tunTcpConnectTimeoutSecs}
+                    oninput={markDirty}
+                    class="field-mono"
+                  />
+                </div>
+                <div class="fieldrow">
+                  <label for="tun-tcp-handshake-timeout">Handshake Timeout (s)</label>
+                  <input
+                    id="tun-tcp-handshake-timeout"
+                    type="number"
+                    min="1"
+                    max="120"
+                    bind:value={tunTcpHandshakeTimeoutSecs}
+                    oninput={markDirty}
+                    class="field-mono"
+                  />
+                </div>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-2);">
+                <div class="fieldrow">
+                  <label for="tun-tcp-downlink-max">Downlink Max (Mbit)</label>
+                  <input
+                    id="tun-tcp-downlink-max"
+                    type="number"
+                    min="0"
+                    placeholder="Unlimited"
+                    bind:value={tunTcpDownlinkMaxMbit}
+                    oninput={markDirty}
+                    class="field-mono"
+                  />
+                </div>
+                <div class="fieldrow">
+                  <label for="tun-tcp-pending-budget">Pending Budget (B)</label>
+                  <input
+                    id="tun-tcp-pending-budget"
+                    type="number"
+                    min="0"
+                    placeholder="Default (1 MiB)"
+                    bind:value={tunTcpPendingServerBudgetBytes}
+                    oninput={markDirty}
+                    class="field-mono"
+                  />
+                </div>
+                <div class="fieldrow">
+                  <label for="tun-tcp-init-rcv-win">Initial Window (B)</label>
+                  <input
+                    id="tun-tcp-init-rcv-win"
+                    type="number"
+                    min="0"
+                    placeholder="Default (64 KiB)"
+                    bind:value={tunTcpInitialReceiveWindowBytes}
+                    oninput={markDirty}
+                    class="field-mono"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1122,6 +1351,69 @@
                   <input type="checkbox" bind:checked={preferPublicIpv6Src} onchange={markDirty} />
                   <span>Prefer public IPv6</span>
                 </label>
+              </div>
+            </div>
+
+            <div style="border-top: 1px solid var(--border-soft); margin: var(--sp-2) 0;"></div>
+            <h4 style="font-size: 13px; font-weight: 600; margin: 0 0 var(--sp-2) 0;">Network & IP Resolution Policy</h4>
+            <div style="display: flex; flex-direction: column; gap: var(--sp-2);">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+                <div class="fieldrow">
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={ipv4Only} onchange={markDirty} />
+                    <span>IPv4 only</span>
+                  </label>
+                  <span class="hint">Disable IPv6 lookups and routes across all uplinks by default.</span>
+                </div>
+                <div class="fieldrow">
+                  <label class="switch">
+                    <input type="checkbox" bind:checked={ipv6First} onchange={markDirty} />
+                    <span>IPv6 first</span>
+                  </label>
+                  <span class="hint">Prefer IPv6 addresses when domain resolves to both families.</span>
+                </div>
+              </div>
+
+              <div class="fieldrow">
+                <label for="direct-ipv6-prefix-iface">Direct IPv6 Prefix Interface (Optional)</label>
+                <input
+                  id="direct-ipv6-prefix-iface"
+                  type="text"
+                  placeholder="eth0 or ens3"
+                  bind:value={directIpv6PrefixInterface}
+                  oninput={markDirty}
+                  class="field-mono"
+                />
+                <span class="hint">Network interface for dynamic IPv6 prefix rotation pool on direct bypass.</span>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2);">
+                <div class="fieldrow">
+                  <label for="udp-recv-buf-bytes">UDP Recv Buffer (bytes)</label>
+                  <input
+                    id="udp-recv-buf-bytes"
+                    type="number"
+                    min="0"
+                    placeholder="Default (OS socket)"
+                    bind:value={udpRecvBufBytes}
+                    oninput={markDirty}
+                    class="field-mono"
+                  />
+                  <span class="hint">SO_RCVBUF size for carrier UDP sockets.</span>
+                </div>
+                <div class="fieldrow">
+                  <label for="udp-send-buf-bytes">UDP Send Buffer (bytes)</label>
+                  <input
+                    id="udp-send-buf-bytes"
+                    type="number"
+                    min="0"
+                    placeholder="Default (OS socket)"
+                    bind:value={udpSendBufBytes}
+                    oninput={markDirty}
+                    class="field-mono"
+                  />
+                  <span class="hint">SO_SNDBUF size for carrier UDP sockets.</span>
+                </div>
               </div>
             </div>
 

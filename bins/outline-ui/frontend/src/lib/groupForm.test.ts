@@ -20,9 +20,11 @@ describe('validateGroupForm', () => {
     const f = { ...emptyGroupFields(), name: 'g', mode: 'active_passive', routingScope: 'global', reselectMode: 'interval' as const, reselectInterval: '10h', reselectSync: true };
     expect(validateGroupForm(f, false)).toMatch(/sync/i);
   });
-  it('accepts a plain active_active group', () => {
-    const f = { ...emptyGroupFields(), name: 'g', mode: 'active_active', routingScope: 'per_flow' };
-    expect(validateGroupForm(f, false)).toBeNull();
+  it('validates positive probe interval and timeout', () => {
+    const f1 = { ...emptyGroupFields(), name: 'g', probeIntervalSecs: 0 };
+    expect(validateGroupForm(f1, false)).toMatch(/probe interval/i);
+    const f2 = { ...emptyGroupFields(), name: 'g', probeTimeoutSecs: -1 };
+    expect(validateGroupForm(f2, false)).toMatch(/probe timeout/i);
   });
 });
 
@@ -44,6 +46,86 @@ describe('buildGroupPayload', () => {
     expect(buildGroupPayload(f, false)).toEqual({
       name: 'g', mode: 'active_passive', routing_scope: 'global', shared_resume: false,
       reselect_at: ['03:00', '15:00'], reselect_sync: true,
+    });
+  });
+  it('encodes probe override with tls targets and http urls', () => {
+    const f = {
+      ...emptyGroupFields(),
+      name: 'g',
+      probeTlsTargets: 'www.instagram.com\nwww.youtube.com\napi.telegram.org',
+      probeHttpUrls: 'http://cp.cloudflare.com/generate_204',
+      probeIntervalSecs: 15,
+      probeTimeoutSecs: 5,
+    };
+    expect(buildGroupPayload(f, false)).toEqual({
+      name: 'g',
+      mode: 'active_active',
+      routing_scope: 'per_flow',
+      shared_resume: false,
+      reselect_at: [],
+      probe: {
+        interval_secs: 15,
+        timeout_secs: 5,
+        tls: {
+          targets: [
+            'www.instagram.com',
+            'www.youtube.com',
+            'api.telegram.org',
+          ],
+        },
+        http: {
+          urls: [
+            'http://cp.cloudflare.com/generate_204',
+          ],
+        },
+      },
+    });
+  });
+  it('clears probe by sending empty object when hadProbeOnDisk is true and all probe fields empty', () => {
+    const f = {
+      ...emptyGroupFields(),
+      name: 'g',
+      hadProbeOnDisk: true,
+    };
+    expect(buildGroupPayload(f, true)).toEqual({
+      mode: 'active_active',
+      routing_scope: 'per_flow',
+      shared_resume: false,
+      reselect_at: [],
+      probe: {},
+    });
+  });
+  it('round-trips probe through fieldsFromConfig', () => {
+    const cfg: GroupConfig = {
+      name: 'g',
+      probe: {
+        interval_secs: 10,
+        tls: {
+          targets: [
+            'www.instagram.com',
+            'www.youtube.com',
+          ],
+        },
+      },
+    };
+    const fields = fieldsFromConfig(cfg);
+    expect(fields.probeIntervalSecs).toBe(10);
+    expect(fields.probeTlsTargets).toBe('www.instagram.com\nwww.youtube.com');
+    expect(fields.hadProbeOnDisk).toBe(true);
+    expect(buildGroupPayload(fields, true)).toEqual({
+      mode: 'active_active',
+      routing_scope: 'per_flow',
+      shared_resume: false,
+      reselect_at: [],
+      probe: {
+        interval_secs: 10,
+        tls: {
+          targets: [
+            'www.instagram.com',
+            'www.youtube.com',
+          ],
+        },
+      },
     });
   });
   it('parses advanced fields by kind', () => {

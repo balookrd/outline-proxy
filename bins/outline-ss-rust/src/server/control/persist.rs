@@ -230,7 +230,15 @@ pub(super) struct ServerConfigPatch {
     #[serde(default)]
     pub outbound: Option<OutboundPatch>,
     #[serde(default)]
+    pub padding: Option<PaddingConfigPatch>,
+    #[serde(default)]
+    pub http_fallback: Option<HttpFallbackPatch>,
+    #[serde(default)]
+    pub sni_fallback: Option<SniFallbackPatch>,
+    #[serde(default)]
     pub tuning_profile: Option<String>,
+    #[serde(default)]
+    pub endpoints: Option<Vec<EndpointPatch>>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -257,6 +265,7 @@ pub(super) struct ServerListenerPatch {
     pub h3_listen: Option<String>,
     pub h3_cert_path: Option<String>,
     pub h3_key_path: Option<String>,
+    pub h3_initial_mtu: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -274,8 +283,59 @@ pub(super) struct OutboundPatch {
     pub prefer_ipv4: Option<bool>,
     pub ipv6_prefix: Option<String>,
     pub ipv6_interface: Option<String>,
+    pub ipv6_prefix_interface: Option<String>,
+    pub ipv6_refresh_secs: Option<u64>,
     pub ipv6_sticky: Option<bool>,
     pub ipv6_sticky_ttl_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct PaddingConfigPatch {
+    pub min_bytes: Option<u16>,
+    pub max_bytes: Option<u16>,
+    pub cover: Option<bool>,
+    pub cover_jitter_min_ms: Option<u64>,
+    pub cover_jitter_max_ms: Option<u64>,
+    pub throttle_detect_enabled: Option<bool>,
+    pub throttle_ratio_percent: Option<u32>,
+    pub throttle_window_secs: Option<u64>,
+    pub throttle_sustain_windows: Option<u32>,
+    pub throttle_min_bytes_per_sec: Option<u64>,
+    pub throttle_signal_cooldown_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct HttpFallbackPatch {
+    pub backend: Option<String>,
+    pub request_timeout_secs: Option<u64>,
+    pub add_x_forwarded_for: Option<bool>,
+    pub add_x_forwarded_proto: Option<bool>,
+    pub add_x_forwarded_host: Option<bool>,
+    pub proxy_protocol: Option<String>,
+    pub backend_proto: Option<String>,
+    pub apply_to_h1: Option<bool>,
+    pub apply_to_h3: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct SniFallbackPatch {
+    pub match_sni: Option<Vec<String>>,
+    pub allow_no_sni: Option<bool>,
+    pub max_client_hello_bytes: Option<usize>,
+    pub backends: Option<Vec<SniBackendPatch>>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub(super) struct SniBackendPatch {
+    pub backend: String,
+    pub proxy_protocol: Option<String>,
+    pub match_sni: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub(super) struct EndpointPatch {
+    pub path: String,
+    pub padded: bool,
 }
 
 pub(super) fn persist_config_patch(path: &Path, patch: &ServerConfigPatch) -> Result<()> {
@@ -346,6 +406,7 @@ fn patch_toml_config(original: &str, patch: &ServerConfigPatch) -> Result<String
         if server.h3_listen.is_some()
             || server.h3_cert_path.is_some()
             || server.h3_key_path.is_some()
+            || server.h3_initial_mtu.is_some()
         {
             if !table.contains_key("h3") || !table["h3"].is_table() {
                 let mut h3_tbl = Table::new();
@@ -361,6 +422,9 @@ fn patch_toml_config(original: &str, patch: &ServerConfigPatch) -> Result<String
             }
             if let Some(key) = &server.h3_key_path {
                 h3_table.insert("key_path", Item::Value(key.trim().into()));
+            }
+            if let Some(mtu) = server.h3_initial_mtu {
+                h3_table.insert("initial_mtu", Item::Value((mtu as i64).into()));
             }
         }
     }
@@ -402,6 +466,12 @@ fn patch_toml_config(original: &str, patch: &ServerConfigPatch) -> Result<String
         if let Some(iface) = &outbound.ipv6_interface {
             table.insert("ipv6_interface", Item::Value(iface.trim().into()));
         }
+        if let Some(piface) = &outbound.ipv6_prefix_interface {
+            table.insert("ipv6_prefix_interface", Item::Value(piface.trim().into()));
+        }
+        if let Some(refresh) = outbound.ipv6_refresh_secs {
+            table.insert("ipv6_refresh_secs", Item::Value((refresh as i64).into()));
+        }
         if let Some(sticky) = outbound.ipv6_sticky {
             table.insert("ipv6_sticky", Item::Value(sticky.into()));
         }
@@ -410,9 +480,163 @@ fn patch_toml_config(original: &str, patch: &ServerConfigPatch) -> Result<String
         }
     }
 
-    // 5. Tuning Profile
+    // 5. Padding
+    if let Some(p) = &patch.padding {
+        ensure_table(&mut doc, "padding");
+        let table = doc["padding"].as_table_mut().expect("table ensured");
+        if let Some(v) = p.min_bytes {
+            table.insert("min_bytes", Item::Value((v as i64).into()));
+        }
+        if let Some(v) = p.max_bytes {
+            table.insert("max_bytes", Item::Value((v as i64).into()));
+        }
+        if let Some(v) = p.cover {
+            table.insert("cover", Item::Value(v.into()));
+        }
+        if let Some(v) = p.cover_jitter_min_ms {
+            table.insert("cover_jitter_min_ms", Item::Value((v as i64).into()));
+        }
+        if let Some(v) = p.cover_jitter_max_ms {
+            table.insert("cover_jitter_max_ms", Item::Value((v as i64).into()));
+        }
+        if let Some(v) = p.throttle_detect_enabled {
+            table.insert("throttle_detect_enabled", Item::Value(v.into()));
+        }
+        if let Some(v) = p.throttle_ratio_percent {
+            table.insert("throttle_ratio_percent", Item::Value((v as i64).into()));
+        }
+        if let Some(v) = p.throttle_window_secs {
+            table.insert("throttle_window_secs", Item::Value((v as i64).into()));
+        }
+        if let Some(v) = p.throttle_sustain_windows {
+            table.insert("throttle_sustain_windows", Item::Value((v as i64).into()));
+        }
+        if let Some(v) = p.throttle_min_bytes_per_sec {
+            table.insert("throttle_min_bytes_per_sec", Item::Value((v as i64).into()));
+        }
+        if let Some(v) = p.throttle_signal_cooldown_secs {
+            table.insert("throttle_signal_cooldown_secs", Item::Value((v as i64).into()));
+        }
+    }
+
+    // 6. HTTP Fallback
+    if let Some(hf) = &patch.http_fallback {
+        ensure_table(&mut doc, "http_fallback");
+        let table = doc["http_fallback"].as_table_mut().expect("table ensured");
+        if let Some(b) = &hf.backend {
+            table.insert("backend", Item::Value(b.trim().into()));
+        }
+        if let Some(v) = hf.request_timeout_secs {
+            table.insert("request_timeout_secs", Item::Value((v as i64).into()));
+        }
+        if let Some(v) = hf.add_x_forwarded_for {
+            table.insert("add_x_forwarded_for", Item::Value(v.into()));
+        }
+        if let Some(v) = hf.add_x_forwarded_proto {
+            table.insert("add_x_forwarded_proto", Item::Value(v.into()));
+        }
+        if let Some(v) = hf.add_x_forwarded_host {
+            table.insert("add_x_forwarded_host", Item::Value(v.into()));
+        }
+        if let Some(v) = &hf.proxy_protocol {
+            table.insert("proxy_protocol", Item::Value(v.trim().into()));
+        }
+        if let Some(v) = &hf.backend_proto {
+            table.insert("backend_proto", Item::Value(v.trim().into()));
+        }
+        if let Some(v) = hf.apply_to_h1 {
+            table.insert("apply_to_h1", Item::Value(v.into()));
+        }
+        if let Some(v) = hf.apply_to_h3 {
+            table.insert("apply_to_h3", Item::Value(v.into()));
+        }
+    }
+
+    // 7. SNI Fallback
+    if let Some(sf) = &patch.sni_fallback {
+        ensure_table(&mut doc, "sni_fallback");
+        let table = doc["sni_fallback"].as_table_mut().expect("table ensured");
+        if let Some(match_sni) = &sf.match_sni {
+            let mut arr = Array::new();
+            for s in match_sni {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    arr.push(trimmed);
+                }
+            }
+            table.insert("match_sni", Item::Value(Value::Array(arr)));
+        }
+        if let Some(v) = sf.allow_no_sni {
+            table.insert("allow_no_sni", Item::Value(v.into()));
+        }
+        if let Some(v) = sf.max_client_hello_bytes {
+            table.insert("max_client_hello_bytes", Item::Value((v as i64).into()));
+        }
+        if let Some(backends) = &sf.backends {
+            table.remove("backend");
+            table.remove("proxy_protocol");
+
+            let mut aot = ArrayOfTables::new();
+            for b in backends {
+                let mut b_table = Table::new();
+                b_table.insert("backend", Item::Value(b.backend.trim().into()));
+                if let Some(pp) = &b.proxy_protocol {
+                    let trimmed = pp.trim();
+                    if !trimmed.is_empty() {
+                        b_table.insert("proxy_protocol", Item::Value(trimmed.into()));
+                    }
+                }
+                if let Some(match_sni) = &b.match_sni {
+                    let mut arr = Array::new();
+                    for s in match_sni {
+                        let trimmed = s.trim();
+                        if !trimmed.is_empty() {
+                            arr.push(trimmed);
+                        }
+                    }
+                    if !arr.is_empty() {
+                        b_table.insert("match_sni", Item::Value(Value::Array(arr)));
+                    }
+                }
+                aot.push(b_table);
+            }
+            table.insert("backends", Item::ArrayOfTables(aot));
+        }
+    }
+
+    // 8. Tuning Profile
     if let Some(profile) = &patch.tuning_profile {
-        doc.insert("tuning_profile", Item::Value(profile.trim().into()));
+        let trimmed = profile.trim();
+        if !trimmed.is_empty() {
+            doc.insert("tuning_profile", Item::Value(trimmed.into()));
+        }
+    }
+
+    // 9. Carrier Endpoints
+    if let Some(endpoints) = &patch.endpoints
+        && let Some(item) = doc.get_mut("endpoint")
+    {
+        if let Some(aot) = item.as_array_of_tables_mut() {
+            for ep in endpoints {
+                for tbl in aot.iter_mut() {
+                    if tbl.get("path").and_then(Item::as_str) == Some(&ep.path) {
+                        tbl.remove("padding");
+                        tbl.insert("padded", Item::Value(ep.padded.into()));
+                    }
+                }
+            }
+        } else if let Some(arr) = item.as_array_mut() {
+            for ep in endpoints {
+                for val in arr.iter_mut() {
+                    if let Some(inline) = val.as_inline_table_mut()
+                        && inline.get("path").and_then(Value::as_str) == Some(&ep.path)
+                    {
+                        inline.remove("padding");
+                        inline.insert("padded", Value::from(ep.padded));
+                    }
+                }
+            }
+        }
     }
 
     Ok(doc.to_string())

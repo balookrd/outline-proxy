@@ -744,7 +744,7 @@ pub(crate) struct UplinkGroupSection {
     /// Requires `reselect_at`. Default: `false`.
     pub(super) reselect_sync: Option<bool>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
-    pub(super) probe: Option<ProbeSection>,
+    pub(crate) probe: Option<ProbeSection>,
 }
 
 /// New: policy routing rule.
@@ -783,7 +783,7 @@ pub(crate) struct RouteSection {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ProbeSection {
+pub(crate) struct ProbeSection {
     pub(super) interval_secs: Option<u64>,
     pub(super) timeout_secs: Option<u64>,
     pub(super) max_concurrent: Option<usize>,
@@ -794,7 +794,7 @@ pub(super) struct ProbeSection {
     pub(super) http: Option<HttpProbeSection>,
     pub(super) dns: Option<DnsProbeSection>,
     pub(super) tcp: Option<TcpProbeSection>,
-    pub(super) tls: Option<TlsProbeSection>,
+    pub(crate) tls: Option<TlsProbeSection>,
     /// When false, disables the "skip probe when uplink already carries
     /// healthy traffic" optimisation. Default true (skip enabled).
     pub(super) skip_when_active: Option<bool>,
@@ -853,7 +853,7 @@ pub(super) struct TcpProbeSection {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TlsProbeSection {
+pub(crate) struct TlsProbeSection {
     /// Single target form (legacy / convenience). Either `target` or
     /// `targets` must be set; if both are set, `targets` wins.
     /// Accepts `"host:port"` or just `"host"` (port defaults to 443).
@@ -861,7 +861,7 @@ pub(super) struct TlsProbeSection {
     /// Rotation list. Each entry is `"host:port"` (or `"host"` for port 443);
     /// the probe advances through the list one entry per cycle, surfacing
     /// per-SNI filtering instead of masking it behind one still-reachable target.
-    pub(super) targets: Option<Vec<String>>,
+    pub(crate) targets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

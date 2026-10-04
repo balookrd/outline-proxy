@@ -23,16 +23,17 @@ beyond what its config points at.
 The `/ss` dashboard provides:
 - **Users** (`/ss`): CRUD access key management (Shadowsocks AEAD / VLESS), blocking, cloning, and credential generation.
 - **Mesh cluster** (`/ss/cluster`): multi-node anycast cluster and shard relay configuration (`[cluster]`). Allows viewing and configuring local Shard ID (0..15), QUIC mesh listening socket, cluster PSK (ChaCha20-Poly1305 / Blake3 KDF), relay budget, and remote peer shards.
-- **Server settings** (`/ss/settings`): server listening sockets (TCP & HTTP/3 QUIC), TLS certificates/keys, session resumption (0-RTT reconnect limits, TTL, downlink buffer), outbound IP routing (prefer IPv4, IPv6 rotation pool prefix, sticky sessions, egress interface), tuning profiles, and carrier endpoint pathways.
+- **Server settings** (`/ss/settings`): server listening sockets (TCP & HTTP/3 QUIC with `h3_initial_mtu`), TLS certificates/keys, session resumption (0-RTT reconnect limits, TTL, downlink buffer), outbound IP routing (prefer IPv4, IPv6 rotation pool prefix, dynamic prefix discovery interface, refresh interval, sticky sessions, egress interface), tuning profiles (`large`, `medium`, `small`), carrier padding and jitter obfuscation (`[padding]`), HTTP camouflage fallback (`[http_fallback]`), and carrier endpoint pathways.
 
 The `/ws` dashboard provides:
 - **Topology** (`/ws`): active wires, live EWMA RTT latencies, carrier packet loss ratios, and manual active uplink selection.
-- **Uplinks** (`/ws/uplinks`): CRUD editor for `[[outline.uplinks]]` entries, fallback wire chains, and reordering.
+- **Uplinks** (`/ws/uplinks`): CRUD editor for `[[outline.uplinks]]` entries, fallback wire chains, reordering, per-wire `ipv4_only` / `ipv6_first` resolution selectors, and anti-DPI carrier parameters (`shuffle_wires`, `shuffle_timer`, per-uplink `padding` override).
 - **Routing** (`/ws/routing`): dynamic rule matching (`[[route]]`) — create, update, delete, reorder, and hot-apply without a restart.
 - **Uplink groups** (`/ws/groups`): CRUD editor for `[[uplink_group]]` policy (mode, routing scope, reselect, warm standby, cluster resume, scoring/failover/keepalive knobs).
 - **Client settings** (`/ws/settings`): in-place editor for client configuration:
   - Quality and liveness probes (`[probe]`): intervals, timeouts, min failures, attempts, max concurrent probes, endpoint pre-check, HTTP rotation URLs, TLS target hosts, DNS/TCP tests.
-  - Ingress and local interfaces: SOCKS5 listen address and credentials (`[socks5]`, multi-user `[[socks5.users]]` list), TUN interface device parameters, MTU, max flows, SNI routing, QUIC sniffing, IPsec bypass, and Linux GSO/GRO/USO offloads (`[tun]`).
+  - Network & IP policy: global `ipv4_only`, `ipv6_first`, direct IPv6 prefix interface, and custom carrier UDP socket buffer sizes (`udp_recv_buf_bytes`, `udp_send_buf_bytes`).
+  - Ingress and local interfaces: SOCKS5 listen address and credentials (`[socks5]`, multi-user `[[socks5.users]]` list), TUN interface device parameters, MTU, max flows, SNI routing, QUIC sniffing, IPsec bypass, PMTUD below QUIC initial, Linux GSO/GRO/USO offloads (`[tun]`), and advanced TUN TCP engine (`[tun.tcp]`: payload sniffing, direct re-resolve, carrier migration, downlink rate caps, and buffers).
   - Carrier & dial policies: dial timeout (`[dial]`), TLS fingerprint profile diversification (`off`, `stable`, `random`), direct fwmark, prefer public IPv6 source, and wire padding obfuscation (`[padding]`: min/max bytes, cover traffic jitter, throttle reactivity).
   - Transport buffers & timeouts: QUIC stream/connection receive windows and keepalive (`[quic]`), HTTP/2 stream/connection window sizes and ping keepalive (`[h2]`), TCP idle and upstream response timeouts (`[tcp_timeouts]`).
   - Instant hot-apply via **Apply now** or graceful restart notification when socket/device parameters are modified.

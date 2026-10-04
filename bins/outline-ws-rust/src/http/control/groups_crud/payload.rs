@@ -167,12 +167,19 @@ pub(super) fn merge_patch_into_table(
     existing: &mut Table,
     patch: &GroupPayload,
 ) -> Result<(), String> {
+    let is_empty_probe = match &patch.probe {
+        Some(serde_json::Value::Object(map)) => map.is_empty(),
+        _ => false,
+    };
+    if is_empty_probe {
+        existing.remove("probe");
+    }
     let text = toml::to_string(patch).map_err(|e| format!("serialize group patch: {e}"))?;
     let doc = text
         .parse::<DocumentMut>()
         .map_err(|e| format!("render group patch: {e}"))?;
     for (key, item) in doc.as_table().iter() {
-        if key == "name" {
+        if key == "name" || (key == "probe" && is_empty_probe) {
             continue;
         }
         existing.insert(key, item.clone());

@@ -9,6 +9,28 @@ commit.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.10.3] - 2026-10-04
+
+### Added
+
+- **Comprehensive coverage of server and client configuration settings across UI dashboards**:
+  - **Server Settings (`/ss/settings`)**:
+    - Aligned `tuning_profile` selector with backend enum options (`large` default, `medium`, `small`).
+    - Added Carrier Padding & Jitter panel (`[padding]`: min/max padding bytes, cover mode, min/max jitter, and throttle detection).
+    - Added SNI Camouflage & Fallback panel (`[sni_fallback]`: local allowed SNI whitelist `match_sni`, toggle for no-SNI connections `allow_no_sni`, ClientHello limit, and dynamic `[[sni_fallback.backends]]` list with target, PROXY Protocol v1/v2, and SNI route filters).
+    - Added HTTP Camouflage & Fallback panel (`[http_fallback]`: backend URL `http://...`, protocol selection, PROXY Protocol header v1/v2, request timeout, H1/H3 application toggles, and X-Forwarded-* headers).
+    - Added `h3_initial_mtu` setting to Listeners panel.
+    - Added dynamic IPv6 discovery interface (`ipv6_prefix_interface`) and refresh interval (`ipv6_refresh_secs`) to Outbound panel.
+    - Made Carrier Endpoints padding toggle interactive in Server Settings table, persisting `padded` flag changes directly to server `config.toml`.
+  - **Client Settings (`/ws/settings`)**:
+    - Added Network & IP Resolution Policy block (global `ipv4_only`, `ipv6_first`, `direct_ipv6_prefix_interface`, and socket `udp_recv_buf_bytes` / `udp_send_buf_bytes`).
+    - Added TUN TCP Engine panel (`[tun.tcp]`: payload sniffing, direct re-resolve, carrier migration, downlink rate caps, server budget, receive window, connect/handshake timeouts) and `pmtud_emit_below_quic_initial`.
+  - **Uplink Drawer (`/ws/uplinks`)**:
+    - Added `IPv4 only` tri-state selector (`—`, `true`, `false`) for both primary uplinks and each individual fallback in `fallbacks[]`.
+    - Added anti-DPI carrier controls in Uplink Drawer and REST API (`outline-ws-rust`): `Carrier padding` tri-state override (`—` inherit global, `true`, `false`), `Shuffle wires` tri-state selector (`shuffle_wires = true/false`), and `Shuffle timer` periodic active wire reroll interval (`shuffle_timer = "10m"`).
+  - **Uplink Group Drawer (`/ws/uplink-groups`)**:
+    - Added Probe Override fieldset (`[uplink_group.probe]`): multi-line TLS probe targets (`[uplink_group.probe.tls.targets]`), HTTP probe URLs (`[uplink_group.probe.http.urls]`), custom check interval (`interval_secs`), and timeout (`timeout_secs`), with full REST API round-trip support in `outline-ws-rust` and clean table deletion on clear.
+
 ## [1.9.3] - 2026-09-14
 
 ### Changed

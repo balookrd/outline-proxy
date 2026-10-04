@@ -43,6 +43,7 @@ export interface ServerListenersConfig {
   h3_listen: string | null;
   h3_cert_path: string | null;
   h3_key_path: string | null;
+  h3_initial_mtu?: number | null;
 }
 
 export interface SessionResumptionConfig {
@@ -58,8 +59,49 @@ export interface OutboundConfig {
   prefer_ipv4: boolean | null;
   ipv6_prefix: string | null;
   ipv6_interface: string | null;
+  ipv6_prefix_interface?: string | null;
+  ipv6_refresh_secs?: number | null;
   ipv6_sticky: boolean | null;
   ipv6_sticky_ttl_secs: number | null;
+}
+
+export interface ServerPaddingConfig {
+  min_bytes?: number | null;
+  max_bytes?: number | null;
+  cover?: boolean | null;
+  cover_jitter_min_ms?: number | null;
+  cover_jitter_max_ms?: number | null;
+  throttle_detect_enabled?: boolean | null;
+  throttle_ratio_percent?: number | null;
+  throttle_window_secs?: number | null;
+  throttle_sustain_windows?: number | null;
+  throttle_min_bytes_per_sec?: number | null;
+  throttle_signal_cooldown_secs?: number | null;
+}
+
+export interface ServerHttpFallbackConfig {
+  backend?: string | null;
+  request_timeout_secs?: number | null;
+  add_x_forwarded_for?: boolean | null;
+  add_x_forwarded_proto?: boolean | null;
+  add_x_forwarded_host?: boolean | null;
+  proxy_protocol?: string | null;
+  backend_proto?: string | null;
+  apply_to_h1?: boolean | null;
+  apply_to_h3?: boolean | null;
+}
+
+export interface SniBackendConfig {
+  backend: string;
+  proxy_protocol?: string | null;
+  match_sni?: string[] | null;
+}
+
+export interface ServerSniFallbackConfig {
+  match_sni?: string[] | null;
+  allow_no_sni?: boolean | null;
+  max_client_hello_bytes?: number | null;
+  backends?: SniBackendConfig[] | null;
 }
 
 export interface EndpointConfigItem {
@@ -75,8 +117,16 @@ export interface ServerConfigResponse {
   server: ServerListenersConfig | null;
   session_resumption: SessionResumptionConfig | null;
   outbound: OutboundConfig | null;
+  padding?: ServerPaddingConfig | null;
+  http_fallback?: ServerHttpFallbackConfig | null;
+  sni_fallback?: ServerSniFallbackConfig | null;
   tuning_profile: string | null;
   endpoints: EndpointConfigItem[];
+}
+
+export interface EndpointPatch {
+  path: string;
+  padded: boolean;
 }
 
 export interface ServerConfigPatch {
@@ -84,7 +134,11 @@ export interface ServerConfigPatch {
   server?: Partial<ServerListenersConfig> | null;
   session_resumption?: Partial<SessionResumptionConfig> | null;
   outbound?: Partial<OutboundConfig> | null;
+  padding?: Partial<ServerPaddingConfig> | null;
+  http_fallback?: Partial<ServerHttpFallbackConfig> | null;
+  sni_fallback?: Partial<ServerSniFallbackConfig> | null;
   tuning_profile?: string | null;
+  endpoints?: EndpointPatch[] | null;
 }
 
 // WS — topology envelope from ws/api.rs InstanceView.
@@ -276,12 +330,16 @@ export interface WireConfig {
   password?: string;
   fwmark?: number;
   ipv6_first?: boolean;
+  ipv4_only?: boolean;
   [k: string]: unknown;
 }
 export type FallbackConfig = WireConfig;
 export interface UplinkConfig extends WireConfig {
   name?: string;
   weight?: number;
+  shuffle_wires?: boolean | null;
+  shuffle_timer?: string | null;
+  padding?: boolean | null;
   /// `[[outline.uplinks.fallbacks]]`, in on-disk/priority order. Absent on
   /// an uplink with no fallbacks configured (not present in the TOML table
   /// at all — `table_to_json` only emits keys that exist on disk).
@@ -355,6 +413,20 @@ export interface RouteMutationResponse {
 // (table_to_json), absent when the config couldn't be read. Only the fields
 // the form treats specially are named; the index signature carries the ~40
 // Advanced policy fields (all optional, primitive-typed).
+export interface GroupProbeConfig {
+  interval_secs?: number;
+  timeout_secs?: number;
+  tls?: {
+    target?: string;
+    targets?: string[];
+  };
+  http?: {
+    url?: string;
+    urls?: string[];
+  };
+  [k: string]: unknown;
+}
+
 export interface GroupConfig {
   name?: string;
   mode?: string;
@@ -365,6 +437,7 @@ export interface GroupConfig {
   reselect_at?: string[];
   reselect_interval?: string;
   reselect_sync?: boolean;
+  probe?: GroupProbeConfig | null;
   [k: string]: unknown;
 }
 export interface GroupEntry {
@@ -431,6 +504,18 @@ export interface WsSocks5Config {
   users_count?: number;
 }
 
+export interface WsTunTcpConfig {
+  sniffing?: boolean | null;
+  sniff_timeout_ms?: number | null;
+  sniff_direct_reresolve?: boolean | null;
+  carrier_migration?: boolean | null;
+  downlink_max_mbit?: number | null;
+  pending_server_budget_bytes?: number | null;
+  initial_receive_window_bytes?: number | null;
+  connect_timeout_secs?: number | null;
+  handshake_timeout_secs?: number | null;
+}
+
 export interface WsTunConfig {
   name?: string | null;
   mtu?: number | null;
@@ -439,11 +524,13 @@ export interface WsTunConfig {
   idle_timeout_secs?: number | null;
   max_concurrent_upstream_dials?: number | null;
   ipsec_bypass?: boolean | null;
+  pmtud_emit_below_quic_initial?: boolean | null;
   sniff_quic?: boolean | null;
   route_by_sni?: boolean | null;
   gso?: boolean | null;
   gro?: boolean | null;
   uso?: boolean | null;
+  tcp?: WsTunTcpConfig | null;
 }
 
 export interface WsDialConfig {
@@ -494,6 +581,11 @@ export interface WsConfigResponse {
   fingerprint_profile?: string | null;
   prefer_public_ipv6_src?: boolean | null;
   direct_fwmark?: number | null;
+  direct_ipv6_prefix_interface?: string | null;
+  ipv4_only?: boolean | null;
+  ipv6_first?: boolean | null;
+  udp_recv_buf_bytes?: number | null;
+  udp_send_buf_bytes?: number | null;
 }
 
 export interface WsConfigPatch {
@@ -513,6 +605,11 @@ export interface WsConfigPatch {
   fingerprint_profile?: string | null;
   prefer_public_ipv6_src?: boolean | null;
   direct_fwmark?: number | null;
+  direct_ipv6_prefix_interface?: string | null;
+  ipv4_only?: boolean | null;
+  ipv6_first?: boolean | null;
+  udp_recv_buf_bytes?: number | null;
+  udp_send_buf_bytes?: number | null;
 }
 
 export interface WsConfigMutationResponse {
