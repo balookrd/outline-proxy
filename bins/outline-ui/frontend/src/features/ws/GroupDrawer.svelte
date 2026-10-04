@@ -147,6 +147,57 @@
       <span class="hint">Reselect requires mode = active_passive and routing_scope = global/per_uplink.</span>
     </fieldset>
 
+    <fieldset class="fieldset">
+      <legend>Probe override</legend>
+      <div class="fieldrow">
+        <label for="group-probe-tls-targets">TLS targets</label>
+        <textarea
+          id="group-probe-tls-targets"
+          class="field-mono"
+          rows="3"
+          bind:value={fields.probeTlsTargets}
+          placeholder="www.instagram.com&#10;www.youtube.com&#10;api.telegram.org"
+        ></textarea>
+        <span class="hint">Hostnames for TLS probes ([uplink_group.probe.tls.targets]), one per line.</span>
+      </div>
+      <div class="fieldrow">
+        <label for="group-probe-http-urls">HTTP URLs</label>
+        <textarea
+          id="group-probe-http-urls"
+          class="field-mono"
+          rows="2"
+          bind:value={fields.probeHttpUrls}
+          placeholder="http://cp.cloudflare.com/generate_204"
+        ></textarea>
+        <span class="hint">URLs for HTTP probes ([uplink_group.probe.http.urls]), one per line.</span>
+      </div>
+      <div class="fieldrow">
+        <label for="group-probe-interval">Interval (s)</label>
+        <input
+          id="group-probe-interval"
+          class="field-mono"
+          type="number"
+          min="1"
+          step="1"
+          bind:value={fields.probeIntervalSecs}
+          placeholder="default"
+        />
+      </div>
+      <div class="fieldrow">
+        <label for="group-probe-timeout">Timeout (s)</label>
+        <input
+          id="group-probe-timeout"
+          class="field-mono"
+          type="number"
+          min="1"
+          step="1"
+          bind:value={fields.probeTimeoutSecs}
+          placeholder="default"
+        />
+      </div>
+      <span class="hint">Overrides the global [probe] section for uplinks in this group.</span>
+    </fieldset>
+
     {#each sections as section}
       <details class="fieldset">
         <summary>{section}</summary>

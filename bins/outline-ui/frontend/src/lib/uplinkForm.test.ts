@@ -76,6 +76,10 @@ describe('buildUplinkPayload — create, explicit mode', () => {
     expect(out).not.toHaveProperty('weight');
     expect(out).not.toHaveProperty('fwmark');
     expect(out).not.toHaveProperty('ipv6_first');
+    expect(out).not.toHaveProperty('ipv4_only');
+    expect(out).not.toHaveProperty('shuffle_wires');
+    expect(out).not.toHaveProperty('shuffle_timer');
+    expect(out).not.toHaveProperty('padding');
   });
 
   it('weight 0 is sent (numeric zero is a provided value, not empty)', () => {
@@ -96,6 +100,45 @@ describe('buildUplinkPayload — create, explicit mode', () => {
       ipv6_first: false,
     });
     expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x' }, false, [])).not.toHaveProperty('ipv6_first');
+  });
+
+  it('ipv4Only "true"/"false" map to booleans; "" is omitted', () => {
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x', ipv4Only: 'true' }, false, [])).toMatchObject({
+      ipv4_only: true,
+    });
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x', ipv4Only: 'false' }, false, [])).toMatchObject({
+      ipv4_only: false,
+    });
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x' }, false, [])).not.toHaveProperty('ipv4_only');
+  });
+
+  it('padding "true"/"false" map to booleans; "" is omitted', () => {
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x', padding: 'true' }, false, [])).toMatchObject({
+      padding: true,
+    });
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x', padding: 'false' }, false, [])).toMatchObject({
+      padding: false,
+    });
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x' }, false, [])).not.toHaveProperty('padding');
+  });
+
+  it('shuffleWires "true"/"false" map to booleans; "" is omitted', () => {
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x', shuffleWires: 'true' }, false, [])).toMatchObject({
+      shuffle_wires: true,
+    });
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x', shuffleWires: 'false' }, false, [])).toMatchObject({
+      shuffle_wires: false,
+    });
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x' }, false, [])).not.toHaveProperty('shuffle_wires');
+  });
+
+  it('shuffleTimer trimmed is sent; empty is omitted', () => {
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x', shuffleTimer: ' 10m ' }, false, [])).toMatchObject({
+      shuffle_timer: '10m',
+    });
+    expect(buildUplinkPayload({ ...emptyUplinkFields(), name: 'x', shuffleTimer: '' }, false, [])).not.toHaveProperty(
+      'shuffle_timer',
+    );
   });
 
   it('all explicit fields filled round-trip onto the payload with snake_case keys', () => {
@@ -122,6 +165,10 @@ describe('buildUplinkPayload — create, explicit mode', () => {
       weight: 12.5,
       fwmark: 7,
       ipv6First: 'true',
+      ipv4Only: 'true',
+      shuffleWires: 'true',
+      shuffleTimer: '15m',
+      padding: 'true',
     };
     expect(buildUplinkPayload(fields, false, [])).toEqual({
       name: 'cloud1',
@@ -144,6 +191,10 @@ describe('buildUplinkPayload — create, explicit mode', () => {
       weight: 12.5,
       fwmark: 7,
       ipv6_first: true,
+      ipv4_only: true,
+      shuffle_wires: true,
+      shuffle_timer: '15m',
+      padding: true,
       fallbacks: [],
     });
   });
@@ -272,6 +323,10 @@ describe('fieldsFromConfig', () => {
       weight: 12,
       fwmark: 5,
       ipv6_first: false,
+      ipv4_only: false,
+      shuffle_wires: false,
+      shuffle_timer: '10m',
+      padding: true,
     };
     expect(fieldsFromConfig(cfg)).toEqual({
       name: '',
@@ -296,6 +351,10 @@ describe('fieldsFromConfig', () => {
       weight: 12,
       fwmark: 5,
       ipv6First: 'false',
+      ipv4Only: 'false',
+      shuffleWires: 'false',
+      shuffleTimer: '10m',
+      padding: 'true',
     });
   });
 
@@ -307,6 +366,17 @@ describe('fieldsFromConfig', () => {
 
   it('ipv6_first unset (not present in config) stays the blank tri-state, not "false"', () => {
     expect(fieldsFromConfig({ transport: 'ss' }).ipv6First).toBe('');
+  });
+
+  it('shuffle_wires and padding unset stay the blank tri-state, not "false"', () => {
+    expect(fieldsFromConfig({ transport: 'ss' }).shuffleWires).toBe('');
+    expect(fieldsFromConfig({ transport: 'ss', shuffle_wires: false }).shuffleWires).toBe('false');
+    expect(fieldsFromConfig({ transport: 'ss', shuffle_wires: true }).shuffleWires).toBe('true');
+    expect(fieldsFromConfig({ transport: 'ss' }).padding).toBe('');
+    expect(fieldsFromConfig({ transport: 'ss', padding: false }).padding).toBe('false');
+    expect(fieldsFromConfig({ transport: 'ss', padding: true }).padding).toBe('true');
+    expect(fieldsFromConfig({ transport: 'ss' }).shuffleTimer).toBe('');
+    expect(fieldsFromConfig({ transport: 'ss', shuffle_timer: '1h' }).shuffleTimer).toBe('1h');
   });
 
   it('link present ⇒ share-link mode, prefilled from config (Task 8b edit-mode detection)', () => {
@@ -351,6 +421,10 @@ describe('emptyUplinkFields', () => {
       weight: null,
       fwmark: null,
       ipv6First: '',
+      ipv4Only: '',
+      shuffleWires: '',
+      shuffleTimer: '',
+      padding: '',
     });
   });
 });
@@ -387,6 +461,7 @@ describe('buildFallbackPayload — explicit mode', () => {
       password: 'fbsecret',
       fwmark: 9,
       ipv6First: 'true',
+      ipv4Only: 'false',
     };
     expect(buildFallbackPayload(fields)).toEqual({
       transport: 'vless',
@@ -407,6 +482,7 @@ describe('buildFallbackPayload — explicit mode', () => {
       password: 'fbsecret',
       fwmark: 9,
       ipv6_first: true,
+      ipv4_only: false,
     });
   });
 
@@ -483,6 +559,7 @@ describe('fallbackFieldsFromConfig', () => {
       password: 'p',
       fwmark: 5,
       ipv6_first: false,
+      ipv4_only: true,
     };
     expect(fallbackFieldsFromConfig(cfg)).toEqual({
       useShareLink: false,
@@ -505,6 +582,7 @@ describe('fallbackFieldsFromConfig', () => {
       password: 'p',
       fwmark: 5,
       ipv6First: 'false',
+      ipv4Only: 'true',
     });
   });
 
@@ -588,6 +666,7 @@ describe('emptyFallbackFields', () => {
       password: '',
       fwmark: null,
       ipv6First: '',
+      ipv4Only: '',
     });
   });
 });

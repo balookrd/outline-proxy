@@ -385,6 +385,42 @@
         <option value="false">false</option>
       </select>
     </div>
+    <div class="fieldrow">
+      <label for="uplink-ipv4-only">IPv4 only</label>
+      <select id="uplink-ipv4-only" class="field-mono" bind:value={fields.ipv4Only}>
+        <option value="">—</option>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    </div>
+    <div class="fieldrow">
+      <label for="uplink-padding">Carrier padding</label>
+      <select id="uplink-padding" class="field-mono" bind:value={fields.padding}>
+        <option value="">— (inherit global)</option>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    </div>
+    <div class="fieldrow">
+      <label for="uplink-shuffle-wires">Shuffle wires</label>
+      <select id="uplink-shuffle-wires" class="field-mono" bind:value={fields.shuffleWires}>
+        <option value="">—</option>
+        <option value="true">true</option>
+        <option value="false">false</option>
+      </select>
+    </div>
+    <div class="fieldrow">
+      <label for="uplink-shuffle-timer">Shuffle timer</label>
+      <input
+        id="uplink-shuffle-timer"
+        class="field-mono"
+        type="text"
+        bind:value={fields.shuffleTimer}
+        autocomplete="off"
+        placeholder="e.g. 10m, 1h (disabled if blank)"
+      />
+      <span class="hint">Periodic active wire reroll interval (e.g. 30s, 5m, 10m, 1h, 2d).</span>
+    </div>
     {#if editing}
       <span class="hint">Every non-empty field above is sent, including unchanged ones — blank fields stay untouched on the server.</span>
     {/if}
@@ -558,6 +594,14 @@
             <div class="fieldrow">
               <label for={`fb-${row.key}-ipv6-first`}>IPv6 first</label>
               <select id={`fb-${row.key}-ipv6-first`} class="field-mono" bind:value={row.fields.ipv6First}>
+                <option value="">inherit parent</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </div>
+            <div class="fieldrow">
+              <label for={`fb-${row.key}-ipv4-only`}>IPv4 only</label>
+              <select id={`fb-${row.key}-ipv4-only`} class="field-mono" bind:value={row.fields.ipv4Only}>
                 <option value="">inherit parent</option>
                 <option value="true">true</option>
                 <option value="false">false</option>

@@ -82,6 +82,13 @@ export interface GroupFormFields {
   reselectAt: string; // one HH:MM per line
   reselectInterval: string;
   reselectSync: boolean;
+  // Probe override ([uplink_group.probe])
+  probeIntervalSecs: number | null;
+  probeTimeoutSecs: number | null;
+  probeTlsTargets: string; // one host per line
+  probeHttpUrls: string;   // one URL per line
+  hadProbeOnDisk: boolean;
+  rawProbe?: Record<string, unknown>;
   // Raw string state for every ADVANCED_FIELDS key. bool → '' | 'true' | 'false'.
   advanced: Record<string, string>;
 }
@@ -100,6 +107,11 @@ export function emptyGroupFields(): GroupFormFields {
     reselectAt: '',
     reselectInterval: '',
     reselectSync: false,
+    probeIntervalSecs: null,
+    probeTimeoutSecs: null,
+    probeTlsTargets: '',
+    probeHttpUrls: '',
+    hadProbeOnDisk: false,
     advanced,
   };
 }
@@ -124,6 +136,31 @@ export function fieldsFromConfig(config: GroupConfig | null | undefined): GroupF
     f.reselectInterval = c.reselect_interval;
   }
   if (typeof c.reselect_sync === 'boolean') f.reselectSync = c.reselect_sync;
+  if (c.probe && typeof c.probe === 'object') {
+    const p = c.probe as Record<string, unknown>;
+    f.hadProbeOnDisk = true;
+    f.rawProbe = { ...p };
+    if (typeof p.interval_secs === 'number') f.probeIntervalSecs = p.interval_secs;
+    if (typeof p.timeout_secs === 'number') f.probeTimeoutSecs = p.timeout_secs;
+
+    if (p.tls && typeof p.tls === 'object') {
+      const tls = p.tls as Record<string, unknown>;
+      if (Array.isArray(tls.targets)) {
+        f.probeTlsTargets = (tls.targets as string[]).join('\n');
+      } else if (typeof tls.target === 'string') {
+        f.probeTlsTargets = tls.target;
+      }
+    }
+
+    if (p.http && typeof p.http === 'object') {
+      const http = p.http as Record<string, unknown>;
+      if (Array.isArray(http.urls)) {
+        f.probeHttpUrls = (http.urls as string[]).join('\n');
+      } else if (typeof http.url === 'string') {
+        f.probeHttpUrls = http.url;
+      }
+    }
+  }
   for (const field of ADVANCED_FIELDS) {
     const v = c[field.key];
     if (v == null) continue;
@@ -136,6 +173,12 @@ export function validateGroupForm(f: GroupFormFields, editing: boolean): string 
   if (!editing && !f.name.trim()) return 'name is required';
   if (f.name.trim().toLowerCase() === 'direct' || f.name.trim().toLowerCase() === 'drop') {
     return 'name "direct"/"drop" is reserved';
+  }
+  if (f.probeIntervalSecs !== null && f.probeIntervalSecs <= 0) {
+    return 'probe interval must be > 0';
+  }
+  if (f.probeTimeoutSecs !== null && f.probeTimeoutSecs <= 0) {
+    return 'probe timeout must be > 0';
   }
   if (f.reselectMode !== 'none') {
     if (f.mode !== 'active_passive') return 'reselect requires mode = active_passive';
@@ -179,6 +222,57 @@ export function buildGroupPayload(f: GroupFormFields, editing: boolean): Record<
       out.reselect_interval = f.reselectInterval.trim();
     }
   }
+
+  // Probe override
+  const tlsTargets = lines(f.probeTlsTargets);
+  const httpUrls = lines(f.probeHttpUrls);
+  const hasProbeConfig =
+    tlsTargets.length > 0 ||
+    httpUrls.length > 0 ||
+    f.probeIntervalSecs !== null ||
+    f.probeTimeoutSecs !== null;
+
+  if (hasProbeConfig) {
+    const probeObj: Record<string, unknown> = {
+      ...(f.rawProbe ?? {}),
+    };
+    if (f.probeIntervalSecs !== null) {
+      probeObj.interval_secs = Math.trunc(f.probeIntervalSecs);
+    } else {
+      delete probeObj.interval_secs;
+    }
+    if (f.probeTimeoutSecs !== null) {
+      probeObj.timeout_secs = Math.trunc(f.probeTimeoutSecs);
+    } else {
+      delete probeObj.timeout_secs;
+    }
+    if (tlsTargets.length > 0) {
+      const existingTls =
+        typeof probeObj.tls === 'object' && probeObj.tls !== null
+          ? { ...(probeObj.tls as Record<string, unknown>) }
+          : {};
+      existingTls.targets = tlsTargets;
+      delete existingTls.target;
+      probeObj.tls = existingTls;
+    } else {
+      delete probeObj.tls;
+    }
+    if (httpUrls.length > 0) {
+      const existingHttp =
+        typeof probeObj.http === 'object' && probeObj.http !== null
+          ? { ...(probeObj.http as Record<string, unknown>) }
+          : {};
+      existingHttp.urls = httpUrls;
+      delete existingHttp.url;
+      probeObj.http = existingHttp;
+    } else {
+      delete probeObj.http;
+    }
+    out.probe = probeObj;
+  } else if (f.hadProbeOnDisk) {
+    out.probe = {};
+  }
+
   for (const field of ADVANCED_FIELDS) {
     const raw = (f.advanced[field.key] ?? '').trim();
     if (!raw) continue;

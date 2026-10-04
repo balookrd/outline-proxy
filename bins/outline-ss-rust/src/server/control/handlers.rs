@@ -218,6 +218,9 @@ pub(super) struct ServerConfigResponse {
     pub server: Option<ServerListenerConfigView>,
     pub session_resumption: Option<SessionResumptionConfigView>,
     pub outbound: Option<OutboundConfigView>,
+    pub padding: Option<PaddingConfigView>,
+    pub http_fallback: Option<HttpFallbackConfigView>,
+    pub sni_fallback: Option<SniFallbackConfigView>,
     pub tuning_profile: Option<String>,
     pub endpoints: Vec<EndpointConfigView>,
 }
@@ -247,6 +250,7 @@ pub(super) struct ServerListenerConfigView {
     pub h3_listen: Option<String>,
     pub h3_cert_path: Option<String>,
     pub h3_key_path: Option<String>,
+    pub h3_initial_mtu: Option<u16>,
 }
 
 #[derive(Debug, Serialize)]
@@ -264,8 +268,53 @@ pub(super) struct OutboundConfigView {
     pub prefer_ipv4: Option<bool>,
     pub ipv6_prefix: Option<String>,
     pub ipv6_interface: Option<String>,
+    pub ipv6_prefix_interface: Option<String>,
+    pub ipv6_refresh_secs: Option<u64>,
     pub ipv6_sticky: Option<bool>,
     pub ipv6_sticky_ttl_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct PaddingConfigView {
+    pub min_bytes: Option<u16>,
+    pub max_bytes: Option<u16>,
+    pub cover: Option<bool>,
+    pub cover_jitter_min_ms: Option<u64>,
+    pub cover_jitter_max_ms: Option<u64>,
+    pub throttle_detect_enabled: Option<bool>,
+    pub throttle_ratio_percent: Option<u32>,
+    pub throttle_window_secs: Option<u64>,
+    pub throttle_sustain_windows: Option<u32>,
+    pub throttle_min_bytes_per_sec: Option<u64>,
+    pub throttle_signal_cooldown_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct HttpFallbackConfigView {
+    pub backend: Option<String>,
+    pub request_timeout_secs: Option<u64>,
+    pub add_x_forwarded_for: Option<bool>,
+    pub add_x_forwarded_proto: Option<bool>,
+    pub add_x_forwarded_host: Option<bool>,
+    pub proxy_protocol: Option<String>,
+    pub backend_proto: Option<String>,
+    pub apply_to_h1: Option<bool>,
+    pub apply_to_h3: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct SniFallbackConfigView {
+    pub match_sni: Vec<String>,
+    pub allow_no_sni: bool,
+    pub max_client_hello_bytes: Option<usize>,
+    pub backends: Vec<SniBackendConfigView>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct SniBackendConfigView {
+    pub backend: String,
+    pub proxy_protocol: Option<String>,
+    pub match_sni: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -347,6 +396,7 @@ pub(super) async fn get_config(State(state): State<ControlState>) -> axum::respo
                 .as_ref()
                 .and_then(|h| h.key_path.as_ref())
                 .map(|p| p.display().to_string()),
+            h3_initial_mtu: df.h3.as_ref().and_then(|h| h.initial_mtu),
         })
     } else {
         Some(ServerListenerConfigView {
@@ -356,6 +406,7 @@ pub(super) async fn get_config(State(state): State<ControlState>) -> axum::respo
             h3_listen: state.config.h3_listen.map(|a| a.to_string()),
             h3_cert_path: state.config.h3_cert_path.as_ref().map(|p| p.display().to_string()),
             h3_key_path: state.config.h3_key_path.as_ref().map(|p| p.display().to_string()),
+            h3_initial_mtu: state.config.h3_initial_mtu,
         })
     };
 
@@ -385,6 +436,8 @@ pub(super) async fn get_config(State(state): State<ControlState>) -> axum::respo
             prefer_ipv4: df.prefer_ipv4,
             ipv6_prefix: df.ipv6_prefix.clone(),
             ipv6_interface: df.ipv6_interface.clone(),
+            ipv6_prefix_interface: df.ipv6_prefix_interface.clone(),
+            ipv6_refresh_secs: df.ipv6_refresh_secs,
             ipv6_sticky: df.ipv6_sticky,
             ipv6_sticky_ttl_secs: df.ipv6_sticky_ttl_secs,
         })
@@ -393,15 +446,150 @@ pub(super) async fn get_config(State(state): State<ControlState>) -> axum::respo
             prefer_ipv4: Some(state.config.prefer_ipv4_upstream),
             ipv6_prefix: state.config.outbound_ipv6_prefix.as_ref().map(|p| p.to_string()),
             ipv6_interface: state.config.outbound_ipv6_interface.clone(),
+            ipv6_prefix_interface: state.config.outbound_ipv6_prefix_interface.clone(),
+            ipv6_refresh_secs: Some(state.config.outbound_ipv6_refresh_secs),
             ipv6_sticky: Some(state.config.outbound_ipv6_sticky),
             ipv6_sticky_ttl_secs: Some(state.config.outbound_ipv6_sticky_ttl_secs),
+        })
+    };
+
+    let padding = if let Some(df) = disk_file.as_ref().and_then(|f| f.padding.as_ref()) {
+        Some(PaddingConfigView {
+            min_bytes: df.min_bytes,
+            max_bytes: df.max_bytes,
+            cover: df.cover,
+            cover_jitter_min_ms: df.cover_jitter_min_ms,
+            cover_jitter_max_ms: df.cover_jitter_max_ms,
+            throttle_detect_enabled: df.throttle_detect_enabled,
+            throttle_ratio_percent: df.throttle_ratio_percent,
+            throttle_window_secs: df.throttle_window_secs,
+            throttle_sustain_windows: df.throttle_sustain_windows,
+            throttle_min_bytes_per_sec: df.throttle_min_bytes_per_sec,
+            throttle_signal_cooldown_secs: df.throttle_signal_cooldown_secs,
+        })
+    } else {
+        Some(PaddingConfigView {
+            min_bytes: Some(state.config.padding.min_bytes),
+            max_bytes: Some(state.config.padding.max_bytes),
+            cover: Some(state.config.padding.cover),
+            cover_jitter_min_ms: Some(state.config.padding.cover_jitter_min_ms),
+            cover_jitter_max_ms: Some(state.config.padding.cover_jitter_max_ms),
+            throttle_detect_enabled: Some(state.config.padding.throttle_detect_enabled),
+            throttle_ratio_percent: Some(state.config.padding.throttle_ratio_percent),
+            throttle_window_secs: Some(state.config.padding.throttle_window_secs),
+            throttle_sustain_windows: Some(state.config.padding.throttle_sustain_windows),
+            throttle_min_bytes_per_sec: Some(state.config.padding.throttle_min_bytes_per_sec),
+            throttle_signal_cooldown_secs: Some(state.config.padding.throttle_signal_cooldown_secs),
+        })
+    };
+
+    let http_fallback = if let Some(df) = disk_file.as_ref().and_then(|f| f.http_fallback.as_ref())
+    {
+        Some(HttpFallbackConfigView {
+            backend: df.backend.clone(),
+            request_timeout_secs: df.request_timeout_secs,
+            add_x_forwarded_for: df.add_x_forwarded_for,
+            add_x_forwarded_proto: df.add_x_forwarded_proto,
+            add_x_forwarded_host: df.add_x_forwarded_host,
+            proxy_protocol: df.proxy_protocol.clone(),
+            backend_proto: df.backend_proto.clone(),
+            apply_to_h1: df.apply_to_h1,
+            apply_to_h3: df.apply_to_h3,
+        })
+    } else {
+        state.config.http_fallback.as_ref().map(|hf| HttpFallbackConfigView {
+            backend: Some(hf.backend_authority.clone()),
+            request_timeout_secs: Some(hf.request_timeout_secs),
+            add_x_forwarded_for: Some(hf.add_x_forwarded_for),
+            add_x_forwarded_proto: Some(hf.add_x_forwarded_proto),
+            add_x_forwarded_host: Some(hf.add_x_forwarded_host),
+            proxy_protocol: hf.proxy_protocol.as_ref().map(|p| match p {
+                crate::config::ProxyProtocolVersion::V1 => "v1".to_string(),
+                crate::config::ProxyProtocolVersion::V2 => "v2".to_string(),
+            }),
+            backend_proto: Some(match hf.backend_proto {
+                crate::config::BackendProto::H1 => "h1".to_string(),
+                crate::config::BackendProto::H2 => "h2".to_string(),
+            }),
+            apply_to_h1: Some(hf.apply_to_h1),
+            apply_to_h3: Some(hf.apply_to_h3),
+        })
+    };
+
+    let sni_fallback = if let Some(df) = disk_file.as_ref().and_then(|f| f.sni_fallback.as_ref()) {
+        let backends = if let Some(bes) = &df.backends {
+            bes.iter()
+                .map(|b| SniBackendConfigView {
+                    backend: b.backend.clone(),
+                    proxy_protocol: b.proxy_protocol.clone(),
+                    match_sni: b.match_sni.clone().unwrap_or_default(),
+                })
+                .collect()
+        } else if let Some(b) = &df.backend {
+            vec![SniBackendConfigView {
+                backend: b.clone(),
+                proxy_protocol: df.proxy_protocol.clone(),
+                match_sni: Vec::new(),
+            }]
+        } else {
+            Vec::new()
+        };
+
+        Some(SniFallbackConfigView {
+            match_sni: df.match_sni.clone().unwrap_or_default(),
+            allow_no_sni: df.allow_no_sni.unwrap_or(false),
+            max_client_hello_bytes: df.max_client_hello_bytes,
+            backends,
+        })
+    } else {
+        state.config.sni_fallback.as_ref().map(|sf| {
+            let match_sni = sf
+                .match_sni
+                .iter()
+                .map(|m| match m {
+                    crate::config::SniMatcher::Exact(s) => s.clone(),
+                    crate::config::SniMatcher::Wildcard { suffix } => format!("*{suffix}"),
+                })
+                .collect();
+
+            let backends = sf
+                .backends
+                .iter()
+                .map(|b| {
+                    let match_sni = b
+                        .match_sni
+                        .iter()
+                        .map(|m| match m {
+                            crate::config::SniMatcher::Exact(s) => s.clone(),
+                            crate::config::SniMatcher::Wildcard { suffix } => format!("*{suffix}"),
+                        })
+                        .collect();
+
+                    SniBackendConfigView {
+                        backend: b.authority.clone(),
+                        proxy_protocol: b.proxy_protocol.map(|p| match p {
+                            crate::config::ProxyProtocolVersion::V1 => "v1".to_string(),
+                            crate::config::ProxyProtocolVersion::V2 => "v2".to_string(),
+                        }),
+                        match_sni,
+                    }
+                })
+                .collect();
+
+            SniFallbackConfigView {
+                match_sni,
+                allow_no_sni: sf.allow_no_sni,
+                max_client_hello_bytes: Some(sf.max_client_hello_bytes),
+                backends,
+            }
         })
     };
 
     let tuning_profile = disk_file
         .as_ref()
         .and_then(|f| f.tuning_profile)
-        .map(|p| format!("{p:?}").to_lowercase());
+        .map(|p| format!("{p:?}").to_lowercase())
+        .or_else(|| Some("large".to_string()));
 
     let endpoints = state
         .manager
@@ -434,6 +622,9 @@ pub(super) async fn get_config(State(state): State<ControlState>) -> axum::respo
         server,
         session_resumption,
         outbound,
+        padding,
+        http_fallback,
+        sni_fallback,
         tuning_profile,
         endpoints,
     })
@@ -444,6 +635,136 @@ pub(super) async fn patch_config(
     Json(req): Json<ServerConfigPatch>,
 ) -> axum::response::Response {
     // 1. Validation
+    if let Some(profile) = &req.tuning_profile {
+        let trimmed = profile.trim().to_lowercase();
+        if !matches!(trimmed.as_str(), "small" | "medium" | "large") {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "tuning_profile must be one of: small, medium, large",
+            );
+        }
+    }
+
+    if let Some(pad) = &req.padding {
+        if let (Some(min), Some(max)) = (pad.min_bytes, pad.max_bytes)
+            && min > max
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "padding min_bytes cannot exceed max_bytes",
+            );
+        }
+        if let (Some(min_jitter), Some(max_jitter)) =
+            (pad.cover_jitter_min_ms, pad.cover_jitter_max_ms)
+            && min_jitter > max_jitter
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "padding cover_jitter_min_ms cannot exceed cover_jitter_max_ms",
+            );
+        }
+    }
+
+    if let Some(hf) = &req.http_fallback {
+        if let Some(proto) = &hf.proxy_protocol {
+            let p = proto.trim().to_lowercase();
+            if !p.is_empty() && !matches!(p.as_str(), "v1" | "v2") {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "http_fallback proxy_protocol must be 'v1' or 'v2'",
+                );
+            }
+        }
+        if let Some(proto) = &hf.backend_proto {
+            let p = proto.trim().to_lowercase();
+            if !p.is_empty() && !matches!(p.as_str(), "h1" | "h2") {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "http_fallback backend_proto must be 'h1' or 'h2'",
+                );
+            }
+        }
+    }
+
+    if let Some(sf) = &req.sni_fallback {
+        if let Some(match_sni) = &sf.match_sni {
+            for entry in match_sni {
+                if entry.trim().is_empty() {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "sni_fallback match_sni entries must not be empty",
+                    );
+                }
+                let trimmed = entry.trim().to_ascii_lowercase();
+                if trimmed.contains('*')
+                    && (!trimmed.starts_with("*.")
+                        || trimmed.len() <= 2
+                        || trimmed[2..].contains('*'))
+                {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!("malformed sni_fallback wildcard in match_sni: {entry:?}"),
+                    );
+                }
+            }
+        }
+        if let Some(bytes) = sf.max_client_hello_bytes
+            && bytes < 256
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "sni_fallback max_client_hello_bytes must be >= 256",
+            );
+        }
+        if let Some(backends) = &sf.backends {
+            let last_idx = if backends.is_empty() { 0 } else { backends.len() - 1 };
+            for (i, b) in backends.iter().enumerate() {
+                if b.backend.trim().is_empty() {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!("sni_fallback.backends[{i}].backend must not be empty"),
+                    );
+                }
+                if let Some(pp) = &b.proxy_protocol {
+                    let p = pp.trim().to_lowercase();
+                    if !p.is_empty() && !matches!(p.as_str(), "v1" | "v2") {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "sni_fallback.backends[{i}].proxy_protocol must be 'v1' or 'v2'"
+                            ),
+                        );
+                    }
+                }
+                if let Some(match_sni) = &b.match_sni {
+                    for entry in match_sni {
+                        if entry.trim().is_empty() {
+                            return error_response(
+                                StatusCode::BAD_REQUEST,
+                                format!(
+                                    "sni_fallback.backends[{i}].match_sni entries must not be empty"
+                                ),
+                            );
+                        }
+                    }
+                    if match_sni.is_empty() && i != last_idx {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "sni_fallback.backends[{i}] is a catch-all but not the last entry"
+                            ),
+                        );
+                    }
+                } else if i != last_idx {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!("sni_fallback.backends[{i}] is a catch-all but not the last entry"),
+                    );
+                }
+            }
+        }
+    }
+
     if let Some(cluster) = &req.cluster {
         if let Some(shard) = cluster.shard_id
             && shard >= 16
@@ -504,6 +825,17 @@ pub(super) async fn patch_config(
                 StatusCode::BAD_REQUEST,
                 "invalid server.h3.listen socket address",
             );
+        }
+    }
+
+    if let Some(endpoints) = &req.endpoints {
+        for (i, ep) in endpoints.iter().enumerate() {
+            if ep.path.trim().is_empty() {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("endpoints[{i}].path cannot be empty"),
+                );
+            }
         }
     }
 

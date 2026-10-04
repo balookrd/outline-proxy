@@ -367,3 +367,167 @@ fn patch_toml_config_updates_server_listeners_and_outbound() {
     assert!(out.contains(r#"ipv6_prefix = "2001:db8::/64""#), "ipv6_prefix updated:\n{out}");
     assert!(out.contains("[server.h3]"), "h3 subtable created:\n{out}");
 }
+
+#[test]
+fn patch_toml_config_updates_padding_http_fallback_and_extended_fields() {
+    let patch = ServerConfigPatch {
+        server: Some(ServerListenerPatch {
+            h3_initial_mtu: Some(1350),
+            ..Default::default()
+        }),
+        outbound: Some(OutboundPatch {
+            ipv6_prefix_interface: Some("eth0".to_string()),
+            ipv6_refresh_secs: Some(120),
+            ..Default::default()
+        }),
+        padding: Some(PaddingConfigPatch {
+            min_bytes: Some(16),
+            max_bytes: Some(512),
+            cover: Some(true),
+            throttle_detect_enabled: Some(true),
+            throttle_ratio_percent: Some(250),
+            ..Default::default()
+        }),
+        http_fallback: Some(HttpFallbackPatch {
+            backend: Some("127.0.0.1:8080".to_string()),
+            proxy_protocol: Some("v2".to_string()),
+            backend_proto: Some("h1".to_string()),
+            apply_to_h1: Some(true),
+            apply_to_h3: Some(false),
+            ..Default::default()
+        }),
+        tuning_profile: Some("medium".to_string()),
+        ..Default::default()
+    };
+
+    let original = "[server]\nlisten = \"0.0.0.0:443\"\n";
+    let out = patch_toml_config(original, &patch).expect("patch config");
+    assert!(out.contains("[server.h3]"), "h3 subtable created:\n{out}");
+    assert!(out.contains("initial_mtu = 1350"), "initial_mtu set:\n{out}");
+    assert!(
+        out.contains(r#"ipv6_prefix_interface = "eth0""#),
+        "ipv6_prefix_interface set:\n{out}"
+    );
+    assert!(out.contains("ipv6_refresh_secs = 120"), "ipv6_refresh_secs set:\n{out}");
+    assert!(out.contains("[padding]"), "padding table created:\n{out}");
+    assert!(out.contains("min_bytes = 16"), "min_bytes set:\n{out}");
+    assert!(out.contains("max_bytes = 512"), "max_bytes set:\n{out}");
+    assert!(out.contains("cover = true"), "cover set:\n{out}");
+    assert!(
+        out.contains("throttle_detect_enabled = true"),
+        "throttle_detect_enabled set:\n{out}"
+    );
+    assert!(
+        out.contains("throttle_ratio_percent = 250"),
+        "throttle_ratio_percent set:\n{out}"
+    );
+    assert!(out.contains("[http_fallback]"), "http_fallback table created:\n{out}");
+    assert!(out.contains(r#"backend = "127.0.0.1:8080""#), "backend set:\n{out}");
+    assert!(out.contains(r#"proxy_protocol = "v2""#), "proxy_protocol set:\n{out}");
+    assert!(out.contains(r#"backend_proto = "h1""#), "backend_proto set:\n{out}");
+    assert!(out.contains(r#"tuning_profile = "medium""#), "tuning_profile set:\n{out}");
+}
+
+#[test]
+fn patch_toml_config_updates_sni_fallback_and_backends() {
+    let patch = ServerConfigPatch {
+        sni_fallback: Some(SniFallbackPatch {
+            match_sni: Some(vec!["*.beerloga.su".to_string()]),
+            allow_no_sni: Some(false),
+            max_client_hello_bytes: Some(4096),
+            backends: Some(vec![SniBackendPatch {
+                backend: "127.0.0.1:11443".to_string(),
+                proxy_protocol: Some("v1".to_string()),
+                match_sni: None,
+            }]),
+        }),
+        http_fallback: Some(HttpFallbackPatch {
+            backend: Some("http://127.0.0.1:8080".to_string()),
+            proxy_protocol: Some("v2".to_string()),
+            apply_to_h3: Some(true),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let original = "[server]\nlisten = \"0.0.0.0:443\"\n";
+    let out = patch_toml_config(original, &patch).expect("patch config with sni_fallback");
+
+    assert!(out.contains("[sni_fallback]"), "sni_fallback table created:\n{out}");
+    assert!(out.contains(r#"match_sni = ["*.beerloga.su"]"#), "match_sni set:\n{out}");
+    assert!(out.contains("allow_no_sni = false"), "allow_no_sni set:\n{out}");
+    assert!(out.contains("[[sni_fallback.backends]]"), "backends table created:\n{out}");
+    assert!(out.contains(r#"backend = "127.0.0.1:11443""#), "backend set:\n{out}");
+    assert!(out.contains(r#"proxy_protocol = "v1""#), "proxy_protocol set:\n{out}");
+    assert!(out.contains("[http_fallback]"), "http_fallback table created:\n{out}");
+    assert!(out.contains(r#"backend = "http://127.0.0.1:8080""#), "http backend set:\n{out}");
+    assert!(out.contains("apply_to_h3 = true"), "apply_to_h3 set:\n{out}");
+
+    // Assert that the generated TOML is valid FileConfig and resolves SniFallbackConfig
+    let file: crate::config::FileConfig = toml::from_str(&out).expect("parse generated TOML");
+    let sf_sec = file.sni_fallback.expect("sni_fallback section present");
+    assert_eq!(sf_sec.allow_no_sni, Some(false));
+    assert_eq!(sf_sec.match_sni.as_deref(), Some(&["*.beerloga.su".to_string()][..]));
+    let bes = sf_sec.backends.expect("backends present");
+    assert_eq!(bes.len(), 1);
+    assert_eq!(bes[0].backend, "127.0.0.1:11443");
+    assert_eq!(bes[0].proxy_protocol.as_deref(), Some("v1"));
+}
+
+#[test]
+fn patch_toml_config_updates_endpoint_padding() {
+    let original = r#"
+[server]
+listen = "0.0.0.0:443"
+
+[[endpoint]]
+path = "/ss-ws"
+kind = "ws_ss"
+padded = false
+
+[[endpoint]]
+path = "/ss-xh"
+kind = "xhttp_ss"
+padding = true
+"#;
+
+    let patch = ServerConfigPatch {
+        endpoints: Some(vec![
+            EndpointPatch { path: "/ss-ws".to_string(), padded: true },
+            EndpointPatch {
+                path: "/ss-xh".to_string(),
+                padded: false,
+            },
+        ]),
+        ..Default::default()
+    };
+
+    let out = patch_toml_config(original, &patch).expect("patch config endpoints");
+    assert!(out.contains("path = \"/ss-ws\""), "contains /ss-ws");
+    assert!(out.contains("path = \"/ss-xh\""), "contains /ss-xh");
+
+    let file: crate::config::FileConfig = toml::from_str(&out).expect("parse generated TOML");
+    let endpoints = file.endpoints.expect("endpoints present");
+    assert_eq!(endpoints.len(), 2);
+    assert_eq!(endpoints[0].path, "/ss-ws");
+    assert!(endpoints[0].padded);
+    assert_eq!(endpoints[1].path, "/ss-xh");
+    assert!(!endpoints[1].padded);
+}
+
+#[test]
+fn endpoint_section_deserializes_with_padding_alias() {
+    let toml_str = r#"
+[server]
+listen = "0.0.0.0:443"
+
+[[endpoint]]
+path = "/test"
+kind = "ws_ss"
+padding = true
+"#;
+    let file: crate::config::FileConfig =
+        toml::from_str(toml_str).expect("parse with padding alias");
+    let ep = &file.endpoints.unwrap()[0];
+    assert!(ep.padded);
+}

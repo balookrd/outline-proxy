@@ -1131,3 +1131,78 @@ password = "secret_password"
     assert!(updated_file.contains("username = \"new_user\""));
     assert!(updated_file.contains("password = \"new_secret_123\""));
 }
+
+#[tokio::test]
+async fn patch_config_updates_network_policy_and_tun_tcp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    tokio::fs::write(
+        &cfg_path,
+        r#"[outline]
+ipv4_only = false
+
+[tun]
+name = "tun0"
+"#,
+    )
+    .await
+    .unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = Arc::new(ControlState {
+        token: "token".to_string(),
+        uplinks: test_registry(),
+        config_path: Some(cfg_path.clone()),
+        config_write_lock: tokio::sync::Mutex::new(()),
+        apply: None,
+    });
+
+    let state_clone = Arc::clone(&state);
+    let srv_task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        handle_connection(stream, state_clone).await.unwrap();
+    });
+
+    let patch_body = r#"{
+        "ipv4_only": true,
+        "ipv6_first": false,
+        "direct_ipv6_prefix_interface": "eth0",
+        "udp_recv_buf_bytes": 4194304,
+        "tun": {
+            "pmtud_emit_below_quic_initial": true,
+            "tcp": {
+                "sniffing": true,
+                "carrier_migration": true,
+                "downlink_max_mbit": 95,
+                "sniff_timeout_ms": 250
+            }
+        }
+    }"#;
+    let req = format!(
+        "PATCH /control/config HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        patch_body.len(),
+        patch_body
+    );
+
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client.write_all(req.as_bytes()).await.unwrap();
+    let mut resp = Vec::new();
+    client.read_to_end(&mut resp).await.unwrap();
+    srv_task.await.unwrap();
+
+    let resp_str = String::from_utf8(resp).unwrap();
+    assert!(resp_str.contains("200 OK"));
+
+    let updated_file = tokio::fs::read_to_string(&cfg_path).await.unwrap();
+    assert!(updated_file.contains("ipv4_only = true"));
+    assert!(updated_file.contains("ipv6_first = false"));
+    assert!(updated_file.contains("direct_ipv6_prefix_interface = \"eth0\""));
+    assert!(updated_file.contains("udp_recv_buf_bytes = 4194304"));
+    assert!(updated_file.contains("pmtud_emit_below_quic_initial = true"));
+    assert!(updated_file.contains("[tun.tcp]"));
+    assert!(updated_file.contains("sniffing = true"));
+    assert!(updated_file.contains("carrier_migration = true"));
+    assert!(updated_file.contains("downlink_max_mbit = 95"));
+    assert!(updated_file.contains("sniff_timeout_ms = 250"));
+}

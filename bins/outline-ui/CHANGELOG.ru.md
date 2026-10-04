@@ -8,6 +8,28 @@
 
 Формат следует [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.10.3] - 2026-10-04
+
+### Добавлено
+
+- **Полное покрытие настроек конфигурации сервера и клиента в UI-дашбордах**:
+  - **Настройки сервера (`/ss/settings`)**:
+    - Исправлен селектор `tuning_profile` в соответствии с enum бэкенда (`large` по умолчанию, `medium`, `small`).
+    - Добавлена панель обфускации Carrier Padding и джиттера (`[padding]`: min/max байт, cover-режим, min/max джиттер и распознавание троттлинга).
+    - Добавлена панель SNI Camouflage & Fallback (`[sni_fallback]`: белый список локальных SNI `match_sni`, тумблер соединений без SNI `allow_no_sni`, лимит ClientHello и динамический список бэкендов `[[sni_fallback.backends]]` с настройкой адреса, PROXY Protocol v1/v2 и фильтрами SNI).
+    - Добавлена панель HTTP Camouflage & Fallback (`[http_fallback]`: адрес бэкенда `http://...`, протокол, заголовок PROXY Protocol v1/v2, таймаут запроса, переключатели H1/H3 и форвардинг заголовков X-Forwarded-*).
+    - Добавлена настройка `h3_initial_mtu` в секцию прослушивателей (Listeners).
+    - Добавлены интерфейс динамического обнаружения префикса (`ipv6_prefix_interface`) и интервал обновления (`ipv6_refresh_secs`) в секцию исходящей маршрутизации.
+    - Добавлен интерактивный переключатель padding для Carrier Endpoints в таблице настроек сервера с сохранением флага `padded` в `config.toml`.
+  - **Настройки клиента (`/ws/settings`)**:
+    - Добавлен блок политики сети и разрешения IP (глобальные `ipv4_only`, `ipv6_first`, `direct_ipv6_prefix_interface`, буферы сокетов `udp_recv_buf_bytes` и `udp_send_buf_bytes`).
+    - Добавлена панель TUN TCP Engine (`[tun.tcp]`: сниффинг полезной нагрузки, direct re-resolve, миграция носителя, лимиты скорости downlink, бюджет сервера, окно приема, таймауты подключения и рукопожатия) и `pmtud_emit_below_quic_initial`.
+  - **Редактор апликов (`/ws/uplinks`)**:
+    - Добавлен три-стейт селектор `IPv4 only` (`—`, `true`, `false`) как для основного аплика, так и для каждой карточки в цепочке фоллбэков `fallbacks[]`.
+    - Добавлены параметры защиты от DPI в карточке аплика и REST API (`outline-ws-rust`): оверрайд `Carrier padding` (`—` наследовать глобально, `true`, `false`), три-стейт селектор `Shuffle wires` (`shuffle_wires = true/false`) и интервал периодической ротации активного носителя `Shuffle timer` (`shuffle_timer = "10m"`).
+  - **Редактор групп апликов (`/ws/uplink-groups`)**:
+    - Добавлен блок переопределения зондирования (`[uplink_group.probe]`): многострочный список TLS-целей (`[uplink_group.probe.tls.targets]`), список HTTP URL для зондирования (`[uplink_group.probe.http.urls]`), интервал проверки (`interval_secs`) и таймаут (`timeout_secs`) с полной поддержкой round-trip в REST API `outline-ws-rust` и удалением таблицы из TOML при очистке.
+
 ## [1.9.3] - 2026-09-14
 
 ### Изменено

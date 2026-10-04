@@ -55,11 +55,15 @@ export interface WireFields {
   password: string;
   fwmark: number | null;
   ipv6First: '' | 'true' | 'false';
+  ipv4Only: '' | 'true' | 'false';
 }
 
 export interface UplinkFormFields extends WireFields {
   name: string;
   weight: number | null;
+  shuffleWires: '' | 'true' | 'false';
+  shuffleTimer: string;
+  padding: '' | 'true' | 'false';
 }
 
 // A `[[outline.uplinks.fallbacks]]` entry has no identity/weight of its own
@@ -100,6 +104,7 @@ export function emptyWireFields(): WireFields {
     password: '',
     fwmark: null,
     ipv6First: '',
+    ipv4Only: '',
   };
 }
 
@@ -113,7 +118,14 @@ export function emptyWireFields(): WireFields {
 // `useShareLink` starts false: explicit mode is the more common case (and
 // matches Task 8's only mode).
 export function emptyUplinkFields(): UplinkFormFields {
-  return { ...emptyWireFields(), name: '', weight: null };
+  return {
+    ...emptyWireFields(),
+    name: '',
+    weight: null,
+    shuffleWires: '',
+    shuffleTimer: '',
+    padding: '',
+  };
 }
 
 // Create-mode default for a freshly added fallback row ("Add fallback" in
@@ -153,6 +165,7 @@ function wireFieldsFromConfig(cfg: Record<string, unknown>): WireFields {
     password: typeof cfg.password === 'string' ? cfg.password : '',
     fwmark: typeof cfg.fwmark === 'number' ? cfg.fwmark : null,
     ipv6First: cfg.ipv6_first === true ? 'true' : cfg.ipv6_first === false ? 'false' : '',
+    ipv4Only: cfg.ipv4_only === true ? 'true' : cfg.ipv4_only === false ? 'false' : '',
   };
 }
 
@@ -175,6 +188,9 @@ export function fieldsFromConfig(config: UplinkConfig | null | undefined): Uplin
     name: typeof cfg.name === 'string' ? cfg.name : '',
     ...wireFieldsFromConfig(cfg),
     weight: typeof cfg.weight === 'number' ? cfg.weight : null,
+    shuffleWires: cfg.shuffle_wires === true ? 'true' : cfg.shuffle_wires === false ? 'false' : '',
+    shuffleTimer: typeof cfg.shuffle_timer === 'string' ? cfg.shuffle_timer : '',
+    padding: cfg.padding === true ? 'true' : cfg.padding === false ? 'false' : '',
   };
 }
 
@@ -268,6 +284,7 @@ export function buildWireFields(fields: WireFields): Record<string, unknown> {
   }
   if (fields.fwmark !== null) out.fwmark = Math.trunc(fields.fwmark);
   if (fields.ipv6First !== '') out.ipv6_first = fields.ipv6First === 'true';
+  if (fields.ipv4Only !== '') out.ipv4_only = fields.ipv4Only === 'true';
   return out;
 }
 
@@ -314,6 +331,9 @@ export function buildUplinkPayload(
   if (!editing && fields.name.trim()) out.name = fields.name.trim();
   Object.assign(out, buildWireFields(fields));
   if (fields.weight !== null) out.weight = fields.weight;
+  if (fields.shuffleWires !== '') out.shuffle_wires = fields.shuffleWires === 'true';
+  if (fields.shuffleTimer.trim()) out.shuffle_timer = fields.shuffleTimer.trim();
+  if (fields.padding !== '') out.padding = fields.padding === 'true';
   out.fallbacks = fallbacks.map(buildFallbackPayload);
   return out;
 }

@@ -50,6 +50,9 @@ pub(crate) struct UplinkPayload {
     pub(crate) ipv6_first: Option<bool>,
     pub(crate) ipv4_only: Option<bool>,
     pub(crate) vless_id: Option<String>,
+    pub(crate) shuffle_wires: Option<bool>,
+    pub(crate) shuffle_timer: Option<String>,
+    pub(crate) padding: Option<bool>,
     /// Per-uplink fallback transports — the wire-shape list rendered as
     /// `[[outline.uplinks.fallbacks]]` in the TOML config. When set in a
     /// PATCH request, the payload **replaces** the entire fallbacks array
@@ -208,6 +211,17 @@ pub(super) fn payload_to_table(payload: &UplinkPayload) -> Table {
         tbl.insert("ipv4_only", Item::Value(Value::from(v)));
     }
     set_str(&mut tbl, "vless_id", payload.vless_id.as_deref());
+    if let Some(v) = payload.shuffle_wires {
+        tbl.insert("shuffle_wires", Item::Value(Value::from(v)));
+    }
+    if let Some(v) = payload.shuffle_timer.as_deref()
+        && !v.trim().is_empty()
+    {
+        tbl.insert("shuffle_timer", Item::Value(Value::from(v.trim())));
+    }
+    if let Some(v) = payload.padding {
+        tbl.insert("padding", Item::Value(Value::from(v)));
+    }
     if let Some(fallbacks) = payload.fallbacks.as_ref() {
         tbl.insert("fallbacks", Item::ArrayOfTables(fallbacks_to_array(fallbacks)));
     }
@@ -329,6 +343,19 @@ pub(super) fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
     }
     if let Some(v) = patch.vless_id.as_deref() {
         set_str(tbl, "vless_id", Some(v));
+    }
+    if let Some(v) = patch.shuffle_wires {
+        tbl.insert("shuffle_wires", Item::Value(Value::from(v)));
+    }
+    if let Some(v) = patch.shuffle_timer.as_deref() {
+        if v.trim().is_empty() {
+            tbl.remove("shuffle_timer");
+        } else {
+            tbl.insert("shuffle_timer", Item::Value(Value::from(v.trim())));
+        }
+    }
+    if let Some(v) = patch.padding {
+        tbl.insert("padding", Item::Value(Value::from(v)));
     }
     if let Some(fallbacks) = patch.fallbacks.as_ref() {
         // PATCH semantics: a present `fallbacks` field replaces the whole

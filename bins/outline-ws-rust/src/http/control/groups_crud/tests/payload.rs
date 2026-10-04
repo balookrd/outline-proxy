@@ -51,3 +51,33 @@ fn merge_patch_replaces_fields_and_ignores_name() {
     assert!(text.contains("name = \"main\""), "name unchanged: {text}");
     assert!(!text.contains("renamed"), "name not overwritten: {text}");
 }
+
+#[test]
+fn probe_tls_targets_sub_table_round_trips() {
+    let p = payload(
+        r#"{"name":"g","probe":{"tls":{"targets":["www.instagram.com","www.youtube.com"]}}}"#,
+    );
+    let table = payload_to_table(&p).expect("to table");
+    let text = render_table_with_arrays(&table);
+    assert!(text.contains("[probe.tls]"), "got: {text}");
+    assert!(
+        text.contains(r#"targets = ["www.instagram.com", "www.youtube.com"]"#),
+        "got: {text}"
+    );
+    let section = table_to_section(&table).expect("probe parses");
+    assert_eq!(
+        section.probe.unwrap().tls.unwrap().targets.unwrap(),
+        vec!["www.instagram.com".to_string(), "www.youtube.com".to_string()]
+    );
+}
+
+#[test]
+fn merge_patch_clears_probe_when_empty_object() {
+    let mut existing: Table = payload_to_table(&payload(
+        r#"{"name":"main","mode":"active_active","probe":{"interval_secs":60}}"#,
+    ))
+    .expect("to table");
+    merge_patch_into_table(&mut existing, &payload(r#"{"probe":{}}"#)).expect("merge ok");
+    let text = render_table_with_arrays(&existing);
+    assert!(!text.contains("[probe]"), "probe removed: {text}");
+}

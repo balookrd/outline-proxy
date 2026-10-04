@@ -808,3 +808,97 @@ fn reorder_same_position_is_noop() {
     apply_reorder(arr, "core", "a", 0).expect("noop ok");
     assert_eq!(doc.to_string(), before, "moving to the same slot must not change the doc");
 }
+
+#[test]
+fn shuffle_wires_and_timer_and_padding_round_trip() {
+    let payload = UplinkPayload {
+        name: Some("u-shuffle".into()),
+        transport: Some("ws".into()),
+        tcp_ws_url: Some("wss://1.2.3.4:8388/tcp".into()),
+        method: Some("chacha20-ietf-poly1305".into()),
+        password: Some("secret-password".into()),
+        shuffle_wires: Some(true),
+        shuffle_timer: Some("10m".into()),
+        padding: Some(true),
+        ..Default::default()
+    };
+    let tbl = payload_to_table(&payload);
+    let rendered = tbl.to_string();
+    assert!(rendered.contains("shuffle_wires = true"), "rendered:\n{rendered}");
+    assert!(rendered.contains("shuffle_timer = \"10m\""), "rendered:\n{rendered}");
+    assert!(rendered.contains("padding = true"), "rendered:\n{rendered}");
+
+    let section = payload_to_section(&payload, Some("core")).expect("valid section");
+    assert_eq!(section.shuffle_wires, Some(true));
+    assert_eq!(section.shuffle_timer.as_deref(), Some("10m"));
+    assert_eq!(section.padding, Some(true));
+    let validated = validate_uplink_section(&section, 0).expect("validation passes");
+    assert!(validated.shuffle_wires);
+    assert!(validated.shuffle_timer.is_some());
+    assert_eq!(validated.padding, Some(true));
+}
+
+#[test]
+fn merge_patch_updates_shuffle_and_padding() {
+    let mut doc = r#"
+[[uplink_group]]
+name = "core"
+
+[[outline.uplinks]]
+name = "u-rot"
+group = "core"
+transport = "ws"
+tcp_ws_url = "wss://1.2.3.4:8388/tcp"
+method = "chacha20-ietf-poly1305"
+password = "secret-password"
+shuffle_wires = false
+shuffle_timer = "5m"
+padding = false
+"#
+    .parse::<DocumentMut>()
+    .unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let idx = find_outline_uplink_index(arr, "core", "u-rot").unwrap();
+
+    // 1. Update shuffle_wires, shuffle_timer, padding
+    let patch = UplinkPayload {
+        shuffle_wires: Some(true),
+        shuffle_timer: Some("1h30m".into()),
+        padding: Some(true),
+        ..Default::default()
+    };
+    merge_patch_into_table(arr.get_mut(idx).unwrap(), &patch);
+    let rendered = doc.to_string();
+    assert!(rendered.contains("shuffle_wires = true"));
+    assert!(rendered.contains("shuffle_timer = \"1h30m\""));
+    assert!(rendered.contains("padding = true"));
+
+    // 2. Clear shuffle_timer with empty string
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let clear_timer_patch = UplinkPayload {
+        shuffle_timer: Some("".into()),
+        ..Default::default()
+    };
+    merge_patch_into_table(arr.get_mut(idx).unwrap(), &clear_timer_patch);
+    let rendered2 = doc.to_string();
+    assert!(
+        !rendered2.contains("shuffle_timer"),
+        "cleared timer must be removed:\n{rendered2}"
+    );
+}
+
+#[test]
+fn invalid_shuffle_timer_fails_validation() {
+    let payload = UplinkPayload {
+        name: Some("u-bad-timer".into()),
+        transport: Some("ws".into()),
+        tcp_ws_url: Some("wss://1.2.3.4:8388/tcp".into()),
+        method: Some("chacha20-ietf-poly1305".into()),
+        password: Some("secret-password".into()),
+        shuffle_timer: Some("invalid-duration".into()),
+        ..Default::default()
+    };
+    let section = payload_to_section(&payload, Some("core")).unwrap();
+    let err = validate_uplink_section(&section, 0).unwrap_err();
+    assert!(err.to_string().contains("shuffle_timer"), "error was: {err:#}");
+}

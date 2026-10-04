@@ -34,6 +34,11 @@ pub struct WsConfigResponse {
     pub fingerprint_profile: Option<String>,
     pub prefer_public_ipv6_src: Option<bool>,
     pub direct_fwmark: Option<u32>,
+    pub direct_ipv6_prefix_interface: Option<String>,
+    pub ipv4_only: Option<bool>,
+    pub ipv6_first: Option<bool>,
+    pub udp_recv_buf_bytes: Option<usize>,
+    pub udp_send_buf_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,11 +88,26 @@ pub struct TunConfigView {
     pub idle_timeout_secs: Option<u64>,
     pub max_concurrent_upstream_dials: Option<usize>,
     pub ipsec_bypass: Option<bool>,
+    pub pmtud_emit_below_quic_initial: Option<bool>,
     pub sniff_quic: Option<bool>,
     pub route_by_sni: Option<bool>,
     pub gso: Option<bool>,
     pub gro: Option<bool>,
     pub uso: Option<bool>,
+    pub tcp: Option<TunTcpConfigView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TunTcpConfigView {
+    pub sniffing: Option<bool>,
+    pub sniff_timeout_ms: Option<u64>,
+    pub sniff_direct_reresolve: Option<bool>,
+    pub carrier_migration: Option<bool>,
+    pub downlink_max_mbit: Option<u64>,
+    pub pending_server_budget_bytes: Option<usize>,
+    pub initial_receive_window_bytes: Option<usize>,
+    pub connect_timeout_secs: Option<u64>,
+    pub handshake_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +163,11 @@ pub struct WsConfigPatch {
     pub fingerprint_profile: Option<String>,
     pub prefer_public_ipv6_src: Option<bool>,
     pub direct_fwmark: Option<u32>,
+    pub direct_ipv6_prefix_interface: Option<String>,
+    pub ipv4_only: Option<bool>,
+    pub ipv6_first: Option<bool>,
+    pub udp_recv_buf_bytes: Option<usize>,
+    pub udp_send_buf_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -190,11 +215,26 @@ pub struct TunConfigPatch {
     pub idle_timeout_secs: Option<u64>,
     pub max_concurrent_upstream_dials: Option<usize>,
     pub ipsec_bypass: Option<bool>,
+    pub pmtud_emit_below_quic_initial: Option<bool>,
     pub sniff_quic: Option<bool>,
     pub route_by_sni: Option<bool>,
     pub gso: Option<bool>,
     pub gro: Option<bool>,
     pub uso: Option<bool>,
+    pub tcp: Option<TunTcpConfigPatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TunTcpConfigPatch {
+    pub sniffing: Option<bool>,
+    pub sniff_timeout_ms: Option<u64>,
+    pub sniff_direct_reresolve: Option<bool>,
+    pub carrier_migration: Option<bool>,
+    pub downlink_max_mbit: Option<u64>,
+    pub pending_server_budget_bytes: Option<usize>,
+    pub initial_receive_window_bytes: Option<usize>,
+    pub connect_timeout_secs: Option<u64>,
+    pub handshake_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -309,6 +349,35 @@ async fn handle_get_config(state: Arc<ControlState>) -> ControlResponse {
         .and_then(|v| v.as_integer())
         .map(|n| n as u32);
 
+    let direct_ipv6_prefix_interface = doc
+        .get("direct_ipv6_prefix_interface")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let ipv4_only = doc
+        .get("outline")
+        .and_then(Item::as_table)
+        .and_then(|o| o.get("ipv4_only"))
+        .and_then(|v| v.as_bool())
+        .or_else(|| doc.get("ipv4_only").and_then(|v| v.as_bool()));
+
+    let ipv6_first = doc
+        .get("outline")
+        .and_then(Item::as_table)
+        .and_then(|o| o.get("ipv6_first"))
+        .and_then(|v| v.as_bool())
+        .or_else(|| doc.get("ipv6_first").and_then(|v| v.as_bool()));
+
+    let udp_recv_buf_bytes = doc
+        .get("udp_recv_buf_bytes")
+        .and_then(|v| v.as_integer())
+        .map(|n| n as usize);
+
+    let udp_send_buf_bytes = doc
+        .get("udp_send_buf_bytes")
+        .and_then(|v| v.as_integer())
+        .map(|n| n as usize);
+
     json_response(
         StatusCode::OK,
         &WsConfigResponse {
@@ -324,6 +393,11 @@ async fn handle_get_config(state: Arc<ControlState>) -> ControlResponse {
             fingerprint_profile,
             prefer_public_ipv6_src,
             direct_fwmark,
+            direct_ipv6_prefix_interface,
+            ipv4_only,
+            ipv6_first,
+            udp_recv_buf_bytes,
+            udp_send_buf_bytes,
         },
     )
 }
@@ -490,6 +564,36 @@ fn extract_tun(doc: &DocumentMut) -> Option<TunConfigView> {
     let uso = tbl.get("uso").and_then(|v| v.as_bool()).or(gso);
     let sniff_quic = tbl.get("sniff_quic").and_then(|v| v.as_bool()).or(Some(true));
 
+    let tcp = tbl.get("tcp").and_then(Item::as_table).map(|t| TunTcpConfigView {
+        sniffing: t.get("sniffing").and_then(|v| v.as_bool()).or(Some(true)),
+        sniff_timeout_ms: t
+            .get("sniff_timeout_ms")
+            .and_then(|v| v.as_integer())
+            .map(|n| n as u64),
+        sniff_direct_reresolve: t.get("sniff_direct_reresolve").and_then(|v| v.as_bool()),
+        carrier_migration: t.get("carrier_migration").and_then(|v| v.as_bool()).or(Some(true)),
+        downlink_max_mbit: t
+            .get("downlink_max_mbit")
+            .and_then(|v| v.as_integer())
+            .map(|n| n as u64),
+        pending_server_budget_bytes: t
+            .get("pending_server_budget_bytes")
+            .and_then(|v| v.as_integer())
+            .map(|n| n as usize),
+        initial_receive_window_bytes: t
+            .get("initial_receive_window_bytes")
+            .and_then(|v| v.as_integer())
+            .map(|n| n as usize),
+        connect_timeout_secs: t
+            .get("connect_timeout_secs")
+            .and_then(|v| v.as_integer())
+            .map(|n| n as u64),
+        handshake_timeout_secs: t
+            .get("handshake_timeout_secs")
+            .and_then(|v| v.as_integer())
+            .map(|n| n as u64),
+    });
+
     Some(TunConfigView {
         name: tbl.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
         mtu: tbl.get("mtu").and_then(|v| v.as_integer()).map(|n| n as usize),
@@ -507,11 +611,15 @@ fn extract_tun(doc: &DocumentMut) -> Option<TunConfigView> {
             .and_then(|v| v.as_integer())
             .map(|n| n as usize),
         ipsec_bypass: tbl.get("ipsec_bypass").and_then(|v| v.as_bool()),
+        pmtud_emit_below_quic_initial: tbl
+            .get("pmtud_emit_below_quic_initial")
+            .and_then(|v| v.as_bool()),
         sniff_quic,
         route_by_sni: tbl.get("route_by_sni").and_then(|v| v.as_bool()),
         gso,
         gro,
         uso,
+        tcp,
     })
 }
 
@@ -778,6 +886,33 @@ async fn handle_patch_config(
     if let Some(fwmark) = patch.direct_fwmark {
         doc.insert("direct_fwmark", value(fwmark as i64));
     }
+    if let Some(iface) = &patch.direct_ipv6_prefix_interface {
+        if iface.trim().is_empty() {
+            doc.remove("direct_ipv6_prefix_interface");
+        } else {
+            doc.insert("direct_ipv6_prefix_interface", value(iface.trim()));
+        }
+    }
+    if let Some(v4) = patch.ipv4_only {
+        if let Some(outline) = doc.get_mut("outline").and_then(Item::as_table_mut) {
+            outline.insert("ipv4_only", value(v4));
+        } else {
+            doc.insert("ipv4_only", value(v4));
+        }
+    }
+    if let Some(v6) = patch.ipv6_first {
+        if let Some(outline) = doc.get_mut("outline").and_then(Item::as_table_mut) {
+            outline.insert("ipv6_first", value(v6));
+        } else {
+            doc.insert("ipv6_first", value(v6));
+        }
+    }
+    if let Some(buf) = patch.udp_recv_buf_bytes {
+        doc.insert("udp_recv_buf_bytes", value(buf as i64));
+    }
+    if let Some(buf) = patch.udp_send_buf_bytes {
+        doc.insert("udp_send_buf_bytes", value(buf as i64));
+    }
 
     if let Err(err) = write_document_atomic(&path, &doc).await {
         return json_error_owned(
@@ -791,7 +926,12 @@ async fn handle_patch_config(
         || patch.dial.is_some()
         || patch.quic.is_some()
         || patch.h2.is_some()
-        || patch.tcp_timeouts.is_some();
+        || patch.tcp_timeouts.is_some()
+        || patch.direct_ipv6_prefix_interface.is_some()
+        || patch.ipv4_only.is_some()
+        || patch.ipv6_first.is_some()
+        || patch.udp_recv_buf_bytes.is_some()
+        || patch.udp_send_buf_bytes.is_some();
 
     json_response(
         StatusCode::OK,
@@ -1063,6 +1203,9 @@ fn apply_tun_patch(doc: &mut DocumentMut, patch: &TunConfigPatch) {
     if let Some(b) = patch.ipsec_bypass {
         tbl.insert("ipsec_bypass", value(b));
     }
+    if let Some(p) = patch.pmtud_emit_below_quic_initial {
+        tbl.insert("pmtud_emit_below_quic_initial", value(p));
+    }
     if let Some(sq) = patch.sniff_quic {
         tbl.insert("sniff_quic", value(sq));
     }
@@ -1077,6 +1220,36 @@ fn apply_tun_patch(doc: &mut DocumentMut, patch: &TunConfigPatch) {
     }
     if let Some(uso) = patch.uso {
         tbl.insert("uso", value(uso));
+    }
+    if let Some(tcp_patch) = &patch.tcp {
+        let tcp_tbl = get_or_create_subtable(tbl, "tcp");
+        if let Some(v) = tcp_patch.sniffing {
+            tcp_tbl.insert("sniffing", value(v));
+        }
+        if let Some(v) = tcp_patch.sniff_timeout_ms {
+            tcp_tbl.insert("sniff_timeout_ms", value(v as i64));
+        }
+        if let Some(v) = tcp_patch.sniff_direct_reresolve {
+            tcp_tbl.insert("sniff_direct_reresolve", value(v));
+        }
+        if let Some(v) = tcp_patch.carrier_migration {
+            tcp_tbl.insert("carrier_migration", value(v));
+        }
+        if let Some(v) = tcp_patch.downlink_max_mbit {
+            tcp_tbl.insert("downlink_max_mbit", value(v as i64));
+        }
+        if let Some(v) = tcp_patch.pending_server_budget_bytes {
+            tcp_tbl.insert("pending_server_budget_bytes", value(v as i64));
+        }
+        if let Some(v) = tcp_patch.initial_receive_window_bytes {
+            tcp_tbl.insert("initial_receive_window_bytes", value(v as i64));
+        }
+        if let Some(v) = tcp_patch.connect_timeout_secs {
+            tcp_tbl.insert("connect_timeout_secs", value(v as i64));
+        }
+        if let Some(v) = tcp_patch.handshake_timeout_secs {
+            tcp_tbl.insert("handshake_timeout_secs", value(v as i64));
+        }
     }
 }
 

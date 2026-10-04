@@ -161,7 +161,7 @@ pub(crate) struct TlsCertSection {
 pub(crate) struct EndpointSection {
     pub path: String,
     pub kind: super::endpoint::EndpointKind,
-    #[serde(default)]
+    #[serde(default, alias = "padding")]
     pub padded: bool,
 }
 

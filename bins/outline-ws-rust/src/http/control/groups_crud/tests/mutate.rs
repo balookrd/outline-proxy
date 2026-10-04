@@ -168,3 +168,30 @@ interval_secs = 60
         "probe.interval_secs preserved:\n{text}"
     );
 }
+
+#[test]
+fn update_updates_probe_tls_targets() {
+    let mut d = "\
+[[uplink_group]]
+name = \"main\"
+mode = \"active_active\"
+"
+    .parse::<DocumentMut>()
+    .unwrap();
+    apply_update(
+        &mut d,
+        "main",
+        &payload(r#"{"probe":{"tls":{"targets":["www.instagram.com","www.youtube.com"]}}}"#),
+    )
+    .expect("update ok");
+    let text = d.to_string();
+    let reparsed: toml::Value = toml::from_str(&text).expect("rendered TOML must re-parse");
+    let group = &reparsed["uplink_group"][0];
+    let targets = group
+        .get("probe")
+        .and_then(|p| p.get("tls"))
+        .and_then(|t| t.get("targets"))
+        .and_then(|v| v.as_array())
+        .expect("probe.tls.targets exists");
+    assert_eq!(targets.len(), 2);
+}
