@@ -238,7 +238,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var quickLinkItems: [AndroidQuickLinkItem] = []
 
     // 6. Footer
-    private let footerLabel = NSTextField(labelWithString: "nightly · v1.9.1")
+    private let footerLabel = NSTextField(labelWithString: AppVersion.displayString)
 
     // Timer
     private var durationTimer: Timer?
@@ -351,6 +351,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         rootStack.addArrangedSubview(spacer)
 
         // 6. Version Footer
+        footerLabel.stringValue = AppVersion.displayString
+        footerLabel.toolTip = AppVersion.fullDiagnosticString
         footerLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         footerLabel.alignment = .center
         rootStack.addArrangedSubview(footerLabel)
@@ -839,6 +841,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         // 7. Footer
         footerLabel.textColor = palette.secondaryText
+        footerLabel.stringValue = AppVersion.displayString
+        footerLabel.toolTip = AppVersion.fullDiagnosticString
 
         // Refresh State & Server Info
         refreshServerInfo()

@@ -180,6 +180,41 @@ if [[ "${SKIP_BUILD}" == "false" ]]; then
     cp "${MACOS_DIR}/Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
     echo -n "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
 
+    # Внедрение динамических метаданных сборки в Info.plist
+    PLIST="${APP_BUNDLE}/Contents/Info.plist"
+    GIT_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo "")"
+    GIT_DIRTY=""
+    if ! git -C "${REPO_ROOT}" diff --quiet 2>/dev/null; then
+        GIT_DIRTY="-dirty"
+    fi
+    COMMIT_STR="${GIT_COMMIT}${GIT_DIRTY}"
+
+    CURRENT_TAG="$(git -C "${REPO_ROOT}" describe --tags --exact-match 2>/dev/null || echo "")"
+    if [[ "${CURRENT_TAG}" =~ ^macos-v[0-9]+ ]]; then
+        BUILD_CHANNEL="release"
+        APP_VERSION="${CURRENT_TAG#macos-v}"
+    else
+        BUILD_CHANNEL="nightly"
+        APP_VERSION="${VERSION:-$(grep -m1 '^version =' "${REPO_ROOT}/bins/outline-ws-rust/Cargo.toml" | cut -d '"' -f2)}"
+    fi
+
+    BUILD_DATE="$(date -u +'%Y-%m-%d')"
+
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${APP_VERSION}" "${PLIST}" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${APP_VERSION}" "${PLIST}"
+
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${COMMIT_STR:-1}" "${PLIST}" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${COMMIT_STR:-1}" "${PLIST}"
+
+    /usr/libexec/PlistBuddy -c "Set :OutlineBuildCommit ${COMMIT_STR}" "${PLIST}" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Add :OutlineBuildCommit string ${COMMIT_STR}" "${PLIST}"
+
+    /usr/libexec/PlistBuddy -c "Set :OutlineBuildChannel ${BUILD_CHANNEL}" "${PLIST}" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Add :OutlineBuildChannel string ${BUILD_CHANNEL}" "${PLIST}"
+
+    /usr/libexec/PlistBuddy -c "Set :OutlineBuildDate ${BUILD_DATE}" "${PLIST}" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Add :OutlineBuildDate string ${BUILD_DATE}" "${PLIST}"
+
     cp "${SWIFT_BIN}" "${APP_BUNDLE}/Contents/MacOS/OutlineProxy"
     cp "${RUST_BIN}" "${APP_BUNDLE}/Contents/Resources/outline-ws-rust"
     cp "${MACOS_DIR}/Resources/tun-runner.sh" "${APP_BUNDLE}/Contents/Resources/tun-runner.sh"
