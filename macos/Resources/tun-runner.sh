@@ -155,7 +155,7 @@ case "$ACTION" in
         PID_FILE="$RUN_DIR/tun.pid"
         if [ -f "$PID_FILE" ]; then
             PID=$(cat "$PID_FILE" 2>/dev/null || true)
-            if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            if [ -n "$PID" ] && ps -p "$PID" >/dev/null 2>&1; then
                 echo "running:$PID"
                 exit 0
             fi

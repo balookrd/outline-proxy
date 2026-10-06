@@ -312,7 +312,7 @@ public final class ProcessController: @unchecked Sendable {
 
             // Check process liveness
             if let pid = self.tunPid {
-                if kill(pid, 0) != 0 {
+                if !self.isProcessAlive(pid: pid) {
                     // Process is no longer running
                     self.stopTunMonitor()
                     self.stateLock.lock()
@@ -331,6 +331,17 @@ public final class ProcessController: @unchecked Sendable {
 
         self.tunTimer = timer
         timer.resume()
+    }
+
+    private func isProcessAlive(pid: Int32) -> Bool {
+        if kill(pid, 0) == 0 {
+            return true
+        }
+        // If kill returns EPERM, the process exists and is owned by root
+        if errno == EPERM {
+            return true
+        }
+        return false
     }
 
     private func stopTunMonitor() {
