@@ -12,7 +12,8 @@ public final class ProcessController: @unchecked Sendable {
         case error(String)
     }
 
-    private let lock = NSLock()
+    private let stateLock = NSLock()
+    private let logLock = NSLock()
     private var process: Process?
     private var state: State = .stopped
     private var logBuffer: [String] = []
@@ -29,14 +30,14 @@ public final class ProcessController: @unchecked Sendable {
     private init() {}
 
     public var currentState: State {
-        lock.lock()
-        defer { lock.unlock() }
+        stateLock.lock()
+        defer { stateLock.unlock() }
         return state
     }
 
     public var logs: [String] {
-        lock.lock()
-        defer { lock.unlock() }
+        logLock.lock()
+        defer { logLock.unlock() }
         return logBuffer
     }
 
@@ -124,24 +125,26 @@ public final class ProcessController: @unchecked Sendable {
         mode: ProxyMode = .socks5,
         serverHost: String? = nil
     ) throws {
-        lock.lock()
-        defer { lock.unlock() }
-
+        stateLock.lock()
         guard case .stopped = state else {
+            stateLock.unlock()
             return
         }
 
         guard let binURL = locateBinary() else {
             let err = "Не найден бинарник outline-ws-rust. Запустите сборку ядра через cargo build -p outline-ws-rust."
-            appendLog("[ERROR] \(err)")
             state = .error(err)
-            onStateChanged?(state)
+            stateLock.unlock()
+            appendLog("[ERROR] \(err)")
+            onStateChanged?(.error(err))
             throw NSError(domain: "ProcessController", code: 1, userInfo: [NSLocalizedDescriptionKey: err])
         }
 
         activeMode = mode
         state = .starting
-        onStateChanged?(state)
+        stateLock.unlock()
+
+        onStateChanged?(.starting)
 
         // Write config to application support directory
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -182,13 +185,14 @@ public final class ProcessController: @unchecked Sendable {
 
         proc.terminationHandler = { [weak self] p in
             guard let self = self else { return }
-            self.lock.lock()
             let status = p.terminationStatus
             let reason = p.terminationReason
+
+            self.stateLock.lock()
             self.process = nil
             self.state = (status == 0) ? .stopped : .error("Процесс завершился с кодом \(status)")
             let currentState = self.state
-            self.lock.unlock()
+            self.stateLock.unlock()
 
             self.appendLog("[INFO] outline-ws-rust (SOCKS5) завершён (код: \(status), причина: \(reason.rawValue))")
             self.onStateChanged?(currentState)
@@ -196,14 +200,23 @@ public final class ProcessController: @unchecked Sendable {
 
         do {
             try proc.run()
+            let pid = proc.processIdentifier
+
+            stateLock.lock()
             self.process = proc
-            self.state = .running(pid: proc.processIdentifier)
-            appendLog("[INFO] Запущен outline-ws-rust в режиме SOCKS5 (PID: \(proc.processIdentifier))")
-            onStateChanged?(self.state)
+            self.state = .running(pid: pid)
+            stateLock.unlock()
+
+            appendLog("[INFO] Запущен outline-ws-rust в режиме SOCKS5 (PID: \(pid))")
+            onStateChanged?(.running(pid: pid))
         } catch {
+            stateLock.lock()
+            self.process = nil
             self.state = .error("Ошибка запуска SOCKS5: \(error.localizedDescription)")
+            stateLock.unlock()
+
             appendLog("[ERROR] \(error.localizedDescription)")
-            onStateChanged?(self.state)
+            onStateChanged?(.error(error.localizedDescription))
             throw error
         }
     }
@@ -213,9 +226,11 @@ public final class ProcessController: @unchecked Sendable {
     private func startTun(binURL: URL, configPath: URL, serverHost: String, appSupport: URL) throws {
         guard let runnerURL = locateTunRunner() else {
             let err = "Скрипт tun-runner.sh не найден в ресурсах приложения."
-            appendLog("[ERROR] \(err)")
+            stateLock.lock()
             state = .error(err)
-            onStateChanged?(state)
+            stateLock.unlock()
+            appendLog("[ERROR] \(err)")
+            onStateChanged?(.error(err))
             throw NSError(domain: "ProcessController", code: 2, userInfo: [NSLocalizedDescriptionKey: err])
         }
 
@@ -237,23 +252,31 @@ public final class ProcessController: @unchecked Sendable {
 
             // Check PID file
             let pidFile = runDir.appendingPathComponent("tun.pid")
+            let pid: Int32
             if let pidStr = try? String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
-               let pid = Int32(pidStr) {
-                self.tunPid = pid
-                self.state = .running(pid: pid)
-                appendLog("[INFO] Запущен outline-ws-rust в режиме TUN (PID: \(pid), utun активен)")
-                onStateChanged?(self.state)
+               let parsed = Int32(pidStr) {
+                pid = parsed
             } else {
-                self.state = .running(pid: 1)
-                onStateChanged?(self.state)
+                pid = 1
             }
+
+            stateLock.lock()
+            self.tunPid = pid
+            self.state = .running(pid: pid)
+            stateLock.unlock()
+
+            appendLog("[INFO] Запущен outline-ws-rust в режиме TUN (PID: \(pid), utun активен)")
+            onStateChanged?(.running(pid: pid))
 
             // Start log and liveness polling
             startTunMonitor(runDir: runDir, runnerURL: runnerURL)
         } catch {
+            stateLock.lock()
             self.state = .error("Ошибка запуска TUN: \(error.localizedDescription)")
+            stateLock.unlock()
+
             appendLog("[ERROR] \(error.localizedDescription)")
-            onStateChanged?(self.state)
+            onStateChanged?(.error(error.localizedDescription))
             throw error
         }
     }
@@ -292,11 +315,11 @@ public final class ProcessController: @unchecked Sendable {
                 if kill(pid, 0) != 0 {
                     // Process is no longer running
                     self.stopTunMonitor()
-                    self.lock.lock()
+                    self.stateLock.lock()
                     self.state = .stopped
                     self.tunPid = nil
                     let newState = self.state
-                    self.lock.unlock()
+                    self.stateLock.unlock()
 
                     self.appendLog("[INFO] outline-ws-rust (TUN) завершил работу.")
                     self.onStateChanged?(newState)
@@ -317,19 +340,20 @@ public final class ProcessController: @unchecked Sendable {
 
     /// Stops the running `outline-ws-rust` process gracefully in either mode.
     public func stop() {
-        lock.lock()
+        stateLock.lock()
+        let mode = activeMode
 
-        switch activeMode {
+        switch mode {
         case .socks5:
             guard let proc = process, proc.isRunning else {
                 state = .stopped
-                lock.unlock()
+                stateLock.unlock()
                 onStateChanged?(.stopped)
                 return
             }
 
             state = .stopping
-            lock.unlock()
+            stateLock.unlock()
             onStateChanged?(.stopping)
 
             appendLog("[INFO] Остановка outline-ws-rust (SOCKS5)...")
@@ -345,19 +369,20 @@ public final class ProcessController: @unchecked Sendable {
                     kill(proc.processIdentifier, SIGKILL)
                 }
 
-                self?.lock.lock()
+                self?.stateLock.lock()
                 self?.process = nil
                 self?.state = .stopped
                 let newState = self?.state ?? .stopped
-                self?.lock.unlock()
+                self?.stateLock.unlock()
 
+                self?.appendLog("[INFO] outline-ws-rust (SOCKS5) остановлен.")
                 self?.onStateChanged?(newState)
             }
 
         case .tun:
             stopTunMonitor()
             state = .stopping
-            lock.unlock()
+            stateLock.unlock()
             onStateChanged?(.stopping)
 
             appendLog("[INFO] Остановка TUN VPN и очистка системных маршрутов...")
@@ -373,11 +398,11 @@ public final class ProcessController: @unchecked Sendable {
                     _ = try? self.executeAsAdmin(command: cmd)
                 }
 
-                self.lock.lock()
+                self.stateLock.lock()
                 self.tunPid = nil
                 self.state = .stopped
                 let newState = self.state
-                self.lock.unlock()
+                self.stateLock.unlock()
 
                 self.appendLog("[INFO] TUN VPN успешно отключен.")
                 self.onStateChanged?(newState)
@@ -412,8 +437,8 @@ public final class ProcessController: @unchecked Sendable {
     }()
 
     public var logCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
+        logLock.lock()
+        defer { logLock.unlock() }
         return logBuffer.count
     }
 
@@ -421,11 +446,13 @@ public final class ProcessController: @unchecked Sendable {
         let time = Self.timeFormatter.string(from: Date())
         let formatted = "[\(time)] \(line)"
 
-        lock.lock()
+        logLock.lock()
         logBuffer.append(formatted)
         if logBuffer.count > maxLogLines {
             logBuffer.removeFirst(logBuffer.count - maxLogLines)
         }
-        lock.unlock()
+        logLock.unlock()
+
+        onLogLine?(formatted)
     }
 }

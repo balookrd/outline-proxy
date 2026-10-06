@@ -43,7 +43,7 @@ public final class AppState: ObservableObject {
                 case .starting:
                     self.status = .connecting
                 case .running:
-                    let name = ProfileStore.shared.activeProfile?.name ?? "Сервер"
+                    let name = ProfileStore.shared.activeProfile?.displayName ?? "Сервер"
                     self.status = .connected(serverName: name)
                 case .stopping:
                     self.status = .disconnecting
@@ -135,7 +135,7 @@ public final class AppState: ObservableObject {
                     try ProcessController.shared.start(withConfigToml: toml, mode: .tun, serverHost: currentProfile.serverHost)
                 }
 
-                let serverName = currentProfile.name
+                let serverName = currentProfile.displayName
                 await MainActor.run {
                     AppState.shared.status = .connected(serverName: serverName)
                     NotificationCenter.default.post(name: NSNotification.Name("AppStateUpdated"), object: nil)
