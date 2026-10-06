@@ -1,0 +1,197 @@
+name: Release Build (macos)
+
+# Reusable build+publish workflow for the macOS app and DMG disk image.
+# Compiles a Universal binary (Apple Silicon + Intel), packages into
+# OutlineProxy.app, generates a compressed DMG with an Applications symlink,
+# computes checksums, and publishes to GitHub Releases.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      checkout_ref:
+        required: false
+        type: string
+        default: ""
+      prerelease:
+        required: false
+        type: boolean
+        default: false
+      make_latest:
+        required: false
+        type: boolean
+        default: true
+      release_name:
+        required: false
+        type: string
+        default: ""
+      version_name:
+        required: false
+        type: string
+        default: ""
+      rolling_tag:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build macOS Universal DMG
+    runs-on: macos-latest
+    steps:
+      - id: vars
+        name: Resolve workflow variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          checkout_ref="${{ inputs.checkout_ref }}"
+          release_name="${{ inputs.release_name }}"
+          version_name="${{ inputs.version_name }}"
+
+          [[ -z "$checkout_ref" ]] && checkout_ref="$tag"
+          [[ -z "$release_name" ]] && release_name="macOS $tag"
+          if [[ -z "$version_name" ]]; then
+            case "$tag" in
+              macos-v*) version_name="${tag#macos-v}" ;;
+              v*)       version_name="${tag#v}" ;;
+              *)        version_name="$tag" ;;
+            esac
+          fi
+
+          {
+            echo "checkout_ref=$checkout_ref"
+            echo "release_name=$release_name"
+            echo "version_name=$version_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.vars.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            .
+
+      - name: Build macOS app and package DMG
+        env:
+          VERSION: ${{ steps.vars.outputs.version_name }}
+          ROLLING: ${{ inputs.rolling_tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          if [[ "$ROLLING" == "true" ]]; then
+            dmg_name="OutlineProxy-nightly-${SHA:0:8}-macOS-Universal.dmg"
+          else
+            dmg_name="OutlineProxy-v${VERSION}-macOS-Universal.dmg"
+          fi
+
+          ./macos/scripts/package-dmg.sh \
+            --arch universal \
+            --version "${VERSION}" \
+            --output-dir dist \
+            --dmg-name "${dmg_name}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-macos-universal-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Move rolling tag
+        if: ${{ inputs.rolling_tag }}
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ inputs.checkout_ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin --tags --force
+          git tag -f "$TAG" "$REF"
+          git push origin "refs/tags/$TAG" --force
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-macos-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- *.dmg > SHA256SUMS.txt
+
+      - name: Delete old rolling assets
+        if: ${{ inputs.rolling_tag }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Rolling release does not exist yet, nothing to clean."
+            exit 0
+          fi
+          mapfile -t assets < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+          for asset in "${assets[@]:-}"; do
+            [[ -z "$asset" ]] && continue
+            echo "Deleting old asset: $asset"
+            gh release delete-asset "$TAG" "$asset" --yes
+          done
+
+      - name: Install git-cliff
+        env:
+          GIT_CLIFF_VERSION: "2.13.1"
+          GIT_CLIFF_SHA256: "9a1263f24e59a2f508c7b3d3283c9dea94a8bf697f96dbc18cc783cac6284546"
+        run: |
+          set -euo pipefail
+          url="https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/git-cliff-${GIT_CLIFF_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL "$url" -o /tmp/git-cliff.tar.gz
+          echo "${GIT_CLIFF_SHA256}  /tmp/git-cliff.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/git-cliff.tar.gz -C /tmp
+          sudo install "/tmp/git-cliff-${GIT_CLIFF_VERSION}/git-cliff" /usr/local/bin/git-cliff
+          git-cliff --version
+
+      - name: Generate release notes
+        env:
+          TAG: ${{ inputs.tag }}
+        run: .github/scripts/gen-release-notes.sh macos "$TAG" release-notes.md
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.release_name != '' && inputs.release_name || format('macOS {0}', inputs.tag) }}
+          prerelease: ${{ inputs.prerelease }}
+          make_latest: ${{ inputs.make_latest }}
+          body_path: release-notes.md
+          files: |
+            dist/*.dmg
+            dist/SHA256SUMS.txt

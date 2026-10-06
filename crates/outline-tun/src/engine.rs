@@ -86,7 +86,7 @@ pub async fn spawn_tun_loop(
         AsyncFd::with_interest(device, Interest::READABLE | Interest::WRITABLE)
             .context("failed to register TUN fd with tokio reactor")?,
     );
-    let writer = SharedTunWriter::from_async_fd(async_fd.clone(), gso_enabled);
+    let writer = SharedTunWriter::from_async_fd(async_fd.clone(), gso_enabled, gso.af_hdr);
 
     let idle_timeout = config.idle_timeout;
     let max_flows = config.max_flows;
@@ -155,6 +155,7 @@ pub async fn spawn_tun_loop(
     if let Some(name) = tun_name.as_deref() {
         crate::device_stats::spawn_collector(name);
     }
+    let af_hdr_enabled = gso.af_hdr;
     tokio::spawn(async move {
         if let Err(error) = tun_read_loop(
             async_fd,
@@ -164,6 +165,7 @@ pub async fn spawn_tun_loop(
             routing,
             tun_mtu,
             gso_enabled,
+            af_hdr_enabled,
             defrag_max_total_bytes,
             defrag_max_bytes_per_set,
             defrag_max_fragment_sets,
@@ -185,6 +187,7 @@ pub async fn spawn_tun_loop(
         gso = gso.vnet_hdr,
         rx_gro = gso.tcp_gro,
         udp_gso = gso.udp_gso,
+        af_hdr = gso.af_hdr,
         "TUN loop started"
     );
     Ok(())
@@ -199,6 +202,7 @@ async fn tun_read_loop(
     routing: TunRouting,
     mtu: usize,
     gso_enabled: bool,
+    af_hdr_enabled: bool,
     defrag_max_total_bytes: usize,
     defrag_max_bytes_per_set: usize,
     defrag_max_fragment_sets: usize,
@@ -230,6 +234,18 @@ async fn tun_read_loop(
         if read == 0 {
             bail!("TUN device returned EOF");
         }
+        let (buf_slice, read_len) = if af_hdr_enabled
+            && read >= 4
+            && (buf[0..4] == (libc::AF_INET as u32).to_be_bytes()
+                || buf[0..4] == (libc::AF_INET6 as u32).to_be_bytes())
+        {
+            (&mut buf[4..], read - 4)
+        } else {
+            (&mut buf[..], read)
+        };
+        if read_len == 0 {
+            continue;
+        }
         // Wire-arrival timestamp for the env-gated ingress-latency diag: the
         // instant this packet became available to userspace. Threaded down to
         // the TCP apply site so `read → apply` can be measured for one flow.
@@ -250,11 +266,11 @@ async fn tun_read_loop(
         // (`flags == 0`, or no vnet header at all) stays `Unverified`.
         let mut read_checksum = L4Checksum::Unverified;
         let input_packet = if gso_enabled {
-            if read <= VIRTIO_NET_HDR_LEN {
-                debug!(read, "dropping short TUN read (no packet after vnet header)");
+            if read_len <= VIRTIO_NET_HDR_LEN {
+                debug!(read = read_len, "dropping short TUN read (no packet after vnet header)");
                 continue;
             }
-            let header = VirtioNetHdr::decode(&buf[..VIRTIO_NET_HDR_LEN])
+            let header = VirtioNetHdr::decode(&buf_slice[..VIRTIO_NET_HDR_LEN])
                 .expect("read > VIRTIO_NET_HDR_LEN guarantees a full header");
             // Mask the ECN CE bit before matching the base GSO type: the kernel
             // ORs `VIRTIO_NET_HDR_GSO_ECN` (0x80) onto the type for ECN-marked
@@ -266,7 +282,7 @@ async fn tun_read_loop(
                     // per-packet path (the kernel merely batched the read).
                     dispatch_udp_gso_superpacket(
                         &udp_engine,
-                        &buf[VIRTIO_NET_HDR_LEN..read],
+                        &buf_slice[VIRTIO_NET_HDR_LEN..read_len],
                         header.gso_size,
                     )
                     .await;
@@ -282,14 +298,15 @@ async fn tun_read_loop(
                     // the normal classify / dispatch path below.
                     metrics::record_tun_packet(
                         "up",
-                        ip_family_name(buf[VIRTIO_NET_HDR_LEN] >> 4),
+                        ip_family_name(buf_slice[VIRTIO_NET_HDR_LEN] >> 4),
                         "tcp_gro_superpacket",
                     );
                     if header.flags != 0 {
-                        read_checksum =
-                            recompute_transport_checksum(&mut buf[VIRTIO_NET_HDR_LEN..read]);
+                        read_checksum = recompute_transport_checksum(
+                            &mut buf_slice[VIRTIO_NET_HDR_LEN..read_len],
+                        );
                     }
-                    &buf[VIRTIO_NET_HDR_LEN..read]
+                    &buf_slice[VIRTIO_NET_HDR_LEN..read_len]
                 },
                 VIRTIO_NET_HDR_GSO_NONE => {
                     // A single packet, possibly with an un-finalised L4 checksum
@@ -297,10 +314,11 @@ async fn tun_read_loop(
                     // / forwarded hop). Recompute, then hand it to the normal
                     // classify / dispatch path below.
                     if header.flags != 0 {
-                        read_checksum =
-                            recompute_transport_checksum(&mut buf[VIRTIO_NET_HDR_LEN..read]);
+                        read_checksum = recompute_transport_checksum(
+                            &mut buf_slice[VIRTIO_NET_HDR_LEN..read_len],
+                        );
                     }
-                    &buf[VIRTIO_NET_HDR_LEN..read]
+                    &buf_slice[VIRTIO_NET_HDR_LEN..read_len]
                 },
                 other => {
                     metrics::record_tun_packet("up", "unknown", "vnet_gso_unsupported");
@@ -309,7 +327,7 @@ async fn tun_read_loop(
                 },
             }
         } else {
-            &buf[..read]
+            &buf_slice[..read_len]
         };
         let version_nibble = input_packet[0] >> 4;
         let owned_packet = {

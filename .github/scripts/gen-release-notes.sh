@@ -36,6 +36,10 @@ case "$component" in
     prefix="android"
     paths=(android)
     ;;
+  macos)
+    prefix="macos"
+    paths=(macos bins/outline-ws-rust crates vendor)
+    ;;
   *)
     echo "unknown component: $component" >&2
     exit 2

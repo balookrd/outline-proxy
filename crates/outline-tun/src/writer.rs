@@ -35,6 +35,9 @@ pub(crate) struct SharedTunWriter {
     /// must be prefixed with a `virtio_net_hdr`: `GSO_NONE` for a single packet,
     /// or a real GSO descriptor for a downlink TSO super-segment.
     gso_enabled: bool,
+    /// When `true` the device is a macOS `utun` interface, where the kernel
+    /// expects each write to be prefixed with a 4-byte address family header.
+    af_hdr: bool,
 }
 
 #[derive(Clone)]
@@ -45,10 +48,15 @@ enum SharedTunWriterInner {
 }
 
 impl SharedTunWriter {
-    pub(crate) fn from_async_fd(fd: Arc<AsyncFd<std::fs::File>>, gso_enabled: bool) -> Self {
+    pub(crate) fn from_async_fd(
+        fd: Arc<AsyncFd<std::fs::File>>,
+        gso_enabled: bool,
+        af_hdr: bool,
+    ) -> Self {
         Self {
             inner: SharedTunWriterInner::Async(fd),
             gso_enabled,
+            af_hdr,
         }
     }
 
@@ -57,6 +65,7 @@ impl SharedTunWriter {
         Self {
             inner: SharedTunWriterInner::Blocking(Arc::new(parking_lot::Mutex::new(file))),
             gso_enabled: false,
+            af_hdr: false,
         }
     }
 
@@ -71,9 +80,10 @@ impl SharedTunWriter {
         // Single IP packet: GSO_NONE header when the fd carries a vnet header,
         // otherwise a bare write.
         let vnet = self.gso_enabled.then_some(VirtioNetHdr::NONE);
+        let af_hdr = self.af_hdr;
         match &self.inner {
             SharedTunWriterInner::Async(fd) => fd
-                .async_io(Interest::WRITABLE, |f| write_tun_packet(f, packet, vnet))
+                .async_io(Interest::WRITABLE, |f| write_tun_packet(f, packet, vnet, af_hdr))
                 .await
                 .context("failed to write packet to TUN"),
             #[cfg(test)]
@@ -97,9 +107,10 @@ impl SharedTunWriter {
         // Downlink TSO signal: one super-segment the kernel splits per MSS —
         // how often the write path actually coalesced server→client data.
         metrics::record_tun_packet("down", ip_family_str(packet), "tso_supersegment");
+        let af_hdr = self.af_hdr;
         match &self.inner {
             SharedTunWriterInner::Async(fd) => fd
-                .async_io(Interest::WRITABLE, |f| write_tun_packet(f, packet, Some(header)))
+                .async_io(Interest::WRITABLE, |f| write_tun_packet(f, packet, Some(header), af_hdr))
                 .await
                 .context("failed to write GSO segment to TUN"),
             #[cfg(test)]
@@ -134,9 +145,12 @@ impl SharedTunWriter {
             },
             None => self.gso_enabled.then_some(VirtioNetHdr::NONE),
         };
+        let af_hdr = self.af_hdr;
         match &self.inner {
             SharedTunWriterInner::Async(fd) => fd
-                .async_io(Interest::WRITABLE, |f| write_tun_data_packet(f, header, payload, vnet))
+                .async_io(Interest::WRITABLE, |f| {
+                    write_tun_data_packet(f, header, payload, vnet, af_hdr)
+                })
                 .await
                 .context("failed to write data packet to TUN"),
             #[cfg(test)]
@@ -175,9 +189,19 @@ fn write_tun_packet(
     file: &std::fs::File,
     packet: &[u8],
     vnet: Option<VirtioNetHdr>,
+    af_hdr: bool,
 ) -> std::io::Result<()> {
     let mut w: &std::fs::File = file;
-    let Some(header) = vnet else {
+    let af_prefix = if af_hdr {
+        match packet.first().map(|b| b >> 4) {
+            Some(6) => (libc::AF_INET6 as u32).to_be_bytes(),
+            _ => (libc::AF_INET as u32).to_be_bytes(),
+        }
+    } else {
+        [0; 4]
+    };
+
+    if vnet.is_none() && !af_hdr {
         let written = w.write(packet)?;
         if written != packet.len() {
             return Err(std::io::Error::other(format!(
@@ -186,18 +210,25 @@ fn write_tun_packet(
             )));
         }
         return Ok(());
-    };
+    }
 
-    // vnet path: one write(2) must atomically deliver [virtio_net_hdr | packet].
-    // `writev` keeps the (potentially large) payload copy-free. The header is
-    // GSO_NONE for a single packet or a TSO descriptor for a super-segment.
-    let header = header.encode();
-    let expected = header.len() + packet.len();
-    let written = w.write_vectored(&[IoSlice::new(&header), IoSlice::new(packet)])?;
+    let vnet_header = vnet.map(|h| h.encode());
+    let mut iovecs: Vec<IoSlice<'_>> = Vec::with_capacity(3);
+    let mut expected = 0;
+    if af_hdr {
+        iovecs.push(IoSlice::new(&af_prefix));
+        expected += 4;
+    }
+    if let Some(vh) = vnet_header.as_ref() {
+        iovecs.push(IoSlice::new(vh));
+        expected += vh.len();
+    }
+    iovecs.push(IoSlice::new(packet));
+    expected += packet.len();
+
+    let written = w.write_vectored(&iovecs)?;
     if written != expected {
-        return Err(std::io::Error::other(format!(
-            "short TUN vnet write: {written}/{expected} bytes"
-        )));
+        return Err(std::io::Error::other(format!("short TUN write: {written}/{expected} bytes")));
     }
     Ok(())
 }
@@ -206,23 +237,38 @@ fn write_tun_packet(
 /// buffers, gathering them (with an optional `virtio_net_hdr`) into a single
 /// `writev` so the payload is delivered copy-free. One `write(2)` atomically
 /// delivers the whole packet on TUN, exactly as the single-buffer paths do. The
-/// `iovec` is `[vnet?, header, chunk0, …]`; the caller bounds the chunk count
+/// `iovec` is `[af_hdr?, vnet?, header, chunk0, …]`; the caller bounds the chunk count
 /// well below `IOV_MAX`.
 fn write_tun_data_packet(
     file: &std::fs::File,
     header: &[u8],
     payload: &[Bytes],
     vnet: Option<VirtioNetHdr>,
+    af_hdr: bool,
 ) -> std::io::Result<()> {
     let mut w: &std::fs::File = file;
+    let af_prefix = if af_hdr {
+        match header.first().map(|b| b >> 4) {
+            Some(6) => (libc::AF_INET6 as u32).to_be_bytes(),
+            _ => (libc::AF_INET as u32).to_be_bytes(),
+        }
+    } else {
+        [0; 4]
+    };
+
     let vnet = vnet.map(|vnet| vnet.encode());
-    let mut iovecs: Vec<IoSlice<'_>> = Vec::with_capacity(2 + payload.len());
-    let mut expected = header.len();
+    let mut iovecs: Vec<IoSlice<'_>> = Vec::with_capacity(3 + payload.len());
+    let mut expected = 0;
+    if af_hdr {
+        iovecs.push(IoSlice::new(&af_prefix));
+        expected += 4;
+    }
     if let Some(vnet) = vnet.as_ref() {
         iovecs.push(IoSlice::new(vnet));
         expected += vnet.len();
     }
     iovecs.push(IoSlice::new(header));
+    expected += header.len();
     for chunk in payload {
         iovecs.push(IoSlice::new(chunk));
         expected += chunk.len();
