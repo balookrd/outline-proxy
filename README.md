@@ -26,6 +26,10 @@ an Android VPN client.
 - **[`android/`](android/)** — an **Android** VPN client that reuses the whole
   `outline-ws-rust` uplink stack unchanged behind a thin `VpnService` + Compose
   UI layer.
+- **[`macos/`](macos/)** — a **macOS** menu-bar client that provides hybrid SOCKS5
+  system proxy (rootless) and TUN (full L3 VPN via kernel `utun`) mode switching,
+  server profile management, and live logs without requiring a paid Apple Developer account.
+  Automated Universal DMG packaging via `./macos/scripts/package-dmg.sh` and GitHub Actions.
 
 The client dials the server; both speak the same wire protocol and share a set
 of common crates, which is why they live in one repository.

@@ -51,6 +51,10 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
   Отдельный workspace (`[workspace]` в его манифесте) — корневой
   `cargo check --workspace` его НЕ видит, поэтому у него свои шаги в гейте
   (см. ниже) и свой `target/`. Path-зависимости смотрят вверх, в монорепо.
+- `macos/` — нативное Swift/AppKit приложение для macOS в строке меню (Menu Bar):
+  управление системным SOCKS5-прокси, профилями и подписками через `outline-ws-rust`
+  без необходимости платного Apple Developer аккаунта. Сборка .app через `./macos/scripts/package-app.sh`,
+  упаковка DMG-образов через `./macos/scripts/package-dmg.sh`.
 
 ## Команды
 

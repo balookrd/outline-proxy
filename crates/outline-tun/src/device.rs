@@ -4,6 +4,7 @@
 //! EBUSY retry when another process is mid-detach, and `O_NONBLOCK` setup
 //! so the fd can be registered with the tokio reactor.
 
+#[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
 use std::fs::OpenOptions;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::time::Duration;
@@ -31,6 +32,9 @@ pub(crate) struct TunGso {
     /// `TUN_F_USO4 | TUN_F_USO6` accepted — the writer may coalesce downlink UDP
     /// into `GSO_UDP_L4` super-segments.
     pub(crate) udp_gso: bool,
+    /// Address-family prefix framing: on macOS `utun` devices, the kernel
+    /// expects and prepends a 4-byte address family header (`AF_INET`/`AF_INET6`).
+    pub(crate) af_hdr: bool,
 }
 
 pub(crate) fn set_nonblocking(file: &std::fs::File) -> Result<()> {
@@ -121,7 +125,28 @@ pub(crate) fn attach_preopened_fd(fd: RawFd) -> Result<(std::fs::File, TunGso)> 
     // SAFETY: `duped` is a fresh, valid, uniquely-owned fd (checked `>= 0`), so
     // `File` becomes its sole owner and closes it exactly once on drop.
     let file = unsafe { std::fs::File::from_raw_fd(duped) };
-    Ok((file, TunGso::default()))
+    #[cfg(target_os = "macos")]
+    let af_hdr = is_macos_utun_fd(duped);
+    #[cfg(not(target_os = "macos"))]
+    let af_hdr = false;
+    Ok((file, TunGso { af_hdr, ..TunGso::default() }))
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_utun_fd(fd: RawFd) -> bool {
+    let mut ifname = [0u8; 64];
+    let mut ifname_len = ifname.len() as libc::socklen_t;
+    // SAFETY: fd is a live borrowed descriptor; ifname is stack-allocated with checked length.
+    let res = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SYSPROTO_CONTROL,
+            2, // UTUN_OPT_IFNAME
+            ifname.as_mut_ptr() as *mut _,
+            &mut ifname_len,
+        )
+    };
+    res == 0
 }
 
 #[cfg(target_os = "linux")]
@@ -228,7 +253,12 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
     // re-segments it). `TUN_F_CSUM` is mandatory for any TSO/USO flag and also
     // enables RX checksum offload, which the read loop recomputes. If the kernel
     // rejects USO (< 6.2) we retry without it so TCP offload survives.
-    let mut gso = TunGso { vnet_hdr, tcp_gro: false, udp_gso: false };
+    let mut gso = TunGso {
+        vnet_hdr,
+        tcp_gro: false,
+        udp_gso: false,
+        af_hdr: false,
+    };
     {
         const TUNSETOFFLOAD: libc::c_ulong = 0x400454d0;
         const TUN_F_CSUM: libc::c_uint = 0x01;
@@ -305,7 +335,135 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
     Ok((file, gso))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
+    open_macos_utun_device(config)
+}
+
+#[cfg(target_os = "macos")]
+fn open_macos_utun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
+    // 1. Open PF_SYSTEM socket
+    // SAFETY: standard BSD socket creation syscall with valid domain/type/protocol.
+    let fd = unsafe { libc::socket(libc::PF_SYSTEM, libc::SOCK_DGRAM, libc::SYSPROTO_CONTROL) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("failed to open PF_SYSTEM socket for utun");
+    }
+
+    // 2. Resolve CTLIOCGINFO for "com.apple.net.utun_control"
+    #[repr(C)]
+    struct CtlInfo {
+        ctl_id: u32,
+        ctl_name: [u8; 96],
+    }
+    const CTLIOCGINFO: libc::c_ulong = 0xc0644e03;
+
+    let mut info = CtlInfo { ctl_id: 0, ctl_name: [0; 96] };
+    let ctl_name = b"com.apple.net.utun_control";
+    info.ctl_name[..ctl_name.len()].copy_from_slice(ctl_name);
+
+    // SAFETY: fd is valid and open; &raw mut info points to struct CtlInfo matching kernel struct ctl_info layout.
+    let ioctl_res = unsafe { libc::ioctl(fd, CTLIOCGINFO, &raw mut info) };
+    if ioctl_res < 0 {
+        let err = std::io::Error::last_os_error();
+        // SAFETY: fd is open and valid.
+        unsafe { libc::close(fd) };
+        return Err(err).context("ioctl CTLIOCGINFO failed for com.apple.net.utun_control");
+    }
+
+    // 3. Connect sockaddr_ctl
+    #[repr(C)]
+    struct SockAddrCtl {
+        sc_len: u8,
+        sc_family: u8,
+        ss_sysaddr: u16,
+        sc_id: u32,
+        sc_unit: u32,
+        sc_reserved: [u32; 5],
+    }
+
+    let addr = SockAddrCtl {
+        sc_len: std::mem::size_of::<SockAddrCtl>() as u8,
+        sc_family: libc::AF_SYSTEM as u8,
+        ss_sysaddr: 2, // AF_SYS_CONTROL
+        sc_id: info.ctl_id,
+        sc_unit: 0, // 0 = kernel allocates next available utunX unit
+        sc_reserved: [0; 5],
+    };
+
+    // SAFETY: fd is open and valid; &addr matches sockaddr_ctl layout.
+    let conn_res = unsafe {
+        libc::connect(
+            fd,
+            &addr as *const _ as *const libc::sockaddr,
+            std::mem::size_of::<SockAddrCtl>() as libc::socklen_t,
+        )
+    };
+    if conn_res < 0 {
+        let err = std::io::Error::last_os_error();
+        // SAFETY: fd is open and valid.
+        unsafe { libc::close(fd) };
+        return Err(err).context(
+            "connect to utun controller failed (requires root / administrator privileges)",
+        );
+    }
+
+    // 4. Retrieve assigned interface name (e.g. "utun3")
+    const UTUN_OPT_IFNAME: libc::c_int = 2;
+    let mut ifname_buf = [0u8; 64];
+    let mut ifname_len = ifname_buf.len() as libc::socklen_t;
+    // SAFETY: fd is connected; ifname_buf is a valid stack buffer with length checked.
+    let opt_res = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SYSPROTO_CONTROL,
+            UTUN_OPT_IFNAME,
+            ifname_buf.as_mut_ptr() as *mut _,
+            &mut ifname_len,
+        )
+    };
+
+    let ifname = if opt_res == 0 {
+        let nul = ifname_buf.iter().position(|&b| b == 0).unwrap_or(ifname_len as usize);
+        String::from_utf8_lossy(&ifname_buf[..nul]).into_owned()
+    } else {
+        "utun0".to_string()
+    };
+
+    tracing::info!(interface = %ifname, mtu = config.mtu, "macOS utun interface created");
+
+    // 5. Configure point-to-point IP address and MTU
+    let mtu_str = config.mtu.to_string();
+    let status = std::process::Command::new("/sbin/ifconfig")
+        .args([&ifname, "10.0.85.2", "10.0.85.1", "mtu", &mtu_str, "up"])
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            tracing::info!(interface = %ifname, "configured IP 10.0.85.2/32 on utun interface");
+        },
+        Ok(s) => {
+            tracing::warn!(interface = %ifname, exit_code = ?s.code(), "ifconfig returned non-zero when configuring utun");
+        },
+        Err(e) => {
+            tracing::warn!(interface = %ifname, error = %e, "failed to run /sbin/ifconfig");
+        },
+    }
+
+    // SAFETY: fd is valid and unique, File takes sole ownership.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    Ok((
+        file,
+        TunGso {
+            vnet_hdr: false,
+            tcp_gro: false,
+            udp_gso: false,
+            af_hdr: true,
+        },
+    ))
+}
+
+#[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
 fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
     let file = OpenOptions::new()
         .read(true)
