@@ -7,8 +7,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sigtermSource: DispatchSourceSignal?
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        // Accessory mode ensures the app runs in the status bar without polluting the macOS Dock
-        NSApp.setActivationPolicy(.accessory)
+        // Standard application mode ensures the app is visible in the Dock/taskbar
+        NSApp.setActivationPolicy(.regular)
 
         // Set application icon from bundled resources if available
         if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "png") ??
@@ -16,6 +16,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
            let img = NSImage(contentsOf: iconURL) {
             NSApp.applicationIconImage = img
         }
+
+        // Setup AppleEvent reopen listener for guaranteed dock/taskbar click handling
+        setupReopenEventHandler()
 
         // Modern safe signal handling on main queue
         setupSignalHandlers()
@@ -26,8 +29,41 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         MainWindowController.shared.show()
     }
 
+    /// Invoked when user clicks the Dock/taskbar icon while the application is already running.
+    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        MainWindowController.shared.show()
+        return true
+    }
+
+    /// Invoked whenever the application gains active focus (e.g. via Taskbar, Dock, App Switcher).
+    public func applicationDidBecomeActive(_ notification: Notification) {
+        if !MainWindowController.shared.isWindowVisible {
+            MainWindowController.shared.show()
+        }
+    }
+
     public func applicationWillTerminate(_ notification: Notification) {
         AppState.shared.cleanupOnExit()
+    }
+
+    private func setupReopenEventHandler() {
+        let eventManager = NSAppleEventManager.shared()
+        eventManager.setEventHandler(
+            self,
+            andSelector: #selector(handleReopenAppleEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(0x61657674), // 'aevt'
+            andEventID: AEEventID(0x72617070)        // 'rapp' (kAEReopenApplication)
+        )
+        eventManager.setEventHandler(
+            self,
+            andSelector: #selector(handleReopenAppleEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(0x61657674), // 'aevt'
+            andEventID: AEEventID(0x6f617070)        // 'oapp' (kAEOpenApplication)
+        )
+    }
+
+    @objc private func handleReopenAppleEvent(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        MainWindowController.shared.show()
     }
 
     private func setupSignalHandlers() {

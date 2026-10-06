@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MACOS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${MACOS_DIR}/.." && pwd)"
 DIST_DIR="${MACOS_DIR}/dist"
-APP_BUNDLE="${DIST_DIR}/OutlineProxy.app"
+APP_BUNDLE="${DIST_DIR}/Outline Proxy.app"
 
 CREATE_DMG=false
 for arg in "$@"; do

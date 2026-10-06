@@ -847,9 +847,16 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: - State Updates
 
+    public var isWindowVisible: Bool {
+        return window?.isVisible == true && window?.isMiniaturized == false
+    }
+
     public func show() {
         applyCurrentTheme()
         NSApp.setActivationPolicy(.regular)
+        if window?.isMiniaturized == true {
+            window?.deminiaturize(nil)
+        }
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
@@ -1011,7 +1018,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     public func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
-        NSApp.setActivationPolicy(.accessory)
         return false
     }
 
