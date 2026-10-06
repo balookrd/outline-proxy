@@ -4,7 +4,7 @@
 //! EBUSY retry when another process is mid-detach, and `O_NONBLOCK` setup
 //! so the fd can be registered with the tokio reactor.
 
-#[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
+#[cfg(not(target_os = "macos"))]
 use std::fs::OpenOptions;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::time::Duration;
