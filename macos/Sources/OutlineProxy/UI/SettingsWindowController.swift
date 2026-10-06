@@ -175,7 +175,12 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         leftButtons.spacing = 8
         leftButtons.translatesAutoresizingMaskIntoConstraints = false
 
-        let bottomStack = NSStackView(views: [leftButtons, NSView(), closeButton])
+        let versionLabel = NSTextField(labelWithString: AppVersion.displayString)
+        versionLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        versionLabel.textColor = NSColor.secondaryLabelColor
+        versionLabel.toolTip = AppVersion.fullDiagnosticString
+
+        let bottomStack = NSStackView(views: [leftButtons, NSView(), versionLabel, closeButton])
         bottomStack.orientation = .horizontal
         bottomStack.translatesAutoresizingMaskIntoConstraints = false
 
