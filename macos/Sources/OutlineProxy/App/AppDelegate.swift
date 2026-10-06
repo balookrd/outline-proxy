@@ -10,13 +10,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Standard application mode ensures the app is visible in the Dock/taskbar
         NSApp.setActivationPolicy(.regular)
 
-        // Set application icon from bundled resources if available
-        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "png") ??
-                         Bundle.main.url(forResource: "AppIcon_round", withExtension: "png"),
-           let img = NSImage(contentsOf: iconURL) {
-            NSApp.applicationIconImage = img
-        }
-
         // Setup AppleEvent reopen listener for guaranteed dock/taskbar click handling
         setupReopenEventHandler()
 
