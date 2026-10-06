@@ -78,7 +78,7 @@ if [[ "${OUTPUT_DIR}" != /* ]]; then
 fi
 mkdir -p "${OUTPUT_DIR}"
 
-APP_BUNDLE="${DIST_DIR}/OutlineProxy.app"
+APP_BUNDLE="${DIST_DIR}/Outline Proxy.app"
 if [[ -n "${APP_PATH}" ]]; then
     APP_BUNDLE="${APP_PATH}"
 fi
