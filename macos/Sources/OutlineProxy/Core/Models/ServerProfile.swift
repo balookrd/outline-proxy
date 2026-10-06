@@ -92,6 +92,16 @@ public struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
         if !link.isEmpty, let host = ServerProfile.extractHost(from: link) {
             return host
         }
+        if !cachedToml.isEmpty {
+            for line in cachedToml.components(separatedBy: .newlines) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("link =") || trimmed.hasPrefix("link=") {
+                    if let host = ServerProfile.extractHost(from: trimmed) {
+                        return host
+                    }
+                }
+            }
+        }
         if !configUrl.isEmpty, let url = URL(string: configUrl), let host = url.host {
             return host
         }

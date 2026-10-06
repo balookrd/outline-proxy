@@ -42,23 +42,43 @@ case "$ACTION" in
         fi
         echo "$DEFAULT_GW" > "$GW_FILE"
 
-        # 3. Resolve server host and set host route to prevent routing loops
-        SERVER_IP=""
-        if [ -n "$SERVER_HOST" ]; then
-            if echo "$SERVER_HOST" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-                SERVER_IP="$SERVER_HOST"
-            else
-                SERVER_IP=$(dig +short "$SERVER_HOST" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
-                if [ -z "$SERVER_IP" ]; then
-                    SERVER_IP=$(dscacheutil -q host -a name "$SERVER_HOST" 2>/dev/null | awk '/ip_address:/ {print $2}' | head -n 1)
-                fi
-            fi
+        # Clean prior host routes if leftover
+        if [ -f "$SERVER_IP_FILE" ] && [ -n "$DEFAULT_GW" ]; then
+            while read -r OLD_IP; do
+                [ -n "$OLD_IP" ] && /sbin/route -q delete -host "$OLD_IP" "$DEFAULT_GW" >/dev/null 2>&1 || true
+            done < "$SERVER_IP_FILE"
+            rm -f "$SERVER_IP_FILE"
         fi
 
-        if [ -n "$SERVER_IP" ] && [ -n "$DEFAULT_GW" ]; then
-            echo "$SERVER_IP" > "$SERVER_IP_FILE"
-            /sbin/route add -host "$SERVER_IP" "$DEFAULT_GW" >/dev/null 2>&1 || true
+        # 3. Resolve all server host endpoints and set host routes to prevent routing loops
+        ALL_HOSTS=""
+        if [ -f "$CONFIG" ]; then
+            ALL_HOSTS=$(grep -E 'link\s*=' "$CONFIG" | sed -E 's/.*@([^:/?#]+).*/\1/' | sort -u || true)
         fi
+        if [ -n "$SERVER_HOST" ]; then
+            ALL_HOSTS=$(printf "%s\n%s" "$ALL_HOSTS" "$SERVER_HOST" | sort -u)
+        fi
+
+        : > "$SERVER_IP_FILE"
+        for HOST in $ALL_HOSTS; do
+            [ -z "$HOST" ] && continue
+            if echo "$HOST" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+                HOST_IPS="$HOST"
+            else
+                HOST_IPS=$(dig +short "$HOST" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)
+                if [ -z "$HOST_IPS" ]; then
+                    HOST_IPS=$(dscacheutil -q host -a name "$HOST" 2>/dev/null | awk '/ip_address:/ {print $2}' || true)
+                fi
+            fi
+            for IP in $HOST_IPS; do
+                if [ -n "$IP" ] && [ -n "$DEFAULT_GW" ]; then
+                    if ! grep -Fxq "$IP" "$SERVER_IP_FILE" 2>/dev/null; then
+                        echo "$IP" >> "$SERVER_IP_FILE"
+                        /sbin/route add -host "$IP" "$DEFAULT_GW" >/dev/null 2>&1 || true
+                    fi
+                fi
+            done
+        done
 
         # 4. Launch outline-ws-rust in background
         "$BIN" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
@@ -118,11 +138,12 @@ case "$ACTION" in
         /sbin/route -q delete -net 128.0.0.0/1 10.0.85.1 >/dev/null 2>&1 || true
 
         if [ -f "$SERVER_IP_FILE" ] && [ -f "$GW_FILE" ]; then
-            SIP=$(cat "$SERVER_IP_FILE" 2>/dev/null || true)
             GW=$(cat "$GW_FILE" 2>/dev/null || true)
-            if [ -n "$SIP" ] && [ -n "$GW" ]; then
-                /sbin/route -q delete -host "$SIP" "$GW" >/dev/null 2>&1 || true
-            fi
+            while read -r IP; do
+                if [ -n "$IP" ] && [ -n "$GW" ]; then
+                    /sbin/route -q delete -host "$IP" "$GW" >/dev/null 2>&1 || true
+                fi
+            done < "$SERVER_IP_FILE"
             rm -f "$SERVER_IP_FILE" "$GW_FILE"
         fi
 
