@@ -86,6 +86,17 @@ public final class ProcessController: @unchecked Sendable {
 
     /// Locates the `tun-runner.sh` script for TUN VPN management.
     public func locateTunRunner() -> URL? {
+        // 0. Privileged installed helper script
+        let sysURL = URL(fileURLWithPath: PrivilegedHelperManager.systemRunnerPath)
+        if FileManager.default.isExecutableFile(atPath: sysURL.path) {
+            return sysURL
+        }
+
+        return locateBundleTunRunner()
+    }
+
+    /// Locates the script within app bundle or development tree.
+    public func locateBundleTunRunner() -> URL? {
         // 1. App Bundle Resources
         if let resURL = Bundle.main.resourceURL?.appendingPathComponent("tun-runner.sh"),
            FileManager.default.fileExists(atPath: resURL.path) {
@@ -242,12 +253,18 @@ public final class ProcessController: @unchecked Sendable {
         try? "".write(to: logPath, atomically: true, encoding: .utf8)
         lastLogOffset = 0
 
-        appendLog("[INFO] Запрос прав администратора для создания L3 utun интерфейса...")
-
-        let cmd = "\"\(runnerURL.path)\" start \"\(binURL.path)\" \"\(configPath.path)\" \"\(serverHost)\" \"\(runDir.path)\""
-
         do {
-            let output = try executeAsAdmin(command: cmd)
+            let output: String
+            if PrivilegedHelperManager.shared.isSudoersConfigured() {
+                appendLog("[INFO] Запуск TUN через беспарольный sudo (в 1 клик)...")
+                output = runCommand("/usr/bin/sudo", [
+                    runnerURL.path, "start", binURL.path, configPath.path, serverHost, runDir.path
+                ])
+            } else {
+                appendLog("[INFO] Запрос прав администратора для создания L3 utun интерфейса...")
+                let cmd = "\"\(runnerURL.path)\" start \"\(binURL.path)\" \"\(configPath.path)\" \"\(serverHost)\" \"\(runDir.path)\""
+                output = try executeAsAdmin(command: cmd)
+            }
             appendLog("[INFO] tun-runner: \(output)")
 
             // Check PID file
@@ -405,8 +422,12 @@ public final class ProcessController: @unchecked Sendable {
                 let runDir = appSupport.appendingPathComponent("tun_run")
 
                 if let runnerURL = self.locateTunRunner() {
-                    let cmd = "\"\(runnerURL.path)\" stop \"\(runDir.path)\""
-                    _ = try? self.executeAsAdmin(command: cmd)
+                    if PrivilegedHelperManager.shared.isSudoersConfigured() {
+                        _ = self.runCommand("/usr/bin/sudo", [runnerURL.path, "stop", runDir.path])
+                    } else {
+                        let cmd = "\"\(runnerURL.path)\" stop \"\(runDir.path)\""
+                        _ = try? self.executeAsAdmin(command: cmd)
+                    }
                 }
 
                 self.stateLock.lock()
@@ -465,5 +486,25 @@ public final class ProcessController: @unchecked Sendable {
         logLock.unlock()
 
         onLogLine?(formatted)
+    }
+
+    @discardableResult
+    public func runCommand(_ launchPath: String, _ arguments: [String]) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: launchPath)
+        process.arguments = arguments
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        } catch {
+            return ""
+        }
     }
 }
