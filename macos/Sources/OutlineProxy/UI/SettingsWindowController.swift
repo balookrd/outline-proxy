@@ -13,9 +13,16 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
     private let themePopUpButton = NSPopUpButton()
     private let bannerSubtitle = NSTextField(labelWithString: "")
 
+    // TUN Passwordless Helper Box
+    private let tunAuthBox = NSBox()
+    private let tunAuthIcon = NSImageView()
+    private let tunAuthTitle = NSTextField(labelWithString: "Режим TUN (VPN): запуск без пароля")
+    private let tunAuthSubtitle = NSTextField(labelWithString: "")
+    private let tunAuthButton = NSButton()
+
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 520),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -94,22 +101,36 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         bannerBox.addSubview(bannerTextStack)
         bannerBox.addSubview(themePopUpButton)
 
-        NSLayoutConstraint.activate([
-            bannerIcon.leadingAnchor.constraint(equalTo: bannerBox.leadingAnchor, constant: 14),
-            bannerIcon.centerYAnchor.constraint(equalTo: bannerBox.centerYAnchor),
-            bannerIcon.widthAnchor.constraint(equalToConstant: 26),
-            bannerIcon.heightAnchor.constraint(equalToConstant: 26),
+        // 1.1 TUN Passwordless Helper Box
+        tunAuthBox.boxType = .custom
+        tunAuthBox.fillColor = NSColor.controlBackgroundColor
+        tunAuthBox.cornerRadius = 8
+        tunAuthBox.translatesAutoresizingMaskIntoConstraints = false
 
-            bannerTextStack.leadingAnchor.constraint(equalTo: bannerIcon.trailingAnchor, constant: 12),
-            bannerTextStack.centerYAnchor.constraint(equalTo: bannerBox.centerYAnchor),
+        tunAuthIcon.translatesAutoresizingMaskIntoConstraints = false
 
-            themePopUpButton.trailingAnchor.constraint(equalTo: bannerBox.trailingAnchor, constant: -14),
-            themePopUpButton.centerYAnchor.constraint(equalTo: bannerBox.centerYAnchor),
-            bannerTextStack.trailingAnchor.constraint(lessThanOrEqualTo: themePopUpButton.leadingAnchor, constant: -12),
-            bannerBox.heightAnchor.constraint(equalToConstant: 58)
-        ])
+        tunAuthTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        tunAuthTitle.translatesAutoresizingMaskIntoConstraints = false
 
-        updateModeUI()
+        tunAuthSubtitle.font = NSFont.systemFont(ofSize: 11)
+        tunAuthSubtitle.translatesAutoresizingMaskIntoConstraints = false
+
+        let tunTextStack = NSStackView(views: [tunAuthTitle, tunAuthSubtitle])
+        tunTextStack.orientation = .vertical
+        tunTextStack.alignment = .leading
+        tunTextStack.spacing = 2
+        tunTextStack.translatesAutoresizingMaskIntoConstraints = false
+
+        tunAuthButton.translatesAutoresizingMaskIntoConstraints = false
+        tunAuthButton.bezelStyle = .rounded
+        tunAuthButton.target = self
+        tunAuthButton.action = #selector(tunAuthAction)
+
+        tunAuthBox.addSubview(tunAuthIcon)
+        tunAuthBox.addSubview(tunTextStack)
+        tunAuthBox.addSubview(tunAuthButton)
+
+        updateTunAuthUI()
 
         // 2. Table view for profiles
         let colActive = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Active"))
@@ -159,6 +180,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         bottomStack.translatesAutoresizingMaskIntoConstraints = false
 
         contentView.addSubview(bannerBox)
+        contentView.addSubview(tunAuthBox)
         contentView.addSubview(scroll)
         contentView.addSubview(bottomStack)
 
@@ -166,8 +188,38 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
             bannerBox.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
             bannerBox.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
             bannerBox.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            bannerBox.heightAnchor.constraint(equalToConstant: 58),
 
-            scroll.topAnchor.constraint(equalTo: bannerBox.bottomAnchor, constant: 12),
+            bannerIcon.leadingAnchor.constraint(equalTo: bannerBox.leadingAnchor, constant: 14),
+            bannerIcon.centerYAnchor.constraint(equalTo: bannerBox.centerYAnchor),
+            bannerIcon.widthAnchor.constraint(equalToConstant: 26),
+            bannerIcon.heightAnchor.constraint(equalToConstant: 26),
+
+            bannerTextStack.leadingAnchor.constraint(equalTo: bannerIcon.trailingAnchor, constant: 12),
+            bannerTextStack.centerYAnchor.constraint(equalTo: bannerBox.centerYAnchor),
+
+            themePopUpButton.trailingAnchor.constraint(equalTo: bannerBox.trailingAnchor, constant: -14),
+            themePopUpButton.centerYAnchor.constraint(equalTo: bannerBox.centerYAnchor),
+            bannerTextStack.trailingAnchor.constraint(lessThanOrEqualTo: themePopUpButton.leadingAnchor, constant: -12),
+
+            tunAuthBox.topAnchor.constraint(equalTo: bannerBox.bottomAnchor, constant: 8),
+            tunAuthBox.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
+            tunAuthBox.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            tunAuthBox.heightAnchor.constraint(equalToConstant: 48),
+
+            tunAuthIcon.leadingAnchor.constraint(equalTo: tunAuthBox.leadingAnchor, constant: 14),
+            tunAuthIcon.centerYAnchor.constraint(equalTo: tunAuthBox.centerYAnchor),
+            tunAuthIcon.widthAnchor.constraint(equalToConstant: 22),
+            tunAuthIcon.heightAnchor.constraint(equalToConstant: 22),
+
+            tunTextStack.leadingAnchor.constraint(equalTo: tunAuthIcon.trailingAnchor, constant: 12),
+            tunTextStack.centerYAnchor.constraint(equalTo: tunAuthBox.centerYAnchor),
+            tunTextStack.trailingAnchor.constraint(lessThanOrEqualTo: tunAuthButton.leadingAnchor, constant: -12),
+
+            tunAuthButton.trailingAnchor.constraint(equalTo: tunAuthBox.trailingAnchor, constant: -14),
+            tunAuthButton.centerYAnchor.constraint(equalTo: tunAuthBox.centerYAnchor),
+
+            scroll.topAnchor.constraint(equalTo: tunAuthBox.bottomAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
             scroll.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
             scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -12),
@@ -182,8 +234,61 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
     public func show() {
         reloadProfiles()
         updateModeUI()
+        updateTunAuthUI()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func updateTunAuthUI() {
+        let isConfigured = PrivilegedHelperManager.shared.isSudoersConfigured()
+        if isConfigured {
+            tunAuthIcon.image = NSImage(systemSymbolName: "checkmark.shield.fill", accessibilityDescription: "Настроено")
+            tunAuthIcon.contentTintColor = NSColor.systemGreen
+            tunAuthSubtitle.stringValue = "Настроено: TUN (VPN) подключается в 1 клик без ввода пароля."
+            tunAuthSubtitle.textColor = NSColor.systemGreen
+            tunAuthButton.title = "Удалить правило"
+        } else {
+            tunAuthIcon.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: "Требуется пароль")
+            tunAuthIcon.contentTintColor = NSColor.systemOrange
+            tunAuthSubtitle.stringValue = "Требуется ввод пароля. Нажмите, чтобы разрешить запуск в 1 клик."
+            tunAuthSubtitle.textColor = NSColor.secondaryLabelColor
+            tunAuthButton.title = "Настроить в 1 клик..."
+        }
+    }
+
+    @objc private func tunAuthAction() {
+        let isConfigured = PrivilegedHelperManager.shared.isSudoersConfigured()
+        if isConfigured {
+            let alert = NSAlert()
+            alert.messageText = "Удалить правило беспарольного доступа?"
+            alert.informativeText = "После удаления при каждом подключении TUN (VPN) снова потребуется вводить системный пароль администратора."
+            alert.addButton(withTitle: "Удалить")
+            alert.addButton(withTitle: "Отмена")
+            alert.alertStyle = .warning
+            if alert.runModal() == .alertFirstButtonReturn {
+                do {
+                    try PrivilegedHelperManager.shared.removeSudoersRule()
+                    updateTunAuthUI()
+                    NotificationCenter.default.post(name: NSNotification.Name("AppStateUpdated"), object: nil)
+                } catch {
+                    NSAlert(error: error).runModal()
+                }
+            }
+        } else {
+            do {
+                try PrivilegedHelperManager.shared.installSudoersRule()
+                updateTunAuthUI()
+                NotificationCenter.default.post(name: NSNotification.Name("AppStateUpdated"), object: nil)
+
+                let alert = NSAlert()
+                alert.messageText = "Беспарольный доступ настроен!"
+                alert.informativeText = "Теперь полноэкранный L3 TUN туннель подключается и отключается мгновенно в один клик без запроса системного пароля."
+                alert.addButton(withTitle: "Отлично")
+                alert.runModal()
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        }
     }
 
     private func updateModeUI() {
@@ -217,6 +322,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
 
     @objc private func handleAppStateUpdated() {
         updateModeUI()
+        updateTunAuthUI()
         reloadProfiles()
     }
 

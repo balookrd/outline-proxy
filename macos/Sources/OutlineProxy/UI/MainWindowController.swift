@@ -957,7 +957,11 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func updateModeHint() {
         if AppState.shared.mode == .tun {
-            modeHintLabel.stringValue = "L3 TUN VPN: системный туннель (DNS, игры, все приложения)"
+            if PrivilegedHelperManager.shared.isSudoersConfigured() {
+                modeHintLabel.stringValue = "L3 TUN VPN: туннель в 1 клик без пароля (DNS, игры, все приложения)"
+            } else {
+                modeHintLabel.stringValue = "L3 TUN VPN: системный туннель (настройте 1 клик в Настройках)"
+            }
         } else {
             modeHintLabel.stringValue = "SOCKS5: локальный прокси без root (браузеры и программы)"
         }

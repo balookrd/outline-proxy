@@ -6,7 +6,10 @@ Native macOS menu-bar client (Apple Silicon & Intel) powered by the `outline-ws-
 
 - **Dual Proxy Modes with One-Click Switching:**
   - **SOCKS5 (System Proxy):** Runs without root or administrator credentials. Automatically manages macOS system proxy configuration via `networksetup`. Ideal for browsers and system-aware applications.
-  - **TUN (Full L3 VPN):** Full system network interception through macOS native BSD kernel interface `utun` (`com.apple.net.utun_control`). Captures all traffic (CLI tools, games, background daemons, DNS). Prompts for administrator credentials (Touch ID / password) upon connection to create the device and manage kernel routing tables (`0.0.0.0/1` and `128.0.0.0/1`).
+  - **TUN (Full L3 VPN):** Full system network interception through macOS native BSD kernel interface `utun` (`com.apple.net.utun_control`). Captures all traffic (CLI tools, games, background daemons, DNS).
+- **Passwordless 1-Click TUN Launch:**
+  - Preferences window includes a **"Configure in 1 click..."** button that prompts for admin credentials once and creates a secured, isolated `/etc/sudoers.d/outline-proxy` rule for `tun-runner.sh`.
+  - Once configured, full L3 VPN connect and disconnect actions operate instantly in 1 click without any password dialogs. The rule can be removed at any time from the same settings card.
 - **Menu Bar Status Item:** One-click connect/disconnect, live status indicator, instant mode and server switcher.
 - **Profiles & Subscriptions:** Import `vless://`, `ss://`, and `outline://` share links (including clipboard import), plus auto-updating HTTPS config subscriptions.
 - **Live Logs Window:** Real-time log inspector for connection diagnostics with copy-to-clipboard.
