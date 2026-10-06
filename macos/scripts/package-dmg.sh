@@ -73,6 +73,9 @@ if [[ -z "${VERSION}" ]]; then
     fi
 fi
 
+if [[ "${OUTPUT_DIR}" != /* ]]; then
+    OUTPUT_DIR="${REPO_ROOT}/${OUTPUT_DIR}"
+fi
 mkdir -p "${OUTPUT_DIR}"
 
 APP_BUNDLE="${DIST_DIR}/OutlineProxy.app"
