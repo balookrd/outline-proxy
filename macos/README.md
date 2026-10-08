@@ -12,6 +12,7 @@ Native macOS menu-bar client (Apple Silicon & Intel) powered by the `outline-ws-
   - Once configured, full L3 VPN connect and disconnect actions operate instantly in 1 click without any password dialogs. The rule can be removed at any time from the same settings card.
 - **Menu Bar Status Item:** One-click connect/disconnect, live status indicator, instant mode and server switcher.
 - **Profiles & Subscriptions:** Import `vless://`, `ss://`, and `outline://` share links (including clipboard import), plus auto-updating HTTPS config subscriptions.
+- **Full macOS Main Menu & Standard Shortcuts:** Complete application menu bar (File, Edit, View, Window, Help) with standard shortcuts: `Cmd+Q` (clean quit with proxy and route teardown), `Cmd+W` (close active window), `Cmd+,` (preferences), `Cmd+O` (main window), `Cmd+L` (logs), `Cmd+Shift+C` (toggle connection), plus full clipboard and undo/redo support in text fields (`Cmd+Z`, `Cmd+C`, `Cmd+V`, `Cmd+A`).
 - **Live Logs Window:** Real-time log inspector for connection diagnostics with copy-to-clipboard.
 - **Clean Teardown:** Automatic reset of macOS system proxy and kernel routing tables on application exit or interruption.
 

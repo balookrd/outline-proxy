@@ -16,6 +16,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         // Modern safe signal handling on main queue
         setupSignalHandlers()
 
+        // Standard macOS application main menu (Cmd+Q, Cmd+W, Edit, Window, etc.)
+        MainMenuController.setup()
+
         StatusMenuController.shared.setup()
 
         // Show Android-styled main window upon application launch
