@@ -869,12 +869,14 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func refreshServerInfo() {
         if let profile = ProfileStore.shared.activeProfile {
             serverTitleLabel.stringValue = profile.displayName
+            let isTcp = AppState.shared.tcpOnly || profile.tcpOnly
+            let tcpNote = isTcp ? " (TCP)" : ""
             if profile.isSubscription {
-                subTypeLabel.stringValue = "Подписка"
+                subTypeLabel.stringValue = "Подписка\(tcpNote)"
                 badgeContainer.isHidden = false
                 refreshSubtitleLabel.stringValue = "Обновлено недавно · каждые 12 ч"
             } else {
-                subTypeLabel.stringValue = "\(profile.transport.uppercased())"
+                subTypeLabel.stringValue = "\(profile.transport.uppercased())\(tcpNote)"
                 badgeContainer.isHidden = true
                 refreshSubtitleLabel.stringValue = "Прямое подключение к серверу"
             }
@@ -906,6 +908,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
             statsContainer.isHidden = false
             modeValueLabel.stringValue = AppState.shared.mode.shortTitle
+            let isTcp = AppState.shared.tcpOnly || (ProfileStore.shared.activeProfile?.tcpOnly == true)
+            let transportName = ProfileStore.shared.activeProfile?.transport.uppercased() ?? "VLESS"
+            protocolValueLabel.stringValue = "\(transportName)/\(isTcp ? "H2" : "H3")"
             if connectedSince == nil {
                 connectedSince = Date()
                 startDurationTimer()
@@ -967,14 +972,15 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func updateModeHint() {
+        let tcpSuffix = AppState.shared.tcpOnly ? " [Только TCP]" : ""
         if AppState.shared.mode == .tun {
             if PrivilegedHelperManager.shared.isSudoersConfigured() {
-                modeHintLabel.stringValue = "L3 TUN VPN: туннель в 1 клик без пароля (DNS, игры, все приложения)"
+                modeHintLabel.stringValue = "L3 TUN VPN\(tcpSuffix): туннель в 1 клик без пароля (DNS, игры, все приложения)"
             } else {
-                modeHintLabel.stringValue = "L3 TUN VPN: системный туннель (настройте 1 клик в Настройках)"
+                modeHintLabel.stringValue = "L3 TUN VPN\(tcpSuffix): системный туннель (настройте 1 клик в Настройках)"
             }
         } else {
-            modeHintLabel.stringValue = "SOCKS5: локальный прокси без root (браузеры и программы)"
+            modeHintLabel.stringValue = "SOCKS5\(tcpSuffix): локальный прокси без root (браузеры и программы)"
         }
     }
 

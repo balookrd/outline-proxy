@@ -73,15 +73,16 @@ public final class StatusMenuController: NSObject, NSMenuDelegate {
         // 1. Status Header
         let statusTitle: String
         let modeSuffix = " [\(AppState.shared.mode.shortTitle)]"
+        let tcpSuffix = AppState.shared.tcpOnly ? " (TCP)" : ""
         switch AppState.shared.status {
         case .connected(let server):
-            statusTitle = "● Подключено: \(server)\(modeSuffix)"
+            statusTitle = "● Подключено: \(server)\(modeSuffix)\(tcpSuffix)"
         case .connecting:
-            statusTitle = "◌ Подключение...\(modeSuffix)"
+            statusTitle = "◌ Подключение...\(modeSuffix)\(tcpSuffix)"
         case .disconnecting:
             statusTitle = "◌ Отключение..."
         case .disconnected:
-            statusTitle = "○ Отключено\(modeSuffix)"
+            statusTitle = "○ Отключено\(modeSuffix)\(tcpSuffix)"
         case .error(let msg):
             statusTitle = "⚠ Ошибка: \(msg)"
         }
@@ -111,6 +112,11 @@ public final class StatusMenuController: NSObject, NSMenuDelegate {
             item.state = (mode == currentMode) ? .on : .off
             menu.addItem(item)
         }
+
+        let tcpOnlyItem = NSMenuItem(title: "   Только TCP (без HTTP/3)", action: #selector(toggleTcpOnlyAction), keyEquivalent: "")
+        tcpOnlyItem.target = self
+        tcpOnlyItem.state = AppState.shared.tcpOnly ? .on : .off
+        menu.addItem(tcpOnlyItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -203,6 +209,10 @@ public final class StatusMenuController: NSObject, NSMenuDelegate {
         if let raw = sender.representedObject as? String, let newMode = ProxyMode(rawValue: raw) {
             AppState.shared.setMode(newMode)
         }
+    }
+
+    @objc private func toggleTcpOnlyAction() {
+        AppState.shared.setTcpOnly(!AppState.shared.tcpOnly)
     }
 
     @objc private func selectServerAction(_ sender: NSMenuItem) {

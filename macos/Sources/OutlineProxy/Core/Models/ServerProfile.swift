@@ -10,10 +10,15 @@ public struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
     public var transport: String // "vless" | "ss"
     public var link: String      // vless://... or ss://...
     public var paddingEnabled: Bool
+    public var tcpOnly: Bool
     public var rawTomlOverride: String
     public var configUrl: String
     public var cachedToml: String
     public var updatedAt: Double
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, transport, link, paddingEnabled, tcpOnly, rawTomlOverride, configUrl, cachedToml, updatedAt
+    }
 
     public init(
         id: String = UUID().uuidString,
@@ -21,6 +26,7 @@ public struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
         transport: String = "vless",
         link: String = "",
         paddingEnabled: Bool = false,
+        tcpOnly: Bool = false,
         rawTomlOverride: String = "",
         configUrl: String = "",
         cachedToml: String = "",
@@ -31,10 +37,25 @@ public struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
         self.transport = transport
         self.link = link
         self.paddingEnabled = paddingEnabled
+        self.tcpOnly = tcpOnly
         self.rawTomlOverride = rawTomlOverride
         self.configUrl = configUrl
         self.cachedToml = cachedToml
         self.updatedAt = updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        transport = try container.decode(String.self, forKey: .transport)
+        link = try container.decode(String.self, forKey: .link)
+        paddingEnabled = try container.decodeIfPresent(Bool.self, forKey: .paddingEnabled) ?? false
+        tcpOnly = try container.decodeIfPresent(Bool.self, forKey: .tcpOnly) ?? false
+        rawTomlOverride = try container.decodeIfPresent(String.self, forKey: .rawTomlOverride) ?? ""
+        configUrl = try container.decodeIfPresent(String.self, forKey: .configUrl) ?? ""
+        cachedToml = try container.decodeIfPresent(String.self, forKey: .cachedToml) ?? ""
+        updatedAt = try container.decodeIfPresent(Double.self, forKey: .updatedAt) ?? Date().timeIntervalSince1970
     }
 
     public var isSubscription: Bool {

@@ -16,6 +16,7 @@ public final class AppState: ObservableObject {
 
     @Published public private(set) var status: ConnectionStatus = .disconnected
     @Published public private(set) var mode: ProxyMode = .socks5
+    @Published public private(set) var tcpOnly: Bool = false
     @Published public private(set) var currentLogs: [String] = []
 
     private init() {
@@ -24,6 +25,9 @@ public final class AppState: ObservableObject {
            let savedMode = ProxyMode(rawValue: savedModeStr) {
             self.mode = savedMode
         }
+
+        // Load saved tcpOnly preference
+        self.tcpOnly = UserDefaults.standard.bool(forKey: "OutlineProxy.TcpOnly")
 
         // Monitor process controller callbacks
         ProcessController.shared.onStateChanged = { [weak self] state in
@@ -86,6 +90,24 @@ public final class AppState: ObservableObject {
         }
     }
 
+    public func setTcpOnly(_ enabled: Bool) {
+        guard tcpOnly != enabled else { return }
+        let wasConnected = isConnected
+        if wasConnected {
+            disconnect()
+        }
+
+        tcpOnly = enabled
+        UserDefaults.standard.set(enabled, forKey: "OutlineProxy.TcpOnly")
+        NotificationCenter.default.post(name: NSNotification.Name("AppStateUpdated"), object: nil)
+
+        if wasConnected {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.connect()
+            }
+        }
+    }
+
     public func toggleConnection() {
         if isConnected {
             disconnect()
@@ -104,6 +126,7 @@ public final class AppState: ObservableObject {
         NotificationCenter.default.post(name: NSNotification.Name("AppStateUpdated"), object: nil)
 
         let targetMode = self.mode
+        let forceTcp = self.tcpOnly
 
         Task.detached(priority: .userInitiated) {
             var currentProfile = profile
@@ -121,8 +144,13 @@ public final class AppState: ObservableObject {
                 }
             }
 
-            // 2. Generate config adapted for current mode
-            let toml = ConfigGenerator.generateConfig(for: currentProfile, mode: targetMode, socksPort: 1080)
+            // 2. Generate config adapted for current mode and tcpOnly setting
+            let toml = ConfigGenerator.generateConfig(
+                for: currentProfile,
+                mode: targetMode,
+                socksPort: 1080,
+                forceTcpOnly: forceTcp
+            )
 
             // 3. Start process and apply proxy
             do {
