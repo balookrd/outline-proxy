@@ -71,6 +71,7 @@
     <string name="dlg_vless_link">Ссылка vless://</string>
     <string name="dlg_ss_link">Ссылка ss://</string>
     <string name="dlg_padding">Заполнение</string>
+    <string name="dlg_tcp_only">Только TCP</string>
     <string name="dlg_raw_toml">Ручной TOML (необязательно)</string>
     <string name="dlg_fetching">Загрузка…</string>
     <string name="btn_save">Сохранить</string>
@@ -120,6 +121,9 @@
     <!-- Keep-Alive screen: background-survival permissions checklist. -->
     <string name="ka_persistent_notif">Постоянное уведомление</string>
     <string name="ka_persistent_notif_desc">Держать в шторке уведомление с кнопкой подключения/отключения, даже когда VPN выключен.</string>
+    <string name="ka_tcp_only">Только TCP</string>
+    <string name="ka_tcp_only_desc">Отключает HTTP/3 (QUIC) и переводит работу тоннелей на HTTP/2 или HTTP/1.1 поверх TCP. Рекомендуется в сетях с блокировкой UDP/QUIC, исключая задержки и постоянные попытки отката.</string>
+    <string name="ka_tcp_only_toast">Настройка применится при следующем подключении</string>
     <string name="ka_qs_tile">Плитка быстрых настроек</string>
     <string name="ka_qs_tile_desc">Переключать туннель прямо из панели быстрых настроек.</string>
     <string name="ka_add_tile">Добавить плитку</string>
