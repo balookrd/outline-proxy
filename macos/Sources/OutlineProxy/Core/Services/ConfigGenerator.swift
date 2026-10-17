@@ -7,16 +7,21 @@ public enum ConfigGenerator {
     public static func generateConfig(
         for profile: ServerProfile,
         mode: ProxyMode = .socks5,
-        socksPort: Int = 1080
+        socksPort: Int = 1080,
+        forceTcpOnly: Bool = false
     ) -> String {
+        let effectiveTcpOnly = forceTcpOnly || profile.tcpOnly
+
         // Subscriptions return their cached TOML directly if available
         if profile.isSubscription && !profile.cachedToml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return applyModeConfiguration(to: profile.cachedToml, mode: mode, socksPort: socksPort)
+            let config = applyModeConfiguration(to: profile.cachedToml, mode: mode, socksPort: socksPort)
+            return effectiveTcpOnly ? TcpOnlyConfig.apply(to: config) : config
         }
 
         // Raw override escape hatch
         if !profile.rawTomlOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return applyModeConfiguration(to: profile.rawTomlOverride, mode: mode, socksPort: socksPort)
+            let config = applyModeConfiguration(to: profile.rawTomlOverride, mode: mode, socksPort: socksPort)
+            return effectiveTcpOnly ? TcpOnlyConfig.apply(to: config) : config
         }
 
         var toml = """
@@ -39,6 +44,9 @@ public enum ConfigGenerator {
             """
         }
 
+        let linkStr = effectiveTcpOnly ? TcpOnlyConfig.enforceLink(profile.link) : profile.link
+        let transportStr = effectiveTcpOnly ? (profile.transport == "xhttp_h3" ? "xhttp_h2" : (profile.transport == "ws_h3" ? "ws_h2" : profile.transport)) : profile.transport
+
         toml += """
         [h2]
         keepalive_interval_secs = 60
@@ -50,22 +58,23 @@ public enum ConfigGenerator {
 
         [[outline.uplinks]]
         name = "\(escapeToml(profile.name.isEmpty ? "primary" : profile.name))"
-        transport = "\(profile.transport)"
-        link = "\(escapeToml(profile.link))"
+        transport = "\(transportStr)"
+        link = "\(escapeToml(linkStr))"
 
         [padding]
         enabled = \(profile.paddingEnabled)
 
         """
-        return toml
+        return effectiveTcpOnly ? TcpOnlyConfig.apply(to: toml) : toml
     }
 
     /// Legacy alias for SOCKS5 mode config generation.
     public static func generateSocks5Config(
         for profile: ServerProfile,
-        socksPort: Int = 1080
+        socksPort: Int = 1080,
+        forceTcpOnly: Bool = false
     ) -> String {
-        generateConfig(for: profile, mode: .socks5, socksPort: socksPort)
+        generateConfig(for: profile, mode: .socks5, socksPort: socksPort, forceTcpOnly: forceTcpOnly)
     }
 
     private static func applyModeConfiguration(to toml: String, mode: ProxyMode, socksPort: Int) -> String {

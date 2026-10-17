@@ -11,6 +11,9 @@ Native macOS menu-bar client (Apple Silicon & Intel) powered by the `outline-ws-
   - Preferences window includes a **"Configure in 1 click..."** button that prompts for admin credentials once and creates a secured, isolated `/etc/sudoers.d/outline-proxy` rule for `tun-runner.sh`.
   - Once configured, full L3 VPN connect and disconnect actions operate instantly in 1 click without any password dialogs. The rule can be removed at any time from the same settings card.
 - **Menu Bar Status Item:** One-click connect/disconnect, live status indicator, instant mode and server switcher.
+- **"TCP Only" Mode (Bypass HTTP/3):**
+  - Instant toggle in Preferences and Menu Bar to force all tunnels to use HTTP/2 or HTTP/1.1 (TCP) carriers instead of HTTP/3 (QUIC/UDP 443).
+  - Eliminates connection stalls, handshake timeouts, and repeated fallback cycles in networks where UDP 443 is blocked or throttled by DPI.
 - **Profiles & Subscriptions:** Import `vless://`, `ss://`, and `outline://` share links (including clipboard import), plus auto-updating HTTPS config subscriptions.
 - **Full macOS Main Menu & Standard Shortcuts:** Complete application menu bar (File, Edit, View, Window, Help) with standard shortcuts: `Cmd+Q` (clean quit with proxy and route teardown), `Cmd+W` (close active window), `Cmd+,` (preferences), `Cmd+O` (main window), `Cmd+L` (logs), `Cmd+Shift+C` (toggle connection), plus full clipboard and undo/redo support in text fields (`Cmd+Z`, `Cmd+C`, `Cmd+V`, `Cmd+A`).
 - **Live Logs Window:** Real-time log inspector for connection diagnostics with copy-to-clipboard.

@@ -20,9 +20,16 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
     private let tunAuthSubtitle = NSTextField(labelWithString: "")
     private let tunAuthButton = NSButton()
 
+    // TCP Only Box
+    private let tcpOnlyBox = NSBox()
+    private let tcpOnlyIcon = NSImageView()
+    private let tcpOnlyTitle = NSTextField(labelWithString: "Режим «Только TCP» (без HTTP/3)")
+    private let tcpOnlySubtitle = NSTextField(labelWithString: "Отключает QUIC/H3 (UDP 443) и переводит туннели на HTTP/2 / HTTP/1.1 для сетей с блокировкой UDP.")
+    private let tcpOnlySwitch = NSSwitch()
+
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -132,6 +139,39 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
 
         updateTunAuthUI()
 
+        // 1.2 TCP Only Box
+        tcpOnlyBox.boxType = .custom
+        tcpOnlyBox.fillColor = NSColor.controlBackgroundColor
+        tcpOnlyBox.cornerRadius = 8
+        tcpOnlyBox.translatesAutoresizingMaskIntoConstraints = false
+
+        tcpOnlyIcon.image = NSImage(systemSymbolName: "network.badge.shield.half.filled", accessibilityDescription: nil)
+        tcpOnlyIcon.contentTintColor = NSColor.systemBlue
+        tcpOnlyIcon.translatesAutoresizingMaskIntoConstraints = false
+
+        tcpOnlyTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        tcpOnlyTitle.translatesAutoresizingMaskIntoConstraints = false
+
+        tcpOnlySubtitle.font = NSFont.systemFont(ofSize: 11)
+        tcpOnlySubtitle.textColor = NSColor.secondaryLabelColor
+        tcpOnlySubtitle.translatesAutoresizingMaskIntoConstraints = false
+
+        let tcpTextStack = NSStackView(views: [tcpOnlyTitle, tcpOnlySubtitle])
+        tcpTextStack.orientation = .vertical
+        tcpTextStack.alignment = .leading
+        tcpTextStack.spacing = 2
+        tcpTextStack.translatesAutoresizingMaskIntoConstraints = false
+
+        tcpOnlySwitch.translatesAutoresizingMaskIntoConstraints = false
+        tcpOnlySwitch.target = self
+        tcpOnlySwitch.action = #selector(tcpOnlyAction(_:))
+
+        tcpOnlyBox.addSubview(tcpOnlyIcon)
+        tcpOnlyBox.addSubview(tcpTextStack)
+        tcpOnlyBox.addSubview(tcpOnlySwitch)
+
+        updateTcpOnlyUI()
+
         // 2. Table view for profiles
         let colActive = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Active"))
         colActive.title = "Статус"
@@ -186,6 +226,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
 
         contentView.addSubview(bannerBox)
         contentView.addSubview(tunAuthBox)
+        contentView.addSubview(tcpOnlyBox)
         contentView.addSubview(scroll)
         contentView.addSubview(bottomStack)
 
@@ -224,7 +265,24 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
             tunAuthButton.trailingAnchor.constraint(equalTo: tunAuthBox.trailingAnchor, constant: -14),
             tunAuthButton.centerYAnchor.constraint(equalTo: tunAuthBox.centerYAnchor),
 
-            scroll.topAnchor.constraint(equalTo: tunAuthBox.bottomAnchor, constant: 10),
+            tcpOnlyBox.topAnchor.constraint(equalTo: tunAuthBox.bottomAnchor, constant: 8),
+            tcpOnlyBox.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
+            tcpOnlyBox.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+            tcpOnlyBox.heightAnchor.constraint(equalToConstant: 48),
+
+            tcpOnlyIcon.leadingAnchor.constraint(equalTo: tcpOnlyBox.leadingAnchor, constant: 14),
+            tcpOnlyIcon.centerYAnchor.constraint(equalTo: tcpOnlyBox.centerYAnchor),
+            tcpOnlyIcon.widthAnchor.constraint(equalToConstant: 22),
+            tcpOnlyIcon.heightAnchor.constraint(equalToConstant: 22),
+
+            tcpTextStack.leadingAnchor.constraint(equalTo: tcpOnlyIcon.trailingAnchor, constant: 12),
+            tcpTextStack.centerYAnchor.constraint(equalTo: tcpOnlyBox.centerYAnchor),
+            tcpTextStack.trailingAnchor.constraint(lessThanOrEqualTo: tcpOnlySwitch.leadingAnchor, constant: -12),
+
+            tcpOnlySwitch.trailingAnchor.constraint(equalTo: tcpOnlyBox.trailingAnchor, constant: -14),
+            tcpOnlySwitch.centerYAnchor.constraint(equalTo: tcpOnlyBox.centerYAnchor),
+
+            scroll.topAnchor.constraint(equalTo: tcpOnlyBox.bottomAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
             scroll.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
             scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -12),
@@ -240,6 +298,7 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         reloadProfiles()
         updateModeUI()
         updateTunAuthUI()
+        updateTcpOnlyUI()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -325,9 +384,18 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         updateModeUI()
     }
 
+    private func updateTcpOnlyUI() {
+        tcpOnlySwitch.state = AppState.shared.tcpOnly ? .on : .off
+    }
+
+    @objc private func tcpOnlyAction(_ sender: NSSwitch) {
+        AppState.shared.setTcpOnly(sender.state == .on)
+    }
+
     @objc private func handleAppStateUpdated() {
         updateModeUI()
         updateTunAuthUI()
+        updateTcpOnlyUI()
         reloadProfiles()
     }
 
@@ -343,8 +411,8 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
 
     @objc private func themeChanged(_ sender: NSPopUpButton) {
         guard let item = sender.selectedItem,
-              let raw = item.representedObject as? String,
-              let newTheme = AppThemeMode(rawValue: raw) else { return }
+               let raw = item.representedObject as? String,
+               let newTheme = AppThemeMode(rawValue: raw) else { return }
 
         ThemeManager.shared.mode = newTheme
     }
@@ -381,7 +449,9 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
             cell.stringValue = profile.name.isEmpty ? "Без названия" : profile.name
             if isActive { cell.font = NSFont.boldSystemFont(ofSize: 12) }
         case "Type":
-            cell.stringValue = profile.isSubscription ? "Подписка" : profile.transport.uppercased()
+            let isTcpOnly = profile.tcpOnly || AppState.shared.tcpOnly
+            let baseType = profile.isSubscription ? "Подписка" : profile.transport.uppercased()
+            cell.stringValue = isTcpOnly ? "\(baseType) (TCP)" : baseType
         case "Link":
             cell.stringValue = profile.isSubscription ? profile.configUrl : profile.link
             cell.textColor = .secondaryLabelColor
