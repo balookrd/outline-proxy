@@ -291,6 +291,16 @@ re-reports the bandwidth estimate when only the radio technology changes, the
 budget is also re-checked on the service's existing 2-second tick — a capability
 read and a comparison, free when nothing moved.
 
+### TCP only mode (no HTTP/3)
+
+On networks where UDP port 443 or QUIC traffic is blocked or throttled (e.g. mobile operators or restricted Wi-Fi), tunnels configured with HTTP/3 (`xhttp_h3` or `ws_h3`) can experience prolonged handshake timeouts (10–60 s) before falling back to HTTP/2, as well as periodic recovery attempts back to H3 that trigger repeated stalls.
+
+The app provides a **TCP only** switch on the Keeping Alive screen (and individually per profile in the server editor):
+- Forces all carriers to HTTP/2 or HTTP/1.1 over TCP (`xhttp_h2`, `ws_h2`, `alpn=h2`).
+- Completely strips HTTP/3 from structured profiles, share links, subscriptions, and raw TOML overrides.
+- Ensures the core never attempts QUIC/H3 handshakes or probes, eliminating fallback delays.
+- User UDP traffic inside the tunnel (DNS, VoIP) continues to be multiplexed over the HTTP/2 connection.
+
 ### What the home screen says about the link
 
 Under the tunnel status the card shows the network the tunnel is actually

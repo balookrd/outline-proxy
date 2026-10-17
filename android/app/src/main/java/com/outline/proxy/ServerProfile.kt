@@ -31,6 +31,7 @@ data class ServerProfile(
     val ssLink: String = "",
     // Common
     val paddingEnabled: Boolean = false,
+    val tcpOnly: Boolean = false,
     val rawTomlOverride: String = "",
     // Subscription
     val configUrl: String = "",
@@ -40,11 +41,16 @@ data class ServerProfile(
     /** This profile's config is fetched from [configUrl] rather than built locally. */
     val isSubscription: Boolean get() = configUrl.isNotBlank()
 
-    fun toToml(): String {
+    fun toToml(forceTcpOnly: Boolean = false): String {
+        val effectiveTcpOnly = forceTcpOnly || tcpOnly
         // A subscription's config is whatever was last fetched — nothing else may
         // leak into it, so this wins over both the override and the fields.
-        if (isSubscription) return cachedToml
-        if (rawTomlOverride.isNotBlank()) return rawTomlOverride
+        if (isSubscription) {
+            return if (effectiveTcpOnly) TcpOnlyConfig.apply(cachedToml) else cachedToml
+        }
+        if (rawTomlOverride.isNotBlank()) {
+            return if (effectiveTcpOnly) TcpOnlyConfig.apply(rawTomlOverride) else rawTomlOverride
+        }
 
         val sb = StringBuilder()
         // Native TUN: the fd comes from VpnService, not this path, but the loader
@@ -77,13 +83,15 @@ data class ServerProfile(
         sb.append("[[outline.uplinks]]\n")
         sb.append("name = \"").append(name.ifBlank { "primary" }).append("\"\n")
         sb.append("transport = \"").append(transport).append("\"\n")
+        val effectiveVlessLink = if (effectiveTcpOnly) TcpOnlyConfig.enforceLink(vlessLink) else vlessLink
+        val effectiveSsLink = if (effectiveTcpOnly) TcpOnlyConfig.enforceLink(ssLink) else ssLink
         when (transport) {
             "vless" -> {
-                sb.append("link = \"").append(vlessLink).append("\"\n")
+                sb.append("link = \"").append(effectiveVlessLink).append("\"\n")
             }
             "ss" -> {
                 // ss:// share link carries carrier + cipher + password.
-                sb.append("link = \"").append(ssLink).append("\"\n")
+                sb.append("link = \"").append(effectiveSsLink).append("\"\n")
             }
         }
         sb.append("\n[padding]\n")
@@ -98,6 +106,7 @@ data class ServerProfile(
         put("vlessLink", vlessLink)
         put("ssLink", ssLink)
         put("paddingEnabled", paddingEnabled)
+        put("tcpOnly", tcpOnly)
         put("rawTomlOverride", rawTomlOverride)
         put("configUrl", configUrl)
         put("cachedToml", cachedToml)
@@ -116,6 +125,7 @@ data class ServerProfile(
             vlessLink = o.optString("vlessLink", ""),
             ssLink = o.optString("ssLink", ""),
             paddingEnabled = o.optBoolean("paddingEnabled", false),
+            tcpOnly = o.optBoolean("tcpOnly", false),
             rawTomlOverride = o.optString("rawTomlOverride", ""),
             configUrl = o.optString("configUrl", ""),
             cachedToml = o.optString("cachedToml", ""),

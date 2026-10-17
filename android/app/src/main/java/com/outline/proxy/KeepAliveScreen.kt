@@ -72,6 +72,8 @@ fun KeepAliveScreen(onBack: () -> Unit) {
     var persistent by remember { mutableStateOf(keepAlive.persistentNotification) }
     val autoStore = remember { AutomationStore(context) }
     var pauseOnAirplane by remember { mutableStateOf(autoStore.load().pauseOnAirplaneMode) }
+    val profileStore = remember { ProfileStore(context) }
+    var tcpOnly by remember { mutableStateOf(profileStore.tcpOnly) }
 
     val notifications = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -83,6 +85,40 @@ fun KeepAliveScreen(onBack: () -> Unit) {
 
     SubScreen(title = stringResource(R.string.home_link_keepalive), icon = Icons.Filled.MonitorHeart, onBack = onBack) {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            stringResource(R.string.ka_tcp_only),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            stringResource(R.string.ka_tcp_only_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    Switch(
+                        checked = tcpOnly,
+                        onCheckedChange = { on ->
+                            tcpOnly = on
+                            profileStore.tcpOnly = on
+                            if (OutlineVpnService.isActive()) {
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.ka_tcp_only_toast),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        },
+                    )
+                }
+            }
             SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),

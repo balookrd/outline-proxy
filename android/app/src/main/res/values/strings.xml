@@ -85,6 +85,7 @@
     <string name="dlg_vless_link">vless:// share link</string>
     <string name="dlg_ss_link">ss:// share link</string>
     <string name="dlg_padding">Padding</string>
+    <string name="dlg_tcp_only">TCP only</string>
     <string name="dlg_raw_toml">Raw TOML override (optional)</string>
     <string name="dlg_fetching">Fetching…</string>
     <string name="btn_save">Save</string>
@@ -135,6 +136,9 @@
     <!-- Keep-Alive screen: background-survival permissions checklist. -->
     <string name="ka_persistent_notif">Persistent notification</string>
     <string name="ka_persistent_notif_desc">Keep a notification with a Connect/Disconnect button in the status bar, even when the VPN is off.</string>
+    <string name="ka_tcp_only">TCP only</string>
+    <string name="ka_tcp_only_desc">Disable HTTP/3 (QUIC) and force tunnels to use HTTP/2 or HTTP/1.1 over TCP. Recommended on networks where UDP or QUIC is blocked, avoiding stalls and continuous fallback attempts.</string>
+    <string name="ka_tcp_only_toast">Setting will take effect on next connect</string>
     <string name="ka_qs_tile">Quick Settings tile</string>
     <string name="ka_qs_tile_desc">Toggle the tunnel straight from the Quick Settings panel.</string>
     <string name="ka_add_tile">Add tile</string>

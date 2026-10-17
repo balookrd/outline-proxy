@@ -716,6 +716,7 @@ private fun ProfileEditorDialog(
     var vlessLink by remember { mutableStateOf(initial.vlessLink) }
     var ssLink by remember { mutableStateOf(initial.ssLink) }
     var paddingEnabled by remember { mutableStateOf(initial.paddingEnabled) }
+    var tcpOnly by remember { mutableStateOf(initial.tcpOnly) }
     var rawOverride by remember { mutableStateOf(initial.rawTomlOverride) }
     var configUrl by remember { mutableStateOf(initial.configUrl) }
     var fetching by remember { mutableStateOf(false) }
@@ -740,6 +741,7 @@ private fun ProfileEditorDialog(
             vlessLink = vlessLink,
             ssLink = ssLink,
             paddingEnabled = paddingEnabled,
+            tcpOnly = tcpOnly,
             rawTomlOverride = rawOverride,
             configUrl = configUrl.trim(),
         )
@@ -828,6 +830,11 @@ private fun ProfileEditorDialog(
                     Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(stringResource(R.string.dlg_padding), modifier = Modifier.weight(1f))
                         Switch(checked = paddingEnabled, onCheckedChange = { paddingEnabled = it })
+                    }
+
+                    Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(stringResource(R.string.dlg_tcp_only), modifier = Modifier.weight(1f))
+                        Switch(checked = tcpOnly, onCheckedChange = { tcpOnly = it })
                     }
 
                     OutlinedTextField(

@@ -503,7 +503,15 @@ class OutlineVpnService : VpnService() {
             state.alwaysOnSeen = isAlwaysOn
         }
         try {
-            val powerOptimizedToml = MobilePowerConfig.sanitize(withDialBudget(configToml))
+            val store = ProfileStore(this)
+            val isTcpOnly = store.tcpOnly || (store.selectedProfile()?.tcpOnly == true)
+            val tomlWithTcpOnly = if (isTcpOnly) {
+                Log.i(TAG, "TCP only mode active: HTTP/3 (QUIC) disabled, forced h2/h1")
+                TcpOnlyConfig.apply(configToml)
+            } else {
+                configToml
+            }
+            val powerOptimizedToml = MobilePowerConfig.sanitize(withDialBudget(tomlWithTcpOnly))
             start(powerOptimizedToml, filesDir.absolutePath, tun.fd)
             Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
             state.clearFailures()
