@@ -378,6 +378,9 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         },
+                        onReturnToPause = {
+                            OutlineVpnService.requestPause(context)
+                        },
                         onAddServer = { showProfiles = true },
                         onOpenProfiles = { showProfiles = true },
                         onOpenSplitTunnel = { showSplit = true },

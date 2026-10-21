@@ -114,6 +114,10 @@ class OutlineVpnService : VpnService() {
     @Volatile
     private var lastLinkAtMs = 0L
 
+    /** Timestamp when the service was created, used to implement boot grace period. */
+    private var serviceCreatedAtMs: Long = 0L
+    private var bootGraceRunnable: Runnable? = null
+
     companion object {
         private const val TAG = "OutlineVpnService"
         const val ACTION_CONNECT = "com.outline.proxy.CONNECT"
@@ -122,6 +126,7 @@ class OutlineVpnService : VpnService() {
         const val ACTION_STANDBY = "com.outline.proxy.STANDBY"
         const val ACTION_STOP_STANDBY = "com.outline.proxy.STOP_STANDBY"
         const val ACTION_CHECK_AUTOMATION = "com.outline.proxy.CHECK_AUTOMATION"
+        const val ACTION_PAUSE_NOW = "com.outline.proxy.PAUSE_NOW"
         const val EXTRA_CONFIG_TOML = "config_toml"
 
         // Bumped from the original "outline_vpn": a channel's badge setting is
@@ -147,6 +152,7 @@ class OutlineVpnService : VpnService() {
         private const val DESTROY_DELAY_MS = 2_000L
         private const val WIFI_LOST_DEBOUNCE_MS = 3_000L
         private const val WIFI_SSID_RETRY_DELAY_MS = 1_500L
+        private const val BOOT_GRACE_PERIOD_MS = 25_000L
 
         /**
          * Whether the tunnel is up, as reported by the Rust core (same process,
@@ -171,6 +177,15 @@ class OutlineVpnService : VpnService() {
             context.startService(
                 Intent(context, OutlineVpnService::class.java).apply {
                     action = ACTION_DISCONNECT
+                },
+            )
+        }
+
+        /** Ask the service to pause the tunnel (return from override to automation pause). */
+        fun requestPause(context: Context) {
+            context.startService(
+                Intent(context, OutlineVpnService::class.java).apply {
+                    action = ACTION_PAUSE_NOW
                 },
             )
         }
@@ -234,6 +249,7 @@ class OutlineVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        serviceCreatedAtMs = android.os.SystemClock.elapsedRealtime()
         ensureNotificationChannels()
         registerAirplaneReceiver()
         registerScreenReceiver()
@@ -245,16 +261,26 @@ class OutlineVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_DISCONNECT -> {
+                cancelBootGraceRetry()
                 KeepAliveState(this).shouldRun = false
                 val autoState = AutomationState(this)
                 autoState.clearPauseFlags()
-                autoState.manualOverrideSsid = null
+                autoState.clearOverride()
                 WatchdogAlarm.cancel(this)
                 WatchdogWorker.cancel(this)
                 disconnect()
                 return START_NOT_STICKY
             }
+            ACTION_PAUSE_NOW -> {
+                cancelBootGraceRetry()
+                val autoState = AutomationState(this)
+                autoState.clearOverride()
+                val ssid = currentWifiSsid ?: LinkProbe.currentWifiSsid(this) ?: autoState.lastSeenWifiSsid
+                pauseTunnel(PauseReason.WIFI_NETWORK, ssid)
+                return START_STICKY
+            }
             ACTION_CONNECT -> {
+                cancelBootGraceRetry()
                 val configToml = intent.getStringExtra(EXTRA_CONFIG_TOML)
                 if (configToml.isNullOrBlank()) {
                     Log.e(TAG, "missing config TOML; refusing to start")
@@ -263,12 +289,21 @@ class OutlineVpnService : VpnService() {
                 }
                 KeepAliveState(this).shouldRun = true
                 val autoState = AutomationState(this)
-                if (autoState.pausedByWifi) {
-                    autoState.manualOverrideSsid = currentWifiSsid ?: LinkProbe.currentWifiSsid(this)
+                val autoConfig = AutomationStore(this).load()
+                val ssid = currentWifiSsid ?: LinkProbe.currentWifiSsid(this)
+
+                // If user connects while on Wi-Fi with auto-pause or currently paused, activate manual override
+                val isOnSelected = autoConfig.wifiAutomationEnabled &&
+                    (autoState.pausedByWifi || (ssid != null && autoConfig.trustedSsids.contains(ssid)) || LinkProbe.isOnWifi(this))
+                if (isOnSelected) {
+                    autoState.manualOverrideActive = true
+                    autoState.manualOverrideSsid = ssid
+                } else {
+                    autoState.clearOverride()
                 }
                 autoState.clearPauseFlags()
                 WatchdogWorker.schedule(this)
-                if (AutomationStore(this).load().wifiAutomationEnabled) {
+                if (autoConfig.wifiAutomationEnabled) {
                     registerWifiAutomationCallback()
                 }
                 connect(configToml)
@@ -354,6 +389,20 @@ class OutlineVpnService : VpnService() {
 
         val isOnWifi = activeWifiNetwork != null || LinkProbe.isOnWifi(this)
         val ssid = currentWifiSsid ?: LinkProbe.currentWifiSsid(this)
+
+        // Boot grace period: immediately after device boot or service restart, Wi-Fi may take
+        // 10-20 seconds to associate. If the tunnel was paused on Wi-Fi, preserve the pause state
+        // and avoid a false RESUME_TUNNEL while the network stabilizes.
+        val elapsedSinceCreate = android.os.SystemClock.elapsedRealtime() - serviceCreatedAtMs
+        val inBootGrace = elapsedSinceCreate < BOOT_GRACE_PERIOD_MS
+        if (autoConfig.wifiAutomationEnabled && autoState.pausedByWifi && !isOnWifi && inBootGrace) {
+            val remainingGrace = BOOT_GRACE_PERIOD_MS - elapsedSinceCreate
+            Log.i(TAG, "ensure: within boot grace period (${elapsedSinceCreate}ms < ${BOOT_GRACE_PERIOD_MS}ms); preserving wifi pause")
+            scheduleBootGraceRetry(remainingGrace)
+            pauseTunnel(PauseReason.WIFI_NETWORK, autoState.pausedWifiSsid ?: autoState.lastSeenWifiSsid)
+            return
+        }
+
         val wifiAction = AutomationPolicy.decideWifiChange(
             wifiAutomationEnabled = autoConfig.wifiAutomationEnabled,
             wifiMode = autoConfig.wifiMode,
@@ -364,6 +413,7 @@ class OutlineVpnService : VpnService() {
             pausedByWifi = autoState.pausedByWifi,
             userIntentShouldRun = state.shouldRun,
             manualOverrideSsid = autoState.manualOverrideSsid,
+            manualOverrideActive = autoState.manualOverrideActive,
         )
         if (wifiAction == AutomationAction.PAUSE_TUNNEL) {
             Log.i(TAG, "ensure: on selected wifi ($ssid); entering pause")
@@ -805,6 +855,7 @@ class OutlineVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        cancelBootGraceRetry()
         unregisterScreenReceiver()
         unregisterAirplaneReceiver()
         unregisterWifiAutomationCallback()
@@ -953,6 +1004,22 @@ class OutlineVpnService : VpnService() {
         wifiSsidRetryRunnable = null
     }
 
+    private fun scheduleBootGraceRetry(delayMs: Long) {
+        bootGraceRunnable?.let { mainHandler.removeCallbacks(it) }
+        bootGraceRunnable = Runnable {
+            bootGraceRunnable = null
+            Log.i(TAG, "boot grace period expired; evaluating network automation")
+            evaluateWifiAutomation()
+        }.also { runnable ->
+            mainHandler.postDelayed(runnable, delayMs.coerceAtLeast(1_000L))
+        }
+    }
+
+    private fun cancelBootGraceRetry() {
+        bootGraceRunnable?.let { mainHandler.removeCallbacks(it) }
+        bootGraceRunnable = null
+    }
+
     private fun registerWifiAutomationCallback() {
         if (wifiCallback != null) return
         startServiceForeground(currentNotification())
@@ -1066,8 +1133,12 @@ class OutlineVpnService : VpnService() {
         val autoState = AutomationState(this)
         val keepAlive = KeepAliveState(this)
 
-        if (autoState.manualOverrideSsid != null && ssid != null && autoState.manualOverrideSsid != ssid) {
-            autoState.manualOverrideSsid = null
+        if (!isOnWifi && autoState.manualOverrideActive) {
+            Log.i(TAG, "wifi automation: left Wi-Fi; clearing manual override")
+            autoState.clearOverride()
+        } else if (autoState.manualOverrideSsid != null && ssid != null && autoState.manualOverrideSsid != ssid) {
+            Log.i(TAG, "wifi automation: SSID changed (${autoState.manualOverrideSsid} -> $ssid); clearing override")
+            autoState.clearOverride()
         }
 
         val action = AutomationPolicy.decideWifiChange(
@@ -1080,8 +1151,9 @@ class OutlineVpnService : VpnService() {
             pausedByWifi = autoState.pausedByWifi,
             userIntentShouldRun = keepAlive.shouldRun,
             manualOverrideSsid = autoState.manualOverrideSsid,
+            manualOverrideActive = autoState.manualOverrideActive,
         )
-        Log.i(TAG, "wifi automation: onWifi=$isOnWifi, ssid='$ssid', action=$action, pausedByWifi=${autoState.pausedByWifi}, active=${isActive()}, shouldRun=${keepAlive.shouldRun}")
+        Log.i(TAG, "wifi automation: onWifi=$isOnWifi, ssid='$ssid', action=$action, pausedByWifi=${autoState.pausedByWifi}, active=${isActive()}, shouldRun=${keepAlive.shouldRun}, override=${autoState.manualOverrideActive}")
 
         when (action) {
             AutomationAction.PAUSE_TUNNEL -> {
@@ -1097,6 +1169,7 @@ class OutlineVpnService : VpnService() {
     }
 
     private fun pauseTunnel(reason: PauseReason, extra: String? = null) {
+        cancelBootGraceRetry()
         val autoState = AutomationState(this)
         val statusText = when (reason) {
             PauseReason.AIRPLANE_MODE -> {
@@ -1105,7 +1178,9 @@ class OutlineVpnService : VpnService() {
             }
             PauseReason.WIFI_NETWORK -> {
                 autoState.pausedByWifi = true
+                autoState.pausedWifiSsid = extra
                 autoState.lastSeenWifiSsid = extra
+                autoState.clearOverride()
                 if (extra != null) {
                     getString(R.string.status_paused_wifi_named, extra)
                 } else {
@@ -1235,7 +1310,8 @@ class OutlineVpnService : VpnService() {
             if (it.isSubscription) getString(R.string.home_subscription) else it.transport.ifBlank { null }
         }
 
-        return Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
+        val autoState = AutomationState(this)
+        val notifBuilder = Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(body)
             .setSmallIcon(R.drawable.ic_stat_tunnel)
@@ -1244,14 +1320,32 @@ class OutlineVpnService : VpnService() {
             .setColor(0xFF40C4FF.toInt())
             .setContentIntent(openApp)
             .setOngoing(true)
-            .addAction(
+
+        if (running && autoState.manualOverrideActive) {
+            val pauseIntent = PendingIntent.getService(
+                this,
+                4,
+                Intent(this, OutlineVpnService::class.java).apply { action = ACTION_PAUSE_NOW },
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+            notifBuilder.addAction(
                 Notification.Action.Builder(
-                    Icon.createWithResource(this, actionIcon),
-                    actionLabel,
-                    actionIntent,
+                    Icon.createWithResource(this, android.R.drawable.ic_media_pause),
+                    getString(R.string.btn_return_to_pause),
+                    pauseIntent,
                 ).build(),
             )
-            .build()
+        }
+
+        notifBuilder.addAction(
+            Notification.Action.Builder(
+                Icon.createWithResource(this, actionIcon),
+                actionLabel,
+                actionIntent,
+            ).build(),
+        )
+
+        return notifBuilder.build()
     }
 
     /** Capture the current TrafficStats totals as this session's baseline, stored
@@ -1363,7 +1457,9 @@ class OutlineVpnService : VpnService() {
         if (hasLink) lastLinkAtMs = System.currentTimeMillis()
         val connecting = !hasLink &&
             System.currentTimeMillis() - lastLinkAtMs < NO_LINK_GRACE_MS
+        val autoState = AutomationState(this)
         val status = when {
+            autoState.manualOverrideActive -> getString(R.string.status_connected_override)
             hasLink -> if (LinkQuality.isSlow(latencyMs)) {
                 getString(R.string.status_connected_slow)
             } else {

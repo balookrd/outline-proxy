@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.MonitorHeart
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Tune
@@ -120,6 +121,7 @@ fun HomeScreen(
     udpFamily: String?,
     udpCarrier: String?,
     onToggle: () -> Unit,
+    onReturnToPause: () -> Unit = {},
     onAddServer: () -> Unit,
     onOpenProfiles: () -> Unit,
     onOpenSplitTunnel: () -> Unit,
@@ -129,6 +131,10 @@ fun HomeScreen(
     onCheckForUpdates: () -> Unit,
     updateStatus: String?,
 ) {
+    val context = LocalContext.current
+    val autoState = remember { AutomationState(context) }
+    val isOverride = connected && autoState.manualOverrideActive
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -150,8 +156,10 @@ fun HomeScreen(
             canConnect = profile != null,
             connected = connected,
             connecting = connecting,
+            isOverrideActive = isOverride,
             onAddServer = onAddServer,
             onToggle = onToggle,
+            onReturnToPause = onReturnToPause,
         )
         Spacer(Modifier.height(16.dp))
         QuickLinks(onOpenSplitTunnel, onOpenRules, onOpenExternalControl, onOpenKeepAlive)
@@ -270,6 +278,7 @@ private fun StatusCard(
                         val context = LocalContext.current
                         val autoState = remember { AutomationState(context) }
                         val isPaused = !connected && (autoState.pausedByAirplane || autoState.pausedByWifi)
+                        val isOverride = connected && autoState.manualOverrideActive
                         val dots = connectingDots(active = connecting)
                         val statusText = when {
                             !connected -> when {
@@ -284,6 +293,7 @@ private fun StatusCard(
                                 }
                                 else -> stringResource(R.string.status_disconnected)
                             }
+                            isOverride -> stringResource(R.string.status_connected_override)
                             // A live link is not the same as a usable one: on an
                             // edge-class network the tunnel is up while nothing
                             // loads, so the label says so rather than sitting on
@@ -668,84 +678,139 @@ private fun ActionRow(
     canConnect: Boolean,
     connected: Boolean,
     connecting: Boolean,
+    isOverrideActive: Boolean = false,
     onAddServer: () -> Unit,
     onToggle: () -> Unit,
+    onReturnToPause: () -> Unit = {},
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        OutlinedButton(
-            onClick = onAddServer,
-            modifier = Modifier.weight(1f).height(56.dp),
-            shape = RoundedCornerShape(20.dp),
-            border = outlineCardBorder(),
-        ) {
-            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(stringResource(R.string.btn_add_server))
-        }
-        // Gradient primary action; a plain Material button cannot take a Brush,
-        // so it is a clickable Box. Disabled until a server exists.
-        val enabled = canConnect || connected
-        // Primary to connect, red/error to disconnect — clear semantic states in M3
-        val gradient = when {
-            !enabled -> Brush.horizontalGradient(
-                listOf(
-                    MaterialTheme.colorScheme.surfaceVariant,
-                    MaterialTheme.colorScheme.surfaceVariant,
-                ),
-            )
-            connected -> Brush.horizontalGradient(
-                listOf(
-                    MaterialTheme.colorScheme.error,
-                    Color(0xFFEF4444),
-                ),
-            )
-            else -> Brush.horizontalGradient(
-                listOf(
-                    MaterialTheme.colorScheme.primary,
-                    MaterialTheme.colorScheme.secondary,
-                ),
-            )
-        }
-        val contentColor = if (enabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .height(56.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(gradient)
-                .clickable(enabled = enabled, onClick = onToggle),
-            contentAlignment = Alignment.Center,
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (connecting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = Color.White,
-                        strokeWidth = 2.5.dp,
-                    )
-                } else {
-                    Icon(
-                        Icons.Filled.PowerSettingsNew,
-                        contentDescription = null,
-                        tint = contentColor,
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
+        if (connected && isOverrideActive) {
+            // In manual override on a paused network: provide explicit Disconnect on the left...
+            OutlinedButton(
+                onClick = onToggle,
+                modifier = Modifier.weight(1f).height(56.dp),
+                shape = RoundedCornerShape(20.dp),
+                border = outlineCardBorder(),
+            ) {
+                Icon(
+                    Icons.Filled.PowerSettingsNew,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.error,
+                )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    if (connected) {
-                        stringResource(R.string.btn_disconnect)
-                    } else if (connecting) {
-                        stringResource(R.string.status_connecting)
-                    } else {
-                        stringResource(R.string.btn_connect)
-                    },
-                    color = contentColor,
-                    fontWeight = FontWeight.SemiBold,
+                    stringResource(R.string.btn_disconnect),
+                    color = MaterialTheme.colorScheme.error,
                 )
+            }
+            // ...and primary "Return to pause" on the right.
+            val pauseGradient = Brush.horizontalGradient(
+                listOf(
+                    StatusAmber,
+                    Color(0xFFF59E0B),
+                ),
+            )
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(pauseGradient)
+                    .clickable(onClick = onReturnToPause),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.Pause,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        stringResource(R.string.btn_return_to_pause),
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+        } else {
+            OutlinedButton(
+                onClick = onAddServer,
+                modifier = Modifier.weight(1f).height(56.dp),
+                shape = RoundedCornerShape(20.dp),
+                border = outlineCardBorder(),
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.btn_add_server))
+            }
+            // Gradient primary action; a plain Material button cannot take a Brush,
+            // so it is a clickable Box. Disabled until a server exists.
+            val enabled = canConnect || connected
+            // Primary to connect, red/error to disconnect — clear semantic states in M3
+            val gradient = when {
+                !enabled -> Brush.horizontalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.surfaceVariant,
+                        MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                )
+                connected -> Brush.horizontalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.error,
+                        Color(0xFFEF4444),
+                    ),
+                )
+                else -> Brush.horizontalGradient(
+                    listOf(
+                        MaterialTheme.colorScheme.primary,
+                        MaterialTheme.colorScheme.secondary,
+                    ),
+                )
+            }
+            val contentColor = if (enabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(56.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(gradient)
+                    .clickable(enabled = enabled, onClick = onToggle),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (connecting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = Color.White,
+                            strokeWidth = 2.5.dp,
+                        )
+                    } else {
+                        Icon(
+                            Icons.Filled.PowerSettingsNew,
+                            contentDescription = null,
+                            tint = contentColor,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (connected) {
+                            stringResource(R.string.btn_disconnect)
+                        } else if (connecting) {
+                            stringResource(R.string.status_connecting)
+                        } else {
+                            stringResource(R.string.btn_connect)
+                        },
+                        color = contentColor,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
             }
         }
     }

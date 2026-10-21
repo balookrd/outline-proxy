@@ -31,6 +31,12 @@ class OutlineTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
+        val autoState = AutomationState(this)
+        if (OutlineVpnService.isActive() && autoState.manualOverrideActive) {
+            OutlineVpnService.requestPause(this)
+            renderTile(running = false)
+            return
+        }
         when (NotificationPolicy.toggle(OutlineVpnService.isActive())) {
             NotifToggle.DISCONNECT -> {
                 OutlineVpnService.requestDisconnect(this)
@@ -67,10 +73,17 @@ class OutlineTileService : TileService() {
         tile.label = "Outline"
         tile.icon = Icon.createWithResource(this, R.drawable.ic_stat_tunnel)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val autoState = AutomationState(this)
             val name = ProfileStore(this).let { store ->
                 store.load().firstOrNull { it.id == store.selectedId }?.name
             }?.takeIf { it.isNotBlank() }
-            tile.subtitle = name ?: getString(if (running) R.string.status_connected else R.string.status_disconnected)
+            val subtitle = when {
+                running && autoState.manualOverrideActive -> getString(R.string.status_connected_override)
+                name != null -> name
+                running -> getString(R.string.status_connected)
+                else -> getString(R.string.status_disconnected)
+            }
+            tile.subtitle = subtitle
         }
         tile.updateTile()
     }

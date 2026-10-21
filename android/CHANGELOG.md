@@ -39,6 +39,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Fix loss of Wi-Fi pause state on device boot and add seamless manual connection override.**
+  - **Boot/revival grace period:** `OutlineVpnService` introduces a 25-second grace period upon service restart / phone boot. If the tunnel was previously paused on a trusted Wi-Fi network, the pause state is preserved while the Wi-Fi interface initializes, preventing a premature `RESUME_TUNNEL` that previously brought up the VPN over cellular before Wi-Fi connected.
+  - **Reliable manual connection override:** eliminated reliance on synchronous text SSID resolution when tapping "Connect" while paused on a trusted network. A boolean override flag (`manualOverrideActive`) ensures the tunnel connects immediately on the local Wi-Fi without triggering immediate pause rollbacks.
+  - **Intuitive UI controls:** when connected under a manual override on trusted Wi-Fi, the home screen status clearly reads "Connected · Override", the quick action button provides a primary **Pause** action (returning the tunnel to automation pause without disabling auto-connect on future network changes), and an explicit **Disconnect** option remains available. Quick Settings tile and ongoing notification also provide a direct "Pause" toggle.
+
 - **Eliminate cellular idle battery drain and continuous Doze wakeups.** Fixed heavy overnight background battery drain on cellular data when the phone is idle without Wi-Fi:
   - Cancelled repeating exact alarms (`WatchdogAlarm`) whenever the tunnel is healthy (`coreAlive == true`). Android now stays uninterrupted in Deep Doze instead of waking up every 15 minutes to re-check a running tunnel.
   - Short-circuited `WatchdogWorker` so it does not re-arm exact alarms when `OutlineVpnService.isActive()`.

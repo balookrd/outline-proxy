@@ -166,6 +166,8 @@
     <string name="status_paused_airplane">На паузе · Авиарежим</string>
     <string name="status_paused_wifi">На паузе · Доверенный Wi-Fi</string>
     <string name="status_paused_wifi_named">На паузе · %1$s</string>
+    <string name="status_connected_override">Подключено · В обход паузы</string>
+    <string name="btn_return_to_pause">На паузу</string>
     <string name="home_link_rules">Правила сети</string>
     <string name="auto_pause_airplane">Приостанавливать в авиарежиме</string>
     <string name="auto_pause_airplane_desc">Приостанавливать туннель при включении авиарежима и восстанавливать при выключении для экономии батареи.</string>

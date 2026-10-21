@@ -99,6 +99,7 @@ object AutomationPolicy {
      * @param pausedByWifi whether the tunnel is currently in a paused state due to Wi-Fi automation.
      * @param userIntentShouldRun whether user intended the VPN to run (`KeepAliveState.shouldRun`).
      * @param manualOverrideSsid if user explicitly hit "Connect" while on this SSID, suppress pausing.
+     * @param manualOverrideActive whether the user explicitly forced connection on the active network.
      */
     fun decideWifiChange(
         wifiAutomationEnabled: Boolean,
@@ -110,8 +111,10 @@ object AutomationPolicy {
         pausedByWifi: Boolean,
         userIntentShouldRun: Boolean,
         manualOverrideSsid: String? = null,
+        manualOverrideActive: Boolean = false,
     ): AutomationAction {
         if (!wifiAutomationEnabled) return AutomationAction.DO_NOTHING
+        if (manualOverrideActive) return AutomationAction.DO_NOTHING
 
         val normalized = normalizeSsid(currentSsid)
 
