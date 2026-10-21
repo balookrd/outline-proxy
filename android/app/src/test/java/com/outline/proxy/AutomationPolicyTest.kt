@@ -144,6 +144,33 @@ class AutomationPolicyTest {
             manualOverrideSsid = "Home-5G",
         )
         assertEquals(AutomationAction.DO_NOTHING, actionOverride)
+
+        // Manual override active flag suppresses pause even if SSID is null or redacted by Android
+        val actionActiveOverrideUnknownSsid = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = true,
+            currentSsid = null,
+            trustedSsids = trusted,
+            tunnelActive = true,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+            manualOverrideActive = true,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, actionActiveOverrideUnknownSsid)
+
+        val actionActiveOverrideKnownSsid = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+            isOnWifi = true,
+            currentSsid = "Home-5G",
+            trustedSsids = trusted,
+            tunnelActive = true,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+            manualOverrideActive = true,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, actionActiveOverrideKnownSsid)
     }
 
     @Test

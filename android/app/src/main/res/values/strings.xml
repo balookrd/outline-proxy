@@ -192,6 +192,8 @@
     <string name="status_paused_airplane">Paused · Airplane mode</string>
     <string name="status_paused_wifi">Paused · Trusted Wi-Fi</string>
     <string name="status_paused_wifi_named">Paused · %1$s</string>
+    <string name="status_connected_override">Connected · Override</string>
+    <string name="btn_return_to_pause">Pause</string>
     <string name="home_link_rules">Network Rules</string>
     <string name="auto_pause_airplane">Pause in Airplane Mode</string>
     <string name="auto_pause_airplane_desc">Temporarily disconnect the tunnel while Airplane Mode is active and restore it when disabled, saving battery.</string>
