@@ -39,6 +39,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Fix false "Connected · Override" status on untrusted Wi-Fi networks.** Connecting manually to VPN while connected to an untrusted/public Wi-Fi network previously activated the manual pause override state due to an unconditional Wi-Fi check. The pause override and the "Pause" action are now strictly gated by `AutomationPolicy.isPauseMandated()`, ensuring untrusted networks display the standard "Connected" status and "Disconnect" action.
+
 - **Fix loss of Wi-Fi pause state on device boot and add seamless manual connection override.**
   - **Boot/revival grace period:** `OutlineVpnService` introduces a 25-second grace period upon service restart / phone boot. If the tunnel was previously paused on a trusted Wi-Fi network, the pause state is preserved while the Wi-Fi interface initializes, preventing a premature `RESUME_TUNNEL` that previously brought up the VPN over cellular before Wi-Fi connected.
   - **Reliable manual connection override:** eliminated reliance on synchronous text SSID resolution when tapping "Connect" while paused on a trusted network. A boolean override flag (`manualOverrideActive`) ensures the tunnel connects immediately on the local Wi-Fi without triggering immediate pause rollbacks.

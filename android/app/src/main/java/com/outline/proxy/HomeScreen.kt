@@ -133,7 +133,18 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val autoState = remember { AutomationState(context) }
-    val isOverride = connected && autoState.manualOverrideActive
+    val autoConfig = remember { AutomationStore(context).load() }
+    val currentSsid = LinkProbe.currentWifiSsid(context)
+    val isOnWifi = LinkProbe.isOnWifi(context)
+    val isPauseMandated = AutomationPolicy.isPauseMandated(
+        wifiAutomationEnabled = autoConfig.wifiAutomationEnabled,
+        wifiMode = autoConfig.wifiMode,
+        isOnWifi = isOnWifi,
+        currentSsid = currentSsid,
+        trustedSsids = autoConfig.trustedSsids,
+        pausedByWifi = autoState.pausedByWifi,
+    )
+    val isOverride = connected && autoState.manualOverrideActive && isPauseMandated
 
     Column(
         modifier = Modifier
@@ -149,7 +160,7 @@ fun HomeScreen(
         Spacer(Modifier.height(20.dp))
         StatusCard(
             profile, connected, connectedSinceMs, hasLiveLink, linkLatencyMs, link, connecting,
-            tcpFamily, tcpCarrier, udpFamily, udpCarrier, onOpenProfiles,
+            isOverride, tcpFamily, tcpCarrier, udpFamily, udpCarrier, onOpenProfiles,
         )
         Spacer(Modifier.height(16.dp))
         ActionRow(
@@ -241,6 +252,7 @@ private fun StatusCard(
     linkLatencyMs: Int?,
     link: LinkReadout?,
     connecting: Boolean,
+    isOverride: Boolean,
     tcpFamily: String?,
     tcpCarrier: String?,
     udpFamily: String?,
@@ -278,7 +290,6 @@ private fun StatusCard(
                         val context = LocalContext.current
                         val autoState = remember { AutomationState(context) }
                         val isPaused = !connected && (autoState.pausedByAirplane || autoState.pausedByWifi)
-                        val isOverride = connected && autoState.manualOverrideActive
                         val dots = connectingDots(active = connecting)
                         val statusText = when {
                             !connected -> when {
