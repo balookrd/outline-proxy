@@ -1,7 +1,9 @@
 package com.outline.proxy
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AutomationPolicyTest {
@@ -348,5 +350,92 @@ class AutomationPolicyTest {
             userIntentShouldRun = true,
         )
         assertEquals(AutomationAction.DO_NOTHING, action)
+    }
+
+    @Test
+    fun `isPauseMandated - pause on selected mode`() {
+        val trusted = setOf("Home-5G", "Office")
+
+        // Trusted Wi-Fi mandates pause
+        assertTrue(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = true,
+                wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+                isOnWifi = true,
+                currentSsid = "Home-5G",
+                trustedSsids = trusted,
+            ),
+        )
+
+        // Untrusted Wi-Fi does NOT mandate pause
+        assertFalse(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = true,
+                wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+                isOnWifi = true,
+                currentSsid = "Public_Airport_Wifi",
+                trustedSsids = trusted,
+            ),
+        )
+
+        // Cellular data does NOT mandate pause
+        assertFalse(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = true,
+                wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+                isOnWifi = false,
+                currentSsid = null,
+                trustedSsids = trusted,
+            ),
+        )
+
+        // Disabled automation does NOT mandate pause
+        assertFalse(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = false,
+                wifiMode = WifiRuleMode.PAUSE_ON_SELECTED,
+                isOnWifi = true,
+                currentSsid = "Home-5G",
+                trustedSsids = trusted,
+            ),
+        )
+    }
+
+    @Test
+    fun `isPauseMandated - connect on selected mode`() {
+        val trusted = setOf("Office")
+
+        // Trusted Wi-Fi connects (does NOT mandate pause)
+        assertFalse(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = true,
+                wifiMode = WifiRuleMode.CONNECT_ON_SELECTED,
+                isOnWifi = true,
+                currentSsid = "Office",
+                trustedSsids = trusted,
+            ),
+        )
+
+        // Untrusted Wi-Fi mandates pause
+        assertTrue(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = true,
+                wifiMode = WifiRuleMode.CONNECT_ON_SELECTED,
+                isOnWifi = true,
+                currentSsid = "CoffeeShop",
+                trustedSsids = trusted,
+            ),
+        )
+
+        // Cellular data mandates pause
+        assertTrue(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = true,
+                wifiMode = WifiRuleMode.CONNECT_ON_SELECTED,
+                isOnWifi = false,
+                currentSsid = null,
+                trustedSsids = trusted,
+            ),
+        )
     }
 }

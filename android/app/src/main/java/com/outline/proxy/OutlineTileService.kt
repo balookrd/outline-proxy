@@ -29,10 +29,25 @@ class OutlineTileService : TileService() {
         renderTile(OutlineVpnService.isActive())
     }
 
+    private fun isManualOverrideEffective(): Boolean {
+        val autoState = AutomationState(this)
+        if (!autoState.manualOverrideActive) return false
+        val autoConfig = AutomationStore(this).load()
+        val isOnWifi = LinkProbe.isOnWifi(this)
+        val ssid = LinkProbe.currentWifiSsid(this)
+        return AutomationPolicy.isPauseMandated(
+            wifiAutomationEnabled = autoConfig.wifiAutomationEnabled,
+            wifiMode = autoConfig.wifiMode,
+            isOnWifi = isOnWifi,
+            currentSsid = ssid,
+            trustedSsids = autoConfig.trustedSsids,
+            pausedByWifi = autoState.pausedByWifi,
+        )
+    }
+
     override fun onClick() {
         super.onClick()
-        val autoState = AutomationState(this)
-        if (OutlineVpnService.isActive() && autoState.manualOverrideActive) {
+        if (OutlineVpnService.isActive() && isManualOverrideEffective()) {
             OutlineVpnService.requestPause(this)
             renderTile(running = false)
             return
@@ -73,12 +88,11 @@ class OutlineTileService : TileService() {
         tile.label = "Outline"
         tile.icon = Icon.createWithResource(this, R.drawable.ic_stat_tunnel)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val autoState = AutomationState(this)
             val name = ProfileStore(this).let { store ->
                 store.load().firstOrNull { it.id == store.selectedId }?.name
             }?.takeIf { it.isNotBlank() }
             val subtitle = when {
-                running && autoState.manualOverrideActive -> getString(R.string.status_connected_override)
+                running && isManualOverrideEffective() -> getString(R.string.status_connected_override)
                 name != null -> name
                 running -> getString(R.string.status_connected)
                 else -> getString(R.string.status_disconnected)

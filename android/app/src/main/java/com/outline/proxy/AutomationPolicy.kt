@@ -88,6 +88,54 @@ object AutomationPolicy {
     }
 
     /**
+     * Determines whether the current network conditions mandate tunnel pause under the active rule set.
+     * Manual override is only valid and visible when this returns true.
+     *
+     * @param wifiAutomationEnabled whether Wi-Fi rule automation is enabled in settings.
+     * @param wifiMode whether to pause or connect on selected networks.
+     * @param isOnWifi whether the device is currently connected to a Wi-Fi network.
+     * @param currentSsid the normalized SSID of the current Wi-Fi network, or null if unknown/cellular.
+     * @param trustedSsids the set of user-selected SSIDs (normalized).
+     * @param pausedByWifi whether the tunnel was already placed on pause on this network.
+     */
+    fun isPauseMandated(
+        wifiAutomationEnabled: Boolean,
+        wifiMode: WifiRuleMode,
+        isOnWifi: Boolean,
+        currentSsid: String?,
+        trustedSsids: Set<String>,
+        pausedByWifi: Boolean = false,
+    ): Boolean {
+        if (!wifiAutomationEnabled) return false
+        val normalized = normalizeSsid(currentSsid)
+
+        return when (wifiMode) {
+            WifiRuleMode.PAUSE_ON_SELECTED -> {
+                if (isOnWifi) {
+                    if (normalized != null) {
+                        trustedSsids.contains(normalized)
+                    } else {
+                        pausedByWifi
+                    }
+                } else {
+                    false
+                }
+            }
+            WifiRuleMode.CONNECT_ON_SELECTED -> {
+                if (isOnWifi) {
+                    if (normalized != null) {
+                        !trustedSsids.contains(normalized)
+                    } else {
+                        pausedByWifi
+                    }
+                } else {
+                    true
+                }
+            }
+        }
+    }
+
+    /**
      * Determines the action when the active network or Wi-Fi SSID changes.
      *
      * @param wifiAutomationEnabled whether Wi-Fi rule automation is enabled in settings.
