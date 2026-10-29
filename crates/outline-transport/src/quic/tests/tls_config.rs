@@ -276,6 +276,38 @@ fn transport_param_ids_from_clienthello(ch: &[u8]) -> Vec<u64> {
     ids
 }
 
+/// `(id, raw value)` pairs from the `quic_transport_parameters` extension
+/// (0x0039), in wire order.
+fn transport_params_from_clienthello(ch: &[u8]) -> Vec<(u64, Vec<u8>)> {
+    let data = clienthello_extension(ch, 0x0039)
+        .expect("no quic_transport_parameters (0x0039) extension in ClientHello");
+    let mut pr = Reader::new(data);
+    let mut params = Vec::new();
+    while pr.remaining() > 0 {
+        let id = pr.varint();
+        let len = pr.varint() as usize;
+        params.push((id, pr.take(len).to_vec()));
+    }
+    params
+}
+
+/// Decodes a QUIC varint that fills the whole slice (a TP integer value).
+fn varint_value(bytes: &[u8]) -> u64 {
+    let mut r = Reader::new(bytes);
+    let v = r.varint();
+    assert_eq!(r.remaining(), 0, "trailing bytes after TP varint");
+    v
+}
+
+/// RFC 9000 section 18.1 reserved ids `31 * N + 27`.
+fn is_grease_tp(id: u64) -> bool {
+    id >= 27 && (id - 27).is_multiple_of(31)
+}
+
+fn tp_value(tp: &[(u64, Vec<u8>)], id: u64) -> Option<&[u8]> {
+    tp.iter().find(|(i, _)| *i == id).map(|(_, v)| v.as_slice())
+}
+
 /// Named groups offered in the `key_share` extension (0x0033), in order. Used
 /// to confirm the post-quantum `X25519MLKEM768` (0x11ec) share is on the wire.
 fn key_share_groups(ch: &[u8]) -> Vec<u16> {
@@ -300,9 +332,12 @@ fn key_share_groups(ch: &[u8]) -> Vec<u16> {
 /// and reassembling the CRYPTO stream into the ClientHello. A fixed endpoint rng
 /// seed keeps the DCID stable run-to-run; the transport-param jitter still
 /// varies per process (that is the thing we want to observe).
-fn capture_clienthello(config: quinn::ClientConfig) -> Vec<u8> {
-    let endpoint_config = Arc::new(quinn_proto::EndpointConfig::default());
-    let mut endpoint = quinn_proto::Endpoint::new(endpoint_config, None, false, Some([0x11; 32]));
+fn capture_clienthello(
+    config: quinn::ClientConfig,
+    endpoint_config: quinn::EndpointConfig,
+) -> Vec<u8> {
+    let mut endpoint =
+        quinn_proto::Endpoint::new(Arc::new(endpoint_config), None, false, Some([0x11; 32]));
     let now = Instant::now();
     let remote = "203.0.113.1:443".parse().unwrap();
     let (_handle, mut conn) = endpoint
@@ -335,14 +370,14 @@ fn capture_clienthello(config: quinn::ClientConfig) -> Vec<u8> {
 
 /// Regression for the H3 carrier config (level A). The H3 QUIC config picks up
 /// the dial fingerprint (PQ key share on the wire), but leaves QUIC datagrams
-/// off, so the H3 Initial does not advertise `max_datagram_frame_size` (0x20),
-/// a transport-parameter tell a browser's HTTP/3 stack would not emit.
+/// off: quinn can advertise `max_datagram_frame_size` (0x20) only up to 65535,
+/// while Chrome sends 65536, so the parameter stays off until it can be exact.
 #[tokio::test]
 async fn h3_config_carries_fingerprint_without_datagram_param() {
     use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
 
     let chromium = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
-        capture_clienthello(super::h3_quic_client_config())
+        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config())
     })
     .await;
     assert!(
@@ -354,4 +389,62 @@ async fn h3_config_carries_fingerprint_without_datagram_param() {
         !has_datagram_param,
         "H3 config must not advertise max_datagram_frame_size (0x20) — datagrams stay off"
     );
+}
+
+/// Chromium-profile H3 Initial carries Chrome 156's transport parameters
+/// (measured 2026-10-29), minus what quinn cannot emit without a patch
+/// (0x11, 0x20, 0x3128) and plus `min_ack_delay`, which quinn always sends.
+#[tokio::test]
+async fn h3_chromium_transport_params_match_chrome() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+    use std::collections::BTreeSet;
+
+    let ch = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
+        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config())
+    })
+    .await;
+    let tp = transport_params_from_clienthello(&ch);
+
+    let ids: BTreeSet<u64> = tp.iter().map(|(id, _)| *id).filter(|id| !is_grease_tp(*id)).collect();
+    assert_eq!(
+        ids,
+        BTreeSet::from([0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0f, 0xff04de1b]),
+        "unexpected transport-parameter set"
+    );
+    assert!(tp.iter().any(|(id, _)| is_grease_tp(*id)), "Chrome sends a GREASE parameter");
+
+    let int = |id| varint_value(tp_value(&tp, id).expect("parameter missing"));
+    assert_eq!(int(0x01), 30_000, "max_idle_timeout");
+    assert_eq!(int(0x03), 1472, "max_udp_payload_size");
+    assert_eq!(int(0x04), 15_728_640, "initial_max_data");
+    for id in [0x05, 0x06, 0x07] {
+        assert_eq!(int(id), 6_291_456, "initial_max_stream_data {id:#x}");
+    }
+    assert_eq!(int(0x08), 100, "initial_max_streams_bidi");
+    assert_eq!(int(0x09), 103, "initial_max_streams_uni");
+    assert_eq!(tp_value(&tp, 0x0f), Some(&[][..]), "zero-length initial_source_connection_id");
+}
+
+/// Safari-profile H3 Initial follows Apple's Network.framework values where
+/// quinn allows it (no bidi streams, 8 uni, 16 MiB / 2 MiB windows, empty
+/// source CID). Idle and the GREASE parameter still differ until phase B.
+#[tokio::test]
+async fn h3_safari_transport_params_match_apple() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+
+    let ch = with_dial_fingerprint(Some(TlsFingerprint::Safari), async {
+        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config())
+    })
+    .await;
+    let tp = transport_params_from_clienthello(&ch);
+    let int = |id| tp_value(&tp, id).map(varint_value);
+    assert_eq!(int(0x01), Some(30_000), "max_idle_timeout");
+    assert_eq!(int(0x04), Some(16_777_216), "initial_max_data");
+    for id in [0x05, 0x06, 0x07] {
+        assert_eq!(int(id), Some(2_097_152), "initial_max_stream_data {id:#x}");
+    }
+    assert_eq!(int(0x08), None, "initial_max_streams_bidi must be unsent");
+    assert_eq!(int(0x09), Some(8), "initial_max_streams_uni");
+    assert_eq!(tp_value(&tp, 0x0f), Some(&[][..]), "zero-length initial_source_connection_id");
+    assert!(tp_value(&tp, 0x2ab2).is_none(), "no grease_quic_bit");
 }

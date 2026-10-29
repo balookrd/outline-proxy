@@ -452,7 +452,7 @@ pub(crate) struct CarrierIdleState {
 /// Which carriers of one logical server should be closed.
 ///
 /// A pooled carrier is never closed by QUIC itself: keep-alive PINGs (8–12 s)
-/// outrun the idle timeout (28–35 s), so a connection opened during a burst
+/// outrun the idle timeout (30 s, from the browser profile), so a connection opened during a burst
 /// holds its UDP socket and its 2.87 MiB receive buffer until the process
 /// exits. Measured on two lightly-loaded nodes on 2026-08-22: 3 and 6 carrier
 /// flows against 24 live endpoints each, nine of them carrying nothing.

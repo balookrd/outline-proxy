@@ -48,7 +48,7 @@ use crate::dial_timeouts::fresh_connect_timeout;
 /// `fresh_connect_timeout()` only covers the handshake, so without this bound a
 /// server that accepts the request stream and then goes silent leaves
 /// `recv_response()` pending forever: QUIC keep-alive (8–12 s) keeps
-/// `max_idle_timeout` (28–35 s) from ever firing, and the POST task holds a
+/// `max_idle_timeout` (30 s, from the browser profile) from ever firing, and the POST task holds a
 /// `SendRequest` clone, which is what keeps the h3 connection — and the UDP
 /// socket under it — alive. The budget is far more than a healthy path needs
 /// for one uplink frame (compare the 7 s the WS-over-H3 carrier allows for

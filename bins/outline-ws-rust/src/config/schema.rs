@@ -337,7 +337,7 @@ pub(super) struct QuicSection {
     pub(super) receive_window: Option<u32>,
     /// Outbound QUIC PING keepalive interval in seconds (default: jittered 8..=12s).
     pub(super) keepalive_secs: Option<u64>,
-    /// QUIC idle timeout in seconds (default: jittered 28..=35s).
+    /// QUIC idle timeout in seconds (default: 30s from the browser profile, no jitter).
     pub(super) idle_timeout_secs: Option<u64>,
 }
 
