@@ -58,4 +58,5 @@ debug = 1
 # HTTP/3 WebSocket path depends on these patched copies — do not drop.
 [patch.crates-io]
 h3 = { path = "vendor/h3" }
+quinn-proto = { path = "vendor/quinn-proto" }
 sockudo-ws = { path = "vendor/sockudo-ws" }
