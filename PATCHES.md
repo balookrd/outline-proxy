@@ -3,9 +3,9 @@
 Single source of truth for the local patches applied to the vendored crates.
 *Русская версия: [PATCHES.ru.md](PATCHES.ru.md).*
 
-The monorepo vendors and patches two upstream crates to make the HTTP/3
-WebSocket path practical. The patched copies live in `vendor/h3` and
-`vendor/sockudo-ws`, wired in through the root `Cargo.toml`
+The monorepo vendors and patches three upstream crates to make the HTTP/3
+WebSocket path practical. The patched copies live in `vendor/h3`,
+`vendor/sockudo-ws` and `vendor/quinn-proto`, wired in through the root `Cargo.toml`
 `[patch.crates-io]`. The `.patch` files in this directory are review and
 maintenance artifacts; actual builds use the vendored copies.
 
@@ -14,6 +14,7 @@ Regenerated against:
 - **h3** — crates.io `h3 0.0.8`.
 - **sockudo-ws** — GitHub tag `v1.7.5` (commit `7819745`), in raw upstream
   git formatting (see the note below).
+- **quinn-proto** — crates.io `quinn-proto 0.11.15`.
 
 ## Patch artifacts
 
@@ -21,11 +22,12 @@ Regenerated against:
 |------|--------|
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | all `vendor/h3` deviations from upstream `h3 0.0.8` |
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | all `vendor/sockudo-ws/src` deviations (the one-line `Cargo.toml` change is documented below, not in the patch) |
+| [`quinn-proto-0.11.15.patch`](quinn-proto-0.11.15.patch) | all `vendor/quinn-proto` deviations from upstream `quinn-proto 0.11.15` (`src/` and `Cargo.toml`) |
 
 ## Gate modules
 
-All production code reaches the patched API surface through two gate
-modules, one per side:
+All production code reaches the patched API surface through three gate
+modules (client h3, server h3, client QUIC):
 
 - [`crates/outline-transport/src/h3/vendored.rs`](crates/outline-transport/src/h3/vendored.rs) — client
   (`Protocol::WEBSOCKET` on Extended CONNECT, `Stream::from_h3_client` +
@@ -34,10 +36,14 @@ modules, one per side:
   (the `h3::ext::Protocol` request extension, `Stream::from_h3_server` +
   `WebSocketStream::from_raw`, the restored `WebSocketServer::into_parts`,
   plus re-exports of the sockudo-ws types the server uses).
+- [`crates/outline-transport/src/quic/vendored.rs`](crates/outline-transport/src/quic/vendored.rs) — client, patched
+  `quinn-proto` (`TransportConfig::initial_stream_receive_window`).
 
 When rebasing the vendored crates onto a new upstream, start (and ideally
-end) at these two files. CI enforces that `sockudo_ws` is referenced only
-from the gate modules; test modules are exempt because they impersonate the
+end) at these gate files. CI enforces that `sockudo_ws` is referenced only
+from the gate modules, and that the patched quinn-proto API
+(`initial_stream_receive_window`) appears only in
+`crates/outline-transport/src/quic/vendored.rs`; test modules are exempt because they impersonate the
 client side on purpose.
 
 ## h3 (0.0.8)
@@ -145,6 +151,32 @@ the same crypto provider as the rest of the workspace and the graph keeps
 exactly one `CryptoProvider` (see the single-provider invariant in the root
 `AGENTS.md`).
 
+## quinn-proto (0.11.15)
+
+Baseline — crates.io `quinn-proto 0.11.15`. Logical changes carried by
+`quinn-proto-0.11.15.patch`:
+
+1. **advertised-stream-window** (`src/config/transport.rs`,
+   `src/transport_parameters.rs`, `src/connection/mod.rs`,
+   `src/connection/streams/{state,mod,recv}.rs`) — new
+   `TransportConfig::initial_stream_receive_window(Option<VarInt>)`. This value
+   goes into the `initial_max_stream_data_*` transport parameters and is the
+   initial credit of every receive stream (including the receive half of locally
+   opened bidi streams); `stream_receive_window` stays the window a stream is
+   widened to when the application first polls it (`MAX_STREAM_DATA` is queued
+   even if no bytes were read yet). This
+   lets the H3 client advertise a browser's window in the Initial (visible to
+   passive DPI) while operating with a larger one (later `MAX_STREAM_DATA`
+   frames are encrypted). `None` (the default) keeps upstream behaviour; the
+   server does not use the patch. `max_stream_data` computes the difference with
+   `saturating_sub`, so a runtime window smaller than the advertised one cannot
+   panic.
+2. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
+   `rcgen` with default `ring` would violate the aws-lc-rs invariant).
+
+Conformance check: apply the patch to a clean copy of crates.io 0.11.15 and
+compare `diff -r src/` — byte-identical.
+
 ## Maintenance strategy (sockudo-ws)
 
 `sockudo-ws` is yanked from crates.io (download returns `403`) and `v1.7.5`
@@ -162,7 +194,7 @@ upstream fix. The practical consequences:
   repository disappears — that tag is the only public baseline left now that
   crates.io serves `403`.
 - **The blast radius is already small.** Production reaches the crate only
-  through the two gate modules above, and CI enforces it, so a rebase or an
+  through the gate modules above, and CI enforces it, so a rebase or an
   audit only has to understand the patched files plus the gate modules — not
   the whole crate.
 - **Keep the diff minimal; do not prune unused modules — yet.** The crate

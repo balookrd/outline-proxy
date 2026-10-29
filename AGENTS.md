@@ -45,7 +45,7 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
   client-side: `outline-transport`,
   `outline-uplink`, `outline-tun`, `outline-metrics`, `outline-net`,
   `outline-routing`, `shadowsocks-crypto`, `socks5-proto`.
-- `vendor/h3`, `vendor/sockudo-ws` — пропатченные крейты, подключены через
+- `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto` — пропатченные крейты, подключены через
   корневой `[patch.crates-io]`. ОДНА копия каждого на весь workspace.
 - `android/rust/` — пакет `outline-android` (UniFFI/JNI-обёртка над клиентом).
   Отдельный workspace (`[workspace]` в его манифесте) — корневой
@@ -140,7 +140,9 @@ vendored-крейты, которые держим в upstream-стиле.
   в upstream нет ни одного `shutdown()`. Остальные файлы `vendor/sockudo-ws`
   обязаны быть побайтово равны upstream — сверка описана в
   [`PATCHES.ru.md`](PATCHES.ru.md). Не плоди вторые копии vendored и не поднимай
-  версии без явной причины.
+  версии без явной причины. `vendor/quinn-proto` = upstream 0.11.15 + один
+  логический патч (advertised-stream-window) и vendoring-trim, описано в
+  `PATCHES*.md`.
 - **Единый профиль.** `[profile.release]` (lto=fat, panic=abort) — только в
   корневом `Cargo.toml`. Package-манифесты в `bins/*` тонкие, без
   `[workspace]`/`[profile]`/`[patch]`.
@@ -249,7 +251,7 @@ vendored-крейты, которые держим в upstream-стиле.
 ## Vendored patches
 
 Корневые [`PATCHES.md`](PATCHES.md) / [`PATCHES.ru.md`](PATCHES.ru.md) и
-patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`) — единый источник
+patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.15.patch`) — единый источник
 истины по отличиям vendored копий от upstream (per-bin `PATCHES.md` —
 указатели на корневой). Меняешь поведение vendored — обнови vendored source и
 корневую patch-документацию в том же изменении. HTTP/3 WebSocket path зависит
@@ -257,7 +259,9 @@ patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`) — еди
 
 Production-код не обращается к `h3`-патч-API и `sockudo_ws` напрямую — только
 через модули-врата `crates/outline-transport/src/h3/vendored.rs` (клиент) и
-`bins/outline-ss-rust/src/server/h3/vendored.rs` (сервер); CI это проверяет
+`bins/outline-ss-rust/src/server/h3/vendored.rs` (сервер); патч `quinn-proto`
+(`initial_stream_receive_window`) — только через
+`crates/outline-transport/src/quic/vendored.rs` (клиент); CI это проверяет
 (тесты — исключение). Новые обращения к vendored-API добавляй во врата, а не
 в потребителей.
 

@@ -1,0 +1,236 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index a59d7e3..c781d03 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -143,35 +143,6 @@ version = "0.1.10"
+ features = ["std"]
+ default-features = false
+ 
+-[dev-dependencies.assert_matches]
+-version = "1.1"
+-
+-[dev-dependencies.hex-literal]
+-version = "1"
+-
+-[dev-dependencies.lazy_static]
+-version = "1"
+-
+-[dev-dependencies.rand_pcg]
+-version = "0.9"
+-
+-[dev-dependencies.rcgen]
+-version = "0.14"
+-
+-[dev-dependencies.tracing-subscriber]
+-version = "0.3.0"
+-features = [
+-    "env-filter",
+-    "fmt",
+-    "ansi",
+-    "time",
+-    "local-time",
+-]
+-default-features = false
+-
+-[dev-dependencies.wasm-bindgen-test]
+-version = "0.3.45"
+-
+ [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.getrandom]
+ version = "0.3"
+ features = ["wasm_js"]
+diff --git a/src/config/transport.rs b/src/config/transport.rs
+index 0198e45..17ce03d 100644
+--- a/src/config/transport.rs
++++ b/src/config/transport.rs
+@@ -29,6 +29,7 @@ pub struct TransportConfig {
+     pub(crate) max_concurrent_uni_streams: VarInt,
+     pub(crate) max_idle_timeout: Option<VarInt>,
+     pub(crate) stream_receive_window: VarInt,
++    pub(crate) initial_stream_receive_window: Option<VarInt>,
+     pub(crate) receive_window: VarInt,
+     pub(crate) send_window: u64,
+     pub(crate) send_fairness: bool,
+@@ -116,6 +117,22 @@ impl TransportConfig {
+         self
+     }
+ 
++    /// Per-stream receive window advertised in the transport parameters, when it should
++    /// differ from the window granted once a stream is first polled (`stream_receive_window`).
++    ///
++    /// The peer starts with this much credit on every receive stream (including the receive half
++    /// of locally opened bidirectional streams); the first time the application polls a stream
++    /// for data, even before any bytes are read, the credit is extended to
++    /// `stream_receive_window`. `None` (the default) advertises `stream_receive_window`.
++    pub fn initial_stream_receive_window(&mut self, value: Option<VarInt>) -> &mut Self {
++        self.initial_stream_receive_window = value;
++        self
++    }
++
++    pub(crate) fn advertised_stream_receive_window(&self) -> VarInt {
++        self.initial_stream_receive_window.unwrap_or(self.stream_receive_window)
++    }
++
+     /// Maximum number of bytes the peer may transmit across all streams of a connection before
+     /// becoming blocked.
+     ///
+@@ -364,6 +381,7 @@ impl Default for TransportConfig {
+             // 30 second default recommended by RFC 9308 § 3.2
+             max_idle_timeout: Some(VarInt(30_000)),
+             stream_receive_window: STREAM_RWND.into(),
++            initial_stream_receive_window: None,
+             receive_window: VarInt::MAX,
+             send_window: (8 * STREAM_RWND).into(),
+             send_fairness: true,
+@@ -402,6 +420,7 @@ impl fmt::Debug for TransportConfig {
+             max_concurrent_uni_streams,
+             max_idle_timeout,
+             stream_receive_window,
++            initial_stream_receive_window,
+             receive_window,
+             send_window,
+             send_fairness,
+@@ -431,6 +450,7 @@ impl fmt::Debug for TransportConfig {
+             .field("max_concurrent_uni_streams", max_concurrent_uni_streams)
+             .field("max_idle_timeout", max_idle_timeout)
+             .field("stream_receive_window", stream_receive_window)
++            .field("initial_stream_receive_window", initial_stream_receive_window)
+             .field("receive_window", receive_window)
+             .field("send_window", send_window)
+             .field("send_fairness", send_fairness)
+diff --git a/src/connection/mod.rs b/src/connection/mod.rs
+index 3cd1a2e..f53cfb4 100644
+--- a/src/connection/mod.rs
++++ b/src/connection/mod.rs
+@@ -348,6 +348,7 @@ impl Connection {
+                 config.send_window,
+                 config.receive_window,
+                 config.stream_receive_window,
++                config.advertised_stream_receive_window(),
+             ),
+             datagrams: DatagramState::default(),
+             config,
+diff --git a/src/connection/streams/mod.rs b/src/connection/streams/mod.rs
+index 3e769c7..f5e7c68 100644
+--- a/src/connection/streams/mod.rs
++++ b/src/connection/streams/mod.rs
+@@ -138,7 +138,7 @@ impl RecvStream<'_> {
+             hash_map::Entry::Occupied(s) => s,
+             hash_map::Entry::Vacant(_) => return Err(ClosedStream { _private: () }),
+         };
+-        let stream = get_or_insert_recv(self.state.stream_receive_window)(entry.get_mut());
++        let stream = get_or_insert_recv(self.state.initial_stream_receive_window)(entry.get_mut());
+ 
+         let (read_credits, stop_sending) = stream.stop()?;
+         if stop_sending.should_transmit() {
+diff --git a/src/connection/streams/recv.rs b/src/connection/streams/recv.rs
+index 5361a22..f028ade 100644
+--- a/src/connection/streams/recv.rs
++++ b/src/connection/streams/recv.rs
+@@ -119,7 +119,7 @@ impl Recv {
+         // less updates. A fixed size would also work - but it would need to be
+         // smaller than `stream_receive_window` in order to make sure the stream
+         // does not get stuck.
+-        let diff = max_stream_data - self.sent_max_stream_data;
++        let diff = max_stream_data.saturating_sub(self.sent_max_stream_data);
+         let transmit = self.can_send_flow_control() && diff >= (stream_receive_window / 8);
+         (max_stream_data, ShouldTransmit(transmit))
+     }
+@@ -266,7 +266,7 @@ impl<'a> Chunks<'a> {
+         };
+ 
+         let mut recv =
+-            match get_or_insert_recv(streams.stream_receive_window)(entry.get_mut()).stopped {
++            match get_or_insert_recv(streams.initial_stream_receive_window)(entry.get_mut()).stopped {
+                 true => return Err(ReadableError::ClosedStream),
+                 false => entry.remove().unwrap().into_inner(), // this can't fail due to the previous get_or_insert_with
+             };
+diff --git a/src/connection/streams/state.rs b/src/connection/streams/state.rs
+index 619ff34..f3b877f 100644
+--- a/src/connection/streams/state.rs
++++ b/src/connection/streams/state.rs
+@@ -129,6 +129,9 @@ pub struct StreamsState {
+     pub(super) send_window: u64,
+     /// Configured upper bound for how much unacked data the peer can send us per stream
+     pub(super) stream_receive_window: u64,
++    /// Per-stream credit the peer was told about in the transport parameters; a new
++    /// receive stream starts from it before the first read widens it.
++    pub(super) initial_stream_receive_window: u64,
+ 
+     // Pertinent state from the TransportParameters supplied by the peer
+     initial_max_stream_data_uni: VarInt,
+@@ -148,6 +151,7 @@ impl StreamsState {
+         send_window: u64,
+         receive_window: VarInt,
+         stream_receive_window: VarInt,
++        initial_stream_receive_window: VarInt,
+     ) -> Self {
+         let mut this = Self {
+             side,
+@@ -177,6 +181,7 @@ impl StreamsState {
+             unacked_data: 0,
+             send_window,
+             stream_receive_window: stream_receive_window.into(),
++            initial_stream_receive_window: initial_stream_receive_window.into(),
+             initial_max_stream_data_uni: 0u32.into(),
+             initial_max_stream_data_bidi_local: 0u32.into(),
+             initial_max_stream_data_bidi_remote: 0u32.into(),
+@@ -263,7 +268,7 @@ impl StreamsState {
+         let rs = match self
+             .recv
+             .get_mut(&id)
+-            .map(get_or_insert_recv(self.stream_receive_window))
++            .map(get_or_insert_recv(self.initial_stream_receive_window))
+         {
+             Some(rs) => rs,
+             None => {
+@@ -316,7 +321,7 @@ impl StreamsState {
+         let rs = match self
+             .recv
+             .get_mut(&id)
+-            .map(get_or_insert_recv(self.stream_receive_window))
++            .map(get_or_insert_recv(self.initial_stream_receive_window))
+         {
+             Some(stream) => stream,
+             None => {
+@@ -943,7 +948,7 @@ impl StreamsState {
+     }
+ 
+     pub(super) fn stream_recv_freed(&mut self, id: StreamId, recv: StreamRecv) {
+-        self.free_recv.push(recv.free(self.stream_receive_window));
++        self.free_recv.push(recv.free(self.initial_stream_receive_window));
+         self.stream_freed(id, StreamHalf::Recv);
+     }
+ 
+@@ -998,6 +1003,7 @@ mod tests {
+             1024 * 1024,
+             (1024 * 1024u32).into(),
+             (1024 * 1024u32).into(),
++            (1024 * 1024u32).into(),
+         )
+     }
+ 
+@@ -1010,6 +1016,7 @@ mod tests {
+             1024 * 1024,
+             (1024 * 1024u32).into(),
+             (1024 * 1024u32).into(),
++            (1024 * 1024u32).into(),
+         );
+         let id = StreamId::new(Side::Server, Dir::Uni, 0);
+         let initial_max = client.local_max_data;
+diff --git a/src/transport_parameters.rs b/src/transport_parameters.rs
+index 67e48bd..d230f85 100644
+--- a/src/transport_parameters.rs
++++ b/src/transport_parameters.rs
+@@ -155,9 +155,9 @@ impl TransportParameters {
+             initial_max_streams_bidi: config.max_concurrent_bidi_streams,
+             initial_max_streams_uni: config.max_concurrent_uni_streams,
+             initial_max_data: config.receive_window,
+-            initial_max_stream_data_bidi_local: config.stream_receive_window,
+-            initial_max_stream_data_bidi_remote: config.stream_receive_window,
+-            initial_max_stream_data_uni: config.stream_receive_window,
++            initial_max_stream_data_bidi_local: config.advertised_stream_receive_window(),
++            initial_max_stream_data_bidi_remote: config.advertised_stream_receive_window(),
++            initial_max_stream_data_uni: config.advertised_stream_receive_window(),
+             max_udp_payload_size: endpoint_config.max_udp_payload_size,
+             max_idle_timeout: config.max_idle_timeout.unwrap_or(VarInt(0)),
+             disable_active_migration: server_config.is_some_and(|c| !c.migration),

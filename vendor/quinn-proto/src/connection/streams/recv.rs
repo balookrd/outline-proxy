@@ -119,7 +119,7 @@ impl Recv {
         // less updates. A fixed size would also work - but it would need to be
         // smaller than `stream_receive_window` in order to make sure the stream
         // does not get stuck.
-        let diff = max_stream_data - self.sent_max_stream_data;
+        let diff = max_stream_data.saturating_sub(self.sent_max_stream_data);
         let transmit = self.can_send_flow_control() && diff >= (stream_receive_window / 8);
         (max_stream_data, ShouldTransmit(transmit))
     }
@@ -266,7 +266,7 @@ impl<'a> Chunks<'a> {
         };
 
         let mut recv =
-            match get_or_insert_recv(streams.stream_receive_window)(entry.get_mut()).stopped {
+            match get_or_insert_recv(streams.initial_stream_receive_window)(entry.get_mut()).stopped {
                 true => return Err(ReadableError::ClosedStream),
                 false => entry.remove().unwrap().into_inner(), // this can't fail due to the previous get_or_insert_with
             };

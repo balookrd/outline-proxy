@@ -295,6 +295,7 @@ async fn dial(
         let connection = connecting
             .await
             .with_context(|| format!("xhttp/h3 QUIC handshake failed for {server_addr}"))?;
+        crate::quic::raise_h3_receive_window(&connection);
         let (driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection.clone()))
             .await
             .context("xhttp/h3 HTTP/3 handshake failed")?;

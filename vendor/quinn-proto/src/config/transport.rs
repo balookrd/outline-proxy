@@ -29,6 +29,7 @@ pub struct TransportConfig {
     pub(crate) max_concurrent_uni_streams: VarInt,
     pub(crate) max_idle_timeout: Option<VarInt>,
     pub(crate) stream_receive_window: VarInt,
+    pub(crate) initial_stream_receive_window: Option<VarInt>,
     pub(crate) receive_window: VarInt,
     pub(crate) send_window: u64,
     pub(crate) send_fairness: bool,
@@ -114,6 +115,22 @@ impl TransportConfig {
     pub fn stream_receive_window(&mut self, value: VarInt) -> &mut Self {
         self.stream_receive_window = value;
         self
+    }
+
+    /// Per-stream receive window advertised in the transport parameters, when it should
+    /// differ from the window granted once a stream is first polled (`stream_receive_window`).
+    ///
+    /// The peer starts with this much credit on every receive stream (including the receive half
+    /// of locally opened bidirectional streams); the first time the application polls a stream
+    /// for data, even before any bytes are read, the credit is extended to
+    /// `stream_receive_window`. `None` (the default) advertises `stream_receive_window`.
+    pub fn initial_stream_receive_window(&mut self, value: Option<VarInt>) -> &mut Self {
+        self.initial_stream_receive_window = value;
+        self
+    }
+
+    pub(crate) fn advertised_stream_receive_window(&self) -> VarInt {
+        self.initial_stream_receive_window.unwrap_or(self.stream_receive_window)
     }
 
     /// Maximum number of bytes the peer may transmit across all streams of a connection before
@@ -364,6 +381,7 @@ impl Default for TransportConfig {
             // 30 second default recommended by RFC 9308 § 3.2
             max_idle_timeout: Some(VarInt(30_000)),
             stream_receive_window: STREAM_RWND.into(),
+            initial_stream_receive_window: None,
             receive_window: VarInt::MAX,
             send_window: (8 * STREAM_RWND).into(),
             send_fairness: true,
@@ -402,6 +420,7 @@ impl fmt::Debug for TransportConfig {
             max_concurrent_uni_streams,
             max_idle_timeout,
             stream_receive_window,
+            initial_stream_receive_window,
             receive_window,
             send_window,
             send_fairness,
@@ -431,6 +450,7 @@ impl fmt::Debug for TransportConfig {
             .field("max_concurrent_uni_streams", max_concurrent_uni_streams)
             .field("max_idle_timeout", max_idle_timeout)
             .field("stream_receive_window", stream_receive_window)
+            .field("initial_stream_receive_window", initial_stream_receive_window)
             .field("receive_window", receive_window)
             .field("send_window", send_window)
             .field("send_fairness", send_fairness)

@@ -77,12 +77,13 @@ pub(crate) fn apply_quic_keepalive(transport: &mut quinn::TransportConfig) {
 // ── QUIC flow-control windows ───────────────────────────────────────────────
 
 // Operator overrides (`[quic]`) for the per-stream / per-connection QUIC
-// receive windows. When unset the browser profile's windows are advertised.
+// runtime receive windows (granted after the handshake; the Initial advertises the
+// browser profile's windows regardless).
 static QUIC_STREAM_RECEIVE_WINDOW: OnceLock<u32> = OnceLock::new();
 static QUIC_RECEIVE_WINDOW: OnceLock<u32> = OnceLock::new();
 
 /// Initialise the QUIC receive-window overrides from config; `None` keeps the
-/// browser-profile value. Must be called before the first QUIC/H3 dial. Idempotent with equal
+/// default runtime window. Must be called before the first QUIC/H3 dial. Idempotent with equal
 /// values; later differing values are ignored (first-writer-wins), mirroring
 /// [`crate::init_h2_window_sizes`].
 pub fn init_quic_window_sizes(stream: Option<u32>, connection: Option<u32>) {
@@ -94,26 +95,81 @@ pub fn init_quic_window_sizes(stream: Option<u32>, connection: Option<u32>) {
     }
 }
 
-/// Transport parameters the Initial advertises, taken from the browser
-/// profile; `[quic]` overrides (windows, idle) win when the operator set them.
-fn apply_tp_profile(transport: &mut quinn::TransportConfig, tp: &super::tp_profile::QuicTpProfile) {
+// Windows granted once streams are first polled (stream) / right after the handshake (connection). The Initial advertises the browser's values
+// (see `tp_profile`); these keep a long-RTT carrier stream throughput-bound by the link,
+// not the window: at ~1 s tunnel RTT a 2 MiB window caps one flow near 16 Mbit.
+// `[quic] stream_receive_window` / `receive_window` override them.
+const DEFAULT_RUNTIME_STREAM_WINDOW: u32 = 8 * 1024 * 1024;
+const DEFAULT_RUNTIME_CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
+
+/// Receive windows the client grants after the handshake; never below what the
+/// Initial advertised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RuntimeWindows {
+    pub(crate) stream: u32,
+    pub(crate) connection: u32,
+}
+
+impl RuntimeWindows {
+    pub(crate) fn current(tp: &super::tp_profile::QuicTpProfile) -> Self {
+        Self {
+            stream: QUIC_STREAM_RECEIVE_WINDOW
+                .get()
+                .copied()
+                .unwrap_or(DEFAULT_RUNTIME_STREAM_WINDOW)
+                .max(tp.stream_receive_window),
+            connection: QUIC_RECEIVE_WINDOW
+                .get()
+                .copied()
+                .unwrap_or(DEFAULT_RUNTIME_CONNECTION_WINDOW)
+                .max(tp.receive_window),
+        }
+    }
+}
+
+/// Full H3 client transport: browser-shaped transport parameters, runtime windows
+/// granted after the handshake, keep-alive PING jitter and BBR.
+pub(crate) fn build_h3_transport(
+    tp: &super::tp_profile::QuicTpProfile,
+    runtime: RuntimeWindows,
+) -> quinn::TransportConfig {
+    let mut transport = quinn::TransportConfig::default();
+    apply_quic_keepalive(&mut transport);
     let idle = QUIC_CUSTOM_IDLE_TIMEOUT.get().copied().unwrap_or(tp.idle_timeout);
     transport.max_idle_timeout(Some(idle.try_into().expect("valid client idle timeout")));
-    transport.stream_receive_window(quinn::VarInt::from_u32(
-        QUIC_STREAM_RECEIVE_WINDOW
-            .get()
-            .copied()
-            .unwrap_or(tp.stream_receive_window),
-    ));
-    transport.receive_window(quinn::VarInt::from_u32(
-        QUIC_RECEIVE_WINDOW.get().copied().unwrap_or(tp.receive_window),
-    ));
+    // The connection window is advertised as the browser's and raised to `runtime` right
+    // after the handshake (`raise_h3_receive_window`); the stream window is split by the
+    // vendored quinn-proto patch.
+    transport.receive_window(quinn::VarInt::from_u32(tp.receive_window));
+    transport.stream_receive_window(quinn::VarInt::from_u32(runtime.stream));
+    super::vendored::set_advertised_stream_receive_window(&mut transport, tp.stream_receive_window);
     transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(tp.max_bidi_streams));
     transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(tp.max_uni_streams));
+    apply_quic_carrier_tuning(&mut transport);
+    // quinn can only advertise `max_datagram_frame_size` up to 65535 while Chrome sends
+    // 65536, so the parameter stays off until it can be sent exactly.
+    transport.datagram_receive_buffer_size(None);
+    transport
+}
+
+/// Raise the connection receive window from the browser's advertised value to the
+/// runtime one. Sends `MAX_DATA` inside 1-RTT packets, invisible to a passive observer.
+pub(crate) fn raise_receive_window(connection: &quinn::Connection, runtime: RuntimeWindows) {
+    connection.set_receive_window(quinn::VarInt::from_u32(runtime.connection));
+}
+
+/// [`raise_receive_window`] for the active dial fingerprint; call right after the H3
+/// handshake, inside the same fingerprint scope as [`h3_quic_client_config`].
+pub(crate) fn raise_h3_receive_window(connection: &quinn::Connection) {
+    let fp = crate::fingerprint_profile::current_dial_fingerprint();
+    raise_receive_window(
+        connection,
+        RuntimeWindows::current(super::tp_profile::for_fingerprint(fp)),
+    );
 }
 
 /// Apply carrier congestion control to a QUIC transport config (windows come
-/// from [`apply_tp_profile`]) so the H3 carrier survives a lossy / throttled
+/// from [`build_h3_transport`]) so the H3 carrier survives a lossy / throttled
 /// WAN path.
 fn apply_quic_carrier_tuning(transport: &mut quinn::TransportConfig) {
     // BBR instead of quinn's default (Cubic): on a lossy / DPI-throttled
@@ -135,7 +191,7 @@ static H3_QUIC_CLIENT_CONFIGS: OnceLock<
 > = OnceLock::new();
 
 /// QUIC client config for the H3 carrier (`h3` ALPN). Transport parameters
-/// follow the dial fingerprint's browser profile ([`apply_tp_profile`]) and
+/// follow the dial fingerprint's browser profile ([`build_h3_transport`]) and
 /// QUIC datagrams stay disabled: quinn can advertise `max_datagram_frame_size`
 /// only up to 65535 while Chrome sends 65536, so the parameter stays off until
 /// it can be sent exactly. `build_client_config` reads the dial
@@ -154,19 +210,12 @@ pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
     let quic_tls = quinn::crypto::rustls::QuicClientConfig::try_from((*tls).clone())
         .expect("h3 rustls config is always QUIC-compatible");
     let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));
-    let mut transport = quinn::TransportConfig::default();
     let tp = super::tp_profile::for_fingerprint(fp);
-    apply_quic_keepalive(&mut transport);
-    apply_tp_profile(&mut transport, tp);
+    let transport = build_h3_transport(tp, RuntimeWindows::current(tp));
     if let Some(keepalive) = QUIC_CUSTOM_KEEPALIVE.get().copied() {
         let idle = QUIC_CUSTOM_IDLE_TIMEOUT.get().copied().unwrap_or(tp.idle_timeout);
         warn_if_keepalive_not_below_idle(keepalive, idle);
     }
-    apply_quic_carrier_tuning(&mut transport);
-    // quinn can only advertise `max_datagram_frame_size` up to 65535 while
-    // Chrome sends 65536, so the parameter stays off until it can be sent
-    // exactly. (Chrome does send it; Apple does not.)
-    transport.datagram_receive_buffer_size(None);
     config.transport_config(Arc::new(transport));
     guard.insert(fp, (config.clone(), Instant::now()));
     config

@@ -3,9 +3,9 @@
 Единый источник истины по локальным патчам на vendored-крейты.
 *English version: [PATCHES.md](PATCHES.md).*
 
-Монорепо vendor'ит и патчит два upstream-крейта, чтобы HTTP/3 WebSocket-путь
-был практичен. Пропатченные копии лежат в `vendor/h3` и `vendor/sockudo-ws`,
-подключены через `[patch.crates-io]` в корневом `Cargo.toml`. Файлы `.patch` в
+Монорепо vendor'ит и патчит три upstream-крейта, чтобы HTTP/3 WebSocket-путь
+был практичен. Пропатченные копии лежат в `vendor/h3`, `vendor/sockudo-ws` и
+`vendor/quinn-proto`, подключены через `[patch.crates-io]` в корневом `Cargo.toml`. Файлы `.patch` в
 этом каталоге — review- и maintenance-артефакты; сами сборки используют
 vendored-копии.
 
@@ -14,6 +14,7 @@ vendored-копии.
 - **h3** — crates.io `h3 0.0.8`.
 - **sockudo-ws** — GitHub-тег `v1.7.5` (коммит `7819745`), в raw
   upstream-форматировании git (см. примечание ниже).
+- **quinn-proto** — crates.io `quinn-proto 0.11.15`.
 
 ## Артефакты-патчи
 
@@ -21,11 +22,12 @@ vendored-копии.
 |------|---------------|
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | все отличия `vendor/h3` от upstream `h3 0.0.8` |
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws/src` (однострочное изменение `Cargo.toml` описано ниже, в патч не входит) |
+| [`quinn-proto-0.11.15.patch`](quinn-proto-0.11.15.patch) | все отличия `vendor/quinn-proto` от upstream `quinn-proto 0.11.15` (`src/` и `Cargo.toml`) |
 
 ## Модули-врата
 
-Весь production-код обращается к пропатченной поверхности API через два
-модуля-врата, по одному на сторону:
+Весь production-код обращается к пропатченной поверхности API через три
+модуля-врата (клиентский h3, серверный h3, клиентский QUIC):
 
 - [`crates/outline-transport/src/h3/vendored.rs`](crates/outline-transport/src/h3/vendored.rs) — клиент
   (`Protocol::WEBSOCKET` на Extended CONNECT, `Stream::from_h3_client` +
@@ -34,10 +36,14 @@ vendored-копии.
   (request-extension `h3::ext::Protocol`, `Stream::from_h3_server` +
   `WebSocketStream::from_raw`, восстановленный `WebSocketServer::into_parts`,
   плюс реэкспорты sockudo-ws-типов, используемых сервером).
+- [`crates/outline-transport/src/quic/vendored.rs`](crates/outline-transport/src/quic/vendored.rs) — клиент, пропатченный
+  `quinn-proto` (`TransportConfig::initial_stream_receive_window`).
 
 Ребейз vendored-крейтов на новый upstream начинай (и в идеале заканчивай) в
-этих двух файлах. CI следит, чтобы `sockudo_ws` упоминался только в
-модулях-вратах; тестовые модули — исключение: они намеренно изображают
+этих файлах-вратах. CI следит, чтобы `sockudo_ws` упоминался только в
+модулях-вратах, а пропатченный API quinn-proto
+(`initial_stream_receive_window`) — только в
+`crates/outline-transport/src/quic/vendored.rs`; тестовые модули — исключение: они намеренно изображают
 клиентскую сторону.
 
 ## h3 (0.0.8)
@@ -146,6 +152,30 @@ vendored-копии.
 один `CryptoProvider` (см. инвариант о единственном провайдере в корневом
 `AGENTS.md`).
 
+## quinn-proto (0.11.15)
+
+Baseline — crates.io `quinn-proto 0.11.15`. Логические изменения в
+`quinn-proto-0.11.15.patch`:
+
+1. **advertised-stream-window** (`src/config/transport.rs`,
+   `src/transport_parameters.rs`, `src/connection/mod.rs`,
+   `src/connection/streams/{state,mod,recv}.rs`) — новое
+   `TransportConfig::initial_stream_receive_window(Option<VarInt>)`. Это значение
+   уходит в `initial_max_stream_data_*` transport parameters и служит начальным
+   кредитом каждого потока на приём (включая принимающую половину локально
+   открытых bidi-потоков); `stream_receive_window` остаётся окном, до которого
+   поток расширяется, когда приложение впервые опрашивает его на чтение
+   (`MAX_STREAM_DATA` ставится в очередь, даже если байты ещё не прочитаны). Нужно, чтобы
+   H3-клиент объявлял в Initial окно браузера (видно пассивному DPI), а работал с
+   большим (последующие `MAX_STREAM_DATA` зашифрованы). `None` (дефолт) — поведение
+   upstream; сервер патч не использует. `max_stream_data` считает разницу через
+   `saturating_sub`, чтобы рабочее окно меньше объявленного не паниковало.
+2. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
+   дефолтным `ring` нарушил бы инвариант aws-lc-rs).
+
+Проверка соответствия: применить патч к чистой копии crates.io 0.11.15 и сравнить
+`diff -r src/` — совпадение побайтово.
+
 ## Стратегия сопровождения (sockudo-ws)
 
 `sockudo-ws` снят (yanked) с crates.io (скачивание возвращает `403`), а
@@ -163,7 +193,7 @@ vendored-копия трактуется как **де-факто наш соб�
   этот тег теперь единственный публичный baseline, раз crates.io отдаёт
   `403`.
 - **Радиус поражения уже мал.** Production обращается к крейту только через
-  два модуля-врата выше, и CI это стережёт, поэтому при ребейзе или аудите
+  модули-врата выше, и CI это стережёт, поэтому при ребейзе или аудите
   достаточно понимать пропатченные файлы плюс модули-врата — не весь крейт.
 - **Держим diff минимальным; неиспользуемые модули пока НЕ вырезаем.** Крейт
   несёт код, который HTTP/3 WebSocket-путь никогда не задействует (`io_uring`,
