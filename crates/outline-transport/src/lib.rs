@@ -271,7 +271,7 @@ pub use h2::{init_h2_keepalive, init_h2_window_sizes};
 
 // QUIC tuning: called once during startup from the main binary.
 #[cfg(feature = "quic")]
-pub use quic::{init_quic_keepalive, init_quic_window_sizes};
+pub use quic::{init_quic_idle_timeout, init_quic_keepalive_interval, init_quic_window_sizes};
 
 // Per-host downgrade cache TTL: called once during startup from the
 // main binary, fed from the `mode_downgrade_secs` config knob. All

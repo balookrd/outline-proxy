@@ -8,7 +8,7 @@
 //!     session count;
 //!   * an unbounded packet-up POST: a server that accepts the request stream
 //!     and then goes silent keeps `recv_response()` pending forever while QUIC
-//!     keep-alive (8–12 s) holds `max_idle_timeout` (28–35 s) off, so the
+//!     keep-alive (8–12 s) holds `max_idle_timeout` (30 s, browser profile) off, so the
 //!     detached POST task, its `SendRequest` clone and the whole QUIC
 //!     connection outlive the `XhttpStream` that spawned them.
 
@@ -38,7 +38,7 @@ fn wildcard_v4() -> SocketAddr {
 //
 // Models the leak's trigger: the peer accepts every stream we open and takes
 // all the bytes we write, but never sends a single response byte back. On a
-// real connection QUIC keep-alive (8–12 s) keeps `max_idle_timeout` (28–35 s)
+// real connection QUIC keep-alive (8–12 s) keeps `max_idle_timeout` (30 s, browser profile)
 // from ever firing in that state, so nothing below the POST itself can end it.
 
 #[derive(Default)]

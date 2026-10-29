@@ -217,7 +217,7 @@ class BuildConfigTest(unittest.TestCase):
         self.assertEqual(doc["h2"]["keepalive_timeout_secs"], 20)
 
         self.assertEqual(doc["quic"]["keepalive_secs"], 25)
-        self.assertEqual(doc["quic"]["idle_timeout_secs"], 60)
+        self.assertNotIn("idle_timeout_secs", doc["quic"])
 
         self.assertEqual(doc["outline"]["probe"]["interval_secs"], 300)
 

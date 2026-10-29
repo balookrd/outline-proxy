@@ -439,9 +439,9 @@ impl crate::shared_cache::CachedEntry for SharedH3Connection {
 // The H3 QUIC/TLS client config lives in `crate::quic` (`h3_quic_client_config`),
 // shared with the XHTTP-over-H3 carrier and keyed by dial fingerprint so the H3
 // ClientHello mimics the same browser family as the WS / XHTTP carriers, with
-// the same per-process keep-alive / idle jitter (8–12 s / 28–35 s). The jitter
-// range keeps the ~30 s idle budget that tears a silently-dropped QUIC path off
-// consumer-router conntrack, while QUIC PING (8–12 s) keeps NAT mappings fresh.
+// the same per-process keep-alive jitter (8–12 s). Idle is a fixed 30 s taken
+// from the browser profile (no jitter); it tears a silently-dropped QUIC path
+// off consumer-router conntrack, while QUIC PING (8–12 s) keeps NAT mappings fresh.
 
 // ── Dial endpoints ────────────────────────────────────────────────────────────
 
@@ -468,7 +468,7 @@ pub(crate) fn client_endpoint(
 ) -> Result<TrackedEndpoint> {
     let socket = bind_udp_socket(bind_addr, fwmark)?;
     let endpoint = quinn::Endpoint::new(
-        quinn::EndpointConfig::default(),
+        crate::quic::h3_endpoint_config(),
         None,
         socket,
         Arc::new(quinn::TokioRuntime),
@@ -763,7 +763,7 @@ pub(crate) async fn gc_shared_h3_connections() {
     metrics::set_h3_pool_carriers(metrics::H3_ENDPOINT_KIND_WS, idle, busy);
 
     // Nothing else ever closes these. Keep-alive PINGs (8–12 s) outrun QUIC's
-    // idle timeout (28–35 s), so a carrier opened during a burst holds its UDP
+    // idle timeout (30 s, from the browser profile), so a carrier opened during a burst holds its UDP
     // socket and 2.87 MiB receive buffer until the process exits — measured on
     // two lightly-loaded nodes as 24 live endpoints against 3 carrier flows.
     for (_, carriers) in by_server {

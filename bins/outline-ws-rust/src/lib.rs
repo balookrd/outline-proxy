@@ -88,16 +88,13 @@ pub async fn run_with_options(args: Args, opts: RunOptions) -> Result<()> {
             config.quic.stream_receive_window,
             config.quic.receive_window,
         );
-        if config.quic.keepalive_secs.is_some() || config.quic.idle_timeout_secs.is_some() {
-            let keepalive = config.quic.keepalive_secs.unwrap_or(25);
-            let idle = config
-                .quic
-                .idle_timeout_secs
-                .unwrap_or_else(|| keepalive.saturating_mul(2).max(60));
-            outline_transport::init_quic_keepalive(
-                Duration::from_secs(keepalive),
-                Duration::from_secs(idle),
-            );
+        if let Some(keepalive) = config.quic.keepalive_secs {
+            outline_transport::init_quic_keepalive_interval(Duration::from_secs(keepalive));
+        }
+        // Idle is overridden only by an explicit `idle_timeout_secs`; otherwise the
+        // dial's browser profile supplies it.
+        if let Some(idle) = config.quic.idle_timeout_secs {
+            outline_transport::init_quic_idle_timeout(Duration::from_secs(idle));
         }
     }
     outline_transport::init_dial_timeout(config.dial_timeout);

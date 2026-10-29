@@ -77,8 +77,7 @@ data class ServerProfile(
         sb.append("keepalive_timeout_secs = 20\n\n")
 
         sb.append("[quic]\n")
-        sb.append("keepalive_secs = 25\n")
-        sb.append("idle_timeout_secs = 60\n\n")
+        sb.append("keepalive_secs = 25\n\n")
 
         sb.append("[[outline.uplinks]]\n")
         sb.append("name = \"").append(name.ifBlank { "primary" }).append("\"\n")

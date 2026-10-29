@@ -1938,7 +1938,11 @@ async fn generated_android_config_fixture_loads() {
     assert_eq!(config.h2.keepalive_interval_secs, Some(60));
     assert_eq!(config.h2.keepalive_timeout_secs, Some(20));
     assert_eq!(config.quic.keepalive_secs, Some(25));
-    assert_eq!(config.quic.idle_timeout_secs, Some(60));
+    assert_eq!(config.quic.idle_timeout_secs, None);
+    // The generated config sets no QUIC windows, so the dial's browser
+    // profile supplies them.
+    assert_eq!(config.quic.stream_receive_window, None);
+    assert_eq!(config.quic.receive_window, None);
 }
 
 /// The dial budget is what a 2 G deployment reaches for: the default 10 s

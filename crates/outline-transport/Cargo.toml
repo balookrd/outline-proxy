@@ -83,3 +83,5 @@ tokio = { version = "1.44", features = ["io-util", "macros", "net", "rt", "sync"
 # without any network I/O. `default-features = false` + `rustls-aws-lc-rs`
 # keeps the workspace's single-CryptoProvider invariant (no rustls-ring).
 quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"] }
+# Self-signed cert for the zero-length-CID rebinding test (`quic/tests/tp_profile.rs`).
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }

@@ -374,7 +374,6 @@ def build_config(user: User, nodes: Sequence[str], server: ServerConfig) -> str 
         "",
         "[quic]",
         "keepalive_secs = 25",
-        "idle_timeout_secs = 60",
         "",
         "[outline.probe]",
         f"interval_secs = {PROBE_INTERVAL_SECS}",
