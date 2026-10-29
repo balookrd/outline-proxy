@@ -24,10 +24,10 @@ vendored-копии.
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws/src` (однострочное изменение `Cargo.toml` описано ниже, в патч не входит) |
 | [`quinn-proto-0.11.15.patch`](quinn-proto-0.11.15.patch) | все отличия `vendor/quinn-proto` от upstream `quinn-proto 0.11.15` (`src/` и `Cargo.toml`) |
 
-## Модули-врата
+## Модули-гейты
 
 Весь production-код обращается к пропатченной поверхности API через три
-модуля-врата (клиентский h3, серверный h3, клиентский QUIC):
+модуля-гейта (клиентский h3, серверный h3, клиентский QUIC):
 
 - [`crates/outline-transport/src/h3/vendored.rs`](crates/outline-transport/src/h3/vendored.rs) — клиент
   (`Protocol::WEBSOCKET` на Extended CONNECT, `Stream::from_h3_client` +
@@ -40,8 +40,8 @@ vendored-копии.
   `quinn-proto` (`TransportConfig::initial_stream_receive_window`).
 
 Ребейз vendored-крейтов на новый upstream начинай (и в идеале заканчивай) в
-этих файлах-вратах. CI следит, чтобы `sockudo_ws` упоминался только в
-модулях-вратах, а пропатченный API quinn-proto
+этих файлах-гейтах. CI следит, чтобы `sockudo_ws` упоминался только в
+модулях-гейтах, а пропатченный API quinn-proto
 (`initial_stream_receive_window`) — только в
 `crates/outline-transport/src/quic/vendored.rs`; тестовые модули — исключение: они намеренно изображают
 клиентскую сторону.
@@ -226,8 +226,8 @@ vendored-копия трактуется как **де-факто наш соб�
   этот тег теперь единственный публичный baseline, раз crates.io отдаёт
   `403`.
 - **Радиус поражения уже мал.** Production обращается к крейту только через
-  модули-врата выше, и CI это стережёт, поэтому при ребейзе или аудите
-  достаточно понимать пропатченные файлы плюс модули-врата — не весь крейт.
+  модули-гейты выше, и CI это стережёт, поэтому при ребейзе или аудите
+  достаточно понимать пропатченные файлы плюс модули-гейты — не весь крейт.
 - **Держим diff минимальным; неиспользуемые модули пока НЕ вырезаем.** Крейт
   несёт код, который HTTP/3 WebSocket-путь никогда не задействует (`io_uring`,
   `compression` / `deflate`, `simd`, `multiplex`, большую часть `pubsub`).

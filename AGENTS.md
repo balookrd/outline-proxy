@@ -258,7 +258,7 @@ patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-pro
 от этих патчей; не удаляй `[patch.crates-io]`.
 
 Production-код не обращается к `h3`-патч-API и `sockudo_ws` напрямую — только
-через модули-врата `crates/outline-transport/src/h3/vendored.rs` (клиент) и
+через модули-гейты `crates/outline-transport/src/h3/vendored.rs` (клиент) и
 `bins/outline-ss-rust/src/server/h3/vendored.rs` (сервер); патч `quinn-proto`
 (`initial_stream_receive_window` и опции `advertise_min_ack_delay`,
 `send_grease_transport_parameter`, `advertise_max_idle_timeout`,
@@ -267,7 +267,7 @@ Production-код не обращается к `h3`-патч-API и `sockudo_ws`
 `advertised_active_connection_id_limit`, `max_ack_delay_ms`,
 `initial_stream_receive_windows`) — только через
 `crates/outline-transport/src/quic/vendored.rs` (клиент); CI это проверяет
-(тесты — исключение). Новые обращения к vendored-API добавляй во врата, а не
+(тесты — исключение). Новые обращения к vendored-API добавляй в гейт-модули, а не
 в потребителей.
 
 ## Справочник боевого парка (Fleet Reference)
