@@ -8,10 +8,14 @@
 
 #![cfg(feature = "quic")]
 
+#[cfg(test)]
+#[path = "tests/loopback.rs"]
+mod loopback;
 mod tls_config;
 mod tp_profile;
+mod vendored;
 
-pub(crate) use tls_config::{h3_endpoint_config, h3_quic_client_config};
+pub(crate) use tls_config::{h3_endpoint_config, h3_quic_client_config, raise_h3_receive_window};
 pub use tls_config::{
     init_quic_idle_timeout, init_quic_keepalive_interval, init_quic_window_sizes,
 };

@@ -16,6 +16,8 @@ use std::time::Instant;
 
 use ring::{aead, hmac};
 
+use crate::quic::loopback;
+
 /// QUIC v1 Initial salt (RFC 9001 §5.2) — public and fixed, which is exactly
 /// why a censor can decrypt any Initial it sees.
 const INITIAL_SALT_V1: [u8; 20] = [
@@ -447,4 +449,167 @@ async fn h3_safari_transport_params_match_apple() {
     assert_eq!(int(0x09), Some(8), "initial_max_streams_uni");
     assert_eq!(tp_value(&tp, 0x0f), Some(&[][..]), "zero-length initial_source_connection_id");
     assert!(tp_value(&tp, 0x2ab2).is_none(), "no grease_quic_bit");
+}
+
+/// Runtime windows never reach the Initial: with 32 MiB / 256 MiB granted after the
+/// handshake, the Safari profile still advertises Apple's 2 MiB / 16 MiB.
+#[tokio::test]
+async fn runtime_windows_do_not_change_advertised_parameters() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+
+    let runtime = super::RuntimeWindows { stream: 32 << 20, connection: 256 << 20 };
+    let ch = with_dial_fingerprint(Some(TlsFingerprint::Safari), async {
+        let mut config = super::h3_quic_client_config();
+        config.transport_config(Arc::new(super::build_h3_transport(
+            &super::super::tp_profile::SAFARI,
+            runtime,
+        )));
+        capture_clienthello(config, super::h3_endpoint_config())
+    })
+    .await;
+    let tp = transport_params_from_clienthello(&ch);
+    let int = |id| tp_value(&tp, id).map(varint_value);
+    assert_eq!(int(0x04), Some(16_777_216), "initial_max_data");
+    for id in [0x05, 0x06, 0x07] {
+        assert_eq!(int(id), Some(2_097_152), "initial_max_stream_data {id:#x}");
+    }
+}
+
+/// Bytes the server manages to write on one client-opened stream while the client
+/// has read a single byte and then stalls for 1 s.
+async fn written_before_stall(lb: &loopback::Loopback, transport: quinn::TransportConfig) -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let written = Arc::new(AtomicU64::new(0));
+    let server_written = Arc::clone(&written);
+    let server = lb.server.clone();
+    let task = tokio::spawn(async move {
+        let conn = server.accept().await.unwrap().await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        let mut hello = [0u8; 1];
+        recv.read_exact(&mut hello).await.unwrap();
+        let chunk = vec![0u8; 64 * 1024];
+        loop {
+            if send.write_all(&chunk).await.is_err() {
+                break;
+            }
+            server_written.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        }
+    });
+
+    let (_ep, conn) = lb.connect(quinn::EndpointConfig::default(), transport).await;
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    send.write_all(b"h").await.unwrap();
+    let mut first = [0u8; 1];
+    recv.read_exact(&mut first).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let total = written.load(Ordering::Relaxed);
+    conn.close(0u32.into(), b"done");
+    task.abort();
+    total
+}
+
+#[tokio::test]
+async fn stream_window_grows_past_advertised_after_first_read() {
+    let lb = loopback::Loopback::new();
+    let advertised = 2u32 << 20;
+
+    let mut split = quinn::TransportConfig::default();
+    split.stream_receive_window(quinn::VarInt::from_u32(8 << 20));
+    super::super::vendored::set_advertised_stream_receive_window(&mut split, advertised);
+    split.receive_window(quinn::VarInt::from_u32(64 << 20));
+    let grown = written_before_stall(&lb, split).await;
+    eprintln!("stream growth: split window wrote {grown} bytes");
+    assert!(grown > 6 << 20, "runtime window not granted: {grown} bytes");
+
+    let mut same = quinn::TransportConfig::default();
+    same.stream_receive_window(quinn::VarInt::from_u32(advertised));
+    same.receive_window(quinn::VarInt::from_u32(64 << 20));
+    let capped = written_before_stall(&lb, same).await;
+    eprintln!("stream growth: control wrote {capped} bytes");
+    assert!(
+        capped <= u64::from(advertised) + (64 << 10),
+        "control not capped: {capped} bytes"
+    );
+}
+
+/// Total bytes the server writes across four client-opened streams while the client
+/// has read one byte per stream and stalls for 1 s. `raise` is applied right after
+/// the handshake.
+async fn written_across_streams(
+    lb: &loopback::Loopback,
+    raise: Option<super::RuntimeWindows>,
+) -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let mut transport = quinn::TransportConfig::default();
+    transport.receive_window(quinn::VarInt::from_u32(16 << 20));
+    transport.stream_receive_window(quinn::VarInt::from_u32(8 << 20));
+
+    let written = Arc::new(AtomicU64::new(0));
+    let server = lb.server.clone();
+    let server_written = Arc::clone(&written);
+    let task = tokio::spawn(async move {
+        let conn = server.accept().await.unwrap().await.unwrap();
+        // Answer every stream with one byte first and only then start the bulk writers:
+        // with a large server send window the first stream would otherwise drain the whole
+        // connection credit before the later streams get their first byte.
+        let mut streams = Vec::new();
+        for _ in 0..4 {
+            let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+            let mut hello = [0u8; 1];
+            recv.read_exact(&mut hello).await.unwrap();
+            send.write_all(b"k").await.unwrap();
+            streams.push((send, recv));
+        }
+        let mut writers = Vec::new();
+        for (mut send, recv) in streams {
+            let counter = Arc::clone(&server_written);
+            writers.push(tokio::spawn(async move {
+                let _recv = recv;
+                let chunk = vec![0u8; 64 * 1024];
+                while send.write_all(&chunk).await.is_ok() {
+                    counter.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                }
+            }));
+        }
+        // Hold the writer handles until the test aborts this task.
+        let _writers = writers;
+        std::future::pending::<()>().await;
+    });
+
+    let (_ep, conn) = lb.connect(quinn::EndpointConfig::default(), transport).await;
+    if let Some(runtime) = raise {
+        super::raise_receive_window(&conn, runtime);
+    }
+    let mut recvs = Vec::new();
+    for _ in 0..4 {
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        send.write_all(b"h").await.unwrap();
+        let mut first = [0u8; 1];
+        recv.read_exact(&mut first).await.unwrap();
+        recvs.push((send, recv));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let total = written.load(Ordering::Relaxed);
+    conn.close(0u32.into(), b"done");
+    task.abort();
+    total
+}
+
+#[tokio::test]
+async fn connection_window_raised_after_handshake() {
+    let lb = loopback::Loopback::new();
+
+    let raised = written_across_streams(
+        &lb,
+        Some(super::RuntimeWindows { stream: 8 << 20, connection: 64 << 20 }),
+    )
+    .await;
+    eprintln!("connection growth: raised wrote {raised} bytes");
+    assert!(raised > 18 << 20, "connection window not raised: {raised} bytes");
+
+    let control = written_across_streams(&lb, None).await;
+    eprintln!("connection growth: control wrote {control} bytes");
+    assert!(control <= (16 << 20) + (64 << 10), "control not capped: {control} bytes");
 }

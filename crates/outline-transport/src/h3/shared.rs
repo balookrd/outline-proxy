@@ -656,6 +656,7 @@ async fn connect_h3_connection(
         let connection = connecting
             .await
             .with_context(|| format!("QUIC handshake failed for {server_addr}"))?;
+        crate::quic::raise_h3_receive_window(&connection);
         let connection_handle = connection.clone();
         let (driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection))
             .await

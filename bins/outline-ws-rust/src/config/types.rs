@@ -140,12 +140,13 @@ pub struct H2Config {
 
 #[derive(Debug, Clone)]
 pub struct QuicConfig {
-    /// Per-stream QUIC receive window in bytes. `None` follows the dial's
-    /// browser profile (Chrome 6 MiB, Safari 2 MiB); setting it makes the
-    /// Initial differ from that browser.
+    /// Per-stream QUIC receive window granted after the handshake, in bytes (default
+    /// 8 MiB), never below the browser's advertised value (smaller settings are raised to
+    /// it). The Initial always advertises the dial's browser value instead.
     pub stream_receive_window: Option<u32>,
-    /// Per-connection QUIC receive window in bytes. `None` follows the
-    /// browser profile (Chrome 15 MiB, Safari 16 MiB).
+    /// Per-connection QUIC receive window granted after the handshake, in bytes
+    /// (default 64 MiB), never below the browser's advertised value (smaller settings are
+    /// raised to it). The Initial always advertises the browser value instead.
     pub receive_window: Option<u32>,
     /// Outbound QUIC PING keepalive interval in seconds (default: jittered 8..=12s).
     pub keepalive_secs: Option<u64>,

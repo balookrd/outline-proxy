@@ -129,6 +129,9 @@ pub struct StreamsState {
     pub(super) send_window: u64,
     /// Configured upper bound for how much unacked data the peer can send us per stream
     pub(super) stream_receive_window: u64,
+    /// Per-stream credit the peer was told about in the transport parameters; a new
+    /// receive stream starts from it before the first read widens it.
+    pub(super) initial_stream_receive_window: u64,
 
     // Pertinent state from the TransportParameters supplied by the peer
     initial_max_stream_data_uni: VarInt,
@@ -148,6 +151,7 @@ impl StreamsState {
         send_window: u64,
         receive_window: VarInt,
         stream_receive_window: VarInt,
+        initial_stream_receive_window: VarInt,
     ) -> Self {
         let mut this = Self {
             side,
@@ -177,6 +181,7 @@ impl StreamsState {
             unacked_data: 0,
             send_window,
             stream_receive_window: stream_receive_window.into(),
+            initial_stream_receive_window: initial_stream_receive_window.into(),
             initial_max_stream_data_uni: 0u32.into(),
             initial_max_stream_data_bidi_local: 0u32.into(),
             initial_max_stream_data_bidi_remote: 0u32.into(),
@@ -263,7 +268,7 @@ impl StreamsState {
         let rs = match self
             .recv
             .get_mut(&id)
-            .map(get_or_insert_recv(self.stream_receive_window))
+            .map(get_or_insert_recv(self.initial_stream_receive_window))
         {
             Some(rs) => rs,
             None => {
@@ -316,7 +321,7 @@ impl StreamsState {
         let rs = match self
             .recv
             .get_mut(&id)
-            .map(get_or_insert_recv(self.stream_receive_window))
+            .map(get_or_insert_recv(self.initial_stream_receive_window))
         {
             Some(stream) => stream,
             None => {
@@ -943,7 +948,7 @@ impl StreamsState {
     }
 
     pub(super) fn stream_recv_freed(&mut self, id: StreamId, recv: StreamRecv) {
-        self.free_recv.push(recv.free(self.stream_receive_window));
+        self.free_recv.push(recv.free(self.initial_stream_receive_window));
         self.stream_freed(id, StreamHalf::Recv);
     }
 
@@ -998,6 +1003,7 @@ mod tests {
             1024 * 1024,
             (1024 * 1024u32).into(),
             (1024 * 1024u32).into(),
+            (1024 * 1024u32).into(),
         )
     }
 
@@ -1008,6 +1014,7 @@ mod tests {
             1u32.into(),
             1u32.into(),
             1024 * 1024,
+            (1024 * 1024u32).into(),
             (1024 * 1024u32).into(),
             (1024 * 1024u32).into(),
         );

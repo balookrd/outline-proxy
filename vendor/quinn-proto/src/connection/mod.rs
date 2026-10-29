@@ -348,6 +348,7 @@ impl Connection {
                 config.send_window,
                 config.receive_window,
                 config.stream_receive_window,
+                config.advertised_stream_receive_window(),
             ),
             datagrams: DatagramState::default(),
             config,
