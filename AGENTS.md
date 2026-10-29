@@ -140,9 +140,9 @@ vendored-крейты, которые держим в upstream-стиле.
   в upstream нет ни одного `shutdown()`. Остальные файлы `vendor/sockudo-ws`
   обязаны быть побайтово равны upstream — сверка описана в
   [`PATCHES.ru.md`](PATCHES.ru.md). Не плоди вторые копии vendored и не поднимай
-  версии без явной причины. `vendor/quinn-proto` = upstream 0.11.15 + два
-  логических патча (advertised-stream-window, browser-shaped-transport-parameters)
-  и vendoring-trim, описано в `PATCHES*.md`.
+  версии без явной причины. `vendor/quinn-proto` = upstream 0.11.15 + три
+  логических патча (advertised-stream-window, browser-shaped-transport-parameters,
+  browser-order-and-firefox) и vendoring-trim, описано в `PATCHES*.md`.
 - **Единый профиль.** `[profile.release]` (lto=fat, panic=abort) — только в
   корневом `Cargo.toml`. Package-манифесты в `bins/*` тонкие, без
   `[workspace]`/`[profile]`/`[patch]`.
@@ -263,7 +263,9 @@ Production-код не обращается к `h3`-патч-API и `sockudo_ws`
 (`initial_stream_receive_window` и опции `advertise_min_ack_delay`,
 `send_grease_transport_parameter`, `advertise_max_idle_timeout`,
 `advertise_max_udp_payload_size`, `advertised_max_datagram_frame_size`,
-`send_version_information`, `extra_transport_parameters`) — только через
+`version_information`, `extra_transport_parameters`, `transport_parameter_order`,
+`advertised_active_connection_id_limit`, `max_ack_delay_ms`,
+`initial_stream_receive_windows`) — только через
 `crates/outline-transport/src/quic/vendored.rs` (клиент); CI это проверяет
 (тесты — исключение). Новые обращения к vendored-API добавляй во врата, а не
 в потребителей.

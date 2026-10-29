@@ -18,18 +18,9 @@ fn firefox_fingerprint_gets_firefox_table() {
 }
 
 #[test]
-fn firefox_differs_from_chromium_only_by_google_extra() {
-    assert_eq!(FIREFOX.name, "firefox");
-    assert!(FIREFOX.options.extra_parameters.is_empty());
-    let normalized = QuicTpProfile {
-        name: CHROMIUM.name,
-        options: BrowserTpOptions {
-            extra_parameters: CHROMIUM.options.extra_parameters,
-            ..FIREFOX.options
-        },
-        ..FIREFOX
-    };
-    assert_eq!(normalized, CHROMIUM);
+fn stream_windows_largest_and_uniform() {
+    assert_eq!(StreamWindows::uniform(7).largest(), 7);
+    assert_eq!(FIREFOX.stream_receive_windows.largest(), 12_582_912);
 }
 
 #[test]
@@ -85,13 +76,13 @@ fn profile_options_match_measured_browsers() {
     assert!(!c.advertise_min_ack_delay && c.grease_parameter);
     assert!(c.advertise_idle_timeout && c.advertise_max_udp_payload_size);
     assert_eq!(c.datagram_frame_size, Some(65_536));
-    assert!(c.version_information);
+    assert!(c.version_information.is_some());
     assert_eq!(c.extra_parameters, &[(0x3128, &b"ORIG"[..])]);
 
     let s = &SAFARI.options;
     assert!(!s.advertise_min_ack_delay && !s.grease_parameter);
     assert!(!s.advertise_idle_timeout && !s.advertise_max_udp_payload_size);
     assert_eq!(s.datagram_frame_size, None);
-    assert!(!s.version_information);
+    assert!(s.version_information.is_none());
     assert_eq!(s.extra_parameters, &[(0xff08_0808, &[0x09][..])]);
 }

@@ -8,7 +8,9 @@ use qlog::streamer::QlogStreamer;
 #[cfg(feature = "qlog")]
 use crate::QlogStream;
 use crate::{
-    Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
+    Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded,
+    cid_queue::CidQueue,
+    congestion,
     connection::qlog::QlogSink,
     transport_parameters::{ExtraTransportParameter, TransportParameterId},
 };
@@ -31,13 +33,17 @@ pub struct TransportConfig {
     pub(crate) max_idle_timeout: Option<VarInt>,
     pub(crate) stream_receive_window: VarInt,
     pub(crate) initial_stream_receive_window: Option<VarInt>,
+    pub(crate) initial_stream_receive_windows: Option<StreamReceiveWindows>,
     pub(crate) advertise_min_ack_delay: bool,
     pub(crate) send_grease_transport_parameter: bool,
     pub(crate) advertise_max_idle_timeout: bool,
     pub(crate) advertise_max_udp_payload_size: bool,
     pub(crate) advertised_max_datagram_frame_size: Option<VarInt>,
-    pub(crate) send_version_information: bool,
+    pub(crate) version_information: Option<VersionInformation>,
     pub(crate) extra_transport_parameters: Vec<(VarInt, Vec<u8>)>,
+    pub(crate) transport_parameter_order: TransportParameterOrder,
+    pub(crate) advertised_active_connection_id_limit: Option<VarInt>,
+    pub(crate) max_ack_delay: VarInt,
     pub(crate) receive_window: VarInt,
     pub(crate) send_window: u64,
     pub(crate) send_fairness: bool,
@@ -132,8 +138,23 @@ impl TransportConfig {
     /// of locally opened bidirectional streams); the first time the application polls a stream
     /// for data, even before any bytes are read, the credit is extended to
     /// `stream_receive_window`. `None` (the default) advertises `stream_receive_window`.
+    ///
+    /// Applies unless `initial_stream_receive_windows` is set, which takes precedence.
     pub fn initial_stream_receive_window(&mut self, value: Option<VarInt>) -> &mut Self {
         self.initial_stream_receive_window = value;
+        self
+    }
+
+    /// Per-direction stream receive windows advertised in the transport parameters; each new
+    /// receive stream starts with the credit of its class until the application first polls
+    /// it (then it is widened to `stream_receive_window`, as with
+    /// `initial_stream_receive_window`). Takes precedence over
+    /// `initial_stream_receive_window`. Defaults to `None`.
+    pub fn initial_stream_receive_windows(
+        &mut self,
+        value: Option<StreamReceiveWindows>,
+    ) -> &mut Self {
+        self.initial_stream_receive_windows = value;
         self
     }
 
@@ -178,16 +199,77 @@ impl TransportConfig {
         self
     }
 
-    /// Whether to send `version_information` (RFC 9368) with QUIC v1 as the chosen version
-    /// and `other_versions` = a random permutation of {v1, a GREASE version}, regenerated per
-    /// connection. Defaults to `false`.
+    /// `version_information` (RFC 9368) with QUIC v1 as the chosen version and
+    /// `other_versions` shaped by `value`. Defaults to `None` (not sent).
     ///
     /// Client-only: the chosen version is always QUIC v1 (the only version the client uses).
     /// Enabling it on a server, or on a connection using another version, produces an invalid
     /// parameter.
-    pub fn send_version_information(&mut self, value: bool) -> &mut Self {
-        self.send_version_information = value;
+    ///
+    /// # Panics
+    ///
+    /// If `other_versions` is empty or has more than 3 entries.
+    pub fn version_information(&mut self, value: Option<VersionInformation>) -> &mut Self {
+        if let Some(vi) = &value {
+            assert!(
+                (1..=3).contains(&vi.other_versions.len()),
+                "version_information takes 1 to 3 other versions"
+            );
+        }
+        self.version_information = value;
         self
+    }
+
+    /// Order of the client's transport parameters. Defaults to
+    /// [`TransportParameterOrder::Shuffled`].
+    ///
+    /// # Panics
+    ///
+    /// If a `Fixed`/`Rotated` list repeats an id.
+    pub fn transport_parameter_order(&mut self, value: TransportParameterOrder) -> &mut Self {
+        if let TransportParameterOrder::Fixed(ids) | TransportParameterOrder::Rotated(ids) = &value
+        {
+            for (i, id) in ids.iter().enumerate() {
+                assert!(!ids[..i].contains(id), "transport parameter id {id} listed twice");
+            }
+        }
+        self.transport_parameter_order = value;
+        self
+    }
+
+    /// `active_connection_id_limit` to advertise, also sent with zero-length local CIDs.
+    /// The remote CID queue holds at most 8 entries whatever is advertised, so a peer that
+    /// issues more than 8 active CIDs gets `CONNECTION_ID_LIMIT_ERROR`. `None` (the default)
+    /// advertises 5, or nothing with zero-length local CIDs, as upstream does.
+    ///
+    /// # Panics
+    ///
+    /// If the value is below 2 (RFC 9000 §18.2).
+    pub fn advertised_active_connection_id_limit(&mut self, value: Option<VarInt>) -> &mut Self {
+        if let Some(limit) = value {
+            assert!(limit.into_inner() >= 2, "active_connection_id_limit must be at least 2");
+        }
+        self.advertised_active_connection_id_limit = value;
+        self
+    }
+
+    /// `max_ack_delay` in milliseconds: advertised to the peer (when not 25, the protocol
+    /// default) and used as the local delayed-ACK timer, so the peer's PTO matches how long
+    /// we really hold ACKs. Defaults to 25.
+    ///
+    /// # Panics
+    ///
+    /// If the value is 2^14 or more (RFC 9000 §18.2).
+    pub fn max_ack_delay_ms(&mut self, value: u32) -> &mut Self {
+        assert!(value < 1 << 14, "max_ack_delay must be below 2^14 ms");
+        self.max_ack_delay = VarInt::from_u32(value);
+        self
+    }
+
+    pub(crate) fn remote_cid_queue_limit(&self) -> usize {
+        self.advertised_active_connection_id_limit.map_or(CidQueue::LEN, |limit| {
+            usize::try_from(limit.into_inner()).unwrap_or(usize::MAX).min(CidQueue::CAPACITY)
+        })
     }
 
     /// Additional transport parameters written verbatim at random positions among the others.
@@ -197,8 +279,7 @@ impl TransportConfig {
     ///
     /// If more than 2 parameters are given (one of the 3 slots is reserved for
     /// `version_information`), a value exceeds 16 bytes, or an id collides with a parameter
-    /// quinn writes itself, with `version_information` (0x11), or with the reserved GREASE form
-    /// `31 * N + 27`.
+    /// quinn writes itself or with `version_information` (0x11).
     pub fn extra_transport_parameters(&mut self, value: Vec<(VarInt, Vec<u8>)>) -> &mut Self {
         assert!(
             value.len() < ExtraTransportParameter::MAX_COUNT,
@@ -217,10 +298,6 @@ impl TransportConfig {
                 "extra transport parameter id {id:#x} collides with a parameter quinn writes"
             );
             assert!(id != 0x11, "extra transport parameter id 0x11 is version_information");
-            assert!(
-                id % 31 != 27,
-                "extra transport parameter id {id:#x} has the reserved GREASE form 31 * N + 27"
-            );
         }
         self.extra_transport_parameters = value;
         self
@@ -228,6 +305,13 @@ impl TransportConfig {
 
     pub(crate) fn advertised_stream_receive_window(&self) -> VarInt {
         self.initial_stream_receive_window.unwrap_or(self.stream_receive_window)
+    }
+
+    pub(crate) fn advertised_stream_receive_windows(&self) -> StreamReceiveWindows {
+        self.initial_stream_receive_windows.unwrap_or_else(|| {
+            let window = self.advertised_stream_receive_window();
+            StreamReceiveWindows { bidi_local: window, bidi_remote: window, uni: window }
+        })
     }
 
     /// Maximum number of bytes the peer may transmit across all streams of a connection before
@@ -464,6 +548,53 @@ impl TransportConfig {
     }
 }
 
+/// Order in which the client writes its transport parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TransportParameterOrder {
+    /// A random permutation per connection (upstream behaviour).
+    #[default]
+    Shuffled,
+    /// Listed ids in this order; parameters quinn writes that are not listed follow in
+    /// upstream order, unlisted extra parameters come last.
+    Fixed(Vec<VarInt>),
+    /// As `Fixed`, but the listed ids quinn writes itself are rotated to a random start
+    /// per connection; listed extra parameters follow them in list order.
+    ///
+    /// The rotation is drawn over the listed ids quinn knows, including ones that end up
+    /// not written (e.g. `max_ack_delay` at its default, `active_connection_id_limit` when
+    /// unsent), so list only parameters that are actually sent to keep the start uniform.
+    Rotated(Vec<VarInt>),
+}
+
+/// One entry of `version_information`'s `other_versions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionSlot {
+    /// A fixed version.
+    Version(u32),
+    /// A reserved version (RFC 9368 §7: `0x?a?a?a?a`), drawn per connection.
+    Grease,
+}
+
+/// Shape of the `version_information` transport parameter (RFC 9368).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionInformation {
+    /// `other_versions`, 1 to 3 entries.
+    pub other_versions: Vec<VersionSlot>,
+    /// Permute `other_versions` per connection.
+    pub shuffle: bool,
+}
+
+/// Per-direction `initial_max_stream_data_*` (RFC 9000 §18.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamReceiveWindows {
+    /// Receive credit on bidirectional streams we open (0x05).
+    pub bidi_local: VarInt,
+    /// Receive credit on bidirectional streams the peer opens (0x06).
+    pub bidi_remote: VarInt,
+    /// Receive credit on unidirectional streams the peer opens (0x07).
+    pub uni: VarInt,
+}
+
 impl Default for TransportConfig {
     fn default() -> Self {
         const EXPECTED_RTT: u32 = 100; // ms
@@ -479,13 +610,17 @@ impl Default for TransportConfig {
             max_idle_timeout: Some(VarInt(30_000)),
             stream_receive_window: STREAM_RWND.into(),
             initial_stream_receive_window: None,
+            initial_stream_receive_windows: None,
             advertise_min_ack_delay: true,
             send_grease_transport_parameter: true,
             advertise_max_idle_timeout: true,
             advertise_max_udp_payload_size: true,
             advertised_max_datagram_frame_size: None,
-            send_version_information: false,
+            version_information: None,
             extra_transport_parameters: Vec::new(),
+            transport_parameter_order: TransportParameterOrder::Shuffled,
+            advertised_active_connection_id_limit: None,
+            max_ack_delay: VarInt(25),
             receive_window: VarInt::MAX,
             send_window: (8 * STREAM_RWND).into(),
             send_fairness: true,
@@ -525,13 +660,17 @@ impl fmt::Debug for TransportConfig {
             max_idle_timeout,
             stream_receive_window,
             initial_stream_receive_window,
+            initial_stream_receive_windows,
             advertise_min_ack_delay,
             send_grease_transport_parameter,
             advertise_max_idle_timeout,
             advertise_max_udp_payload_size,
             advertised_max_datagram_frame_size,
-            send_version_information,
+            version_information,
             extra_transport_parameters,
+            transport_parameter_order,
+            advertised_active_connection_id_limit,
+            max_ack_delay,
             receive_window,
             send_window,
             send_fairness,
@@ -562,13 +701,20 @@ impl fmt::Debug for TransportConfig {
             .field("max_idle_timeout", max_idle_timeout)
             .field("stream_receive_window", stream_receive_window)
             .field("initial_stream_receive_window", initial_stream_receive_window)
+            .field("initial_stream_receive_windows", initial_stream_receive_windows)
             .field("advertise_min_ack_delay", advertise_min_ack_delay)
             .field("send_grease_transport_parameter", send_grease_transport_parameter)
             .field("advertise_max_idle_timeout", advertise_max_idle_timeout)
             .field("advertise_max_udp_payload_size", advertise_max_udp_payload_size)
             .field("advertised_max_datagram_frame_size", advertised_max_datagram_frame_size)
-            .field("send_version_information", send_version_information)
+            .field("version_information", version_information)
             .field("extra_transport_parameters", extra_transport_parameters)
+            .field("transport_parameter_order", transport_parameter_order)
+            .field(
+                "advertised_active_connection_id_limit",
+                advertised_active_connection_id_limit,
+            )
+            .field("max_ack_delay", max_ack_delay)
             .field("receive_window", receive_window)
             .field("send_window", send_window)
             .field("send_fairness", send_fairness)
