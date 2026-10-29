@@ -39,18 +39,33 @@ index a59d7e3..c781d03 100644
  version = "0.3"
  features = ["wasm_js"]
 diff --git a/src/config/transport.rs b/src/config/transport.rs
-index 0198e45..17ce03d 100644
+index 0198e45..d0fd7cb 100644
 --- a/src/config/transport.rs
 +++ b/src/config/transport.rs
-@@ -29,6 +29,7 @@ pub struct TransportConfig {
+@@ -10,6 +10,7 @@ use crate::QlogStream;
+ use crate::{
+     Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
+     connection::qlog::QlogSink,
++    transport_parameters::{ExtraTransportParameter, TransportParameterId},
+ };
+ 
+ /// Parameters governing the core QUIC state machine
+@@ -29,6 +30,14 @@ pub struct TransportConfig {
      pub(crate) max_concurrent_uni_streams: VarInt,
      pub(crate) max_idle_timeout: Option<VarInt>,
      pub(crate) stream_receive_window: VarInt,
 +    pub(crate) initial_stream_receive_window: Option<VarInt>,
++    pub(crate) advertise_min_ack_delay: bool,
++    pub(crate) send_grease_transport_parameter: bool,
++    pub(crate) advertise_max_idle_timeout: bool,
++    pub(crate) advertise_max_udp_payload_size: bool,
++    pub(crate) advertised_max_datagram_frame_size: Option<VarInt>,
++    pub(crate) send_version_information: bool,
++    pub(crate) extra_transport_parameters: Vec<(VarInt, Vec<u8>)>,
      pub(crate) receive_window: VarInt,
      pub(crate) send_window: u64,
      pub(crate) send_fairness: bool,
-@@ -116,6 +117,22 @@ impl TransportConfig {
+@@ -116,6 +125,111 @@ impl TransportConfig {
          self
      }
  
@@ -66,6 +81,95 @@ index 0198e45..17ce03d 100644
 +        self
 +    }
 +
++    /// Whether to advertise `min_ack_delay` (draft-ietf-quic-ack-frequency). Advertising
++    /// it invites the peer to send ACK_FREQUENCY frames. Defaults to `true`.
++    pub fn advertise_min_ack_delay(&mut self, value: bool) -> &mut Self {
++        self.advertise_min_ack_delay = value;
++        self
++    }
++
++    /// Whether to include a randomly generated reserved (GREASE) transport parameter.
++    /// Defaults to `true`.
++    pub fn send_grease_transport_parameter(&mut self, value: bool) -> &mut Self {
++        self.send_grease_transport_parameter = value;
++        self
++    }
++
++    /// Whether to advertise `max_idle_timeout`. When `false` the parameter is omitted (the
++    /// peer sees no limit) while `max_idle_timeout` still bounds the connection locally.
++    /// Defaults to `true`.
++    pub fn advertise_max_idle_timeout(&mut self, value: bool) -> &mut Self {
++        self.advertise_max_idle_timeout = value;
++        self
++    }
++
++    /// Whether to advertise the endpoint's `max_udp_payload_size`. When `false` the
++    /// parameter is omitted (protocol default 65527). Defaults to `true`.
++    pub fn advertise_max_udp_payload_size(&mut self, value: bool) -> &mut Self {
++        self.advertise_max_udp_payload_size = value;
++        self
++    }
++
++    /// Exact `max_datagram_frame_size` to advertise. Takes effect only while datagrams are
++    /// enabled (`datagram_receive_buffer_size` is `Some`); `None` (the default) advertises the
++    /// receive buffer size capped at 65535, as upstream does.
++    ///
++    /// The value must not exceed `datagram_receive_buffer_size`: otherwise the peer may legally
++    /// send a datagram that does not fit the buffer, which the connection rejects with a
++    /// `PROTOCOL_VIOLATION`.
++    pub fn advertised_max_datagram_frame_size(&mut self, value: Option<VarInt>) -> &mut Self {
++        self.advertised_max_datagram_frame_size = value;
++        self
++    }
++
++    /// Whether to send `version_information` (RFC 9368) with QUIC v1 as the chosen version
++    /// and `other_versions` = a random permutation of {v1, a GREASE version}, regenerated per
++    /// connection. Defaults to `false`.
++    ///
++    /// Client-only: the chosen version is always QUIC v1 (the only version the client uses).
++    /// Enabling it on a server, or on a connection using another version, produces an invalid
++    /// parameter.
++    pub fn send_version_information(&mut self, value: bool) -> &mut Self {
++        self.send_version_information = value;
++        self
++    }
++
++    /// Additional transport parameters written verbatim at random positions among the others.
++    /// Defaults to none.
++    ///
++    /// # Panics
++    ///
++    /// If more than 2 parameters are given (one of the 3 slots is reserved for
++    /// `version_information`), a value exceeds 16 bytes, or an id collides with a parameter
++    /// quinn writes itself, with `version_information` (0x11), or with the reserved GREASE form
++    /// `31 * N + 27`.
++    pub fn extra_transport_parameters(&mut self, value: Vec<(VarInt, Vec<u8>)>) -> &mut Self {
++        assert!(
++            value.len() < ExtraTransportParameter::MAX_COUNT,
++            "at most {} extra transport parameters (one slot is reserved for version_information)",
++            ExtraTransportParameter::MAX_COUNT - 1
++        );
++        assert!(
++            value.iter().all(|(_, v)| v.len() <= ExtraTransportParameter::MAX_LEN),
++            "extra transport parameter value longer than {} bytes",
++            ExtraTransportParameter::MAX_LEN
++        );
++        for (id, _) in &value {
++            let id = id.into_inner();
++            assert!(
++                !TransportParameterId::SUPPORTED.iter().any(|known| *known as u64 == id),
++                "extra transport parameter id {id:#x} collides with a parameter quinn writes"
++            );
++            assert!(id != 0x11, "extra transport parameter id 0x11 is version_information");
++            assert!(
++                id % 31 != 27,
++                "extra transport parameter id {id:#x} has the reserved GREASE form 31 * N + 27"
++            );
++        }
++        self.extra_transport_parameters = value;
++        self
++    }
++
 +    pub(crate) fn advertised_stream_receive_window(&self) -> VarInt {
 +        self.initial_stream_receive_window.unwrap_or(self.stream_receive_window)
 +    }
@@ -73,27 +177,48 @@ index 0198e45..17ce03d 100644
      /// Maximum number of bytes the peer may transmit across all streams of a connection before
      /// becoming blocked.
      ///
-@@ -364,6 +381,7 @@ impl Default for TransportConfig {
+@@ -364,6 +478,14 @@ impl Default for TransportConfig {
              // 30 second default recommended by RFC 9308 § 3.2
              max_idle_timeout: Some(VarInt(30_000)),
              stream_receive_window: STREAM_RWND.into(),
 +            initial_stream_receive_window: None,
++            advertise_min_ack_delay: true,
++            send_grease_transport_parameter: true,
++            advertise_max_idle_timeout: true,
++            advertise_max_udp_payload_size: true,
++            advertised_max_datagram_frame_size: None,
++            send_version_information: false,
++            extra_transport_parameters: Vec::new(),
              receive_window: VarInt::MAX,
              send_window: (8 * STREAM_RWND).into(),
              send_fairness: true,
-@@ -402,6 +420,7 @@ impl fmt::Debug for TransportConfig {
+@@ -402,6 +524,14 @@ impl fmt::Debug for TransportConfig {
              max_concurrent_uni_streams,
              max_idle_timeout,
              stream_receive_window,
 +            initial_stream_receive_window,
++            advertise_min_ack_delay,
++            send_grease_transport_parameter,
++            advertise_max_idle_timeout,
++            advertise_max_udp_payload_size,
++            advertised_max_datagram_frame_size,
++            send_version_information,
++            extra_transport_parameters,
              receive_window,
              send_window,
              send_fairness,
-@@ -431,6 +450,7 @@ impl fmt::Debug for TransportConfig {
+@@ -431,6 +561,14 @@ impl fmt::Debug for TransportConfig {
              .field("max_concurrent_uni_streams", max_concurrent_uni_streams)
              .field("max_idle_timeout", max_idle_timeout)
              .field("stream_receive_window", stream_receive_window)
 +            .field("initial_stream_receive_window", initial_stream_receive_window)
++            .field("advertise_min_ack_delay", advertise_min_ack_delay)
++            .field("send_grease_transport_parameter", send_grease_transport_parameter)
++            .field("advertise_max_idle_timeout", advertise_max_idle_timeout)
++            .field("advertise_max_udp_payload_size", advertise_max_udp_payload_size)
++            .field("advertised_max_datagram_frame_size", advertised_max_datagram_frame_size)
++            .field("send_version_information", send_version_information)
++            .field("extra_transport_parameters", extra_transport_parameters)
              .field("receive_window", receive_window)
              .field("send_window", send_window)
              .field("send_fairness", send_fairness)
@@ -218,19 +343,199 @@ index 619ff34..f3b877f 100644
          let id = StreamId::new(Side::Server, Dir::Uni, 0);
          let initial_max = client.local_max_data;
 diff --git a/src/transport_parameters.rs b/src/transport_parameters.rs
-index 67e48bd..d230f85 100644
+index 67e48bd..e6638f0 100644
 --- a/src/transport_parameters.rs
 +++ b/src/transport_parameters.rs
-@@ -155,9 +155,9 @@ impl TransportParameters {
+@@ -110,6 +110,9 @@ macro_rules! make_struct {
+             /// This field is initialized only for outgoing `TransportParameters` instances and
+             /// is set to `None` for `TransportParameters` received from a peer.
+             pub(crate) write_order: Option<[u8; TransportParameterId::SUPPORTED.len()]>,
++
++            /// Extra parameters written as-is at random positions; outgoing only.
++            pub(crate) extras: [Option<ExtraTransportParameter>; ExtraTransportParameter::MAX_COUNT],
+         }
+ 
+         // We deliberately don't implement the `Default` trait, since that would be public, and
+@@ -133,6 +136,7 @@ macro_rules! make_struct {
+                     preferred_address: None,
+                     grease_transport_parameter: None,
+                     write_order: None,
++                    extras: [None; ExtraTransportParameter::MAX_COUNT],
+                 }
+             }
+         }
+@@ -150,16 +154,25 @@ impl TransportParameters {
+         server_config: Option<&ServerConfig>,
+         rng: &mut impl RngCore,
+     ) -> Self {
+-        Self {
++        let mut params = Self {
+             initial_src_cid: Some(initial_src_cid),
              initial_max_streams_bidi: config.max_concurrent_bidi_streams,
              initial_max_streams_uni: config.max_concurrent_uni_streams,
              initial_max_data: config.receive_window,
 -            initial_max_stream_data_bidi_local: config.stream_receive_window,
 -            initial_max_stream_data_bidi_remote: config.stream_receive_window,
 -            initial_max_stream_data_uni: config.stream_receive_window,
+-            max_udp_payload_size: endpoint_config.max_udp_payload_size,
+-            max_idle_timeout: config.max_idle_timeout.unwrap_or(VarInt(0)),
 +            initial_max_stream_data_bidi_local: config.advertised_stream_receive_window(),
 +            initial_max_stream_data_bidi_remote: config.advertised_stream_receive_window(),
 +            initial_max_stream_data_uni: config.advertised_stream_receive_window(),
-             max_udp_payload_size: endpoint_config.max_udp_payload_size,
-             max_idle_timeout: config.max_idle_timeout.unwrap_or(VarInt(0)),
++            max_udp_payload_size: if config.advertise_max_udp_payload_size {
++                endpoint_config.max_udp_payload_size
++            } else {
++                // The protocol default is never written, so the parameter is omitted.
++                VarInt::from_u32(65527)
++            },
++            max_idle_timeout: if config.advertise_max_idle_timeout {
++                config.max_idle_timeout.unwrap_or(VarInt(0))
++            } else {
++                VarInt(0)
++            },
              disable_active_migration: server_config.is_some_and(|c| !c.migration),
+             active_connection_id_limit: if cid_gen.cid_len() == 0 {
+                 2 // i.e. default, i.e. unsent
+@@ -167,21 +180,53 @@ impl TransportParameters {
+                 CidQueue::LEN as u32
+             }
+             .into(),
+-            max_datagram_frame_size: config
+-                .datagram_receive_buffer_size
+-                .map(|x| (x.min(u16::MAX.into()) as u16).into()),
++            max_datagram_frame_size: config.datagram_receive_buffer_size.map(|x| {
++                config
++                    .advertised_max_datagram_frame_size
++                    .unwrap_or_else(|| (x.min(u16::MAX.into()) as u16).into())
++            }),
+             grease_quic_bit: endpoint_config.grease_quic_bit,
+-            min_ack_delay: Some(
+-                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap(),
+-            ),
+-            grease_transport_parameter: Some(ReservedTransportParameter::random(rng)),
++            min_ack_delay: config.advertise_min_ack_delay.then(|| {
++                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap()
++            }),
++            grease_transport_parameter: config
++                .send_grease_transport_parameter
++                .then(|| ReservedTransportParameter::random(rng)),
+             write_order: Some({
+                 let mut order = std::array::from_fn(|i| i as u8);
+                 order.shuffle(rng);
+                 order
+             }),
+             ..Self::default()
++        };
++
++        let mut next = 0;
++        for (id, value) in &config.extra_transport_parameters {
++            Self::push_extra(&mut params, &mut next, *id, value, rng);
++        }
++        if config.send_version_information {
++            let value = version_information(rng);
++            Self::push_extra(&mut params, &mut next, VarInt::from_u32(0x11), &value, rng);
+         }
++        params
++    }
++
++    fn push_extra(
++        params: &mut Self,
++        next: &mut usize,
++        id: VarInt,
++        value: &[u8],
++        rng: &mut impl RngCore,
++    ) {
++        let mut buf = [0u8; ExtraTransportParameter::MAX_LEN];
++        buf[..value.len()].copy_from_slice(value);
++        params.extras[*next] = Some(ExtraTransportParameter {
++            id,
++            len: value.len() as u8,
++            value: buf,
++            slot: rng.random_range(0..=TransportParameterId::SUPPORTED.len() as u8),
++        });
++        *next += 1;
+     }
+ 
+     /// Check that these parameters are legal when resuming from
+@@ -213,6 +258,37 @@ impl TransportParameters {
+     }
+ }
+ 
++/// One extra transport parameter written verbatim (outgoing only, never decoded).
++#[derive(Debug, Copy, Clone, Eq, PartialEq)]
++pub(crate) struct ExtraTransportParameter {
++    id: VarInt,
++    len: u8,
++    value: [u8; ExtraTransportParameter::MAX_LEN],
++    /// Index in `write_order` before which it is written (`SUPPORTED.len()` = after all).
++    slot: u8,
++}
++
++impl ExtraTransportParameter {
++    /// Longest value the client needs: `version_information` with two other versions.
++    pub(crate) const MAX_LEN: usize = 16;
++    /// `version_information` plus up to two static parameters.
++    pub(crate) const MAX_COUNT: usize = 3;
++}
++
++/// `version_information` (RFC 9368 §3) offering QUIC v1 plus one reserved GREASE version
++/// (RFC 9368 §7: `0x?a?a?a?a`), in random order.
++fn version_information(rng: &mut impl RngCore) -> Vec<u8> {
++    const V1: u32 = 0x0000_0001;
++    let grease = (rng.next_u32() & 0xf0f0_f0f0) | 0x0a0a_0a0a;
++    let others = if rng.random::<bool>() { [V1, grease] } else { [grease, V1] };
++    let mut value = Vec::with_capacity(12);
++    value.extend_from_slice(&V1.to_be_bytes());
++    for v in others {
++        value.extend_from_slice(&v.to_be_bytes());
++    }
++    value
++}
++
+ /// A server's preferred address
+ ///
+ /// This is communicated as a transport parameter during TLS session establishment.
+@@ -307,11 +383,14 @@ impl From<UnexpectedEnd> for Error {
+ impl TransportParameters {
+     /// Encode `TransportParameters` into buffer
+     pub fn write<W: BufMut>(&self, w: &mut W) {
+-        for idx in self
++        for (pos, idx) in self
+             .write_order
+             .as_ref()
+             .unwrap_or(&std::array::from_fn(|i| i as u8))
++            .iter()
++            .enumerate()
+         {
++            self.write_extras_at(w, pos as u8);
+             let id = TransportParameterId::SUPPORTED[*idx as usize];
+             match id {
+                 TransportParameterId::ReservedTransportParameter => {
+@@ -401,6 +480,18 @@ impl TransportParameters {
+                 }
+             }
+         }
++        self.write_extras_at(w, TransportParameterId::SUPPORTED.len() as u8);
++    }
++
++    /// Write the extra parameters scheduled before the `pos`-th entry of the write order
++    fn write_extras_at<W: BufMut>(&self, w: &mut W, pos: u8) {
++        for extra in self.extras.iter().flatten() {
++            if extra.slot == pos {
++                w.write_var(extra.id.0);
++                w.write_var(u64::from(extra.len));
++                w.put_slice(&extra.value[..usize::from(extra.len)]);
++            }
++        }
+     }
+ 
+     /// Decode `TransportParameters` from buffer
+@@ -642,7 +733,7 @@ pub(crate) enum TransportParameterId {
+ 
+ impl TransportParameterId {
+     /// Array with all supported transport parameter IDs
+-    const SUPPORTED: [Self; 21] = [
++    pub(crate) const SUPPORTED: [Self; 21] = [
+         Self::MaxIdleTimeout,
+         Self::MaxUdpPayloadSize,
+         Self::InitialMaxData,

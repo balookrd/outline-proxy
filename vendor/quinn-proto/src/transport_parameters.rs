@@ -110,6 +110,9 @@ macro_rules! make_struct {
             /// This field is initialized only for outgoing `TransportParameters` instances and
             /// is set to `None` for `TransportParameters` received from a peer.
             pub(crate) write_order: Option<[u8; TransportParameterId::SUPPORTED.len()]>,
+
+            /// Extra parameters written as-is at random positions; outgoing only.
+            pub(crate) extras: [Option<ExtraTransportParameter>; ExtraTransportParameter::MAX_COUNT],
         }
 
         // We deliberately don't implement the `Default` trait, since that would be public, and
@@ -133,6 +136,7 @@ macro_rules! make_struct {
                     preferred_address: None,
                     grease_transport_parameter: None,
                     write_order: None,
+                    extras: [None; ExtraTransportParameter::MAX_COUNT],
                 }
             }
         }
@@ -150,7 +154,7 @@ impl TransportParameters {
         server_config: Option<&ServerConfig>,
         rng: &mut impl RngCore,
     ) -> Self {
-        Self {
+        let mut params = Self {
             initial_src_cid: Some(initial_src_cid),
             initial_max_streams_bidi: config.max_concurrent_bidi_streams,
             initial_max_streams_uni: config.max_concurrent_uni_streams,
@@ -158,8 +162,17 @@ impl TransportParameters {
             initial_max_stream_data_bidi_local: config.advertised_stream_receive_window(),
             initial_max_stream_data_bidi_remote: config.advertised_stream_receive_window(),
             initial_max_stream_data_uni: config.advertised_stream_receive_window(),
-            max_udp_payload_size: endpoint_config.max_udp_payload_size,
-            max_idle_timeout: config.max_idle_timeout.unwrap_or(VarInt(0)),
+            max_udp_payload_size: if config.advertise_max_udp_payload_size {
+                endpoint_config.max_udp_payload_size
+            } else {
+                // The protocol default is never written, so the parameter is omitted.
+                VarInt::from_u32(65527)
+            },
+            max_idle_timeout: if config.advertise_max_idle_timeout {
+                config.max_idle_timeout.unwrap_or(VarInt(0))
+            } else {
+                VarInt(0)
+            },
             disable_active_migration: server_config.is_some_and(|c| !c.migration),
             active_connection_id_limit: if cid_gen.cid_len() == 0 {
                 2 // i.e. default, i.e. unsent
@@ -167,21 +180,53 @@ impl TransportParameters {
                 CidQueue::LEN as u32
             }
             .into(),
-            max_datagram_frame_size: config
-                .datagram_receive_buffer_size
-                .map(|x| (x.min(u16::MAX.into()) as u16).into()),
+            max_datagram_frame_size: config.datagram_receive_buffer_size.map(|x| {
+                config
+                    .advertised_max_datagram_frame_size
+                    .unwrap_or_else(|| (x.min(u16::MAX.into()) as u16).into())
+            }),
             grease_quic_bit: endpoint_config.grease_quic_bit,
-            min_ack_delay: Some(
-                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap(),
-            ),
-            grease_transport_parameter: Some(ReservedTransportParameter::random(rng)),
+            min_ack_delay: config.advertise_min_ack_delay.then(|| {
+                VarInt::from_u64(u64::try_from(TIMER_GRANULARITY.as_micros()).unwrap()).unwrap()
+            }),
+            grease_transport_parameter: config
+                .send_grease_transport_parameter
+                .then(|| ReservedTransportParameter::random(rng)),
             write_order: Some({
                 let mut order = std::array::from_fn(|i| i as u8);
                 order.shuffle(rng);
                 order
             }),
             ..Self::default()
+        };
+
+        let mut next = 0;
+        for (id, value) in &config.extra_transport_parameters {
+            Self::push_extra(&mut params, &mut next, *id, value, rng);
         }
+        if config.send_version_information {
+            let value = version_information(rng);
+            Self::push_extra(&mut params, &mut next, VarInt::from_u32(0x11), &value, rng);
+        }
+        params
+    }
+
+    fn push_extra(
+        params: &mut Self,
+        next: &mut usize,
+        id: VarInt,
+        value: &[u8],
+        rng: &mut impl RngCore,
+    ) {
+        let mut buf = [0u8; ExtraTransportParameter::MAX_LEN];
+        buf[..value.len()].copy_from_slice(value);
+        params.extras[*next] = Some(ExtraTransportParameter {
+            id,
+            len: value.len() as u8,
+            value: buf,
+            slot: rng.random_range(0..=TransportParameterId::SUPPORTED.len() as u8),
+        });
+        *next += 1;
     }
 
     /// Check that these parameters are legal when resuming from
@@ -211,6 +256,37 @@ impl TransportParameters {
     pub(crate) fn issue_cids_limit(&self) -> u64 {
         self.active_connection_id_limit.0.min(LOC_CID_COUNT)
     }
+}
+
+/// One extra transport parameter written verbatim (outgoing only, never decoded).
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub(crate) struct ExtraTransportParameter {
+    id: VarInt,
+    len: u8,
+    value: [u8; ExtraTransportParameter::MAX_LEN],
+    /// Index in `write_order` before which it is written (`SUPPORTED.len()` = after all).
+    slot: u8,
+}
+
+impl ExtraTransportParameter {
+    /// Longest value the client needs: `version_information` with two other versions.
+    pub(crate) const MAX_LEN: usize = 16;
+    /// `version_information` plus up to two static parameters.
+    pub(crate) const MAX_COUNT: usize = 3;
+}
+
+/// `version_information` (RFC 9368 §3) offering QUIC v1 plus one reserved GREASE version
+/// (RFC 9368 §7: `0x?a?a?a?a`), in random order.
+fn version_information(rng: &mut impl RngCore) -> Vec<u8> {
+    const V1: u32 = 0x0000_0001;
+    let grease = (rng.next_u32() & 0xf0f0_f0f0) | 0x0a0a_0a0a;
+    let others = if rng.random::<bool>() { [V1, grease] } else { [grease, V1] };
+    let mut value = Vec::with_capacity(12);
+    value.extend_from_slice(&V1.to_be_bytes());
+    for v in others {
+        value.extend_from_slice(&v.to_be_bytes());
+    }
+    value
 }
 
 /// A server's preferred address
@@ -307,11 +383,14 @@ impl From<UnexpectedEnd> for Error {
 impl TransportParameters {
     /// Encode `TransportParameters` into buffer
     pub fn write<W: BufMut>(&self, w: &mut W) {
-        for idx in self
+        for (pos, idx) in self
             .write_order
             .as_ref()
             .unwrap_or(&std::array::from_fn(|i| i as u8))
+            .iter()
+            .enumerate()
         {
+            self.write_extras_at(w, pos as u8);
             let id = TransportParameterId::SUPPORTED[*idx as usize];
             match id {
                 TransportParameterId::ReservedTransportParameter => {
@@ -399,6 +478,18 @@ impl TransportParameters {
                     }
                     apply_params!(write_params);
                 }
+            }
+        }
+        self.write_extras_at(w, TransportParameterId::SUPPORTED.len() as u8);
+    }
+
+    /// Write the extra parameters scheduled before the `pos`-th entry of the write order
+    fn write_extras_at<W: BufMut>(&self, w: &mut W, pos: u8) {
+        for extra in self.extras.iter().flatten() {
+            if extra.slot == pos {
+                w.write_var(extra.id.0);
+                w.write_var(u64::from(extra.len));
+                w.put_slice(&extra.value[..usize::from(extra.len)]);
             }
         }
     }
@@ -642,7 +733,7 @@ pub(crate) enum TransportParameterId {
 
 impl TransportParameterId {
     /// Array with all supported transport parameter IDs
-    const SUPPORTED: [Self; 21] = [
+    pub(crate) const SUPPORTED: [Self; 21] = [
         Self::MaxIdleTimeout,
         Self::MaxUdpPayloadSize,
         Self::InitialMaxData,

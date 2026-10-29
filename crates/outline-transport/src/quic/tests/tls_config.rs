@@ -6,7 +6,8 @@
 //! what a DPI box does after observing the packet. The decrypted payload
 //! exposes the QUIC transport parameters quinn actually encodes and the
 //! ClientHello key shares, letting us assert the H3 carrier's on-wire shape
-//! (post-quantum key share present, `max_datagram_frame_size` absent).
+//! (post-quantum key share present, `max_datagram_frame_size` absent for the Safari
+//! profile only).
 //!
 //! Pure computation: `quinn-proto` is a sans-IO core, so no UDP socket is ever
 //! bound.
@@ -332,14 +333,15 @@ fn key_share_groups(ch: &[u8]) -> Vec<u16> {
 /// Drive `config` through a sans-IO `quinn` client and capture the whole client
 /// Initial flight (no socket bound), decrypting each Initial with the v1 salt
 /// and reassembling the CRYPTO stream into the ClientHello. A fixed endpoint rng
-/// seed keeps the DCID stable run-to-run; the transport-param jitter still
-/// varies per process (that is the thing we want to observe).
+/// `seed` keeps the DCID and the connection rng (parameter order, GREASE version)
+/// reproducible; vary it to observe per-connection randomness.
 fn capture_clienthello(
     config: quinn::ClientConfig,
     endpoint_config: quinn::EndpointConfig,
+    seed: [u8; 32],
 ) -> Vec<u8> {
     let mut endpoint =
-        quinn_proto::Endpoint::new(Arc::new(endpoint_config), None, false, Some([0x11; 32]));
+        quinn_proto::Endpoint::new(Arc::new(endpoint_config), None, false, Some(seed));
     let now = Instant::now();
     let remote = "203.0.113.1:443".parse().unwrap();
     let (_handle, mut conn) = endpoint
@@ -370,39 +372,37 @@ fn capture_clienthello(
     clienthello
 }
 
-/// Regression for the H3 carrier config (level A). The H3 QUIC config picks up
-/// the dial fingerprint (PQ key share on the wire), but leaves QUIC datagrams
-/// off: quinn can advertise `max_datagram_frame_size` (0x20) only up to 65535,
-/// while Chrome sends 65536, so the parameter stays off until it can be exact.
+/// Regression for the H3 carrier config. The H3 QUIC config picks up the dial
+/// fingerprint (PQ key share on the wire); the Safari profile leaves QUIC datagrams off
+/// like Apple does, so `max_datagram_frame_size` (0x20) is absent.
 #[tokio::test]
-async fn h3_config_carries_fingerprint_without_datagram_param() {
+async fn h3_safari_config_has_no_datagram_param() {
     use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
 
-    let chromium = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
-        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config())
+    let safari = with_dial_fingerprint(Some(TlsFingerprint::Safari), async {
+        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config(), [0x11; 32])
     })
     .await;
     assert!(
-        key_share_groups(&chromium).contains(&0x11ec),
+        key_share_groups(&safari).contains(&0x11ec),
         "fingerprint scope must reach the H3 config (MLKEM768 key share)"
     );
-    let has_datagram_param = transport_param_ids_from_clienthello(&chromium).contains(&0x20);
+    let has_datagram_param = transport_param_ids_from_clienthello(&safari).contains(&0x20);
     assert!(
         !has_datagram_param,
-        "H3 config must not advertise max_datagram_frame_size (0x20) — datagrams stay off"
+        "Safari profile must not advertise max_datagram_frame_size (0x20)"
     );
 }
 
-/// Chromium-profile H3 Initial carries Chrome 156's transport parameters
-/// (measured 2026-10-29), minus what quinn cannot emit without a patch
-/// (0x11, 0x20, 0x3128) and plus `min_ack_delay`, which quinn always sends.
+/// Chromium-profile H3 Initial carries exactly Chrome 156's transport parameters
+/// (measured 2026-10-29).
 #[tokio::test]
 async fn h3_chromium_transport_params_match_chrome() {
     use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
     use std::collections::BTreeSet;
 
     let ch = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
-        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config())
+        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config(), [0x11; 32])
     })
     .await;
     let tp = transport_params_from_clienthello(&ch);
@@ -410,10 +410,12 @@ async fn h3_chromium_transport_params_match_chrome() {
     let ids: BTreeSet<u64> = tp.iter().map(|(id, _)| *id).filter(|id| !is_grease_tp(*id)).collect();
     assert_eq!(
         ids,
-        BTreeSet::from([0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0f, 0xff04de1b]),
+        BTreeSet::from([0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0f, 0x11, 0x20, 0x3128]),
         "unexpected transport-parameter set"
     );
     assert!(tp.iter().any(|(id, _)| is_grease_tp(*id)), "Chrome sends a GREASE parameter");
+    // BTreeSet hides duplicates: the raw count is the set plus one GREASE entry.
+    assert_eq!(tp.len(), ids.len() + 1, "duplicate or extra transport parameters");
 
     let int = |id| varint_value(tp_value(&tp, id).expect("parameter missing"));
     assert_eq!(int(0x01), 30_000, "max_idle_timeout");
@@ -425,30 +427,64 @@ async fn h3_chromium_transport_params_match_chrome() {
     assert_eq!(int(0x08), 100, "initial_max_streams_bidi");
     assert_eq!(int(0x09), 103, "initial_max_streams_uni");
     assert_eq!(tp_value(&tp, 0x0f), Some(&[][..]), "zero-length initial_source_connection_id");
+    assert_eq!(int(0x20), 65_536, "max_datagram_frame_size");
+    assert_eq!(tp_value(&tp, 0x3128), Some(&b"ORIG"[..]), "google_connection_options");
+    let vi = tp_value(&tp, 0x11).expect("version_information");
+    assert_eq!(vi.len(), 12);
+    assert_eq!(&vi[..4], &[0, 0, 0, 1], "chosen version v1");
+    let others = [
+        u32::from_be_bytes(vi[4..8].try_into().unwrap()),
+        u32::from_be_bytes(vi[8..12].try_into().unwrap()),
+    ];
+    assert!(others.contains(&1), "v1 among other_versions");
+    assert!(
+        others.iter().any(|v| *v & 0x0f0f_0f0f == 0x0a0a_0a0a),
+        "GREASE version among other_versions"
+    );
 }
 
-/// Safari-profile H3 Initial follows Apple's Network.framework values where
-/// quinn allows it (no bidi streams, 8 uni, 16 MiB / 2 MiB windows, empty
-/// source CID). Idle and the GREASE parameter still differ until phase B.
+/// Firefox-profile H3 Initial is the Chromium set minus Google's private
+/// `google_connection_options` (0x3128), which neqo never sends.
 #[tokio::test]
-async fn h3_safari_transport_params_match_apple() {
+async fn h3_firefox_initial_has_no_google_connection_options() {
     use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
 
-    let ch = with_dial_fingerprint(Some(TlsFingerprint::Safari), async {
-        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config())
+    let ch = with_dial_fingerprint(Some(TlsFingerprint::Firefox), async {
+        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config(), [0x11; 32])
     })
     .await;
     let tp = transport_params_from_clienthello(&ch);
+    assert!(!tp.iter().any(|(id, _)| *id == 0x3128), "Firefox must not send 0x3128");
+    assert!(tp.iter().any(|(id, _)| *id == 0x11), "version_information still sent");
+    assert!(tp.iter().any(|(id, _)| *id == 0x20), "max_datagram_frame_size still sent");
+}
+
+/// Safari-profile H3 Initial follows Apple's Network.framework set: no idle timeout,
+/// no max_udp_payload_size, no GREASE parameter, private 0xff080808, no bidi streams, 8 uni,
+/// 16 MiB / 2 MiB windows, empty source CID. Only Apple's `active_connection_id_limit`
+/// (0x0e) is missing (documented residual).
+#[tokio::test]
+async fn h3_safari_transport_params_match_apple() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+    use std::collections::BTreeSet;
+
+    let ch = with_dial_fingerprint(Some(TlsFingerprint::Safari), async {
+        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config(), [0x11; 32])
+    })
+    .await;
+    let tp = transport_params_from_clienthello(&ch);
+    let ids: BTreeSet<u64> = tp.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids, BTreeSet::from([0x04, 0x05, 0x06, 0x07, 0x09, 0x0f, 0xff08_0808]));
+    assert_eq!(tp.len(), 7, "duplicate or extra transport parameters");
+    assert!(!tp.iter().any(|(id, _)| is_grease_tp(*id)), "Apple sends no GREASE parameter");
+    assert_eq!(tp_value(&tp, 0xff08_0808), Some(&[0x09][..]));
     let int = |id| tp_value(&tp, id).map(varint_value);
-    assert_eq!(int(0x01), Some(30_000), "max_idle_timeout");
     assert_eq!(int(0x04), Some(16_777_216), "initial_max_data");
     for id in [0x05, 0x06, 0x07] {
         assert_eq!(int(id), Some(2_097_152), "initial_max_stream_data {id:#x}");
     }
-    assert_eq!(int(0x08), None, "initial_max_streams_bidi must be unsent");
     assert_eq!(int(0x09), Some(8), "initial_max_streams_uni");
     assert_eq!(tp_value(&tp, 0x0f), Some(&[][..]), "zero-length initial_source_connection_id");
-    assert!(tp_value(&tp, 0x2ab2).is_none(), "no grease_quic_bit");
 }
 
 /// Runtime windows never reach the Initial: with 32 MiB / 256 MiB granted after the
@@ -464,7 +500,7 @@ async fn runtime_windows_do_not_change_advertised_parameters() {
             &super::super::tp_profile::SAFARI,
             runtime,
         )));
-        capture_clienthello(config, super::h3_endpoint_config())
+        capture_clienthello(config, super::h3_endpoint_config(), [0x11; 32])
     })
     .await;
     let tp = transport_params_from_clienthello(&ch);
@@ -612,4 +648,80 @@ async fn connection_window_raised_after_handshake() {
     let control = written_across_streams(&lb, None).await;
     eprintln!("connection growth: control wrote {control} bytes");
     assert!(control <= (16 << 20) + (64 << 10), "control not capped: {control} bytes");
+}
+
+/// The extra parameter's position and the GREASE version change from connection to
+/// connection, as in Chrome.
+#[tokio::test]
+async fn chromium_extras_and_grease_version_vary_per_connection() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+    use std::collections::BTreeSet;
+
+    let mut positions = BTreeSet::new();
+    let mut grease_versions = BTreeSet::new();
+    let mut extra_before_vi = BTreeSet::new();
+    let mut v1_first = BTreeSet::new();
+    for i in 0..16u8 {
+        let ch = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
+            capture_clienthello(
+                super::h3_quic_client_config(),
+                super::h3_endpoint_config(),
+                [i.wrapping_add(1); 32],
+            )
+        })
+        .await;
+        let tp = transport_params_from_clienthello(&ch);
+        let extra_pos = tp.iter().position(|(id, _)| *id == 0x3128).unwrap();
+        positions.insert(extra_pos);
+        extra_before_vi.insert(extra_pos < tp.iter().position(|(id, _)| *id == 0x11).unwrap());
+        let vi = tp_value(&tp, 0x11).unwrap();
+        v1_first.insert(vi[4..8] == [0, 0, 0, 1]);
+        for chunk in vi[4..].chunks(4) {
+            let v = u32::from_be_bytes(chunk.try_into().unwrap());
+            if v != 1 {
+                grease_versions.insert(v);
+            }
+        }
+    }
+    assert!(positions.len() > 1, "extra parameter always at the same position");
+    assert!(grease_versions.len() > 1, "GREASE version never changes");
+    assert_eq!(extra_before_vi.len(), 2, "0x3128 / 0x11 relative order never changes");
+    assert_eq!(v1_first.len(), 2, "other_versions order never changes");
+}
+
+/// A profile that omits `max_idle_timeout` from the wire still enforces its local idle
+/// timer: an idle connection closes with `TimedOut` after ~500 ms.
+#[tokio::test]
+async fn safari_local_idle_timeout_applies_without_advertisement() {
+    use std::time::Duration;
+
+    let lb = loopback::Loopback::new();
+    let server = lb.server.clone();
+    let accepted = tokio::spawn(async move {
+        let conn = server.accept().await.unwrap().await.unwrap();
+        // Keep the server side alive (it never sends anything) until the test ends.
+        conn.closed().await;
+    });
+
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_idle_timeout(Some(Duration::from_millis(500).try_into().unwrap()));
+    super::super::vendored::apply_browser_tp_options(
+        &mut transport,
+        &super::super::tp_profile::SAFARI.options,
+    );
+    let (_endpoint, conn) = lb
+        .connect(super::super::tp_profile::SAFARI.endpoint_config(), transport)
+        .await;
+
+    let started = Instant::now();
+    let err = tokio::time::timeout(Duration::from_secs(5), conn.closed())
+        .await
+        .expect("connection must close on local idle within 5 s");
+    assert!(matches!(err, quinn::ConnectionError::TimedOut), "unexpected close: {err:?}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "closed too early: {:?}",
+        started.elapsed()
+    );
+    accepted.abort();
 }

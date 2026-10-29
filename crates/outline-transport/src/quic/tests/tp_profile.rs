@@ -6,16 +6,36 @@ fn safari_fingerprint_gets_safari_table() {
 }
 
 #[test]
-fn chromium_firefox_and_none_share_chromium_table() {
-    for fp in [Some(TlsFingerprint::Chromium), Some(TlsFingerprint::Firefox), None] {
+fn chromium_and_none_get_chromium_table() {
+    for fp in [Some(TlsFingerprint::Chromium), None] {
         assert_eq!(for_fingerprint(fp), &CHROMIUM, "{fp:?}");
     }
 }
 
 #[test]
+fn firefox_fingerprint_gets_firefox_table() {
+    assert_eq!(for_fingerprint(Some(TlsFingerprint::Firefox)), &FIREFOX);
+}
+
+#[test]
+fn firefox_differs_from_chromium_only_by_google_extra() {
+    assert_eq!(FIREFOX.name, "firefox");
+    assert!(FIREFOX.options.extra_parameters.is_empty());
+    let normalized = QuicTpProfile {
+        name: CHROMIUM.name,
+        options: BrowserTpOptions {
+            extra_parameters: CHROMIUM.options.extra_parameters,
+            ..FIREFOX.options
+        },
+        ..FIREFOX
+    };
+    assert_eq!(normalized, CHROMIUM);
+}
+
+#[test]
 fn idle_timeout_outlives_keepalive() {
     // Keep-alive PING is jittered over 8..=12 s; idle must stay > 2x that.
-    for p in [&CHROMIUM, &SAFARI] {
+    for p in [&CHROMIUM, &FIREFOX, &SAFARI] {
         assert!(p.idle_timeout > Duration::from_secs(24), "{}", p.name);
     }
 }
@@ -57,4 +77,21 @@ async fn zero_length_cid_connection_survives_client_rebind() {
 
     conn.close(0u32.into(), b"done");
     echo.abort();
+}
+
+#[test]
+fn profile_options_match_measured_browsers() {
+    let c = &CHROMIUM.options;
+    assert!(!c.advertise_min_ack_delay && c.grease_parameter);
+    assert!(c.advertise_idle_timeout && c.advertise_max_udp_payload_size);
+    assert_eq!(c.datagram_frame_size, Some(65_536));
+    assert!(c.version_information);
+    assert_eq!(c.extra_parameters, &[(0x3128, &b"ORIG"[..])]);
+
+    let s = &SAFARI.options;
+    assert!(!s.advertise_min_ack_delay && !s.grease_parameter);
+    assert!(!s.advertise_idle_timeout && !s.advertise_max_udp_payload_size);
+    assert_eq!(s.datagram_frame_size, None);
+    assert!(!s.version_information);
+    assert_eq!(s.extra_parameters, &[(0xff08_0808, &[0x09][..])]);
 }

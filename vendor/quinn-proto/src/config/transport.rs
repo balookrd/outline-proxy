@@ -10,6 +10,7 @@ use crate::QlogStream;
 use crate::{
     Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
     connection::qlog::QlogSink,
+    transport_parameters::{ExtraTransportParameter, TransportParameterId},
 };
 
 /// Parameters governing the core QUIC state machine
@@ -30,6 +31,13 @@ pub struct TransportConfig {
     pub(crate) max_idle_timeout: Option<VarInt>,
     pub(crate) stream_receive_window: VarInt,
     pub(crate) initial_stream_receive_window: Option<VarInt>,
+    pub(crate) advertise_min_ack_delay: bool,
+    pub(crate) send_grease_transport_parameter: bool,
+    pub(crate) advertise_max_idle_timeout: bool,
+    pub(crate) advertise_max_udp_payload_size: bool,
+    pub(crate) advertised_max_datagram_frame_size: Option<VarInt>,
+    pub(crate) send_version_information: bool,
+    pub(crate) extra_transport_parameters: Vec<(VarInt, Vec<u8>)>,
     pub(crate) receive_window: VarInt,
     pub(crate) send_window: u64,
     pub(crate) send_fairness: bool,
@@ -126,6 +134,95 @@ impl TransportConfig {
     /// `stream_receive_window`. `None` (the default) advertises `stream_receive_window`.
     pub fn initial_stream_receive_window(&mut self, value: Option<VarInt>) -> &mut Self {
         self.initial_stream_receive_window = value;
+        self
+    }
+
+    /// Whether to advertise `min_ack_delay` (draft-ietf-quic-ack-frequency). Advertising
+    /// it invites the peer to send ACK_FREQUENCY frames. Defaults to `true`.
+    pub fn advertise_min_ack_delay(&mut self, value: bool) -> &mut Self {
+        self.advertise_min_ack_delay = value;
+        self
+    }
+
+    /// Whether to include a randomly generated reserved (GREASE) transport parameter.
+    /// Defaults to `true`.
+    pub fn send_grease_transport_parameter(&mut self, value: bool) -> &mut Self {
+        self.send_grease_transport_parameter = value;
+        self
+    }
+
+    /// Whether to advertise `max_idle_timeout`. When `false` the parameter is omitted (the
+    /// peer sees no limit) while `max_idle_timeout` still bounds the connection locally.
+    /// Defaults to `true`.
+    pub fn advertise_max_idle_timeout(&mut self, value: bool) -> &mut Self {
+        self.advertise_max_idle_timeout = value;
+        self
+    }
+
+    /// Whether to advertise the endpoint's `max_udp_payload_size`. When `false` the
+    /// parameter is omitted (protocol default 65527). Defaults to `true`.
+    pub fn advertise_max_udp_payload_size(&mut self, value: bool) -> &mut Self {
+        self.advertise_max_udp_payload_size = value;
+        self
+    }
+
+    /// Exact `max_datagram_frame_size` to advertise. Takes effect only while datagrams are
+    /// enabled (`datagram_receive_buffer_size` is `Some`); `None` (the default) advertises the
+    /// receive buffer size capped at 65535, as upstream does.
+    ///
+    /// The value must not exceed `datagram_receive_buffer_size`: otherwise the peer may legally
+    /// send a datagram that does not fit the buffer, which the connection rejects with a
+    /// `PROTOCOL_VIOLATION`.
+    pub fn advertised_max_datagram_frame_size(&mut self, value: Option<VarInt>) -> &mut Self {
+        self.advertised_max_datagram_frame_size = value;
+        self
+    }
+
+    /// Whether to send `version_information` (RFC 9368) with QUIC v1 as the chosen version
+    /// and `other_versions` = a random permutation of {v1, a GREASE version}, regenerated per
+    /// connection. Defaults to `false`.
+    ///
+    /// Client-only: the chosen version is always QUIC v1 (the only version the client uses).
+    /// Enabling it on a server, or on a connection using another version, produces an invalid
+    /// parameter.
+    pub fn send_version_information(&mut self, value: bool) -> &mut Self {
+        self.send_version_information = value;
+        self
+    }
+
+    /// Additional transport parameters written verbatim at random positions among the others.
+    /// Defaults to none.
+    ///
+    /// # Panics
+    ///
+    /// If more than 2 parameters are given (one of the 3 slots is reserved for
+    /// `version_information`), a value exceeds 16 bytes, or an id collides with a parameter
+    /// quinn writes itself, with `version_information` (0x11), or with the reserved GREASE form
+    /// `31 * N + 27`.
+    pub fn extra_transport_parameters(&mut self, value: Vec<(VarInt, Vec<u8>)>) -> &mut Self {
+        assert!(
+            value.len() < ExtraTransportParameter::MAX_COUNT,
+            "at most {} extra transport parameters (one slot is reserved for version_information)",
+            ExtraTransportParameter::MAX_COUNT - 1
+        );
+        assert!(
+            value.iter().all(|(_, v)| v.len() <= ExtraTransportParameter::MAX_LEN),
+            "extra transport parameter value longer than {} bytes",
+            ExtraTransportParameter::MAX_LEN
+        );
+        for (id, _) in &value {
+            let id = id.into_inner();
+            assert!(
+                !TransportParameterId::SUPPORTED.iter().any(|known| *known as u64 == id),
+                "extra transport parameter id {id:#x} collides with a parameter quinn writes"
+            );
+            assert!(id != 0x11, "extra transport parameter id 0x11 is version_information");
+            assert!(
+                id % 31 != 27,
+                "extra transport parameter id {id:#x} has the reserved GREASE form 31 * N + 27"
+            );
+        }
+        self.extra_transport_parameters = value;
         self
     }
 
@@ -382,6 +479,13 @@ impl Default for TransportConfig {
             max_idle_timeout: Some(VarInt(30_000)),
             stream_receive_window: STREAM_RWND.into(),
             initial_stream_receive_window: None,
+            advertise_min_ack_delay: true,
+            send_grease_transport_parameter: true,
+            advertise_max_idle_timeout: true,
+            advertise_max_udp_payload_size: true,
+            advertised_max_datagram_frame_size: None,
+            send_version_information: false,
+            extra_transport_parameters: Vec::new(),
             receive_window: VarInt::MAX,
             send_window: (8 * STREAM_RWND).into(),
             send_fairness: true,
@@ -421,6 +525,13 @@ impl fmt::Debug for TransportConfig {
             max_idle_timeout,
             stream_receive_window,
             initial_stream_receive_window,
+            advertise_min_ack_delay,
+            send_grease_transport_parameter,
+            advertise_max_idle_timeout,
+            advertise_max_udp_payload_size,
+            advertised_max_datagram_frame_size,
+            send_version_information,
+            extra_transport_parameters,
             receive_window,
             send_window,
             send_fairness,
@@ -451,6 +562,13 @@ impl fmt::Debug for TransportConfig {
             .field("max_idle_timeout", max_idle_timeout)
             .field("stream_receive_window", stream_receive_window)
             .field("initial_stream_receive_window", initial_stream_receive_window)
+            .field("advertise_min_ack_delay", advertise_min_ack_delay)
+            .field("send_grease_transport_parameter", send_grease_transport_parameter)
+            .field("advertise_max_idle_timeout", advertise_max_idle_timeout)
+            .field("advertise_max_udp_payload_size", advertise_max_udp_payload_size)
+            .field("advertised_max_datagram_frame_size", advertised_max_datagram_frame_size)
+            .field("send_version_information", send_version_information)
+            .field("extra_transport_parameters", extra_transport_parameters)
             .field("receive_window", receive_window)
             .field("send_window", send_window)
             .field("send_fairness", send_fairness)

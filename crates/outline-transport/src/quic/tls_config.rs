@@ -146,9 +146,7 @@ pub(crate) fn build_h3_transport(
     transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(tp.max_bidi_streams));
     transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(tp.max_uni_streams));
     apply_quic_carrier_tuning(&mut transport);
-    // quinn can only advertise `max_datagram_frame_size` up to 65535 while Chrome sends
-    // 65536, so the parameter stays off until it can be sent exactly.
-    transport.datagram_receive_buffer_size(None);
+    super::vendored::apply_browser_tp_options(&mut transport, &tp.options);
     transport
 }
 
@@ -191,12 +189,12 @@ static H3_QUIC_CLIENT_CONFIGS: OnceLock<
 > = OnceLock::new();
 
 /// QUIC client config for the H3 carrier (`h3` ALPN). Transport parameters
-/// follow the dial fingerprint's browser profile ([`build_h3_transport`]) and
-/// QUIC datagrams stay disabled: quinn can advertise `max_datagram_frame_size`
-/// only up to 65535 while Chrome sends 65536, so the parameter stays off until
-/// it can be sent exactly. `build_client_config` reads the dial
-/// fingerprint and the test-root override, so a fresh process that installs the
-/// override before the first dial still captures it.
+/// follow the dial fingerprint's browser profile ([`build_h3_transport`]); that
+/// includes `max_datagram_frame_size`: the Chromium profile advertises exactly
+/// 65536 and enables datagram receive, the Safari profile leaves datagrams off.
+/// `build_client_config` reads the dial fingerprint and the test-root override,
+/// so a fresh process that installs the override before the first dial still
+/// captures it.
 pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
     let fp = crate::fingerprint_profile::current_dial_fingerprint();
     let cache = H3_QUIC_CLIENT_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()));

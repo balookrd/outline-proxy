@@ -166,13 +166,14 @@ jobs:
           echo "ok: sockudo-ws stays behind the gate modules"
 
       # Monorepo invariant: the vendored quinn-proto patch adds
-      # `TransportConfig::initial_stream_receive_window`; production code
+      # `TransportConfig::initial_stream_receive_window` and the browser-shaped
+      # transport-parameter options; production code
       # reaches it only via crates/outline-transport/src/quic/vendored.rs, so
       # a quinn-proto rebase touches one file (see PATCHES.md). Test modules
       # are exempt.
       - name: invariant — patched quinn-proto API only behind the gate module
         run: |
-          leaked=$(grep -rn 'initial_stream_receive_window' bins/*/src crates/*/src --include='*.rs' \
+          leaked=$(grep -rn 'initial_stream_receive_window\|\.advertise_min_ack_delay(\|\.send_grease_transport_parameter(\|\.advertise_max_idle_timeout(\|\.advertise_max_udp_payload_size(\|\.advertised_max_datagram_frame_size(\|\.send_version_information(\|\.extra_transport_parameters(' bins/*/src crates/*/src --include='*.rs' \
             | grep -v '/tests/' \
             | grep -v '^crates/outline-transport/src/quic/vendored\.rs:' || true)
           if [ -n "$leaked" ]; then
