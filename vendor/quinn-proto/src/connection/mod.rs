@@ -271,6 +271,7 @@ impl Connection {
             client_hello: None,
         });
         let mut rng = StdRng::from_seed(rng_seed);
+        let rem_cid_limit = config.remote_cid_queue_limit();
         let mut this = Self {
             endpoint_config,
             crypto,
@@ -331,9 +332,13 @@ impl Connection {
             path_responses: PathResponses::default(),
             close: false,
 
-            ack_frequency: AckFrequencyState::new(get_max_ack_delay(
-                &TransportParameters::default(),
-            )),
+            ack_frequency: {
+                let mut state =
+                    AckFrequencyState::new(get_max_ack_delay(&TransportParameters::default()));
+                // Hold ACKs no longer than the max_ack_delay we advertise.
+                state.max_ack_delay = Duration::from_millis(config.max_ack_delay.into_inner());
+                state
+            },
 
             pto_count: 0,
 
@@ -348,11 +353,11 @@ impl Connection {
                 config.send_window,
                 config.receive_window,
                 config.stream_receive_window,
-                config.advertised_stream_receive_window(),
+                config.advertised_stream_receive_windows(),
             ),
             datagrams: DatagramState::default(),
             config,
-            rem_cids: CidQueue::new(rem_cid),
+            rem_cids: CidQueue::new(rem_cid, rem_cid_limit),
             rng,
             stats: ConnectionStats::default(),
             version,

@@ -177,20 +177,33 @@ Baseline — crates.io `quinn-proto 0.11.15`. Logical changes carried by
    `advertise_min_ack_delay`, `send_grease_transport_parameter`,
    `advertise_max_idle_timeout` (the local idle timer keeps working),
    `advertise_max_udp_payload_size`, `advertised_max_datagram_frame_size`,
-   `send_version_information` (RFC 9368: v1 + a GREASE version, permuted per
-   connection) and `extra_transport_parameters` (raw `(id, value)` pairs woven into
-   random positions of the shared shuffled order). Limits: `extra_transport_parameters`
-   takes at most 2 parameters (the 3rd of the 3 slots is reserved for
-   `version_information`, which `send_version_information` adds) and values of at most
-   16 bytes; the setter panics otherwise. It also asserts that no extra id collides
-   with an id quinn writes itself (`TransportParameterId::SUPPORTED`), with
-   `version_information` (0x11) or with the reserved GREASE form `31*N+27`.
+   `version_information` (RFC 9368: v1 as chosen version, `other_versions` from fixed
+   versions and per-connection GREASE slots, optionally permuted) and
+   `extra_transport_parameters` (raw `(id, value)` pairs woven into random positions
+   of the shared shuffled order). Limits: `extra_transport_parameters` takes at most
+   2 parameters (the 3rd of the 3 slots is reserved for `version_information`) and
+   values of at most 16 bytes; the setter panics otherwise. It also asserts that no
+   extra id collides with an id quinn writes itself
+   (`TransportParameterId::SUPPORTED`) or with `version_information` (0x11).
    `advertised_max_datagram_frame_size` must not exceed `datagram_receive_buffer_size`.
-   `send_version_information` is client-only (chosen version is always QUIC v1).
+   `version_information` is client-only (chosen version is always QUIC v1).
    Defaults match upstream, and with the defaults the rng is consumed in the same
    order as upstream (the extras and `version_information` draw from it only when
    set), so the server, which does not use these options, is unaffected.
-3. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
+3. **browser-order-and-firefox** (`src/config/transport.rs`,
+   `src/transport_parameters.rs`, `src/cid_queue.rs`, `src/connection/mod.rs`,
+   `src/connection/streams/{state,mod,recv}.rs`, `src/lib.rs`) — options for the
+   Safari and Firefox profiles:
+   `transport_parameter_order` (`Shuffled` / `Fixed` / `Rotated`; in `Rotated` only
+   the regular parameters are rotated), `initial_stream_receive_windows`
+   (per-direction initial credit by stream class, with the pools of freed `Recv`
+   split by class too), `advertised_active_connection_id_limit` (the remote CID ring
+   buffer holds 8 entries; the limit is checked against the advertised value capped
+   at 8, default 5; more than 8 active CIDs from the peer end in
+   `CONNECTION_ID_LIMIT_ERROR`) and `max_ack_delay_ms` (advertised and also the
+   local ACK timer). All defaults are upstream's, the rng is consumed in the
+   default mode exactly as upstream, and the server does not use the options.
+4. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
    `rcgen` with default `ring` would violate the aws-lc-rs invariant).
 
 Conformance check: apply the patch to a clean copy of crates.io 0.11.15 and

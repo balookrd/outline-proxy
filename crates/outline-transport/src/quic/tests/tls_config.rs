@@ -443,26 +443,147 @@ async fn h3_chromium_transport_params_match_chrome() {
     );
 }
 
-/// Firefox-profile H3 Initial is the Chromium set minus Google's private
-/// `google_connection_options` (0x3128), which neqo never sends.
+/// Firefox-profile H3 Initial carries Firefox 159's transport parameters in its fixed
+/// order (measured 2026-10-29); only the source CID and the GREASE version vary.
 #[tokio::test]
-async fn h3_firefox_initial_has_no_google_connection_options() {
+async fn h3_firefox_transport_params_match_firefox_159() {
     use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
 
-    let ch = with_dial_fingerprint(Some(TlsFingerprint::Firefox), async {
-        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config(), [0x11; 32])
-    })
-    .await;
-    let tp = transport_params_from_clienthello(&ch);
-    assert!(!tp.iter().any(|(id, _)| *id == 0x3128), "Firefox must not send 0x3128");
-    assert!(tp.iter().any(|(id, _)| *id == 0x11), "version_information still sent");
-    assert!(tp.iter().any(|(id, _)| *id == 0x20), "max_datagram_frame_size still sent");
+    for seed in [[0x11; 32], [0x22; 32]] {
+        let ch = with_dial_fingerprint(Some(TlsFingerprint::Firefox), async {
+            capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config(), seed)
+        })
+        .await;
+        let tp = transport_params_from_clienthello(&ch);
+        let ids: Vec<u64> = tp.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            ids,
+            [
+                0x01,
+                0x04,
+                0x05,
+                0x06,
+                0x07,
+                0x08,
+                0x09,
+                0x0b,
+                0x0e,
+                0x0f,
+                0x11,
+                0x1d,
+                0xff02_de1a,
+                0x20
+            ],
+            "Firefox order"
+        );
+        let int = |id| varint_value(tp_value(&tp, id).expect("parameter missing"));
+        assert_eq!(int(0x01), 30_000, "max_idle_timeout");
+        assert_eq!(int(0x04), 25_165_824, "initial_max_data");
+        assert_eq!(int(0x05), 12_582_912, "initial_max_stream_data_bidi_local");
+        assert_eq!(int(0x06), 1_048_576, "initial_max_stream_data_bidi_remote");
+        assert_eq!(int(0x07), 1_048_576, "initial_max_stream_data_uni");
+        assert_eq!(int(0x08), 100, "initial_max_streams_bidi");
+        assert_eq!(int(0x09), 100, "initial_max_streams_uni");
+        assert_eq!(int(0x0b), 20, "max_ack_delay");
+        assert_eq!(int(0x0e), 8, "active_connection_id_limit");
+        assert_eq!(int(0x20), 65_535, "max_datagram_frame_size");
+        assert_eq!(tp_value(&tp, 0x0f).map(<[u8]>::len), Some(3), "3-byte source CID");
+        assert_eq!(tp_value(&tp, 0x1d), Some(&[][..]), "empty 0x1d");
+        assert_eq!(tp_value(&tp, 0xff02_de1a), Some(&[0x43, 0xe8][..]), "draft min_ack_delay");
+        let vi = tp_value(&tp, 0x11).expect("version_information");
+        assert_eq!(vi.len(), 16);
+        assert_eq!(&vi[..4], &[0, 0, 0, 1], "chosen version v1");
+        let grease = u32::from_be_bytes(vi[4..8].try_into().unwrap());
+        assert_eq!(grease & 0x0f0f_0f0f, 0x0a0a_0a0a, "GREASE version first");
+        assert_eq!(&vi[8..], &[0x6b, 0x33, 0x43, 0xcf, 0, 0, 0, 1], "v2 then v1");
+    }
+}
+
+/// Apple writes a fixed sequence rotated per connection, `0xff080808` always last.
+#[tokio::test]
+async fn h3_safari_order_is_rotated_apple_sequence() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+
+    const APPLE: [u64; 7] = [0x04, 0x05, 0x06, 0x07, 0x09, 0x0e, 0x0f];
+    let mut starts = std::collections::BTreeSet::new();
+    for seed in 0..16u8 {
+        let ch = with_dial_fingerprint(Some(TlsFingerprint::Safari), async move {
+            capture_clienthello(
+                super::h3_quic_client_config(),
+                super::h3_endpoint_config(),
+                [seed; 32],
+            )
+        })
+        .await;
+        let ids: Vec<u64> = transport_params_from_clienthello(&ch)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(ids.last(), Some(&0xff08_0808), "Apple's private parameter is last");
+        let start = APPLE
+            .iter()
+            .position(|id| *id == ids[0])
+            .expect("starts with an Apple id");
+        let mut rotated = APPLE;
+        rotated.rotate_left(start);
+        assert_eq!(ids[..APPLE.len()], rotated, "seed {seed}");
+        starts.insert(start);
+    }
+    assert!(starts.len() > 1, "rotation never moved: {starts:?}");
+}
+
+/// The runtime stream window never falls below the largest advertised one.
+#[test]
+fn runtime_stream_window_covers_largest_advertised() {
+    let fx = super::RuntimeWindows::current(&super::super::tp_profile::FIREFOX);
+    assert!(fx.stream >= 12_582_912, "{fx:?}");
+}
+
+/// Safari (64, zero-length CIDs) and Firefox (8, 3-byte CIDs) profiles keep a healthy
+/// connection to a quinn server that issues its 8 CIDs.
+#[tokio::test]
+async fn browser_profiles_accept_server_cids() {
+    for tp in [&super::super::tp_profile::SAFARI, &super::super::tp_profile::FIREFOX] {
+        let lb = loopback::Loopback::new();
+        let server = lb.server.clone();
+        let echo = tokio::spawn(async move {
+            let conn = server.accept().await.unwrap().await.unwrap();
+            let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+            let msg = recv.read_to_end(64).await.unwrap();
+            send.write_all(&msg).await.unwrap();
+            send.finish().unwrap();
+            conn.closed().await
+        });
+        let transport = super::build_h3_transport(tp, super::RuntimeWindows::current(tp));
+        let (_ep, conn) = lb.connect(tp.endpoint_config(), transport).await;
+        // Wait until the server has issued its NEW_CONNECTION_ID frames.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while conn.stats().frame_rx.new_connection_id < 7 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "{}: timed out waiting for NEW_CONNECTION_ID frames, got {}",
+                tp.name,
+                conn.stats().frame_rx.new_connection_id
+            )
+        });
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        send.write_all(b"ping").await.unwrap();
+        send.finish().unwrap();
+        assert_eq!(recv.read_to_end(64).await.unwrap(), b"ping", "{}", tp.name);
+        assert!(conn.close_reason().is_none(), "{}: {:?}", tp.name, conn.close_reason());
+        assert!(conn.stats().frame_rx.new_connection_id >= 7, "{}", tp.name);
+        conn.close(0u32.into(), b"done");
+        echo.abort();
+    }
 }
 
 /// Safari-profile H3 Initial follows Apple's Network.framework set: no idle timeout,
 /// no max_udp_payload_size, no GREASE parameter, private 0xff080808, no bidi streams, 8 uni,
-/// 16 MiB / 2 MiB windows, empty source CID. Only Apple's `active_connection_id_limit`
-/// (0x0e) is missing (documented residual).
+/// 16 MiB / 2 MiB windows, empty source CID, `active_connection_id_limit = 64`.
 #[tokio::test]
 async fn h3_safari_transport_params_match_apple() {
     use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
@@ -474,8 +595,8 @@ async fn h3_safari_transport_params_match_apple() {
     .await;
     let tp = transport_params_from_clienthello(&ch);
     let ids: BTreeSet<u64> = tp.iter().map(|(id, _)| *id).collect();
-    assert_eq!(ids, BTreeSet::from([0x04, 0x05, 0x06, 0x07, 0x09, 0x0f, 0xff08_0808]));
-    assert_eq!(tp.len(), 7, "duplicate or extra transport parameters");
+    assert_eq!(ids, BTreeSet::from([0x04, 0x05, 0x06, 0x07, 0x09, 0x0e, 0x0f, 0xff08_0808]));
+    assert_eq!(tp.len(), 8, "duplicate or extra transport parameters");
     assert!(!tp.iter().any(|(id, _)| is_grease_tp(*id)), "Apple sends no GREASE parameter");
     assert_eq!(tp_value(&tp, 0xff08_0808), Some(&[0x09][..]));
     let int = |id| tp_value(&tp, id).map(varint_value);
@@ -484,6 +605,7 @@ async fn h3_safari_transport_params_match_apple() {
         assert_eq!(int(id), Some(2_097_152), "initial_max_stream_data {id:#x}");
     }
     assert_eq!(int(0x09), Some(8), "initial_max_streams_uni");
+    assert_eq!(int(0x0e), Some(64), "active_connection_id_limit");
     assert_eq!(tp_value(&tp, 0x0f), Some(&[][..]), "zero-length initial_source_connection_id");
 }
 
@@ -724,4 +846,285 @@ async fn safari_local_idle_timeout_applies_without_advertisement() {
         started.elapsed()
     );
     accepted.abort();
+}
+
+/// Without any patch option the client Initial keeps upstream's shape: shuffled order,
+/// `active_connection_id_limit = 5` for 8-byte CIDs, no `max_ack_delay`, no
+/// `version_information`.
+#[tokio::test]
+async fn default_transport_keeps_upstream_parameter_shape() {
+    let mut orders = std::collections::BTreeSet::new();
+    for seed in 1..=8u8 {
+        let mut config = super::h3_quic_client_config();
+        config.transport_config(Arc::new(quinn::TransportConfig::default()));
+        let ch = capture_clienthello(config, quinn::EndpointConfig::default(), [seed; 32]);
+        let tp = transport_params_from_clienthello(&ch);
+        assert_eq!(tp_value(&tp, 0x0e).map(varint_value), Some(5), "active_connection_id_limit");
+        assert!(tp_value(&tp, 0x0b).is_none(), "default max_ack_delay is not written");
+        assert!(tp_value(&tp, 0x11).is_none(), "no version_information by default");
+        orders.insert(tp.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+    }
+    assert!(orders.len() > 1, "default order must stay shuffled");
+}
+
+/// `Fixed` writes the listed ids in order, extras included; `Rotated` rotates only the
+/// ids quinn writes itself and keeps listed extras after them.
+#[tokio::test]
+async fn listed_orders_shape_the_initial() {
+    use super::super::vendored::{BrowserTpOptions, TpOrder, apply_browser_tp_options};
+
+    let base = super::super::tp_profile::SAFARI.options;
+    let capture = |order: TpOrder, seed: u8| {
+        let mut transport = quinn::TransportConfig::default();
+        // Safari's own 0x0e would join the order; keep the id set the assertions list.
+        let opts = BrowserTpOptions {
+            order,
+            active_connection_id_limit: None,
+            ..base
+        };
+        apply_browser_tp_options(&mut transport, &opts);
+        transport.max_concurrent_bidi_streams(0u32.into());
+        let mut config = super::h3_quic_client_config();
+        config.transport_config(Arc::new(transport));
+        let ch = capture_clienthello(
+            config,
+            super::super::tp_profile::SAFARI.endpoint_config(),
+            [seed; 32],
+        );
+        transport_params_from_clienthello(&ch)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>()
+    };
+
+    // 0x0f is listed first, the extra in the middle, 0x04 after it; 0x05..0x07, 0x09
+    // are unlisted and follow in upstream order.
+    let fixed = capture(TpOrder::Fixed(&[0x0f, 0xff08_0808, 0x04]), 1);
+    assert_eq!(fixed, [0x0f, 0xff08_0808, 0x04, 0x05, 0x06, 0x07, 0x09]);
+
+    const SEQ: [u64; 6] = [0x04, 0x05, 0x06, 0x07, 0x09, 0x0f];
+    let mut starts = std::collections::BTreeSet::new();
+    for seed in 0..16u8 {
+        let ids =
+            capture(TpOrder::Rotated(&[0x04, 0x05, 0x06, 0x07, 0x09, 0x0f, 0xff08_0808]), seed);
+        assert_eq!(ids.last(), Some(&0xff08_0808), "listed extra stays after the rotation");
+        let start = SEQ
+            .iter()
+            .position(|id| *id == ids[0])
+            .expect("starts with a listed id");
+        let mut rotated = SEQ;
+        rotated.rotate_left(start);
+        assert_eq!(ids[..SEQ.len()], rotated, "seed {seed}");
+        starts.insert(start);
+    }
+    assert!(starts.len() > 1, "rotation never moved: {starts:?}");
+
+    // A listed extra that is NOT last still follows the known ids in a rotation, also
+    // when the draw is a shift of 0.
+    let mut starts = std::collections::BTreeSet::new();
+    for seed in 0..64u8 {
+        let ids =
+            capture(TpOrder::Rotated(&[0x04, 0xff08_0808, 0x05, 0x06, 0x07, 0x09, 0x0f]), seed);
+        assert_eq!(ids.last(), Some(&0xff08_0808), "extra after the rotation, seed {seed}");
+        let start = SEQ
+            .iter()
+            .position(|id| *id == ids[0])
+            .expect("starts with a listed id");
+        let mut rotated = SEQ;
+        rotated.rotate_left(start);
+        assert_eq!(ids[..SEQ.len()], rotated, "seed {seed}");
+        starts.insert(start);
+    }
+    assert!(starts.contains(&0), "no seed drew shift 0: {starts:?}");
+}
+
+/// `version_information` follows the configured slots; `max_ack_delay` is advertised.
+#[tokio::test]
+async fn version_information_form_and_max_ack_delay_are_written() {
+    use super::super::vendored::{
+        BrowserTpOptions, VersionInfo, VersionSlot, apply_browser_tp_options,
+    };
+
+    let mut transport = quinn::TransportConfig::default();
+    apply_browser_tp_options(
+        &mut transport,
+        &BrowserTpOptions {
+            version_information: Some(VersionInfo {
+                other_versions: &[
+                    VersionSlot::Grease,
+                    VersionSlot::Version(0x6b33_43cf),
+                    VersionSlot::Version(1),
+                ],
+                shuffle: false,
+            }),
+            max_ack_delay_ms: 20,
+            ..super::super::tp_profile::CHROMIUM.options
+        },
+    );
+    let mut config = super::h3_quic_client_config();
+    config.transport_config(Arc::new(transport));
+    let ch = capture_clienthello(config, quinn::EndpointConfig::default(), [7; 32]);
+    let tp = transport_params_from_clienthello(&ch);
+    assert_eq!(tp_value(&tp, 0x0b).map(varint_value), Some(20), "max_ack_delay");
+    let vi = tp_value(&tp, 0x11).expect("version_information");
+    assert_eq!(vi.len(), 16);
+    assert_eq!(&vi[..4], &[0, 0, 0, 1], "chosen version v1");
+    let grease = u32::from_be_bytes(vi[4..8].try_into().unwrap());
+    assert_eq!(grease & 0x0f0f_0f0f, 0x0a0a_0a0a, "GREASE version first");
+    assert_eq!(&vi[8..], &[0x6b, 0x33, 0x43, 0xcf, 0, 0, 0, 1], "v2 then v1");
+}
+
+/// A client that advertises more CIDs than quinn's old 5-entry queue (64, like Apple)
+/// accepts the 8 our server issues instead of failing with CONNECTION_ID_LIMIT_ERROR.
+#[tokio::test]
+async fn advertised_cid_limit_above_queue_capacity_accepts_server_cids() {
+    use super::super::vendored::{BrowserTpOptions, apply_browser_tp_options};
+
+    let lb = loopback::Loopback::new();
+    let server = lb.server.clone();
+    let echo = tokio::spawn(async move {
+        let conn = server.accept().await.unwrap().await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        let msg = recv.read_to_end(64).await.unwrap();
+        send.write_all(&msg).await.unwrap();
+        send.finish().unwrap();
+        conn.closed().await
+    });
+
+    let mut transport = quinn::TransportConfig::default();
+    apply_browser_tp_options(
+        &mut transport,
+        &BrowserTpOptions {
+            active_connection_id_limit: Some(64),
+            ..super::super::tp_profile::CHROMIUM.options
+        },
+    );
+    let (_ep, conn) = lb.connect(quinn::EndpointConfig::default(), transport).await;
+    // Wait until the server has issued its NEW_CONNECTION_ID frames.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while conn.stats().frame_rx.new_connection_id < 7 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "timed out waiting for NEW_CONNECTION_ID frames, got {}",
+            conn.stats().frame_rx.new_connection_id
+        )
+    });
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    send.write_all(b"ping").await.unwrap();
+    send.finish().unwrap();
+    assert_eq!(recv.read_to_end(64).await.unwrap(), b"ping");
+    assert!(conn.close_reason().is_none(), "{:?}", conn.close_reason());
+    assert!(
+        conn.stats().frame_rx.new_connection_id >= 7,
+        "server issued {} CIDs",
+        conn.stats().frame_rx.new_connection_id
+    );
+    conn.close(0u32.into(), b"done");
+    echo.abort();
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Opened {
+    ClientBidi,
+    ServerBidi,
+    ServerUni,
+}
+
+/// Bytes the server writes on one stream that the client never reads, within 1 s.
+async fn server_writes_unread(
+    lb: &loopback::Loopback,
+    transport: quinn::TransportConfig,
+    opened: Opened,
+) -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let written = Arc::new(AtomicU64::new(0));
+    let server_written = Arc::clone(&written);
+    let server = lb.server.clone();
+    let task = tokio::spawn(async move {
+        let conn = server.accept().await.unwrap().await.unwrap();
+        let mut send = match opened {
+            Opened::ClientBidi => {
+                let (send, mut recv) = conn.accept_bi().await.unwrap();
+                let mut hello = [0u8; 1];
+                recv.read_exact(&mut hello).await.unwrap();
+                send
+            },
+            Opened::ServerBidi => conn.open_bi().await.unwrap().0,
+            Opened::ServerUni => conn.open_uni().await.unwrap(),
+        };
+        let chunk = vec![0u8; 64 * 1024];
+        while send.write_all(&chunk).await.is_ok() {
+            server_written.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        }
+    });
+
+    let (_ep, conn) = lb.connect(quinn::EndpointConfig::default(), transport).await;
+    // Kept alive: dropping a RecvStream sends STOP_SENDING.
+    let _client_stream = match opened {
+        Opened::ClientBidi => {
+            let (mut send, recv) = conn.open_bi().await.unwrap();
+            send.write_all(b"h").await.unwrap();
+            Some((send, recv))
+        },
+        Opened::ServerBidi | Opened::ServerUni => None,
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let total = written.load(Ordering::Relaxed);
+    conn.close(0u32.into(), b"done");
+    task.abort();
+    total
+}
+
+/// Each new receive stream starts with the credit of its own class.
+#[tokio::test]
+async fn stream_credit_follows_stream_direction() {
+    const LOCAL: u32 = 256 << 10;
+    const REMOTE: u32 = 1 << 20;
+    const UNI: u32 = 2 << 20;
+    const SLACK: u64 = 64 << 10;
+
+    let lb = loopback::Loopback::new();
+    let transport = || {
+        let mut t = quinn::TransportConfig::default();
+        t.stream_receive_window(quinn::VarInt::from_u32(UNI));
+        t.receive_window(quinn::VarInt::from_u32(64 << 20));
+        super::super::vendored::set_advertised_stream_receive_windows(&mut t, LOCAL, REMOTE, UNI);
+        t
+    };
+    for (opened, window) in
+        [(Opened::ClientBidi, LOCAL), (Opened::ServerBidi, REMOTE), (Opened::ServerUni, UNI)]
+    {
+        let written = server_writes_unread(&lb, transport(), opened).await;
+        eprintln!("{opened:?}: {written} bytes");
+        let window = u64::from(window);
+        assert!(
+            written + SLACK >= window && written <= window + SLACK,
+            "{opened:?} wrote {written}, expected about {window}"
+        );
+    }
+}
+
+/// Per-direction windows reach the Initial as three different parameters.
+#[tokio::test]
+async fn per_direction_windows_are_advertised() {
+    let mut transport = quinn::TransportConfig::default();
+    super::super::vendored::set_advertised_stream_receive_windows(
+        &mut transport,
+        12_582_912,
+        1_048_576,
+        524_288,
+    );
+    let mut config = super::h3_quic_client_config();
+    config.transport_config(Arc::new(transport));
+    let ch = capture_clienthello(config, quinn::EndpointConfig::default(), [3; 32]);
+    let tp = transport_params_from_clienthello(&ch);
+    let int = |id| tp_value(&tp, id).map(varint_value);
+    assert_eq!(int(0x05), Some(12_582_912), "bidi_local");
+    assert_eq!(int(0x06), Some(1_048_576), "bidi_remote");
+    assert_eq!(int(0x07), Some(524_288), "uni");
 }

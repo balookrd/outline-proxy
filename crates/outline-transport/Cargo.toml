@@ -10,7 +10,7 @@ workspace = true
 default = []
 # Raw QUIC transport (no HTTP/3 framing). Required by `h3` since both share
 # the underlying quinn endpoint and TLS config builder.
-quic = ["dep:quinn", "dep:once_cell", "dep:ring"]
+quic = ["dep:quinn", "dep:quinn-proto", "dep:once_cell", "dep:ring"]
 h3 = ["quic", "dep:h3", "dep:h3-quinn", "sockudo-ws/http3"]
 metrics = ["outline-metrics/prometheus", "hyper/server"]
 # Exposes `install_test_tls_root` so cross-repo integration tests
@@ -50,6 +50,10 @@ outline-wire = { path = "../outline-wire" }
 parking_lot = "0.12"
 pin-project-lite = "0.2"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
+# Patched-API types (transport-parameter order, version_information) and
+# RandomConnectionIdGenerator, which quinn does not re-export. Same
+# aws-lc-rs-only features as quinn.
+quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"], optional = true }
 rand = "0.9"
 # SHA-256 / HKDF primitives for the QUIC-Initial decrypt diagnostic test
 # (`quic/tests/tls_config.rs`). Gated under `quic` so slim builds pull neither.

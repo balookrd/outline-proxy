@@ -38,34 +38,271 @@ index a59d7e3..c781d03 100644
  [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.getrandom]
  version = "0.3"
  features = ["wasm_js"]
+diff --git a/src/cid_queue.rs b/src/cid_queue.rs
+index 3e3eec9..f9ddbb0 100644
+--- a/src/cid_queue.rs
++++ b/src/cid_queue.rs
+@@ -11,23 +11,27 @@ type CidData = (ConnectionId, Option<ResetToken>);
+ #[derive(Debug)]
+ pub(crate) struct CidQueue {
+     /// Ring buffer indexed by `self.cursor`
+-    buffer: [Option<CidData>; Self::LEN],
++    buffer: [Option<CidData>; Self::CAPACITY],
+     /// Index at which circular buffer addressing is based
+     cursor: usize,
+     /// Sequence number of `self.buffer[cursor]`
+     ///
+     /// The sequence number of the active CID; must be the smallest among CIDs in `buffer`.
+     offset: u64,
++    /// Most CIDs the peer may have active at once: our advertised limit, capped by `CAPACITY`
++    limit: u64,
+ }
+ 
+ impl CidQueue {
+-    pub(crate) fn new(cid: ConnectionId) -> Self {
+-        let mut buffer = [None; Self::LEN];
++    pub(crate) fn new(cid: ConnectionId, limit: usize) -> Self {
++        debug_assert!((2..=Self::CAPACITY).contains(&limit));
++        let mut buffer = [None; Self::CAPACITY];
+         buffer[0] = Some((cid, None));
+         Self {
+             buffer,
+             cursor: 0,
+             offset: 0,
++            limit: limit as u64,
+         }
+     }
+ 
+@@ -46,17 +50,17 @@ impl CidQueue {
+         };
+ 
+         let retired_count = cid.retire_prior_to.saturating_sub(self.offset);
+-        if index >= Self::LEN as u64 + retired_count {
++        if index >= self.limit + retired_count {
+             return Err(InsertError::ExceedsLimit);
+         }
+ 
+         // Discard retired CIDs, if any
+-        for i in 0..(retired_count.min(Self::LEN as u64) as usize) {
+-            self.buffer[(self.cursor + i) % Self::LEN] = None;
++        for i in 0..(retired_count.min(Self::CAPACITY as u64) as usize) {
++            self.buffer[(self.cursor + i) % Self::CAPACITY] = None;
+         }
+ 
+         // Record the new CID
+-        let index = ((self.cursor as u64 + index) % Self::LEN as u64) as usize;
++        let index = ((self.cursor as u64 + index) % Self::CAPACITY as u64) as usize;
+         self.buffer[index] = Some((cid.id, Some(cid.reset_token)));
+ 
+         if retired_count == 0 {
+@@ -66,22 +70,22 @@ impl CidQueue {
+         // The active CID was retired. Find the first known CID with sequence number of at least
+         // retire_prior_to, and inform the caller that all prior CIDs have been retired, and of
+         // the new CID's reset token.
+-        self.cursor = ((self.cursor as u64 + retired_count) % Self::LEN as u64) as usize;
++        self.cursor = ((self.cursor as u64 + retired_count) % Self::CAPACITY as u64) as usize;
+         let (i, (_, token)) = self
+             .iter()
+             .next()
+             .expect("it is impossible to retire a CID without supplying a new one");
+-        self.cursor = (self.cursor + i) % Self::LEN;
++        self.cursor = (self.cursor + i) % Self::CAPACITY;
+         let orig_offset = self.offset;
+         self.offset = cid.retire_prior_to + i as u64;
+         // We don't immediately retire CIDs in the range (orig_offset +
+-        // Self::LEN)..self.offset. These are CIDs that we haven't yet received from a
++        // self.limit)..self.offset. These are CIDs that we haven't yet received from a
+         // NEW_CONNECTION_ID frame, since having previously received them would violate the
+-        // connection ID limit we specified based on Self::LEN. If we do receive a such a frame
++        // connection ID limit we specified based on self.limit. If we do receive a such a frame
+         // in the future, e.g. due to reordering, we'll retire it then. This ensures we can't be
+         // made to buffer an arbitrarily large number of RETIRE_CONNECTION_ID frames.
+         Ok(Some((
+-            orig_offset..self.offset.min(orig_offset + Self::LEN as u64),
++            orig_offset..self.offset.min(orig_offset + self.limit),
+             token.expect("non-initial CID missing reset token"),
+         )))
+     }
+@@ -94,14 +98,14 @@ impl CidQueue {
+ 
+         let orig_offset = self.offset;
+         self.offset += i as u64;
+-        self.cursor = (self.cursor + i) % Self::LEN;
++        self.cursor = (self.cursor + i) % Self::CAPACITY;
+         Some((cid_data.1.unwrap(), orig_offset..self.offset))
+     }
+ 
+     /// Iterate CIDs in CidQueue that are not `None`, including the active CID
+     fn iter(&self) -> impl Iterator<Item = (usize, CidData)> + '_ {
+-        (0..Self::LEN).filter_map(move |step| {
+-            let index = (self.cursor + step) % Self::LEN;
++        (0..Self::CAPACITY).filter_map(move |step| {
++            let index = (self.cursor + step) % Self::CAPACITY;
+             self.buffer[index].map(|cid_data| (step, cid_data))
+         })
+     }
+@@ -122,7 +126,10 @@ impl CidQueue {
+         self.offset
+     }
+ 
++    /// Default `active_connection_id_limit` (upstream's queue length).
+     pub(crate) const LEN: usize = 5;
++    /// Ring-buffer capacity: the most CIDs our own server ever issues (`LOC_CID_COUNT`).
++    pub(crate) const CAPACITY: usize = 8;
+ }
+ 
+ #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+@@ -152,7 +159,7 @@ mod tests {
+ 
+     #[test]
+     fn next_dense() {
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+         assert!(q.next().is_none());
+         assert!(q.next().is_none());
+ 
+@@ -168,7 +175,7 @@ mod tests {
+     }
+     #[test]
+     fn next_sparse() {
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+         let seqs = (1..CidQueue::LEN as u64).filter(|x| x % 2 == 0);
+         for i in seqs.clone() {
+             q.insert(cid(i, 0)).unwrap();
+@@ -184,7 +191,7 @@ mod tests {
+ 
+     #[test]
+     fn wrap() {
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+ 
+         for i in 1..CidQueue::LEN as u64 {
+             q.insert(cid(i, 0)).unwrap();
+@@ -204,7 +211,7 @@ mod tests {
+ 
+     #[test]
+     fn retire_dense() {
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+ 
+         for i in 1..CidQueue::LEN as u64 {
+             q.insert(cid(i, 0)).unwrap();
+@@ -227,7 +234,7 @@ mod tests {
+     #[test]
+     fn retire_sparse() {
+         // Retiring CID 0 when CID 1 is not known should retire CID 1 as we move to CID 2
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+         q.insert(cid(2, 0)).unwrap();
+         assert_eq!(q.insert(cid(3, 1)).unwrap().unwrap().0, 0..2,);
+         assert_eq!(q.active_seq(), 2);
+@@ -235,7 +242,7 @@ mod tests {
+ 
+     #[test]
+     fn retire_many() {
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+         q.insert(cid(2, 0)).unwrap();
+         assert_eq!(
+             q.insert(cid(1_000_000, 1_000_000)).unwrap().unwrap().0,
+@@ -246,7 +253,7 @@ mod tests {
+ 
+     #[test]
+     fn insert_limit() {
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+         assert_eq!(q.insert(cid(CidQueue::LEN as u64 - 1, 0)), Ok(None));
+         assert_eq!(
+             q.insert(cid(CidQueue::LEN as u64, 0)),
+@@ -256,14 +263,14 @@ mod tests {
+ 
+     #[test]
+     fn insert_duplicate() {
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+         q.insert(cid(0, 0)).unwrap();
+         q.insert(cid(0, 0)).unwrap();
+     }
+ 
+     #[test]
+     fn insert_retired() {
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+         assert_eq!(
+             q.insert(cid(0, 0)),
+             Ok(None),
+@@ -281,7 +288,7 @@ mod tests {
+ 
+     #[test]
+     fn retire_then_insert_next() {
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+         for i in 1..CidQueue::LEN as u64 {
+             q.insert(cid(i, 0)).unwrap();
+         }
+@@ -295,7 +302,7 @@ mod tests {
+ 
+     #[test]
+     fn always_valid() {
+-        let mut q = CidQueue::new(initial_cid());
++        let mut q = CidQueue::new(initial_cid(), CidQueue::LEN);
+         assert!(q.next().is_none());
+         assert_eq!(q.active(), initial_cid());
+         assert_eq!(q.active_seq(), 0);
+diff --git a/src/config/mod.rs b/src/config/mod.rs
+index aa755b5..dfc8897 100644
+--- a/src/config/mod.rs
++++ b/src/config/mod.rs
+@@ -28,7 +28,10 @@ use crate::{
+ mod transport;
+ #[cfg(feature = "qlog")]
+ pub use transport::QlogConfig;
+-pub use transport::{AckFrequencyConfig, IdleTimeout, MtuDiscoveryConfig, TransportConfig};
++pub use transport::{
++    AckFrequencyConfig, IdleTimeout, MtuDiscoveryConfig, StreamReceiveWindows, TransportConfig,
++    TransportParameterOrder, VersionInformation, VersionSlot,
++};
+ 
+ /// Global configuration for the endpoint, affecting all connections
+ ///
 diff --git a/src/config/transport.rs b/src/config/transport.rs
-index 0198e45..d0fd7cb 100644
+index 0198e45..532e61e 100644
 --- a/src/config/transport.rs
 +++ b/src/config/transport.rs
-@@ -10,6 +10,7 @@ use crate::QlogStream;
+@@ -8,8 +8,11 @@ use qlog::streamer::QlogStreamer;
+ #[cfg(feature = "qlog")]
+ use crate::QlogStream;
  use crate::{
-     Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
+-    Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded, congestion,
++    Duration, INITIAL_MTU, MAX_UDP_PAYLOAD, VarInt, VarIntBoundsExceeded,
++    cid_queue::CidQueue,
++    congestion,
      connection::qlog::QlogSink,
 +    transport_parameters::{ExtraTransportParameter, TransportParameterId},
  };
  
  /// Parameters governing the core QUIC state machine
-@@ -29,6 +30,14 @@ pub struct TransportConfig {
+@@ -29,6 +32,18 @@ pub struct TransportConfig {
      pub(crate) max_concurrent_uni_streams: VarInt,
      pub(crate) max_idle_timeout: Option<VarInt>,
      pub(crate) stream_receive_window: VarInt,
 +    pub(crate) initial_stream_receive_window: Option<VarInt>,
++    pub(crate) initial_stream_receive_windows: Option<StreamReceiveWindows>,
 +    pub(crate) advertise_min_ack_delay: bool,
 +    pub(crate) send_grease_transport_parameter: bool,
 +    pub(crate) advertise_max_idle_timeout: bool,
 +    pub(crate) advertise_max_udp_payload_size: bool,
 +    pub(crate) advertised_max_datagram_frame_size: Option<VarInt>,
-+    pub(crate) send_version_information: bool,
++    pub(crate) version_information: Option<VersionInformation>,
 +    pub(crate) extra_transport_parameters: Vec<(VarInt, Vec<u8>)>,
++    pub(crate) transport_parameter_order: TransportParameterOrder,
++    pub(crate) advertised_active_connection_id_limit: Option<VarInt>,
++    pub(crate) max_ack_delay: VarInt,
      pub(crate) receive_window: VarInt,
      pub(crate) send_window: u64,
      pub(crate) send_fairness: bool,
-@@ -116,6 +125,111 @@ impl TransportConfig {
+@@ -116,6 +131,189 @@ impl TransportConfig {
          self
      }
  
@@ -76,8 +313,23 @@ index 0198e45..d0fd7cb 100644
 +    /// of locally opened bidirectional streams); the first time the application polls a stream
 +    /// for data, even before any bytes are read, the credit is extended to
 +    /// `stream_receive_window`. `None` (the default) advertises `stream_receive_window`.
++    ///
++    /// Applies unless `initial_stream_receive_windows` is set, which takes precedence.
 +    pub fn initial_stream_receive_window(&mut self, value: Option<VarInt>) -> &mut Self {
 +        self.initial_stream_receive_window = value;
++        self
++    }
++
++    /// Per-direction stream receive windows advertised in the transport parameters; each new
++    /// receive stream starts with the credit of its class until the application first polls
++    /// it (then it is widened to `stream_receive_window`, as with
++    /// `initial_stream_receive_window`). Takes precedence over
++    /// `initial_stream_receive_window`. Defaults to `None`.
++    pub fn initial_stream_receive_windows(
++        &mut self,
++        value: Option<StreamReceiveWindows>,
++    ) -> &mut Self {
++        self.initial_stream_receive_windows = value;
 +        self
 +    }
 +
@@ -122,16 +374,77 @@ index 0198e45..d0fd7cb 100644
 +        self
 +    }
 +
-+    /// Whether to send `version_information` (RFC 9368) with QUIC v1 as the chosen version
-+    /// and `other_versions` = a random permutation of {v1, a GREASE version}, regenerated per
-+    /// connection. Defaults to `false`.
++    /// `version_information` (RFC 9368) with QUIC v1 as the chosen version and
++    /// `other_versions` shaped by `value`. Defaults to `None` (not sent).
 +    ///
 +    /// Client-only: the chosen version is always QUIC v1 (the only version the client uses).
 +    /// Enabling it on a server, or on a connection using another version, produces an invalid
 +    /// parameter.
-+    pub fn send_version_information(&mut self, value: bool) -> &mut Self {
-+        self.send_version_information = value;
++    ///
++    /// # Panics
++    ///
++    /// If `other_versions` is empty or has more than 3 entries.
++    pub fn version_information(&mut self, value: Option<VersionInformation>) -> &mut Self {
++        if let Some(vi) = &value {
++            assert!(
++                (1..=3).contains(&vi.other_versions.len()),
++                "version_information takes 1 to 3 other versions"
++            );
++        }
++        self.version_information = value;
 +        self
++    }
++
++    /// Order of the client's transport parameters. Defaults to
++    /// [`TransportParameterOrder::Shuffled`].
++    ///
++    /// # Panics
++    ///
++    /// If a `Fixed`/`Rotated` list repeats an id.
++    pub fn transport_parameter_order(&mut self, value: TransportParameterOrder) -> &mut Self {
++        if let TransportParameterOrder::Fixed(ids) | TransportParameterOrder::Rotated(ids) = &value
++        {
++            for (i, id) in ids.iter().enumerate() {
++                assert!(!ids[..i].contains(id), "transport parameter id {id} listed twice");
++            }
++        }
++        self.transport_parameter_order = value;
++        self
++    }
++
++    /// `active_connection_id_limit` to advertise, also sent with zero-length local CIDs.
++    /// The remote CID queue holds at most 8 entries whatever is advertised, so a peer that
++    /// issues more than 8 active CIDs gets `CONNECTION_ID_LIMIT_ERROR`. `None` (the default)
++    /// advertises 5, or nothing with zero-length local CIDs, as upstream does.
++    ///
++    /// # Panics
++    ///
++    /// If the value is below 2 (RFC 9000 §18.2).
++    pub fn advertised_active_connection_id_limit(&mut self, value: Option<VarInt>) -> &mut Self {
++        if let Some(limit) = value {
++            assert!(limit.into_inner() >= 2, "active_connection_id_limit must be at least 2");
++        }
++        self.advertised_active_connection_id_limit = value;
++        self
++    }
++
++    /// `max_ack_delay` in milliseconds: advertised to the peer (when not 25, the protocol
++    /// default) and used as the local delayed-ACK timer, so the peer's PTO matches how long
++    /// we really hold ACKs. Defaults to 25.
++    ///
++    /// # Panics
++    ///
++    /// If the value is 2^14 or more (RFC 9000 §18.2).
++    pub fn max_ack_delay_ms(&mut self, value: u32) -> &mut Self {
++        assert!(value < 1 << 14, "max_ack_delay must be below 2^14 ms");
++        self.max_ack_delay = VarInt::from_u32(value);
++        self
++    }
++
++    pub(crate) fn remote_cid_queue_limit(&self) -> usize {
++        self.advertised_active_connection_id_limit.map_or(CidQueue::LEN, |limit| {
++            usize::try_from(limit.into_inner()).unwrap_or(usize::MAX).min(CidQueue::CAPACITY)
++        })
 +    }
 +
 +    /// Additional transport parameters written verbatim at random positions among the others.
@@ -141,8 +454,7 @@ index 0198e45..d0fd7cb 100644
 +    ///
 +    /// If more than 2 parameters are given (one of the 3 slots is reserved for
 +    /// `version_information`), a value exceeds 16 bytes, or an id collides with a parameter
-+    /// quinn writes itself, with `version_information` (0x11), or with the reserved GREASE form
-+    /// `31 * N + 27`.
++    /// quinn writes itself or with `version_information` (0x11).
 +    pub fn extra_transport_parameters(&mut self, value: Vec<(VarInt, Vec<u8>)>) -> &mut Self {
 +        assert!(
 +            value.len() < ExtraTransportParameter::MAX_COUNT,
@@ -161,10 +473,6 @@ index 0198e45..d0fd7cb 100644
 +                "extra transport parameter id {id:#x} collides with a parameter quinn writes"
 +            );
 +            assert!(id != 0x11, "extra transport parameter id 0x11 is version_information");
-+            assert!(
-+                id % 31 != 27,
-+                "extra transport parameter id {id:#x} has the reserved GREASE form 31 * N + 27"
-+            );
 +        }
 +        self.extra_transport_parameters = value;
 +        self
@@ -174,81 +482,192 @@ index 0198e45..d0fd7cb 100644
 +        self.initial_stream_receive_window.unwrap_or(self.stream_receive_window)
 +    }
 +
++    pub(crate) fn advertised_stream_receive_windows(&self) -> StreamReceiveWindows {
++        self.initial_stream_receive_windows.unwrap_or_else(|| {
++            let window = self.advertised_stream_receive_window();
++            StreamReceiveWindows { bidi_local: window, bidi_remote: window, uni: window }
++        })
++    }
++
      /// Maximum number of bytes the peer may transmit across all streams of a connection before
      /// becoming blocked.
      ///
-@@ -364,6 +478,14 @@ impl Default for TransportConfig {
+@@ -350,6 +548,53 @@ impl TransportConfig {
+     }
+ }
+ 
++/// Order in which the client writes its transport parameters.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++pub enum TransportParameterOrder {
++    /// A random permutation per connection (upstream behaviour).
++    #[default]
++    Shuffled,
++    /// Listed ids in this order; parameters quinn writes that are not listed follow in
++    /// upstream order, unlisted extra parameters come last.
++    Fixed(Vec<VarInt>),
++    /// As `Fixed`, but the listed ids quinn writes itself are rotated to a random start
++    /// per connection; listed extra parameters follow them in list order.
++    ///
++    /// The rotation is drawn over the listed ids quinn knows, including ones that end up
++    /// not written (e.g. `max_ack_delay` at its default, `active_connection_id_limit` when
++    /// unsent), so list only parameters that are actually sent to keep the start uniform.
++    Rotated(Vec<VarInt>),
++}
++
++/// One entry of `version_information`'s `other_versions`.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum VersionSlot {
++    /// A fixed version.
++    Version(u32),
++    /// A reserved version (RFC 9368 §7: `0x?a?a?a?a`), drawn per connection.
++    Grease,
++}
++
++/// Shape of the `version_information` transport parameter (RFC 9368).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct VersionInformation {
++    /// `other_versions`, 1 to 3 entries.
++    pub other_versions: Vec<VersionSlot>,
++    /// Permute `other_versions` per connection.
++    pub shuffle: bool,
++}
++
++/// Per-direction `initial_max_stream_data_*` (RFC 9000 §18.2).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct StreamReceiveWindows {
++    /// Receive credit on bidirectional streams we open (0x05).
++    pub bidi_local: VarInt,
++    /// Receive credit on bidirectional streams the peer opens (0x06).
++    pub bidi_remote: VarInt,
++    /// Receive credit on unidirectional streams the peer opens (0x07).
++    pub uni: VarInt,
++}
++
+ impl Default for TransportConfig {
+     fn default() -> Self {
+         const EXPECTED_RTT: u32 = 100; // ms
+@@ -364,6 +609,18 @@ impl Default for TransportConfig {
              // 30 second default recommended by RFC 9308 § 3.2
              max_idle_timeout: Some(VarInt(30_000)),
              stream_receive_window: STREAM_RWND.into(),
 +            initial_stream_receive_window: None,
++            initial_stream_receive_windows: None,
 +            advertise_min_ack_delay: true,
 +            send_grease_transport_parameter: true,
 +            advertise_max_idle_timeout: true,
 +            advertise_max_udp_payload_size: true,
 +            advertised_max_datagram_frame_size: None,
-+            send_version_information: false,
++            version_information: None,
 +            extra_transport_parameters: Vec::new(),
++            transport_parameter_order: TransportParameterOrder::Shuffled,
++            advertised_active_connection_id_limit: None,
++            max_ack_delay: VarInt(25),
              receive_window: VarInt::MAX,
              send_window: (8 * STREAM_RWND).into(),
              send_fairness: true,
-@@ -402,6 +524,14 @@ impl fmt::Debug for TransportConfig {
+@@ -402,6 +659,18 @@ impl fmt::Debug for TransportConfig {
              max_concurrent_uni_streams,
              max_idle_timeout,
              stream_receive_window,
 +            initial_stream_receive_window,
++            initial_stream_receive_windows,
 +            advertise_min_ack_delay,
 +            send_grease_transport_parameter,
 +            advertise_max_idle_timeout,
 +            advertise_max_udp_payload_size,
 +            advertised_max_datagram_frame_size,
-+            send_version_information,
++            version_information,
 +            extra_transport_parameters,
++            transport_parameter_order,
++            advertised_active_connection_id_limit,
++            max_ack_delay,
              receive_window,
              send_window,
              send_fairness,
-@@ -431,6 +561,14 @@ impl fmt::Debug for TransportConfig {
+@@ -431,6 +700,21 @@ impl fmt::Debug for TransportConfig {
              .field("max_concurrent_uni_streams", max_concurrent_uni_streams)
              .field("max_idle_timeout", max_idle_timeout)
              .field("stream_receive_window", stream_receive_window)
 +            .field("initial_stream_receive_window", initial_stream_receive_window)
++            .field("initial_stream_receive_windows", initial_stream_receive_windows)
 +            .field("advertise_min_ack_delay", advertise_min_ack_delay)
 +            .field("send_grease_transport_parameter", send_grease_transport_parameter)
 +            .field("advertise_max_idle_timeout", advertise_max_idle_timeout)
 +            .field("advertise_max_udp_payload_size", advertise_max_udp_payload_size)
 +            .field("advertised_max_datagram_frame_size", advertised_max_datagram_frame_size)
-+            .field("send_version_information", send_version_information)
++            .field("version_information", version_information)
 +            .field("extra_transport_parameters", extra_transport_parameters)
++            .field("transport_parameter_order", transport_parameter_order)
++            .field(
++                "advertised_active_connection_id_limit",
++                advertised_active_connection_id_limit,
++            )
++            .field("max_ack_delay", max_ack_delay)
              .field("receive_window", receive_window)
              .field("send_window", send_window)
              .field("send_fairness", send_fairness)
 diff --git a/src/connection/mod.rs b/src/connection/mod.rs
-index 3cd1a2e..f53cfb4 100644
+index 3cd1a2e..3395291 100644
 --- a/src/connection/mod.rs
 +++ b/src/connection/mod.rs
-@@ -348,6 +348,7 @@ impl Connection {
+@@ -271,6 +271,7 @@ impl Connection {
+             client_hello: None,
+         });
+         let mut rng = StdRng::from_seed(rng_seed);
++        let rem_cid_limit = config.remote_cid_queue_limit();
+         let mut this = Self {
+             endpoint_config,
+             crypto,
+@@ -331,9 +332,13 @@ impl Connection {
+             path_responses: PathResponses::default(),
+             close: false,
+ 
+-            ack_frequency: AckFrequencyState::new(get_max_ack_delay(
+-                &TransportParameters::default(),
+-            )),
++            ack_frequency: {
++                let mut state =
++                    AckFrequencyState::new(get_max_ack_delay(&TransportParameters::default()));
++                // Hold ACKs no longer than the max_ack_delay we advertise.
++                state.max_ack_delay = Duration::from_millis(config.max_ack_delay.into_inner());
++                state
++            },
+ 
+             pto_count: 0,
+ 
+@@ -348,10 +353,11 @@ impl Connection {
                  config.send_window,
                  config.receive_window,
                  config.stream_receive_window,
-+                config.advertised_stream_receive_window(),
++                config.advertised_stream_receive_windows(),
              ),
              datagrams: DatagramState::default(),
              config,
+-            rem_cids: CidQueue::new(rem_cid),
++            rem_cids: CidQueue::new(rem_cid, rem_cid_limit),
+             rng,
+             stats: ConnectionStats::default(),
+             version,
 diff --git a/src/connection/streams/mod.rs b/src/connection/streams/mod.rs
-index 3e769c7..f5e7c68 100644
+index 3e769c7..8ac0530 100644
 --- a/src/connection/streams/mod.rs
 +++ b/src/connection/streams/mod.rs
-@@ -138,7 +138,7 @@ impl RecvStream<'_> {
+@@ -134,11 +134,12 @@ impl RecvStream<'_> {
+     /// Discards unread data and notifies the peer to stop transmitting. Once stopped, further
+     /// attempts to operate on a stream will yield `ClosedStream` errors.
+     pub fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
++        let window = self.state.initial_recv_window(self.id);
+         let mut entry = match self.state.recv.entry(self.id) {
              hash_map::Entry::Occupied(s) => s,
              hash_map::Entry::Vacant(_) => return Err(ClosedStream { _private: () }),
          };
 -        let stream = get_or_insert_recv(self.state.stream_receive_window)(entry.get_mut());
-+        let stream = get_or_insert_recv(self.state.initial_stream_receive_window)(entry.get_mut());
++        let stream = get_or_insert_recv(window)(entry.get_mut());
  
          let (read_credits, stop_sending) = stream.stop()?;
          if stop_sending.should_transmit() {
 diff --git a/src/connection/streams/recv.rs b/src/connection/streams/recv.rs
-index 5361a22..f028ade 100644
+index 5361a22..b8393f3 100644
 --- a/src/connection/streams/recv.rs
 +++ b/src/connection/streams/recv.rs
 @@ -119,7 +119,7 @@ impl Recv {
@@ -260,93 +679,209 @@ index 5361a22..f028ade 100644
          let transmit = self.can_send_flow_control() && diff >= (stream_receive_window / 8);
          (max_stream_data, ShouldTransmit(transmit))
      }
-@@ -266,7 +266,7 @@ impl<'a> Chunks<'a> {
+@@ -260,16 +260,16 @@ impl<'a> Chunks<'a> {
+         streams: &'a mut StreamsState,
+         pending: &'a mut Retransmits,
+     ) -> Result<Self, ReadableError> {
++        let window = streams.initial_recv_window(id);
+         let mut entry = match streams.recv.entry(id) {
+             Entry::Occupied(entry) => entry,
+             Entry::Vacant(_) => return Err(ReadableError::ClosedStream),
          };
  
-         let mut recv =
+-        let mut recv =
 -            match get_or_insert_recv(streams.stream_receive_window)(entry.get_mut()).stopped {
-+            match get_or_insert_recv(streams.initial_stream_receive_window)(entry.get_mut()).stopped {
-                 true => return Err(ReadableError::ClosedStream),
-                 false => entry.remove().unwrap().into_inner(), // this can't fail due to the previous get_or_insert_with
-             };
+-                true => return Err(ReadableError::ClosedStream),
+-                false => entry.remove().unwrap().into_inner(), // this can't fail due to the previous get_or_insert_with
+-            };
++        let mut recv = match get_or_insert_recv(window)(entry.get_mut()).stopped {
++            true => return Err(ReadableError::ClosedStream),
++            false => entry.remove().unwrap().into_inner(), // this can't fail due to the previous get_or_insert_with
++        };
+ 
+         recv.assembler.ensure_ordering(ordered)?;
+         Ok(Self {
 diff --git a/src/connection/streams/state.rs b/src/connection/streams/state.rs
-index 619ff34..f3b877f 100644
+index 619ff34..14ab3eb 100644
 --- a/src/connection/streams/state.rs
 +++ b/src/connection/streams/state.rs
-@@ -129,6 +129,9 @@ pub struct StreamsState {
+@@ -13,7 +13,7 @@ use super::{
+     StreamHalf, ThinRetransmits,
+ };
+ use crate::{
+-    Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
++    Dir, MAX_STREAM_COUNT, Side, StreamId, StreamReceiveWindows, TransportError, VarInt,
+     coding::BufMutExt,
+     connection::stats::FrameStats,
+     frame::{self, FrameStruct, StreamMetaVec},
+@@ -71,7 +71,9 @@ pub struct StreamsState {
+     // Set of streams that are currently open, or could be immediately opened by the peer
+     pub(super) send: FxHashMap<StreamId, Option<Box<Send>>>,
+     pub(super) recv: FxHashMap<StreamId, Option<StreamRecv>>,
+-    pub(super) free_recv: Vec<StreamRecv>,
++    /// Freed `Recv`s for reuse, per receive class (see `recv_class`): a `Recv` is
++    /// reinitialised with the credit of its class, so it is only reused within that class.
++    pub(super) free_recv: [Vec<StreamRecv>; 3],
+     pub(super) next: [u64; 2],
+     /// Maximum number of locally-initiated streams that may be opened over the lifetime of the
+     /// connection so far, per direction
+@@ -129,6 +131,10 @@ pub struct StreamsState {
      pub(super) send_window: u64,
      /// Configured upper bound for how much unacked data the peer can send us per stream
      pub(super) stream_receive_window: u64,
-+    /// Per-stream credit the peer was told about in the transport parameters; a new
-+    /// receive stream starts from it before the first read widens it.
-+    pub(super) initial_stream_receive_window: u64,
++    /// Per-stream credit the peer was told about in the transport parameters, per receive
++    /// class (see `recv_class`); a new receive stream starts from it before the first read
++    /// widens it.
++    pub(super) initial_stream_receive_windows: [u64; 3],
  
      // Pertinent state from the TransportParameters supplied by the peer
      initial_max_stream_data_uni: VarInt,
-@@ -148,6 +151,7 @@ impl StreamsState {
+@@ -148,12 +154,13 @@ impl StreamsState {
          send_window: u64,
          receive_window: VarInt,
          stream_receive_window: VarInt,
-+        initial_stream_receive_window: VarInt,
++        initial_stream_receive_windows: StreamReceiveWindows,
      ) -> Self {
          let mut this = Self {
              side,
-@@ -177,6 +181,7 @@ impl StreamsState {
+             send: FxHashMap::default(),
+             recv: FxHashMap::default(),
+-            free_recv: Vec::new(),
++            free_recv: Default::default(),
+             next: [0, 0],
+             max: [0, 0],
+             max_remote: [max_remote_bi.into(), max_remote_uni.into()],
+@@ -177,6 +184,11 @@ impl StreamsState {
              unacked_data: 0,
              send_window,
              stream_receive_window: stream_receive_window.into(),
-+            initial_stream_receive_window: initial_stream_receive_window.into(),
++            initial_stream_receive_windows: [
++                initial_stream_receive_windows.bidi_local.into(),
++                initial_stream_receive_windows.bidi_remote.into(),
++                initial_stream_receive_windows.uni.into(),
++            ],
              initial_max_stream_data_uni: 0u32.into(),
              initial_max_stream_data_bidi_local: 0u32.into(),
              initial_max_stream_data_bidi_remote: 0u32.into(),
-@@ -263,7 +268,7 @@ impl StreamsState {
-         let rs = match self
-             .recv
-             .get_mut(&id)
+@@ -260,11 +272,8 @@ impl StreamsState {
+             debug!("received illegal STREAM frame");
+         })?;
+ 
+-        let rs = match self
+-            .recv
+-            .get_mut(&id)
 -            .map(get_or_insert_recv(self.stream_receive_window))
-+            .map(get_or_insert_recv(self.initial_stream_receive_window))
-         {
+-        {
++        let window = self.initial_recv_window(id);
++        let rs = match self.recv.get_mut(&id).map(get_or_insert_recv(window)) {
              Some(rs) => rs,
              None => {
-@@ -316,7 +321,7 @@ impl StreamsState {
-         let rs = match self
-             .recv
-             .get_mut(&id)
+                 trace!("dropping frame for closed stream");
+@@ -313,11 +322,8 @@ impl StreamsState {
+             debug!("received illegal RESET_STREAM frame");
+         })?;
+ 
+-        let rs = match self
+-            .recv
+-            .get_mut(&id)
 -            .map(get_or_insert_recv(self.stream_receive_window))
-+            .map(get_or_insert_recv(self.initial_stream_receive_window))
-         {
+-        {
++        let window = self.initial_recv_window(id);
++        let rs = match self.recv.get_mut(&id).map(get_or_insert_recv(window)) {
              Some(stream) => stream,
              None => {
-@@ -943,7 +948,7 @@ impl StreamsState {
+                 trace!("received RESET_STREAM on closed stream");
+@@ -889,7 +895,7 @@ impl StreamsState {
+         }
+         // bidirectional OR (unidirectional AND remote)
+         if bi || remote {
+-            let recv = self.free_recv.pop();
++            let recv = self.free_recv[self.recv_class(id)].pop();
+             assert!(self.recv.insert(id, recv).is_none());
+         }
+     }
+@@ -943,10 +949,25 @@ impl StreamsState {
      }
  
      pub(super) fn stream_recv_freed(&mut self, id: StreamId, recv: StreamRecv) {
 -        self.free_recv.push(recv.free(self.stream_receive_window));
-+        self.free_recv.push(recv.free(self.initial_stream_receive_window));
++        let class = self.recv_class(id);
++        self.free_recv[class].push(recv.free(self.initial_stream_receive_windows[class]));
          self.stream_freed(id, StreamHalf::Recv);
      }
  
-@@ -998,6 +1003,7 @@ mod tests {
++    /// 0: bidi opened by us, 1: bidi opened by the peer, 2: uni (always the peer's here).
++    fn recv_class(&self, id: StreamId) -> usize {
++        match id.dir() {
++            Dir::Uni => 2,
++            Dir::Bi if id.initiator() == self.side => 0,
++            Dir::Bi => 1,
++        }
++    }
++
++    /// Credit a new receive stream starts with, by its direction.
++    pub(super) fn initial_recv_window(&self, id: StreamId) -> u64 {
++        self.initial_stream_receive_windows[self.recv_class(id)]
++    }
++
+     pub(super) fn max_send_data(&self, id: StreamId) -> VarInt {
+         let remote = self.side != id.initiator();
+         match id.dir() {
+@@ -998,6 +1019,11 @@ mod tests {
              1024 * 1024,
              (1024 * 1024u32).into(),
              (1024 * 1024u32).into(),
-+            (1024 * 1024u32).into(),
++            StreamReceiveWindows {
++                bidi_local: (1024 * 1024u32).into(),
++                bidi_remote: (1024 * 1024u32).into(),
++                uni: (1024 * 1024u32).into(),
++            },
          )
      }
  
-@@ -1010,6 +1016,7 @@ mod tests {
+@@ -1010,6 +1036,11 @@ mod tests {
              1024 * 1024,
              (1024 * 1024u32).into(),
              (1024 * 1024u32).into(),
-+            (1024 * 1024u32).into(),
++            StreamReceiveWindows {
++                bidi_local: (1024 * 1024u32).into(),
++                bidi_remote: (1024 * 1024u32).into(),
++                uni: (1024 * 1024u32).into(),
++            },
          );
          let id = StreamId::new(Side::Server, Dir::Uni, 0);
          let initial_max = client.local_max_data;
+diff --git a/src/lib.rs b/src/lib.rs
+index 5982b69..2fbaccd 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -60,7 +60,8 @@ mod config;
+ pub use config::QlogConfig;
+ pub use config::{
+     AckFrequencyConfig, ClientConfig, ConfigError, EndpointConfig, IdleTimeout, MtuDiscoveryConfig,
+-    ServerConfig, StdSystemTime, TimeSource, TransportConfig, ValidationTokenConfig,
++    ServerConfig, StdSystemTime, StreamReceiveWindows, TimeSource, TransportConfig,
++    TransportParameterOrder, ValidationTokenConfig, VersionInformation, VersionSlot,
+ };
+ 
+ pub mod crypto;
 diff --git a/src/transport_parameters.rs b/src/transport_parameters.rs
-index 67e48bd..e6638f0 100644
+index 67e48bd..677b1f7 100644
 --- a/src/transport_parameters.rs
 +++ b/src/transport_parameters.rs
-@@ -110,6 +110,9 @@ macro_rules! make_struct {
+@@ -21,7 +21,10 @@ use crate::{
+     cid_generator::ConnectionIdGenerator,
+     cid_queue::CidQueue,
+     coding::{BufExt, BufMutExt, UnexpectedEnd},
+-    config::{EndpointConfig, ServerConfig, TransportConfig},
++    config::{
++        EndpointConfig, ServerConfig, TransportConfig, TransportParameterOrder, VersionInformation,
++        VersionSlot,
++    },
+     shared::ConnectionId,
+ };
+ 
+@@ -110,6 +113,9 @@ macro_rules! make_struct {
              /// This field is initialized only for outgoing `TransportParameters` instances and
              /// is set to `None` for `TransportParameters` received from a peer.
              pub(crate) write_order: Option<[u8; TransportParameterId::SUPPORTED.len()]>,
@@ -356,7 +891,7 @@ index 67e48bd..e6638f0 100644
          }
  
          // We deliberately don't implement the `Default` trait, since that would be public, and
-@@ -133,6 +136,7 @@ macro_rules! make_struct {
+@@ -133,6 +139,7 @@ macro_rules! make_struct {
                      preferred_address: None,
                      grease_transport_parameter: None,
                      write_order: None,
@@ -364,11 +899,12 @@ index 67e48bd..e6638f0 100644
                  }
              }
          }
-@@ -150,16 +154,25 @@ impl TransportParameters {
+@@ -150,38 +157,165 @@ impl TransportParameters {
          server_config: Option<&ServerConfig>,
          rng: &mut impl RngCore,
      ) -> Self {
 -        Self {
++        let windows = config.advertised_stream_receive_windows();
 +        let mut params = Self {
              initial_src_cid: Some(initial_src_cid),
              initial_max_streams_bidi: config.max_concurrent_bidi_streams,
@@ -379,12 +915,21 @@ index 67e48bd..e6638f0 100644
 -            initial_max_stream_data_uni: config.stream_receive_window,
 -            max_udp_payload_size: endpoint_config.max_udp_payload_size,
 -            max_idle_timeout: config.max_idle_timeout.unwrap_or(VarInt(0)),
-+            initial_max_stream_data_bidi_local: config.advertised_stream_receive_window(),
-+            initial_max_stream_data_bidi_remote: config.advertised_stream_receive_window(),
-+            initial_max_stream_data_uni: config.advertised_stream_receive_window(),
+-            disable_active_migration: server_config.is_some_and(|c| !c.migration),
+-            active_connection_id_limit: if cid_gen.cid_len() == 0 {
+-                2 // i.e. default, i.e. unsent
++            initial_max_stream_data_bidi_local: windows.bidi_local,
++            initial_max_stream_data_bidi_remote: windows.bidi_remote,
++            initial_max_stream_data_uni: windows.uni,
 +            max_udp_payload_size: if config.advertise_max_udp_payload_size {
 +                endpoint_config.max_udp_payload_size
-+            } else {
+             } else {
+-                CidQueue::LEN as u32
+-            }
+-            .into(),
+-            max_datagram_frame_size: config
+-                .datagram_receive_buffer_size
+-                .map(|x| (x.min(u16::MAX.into()) as u16).into()),
 +                // The protocol default is never written, so the parameter is omitted.
 +                VarInt::from_u32(65527)
 +            },
@@ -393,16 +938,13 @@ index 67e48bd..e6638f0 100644
 +            } else {
 +                VarInt(0)
 +            },
-             disable_active_migration: server_config.is_some_and(|c| !c.migration),
-             active_connection_id_limit: if cid_gen.cid_len() == 0 {
-                 2 // i.e. default, i.e. unsent
-@@ -167,21 +180,53 @@ impl TransportParameters {
-                 CidQueue::LEN as u32
-             }
-             .into(),
--            max_datagram_frame_size: config
--                .datagram_receive_buffer_size
--                .map(|x| (x.min(u16::MAX.into()) as u16).into()),
++            disable_active_migration: server_config.is_some_and(|c| !c.migration),
++            active_connection_id_limit: match config.advertised_active_connection_id_limit {
++                Some(limit) => limit,
++                None if cid_gen.cid_len() == 0 => VarInt::from_u32(2), // i.e. default, i.e. unsent
++                None => VarInt::from_u32(CidQueue::LEN as u32),
++            },
++            max_ack_delay: config.max_ack_delay,
 +            max_datagram_frame_size: config.datagram_receive_buffer_size.map(|x| {
 +                config
 +                    .advertised_max_datagram_frame_size
@@ -421,7 +963,11 @@ index 67e48bd..e6638f0 100644
 +                .then(|| ReservedTransportParameter::random(rng)),
              write_order: Some({
                  let mut order = std::array::from_fn(|i| i as u8);
-                 order.shuffle(rng);
+-                order.shuffle(rng);
++                // Listed orders are laid out below; only the default draws from the rng here.
++                if config.transport_parameter_order == TransportParameterOrder::Shuffled {
++                    order.shuffle(rng);
++                }
                  order
              }),
              ..Self::default()
@@ -431,9 +977,18 @@ index 67e48bd..e6638f0 100644
 +        for (id, value) in &config.extra_transport_parameters {
 +            Self::push_extra(&mut params, &mut next, *id, value, rng);
 +        }
-+        if config.send_version_information {
-+            let value = version_information(rng);
++        if let Some(form) = &config.version_information {
++            let value = version_information(form, rng);
 +            Self::push_extra(&mut params, &mut next, VarInt::from_u32(0x11), &value, rng);
++        }
++        match &config.transport_parameter_order {
++            TransportParameterOrder::Shuffled => {}
++            TransportParameterOrder::Fixed(ids) => params.apply_listed_order(ids, None),
++            TransportParameterOrder::Rotated(ids) => {
++                let known = ids.iter().filter(|id| supported_index(**id).is_some()).count();
++                let shift = if known == 0 { 0 } else { rng.random_range(0..known) };
++                params.apply_listed_order(ids, Some(shift));
++            }
          }
 +        params
 +    }
@@ -454,10 +1009,83 @@ index 67e48bd..e6638f0 100644
 +            slot: rng.random_range(0..=TransportParameterId::SUPPORTED.len() as u8),
 +        });
 +        *next += 1;
++    }
++
++    /// Lays out `write_order` and the extras' slots so the parameters follow `ids`. The
++    /// listed ids quinn writes itself are rotated left by `rotate` when it is `Some` (the
++    /// rotated mode, even for a shift of 0): the listed extras then follow them in list
++    /// order. With `None` (fixed mode) the listed extras keep their listed place. Unlisted
++    /// parameters quinn writes follow in upstream order; unlisted extras keep the last slot.
++    fn apply_listed_order(&mut self, ids: &[VarInt], rotate: Option<usize>) {
++        #[derive(Clone, Copy, PartialEq, Eq)]
++        enum Entry {
++            Known(u8),
++            Extra(VarInt),
++        }
++        let listed: Vec<Entry> = ids
++            .iter()
++            .map(|id| match supported_index(*id) {
++                Some(i) => Entry::Known(i as u8),
++                None => Entry::Extra(*id),
++            })
++            .collect();
++        let mut sequence: Vec<Entry> = if let Some(shift) = rotate {
++            let mut known: Vec<Entry> = listed
++                .iter()
++                .copied()
++                .filter(|e| matches!(e, Entry::Known(_)))
++                .collect();
++            known.rotate_left(shift);
++            known.extend(
++                listed
++                    .iter()
++                    .copied()
++                    .filter(|e| matches!(e, Entry::Extra(_))),
++            );
++            known
++        } else {
++            listed
++        };
++        for i in 0..TransportParameterId::SUPPORTED.len() as u8 {
++            if !sequence.contains(&Entry::Known(i)) {
++                sequence.push(Entry::Known(i));
++            }
++        }
++
++        let mut order = [0u8; TransportParameterId::SUPPORTED.len()];
++        let mut written = 0;
++        for entry in &sequence {
++            match entry {
++                Entry::Known(i) => {
++                    order[written] = *i;
++                    written += 1;
++                }
++                Entry::Extra(id) => {
++                    for extra in self.extras.iter_mut().flatten().filter(|e| e.id == *id) {
++                        extra.slot = written as u8;
++                    }
++                }
++            }
++        }
++        for extra in self.extras.iter_mut().flatten() {
++            if !sequence.contains(&Entry::Extra(extra.id)) {
++                extra.slot = TransportParameterId::SUPPORTED.len() as u8;
++            }
++        }
++        // Extras sharing a slot are written in array order; sort them by listed position.
++        let rank = |id: VarInt| {
++            sequence
++                .iter()
++                .position(|e| *e == Entry::Extra(id))
++                .unwrap_or(usize::MAX)
++        };
++        self.extras
++            .sort_by_key(|extra| extra.map_or(usize::MAX, |e| rank(e.id)));
++        self.write_order = Some(order);
      }
  
      /// Check that these parameters are legal when resuming from
-@@ -213,6 +258,37 @@ impl TransportParameters {
+@@ -213,6 +347,53 @@ impl TransportParameters {
      }
  }
  
@@ -472,19 +1100,29 @@ index 67e48bd..e6638f0 100644
 +}
 +
 +impl ExtraTransportParameter {
-+    /// Longest value the client needs: `version_information` with two other versions.
++    /// Longest value the client needs: `version_information` with three other versions.
 +    pub(crate) const MAX_LEN: usize = 16;
 +    /// `version_information` plus up to two static parameters.
 +    pub(crate) const MAX_COUNT: usize = 3;
 +}
 +
-+/// `version_information` (RFC 9368 §3) offering QUIC v1 plus one reserved GREASE version
-+/// (RFC 9368 §7: `0x?a?a?a?a`), in random order.
-+fn version_information(rng: &mut impl RngCore) -> Vec<u8> {
++/// `version_information` (RFC 9368 §3): QUIC v1 as the chosen version, then
++/// `other_versions` as configured, GREASE slots drawn per connection
++/// (RFC 9368 §7: `0x?a?a?a?a`).
++fn version_information(form: &VersionInformation, rng: &mut impl RngCore) -> Vec<u8> {
 +    const V1: u32 = 0x0000_0001;
-+    let grease = (rng.next_u32() & 0xf0f0_f0f0) | 0x0a0a_0a0a;
-+    let others = if rng.random::<bool>() { [V1, grease] } else { [grease, V1] };
-+    let mut value = Vec::with_capacity(12);
++    let mut others: Vec<u32> = form
++        .other_versions
++        .iter()
++        .map(|slot| match slot {
++            VersionSlot::Version(v) => *v,
++            VersionSlot::Grease => (rng.next_u32() & 0xf0f0_f0f0) | 0x0a0a_0a0a,
++        })
++        .collect();
++    if form.shuffle {
++        others.shuffle(rng);
++    }
++    let mut value = Vec::with_capacity(4 + 4 * others.len());
 +    value.extend_from_slice(&V1.to_be_bytes());
 +    for v in others {
 +        value.extend_from_slice(&v.to_be_bytes());
@@ -492,10 +1130,16 @@ index 67e48bd..e6638f0 100644
 +    value
 +}
 +
++fn supported_index(id: VarInt) -> Option<usize> {
++    TransportParameterId::SUPPORTED
++        .iter()
++        .position(|known| *known as u64 == id.into_inner())
++}
++
  /// A server's preferred address
  ///
  /// This is communicated as a transport parameter during TLS session establishment.
-@@ -307,11 +383,14 @@ impl From<UnexpectedEnd> for Error {
+@@ -307,11 +488,14 @@ impl From<UnexpectedEnd> for Error {
  impl TransportParameters {
      /// Encode `TransportParameters` into buffer
      pub fn write<W: BufMut>(&self, w: &mut W) {
@@ -511,7 +1155,7 @@ index 67e48bd..e6638f0 100644
              let id = TransportParameterId::SUPPORTED[*idx as usize];
              match id {
                  TransportParameterId::ReservedTransportParameter => {
-@@ -401,6 +480,18 @@ impl TransportParameters {
+@@ -401,6 +585,18 @@ impl TransportParameters {
                  }
              }
          }
@@ -530,7 +1174,7 @@ index 67e48bd..e6638f0 100644
      }
  
      /// Decode `TransportParameters` from buffer
-@@ -642,7 +733,7 @@ pub(crate) enum TransportParameterId {
+@@ -642,7 +838,7 @@ pub(crate) enum TransportParameterId {
  
  impl TransportParameterId {
      /// Array with all supported transport parameter IDs

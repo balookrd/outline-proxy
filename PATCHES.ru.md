@@ -176,21 +176,34 @@ Baseline — crates.io `quinn-proto 0.11.15`. Логические измене�
    `advertise_min_ack_delay`, `send_grease_transport_parameter`,
    `advertise_max_idle_timeout` (локальный idle продолжает действовать),
    `advertise_max_udp_payload_size`, `advertised_max_datagram_frame_size`,
-   `send_version_information` (RFC 9368: v1 + GREASE-версия, перестановка на
-   соединение) и `extra_transport_parameters` (сырые `(id, value)`, вплетаются в
+   `version_information` (RFC 9368: выбранная версия v1, `other_versions` из
+   фиксированных версий и GREASE-слотов на соединение, при необходимости
+   переставленных) и `extra_transport_parameters` (сырые `(id, value)`, вплетаются в
    случайные позиции общего перемешанного порядка). Лимиты:
    `extra_transport_parameters` принимает не более 2 параметров (3-й из 3 слотов
-   занят под `version_information`, который добавляет `send_version_information`)
-   со значениями не длиннее 16 байт; иначе сеттер паникует. Сеттер также проверяет,
-   что id extra не совпадает ни с одним id, который пишет сам quinn
-   (`TransportParameterId::SUPPORTED`), ни с `version_information` (0x11), ни с
-   зарезервированной GREASE-формой `31*N+27`. `advertised_max_datagram_frame_size`
-   не должен превышать `datagram_receive_buffer_size`. `send_version_information` —
-   только для клиента (выбранная версия всегда QUIC v1). Дефолты повторяют upstream,
-   и с дефолтами rng расходуется в том же порядке, что и в upstream (extras и
-   `version_information` обращаются к нему только когда заданы), поэтому сервер,
-   не использующий эти опции, не затронут.
-3. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
+   занят под `version_information`) со значениями не длиннее 16 байт; иначе сеттер
+   паникует. Сеттер также проверяет, что id extra не совпадает ни с одним id, который
+   пишет сам quinn (`TransportParameterId::SUPPORTED`), ни с `version_information`
+   (0x11). `advertised_max_datagram_frame_size` не должен превышать
+   `datagram_receive_buffer_size`. `version_information` — только для клиента
+   (выбранная версия всегда QUIC v1). Дефолты повторяют upstream, и с дефолтами rng
+   расходуется в том же порядке, что и в upstream (extras и `version_information`
+   обращаются к нему только когда заданы), поэтому сервер, не использующий эти
+   опции, не затронут.
+3. **browser-order-and-firefox** (`src/config/transport.rs`,
+   `src/transport_parameters.rs`, `src/cid_queue.rs`, `src/connection/mod.rs`,
+   `src/connection/streams/{state,mod,recv}.rs`, `src/lib.rs`) — опции для
+   Safari- и Firefox-профилей:
+   `transport_parameter_order` (`Shuffled` / `Fixed` / `Rotated`; в `Rotated`
+   сдвигаются только штатные параметры), `initial_stream_receive_windows`
+   (начальный кредит по направлениям, по классу потока; пулы освобождённых `Recv`
+   тоже поделены по классам), `advertised_active_connection_id_limit` (кольцевой
+   буфер remote CID на 8 записей; проверка идёт по объявленному лимиту с потолком 8,
+   дефолт 5; больше 8 активных CID от пира завершает соединение
+   `CONNECTION_ID_LIMIT_ERROR`) и `max_ack_delay_ms` (объявляется и задаёт
+   локальный ACK-таймер). Все дефолты — upstream, rng в дефолтном режиме
+   расходуется как в upstream, сервер опции не использует.
+4. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
    дефолтным `ring` нарушил бы инвариант aws-lc-rs).
 
 Проверка соответствия: применить патч к чистой копии crates.io 0.11.15 и сравнить

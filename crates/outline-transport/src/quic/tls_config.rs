@@ -117,7 +117,7 @@ impl RuntimeWindows {
                 .get()
                 .copied()
                 .unwrap_or(DEFAULT_RUNTIME_STREAM_WINDOW)
-                .max(tp.stream_receive_window),
+                .max(tp.stream_receive_windows.largest()),
             connection: QUIC_RECEIVE_WINDOW
                 .get()
                 .copied()
@@ -142,7 +142,13 @@ pub(crate) fn build_h3_transport(
     // vendored quinn-proto patch.
     transport.receive_window(quinn::VarInt::from_u32(tp.receive_window));
     transport.stream_receive_window(quinn::VarInt::from_u32(runtime.stream));
-    super::vendored::set_advertised_stream_receive_window(&mut transport, tp.stream_receive_window);
+    let w = tp.stream_receive_windows;
+    super::vendored::set_advertised_stream_receive_windows(
+        &mut transport,
+        w.bidi_local,
+        w.bidi_remote,
+        w.uni,
+    );
     transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(tp.max_bidi_streams));
     transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(tp.max_uni_streams));
     apply_quic_carrier_tuning(&mut transport);
@@ -220,7 +226,7 @@ pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
 }
 
 /// Endpoint config for one H3 dial, matched to the active dial fingerprint
-/// like [`h3_quic_client_config`]: zero-length source CID and no
+/// like [`h3_quic_client_config`]: the browser's source CID length and no
 /// `grease_quic_bit`, as browsers send.
 pub(crate) fn h3_endpoint_config() -> quinn::EndpointConfig {
     let fp = crate::fingerprint_profile::current_dial_fingerprint();

@@ -21,7 +21,10 @@ use crate::{
     cid_generator::ConnectionIdGenerator,
     cid_queue::CidQueue,
     coding::{BufExt, BufMutExt, UnexpectedEnd},
-    config::{EndpointConfig, ServerConfig, TransportConfig},
+    config::{
+        EndpointConfig, ServerConfig, TransportConfig, TransportParameterOrder, VersionInformation,
+        VersionSlot,
+    },
     shared::ConnectionId,
 };
 
@@ -154,14 +157,15 @@ impl TransportParameters {
         server_config: Option<&ServerConfig>,
         rng: &mut impl RngCore,
     ) -> Self {
+        let windows = config.advertised_stream_receive_windows();
         let mut params = Self {
             initial_src_cid: Some(initial_src_cid),
             initial_max_streams_bidi: config.max_concurrent_bidi_streams,
             initial_max_streams_uni: config.max_concurrent_uni_streams,
             initial_max_data: config.receive_window,
-            initial_max_stream_data_bidi_local: config.advertised_stream_receive_window(),
-            initial_max_stream_data_bidi_remote: config.advertised_stream_receive_window(),
-            initial_max_stream_data_uni: config.advertised_stream_receive_window(),
+            initial_max_stream_data_bidi_local: windows.bidi_local,
+            initial_max_stream_data_bidi_remote: windows.bidi_remote,
+            initial_max_stream_data_uni: windows.uni,
             max_udp_payload_size: if config.advertise_max_udp_payload_size {
                 endpoint_config.max_udp_payload_size
             } else {
@@ -174,12 +178,12 @@ impl TransportParameters {
                 VarInt(0)
             },
             disable_active_migration: server_config.is_some_and(|c| !c.migration),
-            active_connection_id_limit: if cid_gen.cid_len() == 0 {
-                2 // i.e. default, i.e. unsent
-            } else {
-                CidQueue::LEN as u32
-            }
-            .into(),
+            active_connection_id_limit: match config.advertised_active_connection_id_limit {
+                Some(limit) => limit,
+                None if cid_gen.cid_len() == 0 => VarInt::from_u32(2), // i.e. default, i.e. unsent
+                None => VarInt::from_u32(CidQueue::LEN as u32),
+            },
+            max_ack_delay: config.max_ack_delay,
             max_datagram_frame_size: config.datagram_receive_buffer_size.map(|x| {
                 config
                     .advertised_max_datagram_frame_size
@@ -194,7 +198,10 @@ impl TransportParameters {
                 .then(|| ReservedTransportParameter::random(rng)),
             write_order: Some({
                 let mut order = std::array::from_fn(|i| i as u8);
-                order.shuffle(rng);
+                // Listed orders are laid out below; only the default draws from the rng here.
+                if config.transport_parameter_order == TransportParameterOrder::Shuffled {
+                    order.shuffle(rng);
+                }
                 order
             }),
             ..Self::default()
@@ -204,9 +211,18 @@ impl TransportParameters {
         for (id, value) in &config.extra_transport_parameters {
             Self::push_extra(&mut params, &mut next, *id, value, rng);
         }
-        if config.send_version_information {
-            let value = version_information(rng);
+        if let Some(form) = &config.version_information {
+            let value = version_information(form, rng);
             Self::push_extra(&mut params, &mut next, VarInt::from_u32(0x11), &value, rng);
+        }
+        match &config.transport_parameter_order {
+            TransportParameterOrder::Shuffled => {}
+            TransportParameterOrder::Fixed(ids) => params.apply_listed_order(ids, None),
+            TransportParameterOrder::Rotated(ids) => {
+                let known = ids.iter().filter(|id| supported_index(**id).is_some()).count();
+                let shift = if known == 0 { 0 } else { rng.random_range(0..known) };
+                params.apply_listed_order(ids, Some(shift));
+            }
         }
         params
     }
@@ -227,6 +243,79 @@ impl TransportParameters {
             slot: rng.random_range(0..=TransportParameterId::SUPPORTED.len() as u8),
         });
         *next += 1;
+    }
+
+    /// Lays out `write_order` and the extras' slots so the parameters follow `ids`. The
+    /// listed ids quinn writes itself are rotated left by `rotate` when it is `Some` (the
+    /// rotated mode, even for a shift of 0): the listed extras then follow them in list
+    /// order. With `None` (fixed mode) the listed extras keep their listed place. Unlisted
+    /// parameters quinn writes follow in upstream order; unlisted extras keep the last slot.
+    fn apply_listed_order(&mut self, ids: &[VarInt], rotate: Option<usize>) {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Entry {
+            Known(u8),
+            Extra(VarInt),
+        }
+        let listed: Vec<Entry> = ids
+            .iter()
+            .map(|id| match supported_index(*id) {
+                Some(i) => Entry::Known(i as u8),
+                None => Entry::Extra(*id),
+            })
+            .collect();
+        let mut sequence: Vec<Entry> = if let Some(shift) = rotate {
+            let mut known: Vec<Entry> = listed
+                .iter()
+                .copied()
+                .filter(|e| matches!(e, Entry::Known(_)))
+                .collect();
+            known.rotate_left(shift);
+            known.extend(
+                listed
+                    .iter()
+                    .copied()
+                    .filter(|e| matches!(e, Entry::Extra(_))),
+            );
+            known
+        } else {
+            listed
+        };
+        for i in 0..TransportParameterId::SUPPORTED.len() as u8 {
+            if !sequence.contains(&Entry::Known(i)) {
+                sequence.push(Entry::Known(i));
+            }
+        }
+
+        let mut order = [0u8; TransportParameterId::SUPPORTED.len()];
+        let mut written = 0;
+        for entry in &sequence {
+            match entry {
+                Entry::Known(i) => {
+                    order[written] = *i;
+                    written += 1;
+                }
+                Entry::Extra(id) => {
+                    for extra in self.extras.iter_mut().flatten().filter(|e| e.id == *id) {
+                        extra.slot = written as u8;
+                    }
+                }
+            }
+        }
+        for extra in self.extras.iter_mut().flatten() {
+            if !sequence.contains(&Entry::Extra(extra.id)) {
+                extra.slot = TransportParameterId::SUPPORTED.len() as u8;
+            }
+        }
+        // Extras sharing a slot are written in array order; sort them by listed position.
+        let rank = |id: VarInt| {
+            sequence
+                .iter()
+                .position(|e| *e == Entry::Extra(id))
+                .unwrap_or(usize::MAX)
+        };
+        self.extras
+            .sort_by_key(|extra| extra.map_or(usize::MAX, |e| rank(e.id)));
+        self.write_order = Some(order);
     }
 
     /// Check that these parameters are legal when resuming from
@@ -269,24 +358,40 @@ pub(crate) struct ExtraTransportParameter {
 }
 
 impl ExtraTransportParameter {
-    /// Longest value the client needs: `version_information` with two other versions.
+    /// Longest value the client needs: `version_information` with three other versions.
     pub(crate) const MAX_LEN: usize = 16;
     /// `version_information` plus up to two static parameters.
     pub(crate) const MAX_COUNT: usize = 3;
 }
 
-/// `version_information` (RFC 9368 §3) offering QUIC v1 plus one reserved GREASE version
-/// (RFC 9368 §7: `0x?a?a?a?a`), in random order.
-fn version_information(rng: &mut impl RngCore) -> Vec<u8> {
+/// `version_information` (RFC 9368 §3): QUIC v1 as the chosen version, then
+/// `other_versions` as configured, GREASE slots drawn per connection
+/// (RFC 9368 §7: `0x?a?a?a?a`).
+fn version_information(form: &VersionInformation, rng: &mut impl RngCore) -> Vec<u8> {
     const V1: u32 = 0x0000_0001;
-    let grease = (rng.next_u32() & 0xf0f0_f0f0) | 0x0a0a_0a0a;
-    let others = if rng.random::<bool>() { [V1, grease] } else { [grease, V1] };
-    let mut value = Vec::with_capacity(12);
+    let mut others: Vec<u32> = form
+        .other_versions
+        .iter()
+        .map(|slot| match slot {
+            VersionSlot::Version(v) => *v,
+            VersionSlot::Grease => (rng.next_u32() & 0xf0f0_f0f0) | 0x0a0a_0a0a,
+        })
+        .collect();
+    if form.shuffle {
+        others.shuffle(rng);
+    }
+    let mut value = Vec::with_capacity(4 + 4 * others.len());
     value.extend_from_slice(&V1.to_be_bytes());
     for v in others {
         value.extend_from_slice(&v.to_be_bytes());
     }
     value
+}
+
+fn supported_index(id: VarInt) -> Option<usize> {
+    TransportParameterId::SUPPORTED
+        .iter()
+        .position(|known| *known as u64 == id.into_inner())
 }
 
 /// A server's preferred address
