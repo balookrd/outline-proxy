@@ -36,6 +36,9 @@ impl<'a> ServerCertDetails<'a> {
     }
 }
 
+/// ALPS `application_settings`, new codepoint (client-hello-shape patch).
+pub(super) const ALPS_EXTENSION: u16 = 0x44cd;
+
 pub(super) struct ClientHelloDetails {
     pub(super) alpn_protocols: Vec<ProtocolName>,
     pub(super) sent_extensions: Vec<ExtensionType>,
@@ -44,6 +47,9 @@ pub(super) struct ClientHelloDetails {
     /// GREASE values of a shaped ClientHello, kept for a HelloRetryRequest
     /// (client-hello-shape patch).
     pub(super) grease: Option<GreaseValues>,
+    /// ALPN protocols listed in the ClientHello's ALPS extension, when it came
+    /// from `ClientHelloShape::alps` (client-hello-shape patch).
+    pub(super) alps_protocols: Vec<ProtocolName>,
 }
 
 impl ClientHelloDetails {
@@ -54,6 +60,7 @@ impl ClientHelloDetails {
             extension_order_seed,
             offered_cert_compression: false,
             grease: None,
+            alps_protocols: Vec::new(),
         }
     }
 
@@ -132,13 +139,14 @@ pub(super) struct GreaseValues {
     pub(super) version: u16,
     pub(super) first_extension: u16,
     pub(super) last_extension: u16,
+    pub(super) signature_algorithm: u16,
 }
 
 impl GreaseValues {
     /// Draws the values BoringSSL-style: `0x?A?A` from one random byte each,
     /// the two extension values forced apart.
     pub(super) fn new(secure_random: &dyn SecureRandom) -> Result<Self, GetRandomFailed> {
-        let mut seed = [0u8; 5];
+        let mut seed = [0u8; 6];
         secure_random.fill(&mut seed)?;
         let grease = |b: u8| {
             let v = u16::from((b & 0xf0) | 0x0a);
@@ -155,6 +163,7 @@ impl GreaseValues {
             version: grease(seed[2]),
             first_extension,
             last_extension,
+            signature_algorithm: grease(seed[5]),
         })
     }
 }

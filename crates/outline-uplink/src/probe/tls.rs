@@ -23,7 +23,7 @@ use tracing::debug;
 
 use outline_transport::{
     DnsCache, TcpReader, TcpWriter, TlsClientConnection, TlsServerName,
-    build_https_probe_client_config,
+    build_https_probe_client_config_for_target,
 };
 
 use crate::config::{TargetAddr, TlsProbeTarget, TransportMode, UplinkConfig, UplinkTransport};
@@ -86,6 +86,7 @@ pub(super) async fn run_tls_probe(
         &mut writer,
         &mut reader,
         &target_spec.host,
+        target_spec.port,
         &target_wire,
         needs_socks5_target,
         &bytes,
@@ -120,6 +121,7 @@ pub(super) async fn drive_tls_handshake(
     writer: &mut TcpWriter,
     reader: &mut TcpReader,
     sni: &str,
+    port: u16,
     target_wire: &[u8],
     needs_socks5_target: bool,
     bytes: &BytesRecorder<'_>,
@@ -135,7 +137,9 @@ pub(super) async fn drive_tls_handshake(
     // ALPN list mimics a typical browser. Server-side filtering that
     // discriminates by ALPN (e.g. dropping `h2` while passing `http/1.1`)
     // would otherwise be invisible to a probe that omits ALPN entirely.
-    let config = build_https_probe_client_config(&[b"h2", b"http/1.1"]);
+    // The ClientHello follows the browser profile carrier dials to this host would use.
+    // A target that does not form a URL falls back to the Chromium hello.
+    let config = build_https_probe_client_config_for_target(sni, port, &[b"h2", b"http/1.1"]);
     let server_name = TlsServerName::try_from(sni.to_string())
         .map_err(|e| anyhow!("invalid TLS server name {sni}: {e}"))?;
     let mut conn = TlsClientConnection::new(config, server_name)

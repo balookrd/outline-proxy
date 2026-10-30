@@ -314,9 +314,9 @@ async fn client_config_cached_per_fingerprint() {
     use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
     use crate::tls::build_client_config;
     // Same (fingerprint, ALPN) returns the cached Arc; a different family
-    // builds a distinct config (different ClientHello cipher order). Uses the
-    // `Some(_)` path only, which goes through `builder_with_provider` and so
-    // needs no process-default crypto provider installed.
+    // builds a distinct config (that browser's ClientHello). Every build goes
+    // through `builder_with_provider`, so no process-default crypto provider
+    // is needed.
     let chromium_a = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
         build_client_config(&[b"h2"])
     })

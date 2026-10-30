@@ -321,6 +321,13 @@ pub struct ClientHelloShape {
     /// ignored.  The types are recorded as sent, so a server echoing one of
     /// them is not treated as an unsolicited extension.
     ///
+    /// An entry of type 17613 (`application_settings`, ALPS) replaces
+    /// [`ClientHelloShape::alps`] and is written verbatim, but the server's
+    /// ALPS answer is then NOT answered: the client sends no
+    /// `EncryptedExtensions` with settings, and a server that waits for them
+    /// aborts the handshake (this reproduces the abort of Google front ends).
+    /// Use [`ClientHelloShape::alps`] for ALPS.
+    ///
     /// Types are not de-duplicated: list each type at most once, and never a
     /// GREASE value (`0x?A?A`) when [`ClientHelloShape::grease`] is set.  With
     /// real (non-GREASE) ECH, an entry whose type the inner hello compresses
@@ -364,6 +371,66 @@ pub struct ClientHelloShape {
     ///
     /// [`EchMode::Grease`]: crate::client::EchMode::Grease
     pub ech_grease_payload_lengths: Vec<u16>,
+
+    /// Exactly the `cipher_suites` sent on the wire, in this order.
+    ///
+    /// Empty: rustls' own list (the provider's suites, then
+    /// `TLS_EMPTY_RENEGOTIATION_INFO_SCSV` when TLS 1.2 is enabled).
+    /// Non-empty: this list replaces it, after the GREASE suite when
+    /// [`ClientHelloShape::grease`] is set, and the SCSV is not added.
+    ///
+    /// Only the advertised list changes: the suites rustls can negotiate are
+    /// still the provider's, so a ServerHello selecting a listed suite the
+    /// provider does not implement fails the handshake with an error.  List
+    /// every provider suite the config should be able to negotiate, and never
+    /// a GREASE value when `grease` is set.
+    pub wire_cipher_suites: Vec<CipherSuite>,
+
+    /// Also advertise TLS 1.2 (`0303`, after `0304`) in `supported_versions`,
+    /// even when the config enables TLS 1.3 only.
+    ///
+    /// Only the extension changes: cipher-suite filtering, the renegotiation
+    /// SCSV, `extended_master_secret`, session tickets and the check of the
+    /// ServerHello version still follow the versions the config enables, so a
+    /// server selecting TLS 1.2 for a TLS 1.3-only config fails the handshake
+    /// with an error.
+    ///
+    /// This ignores QUIC's ban on TLS 1.2: set on a QUIC config it would put
+    /// `0303` into the QUIC ClientHello, so QUIC profiles must leave it
+    /// `false`.
+    pub advertise_tls12: bool,
+
+    /// With [`ClientHelloShape::grease`], put a GREASE value (`0x?A?A`, drawn
+    /// separately from the other GREASE values and kept across a
+    /// HelloRetryRequest) first in `signature_algorithms`.
+    ///
+    /// Ignored without `grease`.  Only the extension changes: the schemes
+    /// accepted from the server are still the verifier's.
+    pub grease_signature_algorithms: bool,
+
+    /// ALPS (`application_settings`, codepoint 17613) as `(ALPN protocol,
+    /// client settings)` pairs.
+    ///
+    /// Empty (default): no ALPS.  Otherwise the ClientHello carries
+    /// `application_settings` listing, in ALPN order, the offered ALPN
+    /// protocols that have an entry here (no extension when none do); it takes
+    /// part in [`ClientHelloShape::extension_order`] like the built-in
+    /// extensions.  When the server answers with `application_settings` in its
+    /// EncryptedExtensions for the negotiated protocol, the client sends its
+    /// own `EncryptedExtensions` handshake message carrying that protocol's
+    /// settings before its Certificate / Finished (not when early data was
+    /// accepted).  An answer for a protocol not listed, or without ALPN, fails
+    /// the handshake.  TLS 1.3 only; the server's settings are not kept.
+    ///
+    /// Each settings value must fit the u16 length fields of the client
+    /// `EncryptedExtensions` (at most 65531 bytes); longer values are
+    /// truncated, so callers must reject them.
+    ///
+    /// An `extra_extensions` entry of type 17613 replaces this: it is then
+    /// written verbatim and no client settings are sent, so a server that
+    /// answers ALPS waits for them in vain and aborts (this reproduces the
+    /// GFE abort).
+    pub alps: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 /// Extension order of a shaped ClientHello (see [`ClientHelloShape`]).
@@ -1154,6 +1221,9 @@ impl std::error::Error for EarlyDataError {}
 pub struct ClientConnectionData {
     pub(super) early_data: EarlyData,
     pub(super) ech_status: EchStatus,
+    /// client-hello-shape: ALPS settings to send in the client's
+    /// EncryptedExtensions before its Finished.
+    pub(super) alps_client_settings: Option<Vec<u8>>,
 }
 
 impl ClientConnectionData {
@@ -1161,6 +1231,7 @@ impl ClientConnectionData {
         Self {
             early_data: EarlyData::new(),
             ech_status: EchStatus::NotOffered,
+            alps_client_settings: None,
         }
     }
 }

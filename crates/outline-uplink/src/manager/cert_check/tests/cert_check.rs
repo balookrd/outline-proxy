@@ -1,5 +1,6 @@
 //! Endpoint-extraction tests for the cert-check loop.
 
+use outline_transport::FingerprintProfileStrategy as Strategy;
 use url::Url;
 
 use super::uplink_tls_endpoints;
@@ -83,6 +84,7 @@ fn endpoint(host: &str, port: u16) -> Endpoint {
         fwmark: None,
         ipv6_first: false,
         ipv4_only: false,
+        fingerprint_profile: None,
     }
 }
 
@@ -125,4 +127,47 @@ fn fallback_sharing_primary_host_is_deduped() {
     let mut u = vless_xhttp_uplink("a", "https://same.example/xhttp");
     u.fallbacks = vec![vless_ws_fallback("same.example")];
     assert_eq!(uplink_tls_endpoints(&u), vec![endpoint("same.example", 443)]);
+}
+
+#[test]
+fn endpoints_carry_the_fingerprint_profile_of_the_wire_that_dials_them() {
+    let mut u = vless_xhttp_uplink("a", "https://primary.example/xhttp");
+    u.fingerprint_profile = Some(Strategy::ProcessStable);
+    let mut fb = vless_ws_fallback("fallback.example");
+    fb.fingerprint_profile = Some(Strategy::Random);
+    u.fallbacks = vec![fb];
+    let eps = uplink_tls_endpoints(&u);
+    assert_eq!(eps.len(), 2);
+    assert_eq!(eps[0].fingerprint_profile, Some(Strategy::ProcessStable));
+    assert_eq!(eps[1].fingerprint_profile, Some(Strategy::Random));
+}
+
+#[test]
+fn same_host_with_different_wire_profiles_is_checked_per_profile() {
+    let mut u = vless_xhttp_uplink("a", "https://same.example/xhttp");
+    let mut fb = vless_ws_fallback("same.example");
+    fb.fingerprint_profile = Some(Strategy::Random);
+    u.fallbacks = vec![fb];
+    assert_eq!(uplink_tls_endpoints(&u).len(), 2);
+}
+
+/// The scope the check runs each endpoint under (`dial_in_wire_scope` with the
+/// endpoint's own strategy) makes the transport-layer `select` see that
+/// strategy, whatever the process-wide one is (unset in tests => no profile).
+#[tokio::test]
+async fn check_scope_makes_select_follow_the_endpoint_strategy() {
+    let mut u = vless_xhttp_uplink("a", "https://primary.example/xhttp");
+    u.fingerprint_profile = Some(Strategy::ProcessStable);
+    let eps = uplink_tls_endpoints(&u);
+    let url = outline_transport::https_url(&eps[0].host, eps[0].port).unwrap();
+    let scoped = crate::dial::dial_in_wire_scope(&u, eps[0].fingerprint_profile, async {
+        outline_transport::fingerprint_profile::select(&url).is_some()
+    })
+    .await;
+    assert!(scoped, "the endpoint's strategy must be in effect during the check");
+    let inherited = crate::dial::dial_in_wire_scope(&u, None, async {
+        outline_transport::fingerprint_profile::select(&url).is_some()
+    })
+    .await;
+    assert!(!inherited, "no pinned strategy inherits the (unset) process default");
 }

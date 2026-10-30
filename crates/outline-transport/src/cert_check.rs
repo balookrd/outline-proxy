@@ -11,6 +11,9 @@
 //! *outer* certificate the uplink server itself presents — the one whose
 //! expiry silently breaks every wire of the uplink at once.
 //!
+//! The ClientHello is the browser hello of the process's fingerprint strategy
+//! (the one carrier dials to the same endpoint send), not a stock rustls hello.
+//!
 //! The connection carries no application data and is dropped immediately, so
 //! accepting an untrusted/expired cert is safe: the only thing extracted is
 //! the `notAfter` timestamp.
@@ -23,6 +26,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use hashbrown::HashMap;
+use parking_lot::Mutex;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -35,6 +40,8 @@ use x509_cert::der::Decode;
 use crate::DnsCache;
 use crate::connect_tcp_socket;
 use crate::dns::resolve_host_with_preference;
+use crate::fingerprint_profile::{self, TlsFingerprint};
+use crate::tls_hello::{BrowserVerifier, build_shaped_client_config};
 
 /// Total budget for resolve + connect + TLS handshake of a single endpoint.
 /// Mirrors the data-path probe's lack of an inner deadline: a silent endpoint
@@ -88,20 +95,33 @@ impl ServerCertVerifier for AcceptAnyServerCert {
     }
 }
 
-/// Process-wide accept-any client config, built once. Cheap to share across
+/// Cache of accept-any client configs, one per browser fingerprint (no fingerprint is
+/// Chromium, so it shares that slot) for the fixed ALPN list. Cheap to share across
 /// the few endpoints checked per (infrequent) cycle.
-static ACCEPT_ANY_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+static ACCEPT_ANY_TLS_CONFIGS: OnceLock<Mutex<HashMap<TlsFingerprint, Arc<ClientConfig>>>> =
+    OnceLock::new();
 
-fn accept_any_client_config() -> Arc<ClientConfig> {
-    Arc::clone(ACCEPT_ANY_TLS_CONFIG.get_or_init(|| {
-        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-        let config = ClientConfig::builder_with_provider(Arc::clone(&provider))
-            .with_safe_default_protocol_versions()
-            .expect("aws-lc-rs provider supports the default protocol versions")
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert { provider }))
-            .with_no_client_auth();
-        Arc::new(config)
+/// ALPN of the check: a page load's `h2, http/1.1`.
+const CERT_CHECK_ALPN: &[&[u8]] = &[b"h2", b"http/1.1"];
+
+/// Accept-any config whose ClientHello is the browser hello of `fp`
+/// ([`crate::tcp_tls_profile::for_fingerprint`]; Chromium for `None`).
+fn accept_any_client_config_for(fp: Option<TlsFingerprint>) -> Arc<ClientConfig> {
+    let key = fp.unwrap_or(TlsFingerprint::Chromium);
+    let cache = ACCEPT_ANY_TLS_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock();
+    Arc::clone(guard.entry(key).or_insert_with(|| {
+        let profile = crate::tcp_tls_profile::for_fingerprint(Some(key));
+        let provider = Arc::new(profile.provider());
+        let inner: Arc<dyn ServerCertVerifier> = Arc::new(AcceptAnyServerCert { provider });
+        let verifier = Arc::new(BrowserVerifier::new(inner, profile.sig_schemes));
+        let mut config = build_shaped_client_config(profile, CERT_CHECK_ALPN, verifier);
+        // The config lives for the process, and a resumed TLS 1.3 handshake carries no
+        // Certificate: after a renewal the check would keep reporting the old notAfter.
+        Arc::get_mut(&mut config)
+            .expect("a freshly built config is uniquely owned")
+            .resumption = rustls::client::Resumption::disabled();
+        config
     }))
 }
 
@@ -151,7 +171,12 @@ pub async fn fetch_leaf_cert_not_after_unix_ms(
             ServerName::try_from(host.to_string())
                 .map_err(|_| anyhow!("cert check: invalid TLS server name {host}"))?
         };
-        let tls = TlsConnector::from(accept_any_client_config())
+        // Same browser family the carrier dial to this endpoint would pick.
+        let fp = crate::tls::https_url(host, port)
+            .ok()
+            .and_then(|u| fingerprint_profile::select(&u))
+            .map(|p| p.tls);
+        let tls = TlsConnector::from(accept_any_client_config_for(fp))
             .connect(server_name, tcp)
             .await
             .context("cert check: TLS handshake failed")?;

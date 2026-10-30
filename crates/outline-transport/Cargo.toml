@@ -15,9 +15,6 @@ quic = [
     "dep:quinn-proto",
     "dep:once_cell",
     "dep:ring",
-    "dep:flate2",
-    "dep:brotli-decompressor",
-    "dep:ruzstd",
 ]
 h3 = ["quic", "dep:h3", "dep:h3-quinn", "sockudo-ws/http3"]
 metrics = ["outline-metrics/prometheus", "hyper/server"]
@@ -36,11 +33,11 @@ cert-check = ["dep:x509-cert"]
 anyhow = "1.0"
 async-trait = "0.1"
 bytes = "1.10"
-# Certificate decompressors offered by the browser-shaped QUIC ClientHello
-# (`quic/tls_profile.rs`): decoders only, so rustls's own `brotli` / `zlib`
+# Certificate decompressors offered by the browser-shaped TLS ClientHello, TCP and
+# QUIC (`tls_hello.rs`): decoders only, so rustls's own `brotli` / `zlib`
 # features (which would also give the server compressors) stay off.
-brotli-decompressor = { version = "6.2", optional = true }
-flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"], optional = true }
+brotli-decompressor = "6.2"
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hashbrown = "0.14"
 h3 = { version = "0.0.8", optional = true }
@@ -68,7 +65,8 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 # aws-lc-rs-only features as quinn.
 quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"], optional = true }
 rand = "0.9"
-ruzstd = { version = "0.9", default-features = false, features = ["std"], optional = true }
+# zstd certificate decompressor (`tls_hello.rs`), see `brotli-decompressor`.
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 # SHA-256 / HKDF primitives for the QUIC-Initial decrypt diagnostic test
 # (`quic/tests/tls_config.rs`). Gated under `quic` so slim builds pull neither.
 ring = { version = "0.17", optional = true }
@@ -101,5 +99,8 @@ tokio = { version = "1.44", features = ["io-util", "macros", "net", "rt", "sync"
 # without any network I/O. `default-features = false` + `rustls-aws-lc-rs`
 # keeps the workspace's single-CryptoProvider invariant (no rustls-ring).
 quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"] }
+# SHA-256 for the JA4 helper of the ClientHello tests (`tests/client_hello.rs`), which
+# also run without the `quic` feature.
+ring = "0.17"
 # Self-signed cert for the zero-length-CID rebinding test (`quic/tests/tp_profile.rs`).
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }

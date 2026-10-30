@@ -8,7 +8,9 @@ use subtle::ConstantTimeEq;
 use super::client_conn::ClientConnectionData;
 use super::hs::{ClientContext, ClientHelloInput, ClientSessionValue};
 use crate::check::inappropriate_handshake_message;
-use crate::client::common::{ClientAuthDetails, ClientHelloDetails, ServerCertDetails};
+use crate::client::common::{
+    ALPS_EXTENSION, ClientAuthDetails, ClientHelloDetails, ServerCertDetails,
+};
 use crate::client::ech::{self, EchState, EchStatus};
 use crate::client::{ClientConfig, ClientSessionStore, hs};
 use crate::common_state::{
@@ -475,7 +477,12 @@ fn validate_encrypted_extensions(
     hello: &ClientHelloDetails,
     exts: &ServerExtensions<'_>,
 ) -> Result<(), Error> {
-    if hello.server_sent_unsolicited_extensions(exts, &[]) {
+    // client-hello-shape: an ALPS answer is checked against the ALPN later.
+    let alps: &[ExtensionType] = match hello.alps_protocols.is_empty() {
+        true => &[],
+        false => &[ExtensionType::Unknown(ALPS_EXTENSION)],
+    };
+    if hello.server_sent_unsolicited_extensions(exts, alps) {
         return Err(common.send_fatal_alert(
             AlertDescription::UnsupportedExtension,
             PeerMisbehaved::UnsolicitedEncryptedExtension,
@@ -489,6 +496,58 @@ fn validate_encrypted_extensions(
         ));
     }
 
+    Ok(())
+}
+
+/// client-hello-shape: accept the server's ALPS answer for the negotiated
+/// protocol and queue the client's settings, sent before its Finished.
+fn process_alps(
+    cx: &mut ClientContext<'_>,
+    config: &ClientConfig,
+    hello: &ClientHelloDetails,
+    exts: &ServerExtensions<'_>,
+    resuming: bool,
+) -> Result<(), Error> {
+    cx.data.alps_client_settings = None;
+    if hello.alps_protocols.is_empty()
+        || !exts
+            .unknown_extensions
+            .contains(&ALPS_EXTENSION)
+    {
+        return Ok(());
+    }
+
+    let settings = cx
+        .common
+        .alpn_protocol
+        .as_ref()
+        .filter(|protocol| {
+            hello
+                .alps_protocols
+                .iter()
+                .any(|offered| offered[..] == protocol[..])
+        })
+        .and_then(|protocol| {
+            config
+                .client_hello_shape
+                .as_ref()?
+                .alps
+                .iter()
+                .find(|(name, _)| name[..] == protocol[..])
+        });
+    let Some((_, settings)) = settings else {
+        return Err(cx.common.send_fatal_alert(
+            AlertDescription::UnsupportedExtension,
+            PeerMisbehaved::UnsolicitedEncryptedExtension,
+        ));
+    };
+
+    // Like BoringSSL, no client settings when early data was accepted.
+    let early_data_accepted =
+        resuming && cx.common.early_traffic && exts.early_data_ack.is_some();
+    if !early_data_accepted {
+        cx.data.alps_client_settings = Some(settings.clone());
+    }
     Ok(())
 }
 
@@ -539,6 +598,7 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
             &self.config,
             exts.server_certificate_type.as_ref(),
         )?;
+        process_alps(cx, &self.config, &self.hello, exts, self.resuming_session.is_some())?;
 
         let ech_retry_configs = match (cx.data.ech_status, &exts.encrypted_client_hello_ack) {
             // If we didn't offer ECH, or ECH was accepted, but the server sent an ECH encrypted
@@ -1304,6 +1364,21 @@ fn emit_certverify_tls13(
     Ok(())
 }
 
+/// client-hello-shape: client EncryptedExtensions carrying only
+/// `application_settings` (ALPS) with `settings`.
+fn emit_client_encrypted_extensions_tls13(flight: &mut HandshakeFlightTls13<'_>, settings: &[u8]) {
+    let mut body = Vec::with_capacity(6 + settings.len());
+    body.extend_from_slice(&((settings.len() + 4) as u16).to_be_bytes());
+    body.extend_from_slice(&ALPS_EXTENSION.to_be_bytes());
+    body.extend_from_slice(&(settings.len() as u16).to_be_bytes());
+    body.extend_from_slice(settings);
+
+    flight.add(HandshakeMessagePayload(HandshakePayload::Unknown((
+        HandshakeType::EncryptedExtensions,
+        Payload::new(body),
+    ))));
+}
+
 fn emit_finished_tls13(flight: &mut HandshakeFlightTls13<'_>, verify_data: &crypto::hmac::Tag) {
     let verify_data_payload = Payload::new(verify_data.as_ref());
 
@@ -1383,6 +1458,12 @@ impl State<ClientConnectionData> for ExpectFinished {
         }
 
         let mut flight = HandshakeFlightTls13::new(&mut st.transcript);
+
+        // client-hello-shape: the client's EncryptedExtensions with its ALPS
+        // settings, first in the flight.
+        if let Some(settings) = cx.data.alps_client_settings.take() {
+            emit_client_encrypted_extensions_tls13(&mut flight, &settings);
+        }
 
         /* Send our authentication/finished messages.  These are still encrypted
          * with our handshake keys. */
