@@ -9,12 +9,19 @@ package com.outline.proxy
  * 3. Standby keepalives disabled (`tcp_ws_standby_keepalive_secs = 0`, `warm_probe_keepalive_secs = 0`).
  * 4. Active TCP keepalive relaxed (`tcp_active_keepalive_secs >= 120`).
  * 5. Probing interval bounded (`interval_secs >= 300`).
- * 6. HTTP/2 and QUIC carrier keepalive intervals stretched (`[h2]` 60s/20s, `[quic]` 25s/60s).
+ * 6. HTTP/2 and QUIC carrier keepalive intervals stretched (`[h2]` 60s/20s, `[quic]` keepalive 25s).
+ *
+ * The QUIC idle timeout is left to the dial's browser profile (30s), so the Initial's
+ * `max_idle_timeout` matches the browser; it is raised only when the keepalive would
+ * not fit inside it.
  */
 object MobilePowerConfig {
 
     private val SECTION_HEADER_REGEX = Regex("""^\s*(\[+[^\[\]]+\]+)\s*$""")
     private val KEY_VALUE_REGEX = Regex("""^\s*([a-zA-Z0-9_-]+)\s*=\s*(.*)$""")
+
+    /** QUIC idle timeout of every browser profile in `outline-transport`'s `tp_profile`. */
+    private const val BROWSER_QUIC_IDLE_SECS = 30L
 
     fun sanitize(toml: String): String {
         if (toml.isBlank()) return toml
@@ -92,7 +99,6 @@ object MobilePowerConfig {
                 """
                 [quic]
                 keepalive_secs = 25
-                idle_timeout_secs = 60
                 """.trimIndent()
             )
         }
@@ -158,13 +164,16 @@ object MobilePowerConfig {
     }
 
     private fun sanitizeQuic(section: Section) {
-        val currentKeepalive = getKeyIntValue(section.lines, "keepalive_secs")
-        if (currentKeepalive == null || currentKeepalive < 25) {
+        var keepalive = getKeyIntValue(section.lines, "keepalive_secs")
+        if (keepalive == null || keepalive < 25) {
             setOrAddKey(section.lines, "keepalive_secs", "25")
+            keepalive = 25
         }
-        val currentIdle = getKeyIntValue(section.lines, "idle_timeout_secs")
-        if (currentIdle == null || currentIdle < 60) {
-            setOrAddKey(section.lines, "idle_timeout_secs", "60")
+        // An unset idle timeout falls back to the browser profile's 30s. It must outlast
+        // the keepalive, or the connection idles out between PINGs.
+        val idle = getKeyIntValue(section.lines, "idle_timeout_secs") ?: BROWSER_QUIC_IDLE_SECS
+        if (idle <= keepalive) {
+            setOrAddKey(section.lines, "idle_timeout_secs", (keepalive * 2).toString())
         }
     }
 

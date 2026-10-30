@@ -54,7 +54,6 @@ public enum ConfigGenerator {
 
         [quic]
         keepalive_secs = 25
-        idle_timeout_secs = 60
 
         [[outline.uplinks]]
         name = "\(escapeToml(profile.name.isEmpty ? "primary" : profile.name))"

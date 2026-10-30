@@ -54,7 +54,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
     - Disables periodic carrier loss sampling (`loss_sample_interval_secs = 0`).
     - Disables standby keepalives (`tcp_ws_standby_keepalive_secs = 0`, `warm_probe_keepalive_secs = 0`) and relaxes active TCP keepalive to 120s.
     - Stretches background health probe interval to at least 300s (`interval_secs >= 300`).
-    - Stretches carrier keepalive intervals to `[h2]` (60s interval / 20s timeout) and `[quic]` (25s keepalive / 60s idle timeout), allowing the mobile cellular radio modem to drop into low-power RRC Idle instead of staying in active RRC connected state around the clock.
+    - Stretches carrier keepalive intervals to `[h2]` (60s interval / 20s timeout) and `[quic]` (25s keepalive), allowing the mobile cellular radio modem to drop into low-power RRC Idle instead of staying in active RRC connected state around the clock. The QUIC idle timeout is left to the dial's browser profile (30s), so the Initial's `max_idle_timeout` matches the browser; the sanitizer raises it to twice the keepalive only when the keepalive would not fit inside it.
 
 - **Eliminate idle battery drain when tunnel is paused on Wi-Fi.** Fixed excessive background battery consumption when the VPN is paused on trusted Wi-Fi or idle:
   - Unregistered underlying network callbacks and carrier-dial budget refresh on pause and disconnect, eliminating redundant background Binder IPC calls and Rust status queries on signal changes.
