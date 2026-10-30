@@ -45,7 +45,7 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
   client-side: `outline-transport`,
   `outline-uplink`, `outline-tun`, `outline-metrics`, `outline-net`,
   `outline-routing`, `shadowsocks-crypto`, `socks5-proto`.
-- `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto` — пропатченные крейты, подключены через
+- `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`, `vendor/rustls` — пропатченные крейты, подключены через
   корневой `[patch.crates-io]`. ОДНА копия каждого на весь workspace.
 - `android/rust/` — пакет `outline-android` (UniFFI/JNI-обёртка над клиентом).
   Отдельный workspace (`[workspace]` в его манифесте) — корневой
@@ -143,6 +143,13 @@ vendored-крейты, которые держим в upstream-стиле.
   версии без явной причины. `vendor/quinn-proto` = upstream 0.11.15 + три
   логических патча (advertised-stream-window, browser-shaped-transport-parameters,
   browser-order-and-firefox) и vendoring-trim, описано в `PATCHES*.md`.
+  `vendor/rustls` = upstream 0.23.40 + два логических патча (client-hello-shape:
+  `ClientConfig::client_hello_shape` для браузерного ClientHello H3-носителя;
+  secp521r1: `kx_group::SECP521R1`) и vendoring-trim, описано в `PATCHES*.md`.
+  Фичи rustls `brotli`/`zlib` НЕ включать: rustls вендорится один на весь
+  workspace, и сервер получил бы компрессоры и начал бы сжимать свой сертификат
+  (смена серверного поведения). Декомпрессоры сертификата клиента живут в
+  `outline-transport` (`quic/tls_profile.rs`).
 - **Единый профиль.** `[profile.release]` (lto=fat, panic=abort) — только в
   корневом `Cargo.toml`. Package-манифесты в `bins/*` тонкие, без
   `[workspace]`/`[profile]`/`[patch]`.
@@ -251,7 +258,7 @@ vendored-крейты, которые держим в upstream-стиле.
 ## Vendored patches
 
 Корневые [`PATCHES.md`](PATCHES.md) / [`PATCHES.ru.md`](PATCHES.ru.md) и
-patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.15.patch`) — единый источник
+patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.15.patch`, `rustls-0.23.40.patch`) — единый источник
 истины по отличиям vendored копий от upstream (per-bin `PATCHES.md` —
 указатели на корневой). Меняешь поведение vendored — обнови vendored source и
 корневую patch-документацию в том же изменении. HTTP/3 WebSocket path зависит
@@ -266,7 +273,10 @@ Production-код не обращается к `h3`-патч-API и `sockudo_ws`
 `version_information`, `extra_transport_parameters`, `transport_parameter_order`,
 `advertised_active_connection_id_limit`, `max_ack_delay_ms`,
 `initial_stream_receive_windows`) — только через
-`crates/outline-transport/src/quic/vendored.rs` (клиент); CI это проверяет
+`crates/outline-transport/src/quic/vendored.rs` (клиент); патч `rustls`
+(`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
+`kx_group::SECP521R1`) — только через `crates/outline-transport/src/tls_vendored.rs`
+(клиент, только QUIC); CI это проверяет
 (тесты — исключение). Новые обращения к vendored-API добавляй в гейт-модули, а не
 в потребителей.
 

@@ -159,6 +159,8 @@ mod shared_dial;
 mod tcp_transport;
 mod tls;
 mod tls_fingerprint;
+#[cfg(feature = "quic")]
+mod tls_vendored;
 mod udp_transport;
 /// Client-side uplink replay ring — the client→server half of session
 /// resumption. Lives here, next to [`downlink_replay`], so every ingress

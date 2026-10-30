@@ -183,6 +183,23 @@ jobs:
           fi
           echo "ok: patched quinn-proto API stays behind the gate module"
 
+      # Monorepo invariant: the vendored rustls patch "client-hello-shape" adds
+      # `ClientConfig::client_hello_shape` (`ClientHelloShape`, `ExtensionOrder`)
+      # and `kx_group::SECP521R1`; production code reaches them only via
+      # crates/outline-transport/src/tls_vendored.rs, so a rustls rebase
+      # touches one file (see PATCHES.md). Test modules are exempt.
+      - name: invariant — patched rustls API only behind the gate module
+        run: |
+          leaked=$(grep -rn 'client_hello_shape\|ClientHelloShape\|ExtensionOrder\|kx_group::SECP521R1' bins/*/src crates/*/src --include='*.rs' \
+            | grep -v '/tests/' \
+            | grep -v '^crates/outline-transport/src/tls_vendored\.rs:' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::patched rustls API referenced outside the gate module:"
+            echo "$leaked"
+            exit 1
+          fi
+          echo "ok: patched rustls API stays behind the gate module"
+
       # Install-script invariants: syntax + shellcheck for the two root
       # installers, and byte-identity of the helpers deliberately duplicated
       # between install-server.sh and install-client.sh (single-file

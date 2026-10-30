@@ -12,6 +12,7 @@
 #[path = "tests/loopback.rs"]
 mod loopback;
 mod tls_config;
+pub(crate) mod tls_profile;
 mod tp_profile;
 mod vendored;
 

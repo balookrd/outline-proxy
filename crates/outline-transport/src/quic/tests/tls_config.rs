@@ -1128,3 +1128,759 @@ async fn per_direction_windows_are_advertised() {
     assert_eq!(int(0x06), Some(1_048_576), "bidi_remote");
     assert_eq!(int(0x07), Some(524_288), "uni");
 }
+
+// ---------------------------------------------------------------------------
+// rustls patch "client-hello-shape" (gate: `crate::tls_vendored`)
+// ---------------------------------------------------------------------------
+
+/// RFC 8701 GREASE value `0x?A?A`.
+fn is_grease_u16(v: u16) -> bool {
+    v & 0x0f0f == 0x0a0a && (v >> 8) == (v & 0xff)
+}
+
+/// `(type, body)` of every ClientHello extension, in wire order.
+fn extensions(ch: &[u8]) -> Vec<(u16, Vec<u8>)> {
+    let mut r = Reader::new(ch);
+    assert_eq!(r.u8(), 0x01, "expected ClientHello handshake");
+    r.take(3 + 2 + 32); // handshake length, legacy_version, random
+    let sid_len = r.u8() as usize;
+    r.take(sid_len);
+    let cs_len = r.u16() as usize;
+    r.take(cs_len);
+    let comp_len = r.u8() as usize;
+    r.take(comp_len);
+    let ext_end = r.u16() as usize + r.i;
+    let mut out = Vec::new();
+    while r.i < ext_end {
+        let ext_type = r.u16();
+        let ext_len = r.u16() as usize;
+        out.push((ext_type, r.take(ext_len).to_vec()));
+    }
+    out
+}
+
+/// Extension types of a ClientHello in wire order.
+fn extension_types(ch: &[u8]) -> Vec<u16> {
+    extensions(ch).into_iter().map(|(t, _)| t).collect()
+}
+
+/// Cipher suites in offer order.
+fn cipher_suites(ch: &[u8]) -> Vec<u16> {
+    let mut r = Reader::new(ch);
+    assert_eq!(r.u8(), 0x01, "expected ClientHello handshake");
+    r.take(3 + 2 + 32);
+    let sid_len = r.u8() as usize;
+    r.take(sid_len);
+    let cs_len = r.u16() as usize;
+    let mut cs = Reader::new(r.take(cs_len));
+    let mut out = Vec::new();
+    while cs.remaining() > 0 {
+        out.push(cs.u16());
+    }
+    out
+}
+
+/// u16 list inside an extension whose body is `<u16 len><u16...>` (groups 10, sig algs 13).
+fn u16_list_ext(ch: &[u8], ext: u16) -> Vec<u16> {
+    let Some(body) = clienthello_extension(ch, ext) else {
+        return Vec::new();
+    };
+    let mut r = Reader::new(body);
+    let len = r.u16() as usize;
+    assert_eq!(len, r.remaining(), "extension {ext:#06x} list length");
+    let mut out = Vec::new();
+    while r.remaining() > 0 {
+        out.push(r.u16());
+    }
+    out
+}
+
+/// `supported_versions` (43) of a ClientHello: `<u8 len><u16...>`.
+fn supported_versions(ch: &[u8]) -> Vec<u16> {
+    let body = clienthello_extension(ch, 43).expect("no supported_versions");
+    let mut r = Reader::new(body);
+    let len = r.u8() as usize;
+    assert_eq!(len, r.remaining(), "supported_versions list length");
+    let mut out = Vec::new();
+    while r.remaining() > 0 {
+        out.push(r.u16());
+    }
+    out
+}
+
+/// `(group, key length)` of every `key_share` entry, in order.
+fn key_share_entries(ch: &[u8]) -> Vec<(u16, usize)> {
+    let data = clienthello_extension(ch, 0x0033).expect("no key_share");
+    let mut r = Reader::new(data);
+    let end = r.u16() as usize + r.i;
+    let mut out = Vec::new();
+    while r.i < end {
+        let group = r.u16();
+        let len = r.u16() as usize;
+        r.take(len);
+        out.push((group, len));
+    }
+    out
+}
+
+fn sha256_hex12(s: &str) -> String {
+    let d = ring::digest::digest(&ring::digest::SHA256, s.as_bytes());
+    d.as_ref()[..6].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// JA4 for a QUIC ClientHello (FoxIO spec): q + "13" + d/i + 2-digit ciphers + 2-digit
+/// extensions (GREASE excluded, SNI and ALPN counted) + ALPN first/last char, then
+/// sha256[..12] of sorted ciphers, then sha256[..12] of sorted extensions without
+/// SNI/ALPN joined with "_" and the signature algorithms in offer order.
+fn ja4(ch: &[u8]) -> String {
+    let hex = |v: &[u16]| v.iter().map(|x| format!("{x:04x}")).collect::<Vec<_>>().join(",");
+    let ciphers: Vec<u16> = cipher_suites(ch).into_iter().filter(|c| !is_grease_u16(*c)).collect();
+    let exts: Vec<u16> = extension_types(ch)
+        .into_iter()
+        .filter(|e| !is_grease_u16(*e))
+        .collect();
+    let version = match clienthello_extension(ch, 43) {
+        Some(_) => supported_versions(ch)
+            .into_iter()
+            .filter(|v| !is_grease_u16(*v))
+            .max(),
+        None => None,
+    };
+    let version = match version {
+        Some(0x0304) => "13",
+        Some(0x0303) => "12",
+        other => panic!("unexpected TLS version {other:?}"),
+    };
+    let sni = if exts.contains(&0) { 'd' } else { 'i' };
+    let alpn = match clienthello_extension(ch, 16) {
+        Some(body) => {
+            // <u16 list len><u8 len><proto>...: the first protocol.
+            let first = &body[3..3 + body[2] as usize];
+            format!("{}{}", first[0] as char, first[first.len() - 1] as char)
+        },
+        None => "00".into(),
+    };
+    let mut sorted_ciphers = ciphers.clone();
+    sorted_ciphers.sort_unstable();
+    let mut sorted_exts: Vec<u16> = exts.iter().copied().filter(|e| *e != 0 && *e != 16).collect();
+    sorted_exts.sort_unstable();
+    let sigs = u16_list_ext(ch, 13);
+    let c = if sigs.is_empty() {
+        hex(&sorted_exts)
+    } else {
+        format!("{}_{}", hex(&sorted_exts), hex(&sigs))
+    };
+    format!(
+        "q{version}{sni}{:02}{:02}{alpn}_{}_{}",
+        ciphers.len().min(99),
+        exts.len().min(99),
+        sha256_hex12(&hex(&sorted_ciphers)),
+        sha256_hex12(&c)
+    )
+}
+
+#[test]
+fn ja4_helper_reproduces_measured_chrome_hash() {
+    // JA4_r of the Chrome 156 capture -> its JA4 c-part.
+    let c = "000a,000d,001b,002b,002d,0033,0039,44cd,ca34,fe0d_0403,0804,0401,0503,0805,0501,0806,0601,0201";
+    assert_eq!(sha256_hex12(c), "178839b6cec1");
+    assert_eq!(sha256_hex12("1301,1302,1303"), "55b375c5d22e");
+}
+
+/// Capture the Initial ClientHello of a QUIC client config built from `tls`.
+fn capture_with_tls(tls: rustls::ClientConfig, seed: u8) -> Vec<u8> {
+    let quic = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
+    capture_clienthello(
+        quinn::ClientConfig::new(Arc::new(quic)),
+        quinn::EndpointConfig::default(),
+        [seed; 32],
+    )
+}
+
+/// aws-lc-rs default provider with the post-quantum hybrid leading, as browsers (and our
+/// fingerprint providers) offer it; this crate does not enable `prefer-post-quantum`.
+fn pq_first_provider() -> rustls::crypto::CryptoProvider {
+    use rustls::crypto::aws_lc_rs::kx_group;
+    rustls::crypto::CryptoProvider {
+        kx_groups: vec![
+            kx_group::X25519MLKEM768,
+            kx_group::X25519,
+            kx_group::SECP256R1,
+            kx_group::SECP384R1,
+        ],
+        ..rustls::crypto::aws_lc_rs::default_provider()
+    }
+}
+
+fn aws_lc_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(pq_first_provider())
+}
+
+fn finish_tls13(
+    builder: rustls::ConfigBuilder<rustls::ClientConfig, rustls::WantsVerifier>,
+    roots: Arc<rustls::RootCertStore>,
+) -> rustls::ClientConfig {
+    let mut tls = builder.with_root_certificates(roots).with_no_client_auth();
+    tls.alpn_protocols = vec![b"h3".to_vec()];
+    tls
+}
+
+/// TLS 1.3-only aws-lc-rs client config (ALPN h3) trusting `roots`.
+fn tls13_config_with_roots(roots: Arc<rustls::RootCertStore>) -> rustls::ClientConfig {
+    finish_tls13(
+        rustls::ClientConfig::builder_with_provider(aws_lc_provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap(),
+        roots,
+    )
+}
+
+fn tls13_config() -> rustls::ClientConfig {
+    tls13_config_with_roots(Arc::new(rustls::RootCertStore::empty()))
+}
+
+/// Like [`tls13_config_with_roots`], offering GREASE ECH (X25519 / HKDF-SHA256 / AES-128).
+fn tls13_ech_grease_config(roots: Arc<rustls::RootCertStore>) -> rustls::ClientConfig {
+    use rustls::client::{EchGreaseConfig, EchMode};
+    let placeholder = rustls::crypto::hpke::HpkePublicKey(vec![0x42; 32]);
+    let mode = EchMode::Grease(EchGreaseConfig::new(
+        rustls::crypto::aws_lc_rs::hpke::DH_KEM_X25519_HKDF_SHA256_AES_128,
+        placeholder,
+    ));
+    finish_tls13(
+        rustls::ClientConfig::builder_with_provider(aws_lc_provider())
+            .with_ech(mode)
+            .unwrap(),
+        roots,
+    )
+}
+
+/// The full shape: omissions, a raw extension, GREASE, a fixed order and an extra
+/// `secp256r1` key share.
+fn full_shape() -> crate::tls_vendored::ClientHelloShape {
+    use crate::tls_vendored::{ClientHelloShape, ExtensionOrder};
+    ClientHelloShape {
+        omit_extended_master_secret: true,
+        omit_ec_point_formats: true,
+        omit_status_request: false,
+        extra_extensions: vec![(18, vec![])],
+        grease: true,
+        extension_order: ExtensionOrder::Fixed(vec![0, 10, 16, 5, 13, 18, 51, 45, 43, 57]),
+        extra_key_share_groups: vec![rustls::NamedGroup::secp256r1],
+        ech_grease_payload_lengths: vec![],
+    }
+}
+
+#[tokio::test]
+async fn default_shape_keeps_upstream_extensions() {
+    let ch = capture_with_tls(tls13_config(), 1);
+    let mut ids = extension_types(&ch);
+    ids.sort();
+    assert_eq!(ids, [0, 5, 10, 11, 13, 16, 23, 43, 45, 51, 57]);
+    assert_eq!(ja4(&ch)[..10], *"q13d0311h3");
+    assert!(!cipher_suites(&ch).iter().any(|c| is_grease_u16(*c)));
+    assert_eq!(key_share_groups(&ch), [0x11ec, 0x1d]);
+}
+
+/// An explicit `ExtensionOrder::Upstream` shape with nothing else set encodes the same
+/// extension set as no shape at all.
+#[tokio::test]
+async fn empty_shape_matches_upstream_set() {
+    use crate::tls_vendored::{ClientHelloShape, set_client_hello_shape};
+    let mut tls = tls13_config();
+    set_client_hello_shape(&mut tls, ClientHelloShape::default());
+    let ch = capture_with_tls(tls, 1);
+    let mut ids = extension_types(&ch);
+    ids.sort();
+    assert_eq!(ids, [0, 5, 10, 11, 13, 16, 23, 43, 45, 51, 57]);
+    assert_eq!(cipher_suites(&ch), cipher_suites(&capture_with_tls(tls13_config(), 1)));
+}
+
+#[tokio::test]
+async fn shape_omits_adds_and_greases() {
+    use crate::tls_vendored::{ClientHelloShape, ExtensionOrder, set_client_hello_shape};
+    let mut tls = tls13_config();
+    set_client_hello_shape(
+        &mut tls,
+        ClientHelloShape {
+            omit_extended_master_secret: true,
+            omit_ec_point_formats: true,
+            omit_status_request: false,
+            extra_extensions: vec![(18, vec![])],
+            grease: true,
+            extension_order: ExtensionOrder::Fixed(vec![0, 10, 16, 5, 13, 18, 51, 45, 43, 57]),
+            extra_key_share_groups: vec![],
+            ech_grease_payload_lengths: vec![],
+        },
+    );
+    let mut first_greases = std::collections::BTreeSet::new();
+    for seed in 0..8u8 {
+        let ch = capture_with_tls(tls.clone(), seed);
+        let exts = extensions(&ch);
+        let ids = extension_types(&ch);
+        assert!(is_grease_u16(ids[0]) && is_grease_u16(*ids.last().unwrap()), "{ids:x?}");
+        assert_ne!(ids[0], *ids.last().unwrap(), "two distinct GREASE extensions");
+        assert_eq!(ids[1..ids.len() - 1], [0, 10, 16, 5, 13, 18, 51, 45, 43, 57]);
+        assert_eq!(exts[0].1, [0u8; 0], "first GREASE extension is empty");
+        assert_eq!(exts.last().unwrap().1, [0u8], "last GREASE extension is one zero byte");
+        assert_eq!(clienthello_extension(&ch, 18), Some(&[][..]), "raw SCT extension");
+        first_greases.insert(ids[0]);
+
+        let ciphers = cipher_suites(&ch);
+        assert!(is_grease_u16(ciphers[0]), "{ciphers:x?}");
+        assert!(!ciphers[1..].iter().any(|c| is_grease_u16(*c)));
+        let groups = u16_list_ext(&ch, 10);
+        assert!(is_grease_u16(groups[0]), "{groups:x?}");
+        assert!(!groups[1..].iter().any(|g| is_grease_u16(*g)));
+        // key_share: GREASE entry with a 1-byte key first, then the upstream shares.
+        let shares = key_share_entries(&ch);
+        assert_eq!(shares[0], (groups[0], 1), "GREASE share uses the GREASE group, key 00");
+        assert_eq!(shares[1..].iter().map(|(g, _)| *g).collect::<Vec<_>>(), [0x11ec, 0x1d]);
+        // supported_versions: GREASE first.
+        let versions = supported_versions(&ch);
+        assert!(is_grease_u16(versions[0]), "{versions:x?}");
+        assert_eq!(versions[1..], [0x0304]);
+        assert_eq!(ja4(&ch)[..10], *"q13d0310h3", "GREASE is not counted");
+    }
+    assert!(first_greases.len() > 1, "GREASE values are drawn per connection");
+}
+
+#[tokio::test]
+async fn extra_key_share_and_shuffled_ech() {
+    use crate::tls_vendored::{ClientHelloShape, ExtensionOrder, set_client_hello_shape};
+    let empty = || Arc::new(rustls::RootCertStore::empty());
+
+    // Upstream order keeps ECH last; ShuffledWithEch moves it around.
+    let upstream = tls13_ech_grease_config(empty());
+    for seed in 0..16u8 {
+        let ids = extension_types(&capture_with_tls(upstream.clone(), seed));
+        assert_eq!(*ids.last().unwrap(), 0xfe0d, "upstream keeps ECH last: {ids:x?}");
+    }
+
+    let mut tls = tls13_ech_grease_config(empty());
+    set_client_hello_shape(
+        &mut tls,
+        ClientHelloShape {
+            extension_order: ExtensionOrder::ShuffledWithEch,
+            extra_key_share_groups: vec![rustls::NamedGroup::secp256r1],
+            ..ClientHelloShape::default()
+        },
+    );
+    let mut ech_positions = std::collections::BTreeSet::new();
+    for seed in 0..16u8 {
+        let ch = capture_with_tls(tls.clone(), seed);
+        assert_eq!(key_share_groups(&ch), [0x11ec, 0x1d, 0x17]);
+        let p256 = key_share_entries(&ch)[2];
+        assert_eq!(p256, (0x17, 65), "uncompressed P-256 point");
+        let ids = extension_types(&ch);
+        let pos = ids.iter().position(|e| *e == 0xfe0d).expect("GREASE ECH sent");
+        ech_positions.insert(ids.len() - 1 - pos);
+    }
+    assert!(ech_positions.iter().any(|p| *p != 0), "0xfe0d is not always last");
+}
+
+/// GREASE ECH payload length (`ech_grease_payload_lengths`): empty keeps rustls' sizing
+/// from the padded inner hello, one value is used as-is, several are drawn per connection.
+#[tokio::test]
+async fn ech_grease_payload_lengths_shape_the_payload() {
+    use crate::tls_vendored::{ClientHelloShape, set_client_hello_shape};
+    let empty = || Arc::new(rustls::RootCertStore::empty());
+    let shaped = |lengths: Vec<u16>| {
+        let mut tls = tls13_ech_grease_config(empty());
+        set_client_hello_shape(
+            &mut tls,
+            ClientHelloShape {
+                ech_grease_payload_lengths: lengths,
+                ..ClientHelloShape::default()
+            },
+        );
+        tls
+    };
+    let payload =
+        |tls: &rustls::ClientConfig, seed: u8| ech_outer(&capture_with_tls(tls.clone(), seed)).3;
+
+    let upstream = tls13_ech_grease_config(empty());
+    let default_shape = shaped(vec![]);
+    let fixed = shaped(vec![240]);
+    let several = shaped(vec![176, 208, 240]);
+    let mut drawn = std::collections::BTreeSet::new();
+    for seed in 0..16u8 {
+        let up = payload(&upstream, seed);
+        // Upstream: padded inner hello (multiple of 32) plus the 16-byte tag.
+        assert_eq!((up - 16) % 32, 0, "{up}");
+        assert!(up > 240, "inner hello with 240 bytes of name padding: {up}");
+        assert_eq!(payload(&default_shape, seed), up, "empty list keeps upstream sizing");
+        assert_eq!(payload(&fixed, seed), 240);
+        let p = payload(&several, seed);
+        assert!([176, 208, 240].contains(&p), "{p}");
+        drawn.insert(p);
+    }
+    assert!(drawn.len() >= 2, "{drawn:?}");
+}
+
+/// A GREASE ECH payload length from the shape survives a HelloRetryRequest (the
+/// extension is carried forward, not rebuilt) and the handshake completes.
+#[tokio::test]
+async fn ech_grease_payload_length_survives_hello_retry_request() {
+    use rustls::crypto::aws_lc_rs::kx_group;
+    let lb = loopback::Loopback::with_server_tls(server_with_groups(vec![kx_group::SECP384R1]));
+    let mut tls = tls13_ech_grease_config(lb.roots());
+    let mut shape = full_shape();
+    shape.ech_grease_payload_lengths = vec![176, 208, 240];
+    crate::tls_vendored::set_client_hello_shape(&mut tls, shape);
+    echo_with_tls(&lb, tls).await;
+}
+
+/// `secp521r1` from the gate is offered in supported_groups when put in the provider.
+#[tokio::test]
+async fn secp521r1_is_offered_from_the_provider() {
+    let mut provider = pq_first_provider();
+    provider.kx_groups.push(crate::tls_vendored::secp521r1());
+    let tls = finish_tls13(
+        rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap(),
+        Arc::new(rustls::RootCertStore::empty()),
+    );
+    let ch = capture_with_tls(tls, 1);
+    assert_eq!(*u16_list_ext(&ch, 10).last().unwrap(), 0x19);
+    assert!(
+        !rustls::crypto::aws_lc_rs::DEFAULT_KX_GROUPS
+            .iter()
+            .any(|g| g.name() == rustls::NamedGroup::secp521r1)
+    );
+    assert!(
+        !rustls::crypto::aws_lc_rs::ALL_KX_GROUPS
+            .iter()
+            .any(|g| g.name() == rustls::NamedGroup::secp521r1)
+    );
+}
+
+/// Server config builder over aws-lc-rs restricted to `groups`.
+fn server_with_groups(
+    groups: Vec<&'static dyn rustls::crypto::SupportedKxGroup>,
+) -> rustls::ConfigBuilder<rustls::ServerConfig, rustls::WantsVerifier> {
+    let provider = rustls::crypto::CryptoProvider {
+        kx_groups: groups,
+        ..rustls::crypto::aws_lc_rs::default_provider()
+    };
+    rustls::ServerConfig::builder_with_provider(Arc::new(provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+}
+
+/// Handshakes `tls` with `lb`, echoes one message and returns the client's stats.
+async fn echo_with_tls(
+    lb: &loopback::Loopback,
+    tls: rustls::ClientConfig,
+) -> quinn::ConnectionStats {
+    let server = lb.server.clone();
+    let echo = tokio::spawn(async move {
+        let conn = server.accept().await.unwrap().await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        let msg = recv.read_to_end(64).await.unwrap();
+        send.write_all(&msg).await.unwrap();
+        send.finish().unwrap();
+        conn.closed().await
+    });
+    let quic = Arc::new(quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap());
+    let (_ep, conn) = lb
+        .connect_with_tls(quic, quinn::EndpointConfig::default(), quinn::TransportConfig::default())
+        .await;
+    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    send.write_all(b"ping").await.unwrap();
+    send.finish().unwrap();
+    assert_eq!(recv.read_to_end(64).await.unwrap(), b"ping");
+    assert!(conn.close_reason().is_none(), "{:?}", conn.close_reason());
+    let stats = conn.stats();
+    conn.close(0u32.into(), b"done");
+    echo.abort();
+    stats
+}
+
+/// The full shape (GREASE everywhere, raw extension, fixed order, extra key share, GREASE
+/// ECH) completes a handshake with the rustls server and carries data.
+#[tokio::test]
+async fn shaped_client_handshakes_with_rustls_server() {
+    let lb = loopback::Loopback::new();
+    let mut tls = tls13_ech_grease_config(lb.roots());
+    crate::tls_vendored::set_client_hello_shape(&mut tls, full_shape());
+    echo_with_tls(&lb, tls).await;
+}
+
+/// A server limited to the extra share's group completes the exchange with that share,
+/// without a HelloRetryRequest: the client sends exactly as many CRYPTO frames as against a
+/// server that takes the first share, and fewer than the same client without the extra
+/// share (which does go through HRR). Also covers `secp521r1` as an extra share.
+#[tokio::test]
+async fn extra_key_share_avoids_hello_retry_request() {
+    use rustls::crypto::aws_lc_rs::kx_group;
+    // A lost packet makes the client retransmit CRYPTO frames, which would skew the
+    // comparison below; fail loudly instead of reporting a misleading inequality.
+    let crypto_frames = |run: &str, s: quinn::ConnectionStats| {
+        assert_eq!(
+            s.path.lost_packets, 0,
+            "{run}: packet loss in a loopback run makes CRYPTO frame counts incomparable"
+        );
+        s.frame_tx.crypto
+    };
+
+    for (group, name) in [
+        (kx_group::SECP256R1, rustls::NamedGroup::secp256r1),
+        (crate::tls_vendored::secp521r1(), rustls::NamedGroup::secp521r1),
+    ] {
+        let mut provider = pq_first_provider();
+        if !provider.kx_groups.iter().any(|g| g.name() == name) {
+            provider.kx_groups.push(group);
+        }
+        let provider = Arc::new(provider);
+        let client = |roots, extra: bool| {
+            let mut tls = finish_tls13(
+                rustls::ClientConfig::builder_with_provider(provider.clone())
+                    .with_protocol_versions(&[&rustls::version::TLS13])
+                    .unwrap(),
+                roots,
+            );
+            let mut shape = full_shape();
+            shape.extra_key_share_groups = if extra { vec![name] } else { vec![] };
+            crate::tls_vendored::set_client_hello_shape(&mut tls, shape);
+            tls
+        };
+
+        let baseline_lb = loopback::Loopback::new();
+        let baseline = crypto_frames(
+            "baseline",
+            echo_with_tls(&baseline_lb, client(baseline_lb.roots(), true)).await,
+        );
+
+        let restricted = loopback::Loopback::with_server_tls(server_with_groups(vec![group]));
+        let with_extra = crypto_frames(
+            "extra share",
+            echo_with_tls(&restricted, client(restricted.roots(), true)).await,
+        );
+        let restricted = loopback::Loopback::with_server_tls(server_with_groups(vec![group]));
+        let with_hrr = crypto_frames(
+            "HRR control",
+            echo_with_tls(&restricted, client(restricted.roots(), false)).await,
+        );
+
+        eprintln!(
+            "{name:?}: client CRYPTO frames baseline={baseline} extra={with_extra} hrr={with_hrr}"
+        );
+        assert_eq!(with_extra, baseline, "{name:?}: no HRR with the extra share");
+        assert!(with_hrr > with_extra, "{name:?}: HRR control {with_hrr} vs {with_extra}");
+    }
+}
+
+/// A shaped ClientHello survives a HelloRetryRequest (server only on `secp384r1`): GREASE
+/// and the extra share are handled on the second hello and the handshake completes.
+#[tokio::test]
+async fn shaped_client_survives_hello_retry_request() {
+    use rustls::crypto::aws_lc_rs::kx_group;
+    let lb = loopback::Loopback::with_server_tls(server_with_groups(vec![kx_group::SECP384R1]));
+    let mut tls = tls13_config_with_roots(lb.roots());
+    crate::tls_vendored::set_client_hello_shape(&mut tls, full_shape());
+    echo_with_tls(&lb, tls).await;
+}
+
+// ---------------------------------------------------------------------------
+// Browser QUIC TLS profiles (`quic/tls_profile.rs`), measured 2026-10-29
+// ---------------------------------------------------------------------------
+
+/// Chrome 156 `trust_anchors` (0xca34) body from the measurements.
+const CHROME_156_TRUST_ANCHORS_HEX: &str = "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f";
+
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// `(kdf, aead, enc length, payload length)` of an outer GREASE ECH extension (0xfe0d).
+fn ech_outer(ch: &[u8]) -> (u16, u16, usize, usize) {
+    let body = clienthello_extension(ch, 0xfe0d).expect("no encrypted_client_hello");
+    let mut r = Reader::new(body);
+    assert_eq!(r.u8(), 0, "outer ECH");
+    let kdf = r.u16();
+    let aead = r.u16();
+    r.take(1); // config_id
+    let enc = r.u16() as usize;
+    r.take(enc);
+    let payload = r.u16() as usize;
+    r.take(payload);
+    assert_eq!(r.remaining(), 0, "trailing bytes after ECH payload");
+    (kdf, aead, enc, payload)
+}
+
+/// `compress_certificate` (27) algorithms: `<u8 len><u16...>`.
+fn cert_compression_algs(ch: &[u8]) -> Vec<u16> {
+    let body = clienthello_extension(ch, 27).expect("no compress_certificate");
+    let mut r = Reader::new(body);
+    let len = r.u8() as usize;
+    assert_eq!(len, r.remaining(), "compress_certificate list length");
+    let mut out = Vec::new();
+    while r.remaining() > 0 {
+        out.push(r.u16());
+    }
+    out
+}
+
+/// The production H3 ClientHello under the dial fingerprint `fp` for endpoint seed `seed`.
+async fn h3_clienthello(fp: crate::fingerprint_profile::TlsFingerprint, seed: u8) -> Vec<u8> {
+    crate::fingerprint_profile::with_dial_fingerprint(Some(fp), async move {
+        capture_clienthello(super::h3_quic_client_config(), super::h3_endpoint_config(), [seed; 32])
+    })
+    .await
+}
+
+fn sorted(mut v: Vec<u16>) -> Vec<u16> {
+    v.sort_unstable();
+    v
+}
+
+#[tokio::test]
+async fn h3_chromium_clienthello_matches_chrome_156() {
+    use crate::fingerprint_profile::TlsFingerprint;
+    let anchors = unhex(CHROME_156_TRUST_ANCHORS_HEX);
+    assert_eq!(anchors.len(), 186);
+    let mut ech_from_end = std::collections::BTreeSet::new();
+    let mut orders = std::collections::BTreeSet::new();
+    let mut payloads = std::collections::BTreeSet::new();
+    for seed in 0..16u8 {
+        let ch = h3_clienthello(TlsFingerprint::Chromium, seed).await;
+        assert_eq!(ja4(&ch), "q13d0312h3_55b375c5d22e_178839b6cec1");
+        let ids = extension_types(&ch);
+        assert_eq!(sorted(ids.clone()), [0, 10, 13, 16, 27, 43, 45, 51, 57, 17613, 51764, 65037]);
+        assert_eq!(cipher_suites(&ch), [0x1301, 0x1302, 0x1303]);
+        assert_eq!(u16_list_ext(&ch, 10), [0x11ec, 0x1d, 0x17, 0x18]);
+        assert_eq!(key_share_groups(&ch), [0x11ec, 0x1d]);
+        assert_eq!(supported_versions(&ch), [0x0304]);
+        assert_eq!(
+            u16_list_ext(&ch, 13),
+            [0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201]
+        );
+        assert_eq!(cert_compression_algs(&ch), [2], "brotli");
+        assert_eq!(clienthello_extension(&ch, 17613), Some(&[0x00, 0x03, 0x02, b'h', b'3'][..]));
+        assert_eq!(clienthello_extension(&ch, 51764), Some(&anchors[..]));
+        let (kdf, aead, enc, payload) = ech_outer(&ch);
+        assert_eq!((kdf, aead, enc), (1, 1, 32));
+        assert!([176, 208, 240].contains(&payload), "ECH payload {payload}");
+        let ech_len = clienthello_extension(&ch, 0xfe0d).unwrap().len();
+        assert!([218, 250, 282].contains(&ech_len), "ECH extension length {ech_len}");
+        payloads.insert(payload);
+        let pos = ids.iter().position(|e| *e == 0xfe0d).unwrap();
+        ech_from_end.insert(ids.len() - 1 - pos);
+        orders.insert(ids);
+    }
+    assert!(ech_from_end.iter().any(|p| *p != 0), "ECH is not always last");
+    assert!(payloads.len() >= 2, "ECH payload length is drawn per connection: {payloads:?}");
+    assert!(orders.len() > 1, "extension order varies per connection");
+}
+
+#[tokio::test]
+async fn h3_safari_clienthello_matches_apple() {
+    use crate::fingerprint_profile::TlsFingerprint;
+    for seed in 0..8u8 {
+        let ch = h3_clienthello(TlsFingerprint::Safari, seed).await;
+        assert_eq!(ja4(&ch), "q13d0311h3_55b375c5d22e_f2a83c8e78ae");
+        let exts = extensions(&ch);
+        let ids = extension_types(&ch);
+        assert!(is_grease_u16(ids[0]) && is_grease_u16(ids[ids.len() - 1]), "{ids:x?}");
+        assert_eq!(ids[1..ids.len() - 1], [0, 10, 16, 5, 13, 18, 51, 45, 43, 57, 27]);
+        assert_eq!(exts[0].1, [0u8; 0], "first GREASE extension is empty");
+        assert_eq!(exts[exts.len() - 1].1, [0u8], "last GREASE extension is 00");
+
+        let ciphers = cipher_suites(&ch);
+        assert!(is_grease_u16(ciphers[0]), "{ciphers:x?}");
+        assert_eq!(ciphers[1..], [0x1302, 0x1303, 0x1301]);
+        let groups = u16_list_ext(&ch, 10);
+        assert!(is_grease_u16(groups[0]), "{groups:x?}");
+        assert_eq!(groups[1..], [0x11ec, 0x1d, 0x17, 0x18, 0x19]);
+        let shares = key_share_entries(&ch);
+        assert!(is_grease_u16(shares[0].0) && shares[0].1 == 1, "{shares:x?}");
+        assert_eq!(
+            key_share_entries(&ch)[1..]
+                .iter()
+                .map(|(g, _)| *g)
+                .collect::<Vec<_>>(),
+            [0x11ec, 0x1d]
+        );
+        let versions = supported_versions(&ch);
+        assert!(is_grease_u16(versions[0]), "{versions:x?}");
+        assert_eq!(versions[1..], [0x0304]);
+        assert_eq!(
+            u16_list_ext(&ch, 13),
+            [0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201]
+        );
+        assert_eq!(cert_compression_algs(&ch), [1], "zlib");
+        assert_eq!(clienthello_extension(&ch, 18), Some(&[][..]), "empty SCT");
+        assert!(clienthello_extension(&ch, 0xfe0d).is_none(), "Apple sends no ECH");
+    }
+}
+
+#[tokio::test]
+async fn h3_firefox_clienthello_matches_firefox_159() {
+    use crate::fingerprint_profile::TlsFingerprint;
+    let mut orders = std::collections::BTreeSet::new();
+    for seed in 0..8u8 {
+        let ch = h3_clienthello(TlsFingerprint::Firefox, seed).await;
+        assert_eq!(ja4(&ch), "q13d0315h3_55b375c5d22e_dc5437974b47");
+        let ids = extension_types(&ch);
+        assert_eq!(
+            sorted(ids.clone()),
+            [0, 5, 10, 13, 16, 23, 27, 28, 34, 43, 45, 51, 57, 65037, 65281]
+        );
+        assert_eq!(*ids.last().unwrap(), 0xfe0d, "ECH last: {ids:x?}");
+        assert_eq!(cipher_suites(&ch), [0x1301, 0x1303, 0x1302]);
+        assert_eq!(u16_list_ext(&ch, 10), [0x11ec, 0x1d, 0x17, 0x18, 0x19]);
+        assert_eq!(key_share_groups(&ch), [0x11ec, 0x1d, 0x17]);
+        assert_eq!(supported_versions(&ch), [0x0304]);
+        assert_eq!(
+            u16_list_ext(&ch, 13),
+            [
+                0x0403, 0x0503, 0x0603, 0x0203, 0x0804, 0x0805, 0x0806, 0x0401, 0x0501, 0x0601,
+                0x0201
+            ]
+        );
+        assert_eq!(cert_compression_algs(&ch), [1, 3, 2], "zlib, zstd, brotli");
+        assert_eq!(clienthello_extension(&ch, 28), Some(&[0x40, 0x01][..]));
+        assert_eq!(
+            clienthello_extension(&ch, 34),
+            Some(&[0x00, 0x08, 0x04, 0x03, 0x05, 0x03, 0x06, 0x03, 0x02, 0x03][..])
+        );
+        assert_eq!(clienthello_extension(&ch, 65281), Some(&[0x00][..]));
+        assert_eq!(ech_outer(&ch), (1, 1, 32, 240));
+        assert_eq!(clienthello_extension(&ch, 0xfe0d).unwrap().len(), 282);
+        orders.insert(ids);
+    }
+    assert!(orders.len() > 1, "extension order varies per connection");
+}
+
+/// UDP payload length of the first client Initial datagram.
+fn first_initial_len(config: quinn::ClientConfig, endpoint_config: quinn::EndpointConfig) -> usize {
+    let mut endpoint =
+        quinn_proto::Endpoint::new(Arc::new(endpoint_config), None, false, Some([7; 32]));
+    let now = Instant::now();
+    let (_handle, mut conn) = endpoint
+        .connect(now, config, "203.0.113.1:443".parse().unwrap(), "www.example.com")
+        .expect("sans-IO connect");
+    let mut buf = Vec::new();
+    conn.poll_transmit(now, 1, &mut buf).expect("first Initial").size
+}
+
+#[tokio::test]
+async fn h3_initial_datagram_stays_1200_for_every_profile() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+    for (fp, want) in [
+        (TlsFingerprint::Chromium, 1200),
+        (TlsFingerprint::Firefox, 1200),
+        (TlsFingerprint::Safari, 1200),
+    ] {
+        let len = with_dial_fingerprint(Some(fp), async {
+            first_initial_len(super::h3_quic_client_config(), super::h3_endpoint_config())
+        })
+        .await;
+        assert_eq!(len, want, "{fp:?}");
+    }
+}

@@ -5,12 +5,12 @@
 //!
 //! ## What this controls — and what it cannot
 //!
-//! On rustls + `aws-lc-rs` the ClientHello knobs the public API exposes are
-//! the *order* of the offered cipher suites and the *order* of the
-//! key-exchange groups (both are emitted verbatim from the `CryptoProvider`
-//! vectors). Reordering the cipher list moves JA3 — which hashes the ciphers
-//! in offer order — toward the target browser, and leading with the
-//! post-quantum group closes the strongest modern tell, but it still cannot
+//! This module serves the TCP (h1/h2) dials, whose ClientHello stays stock rustls
+//! apart from the knobs here: the *order* of the offered cipher suites and the
+//! *order* of the key-exchange groups (both are emitted verbatim from the
+//! `CryptoProvider` vectors). Reordering the cipher list moves JA3 — which hashes
+//! the ciphers in offer order — toward the target browser, and leading with the
+//! post-quantum group closes the strongest modern tell, but over TCP it does not
 //! reach a byte-exact match:
 //!
 //! * **Post-quantum key share is offered.** `aws-lc-rs` provides
@@ -18,19 +18,18 @@
 //!   do, so a censor can no longer flag the dial on the *absence* of a PQ
 //!   key share behind a modern-browser User-Agent — the single strongest
 //!   "not a real browser" tell on stock rustls + `ring`.
-//! * **No GREASE.** Browsers prepend a random GREASE value to the cipher
-//!   list and sprinkle GREASE extensions; rustls emits none, whatever the
-//!   provider. This is the remaining byte-level gap.
-//! * **Extension set and order are owned by rustls** and are not exposed.
-//!   JA4 sorts ciphers/extensions and drops GREASE, so it keys on the
-//!   *set*; reordering alone does not move it.
+//! * **No GREASE, rustls' extension set and order on TCP.** Browsers prepend
+//!   GREASE values and send their own extension set; JA4 sorts ciphers and
+//!   extensions and drops GREASE, so it keys on the *set*, which reordering
+//!   alone does not move.
 //!
-//! The honest payoff is a closer JA3 with a PQ-capable key_share, and
-//! removal of the obvious "rustls-default order / no post-quantum group
-//! behind a Chrome User-Agent" mismatch. A byte-exact JA3/JA4 still needs a
-//! vendored rustls (GREASE + extension control); this module is the seam
-//! such a fork extends — callers keep asking for a provider by family and
-//! never see the difference.
+//! The vendored rustls does expose GREASE, the extension set and order, extra key
+//! shares and GREASE-ECH sizing (patch "client-hello-shape", reached through
+//! `crate::tls_vendored`), but only the H3 (QUIC) carrier uses it:
+//! `crate::quic::tls_profile` builds the QUIC ClientHello so its JA4 equals the
+//! browser's. Shaping the TCP ClientHello (where browsers differ again, e.g.
+//! padding) is separate, not yet done work; the TCP dials keep the provider order
+//! from this module.
 //!
 //! The kx-group order is `[X25519MLKEM768, x25519, secp256r1, secp384r1]`
 //! for every family — that matches what current Chrome / Firefox / Safari

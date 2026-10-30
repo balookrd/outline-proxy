@@ -3,9 +3,9 @@
 Единый источник истины по локальным патчам на vendored-крейты.
 *English version: [PATCHES.md](PATCHES.md).*
 
-Монорепо vendor'ит и патчит три upstream-крейта, чтобы HTTP/3 WebSocket-путь
-был практичен. Пропатченные копии лежат в `vendor/h3`, `vendor/sockudo-ws` и
-`vendor/quinn-proto`, подключены через `[patch.crates-io]` в корневом `Cargo.toml`. Файлы `.patch` в
+Монорепо vendor'ит и патчит четыре upstream-крейта, чтобы HTTP/3 WebSocket-путь
+был практичен. Пропатченные копии лежат в `vendor/h3`, `vendor/sockudo-ws`,
+`vendor/quinn-proto` и `vendor/rustls`, подключены через `[patch.crates-io]` в корневом `Cargo.toml`. Файлы `.patch` в
 этом каталоге — review- и maintenance-артефакты; сами сборки используют
 vendored-копии.
 
@@ -15,6 +15,7 @@ vendored-копии.
 - **sockudo-ws** — GitHub-тег `v1.7.5` (коммит `7819745`), в raw
   upstream-форматировании git (см. примечание ниже).
 - **quinn-proto** — crates.io `quinn-proto 0.11.15`.
+- **rustls** — crates.io `rustls 0.23.40`.
 
 ## Артефакты-патчи
 
@@ -23,11 +24,12 @@ vendored-копии.
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | все отличия `vendor/h3` от upstream `h3 0.0.8` |
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws/src` (однострочное изменение `Cargo.toml` описано ниже, в патч не входит) |
 | [`quinn-proto-0.11.15.patch`](quinn-proto-0.11.15.patch) | все отличия `vendor/quinn-proto` от upstream `quinn-proto 0.11.15` (`src/` и `Cargo.toml`) |
+| [`rustls-0.23.40.patch`](rustls-0.23.40.patch) | все отличия `vendor/rustls` от upstream `rustls 0.23.40` (`src/` и `Cargo.toml`) |
 
 ## Модули-гейты
 
-Весь production-код обращается к пропатченной поверхности API через три
-модуля-гейта (клиентский h3, серверный h3, клиентский QUIC):
+Весь production-код обращается к пропатченной поверхности API через четыре
+модуля-гейта (клиентский h3, серверный h3, клиентский QUIC, клиентский rustls):
 
 - [`crates/outline-transport/src/h3/vendored.rs`](crates/outline-transport/src/h3/vendored.rs) — клиент
   (`Protocol::WEBSOCKET` на Extended CONNECT, `Stream::from_h3_client` +
@@ -38,12 +40,20 @@ vendored-копии.
   плюс реэкспорты sockudo-ws-типов, используемых сервером).
 - [`crates/outline-transport/src/quic/vendored.rs`](crates/outline-transport/src/quic/vendored.rs) — клиент, пропатченный
   `quinn-proto` (`TransportConfig::initial_stream_receive_window`).
+- [`crates/outline-transport/src/tls_vendored.rs`](crates/outline-transport/src/tls_vendored.rs) — клиент, пропатченный
+  `rustls` (`ClientConfig::client_hello_shape` с `ClientHelloShape` /
+  `ExtensionOrder`, `kx_group::SECP521R1` и `apply_quic_tls_profile`, который
+  превращает браузерный TLS-профиль QUIC в `ClientHelloShape`).
 
 Ребейз vendored-крейтов на новый upstream начинай (и в идеале заканчивай) в
 этих файлах-гейтах. CI следит, чтобы `sockudo_ws` упоминался только в
 модулях-гейтах, а пропатченный API quinn-proto
 (`initial_stream_receive_window`) — только в
-`crates/outline-transport/src/quic/vendored.rs`; тестовые модули — исключение: они намеренно изображают
+`crates/outline-transport/src/quic/vendored.rs`, а пропатченный API rustls
+(`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
+`kx_group::SECP521R1`) — только в `crates/outline-transport/src/tls_vendored.rs`
+(шаг «invariant — patched rustls API only behind the gate module» в
+`.github/workflows/ci.yml`); тестовые модули — исключение: они намеренно изображают
 клиентскую сторону.
 
 ## h3 (0.0.8)
@@ -246,6 +256,76 @@ vendored-копия трактуется как **де-факто наш соб�
 - в неиспользуемом нами модуле всплывает неустранимая проблема безопасности,
   где вырезать дешевле, чем тащить.
 
+## rustls (0.23.40)
+
+Baseline — crates.io `rustls 0.23.40`. Изменения в `rustls-0.23.40.patch`:
+
+1. **client-hello-shape** (`src/client/client_conn.rs`, `src/client/builder.rs`,
+   `src/client/hs.rs`, `src/client/common.rs`, `src/client/tls13.rs`,
+   `src/client/ech.rs`, `src/msgs/handshake.rs`, `src/lib.rs`) — новое поле
+   `ClientConfig::client_hello_shape: Option<Arc<ClientHelloShape>>` (по умолчанию
+   `None`, выставляется в `builder.rs`; `ClientHelloShape` и `ExtensionOrder`
+   реэкспортируются из `rustls::client`). H3-клиент с его помощью делает ClientHello
+   в QUIC Initial таким же, как у браузера (вплоть до JA4). Поля:
+   - `omit_extended_master_secret`, `omit_ec_point_formats`,
+     `omit_status_request` — не отправлять расширения 23 / 11 / 5;
+   - `extra_extensions: Vec<(u16, Vec<u8>)>` — расширения, записываемые как есть и
+     упорядочиваемые наравне со штатными; запись со штатным типом заменяет
+     кодирование rustls, записи `pre_shared_key` игнорируются, типы учитываются как
+     отправленные (эхо сервера не считается непрошеным расширением). Типы не
+     дедуплицируются и не должны совпадать со значениями GREASE; при настоящем (не
+     GREASE) ECH тип, который внутренний hello сжимает, был бы записан дважды — ни
+     один наш профиль так не делает;
+   - `grease` — GREASE по RFC 8701 в стиле BoringSSL: случайные значения `0x?A?A`,
+     вытягиваемые раз на соединение (после всей случайности upstream и
+     сохраняемые через HelloRetryRequest), первыми в `cipher_suites`,
+     `supported_groups` и `supported_versions`, первая запись `key_share` с
+     однобайтным ключом `00` (пропадает после HRR, называющего группу), и два
+     различных GREASE-расширения: первое пустое, последнее с `00` (за ним идёт
+     только `pre_shared_key`);
+   - `extension_order: ExtensionOrder` — `Upstream` (перемешивание rustls, затем
+     ECH, затем `pre_shared_key`), `ShuffledWithEch` (ECH перемешивается со
+     всеми, `pre_shared_key` последним) или `Fixed(Vec<u16>)` (сначала
+     перечисленные типы, неотправляемые пропускаются, остальные — в порядке
+     upstream; поэтому неперечисленный ECH идёт после всех прочих расширений, и за
+     ним следуют только замыкающее GREASE-расширение, если включено, и
+     `pre_shared_key`; GREASE-расширения первые и последние независимо от списка).
+     Порядок сохраняется в ClientHello после HRR;
+   - `extra_key_share_groups: Vec<NamedGroup>` — дополнительные записи `key_share`
+     после штатных (группы без поддержки TLS 1.3 или уже предложенные
+     пропускаются). Клиент хранит их закрытые ключи и, если ServerHello выбрал
+     одну из этих групп, завершает обмен с ней, а не падает (`tls13.rs`); HRR с
+     запросом уже предложенной так группы отвергается как недопустимый. После HRR
+     без группы они отправляются снова, после HRR с группой — отбрасываются;
+   - `ech_grease_payload_lengths: Vec<u16>` — длина поля `payload` (с тегом AEAD)
+     у GREASE `encrypted_client_hello` (`ech.rs`): пустой список — размер по
+     правилам rustls, одно значение — ровно оно, несколько — равновероятный выбор
+     на соединение (rejection sampling на `SecureRandom` конфига, после генерации
+     HPKE-пары и до заполнения случайного payload). Настоящий ECH не затрагивается.
+
+   При `None` ClientHello, обработка ServerHello / HelloRetryRequest и порядок
+   расхода случайности побайтово как в upstream; сервер (`outline-ss-rust`),
+   TCP-клиент (`tokio-rustls`), probe и mesh кластера опцию не выставляют.
+2. **secp521r1** (`src/crypto/aws_lc_rs/mod.rs`, `src/crypto/ring/kx.rs`) — новая
+   группа `rustls::crypto::aws_lc_rs::kx_group::SECP521R1` (ECDH P-521 через
+   aws-lc-rs, её предлагают Safari и Firefox). Она живёт в маленьком модуле в
+   `aws_lc_rs/mod.rs`, потому что `ring/kx.rs` общий с провайдером *ring*, у
+   которого P-521 нет; в этом файле только `KxGroup`, его поля и
+   `uncompressed_point` стали `pub(crate)`. Группы нет ни в `DEFAULT_KX_GROUPS`, ни
+   в `ALL_KX_GROUPS` — дефолты не меняются.
+3. **Vendoring trim** (`Cargo.toml`) — убраны dev-dependencies вместе с
+   целями `[[example]]` и `[[bench]]` (их исходники, `Cargo.lock`, README и
+   `.clippy.toml` не vendor'ятся), так же как у `quinn-proto`. `build.rs` —
+   побайтово upstream.
+
+Фичи rustls `brotli` / `zlib` остаются выключенными: с ними сервер, который делит
+vendored-крейт с клиентом, получил бы компрессоры и начал бы сжимать свой
+сертификат. Декомпрессоры сертификата у клиента — в `outline-transport`
+(`brotli-decompressor`, `flate2`, `ruzstd`).
+
+Проверка соответствия: применить патч к чистой копии crates.io 0.23.40 (в объёме
+vendored-файлов) и сравнить `diff -r` — пусто.
+
 ## Регенерация
 
 Чтобы пересобрать артефакты-патчи после правки vendored-исходников:
@@ -255,6 +335,11 @@ vendored-копия трактуется как **де-факто наш соб�
   сделать `git diff vendor/h3` по изменённым файлам.
 - **sockudo-ws** — сделать diff `vendor/sockudo-ws/src` против `src/` чистого
   GitHub-checkout'а `v1.7.5` (оба уже в raw upstream-форматировании).
+- **quinn-proto / rustls** — распаковать чистый крейт с crates.io в новый
+  одноразовый git-репозиторий (оставив только vendored-набор файлов),
+  закоммитить, скопировать поверх vendored-файлы и взять `git diff` как патч;
+  проверка — применить его `patch -p1` к другой чистой копии и сравнить `diff -r`
+  (пусто).
 
 Не поднимай upstream-версии и не убирай `[patch.crates-io]` без явной
 причины: HTTP/3 WebSocket-путь зависит от этих патчей.
