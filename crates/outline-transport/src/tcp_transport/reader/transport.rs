@@ -49,7 +49,7 @@ pub trait ReadTransport: Send + 'static {
     /// Installs a handler for out-of-band carrier control signals (a
     /// server-initiated downstream-throttle notice riding a padding cover
     /// frame). Default no-op: only the padding-aware WS transport recognises
-    /// such signals; socket / raw-QUIC transports ignore the call.
+    /// such signals; socket transports ignore the call.
     fn set_throttle_handle(&mut self, _handle: crate::ThrottleSignalHandle) {}
 }
 

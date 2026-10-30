@@ -47,8 +47,7 @@ pub(super) async fn connect_probe_tcp(
     // builds the reader/writer (after `dial_in_uplink_scope` hands back the
     // stream), so the build must run inside the override too — otherwise a
     // probe to a padded per-uplink path would dial plain, get rejected, and
-    // flap the uplink unhealthy. raw-QUIC is never padded, so the QUIC arm
-    // inside is a no-op under the scope.
+    // flap the uplink unhealthy.
     crate::dial::with_uplink_padding_scope(
         uplink,
         connect_probe_tcp_inner(

@@ -20,7 +20,8 @@ pub const ATYP_IPV6: u8 = 0x03;
 //
 // The negotiation rides inside the VLESS request / response Addons section
 // (the `opt_len`-prefixed TLV block immediately after the user UUID) when no
-// HTTP headers are available — that is, on raw QUIC. Tags chosen to mirror
+// HTTP headers are available. Since raw QUIC (the only such carrier) was
+// removed no client sends them, but the server still parses them. Tags mirror
 // the spec table in `docs/SESSION-RESUMPTION.md`. Standard VLESS clients
 // (sing-box, v2ray-core) parse `opt_len` and walk past unknown opcodes, so
 // the addition is wire-compatible with everything that does not actively

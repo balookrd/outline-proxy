@@ -423,7 +423,7 @@ impl TunUdpEngine {
     /// the transport for being too large. Without this the client has no
     /// way to learn the effective tunnel MTU and keeps retransmitting the
     /// same oversize payload (real-world breakage: VoWiFi IKE_AUTH with
-    /// certificates over a raw-QUIC uplink).
+    /// certificates, first seen over the since-removed raw-QUIC uplink).
     ///
     /// Throttled per-flow to one PTB every [`Self::PTB_THROTTLE`] — RFC
     /// 4443 §2.4(f) makes this mandatory for ICMPv6 and RFC 1812 §4.3.2.8

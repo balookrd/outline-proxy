@@ -461,9 +461,8 @@ pub fn from_ws_frames(
     // Process-wide carrier padding. Disabled by default (the wire stays
     // byte-for-byte identical); when on, the sink frames every VLESS write,
     // the source decodes inbound frames, and the writer emits idle cover
-    // frames. VLESS-TCP-over-WS / -XHTTP ride this byte-chunk pipe; raw-QUIC
-    // (`open_quic_frame_pair`) and the datagram pipe (`from_ws_datagrams`,
-    // used by SS-UDP / VLESS-UDP) do not.
+    // frames. VLESS-TCP-over-WS / -XHTTP ride this byte-chunk pipe; the
+    // datagram pipe (`from_ws_datagrams`, used by SS-UDP / VLESS-UDP) does not.
     let padding = carrier_padding::effective_carrier_padding();
     let cover = padding.cover_enabled().then_some(padding);
     let (writer_task, data_tx, ctrl_tx, stream, writer_exit) = spawn_ws_writer(ws_stream, cover);

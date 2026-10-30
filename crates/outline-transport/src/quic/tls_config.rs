@@ -1,11 +1,12 @@
-//! Shared TLS / QUIC client configs and shared per-AF endpoints.
+//! QUIC client config for the H3 carrier (`h3` ALPN, used by WS-over-H3 and
+//! XHTTP-over-H3).
 //!
-//! Three ALPNs are supported, matching the outline-ss-rust server's
-//! per-protocol QUIC listener: `vless`, `ss`, `h3`. Each ALPN gets its
-//! own lazily-initialised `quinn::ClientConfig`. The underlying UDP
-//! endpoints are shared across ALPNs (one per address family — quinn
-//! endpoints are protocol-agnostic; ALPN is selected per connection via
-//! the client config).
+//! Everything a passive observer can read in the Initial follows the dial's browser
+//! profile: the TLS ClientHello (`super::tls_profile`, built by
+//! `crate::tls::build_quic_client_config`), the transport parameters
+//! (`super::tp_profile`) and the endpoint's source-CID length
+//! ([`h3_endpoint_config`]). Configs are cached per dial fingerprint; each dial owns its
+//! endpoint. Runtime receive windows, keep-alive and BBR are applied here too.
 
 use std::sync::{Arc, Once, OnceLock};
 use std::time::{Duration, Instant};

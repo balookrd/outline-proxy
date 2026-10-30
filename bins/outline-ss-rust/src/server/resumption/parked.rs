@@ -11,7 +11,7 @@
 //! - `SsUdpStream` — an SS-UDP-over-WS stream, preserved as the set of
 //!   NAT keys it was the registered responder of.
 //!
-//! Direct SS-UDP and SS-over-raw-QUIC are non-goals per the spec.
+//! Direct SS-UDP is a non-goal per the spec.
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, sync::atomic::AtomicU64};
 

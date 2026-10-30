@@ -232,9 +232,8 @@ fn pick_mode_and_scheme(
             Ok((mode, scheme, UrlTarget::Xhttp))
         },
         "quic" => bail!(
-            "ss link type=quic is not supported for combined-path SS \
-             (raw QUIC muxes tcp+udp natively — use the long-form `transport=ss` \
-             with `tcp_*`/`udp_*` config instead)"
+            "ss link type=quic is not supported (raw QUIC carrier support has been removed; \
+             use type=ws or type=xhttp)"
         ),
         "tcp" => bail!("ss link type=tcp is not supported (raw TCP carrier not implemented)"),
         other => bail!("ss link type={other} is not supported (only ws/xhttp)"),

@@ -14,7 +14,7 @@
 //! next probe re-establishes from scratch.
 //!
 //! Scope is intentionally narrow: only the VLESS-XHTTP/WS family uses the
-//! warm slot. Plain Shadowsocks and raw-QUIC paths still dial fresh; the
+//! warm slot. Plain Shadowsocks paths still dial fresh; the
 //! cost profile there differs and is not the bottleneck this module
 //! targets.
 

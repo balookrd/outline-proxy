@@ -134,7 +134,7 @@ pub(super) async fn run_relay(
     let keepalive_interval = lb_snapshot.tcp_active_keepalive_interval;
     // Mid-session retry operates on WS-family uplinks (SS-WS and
     // VLESS-WS as of v1.1) — the SS-direct-socket path bypasses the
-    // WS layer and raw-QUIC has no Ack-Prefix support, so the
+    // WS layer and has no Ack-Prefix support, so the
     // orchestrator skips retry for those uplinks rather than
     // dialling a path that would not give us the offset header.
     //
@@ -807,7 +807,7 @@ async fn try_soft_switch_migrate(
         return None;
     };
     // Resume-based migration only works on WS-family uplinks (SS-WS / VLESS-WS);
-    // a direct-socket or raw-QUIC active cannot present the group resume id.
+    // a direct-socket active cannot present the group resume id.
     if !matches!(new_candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
         metrics::record_soft_switch(uplinks.group_name(), "not_ws_family");
         return None;

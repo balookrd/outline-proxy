@@ -1683,6 +1683,41 @@ async fn shaped_client_survives_hello_retry_request() {
     echo_with_tls(&lb, tls).await;
 }
 
+/// After a server picks plain `x25519`, upstream's session store hints that group and the
+/// next hello to the same server drops the `X25519MLKEM768` share (it then fits in fewer
+/// CRYPTO frames). `NoKxHintStore` keeps both shares, so the second dial sends as many
+/// CRYPTO frames as the first.
+#[tokio::test]
+async fn no_kx_hint_store_keeps_post_quantum_share_on_later_dials() {
+    use rustls::crypto::aws_lc_rs::kx_group;
+    let crypto_frames = |run: &str, s: quinn::ConnectionStats| {
+        assert_eq!(s.path.lost_packets, 0, "{run}: loss makes CRYPTO frame counts incomparable");
+        s.frame_tx.crypto
+    };
+    let lb = loopback::Loopback::with_server_tls(server_with_groups(vec![kx_group::X25519]));
+    let client = || {
+        finish_tls13(
+            rustls::ClientConfig::builder_with_provider(Arc::new(pq_first_provider()))
+                .with_protocol_versions(&[&rustls::version::TLS13])
+                .unwrap(),
+            lb.roots(),
+        )
+    };
+
+    // Control: upstream's in-memory store applies the hint on the second dial.
+    let upstream = client();
+    let first = crypto_frames("upstream 1", echo_with_tls(&lb, upstream.clone()).await);
+    let second = crypto_frames("upstream 2", echo_with_tls(&lb, upstream).await);
+    assert!(second < first, "control: hinted hello should shrink ({first} -> {second})");
+
+    let mut patched = client();
+    patched.resumption =
+        rustls::client::Resumption::store(Arc::new(crate::quic::tls_profile::NoKxHintStore::new()));
+    let first = crypto_frames("no hint 1", echo_with_tls(&lb, patched.clone()).await);
+    let second = crypto_frames("no hint 2", echo_with_tls(&lb, patched).await);
+    assert_eq!(second, first, "the second hello keeps the X25519MLKEM768 share");
+}
+
 // ---------------------------------------------------------------------------
 // Browser QUIC TLS profiles (`quic/tls_profile.rs`), measured 2026-10-29
 // ---------------------------------------------------------------------------

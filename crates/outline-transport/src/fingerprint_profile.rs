@@ -390,7 +390,7 @@ where
 }
 
 /// The dial-scoped TLS fingerprint, or `None` outside any
-/// [`with_dial_fingerprint`] scope (probes, raw-QUIC, tests).
+/// [`with_dial_fingerprint`] scope (probes, tests).
 pub(crate) fn current_dial_fingerprint() -> Option<TlsFingerprint> {
     DIAL_TLS_FINGERPRINT.try_with(|fp| *fp).unwrap_or(None)
 }

@@ -3,8 +3,8 @@
 //! The raw-QUIC forward carriers (VLESS / Shadowsocks framed directly over
 //! QUIC) have been removed; the only remaining consumer of this module is the
 //! HTTP/3 carrier (`crate::h3`), which negotiates the [`ALPN_H3`] ALPN and
-//! reuses the shared per-AF endpoint and client-config builder in
-//! [`tls_config`].
+//! takes its browser-shaped client and endpoint configs from [`tls_config`]
+//! (each dial owns its endpoint).
 
 #![cfg(feature = "quic")]
 

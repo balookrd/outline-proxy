@@ -6,24 +6,17 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
 use socks5_proto::TargetAddr;
-use tokio::sync::oneshot;
 
 use crate::carrier_queue::FRAME_SOFT_CAP;
-use crate::{
-    TransportStream, UpstreamTransportGuard, WsClosed, frame_io_ws::carrier_liveness,
-    resumption::SessionId,
-};
+use crate::{TransportStream, UpstreamTransportGuard, WsClosed, frame_io_ws::carrier_liveness};
 use outline_wire::resume::{FRAME_LEN_V1, ParseResult, parse_v1};
 
-use super::header::{
-    VLESS_CMD_TCP, VLESS_VERSION, build_request_header, build_vless_tcp_request_header_with_resume,
-    parse_response_addons_session_id,
-};
+use super::header::{VLESS_CMD_TCP, VLESS_VERSION, build_request_header};
 
 /// VLESS TCP writer. Emits the request header on the first `send_chunk`
 /// concatenated with the payload into a single frame; subsequent frames
 /// are raw client bytes. Decoupled from the underlying transport via
-/// [`crate::frame_io::FrameSink`] — works identically over WS or QUIC.
+/// [`crate::frame_io::FrameSink`] — works identically over any frame carrier.
 pub struct VlessTcpWriter {
     sink: Option<Box<dyn crate::frame_io::FrameSink>>,
     pending_header: Option<Vec<u8>>,
@@ -40,25 +33,6 @@ impl VlessTcpWriter {
         lifetime: Arc<UpstreamTransportGuard>,
     ) -> Result<Self> {
         let header = build_request_header(uuid, VLESS_CMD_TCP, target, &[])?;
-        Ok(Self {
-            sink: Some(sink),
-            pending_header: Some(header),
-            _lifetime: lifetime,
-        })
-    }
-
-    /// Same as [`Self::with_sink`] but emits a populated Addons block
-    /// carrying `RESUME_CAPABLE` and (optionally) `RESUME_ID`. Used by
-    /// raw-QUIC callers — WS callers reach the same negotiation via
-    /// HTTP headers in `connect_transport`.
-    pub fn with_sink_and_resume(
-        sink: Box<dyn crate::frame_io::FrameSink>,
-        uuid: &[u8; 16],
-        target: &TargetAddr,
-        lifetime: Arc<UpstreamTransportGuard>,
-        resume_id: Option<&[u8; 16]>,
-    ) -> Result<Self> {
-        let header = build_vless_tcp_request_header_with_resume(uuid, target, true, resume_id)?;
         Ok(Self {
             sink: Some(sink),
             pending_header: Some(header),
@@ -141,14 +115,6 @@ pub struct VlessTcpReader {
     source: Box<dyn crate::frame_io::FrameSource>,
     pending_header: bool,
     header_buf: Vec<u8>,
-    /// Optional one-shot sink that receives the parsed `SESSION_ID`
-    /// opcode (or `None` on a feature-disabled server) the moment the
-    /// VLESS response header is first read. Used by resumption-aware
-    /// callers (raw-QUIC dial path) to stash the freshly issued Session
-    /// ID in the global ResumeCache without blocking the dial on a
-    /// server round-trip — the dial returns immediately and the sink
-    /// fires lazily on the first inbound frame.
-    session_id_sink: Option<oneshot::Sender<Option<SessionId>>>,
     /// Set by the caller when the WS upgrade negotiated the v1
     /// Ack-Prefix Protocol on the VLESS-WS path (server echoed
     /// `X-Outline-Resume-Ack-Prefix: 1`). When `true`, the very
@@ -200,31 +166,6 @@ impl VlessTcpReader {
             source,
             pending_header: true,
             header_buf: Vec::new(),
-            session_id_sink: None,
-            expect_ack_prefix: false,
-            up_acked: None,
-            pending_tail: None,
-            expect_downlink_replay: false,
-            _lifetime: lifetime,
-        }
-    }
-
-    /// Same as [`Self::with_source`] but installs a one-shot sink that
-    /// fires with the server-assigned `SESSION_ID` (or `None`) the
-    /// moment the response header is parsed by the first
-    /// [`Self::read_chunk`] call. Lets the dial path return without
-    /// waiting for the server's handshake response — saves one full
-    /// RTT per VLESS-TCP-over-QUIC dial.
-    pub fn with_source_and_resume_sink(
-        source: Box<dyn crate::frame_io::FrameSource>,
-        lifetime: Arc<UpstreamTransportGuard>,
-        sink: oneshot::Sender<Option<SessionId>>,
-    ) -> Self {
-        Self {
-            source,
-            pending_header: true,
-            header_buf: Vec::new(),
-            session_id_sink: Some(sink),
             expect_ack_prefix: false,
             up_acked: None,
             pending_tail: None,
@@ -504,13 +445,9 @@ impl VlessTcpReader {
             if self.header_buf.len() < need {
                 continue;
             }
-            // Resumption-aware reader: pull SESSION_ID out of the
-            // response Addons block and notify the dial-side sink.
-            // Non-resumption readers skip this — the sink is None.
-            if let Some(sink) = self.session_id_sink.take() {
-                let session_id = parse_response_addons_session_id(&self.header_buf[2..need]);
-                let _ = sink.send(session_id);
-            }
+            // The response Addons block (resumption opcodes from a server that
+            // still emits them) is skipped: WS carriers negotiate resumption
+            // through HTTP headers.
             let tail = self.header_buf.split_off(need);
             self.header_buf.clear();
             if !tail.is_empty() {
