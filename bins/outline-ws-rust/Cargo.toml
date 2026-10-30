@@ -46,8 +46,8 @@ mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 # test-tls: integration-only. Lets the binary trust a self-signed root supplied
 # via the OUTLINE_WS_TEST_TLS_CA_DER env var (forwarded to
-# outline_transport::install_test_tls_root) so e2e tests can drive TLS / H3 /
-# raw-QUIC carriers against a local self-signed server. NEVER in `default` —
+# outline_transport::install_test_tls_root) so e2e tests can drive TLS and H3
+# carriers against a local self-signed server. NEVER in `default` —
 # production builds omit the env hook and the install symbol entirely.
 test-tls = ["outline-transport/test-tls"]
 
