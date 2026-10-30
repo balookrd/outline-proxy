@@ -1827,8 +1827,20 @@ WS / XHTTP-дозвоны могут подмешивать браузерные
 идентификации (`User-Agent`, `Accept-*`, семейство Sec-CH-UA,
 Sec-Fetch-*), чтобы простое DPI-правило вида «WS-upgrade без
 User-Agent» больше не отделяло клиент от реального браузерного
-трафика. В пул входит шесть профилей: Chrome 151 (Windows + macOS),
-Firefox 152 (Windows + macOS), Safari 26 (macOS), Edge 150 (Windows).
+трафика. В каталоге девять профилей: Chrome 156 (Windows, macOS, Linux,
+Android), Firefox 159 (Windows, macOS, Linux), Safari 27 (macOS),
+Edge 156 (Windows).
+
+Профиль выбирается **только из пула той ОС, на которой клиент реально
+работает**: TCP SYN (TTL, раскладка опций) виден DPI рядом с
+ClientHello, и hello Safari из Linux-стека — несовместимая пара. macOS —
+Chrome, Firefox, Safari; Linux — Chrome, Firefox; Android — Chrome;
+Windows — Chrome, Firefox, Edge; любая другая ОС использует пул Linux.
+Стратегии ниже работают внутри этого пула. TLS-семейство не зависит от
+ОС: Chrome на Android шлёт десктопный ClientHello Chromium, и это
+подтверждено замером 2026-10-30 (Chrome Android 156.0.8078.73 на
+Android 17 совпадает с десктопным Chrome 156 байт в байт, включая trust
+anchors). 0-RTT с браузерами не выровнен.
 
 Доступны две стабильные стратегии. **`process_stable`
 (рекомендуемый дефолт)** выбирает одну идентичность на старте
@@ -1941,7 +1953,7 @@ Strategy»** в верхней строке статуса рядом с `Select
 пустые ячейки серые, так что активное распределение видно сразу.
 
 Встроенный HTML-дашборд control-plane'а рисует per-uplink чип
-с **именем активного профиля** (например, `Chrome 151 macOS`)
+с **именем активного профиля** (например, `Chrome 156 macOS`)
 рядом с протокол-pill в каждой строке аплинка, где эффективная
 стратегия не равна `none`. Цвет — по семейству: синий для
 стабильных профилей (Chrome / Firefox / Safari / Edge под
@@ -1949,7 +1961,7 @@ Strategy»** в верхней строке статуса рядом с `Select
 оператор сразу видит, идентичность приколота или ротируется.
 Аплинки на `none` чипа не получают — типичный opt-out-deployment
 визуально не меняется. Tooltip несёт и сырой id профиля, и стратегию
-(`fingerprint_profile_name = chrome-151-macos · strategy = process_stable`),
+(`fingerprint_profile_name = chrome-156-macos · strategy = process_stable`),
 чтобы отрисованный лейбл сразу сопоставлялся с Prometheus-лейблом
 `strategy` и snapshot-полем без перевода между формами.
 

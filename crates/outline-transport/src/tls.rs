@@ -31,7 +31,7 @@ use crate::tls_hello;
 
 /// Cache of built client configs keyed by `(tls fingerprint, ALPN list)`.
 /// The fingerprint is the dial-scoped value set by
-/// [`crate::fingerprint_profile::with_dial_fingerprint`]; `None` (no active
+/// [`crate::fingerprint_profile::with_dial_profile`]; `None` (no active
 /// scope — probes, tests) builds the Chromium profile.
 /// Builds are rare (one per distinct key, ever), so a single mutex is fine.
 ///

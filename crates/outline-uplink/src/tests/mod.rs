@@ -1185,14 +1185,11 @@ async fn snapshot_reports_fingerprint_profile_name_per_strategy() {
     .unwrap();
 
     let snapshot = manager.snapshot().await;
-    let pool: &[&str] = &[
-        "chrome-151-windows",
-        "chrome-151-macos",
-        "firefox-152-windows",
-        "firefox-152-macos",
-        "safari-26-macos",
-        "edge-150-windows",
-    ];
+    let pool: Vec<&str> = outline_transport::fingerprint_profile::PROFILES
+        .iter()
+        .filter(|p| p.os == outline_transport::fingerprint_profile::host_os())
+        .map(|p| p.name)
+        .collect();
 
     let u_none = &snapshot.uplinks[0];
     assert_eq!(u_none.fingerprint_profile_strategy, "none");

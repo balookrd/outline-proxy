@@ -181,17 +181,18 @@ impl DialPlan {
             options.url = url;
         }
 
-        // Pick the dial's TLS fingerprint once and scope it here so every
-        // carrier's TLS-config build below mimics the same browser family the
-        // HTTP headers advertise. One scope at the dispatch root covers all
-        // modes (h1/h2/h3/xhttp), so the per-carrier connect functions need no
-        // wrapper of their own. `Box::pin` the inner future: this `match`
-        // inlines every carrier's connect future (each with its own fallback
-        // chain), so leaving the scope wrapper un-boxed would grow an
-        // already-large state machine past tokio's 2 MiB test-thread stack.
-        let fp = crate::fingerprint_profile::select(options.url).map(|p| p.tls);
-        crate::fingerprint_profile::with_dial_fingerprint(
-            fp,
+        // Pick the dial's browser profile once and pin it here so every
+        // carrier's TLS-config build, HTTP/2 shape and header lookup below
+        // follow the same browser (one pick even under `random`). One scope
+        // at the dispatch root covers all modes (h1/h2/h3/xhttp), so the
+        // per-carrier connect functions need no wrapper of their own. `Box::pin`
+        // the inner future: this `match` inlines every carrier's connect future
+        // (each with its own fallback chain), so leaving the scope wrapper
+        // un-boxed would grow an already-large state machine past tokio's 2 MiB
+        // test-thread stack.
+        let url = options.url;
+        crate::fingerprint_profile::with_dial_profile(
+            url,
             Box::pin(async move {
                 match self.selected {
                     TransportMode::WsH1 => self.connect_ws_h1(options).await,

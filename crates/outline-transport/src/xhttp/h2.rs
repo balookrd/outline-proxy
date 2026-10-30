@@ -269,6 +269,52 @@ pub(super) async fn connect_xhttp_h2(
         .with_context(|| format!("xhttp dial to {url} failed"))
 }
 
+/// Headers of the session-opening request (the long-lived GET, or the
+/// stream-one POST): the profile's browser headers first, in its browser's
+/// h2 order, then the `X-Outline-*` negotiation headers. No `host` — on h2
+/// `:authority` carries it and browsers never send both.
+pub(crate) fn build_session_request_headers(
+    resume_request: Option<SessionId>,
+    ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
+    datagram_records: bool,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
+) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply_h2(
+            profile,
+            &mut headers,
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
+    headers.insert(RESUME_CAPABLE_HEADER, HeaderValue::from_static("1"));
+    if let Some(id) = resume_request {
+        headers.insert(
+            RESUME_REQUEST_HEADER,
+            HeaderValue::try_from(id.to_hex()).expect("hex Session ID is a valid header value"),
+        );
+    }
+    if ack_prefix_requested {
+        headers.insert(ACK_PREFIX_HEADER, HeaderValue::from_static("1"));
+    }
+    if symmetric_replay_requested {
+        headers.insert(crate::resumption::SYMMETRIC_REPLAY_HEADER, HeaderValue::from_static("1"));
+    }
+    if symmetric_replay_requested && client_acked_offset > 0 {
+        headers
+            .insert(crate::resumption::DOWN_ACKED_HEADER, HeaderValue::from(client_acked_offset));
+    }
+    if datagram_records {
+        headers.insert(
+            http::HeaderName::from_static(super::UDP_RECORDS_HEADER),
+            HeaderValue::from_static(super::UDP_RECORDS_ENABLED),
+        );
+    }
+    headers
+}
+
 /// Issues the long-lived GET, awaits response headers, and pulls
 /// out the optional `X-Outline-Session` resume token. The body is
 /// returned for the caller to drain in its own sub-task. Surfacing
@@ -286,36 +332,20 @@ async fn open_h2_get(
     datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(Option<SessionId>, bool, bool, bool, hyper::body::Incoming)> {
-    let mut builder = Request::builder()
+    let mut req = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
         .version(Version::HTTP_2)
-        .header(http::header::HOST, target.authority.as_str())
-        .header(RESUME_CAPABLE_HEADER, "1");
-    if let Some(id) = resume_request {
-        builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
-    }
-    if ack_prefix_requested {
-        builder = builder.header(ACK_PREFIX_HEADER, "1");
-    }
-    if symmetric_replay_requested {
-        builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
-    }
-    if symmetric_replay_requested && client_acked_offset > 0 {
-        builder =
-            builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
-    }
-    builder = super::apply_udp_records_request_header(datagram_records, builder);
-    let mut req = builder
         .body(empty_request_body())
         .context("failed to build xhttp GET request")?;
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
-            profile,
-            req.headers_mut(),
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
+    *req.headers_mut() = build_session_request_headers(
+        resume_request,
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        client_acked_offset,
+        datagram_records,
+        profile,
+    );
     send.ready().await.context("xhttp h2 not ready for GET")?;
     let resp = send
         .send_request(req)
@@ -374,36 +404,20 @@ async fn open_h2_stream_one(
     });
     let body: RequestBody = StreamBody::new(body_stream).boxed();
 
-    let mut builder = Request::builder()
+    let mut req = Request::builder()
         .method(Method::POST)
         .uri(target.full_uri_with_submode(XhttpSubmode::StreamOne))
         .version(Version::HTTP_2)
-        .header(http::header::HOST, target.authority.as_str())
-        .header(RESUME_CAPABLE_HEADER, "1");
-    if let Some(id) = resume_request {
-        builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
-    }
-    if ack_prefix_requested {
-        builder = builder.header(ACK_PREFIX_HEADER, "1");
-    }
-    if symmetric_replay_requested {
-        builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
-    }
-    if symmetric_replay_requested && client_acked_offset > 0 {
-        builder =
-            builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
-    }
-    builder = super::apply_udp_records_request_header(datagram_records, builder);
-    let mut req = builder
         .body(body)
         .context("failed to build xhttp stream-one request")?;
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
-            profile,
-            req.headers_mut(),
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
+    *req.headers_mut() = build_session_request_headers(
+        resume_request,
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        client_acked_offset,
+        datagram_records,
+        profile,
+    );
     send.ready().await.context("xhttp h2 not ready for stream-one")?;
     let resp = send
         .send_request(req)
@@ -509,10 +523,12 @@ async fn spawn_h2<T>(io: TokioIo<T>) -> Result<http2::SendRequest<RequestBody>>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
-    let (send_request, conn) = http2::Builder::new(TokioExecutor::new())
-        .handshake(io)
-        .await
-        .context("xhttp h2 handshake failed")?;
+    let mut builder = http2::Builder::new(TokioExecutor::new());
+    // SETTINGS of the dial's browser family (the dial fingerprint scope is
+    // still active here, as for the TLS config); windows are the carrier's
+    // defaults with the operator's `[h2]` windows on top.
+    crate::h2_profile::apply_dial_h2_shape(&mut builder, crate::h2_profile::H2Carrier::Xhttp);
+    let (send_request, conn) = builder.handshake(io).await.context("xhttp h2 handshake failed")?;
     // Hyper's connection future drives the multiplexer; without this
     // background task the whole mux freezes after the handshake.
     tokio::spawn(async move {
@@ -550,21 +566,12 @@ async fn driver_loop_h2(
     }));
 
     // Per-POST request template, built once per session: every POST in
-    // this session carries the same host + fingerprint headers and the
+    // this session carries the same fingerprint headers and the
     // same URL prefix, so we precompute both here and only clone the
     // header map / append the seq per frame instead of re-running the
     // fingerprint `apply` and re-`format!`-ing the whole absolute URI on
     // every uplink write.
-    let base_headers = match build_post_headers(&target, datagram_records, profile) {
-        Ok(headers) => Arc::new(headers),
-        Err(error) => {
-            warn!(?error, "xhttp h2 POST header template build failed");
-            let _ = in_tx
-                .send_control(Err(io_ws_err("xhttp h2 POST header build failed")))
-                .await;
-            return;
-        },
-    };
+    let base_headers = Arc::new(build_post_headers(datagram_records, profile));
     let uri_prefix: Arc<str> = Arc::from(target.uri_seq_prefix());
 
     // POST loop: pop messages, send them with monotonically-
@@ -676,22 +683,22 @@ async fn send_fin(
 }
 
 /// Header map shared by every packet-up POST in an h2 session: the
-/// `Host` header plus the browser fingerprint headers. Built once per
-/// session and cloned per POST — the clone reproduces the exact header
-/// order the old per-POST `Request::builder` + `apply` path produced
-/// (`HeaderMap::clone` preserves iteration order), so the anti-DPI
-/// fingerprint stays byte-identical.
+/// browser fingerprint headers (in the profile browser's h2 order), then
+/// the carrier's own. No `host` — `:authority` carries it on h2. Built
+/// once per session and cloned per POST; `HeaderMap::clone` preserves
+/// iteration order, so every POST carries the same wire order.
 pub(super) fn build_post_headers(
-    target: &XhttpTarget,
     datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<HeaderMap> {
+) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        http::header::HOST,
-        HeaderValue::try_from(target.authority.as_str())
-            .context("invalid xhttp authority for POST host header")?,
-    );
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply_h2(
+            profile,
+            &mut headers,
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
     // Uplink POSTs advertise the capability too: a session whose first
     // request is a POST (seq=0 racing the GET) must reach the server with the
     // same negotiation state the GET carries.
@@ -701,14 +708,7 @@ pub(super) fn build_post_headers(
             HeaderValue::from_static(super::UDP_RECORDS_ENABLED),
         );
     }
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
-            profile,
-            &mut headers,
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
-    Ok(headers)
+    headers
 }
 
 /// One packet-up POST under [`POST_TIMEOUT`]. On expiry the inner future is
