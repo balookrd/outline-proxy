@@ -198,9 +198,9 @@ static H3_QUIC_CLIENT_CONFIGS: OnceLock<
 /// follow the dial fingerprint's browser profile ([`build_h3_transport`]); that
 /// includes `max_datagram_frame_size`: the Chromium profile advertises exactly
 /// 65536 and enables datagram receive, the Safari profile leaves datagrams off.
-/// `build_client_config` reads the dial fingerprint and the test-root override,
-/// so a fresh process that installs the override before the first dial still
-/// captures it.
+/// The TLS ClientHello follows the same browser
+/// ([`crate::tls::build_quic_client_config`]); it reads the test-root override, so a
+/// fresh process that installs the override before the first dial still captures it.
 pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
     let fp = crate::fingerprint_profile::current_dial_fingerprint();
     let cache = H3_QUIC_CLIENT_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -210,7 +210,7 @@ pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
     {
         return existing.clone();
     }
-    let tls = crate::tls::build_client_config(&[b"h3"]);
+    let tls = crate::tls::build_quic_client_config(fp, &[super::ALPN_H3]);
     let quic_tls = quinn::crypto::rustls::QuicClientConfig::try_from((*tls).clone())
         .expect("h3 rustls config is always QUIC-compatible");
     let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));

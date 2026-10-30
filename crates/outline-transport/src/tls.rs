@@ -94,14 +94,7 @@ fn build_client_config_uncached(
     fp: Option<TlsFingerprint>,
     alpn_protocols: &[&[u8]],
 ) -> Arc<ClientConfig> {
-    let roots = match test_override_roots() {
-        Some(override_roots) => (*override_roots).clone(),
-        None => {
-            let mut roots = RootCertStore::empty();
-            roots.extend(TLS_SERVER_ROOTS.iter().cloned());
-            roots
-        },
-    };
+    let roots = roots();
     let mut config = match fp {
         Some(fp) => ClientConfig::builder_with_provider(crate::tls_fingerprint::provider_for(fp))
             .with_safe_default_protocol_versions()
@@ -114,6 +107,89 @@ fn build_client_config_uncached(
     };
     config.alpn_protocols = alpn_protocols.iter().map(|p| p.to_vec()).collect();
     Arc::new(config)
+}
+
+/// Cache of browser-shaped QUIC configs, keyed and rotated like [`CLIENT_CONFIG_CACHE`].
+#[cfg(feature = "quic")]
+static QUIC_CLIENT_CONFIG_CACHE: OnceLock<Mutex<HashMap<ClientConfigKey, ClientConfigEntry>>> =
+    OnceLock::new();
+
+/// Build (or return a cached) TLS 1.3 `ClientConfig` for a QUIC dial whose ClientHello
+/// matches the browser of `fp` ([`crate::quic::tls_profile`]; `None` = Chromium, as the
+/// QUIC transport parameters). Only for QUIC: browsers' TCP ClientHellos differ, so
+/// [`build_client_config`] keeps the TCP shape. Roots and the session-ticket rotation
+/// are those of [`build_client_config`].
+#[cfg(feature = "quic")]
+pub(crate) fn build_quic_client_config(
+    fp: Option<TlsFingerprint>,
+    alpn_protocols: &[&[u8]],
+) -> Arc<ClientConfig> {
+    let cache = QUIC_CLIENT_CONFIG_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key: ClientConfigKey = (fp, alpn_protocols.iter().map(|p| p.to_vec()).collect());
+    let mut guard = cache.lock();
+    if let Some((existing, created_at)) = guard.get(&key)
+        && created_at.elapsed() < SESSION_TICKET_ROTATION_INTERVAL
+    {
+        return Arc::clone(existing);
+    }
+    let config = build_quic_client_config_uncached(fp, alpn_protocols);
+    guard.insert(key, (Arc::clone(&config), Instant::now()));
+    config
+}
+
+/// [`build_quic_client_config`] without the cache.
+#[cfg(feature = "quic")]
+pub(crate) fn build_quic_client_config_uncached(
+    fp: Option<TlsFingerprint>,
+    alpn_protocols: &[&[u8]],
+) -> Arc<ClientConfig> {
+    use rustls::client::{EchGreaseConfig, EchMode, WebPkiServerVerifier};
+    use rustls::crypto::aws_lc_rs::hpke::DH_KEM_X25519_HKDF_SHA256_AES_128;
+    use rustls::crypto::hpke::Hpke;
+
+    use crate::quic::tls_profile::{self, BrowserVerifier};
+
+    let profile = tls_profile::for_fingerprint(fp);
+    let provider = Arc::new(profile.provider());
+    let verifier = WebPkiServerVerifier::builder_with_provider(Arc::new(roots()), provider.clone())
+        .build()
+        .expect("webpki verifier over a non-empty root store");
+    let builder = ClientConfig::builder_with_provider(provider);
+    let builder = if profile.ech_grease {
+        // A fresh X25519 point per build stands in for the (absent) server ECH key.
+        let suite = DH_KEM_X25519_HKDF_SHA256_AES_128;
+        let (placeholder, _) = suite.generate_key_pair().expect("aws-lc-rs X25519 key generation");
+        builder
+            .with_ech(EchMode::Grease(EchGreaseConfig::new(suite, placeholder)))
+            .expect("aws-lc-rs provider supports TLS 1.3 and ECH")
+    } else {
+        builder
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("aws-lc-rs provider supports TLS 1.3")
+    };
+    let mut config = builder
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(BrowserVerifier::new(
+            verifier,
+            profile.sig_schemes,
+        )))
+        .with_no_client_auth();
+    config.alpn_protocols = alpn_protocols.iter().map(|p| p.to_vec()).collect();
+    config.cert_decompressors = profile.cert_decompressors();
+    crate::tls_vendored::apply_quic_tls_profile(&mut config, profile);
+    Arc::new(config)
+}
+
+/// Roots for every client config: the test override when installed, else webpki.
+fn roots() -> RootCertStore {
+    match test_override_roots() {
+        Some(override_roots) => (*override_roots).clone(),
+        None => {
+            let mut roots = RootCertStore::empty();
+            roots.extend(TLS_SERVER_ROOTS.iter().cloned());
+            roots
+        },
+    }
 }
 
 /// Process-wide override slot consulted by [`build_client_config`].

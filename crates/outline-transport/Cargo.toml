@@ -10,7 +10,15 @@ workspace = true
 default = []
 # Raw QUIC transport (no HTTP/3 framing). Required by `h3` since both share
 # the underlying quinn endpoint and TLS config builder.
-quic = ["dep:quinn", "dep:quinn-proto", "dep:once_cell", "dep:ring"]
+quic = [
+    "dep:quinn",
+    "dep:quinn-proto",
+    "dep:once_cell",
+    "dep:ring",
+    "dep:flate2",
+    "dep:brotli-decompressor",
+    "dep:ruzstd",
+]
 h3 = ["quic", "dep:h3", "dep:h3-quinn", "sockudo-ws/http3"]
 metrics = ["outline-metrics/prometheus", "hyper/server"]
 # Exposes `install_test_tls_root` so cross-repo integration tests
@@ -28,6 +36,11 @@ cert-check = ["dep:x509-cert"]
 anyhow = "1.0"
 async-trait = "0.1"
 bytes = "1.10"
+# Certificate decompressors offered by the browser-shaped QUIC ClientHello
+# (`quic/tls_profile.rs`): decoders only, so rustls's own `brotli` / `zlib`
+# features (which would also give the server compressors) stay off.
+brotli-decompressor = { version = "6.2", optional = true }
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"], optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hashbrown = "0.14"
 h3 = { version = "0.0.8", optional = true }
@@ -55,6 +68,7 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 # aws-lc-rs-only features as quinn.
 quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"], optional = true }
 rand = "0.9"
+ruzstd = { version = "0.9", default-features = false, features = ["std"], optional = true }
 # SHA-256 / HKDF primitives for the QUIC-Initial decrypt diagnostic test
 # (`quic/tests/tls_config.rs`). Gated under `quic` so slim builds pull neither.
 ring = { version = "0.17", optional = true }

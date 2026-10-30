@@ -59,4 +59,5 @@ debug = 1
 [patch.crates-io]
 h3 = { path = "vendor/h3" }
 quinn-proto = { path = "vendor/quinn-proto" }
+rustls = { path = "vendor/rustls" }
 sockudo-ws = { path = "vendor/sockudo-ws" }

@@ -1,0 +1,977 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 6262e3d..ff768b7 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -101,16 +101,6 @@ zlib = ["dep:zlib-rs"]
+ name = "rustls"
+ path = "src/lib.rs"
+ 
+-[[example]]
+-name = "test_ca"
+-path = "examples/internal/test_ca.rs"
+-
+-[[bench]]
+-name = "benchmarks"
+-path = "benches/benchmarks.rs"
+-harness = false
+-required-features = ["ring"]
+-
+ [dependencies.aws-lc-rs]
+ version = "1.14"
+ optional = true
+@@ -173,52 +163,6 @@ version = "1.8"
+ version = "0.6"
+ optional = true
+ 
+-[dev-dependencies.base64]
+-version = "0.22"
+-
+-[dev-dependencies.bencher]
+-version = "0.1.5"
+-
+-[dev-dependencies.env_logger]
+-version = "0.11"
+-
+-[dev-dependencies.hex]
+-version = "0.4"
+-
+-[dev-dependencies.log]
+-version = "0.4.8"
+-
+-[dev-dependencies.macro_rules_attribute]
+-version = "0.2"
+-
+-[dev-dependencies.num-bigint]
+-version = "0.4.4"
+-
+-[dev-dependencies.rcgen]
+-version = "0.14"
+-features = [
+-    "pem",
+-    "aws_lc_rs",
+-]
+-default-features = false
+-
+-[dev-dependencies.serde]
+-version = "1"
+-features = ["derive"]
+-
+-[dev-dependencies.serde_json]
+-version = "1"
+-
+-[dev-dependencies.time]
+-version = "0.3.6"
+-default-features = false
+-
+-[dev-dependencies.webpki-roots]
+-version = "1"
+-
+-[dev-dependencies.x509-parser]
+-version = "0.17"
+-
+ [build-dependencies.rustversion]
+ version = "1.0.6"
+ optional = true
+diff --git a/src/client/builder.rs b/src/client/builder.rs
+index 4b110d1..1ba0a1f 100644
+--- a/src/client/builder.rs
++++ b/src/client/builder.rs
+@@ -185,6 +185,7 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
+             cert_compression_cache: Arc::new(compress::CompressionCache::default()),
+             cert_decompressors: compress::default_cert_decompressors().to_vec(),
+             ech_mode: self.state.client_ech_mode,
++            client_hello_shape: None,
+         }
+     }
+ }
+diff --git a/src/client/client_conn.rs b/src/client/client_conn.rs
+index 374a70d..f1b0628 100644
+--- a/src/client/client_conn.rs
++++ b/src/client/client_conn.rs
+@@ -287,6 +287,106 @@ pub struct ClientConfig {
+ 
+     /// How to offer Encrypted Client Hello (ECH). The default is to not offer ECH.
+     pub(super) ech_mode: Option<EchMode>,
++
++    /// Reshape the ClientHello (outline-proxy patch "client-hello-shape").
++    ///
++    /// `None` (the default) keeps the upstream ClientHello byte for byte,
++    /// including how much randomness is drawn while building it.
++    pub client_hello_shape: Option<Arc<ClientHelloShape>>,
++}
++
++/// How the ClientHello is reshaped (outline-proxy patch "client-hello-shape").
++///
++/// Only the client's outgoing hello is affected; parsing of peer messages and
++/// every server-side code path are unchanged.
++#[derive(Debug, Clone, Default)]
++pub struct ClientHelloShape {
++    /// Do not send `extended_master_secret` (23).
++    ///
++    /// Only meaningful for TLS 1.3-only configurations: a TLS 1.2 handshake
++    /// then runs without EMS, or fails when `ClientConfig::require_ems` is set.
++    pub omit_extended_master_secret: bool,
++
++    /// Do not send `ec_point_formats` (11).
++    pub omit_ec_point_formats: bool,
++
++    /// Do not send `status_request` (5), so no OCSP response is requested.
++    pub omit_status_request: bool,
++
++    /// Extensions written verbatim as `(type, body)`.
++    ///
++    /// They take part in [`ClientHelloShape::extension_order`] like the
++    /// built-in ones.  An entry naming an extension rustls builds itself
++    /// replaces rustls' encoding of it; `pre_shared_key` (41) entries are
++    /// ignored.  The types are recorded as sent, so a server echoing one of
++    /// them is not treated as an unsolicited extension.
++    ///
++    /// Types are not de-duplicated: list each type at most once, and never a
++    /// GREASE value (`0x?A?A`) when [`ClientHelloShape::grease`] is set.  With
++    /// real (non-GREASE) ECH, an entry whose type the inner hello compresses
++    /// into `ech_outer_extensions` would be written twice; use such types only
++    /// with GREASE ECH or without ECH.
++    pub extra_extensions: Vec<(u16, Vec<u8>)>,
++
++    /// BoringSSL-style GREASE (RFC 8701).
++    ///
++    /// Random `0x?A?A` values, drawn once per connection and kept across a
++    /// HelloRetryRequest, are put first in `cipher_suites`, `supported_groups`
++    /// and `supported_versions`; `key_share` starts with a GREASE entry whose
++    /// key is the single byte `00` (not repeated after a HelloRetryRequest that
++    /// names a group); and two distinct GREASE extensions are sent, the first
++    /// one empty and the last one carrying the single byte `00` (only
++    /// `pre_shared_key` follows it).
++    pub grease: bool,
++
++    /// Order of the extensions; see [`ExtensionOrder`].
++    pub extension_order: ExtensionOrder,
++
++    /// Additional `key_share` entries, after the built-in ones.
++    ///
++    /// Groups the provider does not support for TLS 1.3, or that already have
++    /// a share, are skipped.  The keys are kept, and if the ServerHello selects
++    /// one of these groups the key exchange completes with it.  They are sent
++    /// again unchanged after a HelloRetryRequest without a group, and dropped
++    /// after one that names a group.
++    pub extra_key_share_groups: Vec<NamedGroup>,
++
++    /// Length of the `payload` field of a GREASE `encrypted_client_hello`
++    /// (AEAD tag included), applied only with [`EchMode::Grease`].
++    ///
++    /// Empty: rustls' own sizing (the length of a padded inner hello plus the
++    /// tag).  One value: exactly that length.  Several values: one picked
++    /// uniformly at random per connection from the config's `SecureRandom`,
++    /// after the HPKE key pair is generated and before the random payload is
++    /// filled (the fill needs the length); the extension, and so
++    /// the length, is carried unchanged into a ClientHello sent after a
++    /// HelloRetryRequest.  Real (non-GREASE) ECH is not affected.
++    ///
++    /// [`EchMode::Grease`]: crate::client::EchMode::Grease
++    pub ech_grease_payload_lengths: Vec<u16>,
++}
++
++/// Extension order of a shaped ClientHello (see [`ClientHelloShape`]).
++///
++/// The order is fixed per connection: a ClientHello sent after a
++/// HelloRetryRequest repeats it.
++#[derive(Debug, Clone, Default, PartialEq, Eq)]
++pub enum ExtensionOrder {
++    /// rustls' own order: shuffled, then ECH, then `pre_shared_key`.
++    #[default]
++    Upstream,
++
++    /// Like [`ExtensionOrder::Upstream`], but `encrypted_client_hello` is
++    /// shuffled with the rest; `pre_shared_key` stays last.
++    ShuffledWithEch,
++
++    /// Exactly the listed extension types first (types not sent are skipped),
++    /// then the remaining ones in upstream order.  ECH extensions not listed
++    /// therefore come after every other extension, followed only by the
++    /// trailing GREASE extension (when enabled) and `pre_shared_key`, which is
++    /// always last.  GREASE extensions, when enabled, are first and last
++    /// (before `pre_shared_key`) regardless of the list.
++    Fixed(Vec<u16>),
+ }
+ 
+ impl ClientConfig {
+diff --git a/src/client/common.rs b/src/client/common.rs
+index 9afa0c3..5ab89d9 100644
+--- a/src/client/common.rs
++++ b/src/client/common.rs
+@@ -2,9 +2,11 @@ use alloc::boxed::Box;
+ use alloc::vec::Vec;
+ 
+ use super::ResolvesClientCert;
++use crate::crypto::SecureRandom;
+ use crate::log::{debug, trace};
+ use crate::msgs::enums::ExtensionType;
+ use crate::msgs::handshake::{CertificateChain, DistinguishedName, ProtocolName, ServerExtensions};
++use crate::rand::GetRandomFailed;
+ use crate::sync::Arc;
+ use crate::{SignatureScheme, compress, sign};
+ 
+@@ -39,6 +41,9 @@ pub(super) struct ClientHelloDetails {
+     pub(super) sent_extensions: Vec<ExtensionType>,
+     pub(super) extension_order_seed: u16,
+     pub(super) offered_cert_compression: bool,
++    /// GREASE values of a shaped ClientHello, kept for a HelloRetryRequest
++    /// (client-hello-shape patch).
++    pub(super) grease: Option<GreaseValues>,
+ }
+ 
+ impl ClientHelloDetails {
+@@ -48,6 +53,7 @@ impl ClientHelloDetails {
+             sent_extensions: Vec::new(),
+             extension_order_seed,
+             offered_cert_compression: false,
++            grease: None,
+         }
+     }
+ 
+@@ -117,3 +123,38 @@ impl ClientAuthDetails {
+         Self::Empty { auth_context_tls13 }
+     }
+ }
++
++/// RFC 8701 GREASE values of one shaped ClientHello (client-hello-shape patch).
++#[derive(Clone, Copy, Debug)]
++pub(super) struct GreaseValues {
++    pub(super) cipher_suite: u16,
++    pub(super) group: u16,
++    pub(super) version: u16,
++    pub(super) first_extension: u16,
++    pub(super) last_extension: u16,
++}
++
++impl GreaseValues {
++    /// Draws the values BoringSSL-style: `0x?A?A` from one random byte each,
++    /// the two extension values forced apart.
++    pub(super) fn new(secure_random: &dyn SecureRandom) -> Result<Self, GetRandomFailed> {
++        let mut seed = [0u8; 5];
++        secure_random.fill(&mut seed)?;
++        let grease = |b: u8| {
++            let v = u16::from((b & 0xf0) | 0x0a);
++            (v << 8) | v
++        };
++        let first_extension = grease(seed[3]);
++        let mut last_extension = grease(seed[4]);
++        if last_extension == first_extension {
++            last_extension ^= 0x1010;
++        }
++        Ok(Self {
++            cipher_suite: grease(seed[0]),
++            group: grease(seed[1]),
++            version: grease(seed[2]),
++            first_extension,
++            last_extension,
++        })
++    }
++}
+diff --git a/src/client/ech.rs b/src/client/ech.rs
+index 5675e71..52bd7f2 100644
+--- a/src/client/ech.rs
++++ b/src/client/ech.rs
+@@ -219,6 +219,7 @@ impl EchGreaseConfig {
+         secure_random: &'static dyn SecureRandom,
+         inner_name: ServerName<'static>,
+         outer_hello: &ClientHelloPayload,
++        payload_lengths: &[u16],
+     ) -> Result<EncryptedClientHello, Error> {
+         trace!("Preparing GREASE ECH extension");
+ 
+@@ -251,19 +252,27 @@ impl EchGreaseConfig {
+             false, // Does not matter if we enable/disable SNI here. Inner hello is not used.
+         )?;
+ 
+-        // Construct an inner hello using the outer hello - this allows us to know the size of
+-        // dummy payload we should use for the GREASE extension.
+-        let encoded_inner_hello = grease_state.encode_inner_hello(outer_hello, None, &None);
+-
+-        // Generate a payload of random data equivalent in length to a real inner hello.
+-        let payload_len = encoded_inner_hello.len()
+-            + suite
+-                .sym
+-                .aead_id
+-                .tag_len()
+-                // Safety: we have confirmed the AEAD is supported when building the config. All
+-                //  supported AEADs have a tag length.
+-                .unwrap();
++        let payload_len = match payload_lengths {
++            // Construct an inner hello using the outer hello - this allows us to know the size of
++            // dummy payload we should use for the GREASE extension.
++            [] => {
++                let encoded_inner_hello = grease_state.encode_inner_hello(outer_hello, None, &None);
++
++                // Generate a payload of random data equivalent in length to a real inner hello.
++                encoded_inner_hello.len()
++                    + suite
++                        .sym
++                        .aead_id
++                        .tag_len()
++                        // Safety: we have confirmed the AEAD is supported when building the config. All
++                        //  supported AEADs have a tag length.
++                        .unwrap()
++            }
++            // client-hello-shape: a fixed payload length.
++            [len] => usize::from(*len),
++            // client-hello-shape: one of several lengths, drawn after the draws above.
++            lens => usize::from(lens[pick_index(secure_random, lens.len())?]),
++        };
+         let mut payload = vec![0; payload_len];
+         secure_random.fill(&mut payload)?;
+ 
+@@ -277,6 +286,19 @@ impl EchGreaseConfig {
+     }
+ }
+ 
++/// A uniformly random index below `n` (`n >= 1`), by rejection sampling
++/// (client-hello-shape patch).
++fn pick_index(secure_random: &dyn SecureRandom, n: usize) -> Result<usize, Error> {
++    let n = n as u32;
++    let zone = u32::MAX - u32::MAX % n;
++    loop {
++        let v = crate::rand::random_u32(secure_random)?;
++        if v < zone {
++            return Ok((v % n) as usize);
++        }
++    }
++}
++
+ /// An enum representing ECH offer status.
+ #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+ pub enum EchStatus {
+@@ -647,10 +669,19 @@ impl EchState {
+         // block of to-be-compressed extensions.
+         inner_hello.contiguous_extensions = compressed_exts.clone();
+ 
++        // client-hello-shape: the inner hello carries the raw extensions too.
++        inner_hello.raw_extensions = outer_hello.raw_extensions.clone();
++
+         // Note which extensions we're sending in the inner hello. This may differ from
+         // the outer hello (e.g. the inner hello may omit SNI while the outer hello will
+         // always have the ECH cover name in SNI).
+         self.sent_extensions = inner_hello.collect_used();
++        self.sent_extensions.extend(
++            inner_hello
++                .raw_extensions
++                .iter()
++                .map(|(typ, _)| *typ),
++        );
+ 
+         // If we're resuming, we need to update the PSK binder in the inner hello.
+         if let Some(resuming) = resuming.as_ref() {
+diff --git a/src/client/hs.rs b/src/client/hs.rs
+index 12e885e..c6a4f2e 100644
+--- a/src/client/hs.rs
++++ b/src/client/hs.rs
+@@ -14,9 +14,9 @@ use crate::SupportedCipherSuite;
+ use crate::bs_debug;
+ use crate::check::inappropriate_handshake_message;
+ use crate::client::client_conn::ClientConnectionData;
+-use crate::client::common::ClientHelloDetails;
++use crate::client::common::{ClientHelloDetails, GreaseValues};
+ use crate::client::ech::EchState;
+-use crate::client::{ClientConfig, EchMode, EchStatus, tls13};
++use crate::client::{ClientConfig, EchMode, EchStatus, ExtensionOrder, tls13};
+ use crate::common_state::{CommonState, HandshakeKind, KxState, State};
+ use crate::conn::ConnectionRandoms;
+ use crate::crypto::{ActiveKeyExchange, KeyExchangeAlgorithm};
+@@ -27,12 +27,13 @@ use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
+ use crate::hash_hs::HandshakeHashBuffer;
+ use crate::log::{debug, trace};
+ use crate::msgs::base::Payload;
+-use crate::msgs::enums::{Compression, ExtensionType};
++use crate::msgs::enums::{Compression, ExtensionType, NamedGroup};
+ use crate::msgs::handshake::{
+     CertificateStatusRequest, ClientExtensions, ClientExtensionsInput, ClientHelloPayload,
+     ClientSessionTicket, EncryptedClientHello, HandshakeMessagePayload, HandshakePayload,
+     HelloRetryRequest, KeyShareEntry, ProtocolName, PskKeyExchangeModes, Random, ServerNamePayload,
+-    SessionId, SupportedEcPointFormats, SupportedProtocolVersions, TransportParameters,
++    SessionId, ShapeOrder, SupportedEcPointFormats, SupportedProtocolVersions,
++    TransportParameters,
+ };
+ use crate::msgs::message::{Message, MessagePayload};
+ use crate::msgs::persist;
+@@ -74,6 +75,8 @@ pub(super) struct ClientHelloInput {
+     pub(super) session_id: SessionId,
+     pub(super) server_name: ServerName<'static>,
+     pub(super) prev_ech_ext: Option<EncryptedClientHello>,
++    /// Keys of `ClientHelloShape::extra_key_share_groups` (client-hello-shape patch).
++    pub(super) extra_key_shares: Vec<Box<dyn ActiveKeyExchange>>,
+ }
+ 
+ impl ClientHelloInput {
+@@ -124,7 +127,7 @@ impl ClientHelloInput {
+             crate::rand::random_u16(config.provider.secure_random)?,
+         );
+ 
+-        Ok(Self {
++        let mut input = Self {
+             resuming,
+             random: Random::new(config.provider.secure_random)?,
+             sent_tls13_fake_ccs: false,
+@@ -132,8 +135,22 @@ impl ClientHelloInput {
+             session_id,
+             server_name,
+             prev_ech_ext: None,
++            extra_key_shares: Vec::new(),
+             config,
+-        })
++        };
++
++        // client-hello-shape: GREASE values are drawn once per connection, after
++        // all upstream randomness, and reused by a ClientHello after HRR.
++        if input
++            .config
++            .client_hello_shape
++            .as_ref()
++            .is_some_and(|shape| shape.grease)
++        {
++            input.hello.grease = Some(GreaseValues::new(input.config.provider.secure_random)?);
++        }
++
++        Ok(input)
+     }
+ 
+     pub(super) fn start_handshake(
+@@ -208,6 +225,8 @@ fn emit_client_hello_for_retry(
+     // should be unreachable thanks to config builder
+     assert!(supported_versions.any(|_| true));
+ 
++    let shape = config.client_hello_shape.as_deref();
++
+     let mut exts = Box::new(ClientExtensions {
+         // offer groups which are usable for any offered version
+         named_groups: Some(
+@@ -231,6 +250,15 @@ fn emit_client_hello_for_retry(
+         ..Default::default()
+     });
+ 
++    if let Some(shape) = shape {
++        if shape.omit_extended_master_secret {
++            exts.extended_master_secret_request = None;
++        }
++        if shape.omit_status_request {
++            exts.certificate_status_request = None;
++        }
++    }
++
+     match extra_exts.transport_parameters.clone() {
+         Some(TransportParameters::Quic(v)) => exts.transport_parameters = Some(v),
+         Some(TransportParameters::QuicDraft(v)) => exts.transport_parameters_draft = Some(v),
+@@ -249,6 +277,7 @@ fn emit_client_hello_for_retry(
+         .kx_groups
+         .iter()
+         .any(|skxg| skxg.name().key_exchange_algorithm() == KeyExchangeAlgorithm::ECDHE)
++        && !shape.is_some_and(|shape| shape.omit_ec_point_formats)
+     {
+         exts.ec_point_formats = Some(SupportedEcPointFormats::default());
+     }
+@@ -294,11 +323,64 @@ fn emit_client_hello_for_retry(
+             {
+                 shares.push(KeyShareEntry::new(component_group, component_share));
+             }
++
++            // client-hello-shape: extra key shares.  A ClientHello after an HRR
++            // without a group resends the keys of the first one unchanged.
++            if let Some(shape) = shape {
++                if retryreq.is_none() {
++                    for &group in &shape.extra_key_share_groups {
++                        let already_offered = shares
++                            .iter()
++                            .any(|share| share.group == group)
++                            || input
++                                .extra_key_shares
++                                .iter()
++                                .any(|kx| kx.group() == group);
++                        if already_offered {
++                            continue;
++                        }
++                        if let Some(skxg) = config.find_kx_group(group, ProtocolVersion::TLSv1_3) {
++                            input
++                                .extra_key_shares
++                                .push(skxg.start()?);
++                        }
++                    }
++                }
++                for kx in &input.extra_key_shares {
++                    shares.push(KeyShareEntry::new(kx.group(), kx.pub_key()));
++                }
++            }
++        } else {
++            // client-hello-shape: the HRR named a group; only that one is offered now.
++            input.extra_key_shares.clear();
++        }
++
++        if let Some(grease) = input.hello.grease {
++            // client-hello-shape: GREASE share first, unless the HRR named a group.
++            if !retryreq
++                .map(|rr| rr.key_share.is_some())
++                .unwrap_or_default()
++            {
++                shares.insert(0, KeyShareEntry::new(NamedGroup::from(grease.group), [0u8]));
++            }
+         }
+ 
+         exts.key_shares = Some(shares);
+     }
+ 
++    if let Some(grease) = input.hello.grease {
++        // client-hello-shape: GREASE in supported_groups and supported_versions,
++        // and the two GREASE extensions.
++        if let Some(groups) = exts.named_groups.as_mut() {
++            groups.insert(0, NamedGroup::from(grease.group));
++        }
++        exts.grease_version = Some(ProtocolVersion::from(grease.version));
++        exts.grease_extensions = Some((
++            ExtensionType::from(grease.first_extension),
++            ExtensionType::from(grease.last_extension),
++        ));
++    }
++
+     if let Some(cookie) = retryreq.and_then(|hrr| hrr.cookie.as_ref()) {
+         exts.cookie = Some(cookie.clone());
+     }
+@@ -352,6 +434,28 @@ fn emit_client_hello_for_retry(
+     // Do we have a SessionID or ticket cached for this host?
+     let tls13_session = prepare_resumption(&input.resuming, &mut exts, suite, cx, config);
+ 
++    if let Some(shape) = shape {
++        // client-hello-shape: raw extensions replace a built-in one of the same type.
++        for (typ, body) in &shape.extra_extensions {
++            let typ = ExtensionType::from(*typ);
++            if typ == ExtensionType::PreSharedKey {
++                continue;
++            }
++            exts.clear(typ);
++            exts.raw_extensions
++                .push((typ, body.clone()));
++        }
++        exts.shape_order = match &shape.extension_order {
++            ExtensionOrder::Upstream => ShapeOrder::Upstream,
++            ExtensionOrder::ShuffledWithEch => ShapeOrder::ShuffledWithEch,
++            ExtensionOrder::Fixed(list) => ShapeOrder::Fixed(
++                list.iter()
++                    .map(|typ| ExtensionType::from(*typ))
++                    .collect(),
++            ),
++        };
++    }
++
+     // Extensions MAY be randomized
+     // but they also need to keep the same order as the previous ClientHello
+     exts.order_seed = input.hello.extension_order_seed;
+@@ -371,6 +475,11 @@ fn emit_client_hello_for_retry(
+         cipher_suites.push(CipherSuite::TLS_EMPTY_RENEGOTIATION_INFO_SCSV);
+     }
+ 
++    if let Some(grease) = input.hello.grease {
++        // client-hello-shape: GREASE cipher suite first.
++        cipher_suites.insert(0, CipherSuite::from(grease.cipher_suite));
++    }
++
+     let mut chp_payload = ClientHelloPayload {
+         client_version: ProtocolVersion::TLSv1_2,
+         random: input.random,
+@@ -388,6 +497,8 @@ fn emit_client_hello_for_retry(
+                 config.provider.secure_random,
+                 input.server_name.clone(),
+                 &chp_payload,
++                // client-hello-shape: optional fixed / random payload length.
++                shape.map_or(&[][..], |shape| &shape.ech_grease_payload_lengths),
+             )),
+             _ => None,
+         });
+@@ -422,6 +533,13 @@ fn emit_client_hello_for_retry(
+ 
+     // Note what extensions we sent.
+     input.hello.sent_extensions = chp_payload.collect_used();
++    // client-hello-shape: raw extensions were sent too.
++    input.hello.sent_extensions.extend(
++        chp_payload
++            .raw_extensions
++            .iter()
++            .map(|(typ, _)| *typ),
++    );
+ 
+     let mut chp = HandshakeMessagePayload(HandshakePayload::ClientHello(chp_payload));
+ 
+@@ -867,7 +985,18 @@ impl ExpectServerHelloOrHelloRetryRequest {
+                 })
+                 .map(|skxg| skxg.name());
+ 
+-            if req_group == offered_key_share.group() || Some(req_group) == offered_hybrid {
++            // client-hello-shape: the extra key shares were offered too.
++            let offered_extra = self
++                .next
++                .input
++                .extra_key_shares
++                .iter()
++                .any(|kx| kx.group() == req_group);
++
++            if req_group == offered_key_share.group()
++                || Some(req_group) == offered_hybrid
++                || offered_extra
++            {
+                 return Err({
+                     cx.common.send_fatal_alert(
+                         AlertDescription::IllegalParameter,
+diff --git a/src/client/tls13.rs b/src/client/tls13.rs
+index 5f15f36..52cd751 100644
+--- a/src/client/tls13.rs
++++ b/src/client/tls13.rs
+@@ -97,6 +97,7 @@ pub(super) fn handle_server_hello(
+         mut sent_tls13_fake_ccs,
+         mut hello,
+         server_name,
++        extra_key_shares,
+         ..
+     } = input;
+ 
+@@ -108,8 +109,14 @@ pub(super) fn handle_server_hello(
+         _ => None,
+     };
+ 
+-    let our_key_share = KeyExchangeChoice::new(&config, cx, our_key_share, their_key_share)
+-        .map_err(|_| {
++    let our_key_share = KeyExchangeChoice::new(
++        &config,
++        cx,
++        our_key_share,
++        extra_key_shares,
++        their_key_share,
++    )
++    .map_err(|_| {
+             cx.common.send_fatal_alert(
+                 AlertDescription::IllegalParameter,
+                 PeerMisbehaved::WrongGroupForKeyShare,
+@@ -256,23 +263,37 @@ enum KeyExchangeChoice {
+ impl KeyExchangeChoice {
+     /// Decide between `our_key_share` or `our_key_share.hybrid_component()`
+     /// based on the selection of the server expressed in `their_key_share`.
++    ///
++    /// client-hello-shape: failing both, one of `extra_key_shares` of the
++    /// same group is used.
+     fn new(
+         config: &Arc<ClientConfig>,
+         cx: &mut ClientContext<'_>,
+         our_key_share: Box<dyn ActiveKeyExchange>,
++        extra_key_shares: Vec<Box<dyn ActiveKeyExchange>>,
+         their_key_share: &KeyShareEntry,
+     ) -> Result<Self, ()> {
+         if our_key_share.group() == their_key_share.group {
+             return Ok(Self::Whole(our_key_share));
+         }
+ 
+-        let (component_group, _) = our_key_share
++        let component_group = our_key_share
+             .hybrid_component()
+-            .ok_or(())?;
+-
+-        if component_group != their_key_share.group {
+-            return Err(());
++            .map(|(group, _)| group);
++
++        if component_group != Some(their_key_share.group) {
++            let extra = extra_key_shares
++                .into_iter()
++                .find(|kx| kx.group() == their_key_share.group)
++                .ok_or(())?;
++            // correct the record, as for a hybrid component below
++            let actual_skxg = config
++                .find_kx_group(their_key_share.group, ProtocolVersion::TLSv1_3)
++                .ok_or(())?;
++            cx.common.kx_state = KxState::Start(actual_skxg);
++            return Ok(Self::Whole(extra));
+         }
++        let component_group = their_key_share.group;
+ 
+         // correct the record for the benefit of accuracy of
+         // `negotiated_key_exchange_group()`
+diff --git a/src/crypto/aws_lc_rs/mod.rs b/src/crypto/aws_lc_rs/mod.rs
+index 1ab57da..528e724 100644
+--- a/src/crypto/aws_lc_rs/mod.rs
++++ b/src/crypto/aws_lc_rs/mod.rs
+@@ -237,9 +237,29 @@ static SUPPORTED_SIG_ALGS: WebPkiSupportedAlgorithms = WebPkiSupportedAlgorithms
+ /// [`DEFAULT_KX_GROUPS`] is provided as an array of this provider's defaults.
+ pub mod kx_group {
+     pub use super::kx::{SECP256R1, SECP384R1, X25519};
++    pub use super::kx_p521::SECP521R1;
+     pub use super::pq::{MLKEM768, MLKEM1024, SECP256R1MLKEM768, X25519MLKEM768};
+ }
+ 
++/// secp521r1, outside the `kx.rs` shared with *ring*, which lacks P-521
++/// (outline-proxy patch "client-hello-shape").
++mod kx_p521 {
++    use super::kx::{KxGroup, uncompressed_point};
++    use super::ring_like::agreement;
++    use crate::crypto::SupportedKxGroup;
++    use crate::msgs::enums::NamedGroup;
++
++    /// Ephemeral ECDH on secp521r1 (aka NIST-P521).
++    ///
++    /// Not in [`super::DEFAULT_KX_GROUPS`] or [`super::ALL_KX_GROUPS`].
++    pub static SECP521R1: &dyn SupportedKxGroup = &KxGroup {
++        name: NamedGroup::secp521r1,
++        agreement_algorithm: &agreement::ECDH_P521,
++        fips_allowed: true,
++        pub_key_validator: uncompressed_point,
++    };
++}
++
+ /// A list of the default key exchange groups supported by this provider.
+ ///
+ /// This does not contain MLKEM768; by default MLKEM768 is only offered
+diff --git a/src/crypto/ring/kx.rs b/src/crypto/ring/kx.rs
+index 6e0da22..fb88114 100644
+--- a/src/crypto/ring/kx.rs
++++ b/src/crypto/ring/kx.rs
+@@ -11,18 +11,21 @@ use crate::msgs::enums::NamedGroup;
+ use crate::rand::GetRandomFailed;
+ 
+ /// A key-exchange group supported by *ring*.
+-struct KxGroup {
++///
++/// `pub(crate)` for aws-lc-rs' `SECP521R1` (client-hello-shape patch), which
++/// *ring* lacks and so cannot live in this shared file.
++pub(crate) struct KxGroup {
+     /// The IANA "TLS Supported Groups" name of the group
+-    name: NamedGroup,
++    pub(crate) name: NamedGroup,
+ 
+     /// The corresponding ring agreement::Algorithm
+-    agreement_algorithm: &'static agreement::Algorithm,
++    pub(crate) agreement_algorithm: &'static agreement::Algorithm,
+ 
+     /// Whether the algorithm is allowed by FIPS
+     ///
+     /// `SupportedKxGroup::fips()` is true if and only if the algorithm is allowed,
+     /// _and_ the implementation is FIPS-validated.
+-    fips_allowed: bool,
++    pub(crate) fips_allowed: bool,
+ 
+     /// aws-lc-rs 1.9 and later accepts more formats of public keys than
+     /// just uncompressed.
+@@ -36,7 +39,7 @@ struct KxGroup {
+     /// is consistent with an uncompressed point encoding.  It does not need
+     /// to verify that the point is on the curve (if the curve requires that
+     /// for security); aws-lc-rs/ring must do that.
+-    pub_key_validator: fn(&[u8]) -> bool,
++    pub(crate) pub_key_validator: fn(&[u8]) -> bool,
+ }
+ 
+ impl SupportedKxGroup for KxGroup {
+@@ -108,7 +111,7 @@ pub static SECP384R1: &dyn SupportedKxGroup = &KxGroup {
+     pub_key_validator: uncompressed_point,
+ };
+ 
+-fn uncompressed_point(point: &[u8]) -> bool {
++pub(crate) fn uncompressed_point(point: &[u8]) -> bool {
+     // See `UncompressedPointRepresentation`, which is a retelling of
+     // SEC1 section 2.3.3 "Elliptic-Curve-Point-to-Octet-String Conversion"
+     // <https://datatracker.ietf.org/doc/html/rfc8446#section-4.2.8.2>
+diff --git a/src/lib.rs b/src/lib.rs
+index 33c0d9c..d0fbd45 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -594,8 +594,8 @@ pub mod client {
+ 
+     pub use builder::WantsClientCert;
+     pub use client_conn::{
+-        ClientConfig, ClientConnectionData, ClientSessionStore, EarlyDataError, ResolvesClientCert,
+-        Resumption, Tls12Resumption, UnbufferedClientConnection,
++        ClientConfig, ClientConnectionData, ClientHelloShape, ClientSessionStore, EarlyDataError,
++        ExtensionOrder, ResolvesClientCert, Resumption, Tls12Resumption, UnbufferedClientConnection,
+     };
+     #[cfg(feature = "std")]
+     pub use client_conn::{ClientConnection, WriteEarlyData};
+diff --git a/src/msgs/handshake.rs b/src/msgs/handshake.rs
+index 093f2d1..0fc281d 100644
+--- a/src/msgs/handshake.rs
++++ b/src/msgs/handshake.rs
+@@ -933,9 +933,35 @@ extension_struct! {
+ 
+         /// Extensions that must appear contiguously.
+         pub(crate) contiguous_extensions: Vec<ExtensionType>,
++
++        /// Extension order mode (client-hello-shape patch; outgoing hellos only).
++        pub(crate) shape_order: ShapeOrder,
++
++        /// Extensions written verbatim (client-hello-shape patch; outgoing hellos only).
++        pub(crate) raw_extensions: Vec<(ExtensionType, Vec<u8>)>,
++
++        /// GREASE extension types written first (empty) and last (one zero
++        /// byte, before `pre_shared_key`) (client-hello-shape patch).
++        pub(crate) grease_extensions: Option<(ExtensionType, ExtensionType)>,
++
++        /// GREASE value written first in `supported_versions`
++        /// (client-hello-shape patch).
++        pub(crate) grease_version: Option<ProtocolVersion>,
+     }
+ }
+ 
++/// Extension order of an outgoing ClientHello (client-hello-shape patch).
++#[derive(Clone, Debug, Default)]
++pub(crate) enum ShapeOrder {
++    /// Upstream rustls order.
++    #[default]
++    Upstream,
++    /// Upstream order, but `encrypted_client_hello` is shuffled with the rest.
++    ShuffledWithEch,
++    /// These types first, the rest in upstream order.
++    Fixed(Vec<ExtensionType>),
++}
++
+ impl ClientExtensions<'_> {
+     pub(crate) fn into_owned(self) -> ClientExtensions<'static> {
+         let Self {
+@@ -964,6 +990,10 @@ impl ClientExtensions<'_> {
+             encrypted_client_hello_outer,
+             order_seed,
+             contiguous_extensions,
++            shape_order,
++            raw_extensions,
++            grease_extensions,
++            grease_version,
+         } = self;
+         ClientExtensions {
+             server_name: server_name.map(|x| x.into_owned()),
+@@ -991,11 +1021,16 @@ impl ClientExtensions<'_> {
+             encrypted_client_hello_outer,
+             order_seed,
+             contiguous_extensions,
++            shape_order,
++            raw_extensions,
++            grease_extensions,
++            grease_version,
+         }
+     }
+ 
+     pub(crate) fn used_extensions_in_encoding_order(&self) -> Vec<ExtensionType> {
+-        let mut exts = self.order_insensitive_extensions_in_random_order();
++        let shuffle_ech = matches!(self.shape_order, ShapeOrder::ShuffledWithEch);
++        let mut exts = self.order_insensitive_extensions_in_random_order(shuffle_ech);
+         exts.extend(&self.contiguous_extensions);
+ 
+         if self
+@@ -1004,15 +1039,79 @@ impl ClientExtensions<'_> {
+         {
+             exts.push(ExtensionType::EncryptedClientHelloOuterExtensions);
+         }
+-        if self.encrypted_client_hello.is_some() {
++        if self.encrypted_client_hello.is_some() && !shuffle_ech {
+             exts.push(ExtensionType::EncryptedClientHello);
+         }
++
++        // client-hello-shape: listed types first, the rest in upstream order.
++        if let ShapeOrder::Fixed(list) = &self.shape_order {
++            let mut ordered = Vec::with_capacity(exts.len());
++            for ext in list {
++                if exts.contains(ext) && !ordered.contains(ext) {
++                    ordered.push(*ext);
++                }
++            }
++            exts.retain(|ext| !ordered.contains(ext));
++            ordered.extend(exts);
++            exts = ordered;
++        }
++
++        // client-hello-shape: GREASE extensions bracket everything but the PSK.
++        if let Some((first, last)) = self.grease_extensions {
++            exts.insert(0, first);
++            exts.push(last);
++        }
++
+         if self.preshared_key_offer.is_some() {
+             exts.push(ExtensionType::PreSharedKey);
+         }
+         exts
+     }
+ 
++    /// Encode one extension, including the client-hello-shape additions
++    /// (GREASE, raw extensions, GREASE in `supported_versions`).
++    fn encode_shaped(&self, typ: ExtensionType, output: &mut Vec<u8>) {
++        if let Some((first, last)) = self.grease_extensions {
++            if typ == first || typ == last {
++                typ.encode(output);
++                let body = LengthPrefixedBuffer::new(ListLength::U16, output);
++                if typ == last {
++                    body.buf.push(0);
++                }
++                return;
++            }
++        }
++
++        if let Some((_, raw)) = self
++            .raw_extensions
++            .iter()
++            .find(|(t, _)| *t == typ)
++        {
++            typ.encode(output);
++            let body = LengthPrefixedBuffer::new(ListLength::U16, output);
++            body.buf.extend_from_slice(raw);
++            return;
++        }
++
++        if let (ExtensionType::SupportedVersions, Some(grease), Some(versions)) =
++            (typ, self.grease_version, &self.supported_versions)
++        {
++            typ.encode(output);
++            let body = LengthPrefixedBuffer::new(ListLength::U16, output);
++            let list = LengthPrefixedBuffer::new(SupportedProtocolVersions::LIST_LENGTH, body.buf);
++            grease.encode(list.buf);
++            if versions.tls13 {
++                ProtocolVersion::TLSv1_3.encode(list.buf);
++            }
++            if versions.tls12 {
++                ProtocolVersion::TLSv1_2.encode(list.buf);
++            }
++            return;
++        }
++
++        self.encode_one(typ, output);
++    }
++
+     /// Returns extensions which don't need a specific order, in randomized order.
+     ///
+     /// Extensions are encoded in three portions:
+@@ -1026,17 +1125,24 @@ impl ClientExtensions<'_> {
+     ///
+     /// - Lastly, any ECH and PSK extensions (in that order).  These
+     ///   are required to be last by the standard.
+-    fn order_insensitive_extensions_in_random_order(&self) -> Vec<ExtensionType> {
++    ///
++    /// client-hello-shape: raw extensions join the shuffled set, and so does
++    /// `encrypted_client_hello` when `shuffle_ech` is set.
++    fn order_insensitive_extensions_in_random_order(&self, shuffle_ech: bool) -> Vec<ExtensionType> {
+         let mut order = self.collect_used();
++        order.extend(
++            self.raw_extensions
++                .iter()
++                .map(|(typ, _)| *typ),
++        );
+ 
+         // Remove extensions which have specific order requirements.
+         order.retain(|ext| {
+             !(matches!(
+                 ext,
+-                ExtensionType::PreSharedKey
+-                    | ExtensionType::EncryptedClientHello
+-                    | ExtensionType::EncryptedClientHelloOuterExtensions
+-            ) || self.contiguous_extensions.contains(ext))
++                ExtensionType::PreSharedKey | ExtensionType::EncryptedClientHelloOuterExtensions
++            ) || (*ext == ExtensionType::EncryptedClientHello && !shuffle_ech)
++                || self.contiguous_extensions.contains(ext))
+         });
+ 
+         order.sort_by_cached_key(|new_ext| {
+@@ -1058,7 +1164,7 @@ impl<'a> Codec<'a> for ClientExtensions<'a> {
+ 
+         let body = LengthPrefixedBuffer::new(ListLength::U16, bytes);
+         for item in order {
+-            self.encode_one(item, body.buf);
++            self.encode_shaped(item, body.buf);
+         }
+     }
+ 
