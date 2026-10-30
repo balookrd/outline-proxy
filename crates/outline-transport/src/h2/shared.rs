@@ -1,4 +1,4 @@
-// HTTP/2 connection infrastructure: window-size statics, TLS config, H2Io
+// HTTP/2 connection infrastructure: keepalive statics, TLS config, H2Io
 // async-IO adapter, connect_tls_h2, H2Dialer (WsDialer impl), connection
 // cache, and connect / gc logic.
 //
@@ -28,6 +28,7 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use url::Url;
 
+use crate::fingerprint_profile::TlsFingerprint;
 use crate::shared_cache::{
     ConnLife, ConnLifeGuard, ConnLifeLevel, SharedConnectionRegistry, classify_by_substrings,
 };
@@ -36,24 +37,12 @@ use crate::{AbortOnDrop, DnsCache, SharedConnectionHealth, TransportStream, conn
 
 use super::H2WsStream;
 
-// ── Window sizes & Keepalive ──────────────────────────────────────────────────
+// ── Keepalive ─────────────────────────────────────────────────────────────────
 
-// HTTP/2 flow-control window sizes.  Defaults match the sizing used by
-// sockudo-ws so the long-lived CONNECT stream carrying UDP datagrams does not
-// stall on the small RFC default window under sustained downstream traffic.
-// On memory-constrained routers these can be reduced via [h2] in config.toml.
-static H2_INITIAL_STREAM_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
-static H2_INITIAL_CONNECTION_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
+// SETTINGS come from the dial's browser profile; flow-control windows are the
+// carrier's defaults (`crate::h2_profile`), overridable per window via `[h2]`.
 static H2_KEEPALIVE_INTERVAL: OnceLock<Duration> = OnceLock::new();
 static H2_KEEPALIVE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
-
-/// Initialise H2 window sizes from config.  Must be called before the first
-/// outbound H2 connection is opened.  Safe to call multiple times with the same
-/// values; panics if called with different values after initialization.
-pub fn init_h2_window_sizes(stream: u32, connection: u32) {
-    H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| stream);
-    H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| connection);
-}
 
 /// Initialise H2 keepalive interval and timeout from config. Must be called before
 /// the first outbound H2 connection is opened.
@@ -68,14 +57,6 @@ fn h2_keepalive_interval() -> Duration {
 
 fn h2_keepalive_timeout() -> Duration {
     *H2_KEEPALIVE_TIMEOUT.get_or_init(|| Duration::from_secs(10))
-}
-
-fn h2_stream_window_size() -> u32 {
-    *H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| 1024 * 1024)
-}
-
-fn h2_connection_window_size() -> u32 {
-    *H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| 2 * 1024 * 1024)
 }
 
 // ── TLS config ────────────────────────────────────────────────────────────────
@@ -201,17 +182,31 @@ use crate::dial_timeouts::fresh_connect_timeout;
 // there is at most one shared H2 connection per logical server: when the DNS
 // answer changes, the old connection is kept until it fails naturally, at which
 // point a fresh connection is made to the (now re-resolved) new address.
+//
+// The browser family (`tls`) is part of the key too: it fixes the TLS
+// ClientHello and the HTTP/2 SETTINGS / windows of the connection, so a
+// connection opened as one browser must not carry streams of a dial that
+// pinned another (`random` strategy, per-uplink profile overrides). `None`
+// (no profile) is normalised to Chromium, the hello and shape it sends.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct H2ConnectionKey {
     base: crate::shared_cache::ConnectionKey,
     use_tls: bool,
+    tls: TlsFingerprint,
 }
 
 impl H2ConnectionKey {
-    fn new(server_name: &str, server_port: u16, use_tls: bool, fwmark: Option<u32>) -> Self {
+    fn new(
+        server_name: &str,
+        server_port: u16,
+        use_tls: bool,
+        fwmark: Option<u32>,
+        tls: TlsFingerprint,
+    ) -> Self {
         Self {
             base: crate::shared_cache::ConnectionKey::new(server_name, server_port, fwmark),
             use_tls,
+            tls,
         }
     }
 }
@@ -282,23 +277,7 @@ impl SharedH2Connection {
             bail!("shared h2 connection is already closed");
         }
 
-        let request_builder = Request::builder()
-            .method(Method::CONNECT)
-            .version(Version::HTTP_2)
-            .uri(target_uri)
-            .extension(Protocol::from_static("websocket"))
-            .header("sec-websocket-version", "13");
-        let mut request: Request<Empty<Bytes>> = request_builder
-            .body(Empty::new())
-            .expect("request builder never fails");
-        crate::resumption::apply_resume_request_headers(resume, request.headers_mut());
-        if let Some(profile) = profile {
-            crate::fingerprint_profile::apply(
-                profile,
-                request.headers_mut(),
-                crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
-            );
-        }
+        let request = build_websocket_connect_request(target_uri, resume, profile)?;
 
         // Clone the SendRequest handle so each concurrent open_websocket call
         // proceeds independently.  hyper's http2::SendRequest is Send+Sync+Clone
@@ -363,6 +342,36 @@ impl SharedH2Connection {
     }
 }
 
+/// The RFC 8441 extended CONNECT that opens a WebSocket stream: the browser
+/// headers of `profile` first, in its browser's h2 order, then
+/// `sec-websocket-version` and the `X-Outline-Resume*` headers — the shape of
+/// a page's request with a few custom headers. No `host`: `:authority`
+/// carries it on h2.
+pub(crate) fn build_websocket_connect_request(
+    target_uri: &str,
+    resume: &crate::dial_plan::DialResumeOptions,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
+) -> Result<Request<Empty<Bytes>>> {
+    let mut request = Request::builder()
+        .method(Method::CONNECT)
+        .version(Version::HTTP_2)
+        .uri(target_uri)
+        .extension(Protocol::from_static("websocket"))
+        .body(Empty::new())
+        .context("invalid HTTP/2 websocket CONNECT target")?;
+    let headers = request.headers_mut();
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply_h2(
+            profile,
+            headers,
+            crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
+        );
+    }
+    headers.insert("sec-websocket-version", http::HeaderValue::from_static("13"));
+    crate::resumption::apply_resume_request_headers(resume, headers);
+    Ok(request)
+}
+
 impl SharedConnectionHealth for SharedH2Connection {
     fn is_open(&self) -> bool {
         self.is_open()
@@ -424,6 +433,22 @@ struct H2Dialer {
     /// rationale as `resume` above — captured at dialer construction
     /// so `open_on`'s trait signature is unaffected.
     profile: Option<&'static crate::fingerprint_profile::Profile>,
+    /// Browser family the connection is established as: the dial-scoped
+    /// family, read once at construction (inside the dial scope), so the
+    /// cache key and the TLS / HTTP/2 shape `establish` builds agree.
+    tls: TlsFingerprint,
+}
+
+impl H2Dialer {
+    fn new(
+        use_tls: bool,
+        resume: crate::dial_plan::DialResumeOptions,
+        profile: Option<&'static crate::fingerprint_profile::Profile>,
+    ) -> Self {
+        let tls = crate::fingerprint_profile::current_dial_fingerprint()
+            .unwrap_or(TlsFingerprint::Chromium);
+        Self { use_tls, resume, profile, tls }
+    }
 }
 
 impl crate::shared_dial::WsDialer for H2Dialer {
@@ -448,7 +473,7 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         server_port: u16,
         fwmark: Option<u32>,
     ) -> H2ConnectionKey {
-        H2ConnectionKey::new(server_name, server_port, self.use_tls, fwmark)
+        H2ConnectionKey::new(server_name, server_port, self.use_tls, fwmark, self.tls)
     }
 
     async fn establish(
@@ -503,7 +528,7 @@ pub(crate) async fn connect_websocket_h2(
     };
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
-    let dialer = H2Dialer { use_tls, resume, profile };
+    let dialer = H2Dialer::new(use_tls, resume, profile);
 
     // The dial-scoped TLS fingerprint is set once by `DialPlan::connect`
     // above this call, so the TLS handshake inside `establish` already
@@ -538,10 +563,13 @@ async fn connect_h2_connection(
             (H2Io::Plain { inner: tcp }, loss_probe)
         };
 
-        let (send_request, conn) = http2::Builder::new(TokioExecutor::new())
+        let mut builder = http2::Builder::new(TokioExecutor::new());
+        // SETTINGS of the dial's browser family; windows are the carrier's
+        // defaults with the `[h2]` windows on top. Runs inside the
+        // dial-fingerprint scope, like the TLS config built just above.
+        crate::h2_profile::apply_dial_h2_shape(&mut builder, crate::h2_profile::H2Carrier::Ws);
+        let (send_request, conn) = builder
             .timer(TokioTimer::new())
-            .initial_stream_window_size(Some(h2_stream_window_size()))
-            .initial_connection_window_size(Some(h2_connection_window_size()))
             // Tighter than the previous 20s/20s so a silently-broken shared
             // connection (e.g. NAT/conntrack on the router path through
             // hev-socks5-tunnel loses the TCP mapping) is detected within ~20s

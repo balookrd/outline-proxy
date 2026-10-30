@@ -2,13 +2,15 @@
 //
 // Layout:
 //   mod.rs  — H2WsStream adapter, re-exports.
-//   shared  — window-size statics, TLS config, H2Io async-IO adapter,
+//   shared  — keepalive statics, TLS config, H2Io async-IO adapter,
 //              connect_tls_h2, H2Dialer, shared-connection cache, connect / gc logic.
 
 mod shared;
 
+#[cfg(test)]
+pub(crate) use shared::build_websocket_connect_request;
+pub use shared::init_h2_keepalive;
 pub(crate) use shared::{connect_websocket_h2, gc_shared_h2_connections};
-pub use shared::{init_h2_keepalive, init_h2_window_sizes};
 
 use std::sync::Arc;
 

@@ -1,5 +1,7 @@
 //! Fingerprint-preservation regression for the per-session POST
-//! template (`build_post_headers` + `uri_seq_prefix`).
+//! template (`build_post_headers` + `uri_seq_prefix`). The h1 template
+//! must stay byte-identical to the legacy per-POST build; the h2 one is
+//! the profile's headers in its browser's h2 order, without `host`.
 //!
 //! The uplink driver used to rebuild the whole POST request on every
 //! frame: a fresh `Request::builder`, a `format!`-ed absolute URI, and
@@ -13,7 +15,7 @@
 
 use http::{HeaderMap, HeaderValue, Method, Request, Version, header};
 
-use crate::fingerprint_profile::{PROFILES, Profile, SecFetchPreset, apply};
+use crate::fingerprint_profile::{PROFILES, Profile, SecFetchPreset, apply, apply_h2};
 use crate::xhttp::XhttpTarget;
 
 fn target(authority: &str) -> XhttpTarget {
@@ -43,29 +45,29 @@ fn profile_cases() -> Vec<Option<&'static Profile>> {
 }
 
 #[test]
-fn h2_post_headers_match_legacy_per_post_build() {
-    for authority in ["example.com", "example.com:8443"] {
-        let target = target(authority);
-        for profile in profile_cases() {
-            // Legacy path: builder Host header, then `apply` on the body req.
-            let mut legacy: Request<()> = Request::builder()
-                .method(Method::POST)
-                .uri("https://example.com/xh/abcDEF123456/0")
-                .version(Version::HTTP_2)
-                .header(header::HOST, authority)
-                .body(())
-                .unwrap();
+fn h2_post_headers_are_the_profile_headers_in_h2_order_without_host() {
+    for profile in profile_cases() {
+        for datagram_records in [false, true] {
+            // Expected: the profile's browser headers in its browser's h2
+            // order on an empty map, then the carrier's own header.
+            let mut expected = HeaderMap::new();
             if let Some(profile) = profile {
-                apply(profile, legacy.headers_mut(), SecFetchPreset::XhrCors);
+                apply_h2(profile, &mut expected, SecFetchPreset::XhrCors);
+            }
+            if datagram_records {
+                expected.insert(
+                    http::HeaderName::from_static(crate::xhttp::UDP_RECORDS_HEADER),
+                    HeaderValue::from_static(crate::xhttp::UDP_RECORDS_ENABLED),
+                );
             }
 
-            // New path: base headers cloned per POST (no per-POST delta on h2).
-            let base = super::h2::build_post_headers(&target, false, profile).unwrap();
+            let base = super::h2::build_post_headers(datagram_records, profile);
 
+            assert!(!base.contains_key(header::HOST), "h2 POST must not carry `host`");
             assert_eq!(
-                header_lines(legacy.headers()),
+                header_lines(&expected),
                 header_lines(&base),
-                "h2 POST header order/set drifted (authority={authority}, profile={:?})",
+                "h2 POST header order/set drifted (records={datagram_records}, profile={:?})",
                 profile.map(|p| p.name),
             );
         }

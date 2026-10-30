@@ -10,7 +10,10 @@ use std::str::FromStr;
 use http::{HeaderValue, header};
 use url::Url;
 
-use crate::fingerprint_profile::{PROFILES, SecFetchPreset, Strategy, apply, select_with_strategy};
+use crate::fingerprint_profile::{
+    PROFILES, Profile, ProfileOs, SecFetchPreset, Strategy, TlsFingerprint, apply, host_os,
+    pool_for, select_with_strategy, select_with_strategy_for_os,
+};
 
 #[test]
 fn pool_is_non_empty_and_contains_chrome_firefox_safari() {
@@ -58,9 +61,9 @@ fn select_with_per_host_stable_ignores_path_and_query() {
 
 #[test]
 fn select_with_per_host_stable_varies_across_hosts() {
-    // With six profiles a single random hostname pair has 1/6 chance
-    // of colliding; a small sweep makes the test reliably hit the
-    // "different profile" case at least once.
+    // A single hostname pair can collide on the same profile (the host OS
+    // pool is small); a sweep makes the test reliably hit the "different
+    // profile" case at least once.
     let url1 = Url::parse("wss://alpha.test:443/").unwrap();
     let p1 = select_with_strategy(&url1, Strategy::PerHostStable).unwrap();
     let mut found_different = false;
@@ -427,4 +430,270 @@ async fn nested_task_local_override_uses_innermost_value() {
         })
         .await;
     assert!(inner.is_none(), "innermost override wins");
+}
+
+/// A `random` dial picks once: inside one `with_dial_profile` scope every
+/// header-profile lookup returns the pinned profile and the TLS family (and so
+/// the ClientHello config and the HTTP/2 shape) is that profile's — never a
+/// ClientHello of one browser with headers of another.
+#[tokio::test]
+async fn random_dial_scope_pins_one_profile_for_tls_and_headers() {
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    use crate::fingerprint_profile::{
+        current_dial_fingerprint, select, with_dial_profile, with_strategy_override,
+    };
+    use crate::h2_profile::h2_shape;
+    use crate::tls::{build_client_config, build_client_config_for};
+
+    let url: Url = "wss://random-dial-pin.example/ws".parse().unwrap();
+    let pool_len = pool_for(host_os()).count();
+    let picked = with_strategy_override(Strategy::Random, async {
+        let mut picked = HashSet::new();
+        for _ in 0..200 {
+            let name = with_dial_profile(&url, async {
+                let pinned = select(&url).expect("random always picks a profile");
+                assert_eq!(current_dial_fingerprint(), Some(pinned.tls));
+                for _ in 0..16 {
+                    let again = select(&url).expect("pinned profile");
+                    assert!(std::ptr::eq(again, pinned), "{} vs {}", again.name, pinned.name);
+                    assert_eq!(current_dial_fingerprint(), Some(pinned.tls));
+                }
+                assert_eq!(h2_shape(current_dial_fingerprint()), h2_shape(Some(pinned.tls)));
+                assert!(Arc::ptr_eq(
+                    &build_client_config(&[b"h2"]),
+                    &build_client_config_for(Some(pinned.tls), &[b"h2"]),
+                ));
+                pinned.name
+            })
+            .await;
+            picked.insert(name);
+        }
+        picked
+    })
+    .await;
+    // The pin is per dial, not per process: across dials `random` still
+    // varies whenever the host pool has more than one profile.
+    if pool_len > 1 {
+        assert!(picked.len() > 1, "random must still vary across dials: {picked:?}");
+    }
+}
+
+/// Outside a dial scope `select` keeps its unpinned behaviour: under `random`
+/// consecutive calls pick independently.
+#[tokio::test]
+async fn select_outside_dial_scope_is_not_pinned() {
+    use std::collections::HashSet;
+
+    use crate::fingerprint_profile::{current_dial_fingerprint, select, with_strategy_override};
+
+    if pool_for(host_os()).count() < 2 {
+        return;
+    }
+    let url: Url = "wss://random-unpinned.example/".parse().unwrap();
+    let picked: HashSet<_> = with_strategy_override(Strategy::Random, async {
+        (0..200).map(|_| select(&url).expect("random picks").name).collect()
+    })
+    .await;
+    assert!(picked.len() > 1, "unscoped random select must vary: {picked:?}");
+    assert_eq!(current_dial_fingerprint(), None);
+}
+
+/// A dial under a `None` strategy pins "no profile": no headers, and the TLS
+/// family stays unset (Chromium hello / shape).
+#[tokio::test]
+async fn dial_scope_without_profile_pins_none() {
+    use crate::fingerprint_profile::{
+        current_dial_fingerprint, select, with_dial_profile, with_strategy_override,
+    };
+
+    let url: Url = "wss://dial-pin-none.example/".parse().unwrap();
+    let (profile, fp) = with_strategy_override(Strategy::None, async {
+        with_dial_profile(&url, async { (select(&url), current_dial_fingerprint()) }).await
+    })
+    .await;
+    assert!(profile.is_none());
+    assert_eq!(fp, None);
+}
+
+const ALL_OS: [ProfileOs; 4] =
+    [ProfileOs::Windows, ProfileOs::MacOs, ProfileOs::Linux, ProfileOs::Android];
+
+fn names(os: ProfileOs) -> Vec<&'static str> {
+    pool_for(os).map(|p| p.name).collect()
+}
+
+fn by_name(name: &str) -> &'static Profile {
+    PROFILES
+        .iter()
+        .find(|p| p.name == name)
+        .unwrap_or_else(|| panic!("no profile {name}"))
+}
+
+#[test]
+fn per_os_pools_have_the_decided_members() {
+    assert_eq!(
+        names(ProfileOs::MacOs),
+        ["chrome-156-macos", "firefox-159-macos", "safari-27-macos"]
+    );
+    assert_eq!(names(ProfileOs::Linux), ["chrome-156-linux", "firefox-159-linux"]);
+    assert_eq!(names(ProfileOs::Android), ["chrome-156-android"]);
+    assert_eq!(
+        names(ProfileOs::Windows),
+        ["chrome-156-windows", "firefox-159-windows", "edge-156-windows"]
+    );
+}
+
+#[test]
+fn linux_and_android_pools_have_no_safari() {
+    for os in [ProfileOs::Linux, ProfileOs::Android] {
+        assert!(pool_for(os).all(|p| p.tls != TlsFingerprint::Safari), "{os:?}");
+    }
+}
+
+#[test]
+fn selection_stays_inside_the_requested_os_pool() {
+    for os in ALL_OS {
+        for i in 0..50 {
+            let url = Url::parse(&format!("wss://host-{i}.test:443/")).unwrap();
+            let p = select_with_strategy_for_os(&url, Strategy::PerHostStable, os).unwrap();
+            assert_eq!(p.os, os, "per_host_stable {os:?} -> {}", p.name);
+        }
+        let url = Url::parse("wss://process.test/").unwrap();
+        let p = select_with_strategy_for_os(&url, Strategy::ProcessStable, os).unwrap();
+        assert_eq!(p.os, os);
+        for _ in 0..200 {
+            let p = select_with_strategy_for_os(&url, Strategy::Random, os).unwrap();
+            assert_eq!(p.os, os, "random {os:?} -> {}", p.name);
+        }
+        assert!(select_with_strategy_for_os(&url, Strategy::None, os).is_none());
+    }
+}
+
+#[test]
+fn default_selection_uses_the_host_os_pool() {
+    let url = Url::parse("wss://host-os.test/").unwrap();
+    for s in [Strategy::PerHostStable, Strategy::ProcessStable, Strategy::Random] {
+        assert_eq!(select_with_strategy(&url, s).unwrap().os, host_os());
+    }
+}
+
+#[test]
+fn host_os_matches_the_compile_target() {
+    #[cfg(target_os = "macos")]
+    assert_eq!(host_os(), ProfileOs::MacOs);
+    #[cfg(target_os = "linux")]
+    assert_eq!(host_os(), ProfileOs::Linux);
+    #[cfg(target_os = "windows")]
+    assert_eq!(host_os(), ProfileOs::Windows);
+    #[cfg(target_os = "android")]
+    assert_eq!(host_os(), ProfileOs::Android);
+}
+
+#[test]
+fn profile_names_are_unique() {
+    let mut seen = std::collections::HashSet::new();
+    for p in PROFILES {
+        assert!(seen.insert(p.name), "duplicate profile name {}", p.name);
+    }
+}
+
+#[test]
+fn user_agent_and_client_hints_agree_with_profile_os() {
+    for p in PROFILES {
+        let marker = match p.os {
+            ProfileOs::Windows => "Windows NT",
+            ProfileOs::MacOs => "Macintosh",
+            ProfileOs::Linux => "X11; Linux",
+            ProfileOs::Android => "Linux; Android",
+        };
+        assert!(p.user_agent.contains(marker), "{}: UA lacks {marker}", p.name);
+        if let Some(platform) = p.sec_ch_ua_platform {
+            let want = match p.os {
+                ProfileOs::Windows => "\"Windows\"",
+                ProfileOs::MacOs => "\"macOS\"",
+                ProfileOs::Linux => "\"Linux\"",
+                ProfileOs::Android => "\"Android\"",
+            };
+            assert_eq!(platform, want, "{}", p.name);
+        }
+        let mobile = if p.os == ProfileOs::Android { "?1" } else { "?0" };
+        if p.sec_ch_ua.is_some() {
+            assert_eq!(p.sec_ch_ua_mobile, Some(mobile), "{}", p.name);
+        }
+    }
+}
+
+const CHROME_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
+const CHROME_UA_TAIL: &str = "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0";
+const CHROME_HINTS: &str =
+    "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"";
+const FIREFOX_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+
+#[test]
+fn chrome_156_values_match_the_measurement() {
+    let ua = |os: &str, tail: &str| format!("Mozilla/5.0 ({os}) {CHROME_UA_TAIL} {tail}");
+    for (name, os_part, tail) in [
+        ("chrome-156-macos", "Macintosh; Intel Mac OS X 10_15_7", "Safari/537.36"),
+        ("chrome-156-windows", "Windows NT 10.0; Win64; x64", "Safari/537.36"),
+        ("chrome-156-linux", "X11; Linux x86_64", "Safari/537.36"),
+        ("chrome-156-android", "Linux; Android 10; K", "Mobile Safari/537.36"),
+    ] {
+        let p = by_name(name);
+        assert_eq!(p.user_agent, ua(os_part, tail), "{name}");
+        assert_eq!(p.accept, CHROME_ACCEPT, "{name}");
+        assert_eq!(p.accept_language, "en-US,en;q=0.9", "{name}");
+        assert_eq!(p.accept_encoding, "gzip, deflate, br, zstd", "{name}");
+        assert_eq!(p.sec_ch_ua, Some(CHROME_HINTS), "{name}");
+        assert_eq!(p.tls, TlsFingerprint::Chromium, "{name}");
+    }
+}
+
+#[test]
+fn edge_follows_chrome_156_with_its_own_brand() {
+    let p = by_name("edge-156-windows");
+    assert!(p.user_agent.ends_with("Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0"));
+    assert_eq!(
+        p.sec_ch_ua,
+        Some("\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Microsoft Edge\";v=\"156\"")
+    );
+    assert_eq!(p.accept, CHROME_ACCEPT);
+}
+
+#[test]
+fn firefox_159_values_match_the_measurement() {
+    for (name, ua) in [
+        (
+            "firefox-159-macos",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:159.0) Gecko/20100101 Firefox/159.0",
+        ),
+        (
+            "firefox-159-windows",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0",
+        ),
+        (
+            "firefox-159-linux",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:159.0) Gecko/20100101 Firefox/159.0",
+        ),
+    ] {
+        let p = by_name(name);
+        assert_eq!(p.user_agent, ua, "{name}");
+        assert_eq!(p.accept, FIREFOX_ACCEPT, "{name}");
+        assert_eq!(p.accept_language, "en-US,en;q=0.9", "{name}");
+        assert_eq!(p.accept_encoding, "gzip, deflate, br, zstd", "{name}");
+        assert!(p.sec_ch_ua.is_none(), "{name}");
+        assert_eq!(p.tls, TlsFingerprint::Firefox, "{name}");
+    }
+}
+
+#[test]
+fn safari_27_values() {
+    let p = by_name("safari-27-macos");
+    assert_eq!(
+        p.user_agent,
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15"
+    );
+    assert_eq!(p.accept_encoding, "gzip, deflate, br");
+    assert_eq!(p.tls, TlsFingerprint::Safari);
 }

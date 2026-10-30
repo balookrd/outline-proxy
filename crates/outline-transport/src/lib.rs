@@ -149,6 +149,7 @@ pub mod frame_io;
 mod frame_io_ws;
 mod guards;
 mod h2;
+mod h2_profile;
 #[cfg(feature = "h3")]
 pub(crate) mod h3;
 #[cfg(feature = "quic")]
@@ -271,7 +272,8 @@ pub use error_classify::{
 };
 
 // HTTP/2 tuning: called once during startup from the main binary.
-pub use h2::{init_h2_keepalive, init_h2_window_sizes};
+pub use h2::init_h2_keepalive;
+pub use h2_profile::init_h2_window_sizes;
 
 // QUIC tuning: called once during startup from the main binary.
 #[cfg(feature = "quic")]

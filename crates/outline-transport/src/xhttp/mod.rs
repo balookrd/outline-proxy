@@ -49,6 +49,8 @@ use crate::resumption::SessionId;
 
 mod h1;
 mod h2;
+#[cfg(test)]
+pub(crate) use h2::build_session_request_headers;
 #[cfg(feature = "h3")]
 mod h3;
 #[cfg(feature = "h3")]

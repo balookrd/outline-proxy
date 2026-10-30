@@ -125,13 +125,16 @@ impl PaddingConfig {
     }
 }
 
-/// HTTP/2 flow-control window sizes and keepalive for WebSocket transports.
+/// HTTP/2 flow-control window overrides and keepalive for the HTTP/2 carriers
+/// (`ws_h2`, `xhttp_h2`).
 #[derive(Debug, Clone)]
 pub struct H2Config {
-    /// Per-stream initial window size in bytes (default: 8 MiB).
-    pub initial_stream_window_size: u32,
-    /// Per-connection initial window size in bytes (default: 32 MiB).
-    pub initial_connection_window_size: u32,
+    /// Per-stream initial window size in bytes. `None` (default): the
+    /// carrier's default (`ws_h2` 8 MiB, `xhttp_h2` 2 MiB).
+    pub initial_stream_window_size: Option<u32>,
+    /// Per-connection initial window size in bytes. `None` (default): the
+    /// carrier's default (`ws_h2` 32 MiB, `xhttp_h2` 5 MiB).
+    pub initial_connection_window_size: Option<u32>,
     /// HTTP/2 PING keepalive interval in seconds (default: 10s).
     pub keepalive_interval_secs: Option<u64>,
     /// HTTP/2 PING keepalive timeout in seconds (default: 10s).

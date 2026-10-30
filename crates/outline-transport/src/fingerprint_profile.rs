@@ -10,6 +10,14 @@
 //! `(host, port)` so a single observer sees a single identity per
 //! peer instead of a per-dial reshuffle (which is itself a signal).
 //!
+//! Profiles are picked only from the sub-pool matching the OS the client
+//! really runs on ([`host_os`], see [`pool_for`]): macOS = Chrome / Firefox /
+//! Safari, Linux = Chrome / Firefox, Android = Chrome, Windows = Chrome /
+//! Firefox / Edge. The TLS family does not vary by OS: Chrome on Android
+//! sends the desktop Chromium ClientHello (confirmed 2026-10-30: Chrome
+//! Android 156.0.8078.73 on Android 17 matches desktop Chrome 156 byte for
+//! byte, trust anchors included). 0-RTT is not aligned with the browsers yet.
+//!
 //! The pool is process-wide and opt-in: callers wire a `Strategy`
 //! at startup via [`init_strategy`]. The default is [`Strategy::None`]
 //! — no headers are added (TLS dials still send the Chromium ClientHello).
@@ -23,8 +31,12 @@
 //!   the HTTPS probe) and `crate::quic::tls_profile` (H3), both through
 //!   the vendored rustls `ClientHelloShape`. This module only picks the
 //!   profile they follow.
-//! * It does not touch HTTP/2 SETTINGS (still `hyper`/`h2` defaults).
-//!   QUIC transport parameters are shaped by `crate::quic`.
+//! * It does not shape HTTP/2 SETTINGS, windows or header order itself:
+//!   `crate::h2_profile` does, per the profile's browser family, as far
+//!   as `hyper`/`h2` allow (pseudo-header order, the priority flag,
+//!   Firefox's first stream id, Safari's SETTINGS order and id 9 and the
+//!   always-sent MAX_HEADER_LIST_SIZE stay hyper's). QUIC transport
+//!   parameters are shaped by `crate::quic`.
 
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
@@ -145,12 +157,43 @@ pub enum TlsFingerprint {
     Safari,
 }
 
+/// Operating system a [`Profile`] claims to run on. The dial path only
+/// picks profiles whose `os` matches the OS the client really runs on
+/// ([`host_os`]): the TCP SYN (TTL, option layout) is visible to a DPI
+/// right next to the ClientHello, so a Safari hello from a Linux stack
+/// (or an Edge/Windows one) is an incompatible pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProfileOs {
+    Windows,
+    MacOs,
+    Linux,
+    Android,
+}
+
+/// OS the running binary targets, resolved at compile time. Every OS
+/// without a dedicated pool (BSDs, ...) maps to [`ProfileOs::Linux`].
+/// Android is checked first: `target_os = "android"` is distinct from
+/// `"linux"` for rustc, but the explicit ordering keeps the intent clear.
+pub const fn host_os() -> ProfileOs {
+    if cfg!(target_os = "android") {
+        ProfileOs::Android
+    } else if cfg!(target_os = "macos") {
+        ProfileOs::MacOs
+    } else if cfg!(target_os = "windows") {
+        ProfileOs::Windows
+    } else {
+        ProfileOs::Linux
+    }
+}
+
 /// A single browser identity. Values are `&'static` so the whole
 /// pool is a single `const` table — selection is a hash-and-index,
 /// no allocation, no string copies.
 #[derive(Clone, Copy, Debug)]
 pub struct Profile {
     pub name: &'static str,
+    /// OS this identity claims; selection is restricted to [`host_os`].
+    pub os: ProfileOs,
     pub user_agent: &'static str,
     pub accept: &'static str,
     pub accept_language: &'static str,
@@ -177,7 +220,7 @@ pub struct Profile {
 /// re-detecting this binary). To refresh: update each `user_agent`
 /// and `sec_ch_ua` field in the table below, bump the constant to
 /// the current `date +%s`, then re-run the suite.
-pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_784_419_200; // 2026-07-19 00:00 UTC
+pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_793_381_218; // 2026-10-30 UTC
 
 /// Maximum tolerated age of [`PROFILES`] before the staleness test
 /// fails. Six months is short enough to keep up with browser-major
@@ -185,72 +228,124 @@ pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_784_419_200; // 2026-07-19 00:00 U
 /// regular contributors are not woken up by the nag.
 pub const REFRESH_PERIOD_SECS: u64 = 180 * 24 * 60 * 60;
 
-/// Pool of representative browser identities. Six entries spread
-/// across the three Chromium-derived UAs (Chrome × 2 OS, Edge × 1)
-/// and the two non-Chromium UAs (Firefox × 2 OS, Safari × 1) so a
-/// per-host-stable selector lands on a Chromium identity for ~⅔ of
-/// peers and a Gecko/WebKit identity for the remaining ⅓ — matching
-/// rough real-world browser-share, which is what a passive observer
-/// expects to see across many independent peers.
+/// Catalog of representative browser identities, one per (browser, OS)
+/// pair a real client of that OS can plausibly be: Chrome on all four
+/// OSes, Firefox on Windows / macOS / Linux, Safari on macOS, Edge on
+/// Windows. Only the sub-pool of the host OS is ever selected (see
+/// [`pool_for`]); the other entries stay for tests and snapshots.
 pub const PROFILES: &[Profile] = &[
     Profile {
-        name: "chrome-151-windows",
+        name: "chrome-156-windows",
+        os: ProfileOs::Windows,
         tls: TlsFingerprint::Chromium,
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
-            "\"Chromium\";v=\"151\", \"Google Chrome\";v=\"151\", \"Not?A_Brand\";v=\"99\"",
+            "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
         ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"Windows\""),
     },
     Profile {
-        name: "chrome-151-macos",
+        name: "chrome-156-macos",
+        os: ProfileOs::MacOs,
         tls: TlsFingerprint::Chromium,
         // Chrome on macOS still pins `10_15_7` (Catalina) in the UA
         // string — Google froze that in 2021 to stop User-Agent
         // leaking the real macOS version. Recent Chrome stable still
-        // ships the same string in 2026 (macOS Tahoe 26 does not change
+        // ships the same string in 2026 (macOS 27 does not change
         // it), so we mirror it. The actual OS version travels via
         // `Sec-CH-UA-Platform-Version` when negotiated; we don't
         // advertise that header in this pool.
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
-            "\"Chromium\";v=\"151\", \"Google Chrome\";v=\"151\", \"Not?A_Brand\";v=\"99\"",
+            "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
         ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"macOS\""),
     },
     Profile {
-        name: "firefox-152-windows",
+        name: "chrome-156-linux",
+        os: ProfileOs::Linux,
+        tls: TlsFingerprint::Chromium,
+        // Chrome on Linux reports `x86_64` even on aarch64 hosts (UA
+        // Reduction), so one string covers every Linux client.
+        user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        accept_language: "en-US,en;q=0.9",
+        accept_encoding: "gzip, deflate, br, zstd",
+        sec_ch_ua: Some(
+            "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
+        ),
+        sec_ch_ua_mobile: Some("?0"),
+        sec_ch_ua_platform: Some("\"Linux\""),
+    },
+    Profile {
+        name: "chrome-156-android",
+        os: ProfileOs::Android,
+        tls: TlsFingerprint::Chromium,
+        // UA Reduction freezes Android Chrome at `Android 10; K` and a
+        // `Mobile Safari` tail. The TLS family stays Chromium: measured
+        // 2026-10-30, Chrome Android 156.0.8078.73 (Android 17) sends the
+        // desktop Chrome 156 ClientHello byte for byte, trust anchors included.
+        user_agent: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36",
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        accept_language: "en-US,en;q=0.9",
+        accept_encoding: "gzip, deflate, br, zstd",
+        sec_ch_ua: Some(
+            "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
+        ),
+        sec_ch_ua_mobile: Some("?1"),
+        sec_ch_ua_platform: Some("\"Android\""),
+    },
+    Profile {
+        name: "firefox-159-windows",
+        os: ProfileOs::Windows,
         tls: TlsFingerprint::Firefox,
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        accept_language: "en-US,en;q=0.5",
+        // Header values measured on macOS Firefox 159 and extrapolated to
+        // Windows (only the UA platform token differs).
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0",
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: None,
         sec_ch_ua_mobile: None,
         sec_ch_ua_platform: None,
     },
     Profile {
-        name: "firefox-152-macos",
+        name: "firefox-159-macos",
+        os: ProfileOs::MacOs,
         tls: TlsFingerprint::Firefox,
         // Firefox caps the reported macOS version at `10.15` in its UA
         // (Bugzilla 1679929, shipped in Firefox 87) — exactly like
         // Chrome/Safari freeze `10_15_7`, just spelled with dots and
-        // no patch component. So a real Firefox on macOS Tahoe 26 still
-        // sends `Intel Mac OS X 10.15`, NOT the true `26.x`; emitting
+        // no patch component. So a real Firefox on macOS 27 still
+        // sends `Intel Mac OS X 10.15`, NOT the true `27.x`; emitting
         // the actual major would itself be the fingerprint. Apple-
         // silicon machines still surface as `Intel Mac OS X` here —
         // Firefox has no separate ARM string in the UA.
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        accept_language: "en-US,en;q=0.5",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:159.0) Gecko/20100101 Firefox/159.0",
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        accept_language: "en-US,en;q=0.9",
+        accept_encoding: "gzip, deflate, br, zstd",
+        sec_ch_ua: None,
+        sec_ch_ua_mobile: None,
+        sec_ch_ua_platform: None,
+    },
+    Profile {
+        name: "firefox-159-linux",
+        os: ProfileOs::Linux,
+        tls: TlsFingerprint::Firefox,
+        // Header values measured on macOS Firefox 159 and extrapolated to
+        // Linux (only the UA platform token differs).
+        user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:159.0) Gecko/20100101 Firefox/159.0",
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: None,
         sec_ch_ua_mobile: None,
@@ -259,38 +354,38 @@ pub const PROFILES: &[Profile] = &[
     Profile {
         // Apple switched to year-based version numbers at WWDC 2025:
         // the release after Safari 18 (Sequoia, 2024) is Safari 26,
-        // not Safari 19 — matching macOS Tahoe 26 / iOS 26. Safari 26.0
-        // shipped May 2026 with macOS Tahoe 26. The UA still pins
-        // `10_15_7` for the OS like Chrome does; only the `Version/`
-        // token tracks the release.
-        name: "safari-26-macos",
+        // then 27 with macOS 27. The UA still pins `10_15_7` for the
+        // OS like Chrome does; only the `Version/` token tracks the
+        // release (major.minor).
+        name: "safari-27-macos",
+        os: ProfileOs::MacOs,
         tls: TlsFingerprint::Safari,
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         accept_language: "en-US,en;q=0.9",
-        // Safari still does NOT advertise `zstd` as of 26.x — Apple
-        // has not shipped the algorithm in WebKit. Keep the list
-        // short so the profile reads as Safari rather than
-        // Chrome-with-different-UA.
+        // Safari still does NOT advertise `zstd` — Apple has not
+        // shipped the algorithm in WebKit. Keep the list short so the
+        // profile reads as Safari rather than Chrome-with-different-UA.
         accept_encoding: "gzip, deflate, br",
         sec_ch_ua: None,
         sec_ch_ua_mobile: None,
         sec_ch_ua_platform: None,
     },
     Profile {
-        // Edge stable trails Chrome stable by one major for a short
-        // window each cycle: Chrome is on 151 while Edge 150 (Chromium
-        // 150) is the current stable — a realistic pairing a passive
-        // observer sees in the wild, not a mismatch. Both the `Chrome/`
-        // compatibility token and the `Edg/` token carry 150.
-        name: "edge-150-windows",
+        // Edge stable 156 (Chromium 156, 2026-10-22 per the Microsoft
+        // Edge stable release notes) tracks Chrome 156. Both the
+        // `Chrome/` compatibility token and the `Edg/` token carry 156.
+        name: "edge-156-windows",
+        os: ProfileOs::Windows,
         tls: TlsFingerprint::Chromium,
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0",
+        // Copied from Chrome 156 (the same Chromium navigation Accept); not
+        // measured on Edge.
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
-            "\"Chromium\";v=\"150\", \"Microsoft Edge\";v=\"150\", \"Not?A_Brand\";v=\"99\"",
+            "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Microsoft Edge\";v=\"156\"",
         ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"Windows\""),
@@ -356,43 +451,95 @@ fn current_effective_strategy() -> Strategy {
         .unwrap_or_else(|_| current_strategy())
 }
 
-tokio::task_local! {
-    /// TLS fingerprint family for the current dial, set by
-    /// [`with_dial_fingerprint`]. The dial path picks one [`Profile`] per
-    /// connection and pushes `profile.tls` here so the TLS-config builder
-    /// ([`crate::tls::build_client_config`]) mimics the same browser family
-    /// the HTTP headers advertise — without threading the value through
-    /// every transport signature. Same propagation as [`STRATEGY_OVERRIDE`]:
-    /// it follows awaited futures but not freshly-spawned tasks, which is
-    /// exactly the dial → TLS-handshake path (the handshake is awaited
-    /// inline; post-handshake POST tasks reuse the already-built config).
-    static DIAL_TLS_FINGERPRINT: Option<TlsFingerprint>;
+/// What the current dial pinned in its task-local scope.
+#[derive(Clone, Copy, Debug)]
+enum DialScope {
+    /// The profile the dial picked (`None` = no profile under the active
+    /// strategy). [`select`] returns it verbatim and the TLS family follows
+    /// it, so the ClientHello, the HTTP/2 SETTINGS and the request headers of
+    /// one dial all come from the same browser even under
+    /// [`Strategy::Random`].
+    Profile(Option<&'static Profile>),
+    /// A bare TLS family with no profile pinned: [`select`] keeps its
+    /// unscoped behaviour. Only tests push this, to drive the TLS / h2
+    /// builders for one family directly.
+    #[cfg(test)]
+    Fingerprint(Option<TlsFingerprint>),
 }
 
-/// Run `f` with `fp` as the dial-scoped TLS fingerprint that
-/// [`crate::tls::build_client_config`] reads. Wrap the whole dial future
-/// (TCP + TLS + handshake) so the config built inside picks up `fp`. `None`
-/// sends the Chromium ClientHello.
+tokio::task_local! {
+    /// The current dial's pinned profile, set by [`with_dial_profile`]. The
+    /// dial path picks one [`Profile`] per connection and pins it here so
+    /// every later [`select`] in the same dial returns it and the TLS-config
+    /// builder ([`crate::tls::build_client_config`]) and the HTTP/2 shape
+    /// ([`crate::h2_profile`]) mimic its family — without threading the
+    /// value through every transport signature. Same propagation as
+    /// [`STRATEGY_OVERRIDE`]: it follows awaited futures but not
+    /// freshly-spawned tasks, which is exactly the dial → TLS-handshake →
+    /// request-headers path (all awaited inline; post-handshake tasks reuse
+    /// the profile and config captured by the dial).
+    static DIAL_SCOPE: DialScope;
+}
+
+/// Pick the profile for `url` once and run `f` with it pinned: every
+/// [`select`] inside `f` returns that same profile and
+/// [`current_dial_fingerprint`] its TLS family. Wrap the whole dial future
+/// (TCP + TLS + handshake + request headers). Outside any such scope
+/// [`select`] picks afresh under the active strategy, as before. One scope
+/// covers one dial to one `url`'s host; a nested scope keeps the outer pin.
+pub(crate) async fn with_dial_profile<F>(url: &Url, f: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    let profile = select(url);
+    DIAL_SCOPE.scope(DialScope::Profile(profile), f).await
+}
+
+/// Run `f` with a bare dial-scoped TLS family (no profile pinned), as the
+/// TLS / h2 builders read it. `None` sends the Chromium ClientHello.
+#[cfg(test)]
 pub(crate) async fn with_dial_fingerprint<F>(fp: Option<TlsFingerprint>, f: F) -> F::Output
 where
     F: std::future::Future,
 {
-    DIAL_TLS_FINGERPRINT.scope(fp, f).await
+    DIAL_SCOPE.scope(DialScope::Fingerprint(fp), f).await
 }
 
-/// The dial-scoped TLS fingerprint, or `None` outside any
-/// [`with_dial_fingerprint`] scope (probes, tests).
+/// The dial-scoped TLS fingerprint (the pinned profile's family), or `None`
+/// outside any dial scope (probes, tests) and for a dial without a profile.
 pub(crate) fn current_dial_fingerprint() -> Option<TlsFingerprint> {
-    DIAL_TLS_FINGERPRINT.try_with(|fp| *fp).unwrap_or(None)
+    match DIAL_SCOPE.try_with(|scope| *scope) {
+        Ok(DialScope::Profile(profile)) => profile.map(|p| p.tls),
+        #[cfg(test)]
+        Ok(DialScope::Fingerprint(fp)) => fp,
+        Err(_) => None,
+    }
+}
+
+/// The profile pinned by an enclosing [`with_dial_profile`] scope:
+/// `Some(pinned)` inside a dial, `None` outside any (or under a bare
+/// test-only fingerprint scope).
+fn pinned_dial_profile() -> Option<Option<&'static Profile>> {
+    match DIAL_SCOPE.try_with(|scope| *scope) {
+        Ok(DialScope::Profile(profile)) => Some(profile),
+        #[cfg(test)]
+        Ok(DialScope::Fingerprint(_)) => None,
+        Err(_) => None,
+    }
 }
 
 /// Returns the profile selected for `url` under the active strategy,
-/// or `None` when fingerprint diversification is disabled. Logs the
+/// or `None` when fingerprint diversification is disabled. Inside a
+/// [`with_dial_profile`] scope it returns the profile that dial pinned, so a
+/// [`Strategy::Random`] dial does not mix two browsers. Logs the
 /// (host, port, profile.name) triple at `info` the first time each
 /// distinct combination is observed in the current process — useful
 /// for operators verifying that the strategy actually engaged and for
 /// correlating dial failures with a specific profile choice.
 pub fn select(url: &Url) -> Option<&'static Profile> {
+    if let Some(pinned) = pinned_dial_profile() {
+        return pinned;
+    }
     let profile = select_with_strategy(url, current_effective_strategy())?;
     note_first_use(url, profile);
     Some(profile)
@@ -434,29 +581,63 @@ pub(crate) fn note_first_use(url: &Url, profile: &'static Profile) -> bool {
     inserted
 }
 
+/// Profiles selectable on `os`, in [`PROFILES`] order. Profiles of
+/// other OSes stay in the catalog (tests, snapshots) but are never
+/// picked on this OS. Per-OS pools: macOS = Chrome, Firefox, Safari;
+/// Linux = Chrome, Firefox; Android = Chrome; Windows = Chrome,
+/// Firefox, Edge.
+pub(crate) fn pool_for(os: ProfileOs) -> impl Iterator<Item = &'static Profile> {
+    PROFILES.iter().filter(move |p| p.os == os)
+}
+
+fn pick(os: ProfileOs, seed: usize) -> &'static Profile {
+    // One pass over `PROFILES` into a stack buffer (no allocation on the
+    // dial path), then index it.
+    let mut pool = [&PROFILES[0]; PROFILES.len()];
+    let mut len = 0;
+    for profile in pool_for(os) {
+        pool[len] = profile;
+        len += 1;
+    }
+    assert!(len > 0, "every OS has a non-empty pool");
+    pool[seed % len]
+}
+
 /// Variant of [`select`] that ignores the process-wide
 /// [`init_strategy`] and uses `strategy` directly. Exposed so unit
 /// tests can drive the selector without poisoning the global
-/// `OnceLock`.
+/// `OnceLock`. Picks from the pool of the OS the binary runs on.
 pub fn select_with_strategy(url: &Url, strategy: Strategy) -> Option<&'static Profile> {
+    select_with_strategy_for_os(url, strategy, host_os())
+}
+
+/// [`select_with_strategy`] for an explicit OS, so tests can cover
+/// every per-OS pool from a single host.
+pub fn select_with_strategy_for_os(
+    url: &Url,
+    strategy: Strategy,
+    os: ProfileOs,
+) -> Option<&'static Profile> {
     match strategy {
         Strategy::None => None,
-        Strategy::PerHostStable => Some(&PROFILES[host_index(url)]),
-        Strategy::ProcessStable => Some(&PROFILES[process_index()]),
-        Strategy::Random => Some(&PROFILES[rand::random_range(0..PROFILES.len())]),
+        Strategy::PerHostStable => Some(pick(os, host_index(url))),
+        Strategy::ProcessStable => Some(pick(os, process_index())),
+        Strategy::Random => Some(pick(os, rand::random_range(0..usize::MAX))),
     }
 }
 
+/// Stable hash of `(host, port)`; reduced modulo the sub-pool size by [`pick`].
 fn host_index(url: &Url) -> usize {
     let host = url.host_str().unwrap_or_default();
     let port = url.port_or_known_default().unwrap_or(0);
     let mut hasher = DefaultHasher::new();
     host.hash(&mut hasher);
     port.hash(&mut hasher);
-    (hasher.finish() as usize) % PROFILES.len()
+    hasher.finish() as usize
 }
 
-/// Process-wide profile index used by [`Strategy::ProcessStable`].
+/// Process-wide profile seed (reduced modulo the sub-pool size by [`pick`])
+/// used by [`Strategy::ProcessStable`].
 ///
 /// Seeded from the OS-level hostname when available — that keeps
 /// identity stable across restarts on the same machine, which
@@ -484,9 +665,9 @@ fn process_index() -> usize {
         Some(name) => {
             let mut hasher = DefaultHasher::new();
             name.hash(&mut hasher);
-            (hasher.finish() as usize) % PROFILES.len()
+            hasher.finish() as usize
         },
-        None => rand::random_range(0..PROFILES.len()),
+        None => rand::random_range(0..usize::MAX),
     })
 }
 
@@ -564,7 +745,9 @@ impl SecFetchPreset {
     }
 }
 
-/// Append the profile's identification headers to `headers`.
+/// Append the profile's identification headers to `headers`, in the
+/// historical order (h1 and h3 carriers; on h1 the `Host` the caller put in
+/// first stays first).
 ///
 /// Headers already present (`Accept` is the only realistic case —
 /// some XHTTP carriers may want to pin a specific value to mirror
@@ -573,24 +756,73 @@ impl SecFetchPreset {
 /// freshly-built `HeaderMap` that does not yet carry browser-style
 /// identity headers.
 pub fn apply(profile: &Profile, headers: &mut HeaderMap, sec_fetch: SecFetchPreset) {
-    headers.insert(header::USER_AGENT, HeaderValue::from_static(profile.user_agent));
-    if !headers.contains_key(header::ACCEPT) {
-        headers.insert(header::ACCEPT, HeaderValue::from_static(profile.accept));
+    apply_in_order(profile, headers, sec_fetch, crate::h2_profile::LEGACY_HEADER_ORDER);
+}
+
+/// [`apply`] for an HTTP/2 request: the headers go in the order the
+/// profile's browser sends them on h2 ([`crate::h2_profile::h2_header_order`]).
+/// Call it on an empty `HeaderMap` and insert carrier headers
+/// (`sec-websocket-*`, `x-outline-*`) afterwards, so they trail the
+/// browser ones like a page's custom headers do.
+pub(crate) fn apply_h2(profile: &Profile, headers: &mut HeaderMap, sec_fetch: SecFetchPreset) {
+    apply_in_order(profile, headers, sec_fetch, crate::h2_profile::h2_header_order(profile.tls));
+}
+
+fn apply_in_order(
+    profile: &Profile,
+    headers: &mut HeaderMap,
+    sec_fetch: SecFetchPreset,
+    order: &[crate::h2_profile::BrowserHeader],
+) {
+    use crate::h2_profile::BrowserHeader as B;
+    for slot in order {
+        match slot {
+            B::UserAgent => {
+                headers.insert(header::USER_AGENT, HeaderValue::from_static(profile.user_agent));
+            },
+            B::Accept => {
+                if !headers.contains_key(header::ACCEPT) {
+                    headers.insert(header::ACCEPT, HeaderValue::from_static(profile.accept));
+                }
+            },
+            B::AcceptLanguage => {
+                headers.insert(
+                    header::ACCEPT_LANGUAGE,
+                    HeaderValue::from_static(profile.accept_language),
+                );
+            },
+            B::AcceptEncoding => {
+                headers.insert(
+                    header::ACCEPT_ENCODING,
+                    HeaderValue::from_static(profile.accept_encoding),
+                );
+            },
+            B::SecChUa => {
+                if let Some(v) = profile.sec_ch_ua {
+                    headers.insert("sec-ch-ua", HeaderValue::from_static(v));
+                }
+            },
+            B::SecChUaMobile => {
+                if let Some(v) = profile.sec_ch_ua_mobile {
+                    headers.insert("sec-ch-ua-mobile", HeaderValue::from_static(v));
+                }
+            },
+            B::SecChUaPlatform => {
+                if let Some(v) = profile.sec_ch_ua_platform {
+                    headers.insert("sec-ch-ua-platform", HeaderValue::from_static(v));
+                }
+            },
+            B::SecFetchSite => {
+                headers.insert("sec-fetch-site", HeaderValue::from_static(sec_fetch.site()));
+            },
+            B::SecFetchMode => {
+                headers.insert("sec-fetch-mode", HeaderValue::from_static(sec_fetch.mode()));
+            },
+            B::SecFetchDest => {
+                headers.insert("sec-fetch-dest", HeaderValue::from_static(sec_fetch.dest()));
+            },
+        }
     }
-    headers.insert(header::ACCEPT_LANGUAGE, HeaderValue::from_static(profile.accept_language));
-    headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(profile.accept_encoding));
-    if let Some(v) = profile.sec_ch_ua {
-        headers.insert("sec-ch-ua", HeaderValue::from_static(v));
-    }
-    if let Some(v) = profile.sec_ch_ua_mobile {
-        headers.insert("sec-ch-ua-mobile", HeaderValue::from_static(v));
-    }
-    if let Some(v) = profile.sec_ch_ua_platform {
-        headers.insert("sec-ch-ua-platform", HeaderValue::from_static(v));
-    }
-    headers.insert("sec-fetch-site", HeaderValue::from_static(sec_fetch.site()));
-    headers.insert("sec-fetch-mode", HeaderValue::from_static(sec_fetch.mode()));
-    headers.insert("sec-fetch-dest", HeaderValue::from_static(sec_fetch.dest()));
 }
 
 #[cfg(test)]
