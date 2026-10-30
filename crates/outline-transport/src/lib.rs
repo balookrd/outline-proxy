@@ -156,10 +156,10 @@ pub mod quic;
 pub mod resumption;
 mod shared_cache;
 mod shared_dial;
+mod tcp_tls_profile;
 mod tcp_transport;
 mod tls;
-mod tls_fingerprint;
-#[cfg(feature = "quic")]
+mod tls_hello;
 mod tls_vendored;
 mod udp_transport;
 /// Client-side uplink replay ring — the client→server half of session
@@ -225,7 +225,9 @@ pub use tls::install_test_tls_root;
 // this crate (see [`tls::build_client_config`]).
 pub use rustls::ClientConnection as TlsClientConnection;
 pub use rustls::pki_types::ServerName as TlsServerName;
-pub use tls::build_https_probe_client_config;
+pub use tls::{
+    build_https_probe_client_config, build_https_probe_client_config_for_target, https_url,
+};
 
 // DNS cache: shared by every resolve path in the main binary.
 pub use dns::resolve_host_with_preference;

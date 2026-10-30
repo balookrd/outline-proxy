@@ -14,7 +14,7 @@ use crate::SupportedCipherSuite;
 use crate::bs_debug;
 use crate::check::inappropriate_handshake_message;
 use crate::client::client_conn::ClientConnectionData;
-use crate::client::common::{ClientHelloDetails, GreaseValues};
+use crate::client::common::{ALPS_EXTENSION, ClientHelloDetails, GreaseValues};
 use crate::client::ech::EchState;
 use crate::client::{ClientConfig, EchMode, EchStatus, ExtensionOrder, tls13};
 use crate::common_state::{CommonState, HandshakeKind, KxState, State};
@@ -22,11 +22,13 @@ use crate::conn::ConnectionRandoms;
 use crate::crypto::{ActiveKeyExchange, KeyExchangeAlgorithm};
 use crate::enums::{
     AlertDescription, CertificateType, CipherSuite, ContentType, HandshakeType, ProtocolVersion,
+    SignatureScheme,
 };
 use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
 use crate::hash_hs::HandshakeHashBuffer;
 use crate::log::{debug, trace};
 use crate::msgs::base::Payload;
+use crate::msgs::codec::Codec;
 use crate::msgs::enums::{Compression, ExtensionType, NamedGroup};
 use crate::msgs::handshake::{
     CertificateStatusRequest, ClientExtensions, ClientExtensionsInput, ClientHelloPayload,
@@ -257,6 +259,13 @@ fn emit_client_hello_for_retry(
         if shape.omit_status_request {
             exts.certificate_status_request = None;
         }
+        if shape.advertise_tls12 {
+            // Wire only: `supported_versions` itself keeps the real versions.
+            exts.supported_versions = Some(SupportedProtocolVersions {
+                tls12: true,
+                ..supported_versions
+            });
+        }
     }
 
     match extra_exts.transport_parameters.clone() {
@@ -369,10 +378,15 @@ fn emit_client_hello_for_retry(
     }
 
     if let Some(grease) = input.hello.grease {
-        // client-hello-shape: GREASE in supported_groups and supported_versions,
-        // and the two GREASE extensions.
+        // client-hello-shape: GREASE in supported_groups and supported_versions
+        // (and signature_algorithms when asked), and the two GREASE extensions.
         if let Some(groups) = exts.named_groups.as_mut() {
             groups.insert(0, NamedGroup::from(grease.group));
+        }
+        if shape.is_some_and(|shape| shape.grease_signature_algorithms) {
+            if let Some(schemes) = exts.signature_schemes.as_mut() {
+                schemes.insert(0, SignatureScheme::from(grease.signature_algorithm));
+            }
         }
         exts.grease_version = Some(ProtocolVersion::from(grease.version));
         exts.grease_extensions = Some((
@@ -434,7 +448,36 @@ fn emit_client_hello_for_retry(
     // Do we have a SessionID or ticket cached for this host?
     let tls13_session = prepare_resumption(&input.resuming, &mut exts, suite, cx, config);
 
+    input.hello.alps_protocols = Vec::new();
     if let Some(shape) = shape {
+        // client-hello-shape: ALPS for the offered ALPN protocols that have
+        // settings, in ALPN order, unless a raw extension replaces it.
+        let alps_type = ExtensionType::from(ALPS_EXTENSION);
+        if !shape
+            .extra_extensions
+            .iter()
+            .any(|(typ, _)| ExtensionType::from(*typ) == alps_type)
+        {
+            input.hello.alps_protocols = exts
+                .protocols
+                .iter()
+                .flatten()
+                .filter(|protocol| {
+                    shape
+                        .alps
+                        .iter()
+                        .any(|(name, _)| name[..] == protocol[..])
+                })
+                .cloned()
+                .collect();
+        }
+        if !input.hello.alps_protocols.is_empty() {
+            let mut body = Vec::new();
+            input.hello.alps_protocols.encode(&mut body);
+            exts.raw_extensions
+                .push((alps_type, body));
+        }
+
         // client-hello-shape: raw extensions replace a built-in one of the same type.
         for (typ, body) in &shape.extra_extensions {
             let typ = ExtensionType::from(*typ);
@@ -473,6 +516,11 @@ fn emit_client_hello_for_retry(
     if supported_versions.tls12 {
         // We don't do renegotiation at all, in fact.
         cipher_suites.push(CipherSuite::TLS_EMPTY_RENEGOTIATION_INFO_SCSV);
+    }
+
+    if let Some(shape) = shape.filter(|shape| !shape.wire_cipher_suites.is_empty()) {
+        // client-hello-shape: the advertised list, without the SCSV.
+        cipher_suites = shape.wire_cipher_suites.clone();
     }
 
     if let Some(grease) = input.hello.grease {
@@ -533,12 +581,15 @@ fn emit_client_hello_for_retry(
 
     // Note what extensions we sent.
     input.hello.sent_extensions = chp_payload.collect_used();
-    // client-hello-shape: raw extensions were sent too.
+    // client-hello-shape: raw extensions were sent too; the ALPS answer is
+    // checked separately (only in EncryptedExtensions, and against the ALPN).
+    let alps_offered = !input.hello.alps_protocols.is_empty();
     input.hello.sent_extensions.extend(
         chp_payload
             .raw_extensions
             .iter()
-            .map(|(typ, _)| *typ),
+            .map(|(typ, _)| *typ)
+            .filter(|typ| !(alps_offered && *typ == ExtensionType::from(ALPS_EXTENSION))),
     );
 
     let mut chp = HandshakeMessagePayload(HandshakePayload::ClientHello(chp_payload));

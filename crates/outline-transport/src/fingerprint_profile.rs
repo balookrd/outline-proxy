@@ -12,20 +12,19 @@
 //!
 //! The pool is process-wide and opt-in: callers wire a `Strategy`
 //! at startup via [`init_strategy`]. The default is [`Strategy::None`]
-//! — no headers are added, wire shape stays byte-identical to the
-//! pre-profile builds. Cross-transport session-resumption headers
+//! — no headers are added (TLS dials still send the Chromium ClientHello).
+//! Cross-transport session-resumption headers
 //! (`X-Outline-Resume*`) are inserted by the dial sites independently
 //! of this module; they ride on top of whatever profile is active.
 //!
 //! What this module does NOT do:
-//! * It does not touch TLS ClientHello or ALPN ordering — both of
-//!   those are owned by `crate::tls` and the per-carrier TLS configs.
-//!   Diversifying them is a separate, costlier pass that would need
-//!   a uTLS-style stack (`boring`/BoringSSL) instead of vanilla
-//!   rustls.
-//! * It does not touch HTTP/2 SETTINGS or QUIC transport-parameters
-//!   ordering. Those are owned by `hyper`/`h2` and `quinn` and have
-//!   their own (largely closed) fingerprint surface.
+//! * It does not shape the TLS ClientHello itself: that is done by
+//!   `crate::tcp_tls_profile` (TCP carriers, the certificate check and
+//!   the HTTPS probe) and `crate::quic::tls_profile` (H3), both through
+//!   the vendored rustls `ClientHelloShape`. This module only picks the
+//!   profile they follow.
+//! * It does not touch HTTP/2 SETTINGS (still `hyper`/`h2` defaults).
+//!   QUIC transport parameters are shaped by `crate::quic`.
 
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
@@ -37,11 +36,11 @@ use http::{HeaderMap, HeaderValue, header};
 use url::Url;
 
 /// How the dial path picks a profile from [`PROFILES`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Strategy {
-    /// No profile applied — current process behaves as if this
-    /// module did not exist. Default so existing deployments keep
-    /// the exact wire shape they had before the knob landed.
+    /// No profile applied: no `User-Agent` / `Accept-Language` /
+    /// `Sec-Fetch-*` headers are added. TLS dials (TCP and QUIC) still
+    /// send the Chromium ClientHello. Default.
     #[default]
     None,
     /// Same profile for the same `(host, port)` for the lifetime
@@ -130,27 +129,19 @@ impl<'de> serde::Deserialize<'de> for Strategy {
     }
 }
 
-/// TLS-layer browser family a [`Profile`] mimics. Selects the
-/// ClientHello cipher-suite (and kx-group) ordering offered by the dial
-/// path so the JA3 surface lines up with the HTTP-layer identity the
-/// same profile advertises — a Chrome `User-Agent` paired with rustls's
-/// default cipher order is itself a mismatch a fingerprinting DPI can
-/// key on.
-///
-/// Scope on stock rustls is deliberately narrow (see [`crate::tls_fingerprint`]):
-/// only cipher / kx *ordering* is reachable. GREASE, the extension set,
-/// and extension ordering are not exposed by the public rustls API and
-/// would need a vendored rustls; this enum is the seam such a fork plugs
-/// into without touching callers.
+/// TLS-layer browser family a [`Profile`] mimics. Selects the browser
+/// whose ClientHello the dial sends ([`crate::tcp_tls_profile`] over TCP,
+/// `crate::quic::tls_profile` over QUIC), so the JA4 surface lines up
+/// with the HTTP-layer identity the same profile advertises — a Chrome
+/// `User-Agent` paired with a stock rustls ClientHello is itself a
+/// mismatch a fingerprinting DPI can key on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TlsFingerprint {
     /// Chromium family — Chrome, Edge, and other Blink/BoringSSL clients.
-    /// TLS 1.3 order is AES-128-GCM, AES-256-GCM, then ChaCha20.
     Chromium,
-    /// Gecko (Firefox). TLS 1.3 order is AES-128-GCM, ChaCha20, then
-    /// AES-256-GCM; in TLS 1.2 ECDHE-ChaCha20 sits ahead of ECDHE-AES-256.
+    /// Gecko (Firefox, NSS).
     Firefox,
-    /// WebKit (Safari) — Apple's SecureTransport preference list.
+    /// WebKit (Safari) — Apple's URLSession / Network.framework.
     Safari,
 }
 
@@ -381,7 +372,7 @@ tokio::task_local! {
 /// Run `f` with `fp` as the dial-scoped TLS fingerprint that
 /// [`crate::tls::build_client_config`] reads. Wrap the whole dial future
 /// (TCP + TLS + handshake) so the config built inside picks up `fp`. `None`
-/// reproduces the pre-fingerprint default provider and exact wire shape.
+/// sends the Chromium ClientHello.
 pub(crate) async fn with_dial_fingerprint<F>(fp: Option<TlsFingerprint>, f: F) -> F::Output
 where
     F: std::future::Future,

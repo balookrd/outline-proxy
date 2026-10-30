@@ -34,6 +34,7 @@ async fn tls_probe_silent_upstream_blocks_handshake() {
             &mut writer,
             &mut reader,
             "example.com",
+            443,
             &target_wire,
             false, // VLESS path: target encoded in the request header, no SOCKS5 prefix
             &bytes,

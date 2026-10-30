@@ -1,12 +1,12 @@
-//! Shared rustls `ClientConfig` builders: one for the TCP TLS carriers (HTTP/1.1,
-//! HTTP/2) and the probe, one for the QUIC (HTTP/3) carrier, which shapes the
-//! ClientHello like the dial's browser.
+//! Shared rustls `ClientConfig` builders, both browser-shaped: one for the TCP TLS
+//! carriers (HTTP/1.1, HTTP/2) and the probe ([`crate::tcp_tls_profile`]), one for the
+//! QUIC (HTTP/3) carrier (`crate::quic::tls_profile`). Both build through
+//! [`crate::tls_hello::build_shaped_client_config`], so the ClientHello follows the
+//! dial's browser (Chromium when no dial fingerprint is set). Both configs negotiate
+//! TLS 1.3 only; the TCP ClientHello still advertises TLS 1.2, as the browsers do.
 //!
 //! Each transport advertises its own ALPN list but shares the same
-//! webpki root store and no-client-auth setup; centralising the
-//! builder avoids drift if we ever need to, e.g., add a custom
-//! certificate verifier or tweak crypto settings — it only has to
-//! happen in one place.
+//! webpki root store and no-client-auth setup.
 //!
 //! A test-only override slot lives below: cross-repo integration
 //! tests (`outline-ss-rust/tests`) generate a self-signed cert for
@@ -27,12 +27,12 @@ use rustls::{ClientConfig, RootCertStore};
 use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::fingerprint_profile::TlsFingerprint;
+use crate::tls_hello;
 
 /// Cache of built client configs keyed by `(tls fingerprint, ALPN list)`.
 /// The fingerprint is the dial-scoped value set by
 /// [`crate::fingerprint_profile::with_dial_fingerprint`]; `None` (no active
-/// scope — probes, tests) reproduces the pre-fingerprint default
-/// provider and the exact wire shape builds had before this knob landed.
+/// scope — probes, tests) builds the Chromium profile.
 /// Builds are rare (one per distinct key, ever), so a single mutex is fine.
 ///
 /// Each entry carries the `Instant` at which it was built. After
@@ -53,14 +53,20 @@ static CLIENT_CONFIG_CACHE: OnceLock<Mutex<HashMap<ClientConfigKey, ClientConfig
 pub(crate) const SESSION_TICKET_ROTATION_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// Build (or return a cached) rustls `ClientConfig` with no client auth and
-/// the given ALPN protocol list (order = preference). When a dial-scoped
-/// [`TlsFingerprint`] is in effect the ClientHello cipher / kx order is
-/// swapped to mimic that browser family (see [`crate::tls_fingerprint`]);
-/// otherwise rustls's default provider is used, byte-for-byte as before.
+/// the given ALPN protocol list (order = preference), whose ClientHello is that of
+/// the dial-scoped [`TlsFingerprint`]'s browser over TCP
+/// ([`crate::tcp_tls_profile::for_fingerprint`]; Chromium without a scope).
 /// Roots come from the process-wide test override if [`install_test_tls_root`]
 /// populated it, otherwise from the system webpki bundle.
 pub(crate) fn build_client_config(alpn_protocols: &[&[u8]]) -> Arc<ClientConfig> {
-    let fp = crate::fingerprint_profile::current_dial_fingerprint();
+    build_client_config_for(crate::fingerprint_profile::current_dial_fingerprint(), alpn_protocols)
+}
+
+/// [`build_client_config`] for an explicit fingerprint instead of the dial scope's.
+pub(crate) fn build_client_config_for(
+    fp: Option<TlsFingerprint>,
+    alpn_protocols: &[&[u8]],
+) -> Arc<ClientConfig> {
     let cache = CLIENT_CONFIG_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let key: ClientConfigKey = (fp, alpn_protocols.iter().map(|p| p.to_vec()).collect());
     let mut guard = cache.lock();
@@ -75,39 +81,67 @@ pub(crate) fn build_client_config(alpn_protocols: &[&[u8]]) -> Arc<ClientConfig>
     config
 }
 
-/// Public wrapper over [`build_client_config`] used by the HTTPS data-path
-/// probe. Sibling to the existing transport callers, with the same root
-/// store and test-override behaviour — separated only because probe code
-/// lives outside this crate and would otherwise reach into a `pub(crate)`
-/// helper. Probes run outside any dial scope, so the fingerprint is `None`
-/// and the default provider is used. ALPN list controls what the probe
+/// Public wrapper used by the HTTPS data-path probe, which lives outside this crate.
+/// The ClientHello follows the browser profile the dial path would pick for `url`
+/// ([`crate::fingerprint_profile::select`]; Chromium when no strategy is set), so the
+/// probe looks like the carrier dials to the same host. Same root store and
+/// test-override behaviour as [`build_client_config`]. ALPN controls what the probe
 /// handshake advertises (typical caller passes `[b"h2", b"http/1.1"]`).
-pub fn build_https_probe_client_config(alpn_protocols: &[&[u8]]) -> Arc<ClientConfig> {
-    build_client_config(alpn_protocols)
+pub fn build_https_probe_client_config(
+    url: &url::Url,
+    alpn_protocols: &[&[u8]],
+) -> Arc<ClientConfig> {
+    build_https_probe_client_config_for(
+        crate::fingerprint_profile::select(url).map(|p| p.tls),
+        alpn_protocols,
+    )
 }
 
-/// Builds a fresh `ClientConfig` for `(fp, alpn)`, bypassing the cache.
-/// `fp = Some(_)` selects the family-specific cipher / kx provider via
-/// [`crate::tls_fingerprint::provider_for`]; `None` keeps rustls's default
-/// provider (the exact builder used before the fingerprint knob). Roots are
-/// the test override when installed, else the system webpki list.
+/// [`build_https_probe_client_config`] for a probe target given as `host:port`. A target
+/// that does not form a URL (and so cannot drive profile selection) still gets the
+/// Chromium hello, the same fallback the certificate check uses, instead of failing.
+pub fn build_https_probe_client_config_for_target(
+    host: &str,
+    port: u16,
+    alpn_protocols: &[&[u8]],
+) -> Arc<ClientConfig> {
+    match https_url(host, port) {
+        Ok(url) => build_https_probe_client_config(&url, alpn_protocols),
+        Err(_) => build_https_probe_client_config_for(None, alpn_protocols),
+    }
+}
+
+/// `https://{host}:{port}/` with an IPv6 literal bracketed, for profile selection by
+/// the probes.
+pub fn https_url(host: &str, port: u16) -> Result<url::Url, url::ParseError> {
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        url::Url::parse(&format!("https://[{host}]:{port}/"))
+    } else {
+        url::Url::parse(&format!("https://{host}:{port}/"))
+    }
+}
+
+/// [`build_https_probe_client_config`] for an explicit fingerprint.
+pub(crate) fn build_https_probe_client_config_for(
+    fp: Option<TlsFingerprint>,
+    alpn_protocols: &[&[u8]],
+) -> Arc<ClientConfig> {
+    build_client_config_for(fp, alpn_protocols)
+}
+
+/// Builds a fresh `ClientConfig` for `(fp, alpn)`, bypassing the cache: the TCP
+/// browser profile of `fp`, roots from the test override when installed, else the
+/// system webpki list.
 fn build_client_config_uncached(
     fp: Option<TlsFingerprint>,
     alpn_protocols: &[&[u8]],
 ) -> Arc<ClientConfig> {
-    let roots = roots();
-    let mut config = match fp {
-        Some(fp) => ClientConfig::builder_with_provider(crate::tls_fingerprint::provider_for(fp))
-            .with_safe_default_protocol_versions()
-            .expect("aws-lc-rs provider supports TLS 1.2 + 1.3")
-            .with_root_certificates(roots)
-            .with_no_client_auth(),
-        None => ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth(),
-    };
-    config.alpn_protocols = alpn_protocols.iter().map(|p| p.to_vec()).collect();
-    Arc::new(config)
+    let profile = crate::tcp_tls_profile::for_fingerprint(fp);
+    tls_hello::build_shaped_client_config(
+        profile,
+        alpn_protocols,
+        tls_hello::webpki_verifier(profile),
+    )
 }
 
 /// Cache of browser-shaped QUIC configs, keyed and rotated like [`CLIENT_CONFIG_CACHE`].
@@ -118,7 +152,7 @@ static QUIC_CLIENT_CONFIG_CACHE: OnceLock<Mutex<HashMap<ClientConfigKey, ClientC
 /// Build (or return a cached) TLS 1.3 `ClientConfig` for a QUIC dial whose ClientHello
 /// matches the browser of `fp` ([`crate::quic::tls_profile`]; `None` = Chromium, as the
 /// QUIC transport parameters). Only for QUIC: browsers' TCP ClientHellos differ, so
-/// [`build_client_config`] keeps the TCP shape. Roots and the session-ticket rotation
+/// [`build_client_config`] uses the TCP profiles. Roots and the session-ticket rotation
 /// are those of [`build_client_config`].
 #[cfg(feature = "quic")]
 pub(crate) fn build_quic_client_config(
@@ -144,49 +178,16 @@ pub(crate) fn build_quic_client_config_uncached(
     fp: Option<TlsFingerprint>,
     alpn_protocols: &[&[u8]],
 ) -> Arc<ClientConfig> {
-    use rustls::client::{EchGreaseConfig, EchMode, WebPkiServerVerifier};
-    use rustls::crypto::aws_lc_rs::hpke::DH_KEM_X25519_HKDF_SHA256_AES_128;
-    use rustls::crypto::hpke::Hpke;
-
-    use crate::quic::tls_profile::{self, BrowserVerifier};
-
-    let profile = tls_profile::for_fingerprint(fp);
-    let provider = Arc::new(profile.provider());
-    let verifier = WebPkiServerVerifier::builder_with_provider(Arc::new(roots()), provider.clone())
-        .build()
-        .expect("webpki verifier over a non-empty root store");
-    let builder = ClientConfig::builder_with_provider(provider);
-    let builder = if profile.ech_grease {
-        // A fresh X25519 point per build stands in for the (absent) server ECH key.
-        let suite = DH_KEM_X25519_HKDF_SHA256_AES_128;
-        let (placeholder, _) = suite.generate_key_pair().expect("aws-lc-rs X25519 key generation");
-        builder
-            .with_ech(EchMode::Grease(EchGreaseConfig::new(suite, placeholder)))
-            .expect("aws-lc-rs provider supports TLS 1.3 and ECH")
-    } else {
-        builder
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .expect("aws-lc-rs provider supports TLS 1.3")
-    };
-    let mut config = builder
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(BrowserVerifier::new(
-            verifier,
-            profile.sig_schemes,
-        )))
-        .with_no_client_auth();
-    config.alpn_protocols = alpn_protocols.iter().map(|p| p.to_vec()).collect();
-    config.cert_decompressors = profile.cert_decompressors();
-    // TLS 1.3 tickets only (the config is TLS 1.3); no kx hint, so every hello keeps the
-    // profile's key shares.
-    config.resumption =
-        rustls::client::Resumption::store(Arc::new(tls_profile::NoKxHintStore::new()));
-    crate::tls_vendored::apply_quic_tls_profile(&mut config, profile);
-    Arc::new(config)
+    let profile = crate::quic::tls_profile::for_fingerprint(fp);
+    tls_hello::build_shaped_client_config(
+        profile,
+        alpn_protocols,
+        tls_hello::webpki_verifier(profile),
+    )
 }
 
 /// Roots for every client config: the test override when installed, else webpki.
-fn roots() -> RootCertStore {
+pub(crate) fn roots() -> RootCertStore {
     match test_override_roots() {
         Some(override_roots) => (*override_roots).clone(),
         None => {

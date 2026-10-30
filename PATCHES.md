@@ -42,8 +42,8 @@ modules (client h3, server h3, client QUIC, client rustls):
   `quinn-proto` (`TransportConfig::initial_stream_receive_window`).
 - [`crates/outline-transport/src/tls_vendored.rs`](crates/outline-transport/src/tls_vendored.rs) — client, patched
   `rustls` (`ClientConfig::client_hello_shape` with `ClientHelloShape` /
-  `ExtensionOrder`, `kx_group::SECP521R1`, and `apply_quic_tls_profile`, which
-  turns a QUIC browser TLS profile into a `ClientHelloShape`).
+  `ExtensionOrder`, `kx_group::SECP521R1`, and `apply_tls_hello_profile`, which
+  turns a browser TLS hello profile — QUIC or TCP — into a `ClientHelloShape`).
 
 When rebasing the vendored crates onto a new upstream, start (and ideally
 end) at these gate files. CI enforces that `sockudo_ws` is referenced only
@@ -268,7 +268,8 @@ Baseline — crates.io `rustls 0.23.40`. Changes carried by
    `ClientConfig::client_hello_shape: Option<Arc<ClientHelloShape>>` (default
    `None`, set in `builder.rs`; `ClientHelloShape` and `ExtensionOrder` are
    re-exported from `rustls::client`). The H3 client uses it so the ClientHello in
-   the QUIC Initial matches a browser's (JA4 included). Fields:
+   the QUIC Initial matches a browser's (JA4 included), and the TCP carriers, the
+   certificate check and the HTTPS probe use it for the TCP ClientHello. Fields:
    - `omit_extended_master_secret`, `omit_ec_point_formats`,
      `omit_status_request` — do not send extensions 23 / 11 / 5;
    - `extra_extensions: Vec<(u16, Vec<u8>)>` — extensions written verbatim, ordered
@@ -302,12 +303,60 @@ Baseline — crates.io `rustls 0.23.40`. Changes carried by
      of a GREASE `encrypted_client_hello` (`ech.rs`): empty keeps rustls' sizing,
      one value is used as is, several are picked from uniformly per connection
      (rejection sampling on the config's `SecureRandom`, after the HPKE key pair
-     and before the random payload). Real ECH is not affected.
+     and before the random payload). Real ECH is not affected;
+   - `wire_cipher_suites: Vec<CipherSuite>` — exactly the `cipher_suites` on the
+     wire, after the GREASE suite when `grease` is set, without the renegotiation
+     SCSV. Empty (default): rustls' own list. Only the advertised list changes: the
+     suites rustls can negotiate stay the provider's, so a ServerHello selecting a
+     listed suite the provider lacks (CBC, RSA key exchange, 3DES) fails the
+     handshake with an error. The list must contain every provider suite the config
+     should be able to negotiate — `outline-transport` checks that, the patch does
+     not;
+   - `advertise_tls12: bool` — add `0303` after `0304` to the wire
+     `supported_versions` even for a TLS 1.3-only config. Only the extension
+     changes; suite filtering, SCSV, `extended_master_secret`, tickets and the
+     ServerHello version check still follow the config's real versions, so a server
+     answering TLS 1.2 fails the handshake. Not neutral for QUIC: it ignores QUIC's
+     ban on TLS 1.2 and would put `0303` into a QUIC hello, so QUIC profiles keep it
+     `false`. Default `false`;
+   - `grease_signature_algorithms: bool` — with `grease`, a separate GREASE value
+     (`0x?A?A`, its own random byte, kept across an HRR) goes first in
+     `signature_algorithms`. Ignored without `grease`; the schemes accepted from the
+     server are still the verifier's. Default `false`;
+   - `alps: Vec<(Vec<u8>, Vec<u8>)>` — client side of ALPS (`application_settings`,
+     new codepoint 17613) as `(ALPN protocol, client settings)` pairs. Non-empty:
+     the hello carries 17613 listing, in ALPN order, the offered ALPN protocols that
+     have an entry (none offered: no extension); it is encoded like a raw extension,
+     so it takes part in `extension_order` the same way and the hello is byte-for-byte
+     what the former raw 17613 entry produced. It is not recorded as sent: a 17613 in
+     the ServerHello stays unsolicited, and in EncryptedExtensions (`tls13.rs`) it is
+     accepted only when the negotiated ALPN protocol is in the list — otherwise, or
+     without ALPN, the handshake fails (`unsupported_extension`,
+     `UnsolicitedEncryptedExtension`). An accepted answer queues the protocol's
+     settings (`ClientConnectionData`), and the client sends them, before its
+     Certificate / Finished, as a handshake message `EncryptedExtensions` (type 8)
+     holding only `application_settings`; it is part of the transcript, so the client
+     Finished and the resumption secret cover it, while the application traffic
+     secrets (transcript up to the server Finished) do not. Not sent when early data
+     was accepted (as in BoringSSL). QUIC needs nothing extra: the message rides the
+     Handshake-epoch CRYPTO data like the rest of the flight. The server's settings
+     are not kept. An `extra_extensions` entry of type 17613 overrides the field
+     (written verbatim, recorded as sent, no client settings, and the server's ALPS answer
+     is then not answered, so a server waiting for them aborts — the Google front-end
+     abort). Each settings value must fit the u16 length fields (at most 65531 bytes;
+     `outline-transport` asserts it). Chrome carries its HTTP/2 SETTINGS in the client
+     ALPS data; ours is empty, so the encrypted second-flight record is a few bytes
+     shorter than Chrome's. Default empty.
 
-   With `None`, the ClientHello, the ServerHello / HelloRetryRequest handling and
-   the order in which randomness is drawn are byte-for-byte upstream; the server
-   (`outline-ss-rust`), the TCP client (`tokio-rustls`), the probe and the cluster
-   mesh never set the option.
+   The four newest fields default to empty / `false`, and with those defaults a
+   `Some(shape)` ClientHello and handshake are structurally identical to what they
+   were before them (the QUIC profiles are unchanged on the wire; with `grease` the
+   RNG stream gains one byte for the signature-algorithm GREASE value, which shifts
+   the random bytes drawn after it). With `None`, the ClientHello,
+   the ServerHello / HelloRetryRequest / EncryptedExtensions handling and the order in
+   which randomness is drawn are byte-for-byte upstream; the server (`outline-ss-rust`) and the cluster mesh
+   never set the option; every client TLS dial (TCP and QUIC carriers, the certificate check,
+   the HTTPS data-path probe) does.
 2. **secp521r1** (`src/crypto/aws_lc_rs/mod.rs`, `src/crypto/ring/kx.rs`) — new
    `rustls::crypto::aws_lc_rs::kx_group::SECP521R1` (ECDH P-521 via aws-lc-rs,
    offered by Safari and Firefox). It lives in a small module in
@@ -323,7 +372,8 @@ Baseline — crates.io `rustls 0.23.40`. Changes carried by
 The rustls `brotli` / `zlib` features stay off: with them the server, which shares
 the vendored crate, would gain certificate compressors and start compressing its
 certificate. The client's certificate decompressors live in `outline-transport`
-(`brotli-decompressor`, `flate2`, `ruzstd`).
+(`brotli-decompressor`, `flate2`, `ruzstd`), always built in now that the TCP dials
+use them too.
 
 Conformance check: apply the patch to a clean copy of crates.io 0.23.40 (the
 retained file set) and compare with `diff -r` — empty.

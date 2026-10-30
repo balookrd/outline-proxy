@@ -147,12 +147,14 @@ vendored-крейты, которые держим в upstream-стиле.
   логических патча (advertised-stream-window, browser-shaped-transport-parameters,
   browser-order-and-firefox) и vendoring-trim, описано в `PATCHES*.md`.
   `vendor/rustls` = upstream 0.23.40 + два логических патча (client-hello-shape:
-  `ClientConfig::client_hello_shape` для браузерного ClientHello H3-носителя;
+  `ClientConfig::client_hello_shape` для браузерного ClientHello H3- и
+  TCP-носителей, `cert_check` и HTTPS-пробы;
   secp521r1: `kx_group::SECP521R1`) и vendoring-trim, описано в `PATCHES*.md`.
   Фичи rustls `brotli`/`zlib` НЕ включать: rustls вендорится один на весь
   workspace, и сервер получил бы компрессоры и начал бы сжимать свой сертификат
   (смена серверного поведения). Декомпрессоры сертификата клиента живут в
-  `outline-transport` (`quic/tls_profile.rs`).
+  `outline-transport` (`tls_hello.rs`) и собираются всегда: ими пользуются и
+  QUIC, и TCP-дозвоны.
 - **Единый профиль.** `[profile.release]` (lto=fat, panic=abort) — только в
   корневом `Cargo.toml`. Package-манифесты в `bins/*` тонкие, без
   `[workspace]`/`[profile]`/`[patch]`.
@@ -279,7 +281,7 @@ Production-код не обращается к `h3`-патч-API и `sockudo_ws`
 `crates/outline-transport/src/quic/vendored.rs` (клиент); патч `rustls`
 (`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
 `kx_group::SECP521R1`) — только через `crates/outline-transport/src/tls_vendored.rs`
-(клиент, только QUIC); CI это проверяет
+(клиент: QUIC и TCP); CI это проверяет
 (тесты — исключение). Новые обращения к vendored-API добавляй в гейт-модули, а не
 в потребителей.
 

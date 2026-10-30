@@ -82,13 +82,20 @@ impl UplinkManager {
             }
             let mut soonest: Option<u64> = None;
             for ep in &endpoints {
-                match outline_transport::cert_check::fetch_leaf_cert_not_after_unix_ms(
-                    &self.inner.dns_cache,
-                    &ep.host,
-                    ep.port,
-                    ep.fwmark,
-                    ep.ipv6_first,
-                    ep.ipv4_only,
+                // Same strategy scope the carrier dial to this endpoint runs
+                // under, so the check's ClientHello follows the wire's
+                // `fingerprint_profile` rather than only the process default.
+                match crate::dial::dial_in_wire_scope(
+                    &self.inner.uplinks[index],
+                    ep.fingerprint_profile,
+                    outline_transport::cert_check::fetch_leaf_cert_not_after_unix_ms(
+                        &self.inner.dns_cache,
+                        &ep.host,
+                        ep.port,
+                        ep.fwmark,
+                        ep.ipv6_first,
+                        ep.ipv4_only,
+                    ),
                 )
                 .await
                 {

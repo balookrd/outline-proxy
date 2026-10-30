@@ -18,6 +18,11 @@ use std::time::Instant;
 use ring::{aead, hmac};
 
 use crate::quic::loopback;
+use crate::tests::client_hello::{
+    Reader, cert_compression_algs, cipher_suites, ech_outer, extension, extension_types,
+    extensions, is_grease_u16, ja4, key_share_entries, key_share_groups, sha256_hex12,
+    supported_versions, u16_list_ext,
+};
 
 /// QUIC v1 Initial salt (RFC 9001 §5.2) — public and fixed, which is exactly
 /// why a censor can decrypt any Initial it sees.
@@ -26,34 +31,12 @@ const INITIAL_SALT_V1: [u8; 20] = [
     0xcc, 0xbb, 0x7f, 0x0a,
 ];
 
-/// Minimal cursor over a byte slice for QUIC/TLS parsing.
-struct Reader<'a> {
-    b: &'a [u8],
-    i: usize,
+/// QUIC variable-length integers on the shared ClientHello cursor.
+trait QuicVarint {
+    fn varint(&mut self) -> u64;
 }
 
-impl<'a> Reader<'a> {
-    fn new(b: &'a [u8]) -> Self {
-        Self { b, i: 0 }
-    }
-    fn u8(&mut self) -> u8 {
-        let v = self.b[self.i];
-        self.i += 1;
-        v
-    }
-    fn u16(&mut self) -> u16 {
-        let v = u16::from_be_bytes([self.b[self.i], self.b[self.i + 1]]);
-        self.i += 2;
-        v
-    }
-    fn take(&mut self, n: usize) -> &'a [u8] {
-        let s = &self.b[self.i..self.i + n];
-        self.i += n;
-        s
-    }
-    fn remaining(&self) -> usize {
-        self.b.len() - self.i
-    }
+impl QuicVarint for Reader<'_> {
     /// QUIC variable-length integer (RFC 9000 §16): the two high bits of the
     /// first byte give the length (1/2/4/8), the rest is the value.
     fn varint(&mut self) -> u64 {
@@ -237,36 +220,10 @@ fn crypto_complete(ch: &[u8]) -> bool {
     ch.len() >= 4 + body
 }
 
-/// Return the raw data of ClientHello extension `want_type`, if present.
-fn clienthello_extension(ch: &[u8], want_type: u16) -> Option<&[u8]> {
-    let mut r = Reader::new(ch);
-    assert_eq!(r.u8(), 0x01, "expected ClientHello handshake");
-    r.take(3); // 24-bit handshake length
-    r.take(2); // legacy_version
-    r.take(32); // random
-    let sid_len = r.u8() as usize;
-    r.take(sid_len); // session id (empty for QUIC)
-    let cs_len = r.u16() as usize;
-    r.take(cs_len); // cipher suites
-    let comp_len = r.u8() as usize;
-    r.take(comp_len); // compression methods
-    let ext_total = r.u16() as usize;
-    let ext_end = r.i + ext_total;
-    while r.i < ext_end {
-        let ext_type = r.u16();
-        let ext_len = r.u16() as usize;
-        let ext_data = r.take(ext_len);
-        if ext_type == want_type {
-            return Some(ext_data);
-        }
-    }
-    None
-}
-
 /// Ordered transport-parameter ids from the `quic_transport_parameters`
 /// extension (0x0039).
 fn transport_param_ids_from_clienthello(ch: &[u8]) -> Vec<u64> {
-    let data = clienthello_extension(ch, 0x0039)
+    let data = extension(ch, 0x0039)
         .expect("no quic_transport_parameters (0x0039) extension in ClientHello");
     let mut pr = Reader::new(data);
     let mut ids = Vec::new();
@@ -282,7 +239,7 @@ fn transport_param_ids_from_clienthello(ch: &[u8]) -> Vec<u64> {
 /// `(id, raw value)` pairs from the `quic_transport_parameters` extension
 /// (0x0039), in wire order.
 fn transport_params_from_clienthello(ch: &[u8]) -> Vec<(u64, Vec<u8>)> {
-    let data = clienthello_extension(ch, 0x0039)
+    let data = extension(ch, 0x0039)
         .expect("no quic_transport_parameters (0x0039) extension in ClientHello");
     let mut pr = Reader::new(data);
     let mut params = Vec::new();
@@ -309,25 +266,6 @@ fn is_grease_tp(id: u64) -> bool {
 
 fn tp_value(tp: &[(u64, Vec<u8>)], id: u64) -> Option<&[u8]> {
     tp.iter().find(|(i, _)| *i == id).map(|(_, v)| v.as_slice())
-}
-
-/// Named groups offered in the `key_share` extension (0x0033), in order. Used
-/// to confirm the post-quantum `X25519MLKEM768` (0x11ec) share is on the wire.
-fn key_share_groups(ch: &[u8]) -> Vec<u16> {
-    let Some(data) = clienthello_extension(ch, 0x0033) else {
-        return Vec::new();
-    };
-    let mut r = Reader::new(data);
-    let list_len = r.u16() as usize; // client_shares vector length
-    let end = r.i + list_len;
-    let mut groups = Vec::new();
-    while r.i < end {
-        let group = r.u16();
-        let ke_len = r.u16() as usize;
-        r.take(ke_len);
-        groups.push(group);
-    }
-    groups
 }
 
 /// Drive `config` through a sans-IO `quinn` client and capture the whole client
@@ -1133,152 +1071,6 @@ async fn per_direction_windows_are_advertised() {
 // rustls patch "client-hello-shape" (gate: `crate::tls_vendored`)
 // ---------------------------------------------------------------------------
 
-/// RFC 8701 GREASE value `0x?A?A`.
-fn is_grease_u16(v: u16) -> bool {
-    v & 0x0f0f == 0x0a0a && (v >> 8) == (v & 0xff)
-}
-
-/// `(type, body)` of every ClientHello extension, in wire order.
-fn extensions(ch: &[u8]) -> Vec<(u16, Vec<u8>)> {
-    let mut r = Reader::new(ch);
-    assert_eq!(r.u8(), 0x01, "expected ClientHello handshake");
-    r.take(3 + 2 + 32); // handshake length, legacy_version, random
-    let sid_len = r.u8() as usize;
-    r.take(sid_len);
-    let cs_len = r.u16() as usize;
-    r.take(cs_len);
-    let comp_len = r.u8() as usize;
-    r.take(comp_len);
-    let ext_end = r.u16() as usize + r.i;
-    let mut out = Vec::new();
-    while r.i < ext_end {
-        let ext_type = r.u16();
-        let ext_len = r.u16() as usize;
-        out.push((ext_type, r.take(ext_len).to_vec()));
-    }
-    out
-}
-
-/// Extension types of a ClientHello in wire order.
-fn extension_types(ch: &[u8]) -> Vec<u16> {
-    extensions(ch).into_iter().map(|(t, _)| t).collect()
-}
-
-/// Cipher suites in offer order.
-fn cipher_suites(ch: &[u8]) -> Vec<u16> {
-    let mut r = Reader::new(ch);
-    assert_eq!(r.u8(), 0x01, "expected ClientHello handshake");
-    r.take(3 + 2 + 32);
-    let sid_len = r.u8() as usize;
-    r.take(sid_len);
-    let cs_len = r.u16() as usize;
-    let mut cs = Reader::new(r.take(cs_len));
-    let mut out = Vec::new();
-    while cs.remaining() > 0 {
-        out.push(cs.u16());
-    }
-    out
-}
-
-/// u16 list inside an extension whose body is `<u16 len><u16...>` (groups 10, sig algs 13).
-fn u16_list_ext(ch: &[u8], ext: u16) -> Vec<u16> {
-    let Some(body) = clienthello_extension(ch, ext) else {
-        return Vec::new();
-    };
-    let mut r = Reader::new(body);
-    let len = r.u16() as usize;
-    assert_eq!(len, r.remaining(), "extension {ext:#06x} list length");
-    let mut out = Vec::new();
-    while r.remaining() > 0 {
-        out.push(r.u16());
-    }
-    out
-}
-
-/// `supported_versions` (43) of a ClientHello: `<u8 len><u16...>`.
-fn supported_versions(ch: &[u8]) -> Vec<u16> {
-    let body = clienthello_extension(ch, 43).expect("no supported_versions");
-    let mut r = Reader::new(body);
-    let len = r.u8() as usize;
-    assert_eq!(len, r.remaining(), "supported_versions list length");
-    let mut out = Vec::new();
-    while r.remaining() > 0 {
-        out.push(r.u16());
-    }
-    out
-}
-
-/// `(group, key length)` of every `key_share` entry, in order.
-fn key_share_entries(ch: &[u8]) -> Vec<(u16, usize)> {
-    let data = clienthello_extension(ch, 0x0033).expect("no key_share");
-    let mut r = Reader::new(data);
-    let end = r.u16() as usize + r.i;
-    let mut out = Vec::new();
-    while r.i < end {
-        let group = r.u16();
-        let len = r.u16() as usize;
-        r.take(len);
-        out.push((group, len));
-    }
-    out
-}
-
-fn sha256_hex12(s: &str) -> String {
-    let d = ring::digest::digest(&ring::digest::SHA256, s.as_bytes());
-    d.as_ref()[..6].iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// JA4 for a QUIC ClientHello (FoxIO spec): q + "13" + d/i + 2-digit ciphers + 2-digit
-/// extensions (GREASE excluded, SNI and ALPN counted) + ALPN first/last char, then
-/// sha256[..12] of sorted ciphers, then sha256[..12] of sorted extensions without
-/// SNI/ALPN joined with "_" and the signature algorithms in offer order.
-fn ja4(ch: &[u8]) -> String {
-    let hex = |v: &[u16]| v.iter().map(|x| format!("{x:04x}")).collect::<Vec<_>>().join(",");
-    let ciphers: Vec<u16> = cipher_suites(ch).into_iter().filter(|c| !is_grease_u16(*c)).collect();
-    let exts: Vec<u16> = extension_types(ch)
-        .into_iter()
-        .filter(|e| !is_grease_u16(*e))
-        .collect();
-    let version = match clienthello_extension(ch, 43) {
-        Some(_) => supported_versions(ch)
-            .into_iter()
-            .filter(|v| !is_grease_u16(*v))
-            .max(),
-        None => None,
-    };
-    let version = match version {
-        Some(0x0304) => "13",
-        Some(0x0303) => "12",
-        other => panic!("unexpected TLS version {other:?}"),
-    };
-    let sni = if exts.contains(&0) { 'd' } else { 'i' };
-    let alpn = match clienthello_extension(ch, 16) {
-        Some(body) => {
-            // <u16 list len><u8 len><proto>...: the first protocol.
-            let first = &body[3..3 + body[2] as usize];
-            format!("{}{}", first[0] as char, first[first.len() - 1] as char)
-        },
-        None => "00".into(),
-    };
-    let mut sorted_ciphers = ciphers.clone();
-    sorted_ciphers.sort_unstable();
-    let mut sorted_exts: Vec<u16> = exts.iter().copied().filter(|e| *e != 0 && *e != 16).collect();
-    sorted_exts.sort_unstable();
-    let sigs = u16_list_ext(ch, 13);
-    let c = if sigs.is_empty() {
-        hex(&sorted_exts)
-    } else {
-        format!("{}_{}", hex(&sorted_exts), hex(&sigs))
-    };
-    format!(
-        "q{version}{sni}{:02}{:02}{alpn}_{}_{}",
-        ciphers.len().min(99),
-        exts.len().min(99),
-        sha256_hex12(&hex(&sorted_ciphers)),
-        sha256_hex12(&c)
-    )
-}
-
 #[test]
 fn ja4_helper_reproduces_measured_chrome_hash() {
     // JA4_r of the Chrome 156 capture -> its JA4 c-part.
@@ -1368,6 +1160,10 @@ fn full_shape() -> crate::tls_vendored::ClientHelloShape {
         extension_order: ExtensionOrder::Fixed(vec![0, 10, 16, 5, 13, 18, 51, 45, 43, 57]),
         extra_key_share_groups: vec![rustls::NamedGroup::secp256r1],
         ech_grease_payload_lengths: vec![],
+        wire_cipher_suites: vec![],
+        advertise_tls12: false,
+        grease_signature_algorithms: false,
+        alps: vec![],
     }
 }
 
@@ -1411,6 +1207,10 @@ async fn shape_omits_adds_and_greases() {
             extension_order: ExtensionOrder::Fixed(vec![0, 10, 16, 5, 13, 18, 51, 45, 43, 57]),
             extra_key_share_groups: vec![],
             ech_grease_payload_lengths: vec![],
+            wire_cipher_suites: vec![],
+            advertise_tls12: false,
+            grease_signature_algorithms: false,
+            alps: vec![],
         },
     );
     let mut first_greases = std::collections::BTreeSet::new();
@@ -1423,7 +1223,7 @@ async fn shape_omits_adds_and_greases() {
         assert_eq!(ids[1..ids.len() - 1], [0, 10, 16, 5, 13, 18, 51, 45, 43, 57]);
         assert_eq!(exts[0].1, [0u8; 0], "first GREASE extension is empty");
         assert_eq!(exts.last().unwrap().1, [0u8], "last GREASE extension is one zero byte");
-        assert_eq!(clienthello_extension(&ch, 18), Some(&[][..]), "raw SCT extension");
+        assert_eq!(extension(&ch, 18), Some(&[][..]), "raw SCT extension");
         first_greases.insert(ids[0]);
 
         let ciphers = cipher_suites(&ch);
@@ -1712,7 +1512,7 @@ async fn no_kx_hint_store_keeps_post_quantum_share_on_later_dials() {
 
     let mut patched = client();
     patched.resumption =
-        rustls::client::Resumption::store(Arc::new(crate::quic::tls_profile::NoKxHintStore::new()));
+        rustls::client::Resumption::store(Arc::new(crate::tls_hello::NoKxHintStore::new()));
     let first = crypto_frames("no hint 1", echo_with_tls(&lb, patched.clone()).await);
     let second = crypto_frames("no hint 2", echo_with_tls(&lb, patched).await);
     assert_eq!(second, first, "the second hello keeps the X25519MLKEM768 share");
@@ -1730,35 +1530,6 @@ fn unhex(s: &str) -> Vec<u8> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
         .collect()
-}
-
-/// `(kdf, aead, enc length, payload length)` of an outer GREASE ECH extension (0xfe0d).
-fn ech_outer(ch: &[u8]) -> (u16, u16, usize, usize) {
-    let body = clienthello_extension(ch, 0xfe0d).expect("no encrypted_client_hello");
-    let mut r = Reader::new(body);
-    assert_eq!(r.u8(), 0, "outer ECH");
-    let kdf = r.u16();
-    let aead = r.u16();
-    r.take(1); // config_id
-    let enc = r.u16() as usize;
-    r.take(enc);
-    let payload = r.u16() as usize;
-    r.take(payload);
-    assert_eq!(r.remaining(), 0, "trailing bytes after ECH payload");
-    (kdf, aead, enc, payload)
-}
-
-/// `compress_certificate` (27) algorithms: `<u8 len><u16...>`.
-fn cert_compression_algs(ch: &[u8]) -> Vec<u16> {
-    let body = clienthello_extension(ch, 27).expect("no compress_certificate");
-    let mut r = Reader::new(body);
-    let len = r.u8() as usize;
-    assert_eq!(len, r.remaining(), "compress_certificate list length");
-    let mut out = Vec::new();
-    while r.remaining() > 0 {
-        out.push(r.u16());
-    }
-    out
 }
 
 /// The production H3 ClientHello under the dial fingerprint `fp` for endpoint seed `seed`.
@@ -1796,12 +1567,12 @@ async fn h3_chromium_clienthello_matches_chrome_156() {
             [0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201]
         );
         assert_eq!(cert_compression_algs(&ch), [2], "brotli");
-        assert_eq!(clienthello_extension(&ch, 17613), Some(&[0x00, 0x03, 0x02, b'h', b'3'][..]));
-        assert_eq!(clienthello_extension(&ch, 51764), Some(&anchors[..]));
+        assert_eq!(extension(&ch, 17613), Some(&[0x00, 0x03, 0x02, b'h', b'3'][..]));
+        assert_eq!(extension(&ch, 51764), Some(&anchors[..]));
         let (kdf, aead, enc, payload) = ech_outer(&ch);
         assert_eq!((kdf, aead, enc), (1, 1, 32));
         assert!([176, 208, 240].contains(&payload), "ECH payload {payload}");
-        let ech_len = clienthello_extension(&ch, 0xfe0d).unwrap().len();
+        let ech_len = extension(&ch, 0xfe0d).unwrap().len();
         assert!([218, 250, 282].contains(&ech_len), "ECH extension length {ech_len}");
         payloads.insert(payload);
         let pos = ids.iter().position(|e| *e == 0xfe0d).unwrap();
@@ -1849,8 +1620,8 @@ async fn h3_safari_clienthello_matches_apple() {
             [0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201]
         );
         assert_eq!(cert_compression_algs(&ch), [1], "zlib");
-        assert_eq!(clienthello_extension(&ch, 18), Some(&[][..]), "empty SCT");
-        assert!(clienthello_extension(&ch, 0xfe0d).is_none(), "Apple sends no ECH");
+        assert_eq!(extension(&ch, 18), Some(&[][..]), "empty SCT");
+        assert!(extension(&ch, 0xfe0d).is_none(), "Apple sends no ECH");
     }
 }
 
@@ -1879,14 +1650,14 @@ async fn h3_firefox_clienthello_matches_firefox_159() {
             ]
         );
         assert_eq!(cert_compression_algs(&ch), [1, 3, 2], "zlib, zstd, brotli");
-        assert_eq!(clienthello_extension(&ch, 28), Some(&[0x40, 0x01][..]));
+        assert_eq!(extension(&ch, 28), Some(&[0x40, 0x01][..]));
         assert_eq!(
-            clienthello_extension(&ch, 34),
+            extension(&ch, 34),
             Some(&[0x00, 0x08, 0x04, 0x03, 0x05, 0x03, 0x06, 0x03, 0x02, 0x03][..])
         );
-        assert_eq!(clienthello_extension(&ch, 65281), Some(&[0x00][..]));
+        assert_eq!(extension(&ch, 65281), Some(&[0x00][..]));
         assert_eq!(ech_outer(&ch), (1, 1, 32, 240));
-        assert_eq!(clienthello_extension(&ch, 0xfe0d).unwrap().len(), 282);
+        assert_eq!(extension(&ch, 0xfe0d).unwrap().len(), 282);
         orders.insert(ids);
     }
     assert!(orders.len() > 1, "extension order varies per connection");

@@ -85,10 +85,10 @@ index 4b110d1..1ba0a1f 100644
      }
  }
 diff --git a/src/client/client_conn.rs b/src/client/client_conn.rs
-index 374a70d..f1b0628 100644
+index 374a70d..c21d105 100644
 --- a/src/client/client_conn.rs
 +++ b/src/client/client_conn.rs
-@@ -287,6 +287,106 @@ pub struct ClientConfig {
+@@ -287,6 +287,173 @@ pub struct ClientConfig {
  
      /// How to offer Encrypted Client Hello (ECH). The default is to not offer ECH.
      pub(super) ech_mode: Option<EchMode>,
@@ -125,6 +125,13 @@ index 374a70d..f1b0628 100644
 +    /// replaces rustls' encoding of it; `pre_shared_key` (41) entries are
 +    /// ignored.  The types are recorded as sent, so a server echoing one of
 +    /// them is not treated as an unsolicited extension.
++    ///
++    /// An entry of type 17613 (`application_settings`, ALPS) replaces
++    /// [`ClientHelloShape::alps`] and is written verbatim, but the server's
++    /// ALPS answer is then NOT answered: the client sends no
++    /// `EncryptedExtensions` with settings, and a server that waits for them
++    /// aborts the handshake (this reproduces the abort of Google front ends).
++    /// Use [`ClientHelloShape::alps`] for ALPS.
 +    ///
 +    /// Types are not de-duplicated: list each type at most once, and never a
 +    /// GREASE value (`0x?A?A`) when [`ClientHelloShape::grease`] is set.  With
@@ -169,6 +176,66 @@ index 374a70d..f1b0628 100644
 +    ///
 +    /// [`EchMode::Grease`]: crate::client::EchMode::Grease
 +    pub ech_grease_payload_lengths: Vec<u16>,
++
++    /// Exactly the `cipher_suites` sent on the wire, in this order.
++    ///
++    /// Empty: rustls' own list (the provider's suites, then
++    /// `TLS_EMPTY_RENEGOTIATION_INFO_SCSV` when TLS 1.2 is enabled).
++    /// Non-empty: this list replaces it, after the GREASE suite when
++    /// [`ClientHelloShape::grease`] is set, and the SCSV is not added.
++    ///
++    /// Only the advertised list changes: the suites rustls can negotiate are
++    /// still the provider's, so a ServerHello selecting a listed suite the
++    /// provider does not implement fails the handshake with an error.  List
++    /// every provider suite the config should be able to negotiate, and never
++    /// a GREASE value when `grease` is set.
++    pub wire_cipher_suites: Vec<CipherSuite>,
++
++    /// Also advertise TLS 1.2 (`0303`, after `0304`) in `supported_versions`,
++    /// even when the config enables TLS 1.3 only.
++    ///
++    /// Only the extension changes: cipher-suite filtering, the renegotiation
++    /// SCSV, `extended_master_secret`, session tickets and the check of the
++    /// ServerHello version still follow the versions the config enables, so a
++    /// server selecting TLS 1.2 for a TLS 1.3-only config fails the handshake
++    /// with an error.
++    ///
++    /// This ignores QUIC's ban on TLS 1.2: set on a QUIC config it would put
++    /// `0303` into the QUIC ClientHello, so QUIC profiles must leave it
++    /// `false`.
++    pub advertise_tls12: bool,
++
++    /// With [`ClientHelloShape::grease`], put a GREASE value (`0x?A?A`, drawn
++    /// separately from the other GREASE values and kept across a
++    /// HelloRetryRequest) first in `signature_algorithms`.
++    ///
++    /// Ignored without `grease`.  Only the extension changes: the schemes
++    /// accepted from the server are still the verifier's.
++    pub grease_signature_algorithms: bool,
++
++    /// ALPS (`application_settings`, codepoint 17613) as `(ALPN protocol,
++    /// client settings)` pairs.
++    ///
++    /// Empty (default): no ALPS.  Otherwise the ClientHello carries
++    /// `application_settings` listing, in ALPN order, the offered ALPN
++    /// protocols that have an entry here (no extension when none do); it takes
++    /// part in [`ClientHelloShape::extension_order`] like the built-in
++    /// extensions.  When the server answers with `application_settings` in its
++    /// EncryptedExtensions for the negotiated protocol, the client sends its
++    /// own `EncryptedExtensions` handshake message carrying that protocol's
++    /// settings before its Certificate / Finished (not when early data was
++    /// accepted).  An answer for a protocol not listed, or without ALPN, fails
++    /// the handshake.  TLS 1.3 only; the server's settings are not kept.
++    ///
++    /// Each settings value must fit the u16 length fields of the client
++    /// `EncryptedExtensions` (at most 65531 bytes); longer values are
++    /// truncated, so callers must reject them.
++    ///
++    /// An `extra_extensions` entry of type 17613 replaces this: it is then
++    /// written verbatim and no client settings are sent, so a server that
++    /// answers ALPS waits for them in vain and aborts (this reproduces the
++    /// GFE abort).
++    pub alps: Vec<(Vec<u8>, Vec<u8>)>,
 +}
 +
 +/// Extension order of a shaped ClientHello (see [`ClientHelloShape`]).
@@ -195,8 +262,26 @@ index 374a70d..f1b0628 100644
  }
  
  impl ClientConfig {
+@@ -1054,6 +1221,9 @@ impl std::error::Error for EarlyDataError {}
+ pub struct ClientConnectionData {
+     pub(super) early_data: EarlyData,
+     pub(super) ech_status: EchStatus,
++    /// client-hello-shape: ALPS settings to send in the client's
++    /// EncryptedExtensions before its Finished.
++    pub(super) alps_client_settings: Option<Vec<u8>>,
+ }
+ 
+ impl ClientConnectionData {
+@@ -1061,6 +1231,7 @@ impl ClientConnectionData {
+         Self {
+             early_data: EarlyData::new(),
+             ech_status: EchStatus::NotOffered,
++            alps_client_settings: None,
+         }
+     }
+ }
 diff --git a/src/client/common.rs b/src/client/common.rs
-index 9afa0c3..5ab89d9 100644
+index 9afa0c3..b999939 100644
 --- a/src/client/common.rs
 +++ b/src/client/common.rs
 @@ -2,9 +2,11 @@ use alloc::boxed::Box;
@@ -211,25 +296,37 @@ index 9afa0c3..5ab89d9 100644
  use crate::sync::Arc;
  use crate::{SignatureScheme, compress, sign};
  
-@@ -39,6 +41,9 @@ pub(super) struct ClientHelloDetails {
+@@ -34,11 +36,20 @@ impl<'a> ServerCertDetails<'a> {
+     }
+ }
+ 
++/// ALPS `application_settings`, new codepoint (client-hello-shape patch).
++pub(super) const ALPS_EXTENSION: u16 = 0x44cd;
++
+ pub(super) struct ClientHelloDetails {
+     pub(super) alpn_protocols: Vec<ProtocolName>,
      pub(super) sent_extensions: Vec<ExtensionType>,
      pub(super) extension_order_seed: u16,
      pub(super) offered_cert_compression: bool,
 +    /// GREASE values of a shaped ClientHello, kept for a HelloRetryRequest
 +    /// (client-hello-shape patch).
 +    pub(super) grease: Option<GreaseValues>,
++    /// ALPN protocols listed in the ClientHello's ALPS extension, when it came
++    /// from `ClientHelloShape::alps` (client-hello-shape patch).
++    pub(super) alps_protocols: Vec<ProtocolName>,
  }
  
  impl ClientHelloDetails {
-@@ -48,6 +53,7 @@ impl ClientHelloDetails {
+@@ -48,6 +59,8 @@ impl ClientHelloDetails {
              sent_extensions: Vec::new(),
              extension_order_seed,
              offered_cert_compression: false,
 +            grease: None,
++            alps_protocols: Vec::new(),
          }
      }
  
-@@ -117,3 +123,38 @@ impl ClientAuthDetails {
+@@ -117,3 +130,40 @@ impl ClientAuthDetails {
          Self::Empty { auth_context_tls13 }
      }
  }
@@ -242,13 +339,14 @@ index 9afa0c3..5ab89d9 100644
 +    pub(super) version: u16,
 +    pub(super) first_extension: u16,
 +    pub(super) last_extension: u16,
++    pub(super) signature_algorithm: u16,
 +}
 +
 +impl GreaseValues {
 +    /// Draws the values BoringSSL-style: `0x?A?A` from one random byte each,
 +    /// the two extension values forced apart.
 +    pub(super) fn new(secure_random: &dyn SecureRandom) -> Result<Self, GetRandomFailed> {
-+        let mut seed = [0u8; 5];
++        let mut seed = [0u8; 6];
 +        secure_random.fill(&mut seed)?;
 +        let grease = |b: u8| {
 +            let v = u16::from((b & 0xf0) | 0x0a);
@@ -265,6 +363,7 @@ index 9afa0c3..5ab89d9 100644
 +            version: grease(seed[2]),
 +            first_extension,
 +            last_extension,
++            signature_algorithm: grease(seed[5]),
 +        })
 +    }
 +}
@@ -362,26 +461,31 @@ index 5675e71..52bd7f2 100644
          // If we're resuming, we need to update the PSK binder in the inner hello.
          if let Some(resuming) = resuming.as_ref() {
 diff --git a/src/client/hs.rs b/src/client/hs.rs
-index 12e885e..c6a4f2e 100644
+index 12e885e..842e373 100644
 --- a/src/client/hs.rs
 +++ b/src/client/hs.rs
-@@ -14,9 +14,9 @@ use crate::SupportedCipherSuite;
+@@ -14,25 +14,28 @@ use crate::SupportedCipherSuite;
  use crate::bs_debug;
  use crate::check::inappropriate_handshake_message;
  use crate::client::client_conn::ClientConnectionData;
 -use crate::client::common::ClientHelloDetails;
-+use crate::client::common::{ClientHelloDetails, GreaseValues};
++use crate::client::common::{ALPS_EXTENSION, ClientHelloDetails, GreaseValues};
  use crate::client::ech::EchState;
 -use crate::client::{ClientConfig, EchMode, EchStatus, tls13};
 +use crate::client::{ClientConfig, EchMode, EchStatus, ExtensionOrder, tls13};
  use crate::common_state::{CommonState, HandshakeKind, KxState, State};
  use crate::conn::ConnectionRandoms;
  use crate::crypto::{ActiveKeyExchange, KeyExchangeAlgorithm};
-@@ -27,12 +27,13 @@ use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
+ use crate::enums::{
+     AlertDescription, CertificateType, CipherSuite, ContentType, HandshakeType, ProtocolVersion,
++    SignatureScheme,
+ };
+ use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
  use crate::hash_hs::HandshakeHashBuffer;
  use crate::log::{debug, trace};
  use crate::msgs::base::Payload;
 -use crate::msgs::enums::{Compression, ExtensionType};
++use crate::msgs::codec::Codec;
 +use crate::msgs::enums::{Compression, ExtensionType, NamedGroup};
  use crate::msgs::handshake::{
      CertificateStatusRequest, ClientExtensions, ClientExtensionsInput, ClientHelloPayload,
@@ -393,7 +497,7 @@ index 12e885e..c6a4f2e 100644
  };
  use crate::msgs::message::{Message, MessagePayload};
  use crate::msgs::persist;
-@@ -74,6 +75,8 @@ pub(super) struct ClientHelloInput {
+@@ -74,6 +77,8 @@ pub(super) struct ClientHelloInput {
      pub(super) session_id: SessionId,
      pub(super) server_name: ServerName<'static>,
      pub(super) prev_ech_ext: Option<EncryptedClientHello>,
@@ -402,7 +506,7 @@ index 12e885e..c6a4f2e 100644
  }
  
  impl ClientHelloInput {
-@@ -124,7 +127,7 @@ impl ClientHelloInput {
+@@ -124,7 +129,7 @@ impl ClientHelloInput {
              crate::rand::random_u16(config.provider.secure_random)?,
          );
  
@@ -411,7 +515,7 @@ index 12e885e..c6a4f2e 100644
              resuming,
              random: Random::new(config.provider.secure_random)?,
              sent_tls13_fake_ccs: false,
-@@ -132,8 +135,22 @@ impl ClientHelloInput {
+@@ -132,8 +137,22 @@ impl ClientHelloInput {
              session_id,
              server_name,
              prev_ech_ext: None,
@@ -435,7 +539,7 @@ index 12e885e..c6a4f2e 100644
      }
  
      pub(super) fn start_handshake(
-@@ -208,6 +225,8 @@ fn emit_client_hello_for_retry(
+@@ -208,6 +227,8 @@ fn emit_client_hello_for_retry(
      // should be unreachable thanks to config builder
      assert!(supported_versions.any(|_| true));
  
@@ -444,7 +548,7 @@ index 12e885e..c6a4f2e 100644
      let mut exts = Box::new(ClientExtensions {
          // offer groups which are usable for any offered version
          named_groups: Some(
-@@ -231,6 +250,15 @@ fn emit_client_hello_for_retry(
+@@ -231,6 +252,22 @@ fn emit_client_hello_for_retry(
          ..Default::default()
      });
  
@@ -455,12 +559,19 @@ index 12e885e..c6a4f2e 100644
 +        if shape.omit_status_request {
 +            exts.certificate_status_request = None;
 +        }
++        if shape.advertise_tls12 {
++            // Wire only: `supported_versions` itself keeps the real versions.
++            exts.supported_versions = Some(SupportedProtocolVersions {
++                tls12: true,
++                ..supported_versions
++            });
++        }
 +    }
 +
      match extra_exts.transport_parameters.clone() {
          Some(TransportParameters::Quic(v)) => exts.transport_parameters = Some(v),
          Some(TransportParameters::QuicDraft(v)) => exts.transport_parameters_draft = Some(v),
-@@ -249,6 +277,7 @@ fn emit_client_hello_for_retry(
+@@ -249,6 +286,7 @@ fn emit_client_hello_for_retry(
          .kx_groups
          .iter()
          .any(|skxg| skxg.name().key_exchange_algorithm() == KeyExchangeAlgorithm::ECDHE)
@@ -468,7 +579,7 @@ index 12e885e..c6a4f2e 100644
      {
          exts.ec_point_formats = Some(SupportedEcPointFormats::default());
      }
-@@ -294,11 +323,64 @@ fn emit_client_hello_for_retry(
+@@ -294,11 +332,69 @@ fn emit_client_hello_for_retry(
              {
                  shares.push(KeyShareEntry::new(component_group, component_share));
              }
@@ -518,10 +629,15 @@ index 12e885e..c6a4f2e 100644
      }
  
 +    if let Some(grease) = input.hello.grease {
-+        // client-hello-shape: GREASE in supported_groups and supported_versions,
-+        // and the two GREASE extensions.
++        // client-hello-shape: GREASE in supported_groups and supported_versions
++        // (and signature_algorithms when asked), and the two GREASE extensions.
 +        if let Some(groups) = exts.named_groups.as_mut() {
 +            groups.insert(0, NamedGroup::from(grease.group));
++        }
++        if shape.is_some_and(|shape| shape.grease_signature_algorithms) {
++            if let Some(schemes) = exts.signature_schemes.as_mut() {
++                schemes.insert(0, SignatureScheme::from(grease.signature_algorithm));
++            }
 +        }
 +        exts.grease_version = Some(ProtocolVersion::from(grease.version));
 +        exts.grease_extensions = Some((
@@ -533,11 +649,40 @@ index 12e885e..c6a4f2e 100644
      if let Some(cookie) = retryreq.and_then(|hrr| hrr.cookie.as_ref()) {
          exts.cookie = Some(cookie.clone());
      }
-@@ -352,6 +434,28 @@ fn emit_client_hello_for_retry(
+@@ -352,6 +448,57 @@ fn emit_client_hello_for_retry(
      // Do we have a SessionID or ticket cached for this host?
      let tls13_session = prepare_resumption(&input.resuming, &mut exts, suite, cx, config);
  
++    input.hello.alps_protocols = Vec::new();
 +    if let Some(shape) = shape {
++        // client-hello-shape: ALPS for the offered ALPN protocols that have
++        // settings, in ALPN order, unless a raw extension replaces it.
++        let alps_type = ExtensionType::from(ALPS_EXTENSION);
++        if !shape
++            .extra_extensions
++            .iter()
++            .any(|(typ, _)| ExtensionType::from(*typ) == alps_type)
++        {
++            input.hello.alps_protocols = exts
++                .protocols
++                .iter()
++                .flatten()
++                .filter(|protocol| {
++                    shape
++                        .alps
++                        .iter()
++                        .any(|(name, _)| name[..] == protocol[..])
++                })
++                .cloned()
++                .collect();
++        }
++        if !input.hello.alps_protocols.is_empty() {
++            let mut body = Vec::new();
++            input.hello.alps_protocols.encode(&mut body);
++            exts.raw_extensions
++                .push((alps_type, body));
++        }
++
 +        // client-hello-shape: raw extensions replace a built-in one of the same type.
 +        for (typ, body) in &shape.extra_extensions {
 +            let typ = ExtensionType::from(*typ);
@@ -562,10 +707,15 @@ index 12e885e..c6a4f2e 100644
      // Extensions MAY be randomized
      // but they also need to keep the same order as the previous ClientHello
      exts.order_seed = input.hello.extension_order_seed;
-@@ -371,6 +475,11 @@ fn emit_client_hello_for_retry(
+@@ -371,6 +518,16 @@ fn emit_client_hello_for_retry(
          cipher_suites.push(CipherSuite::TLS_EMPTY_RENEGOTIATION_INFO_SCSV);
      }
  
++    if let Some(shape) = shape.filter(|shape| !shape.wire_cipher_suites.is_empty()) {
++        // client-hello-shape: the advertised list, without the SCSV.
++        cipher_suites = shape.wire_cipher_suites.clone();
++    }
++
 +    if let Some(grease) = input.hello.grease {
 +        // client-hello-shape: GREASE cipher suite first.
 +        cipher_suites.insert(0, CipherSuite::from(grease.cipher_suite));
@@ -574,7 +724,7 @@ index 12e885e..c6a4f2e 100644
      let mut chp_payload = ClientHelloPayload {
          client_version: ProtocolVersion::TLSv1_2,
          random: input.random,
-@@ -388,6 +497,8 @@ fn emit_client_hello_for_retry(
+@@ -388,6 +545,8 @@ fn emit_client_hello_for_retry(
                  config.provider.secure_random,
                  input.server_name.clone(),
                  &chp_payload,
@@ -583,21 +733,24 @@ index 12e885e..c6a4f2e 100644
              )),
              _ => None,
          });
-@@ -422,6 +533,13 @@ fn emit_client_hello_for_retry(
+@@ -422,6 +581,16 @@ fn emit_client_hello_for_retry(
  
      // Note what extensions we sent.
      input.hello.sent_extensions = chp_payload.collect_used();
-+    // client-hello-shape: raw extensions were sent too.
++    // client-hello-shape: raw extensions were sent too; the ALPS answer is
++    // checked separately (only in EncryptedExtensions, and against the ALPN).
++    let alps_offered = !input.hello.alps_protocols.is_empty();
 +    input.hello.sent_extensions.extend(
 +        chp_payload
 +            .raw_extensions
 +            .iter()
-+            .map(|(typ, _)| *typ),
++            .map(|(typ, _)| *typ)
++            .filter(|typ| !(alps_offered && *typ == ExtensionType::from(ALPS_EXTENSION))),
 +    );
  
      let mut chp = HandshakeMessagePayload(HandshakePayload::ClientHello(chp_payload));
  
-@@ -867,7 +985,18 @@ impl ExpectServerHelloOrHelloRetryRequest {
+@@ -867,7 +1036,18 @@ impl ExpectServerHelloOrHelloRetryRequest {
                  })
                  .map(|skxg| skxg.name());
  
@@ -618,10 +771,21 @@ index 12e885e..c6a4f2e 100644
                      cx.common.send_fatal_alert(
                          AlertDescription::IllegalParameter,
 diff --git a/src/client/tls13.rs b/src/client/tls13.rs
-index 5f15f36..52cd751 100644
+index 5f15f36..991f16f 100644
 --- a/src/client/tls13.rs
 +++ b/src/client/tls13.rs
-@@ -97,6 +97,7 @@ pub(super) fn handle_server_hello(
+@@ -8,7 +8,9 @@ use subtle::ConstantTimeEq;
+ use super::client_conn::ClientConnectionData;
+ use super::hs::{ClientContext, ClientHelloInput, ClientSessionValue};
+ use crate::check::inappropriate_handshake_message;
+-use crate::client::common::{ClientAuthDetails, ClientHelloDetails, ServerCertDetails};
++use crate::client::common::{
++    ALPS_EXTENSION, ClientAuthDetails, ClientHelloDetails, ServerCertDetails,
++};
+ use crate::client::ech::{self, EchState, EchStatus};
+ use crate::client::{ClientConfig, ClientSessionStore, hs};
+ use crate::common_state::{
+@@ -97,6 +99,7 @@ pub(super) fn handle_server_hello(
          mut sent_tls13_fake_ccs,
          mut hello,
          server_name,
@@ -629,7 +793,7 @@ index 5f15f36..52cd751 100644
          ..
      } = input;
  
-@@ -108,8 +109,14 @@ pub(super) fn handle_server_hello(
+@@ -108,8 +111,14 @@ pub(super) fn handle_server_hello(
          _ => None,
      };
  
@@ -646,7 +810,7 @@ index 5f15f36..52cd751 100644
              cx.common.send_fatal_alert(
                  AlertDescription::IllegalParameter,
                  PeerMisbehaved::WrongGroupForKeyShare,
-@@ -256,23 +263,37 @@ enum KeyExchangeChoice {
+@@ -256,23 +265,37 @@ enum KeyExchangeChoice {
  impl KeyExchangeChoice {
      /// Decide between `our_key_share` or `our_key_share.hybrid_component()`
      /// based on the selection of the server expressed in `their_key_share`.
@@ -689,6 +853,122 @@ index 5f15f36..52cd751 100644
  
          // correct the record for the benefit of accuracy of
          // `negotiated_key_exchange_group()`
+@@ -454,7 +477,12 @@ fn validate_encrypted_extensions(
+     hello: &ClientHelloDetails,
+     exts: &ServerExtensions<'_>,
+ ) -> Result<(), Error> {
+-    if hello.server_sent_unsolicited_extensions(exts, &[]) {
++    // client-hello-shape: an ALPS answer is checked against the ALPN later.
++    let alps: &[ExtensionType] = match hello.alps_protocols.is_empty() {
++        true => &[],
++        false => &[ExtensionType::Unknown(ALPS_EXTENSION)],
++    };
++    if hello.server_sent_unsolicited_extensions(exts, alps) {
+         return Err(common.send_fatal_alert(
+             AlertDescription::UnsupportedExtension,
+             PeerMisbehaved::UnsolicitedEncryptedExtension,
+@@ -471,6 +499,58 @@ fn validate_encrypted_extensions(
+     Ok(())
+ }
+ 
++/// client-hello-shape: accept the server's ALPS answer for the negotiated
++/// protocol and queue the client's settings, sent before its Finished.
++fn process_alps(
++    cx: &mut ClientContext<'_>,
++    config: &ClientConfig,
++    hello: &ClientHelloDetails,
++    exts: &ServerExtensions<'_>,
++    resuming: bool,
++) -> Result<(), Error> {
++    cx.data.alps_client_settings = None;
++    if hello.alps_protocols.is_empty()
++        || !exts
++            .unknown_extensions
++            .contains(&ALPS_EXTENSION)
++    {
++        return Ok(());
++    }
++
++    let settings = cx
++        .common
++        .alpn_protocol
++        .as_ref()
++        .filter(|protocol| {
++            hello
++                .alps_protocols
++                .iter()
++                .any(|offered| offered[..] == protocol[..])
++        })
++        .and_then(|protocol| {
++            config
++                .client_hello_shape
++                .as_ref()?
++                .alps
++                .iter()
++                .find(|(name, _)| name[..] == protocol[..])
++        });
++    let Some((_, settings)) = settings else {
++        return Err(cx.common.send_fatal_alert(
++            AlertDescription::UnsupportedExtension,
++            PeerMisbehaved::UnsolicitedEncryptedExtension,
++        ));
++    };
++
++    // Like BoringSSL, no client settings when early data was accepted.
++    let early_data_accepted =
++        resuming && cx.common.early_traffic && exts.early_data_ack.is_some();
++    if !early_data_accepted {
++        cx.data.alps_client_settings = Some(settings.clone());
++    }
++    Ok(())
++}
++
+ struct ExpectEncryptedExtensions {
+     config: Arc<ClientConfig>,
+     resuming_session: Option<persist::Tls13ClientSessionValue>,
+@@ -518,6 +598,7 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
+             &self.config,
+             exts.server_certificate_type.as_ref(),
+         )?;
++        process_alps(cx, &self.config, &self.hello, exts, self.resuming_session.is_some())?;
+ 
+         let ech_retry_configs = match (cx.data.ech_status, &exts.encrypted_client_hello_ack) {
+             // If we didn't offer ECH, or ECH was accepted, but the server sent an ECH encrypted
+@@ -1283,6 +1364,21 @@ fn emit_certverify_tls13(
+     Ok(())
+ }
+ 
++/// client-hello-shape: client EncryptedExtensions carrying only
++/// `application_settings` (ALPS) with `settings`.
++fn emit_client_encrypted_extensions_tls13(flight: &mut HandshakeFlightTls13<'_>, settings: &[u8]) {
++    let mut body = Vec::with_capacity(6 + settings.len());
++    body.extend_from_slice(&((settings.len() + 4) as u16).to_be_bytes());
++    body.extend_from_slice(&ALPS_EXTENSION.to_be_bytes());
++    body.extend_from_slice(&(settings.len() as u16).to_be_bytes());
++    body.extend_from_slice(settings);
++
++    flight.add(HandshakeMessagePayload(HandshakePayload::Unknown((
++        HandshakeType::EncryptedExtensions,
++        Payload::new(body),
++    ))));
++}
++
+ fn emit_finished_tls13(flight: &mut HandshakeFlightTls13<'_>, verify_data: &crypto::hmac::Tag) {
+     let verify_data_payload = Payload::new(verify_data.as_ref());
+ 
+@@ -1363,6 +1459,12 @@ impl State<ClientConnectionData> for ExpectFinished {
+ 
+         let mut flight = HandshakeFlightTls13::new(&mut st.transcript);
+ 
++        // client-hello-shape: the client's EncryptedExtensions with its ALPS
++        // settings, first in the flight.
++        if let Some(settings) = cx.data.alps_client_settings.take() {
++            emit_client_encrypted_extensions_tls13(&mut flight, &settings);
++        }
++
+         /* Send our authentication/finished messages.  These are still encrypted
+          * with our handshake keys. */
+         if let Some(client_auth) = st.client_auth {
 diff --git a/src/crypto/aws_lc_rs/mod.rs b/src/crypto/aws_lc_rs/mod.rs
 index 1ab57da..528e724 100644
 --- a/src/crypto/aws_lc_rs/mod.rs

@@ -45,6 +45,12 @@ pub(crate) struct Endpoint {
     pub(crate) ipv6_first: bool,
     pub(crate) ipv4_only: bool,
     pub(crate) fwmark: Option<u32>,
+    /// `fingerprint_profile` pinned by the wire that dials this endpoint
+    /// (`None` = inherit the process-wide strategy). Part of the identity for
+    /// the same reason as the network options: two wires with different
+    /// profiles present different ClientHellos to the same `host:port`, and the
+    /// certificate check must read it the way each of them would.
+    pub(crate) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }
 
 impl Endpoint {
@@ -65,38 +71,58 @@ impl Endpoint {
 pub(crate) fn wire_endpoints(uplink: &UplinkConfig, keep: impl Fn(&str) -> bool) -> Vec<Endpoint> {
     let mut seen: HashSet<Endpoint> = HashSet::new();
     let mut endpoints: Vec<Endpoint> = Vec::new();
-    let mut push = |url: Option<&Url>, ipv6_first: bool, ipv4_only: bool, fwmark: Option<u32>| {
-        if let Some(url) = url
-            && keep(url.scheme())
-            && let Some(host) = url.host_str()
-            && let Some(port) = url.port_or_known_default()
-        {
-            let endpoint = Endpoint {
-                host: host.to_string(),
-                port,
-                ipv6_first,
-                ipv4_only,
-                fwmark,
-            };
-            if seen.insert(endpoint.clone()) {
-                endpoints.push(endpoint);
+    let mut push =
+        |url: Option<&Url>,
+         ipv6_first: bool,
+         ipv4_only: bool,
+         fwmark: Option<u32>,
+         fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>| {
+            if let Some(url) = url
+                && keep(url.scheme())
+                && let Some(host) = url.host_str()
+                && let Some(port) = url.port_or_known_default()
+            {
+                let endpoint = Endpoint {
+                    host: host.to_string(),
+                    port,
+                    ipv6_first,
+                    ipv4_only,
+                    fwmark,
+                    fingerprint_profile,
+                };
+                if seen.insert(endpoint.clone()) {
+                    endpoints.push(endpoint);
+                }
             }
-        }
-    };
-    push(uplink.tcp_dial_url(), uplink.ipv6_first, uplink.ipv4_only, uplink.fwmark);
-    push(uplink.udp_dial_url(), uplink.ipv6_first, uplink.ipv4_only, uplink.fwmark);
+        };
+    push(
+        uplink.tcp_dial_url(),
+        uplink.ipv6_first,
+        uplink.ipv4_only,
+        uplink.fwmark,
+        uplink.fingerprint_profile,
+    );
+    push(
+        uplink.udp_dial_url(),
+        uplink.ipv6_first,
+        uplink.ipv4_only,
+        uplink.fwmark,
+        uplink.fingerprint_profile,
+    );
     for fallback in &uplink.fallbacks {
         push(
             fallback.tcp_dial_url(),
             fallback.ipv6_first,
             fallback.ipv4_only,
             fallback.fwmark,
+            fallback.fingerprint_profile,
         );
         push(
             fallback.udp_dial_url(),
             fallback.ipv6_first,
             fallback.ipv4_only,
             fallback.fwmark,
+            fallback.fingerprint_profile,
         );
     }
     endpoints

@@ -1,3 +1,6 @@
+// ClientHello parsing / JA4 / handshake helpers shared by the TLS test modules.
+pub(crate) mod client_hello;
+
 use super::*;
 #[cfg(feature = "metrics")]
 use crate::config::TransportMode;
