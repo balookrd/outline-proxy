@@ -93,6 +93,9 @@ cargo fmt --check -p outline-ss-rust -p outline-ws-rust -p outline-ui \
   -p shadowsocks-crypto -p socks5-proto
 cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps -- -D warnings
 cargo test --workspace --exclude sockudo-ws
+# e2e на настоящих бинарях (job `e2e`): без RUN_E2E_FAILOVER=1 каждый тест
+# молча выходит, без test-tls набор e2e_tls_carriers пуст — оба обязательны
+RUN_E2E_FAILOVER=1 cargo test -p outline-ws-rust --features test-tls --test 'e2e_*' -- --test-threads=1
 
 # android/rust — отдельный workspace, ни одна из команд выше его не задевает
 (cd android/rust && cargo fmt --check && cargo clippy --no-deps -- -D warnings)
