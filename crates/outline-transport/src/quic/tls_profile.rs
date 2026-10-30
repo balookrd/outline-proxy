@@ -39,8 +39,11 @@
 use std::io::Read;
 use std::sync::Arc;
 
-use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::client::{
+    ClientSessionMemoryCache, ClientSessionStore, Tls12ClientSessionValue, Tls13ClientSessionValue,
+    WebPkiServerVerifier,
+};
 use rustls::compress::{CertDecompressor, DecompressionFailed};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{
@@ -422,6 +425,62 @@ impl ServerCertVerifier for BrowserVerifier {
 
     fn root_hint_subjects(&self) -> Option<&[DistinguishedName]> {
         self.inner.root_hint_subjects()
+    }
+}
+
+// ── Session store ───────────────────────────────────────────────────────────
+
+/// rustls's in-memory session store without the key-exchange hint. Upstream remembers
+/// the group each server chose and leads the next ClientHello's `key_share` with it, so
+/// one handshake with a server that picked plain `x25519` would drop the 1216-byte
+/// `X25519MLKEM768` share from every later dial to that server - a hello no browser
+/// sends. Without the hint every ClientHello offers the profile's key shares.
+#[derive(Debug)]
+pub(crate) struct NoKxHintStore {
+    inner: ClientSessionMemoryCache,
+}
+
+impl NoKxHintStore {
+    /// Same capacity as rustls's default `Resumption` (256 server names).
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: ClientSessionMemoryCache::new(256),
+        }
+    }
+}
+
+impl ClientSessionStore for NoKxHintStore {
+    fn set_kx_hint(&self, _server_name: ServerName<'static>, _group: NamedGroup) {}
+
+    fn kx_hint(&self, _server_name: &ServerName<'_>) -> Option<NamedGroup> {
+        None
+    }
+
+    fn set_tls12_session(&self, server_name: ServerName<'static>, value: Tls12ClientSessionValue) {
+        self.inner.set_tls12_session(server_name, value)
+    }
+
+    fn tls12_session(&self, server_name: &ServerName<'_>) -> Option<Tls12ClientSessionValue> {
+        self.inner.tls12_session(server_name)
+    }
+
+    fn remove_tls12_session(&self, server_name: &ServerName<'static>) {
+        self.inner.remove_tls12_session(server_name)
+    }
+
+    fn insert_tls13_ticket(
+        &self,
+        server_name: ServerName<'static>,
+        value: Tls13ClientSessionValue,
+    ) {
+        self.inner.insert_tls13_ticket(server_name, value)
+    }
+
+    fn take_tls13_ticket(
+        &self,
+        server_name: &ServerName<'static>,
+    ) -> Option<Tls13ClientSessionValue> {
+        self.inner.take_tls13_ticket(server_name)
     }
 }
 

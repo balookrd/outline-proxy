@@ -84,7 +84,7 @@ pub(crate) struct PerTransportStatus {
     /// range slot return `(None, None)` (no active downgrade).
     ///
     /// Without these slots, every observation of a downgrade on a fallback
-    /// wire (XHTTP-H3 → H2, raw-QUIC → WS, etc.) had to be discarded at the
+    /// wire (XHTTP-H3 → H2, WS-H3 → H2, etc.) had to be discarded at the
     /// proxy / transport layer to avoid mis-parking the primary's mode —
     /// which kept fallback-only paths from learning their own downgrade
     /// chain. Now each wire gets its own window, and fallback dials can

@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-//! Self-signed CA + leaf generation for the TLS / H3 / raw-QUIC e2e tests.
+//! Self-signed CA + leaf generation for the TLS / H3 e2e tests.
 //! Compiled only under the `test-tls` feature (the client binary's matching
 //! hook trusts the CA via `OUTLINE_WS_TEST_TLS_CA_DER`).
 //!

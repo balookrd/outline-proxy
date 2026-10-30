@@ -164,7 +164,7 @@ impl VlessShareLink {
         }
 
         let (vless_ws_url, vless_xhttp_url) = match target {
-            UrlTarget::WsOrQuic => (Some(composed), None),
+            UrlTarget::Ws => (Some(composed), None),
             UrlTarget::Xhttp => (None, Some(composed)),
         };
 
@@ -180,8 +180,8 @@ impl VlessShareLink {
 
 #[derive(Clone, Copy)]
 enum UrlTarget {
-    /// Goes into `vless_ws_url` (covers WS modes and raw QUIC).
-    WsOrQuic,
+    /// Goes into `vless_ws_url` (WS modes).
+    Ws,
     /// Goes into `vless_xhttp_url`.
     Xhttp,
 }
@@ -206,7 +206,7 @@ fn pick_mode_and_scheme(
                 Some(other) => bail!("vless link alpn={other} is not supported for type=ws"),
             };
             let scheme = if tls { "wss" } else { "ws" };
-            Ok((mode, scheme, UrlTarget::WsOrQuic))
+            Ok((mode, scheme, UrlTarget::Ws))
         },
         "xhttp" => {
             let mode = match first_alpn_token(alpn) {

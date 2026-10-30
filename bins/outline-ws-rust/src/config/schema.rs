@@ -325,7 +325,7 @@ pub(super) struct H2Section {
     pub(super) keepalive_timeout_secs: Option<u64>,
 }
 
-/// QUIC carrier flow-control windows (raw-QUIC and HTTP/3 carriers) and keepalive. Larger
+/// QUIC carrier flow-control windows (HTTP/3 carriers) and keepalive. Larger
 /// windows lift the single-stream `window / RTT` throughput ceiling on
 /// long-RTT tunnels; reduce on memory-tight hosts.
 #[derive(Debug, Deserialize)]
@@ -620,8 +620,8 @@ pub(crate) struct UplinkGroupSection {
     pub(super) failure_penalty_ms: Option<u64>,
     pub(super) failure_penalty_max_ms: Option<u64>,
     pub(super) failure_penalty_halflife_secs: Option<u64>,
-    /// Cooldown before retrying the configured "advanced" dial mode (H3 or
-    /// raw QUIC) after a failure forced a fall-back to H2. The legacy
+    /// Cooldown before retrying the configured "advanced" dial mode (H3)
+    /// after a failure forced a fall-back to H2. The legacy
     /// alias `h3_downgrade_secs` (from when the cooldown only covered
     /// H3 → H2) is still accepted. Default: 60.
     #[serde(alias = "h3_downgrade_secs")]
@@ -905,8 +905,8 @@ pub(crate) struct LoadBalancingSection {
     pub(super) failure_penalty_ms: Option<u64>,
     pub(super) failure_penalty_max_ms: Option<u64>,
     pub(super) failure_penalty_halflife_secs: Option<u64>,
-    /// Cooldown before retrying the configured "advanced" dial mode (H3 or
-    /// raw QUIC) after a failure forced a fall-back to H2. The legacy
+    /// Cooldown before retrying the configured "advanced" dial mode (H3)
+    /// after a failure forced a fall-back to H2. The legacy
     /// alias `h3_downgrade_secs` (from when the cooldown only covered
     /// H3 → H2) is still accepted. Default: 60.
     #[serde(alias = "h3_downgrade_secs")]

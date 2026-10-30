@@ -154,10 +154,8 @@ fn dump_clienthello_wire() {
 /// (ids, values, order, jitter, padding) is dumped by the full-Initial
 /// diagnostic that drives a real `quinn` handshake.
 ///
-/// The cases mirror the real dial paths: H3 carriers run under a browser
-/// fingerprint and offer `h3`; raw-QUIC (vless/ss) currently dials outside any
-/// fingerprint scope (`fp = None` → default provider) and offers the tell-tale
-/// `vless` ALPN. Run with `--nocapture` to see the `QUIC-CLIENTHELLO` lines.
+/// The cases mirror the real dial path: H3 carriers run under a browser
+/// fingerprint and offer `h3`. Run with `--nocapture` to see the `QUIC-CLIENTHELLO` lines.
 ///
 /// No feature gate: `rustls::quic` is unconditionally available (rustls 0.23
 /// has no `quic` feature), so the diagnostic builds in the default test set.
@@ -171,7 +169,6 @@ fn dump_quic_clienthello_wire() {
         ("h3-chromium", Some(TlsFingerprint::Chromium), &[b"h3"]),
         ("h3-firefox", Some(TlsFingerprint::Firefox), &[b"h3"]),
         ("h3-safari", Some(TlsFingerprint::Safari), &[b"h3"]),
-        ("rawquic-default-vless", None, &[b"vless-mtu", b"vless"]),
     ];
     for (label, fp, alpn) in cases {
         let provider = match fp {

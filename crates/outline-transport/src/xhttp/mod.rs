@@ -10,8 +10,8 @@
 //! * h2 mux'es every request into the same TCP+TLS connection, so a
 //!   long-lived GET and a stream of POSTs cost one TCP socket and
 //!   one TLS handshake.
-//! * h3 (raw QUIC) needs a separate dial path through `quinn` and
-//!   manual h3 client setup; we add it once h2 is proven.
+//! * h3 needs a separate dial path through `quinn` and manual h3
+//!   client setup; we add it once h2 is proven.
 //!
 //! Why pipelined POSTs (not strictly serial):
 //! * Forcing one-at-a-time uplink would halve effective TX bandwidth

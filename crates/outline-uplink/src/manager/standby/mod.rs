@@ -831,8 +831,8 @@ impl UplinkManager {
         let udp_resume_request = resume_store.ss().get(&udp_resume_key);
         // Scope the per-uplink padding override over the dial + build: padding
         // is read when `from_websocket` builds the transport (after the dial
-        // returns), so the scope must wrap the whole future. raw QUIC (handled
-        // above) and the global default are unaffected by an absent override.
+        // returns), so the scope must wrap the whole future. The global default
+        // is unaffected by an absent override.
         let connect = UdpWsTransport::connect_with_resume(
             cache,
             udp_ws_url,

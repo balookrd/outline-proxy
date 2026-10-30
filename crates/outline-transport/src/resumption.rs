@@ -28,9 +28,8 @@ use parking_lot::Mutex;
 
 /// Server-minted opaque token identifying a resumable session.
 ///
-/// Emitted by the server in the `X-Outline-Session` response header
-/// (and, eventually, in the VLESS Addons `SESSION_ID` opcode for the
-/// raw-QUIC path). The client treats it as an opaque 16-byte value;
+/// Emitted by the server in the `X-Outline-Session` response header.
+/// The client treats it as an opaque 16-byte value;
 /// any ordering or structure is the server's concern. Kept `Copy` so
 /// callers can stash it in `Arc<Mutex<Option<SessionId>>>` without
 /// fighting borrow checker over clones.

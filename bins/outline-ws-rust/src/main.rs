@@ -72,7 +72,7 @@ fn main() -> Result<()> {
 
     // Integration-test hook (compiled out of production builds): trust a
     // self-signed root supplied by the e2e harness so the binary can dial
-    // TLS / H3 / raw-QUIC carriers against a local test server. Installed
+    // TLS / H3 carriers against a local test server. Installed
     // before any dial, since the rustls client-config cache captures the
     // root override on its first build.
     #[cfg(feature = "test-tls")]

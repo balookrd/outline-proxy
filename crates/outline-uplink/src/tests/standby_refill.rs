@@ -114,8 +114,7 @@ async fn combined_ss_udp_standby_refill_dials_udp_leg() {
 
 /// The warm-standby refill dial must register a loss probe like every sibling
 /// dial site (`connect_tcp_ws_fresh_internal`,
-/// `acquire_udp_standby_or_connect_with_store`, and the raw-QUIC/VLESS-UDP
-/// sites). This pool is the majority producer of user carriers, so skipping
+/// `acquire_udp_standby_or_connect_with_store`, and the VLESS-UDP sites). This pool is the majority producer of user carriers, so skipping
 /// it here silently thins the dataset the whole carrier-loss feature exists
 /// to collect — and on an explicitly-`h1` pool, where each slot owns its own
 /// socket rather than sharing a carrier opened elsewhere, its carriers were

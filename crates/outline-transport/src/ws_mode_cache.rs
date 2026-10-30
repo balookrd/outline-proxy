@@ -96,7 +96,7 @@ fn cache() -> &'static RwLock<HashMap<String, Entry>> {
 }
 
 /// Resolve the mode a dial to `url` should start at, honouring whichever
-/// strategy is active. No-op for non-WS modes (raw QUIC / XHTTP) — the
+/// strategy is active. No-op for non-WS modes (XHTTP) — the
 /// dispatcher can call this unconditionally.
 pub(crate) async fn effective_mode(url: &Url, requested: TransportMode) -> TransportMode {
     let params = mode_health::weighting();

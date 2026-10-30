@@ -10,7 +10,7 @@
 //! on top of a lazy map of per-target VLESS sessions.
 //!
 //! The session map, janitor and downlink fan-in live in the carrier-generic
-//! [`super::udp_mux_core::VlessUdpMuxCore`] (shared with the raw-QUIC mux);
+//! [`super::udp_mux_core::VlessUdpMuxCore`];
 //! this module contributes the WS dial path and its side-channel
 //! bookkeeping: per-target resume IDs and the H3-downgrade latch.
 //!

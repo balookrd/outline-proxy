@@ -69,8 +69,8 @@ pub struct UdpWsTransport {
     /// frame (`real` = the ciphertext, plus a random pad tail) before
     /// `send_datagram`, and inbound datagrams are decoded before SS decrypt.
     /// Only set on the WS / XHTTP datagram carrier (`from_websocket`); the raw
-    /// socket and raw-QUIC datagram channel stay plain (padding is a WS-carrier
-    /// fingerprint feature, mirroring VLESS-UDP). Per-datagram, no cover frames
+    /// socket stays plain (padding is a WS-carrier fingerprint feature,
+    /// mirroring VLESS-UDP). Per-datagram, no cover frames
     /// on the uplink: one frame wraps one packet. On a WS carrier the frame
     /// boundary is the datagram boundary; on an XHTTP carrier (an HTTP byte
     /// stream) the boundary is re-established one layer down by the negotiated
@@ -95,7 +95,7 @@ pub struct UdpWsTransport {
     /// `&self`, so this is interior-mutable.
     throttle_fired: std::sync::atomic::AtomicBool,
     /// The carrier's loss probe, captured at dial time. `None` for the raw
-    /// socket and raw-QUIC datagram paths (no WS-family `TransportStream` to
+    /// socket path (no WS-family `TransportStream` to
     /// capture from) and for a WS-family carrier whose family cannot
     /// surrender one (see [`crate::CarrierLossProbe::from_tcp_stream`]).
     /// Captured rather than read live off a stored `TransportStream` because
@@ -147,9 +147,7 @@ impl UdpWsTransport {
         let channel: Arc<dyn DatagramChannel> =
             Arc::new(from_ws_datagrams(ws_stream, idle_timeout, keepalive));
         // Padding is a WS / XHTTP-carrier feature, read here (after the dial,
-        // inside the manager's `with_uplink_padding_scope`). The raw-QUIC
-        // datagram channel reaches `from_channel` directly with padding
-        // disabled, so raw QUIC stays plain — matching VLESS-UDP.
+        // inside the manager's `with_uplink_padding_scope`).
         let padding = carrier_padding::effective_carrier_padding();
         Self::from_channel(channel, cipher, password, source, padding)
             .map(|transport| transport.with_loss_probe(loss_probe))
@@ -158,9 +156,9 @@ impl UdpWsTransport {
     /// Build an SS UDP transport over an arbitrary [`DatagramChannel`]. The
     /// channel is opaque — the SS layer cares only about send/recv of
     /// already-encrypted datagrams. `padding` is resolved by the caller:
-    /// [`Self::from_websocket`] reads the per-dial carrier padding, while the
-    /// raw-QUIC datagram path passes [`CarrierPadding::disabled`] (raw QUIC is
-    /// not a WS carrier, so it is never framed — same scope as VLESS-UDP).
+    /// [`Self::from_websocket`] reads the per-dial carrier padding; a channel that
+    /// is not a WS carrier passes [`CarrierPadding::disabled`] (never framed —
+    /// same scope as VLESS-UDP).
     pub fn from_channel(
         channel: Arc<dyn DatagramChannel>,
         cipher: CipherKind,
@@ -207,7 +205,7 @@ impl UdpWsTransport {
     /// transport was built from. Builder form, called by [`Self::from_websocket`]
     /// right after construction — the raw stream no longer exists by then, so
     /// this is the only point the probe can be handed in. `None` is a normal
-    /// value here (raw socket / raw-QUIC callers of [`Self::from_channel`]
+    /// value here (other callers of [`Self::from_channel`]
     /// never call this at all, leaving the field at its `None` default).
     fn with_loss_probe(mut self, probe: Option<crate::CarrierLossProbe>) -> Self {
         self.loss_probe = probe;

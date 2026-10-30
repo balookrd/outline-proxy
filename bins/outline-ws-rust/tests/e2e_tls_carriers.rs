@@ -2,9 +2,8 @@
 //! (E) TLS-bearing carriers and the QUIC family, end-to-end through the real
 //! binaries. The client binary, built with `--features test-tls`, trusts the
 //! harness CA via `OUTLINE_WS_TEST_TLS_CA_DER`, so it can dial a self-signed
-//! server over `wss://` WebSocket-over-H2 (TLS on the TCP listener), `wss://`
-//! WebSocket-over-H3 (QUIC), and raw QUIC (VLESS and Shadowsocks, ALPN-selected
-//! on the H3 UDP port). Plus a TLS→cleartext sub-uplink failover, proving wires
+//! server over `wss://` WebSocket-over-H2 (TLS on the TCP listener) and `wss://`
+//! WebSocket-over-H3 (QUIC). Plus a TLS→cleartext sub-uplink failover, proving wires
 //! of different security levels interoperate in one uplink.
 //!
 //! Run with: `cargo test -p outline-ws-rust --features test-tls
@@ -114,43 +113,6 @@ fn tls_ws_h3_ss_dial_works() -> Result<(), BoxError> {
                 tcp_url: format!("wss://127.0.0.1:{}{PATH_SS_TCP}", h3.port()),
                 udp_url: None,
                 mode: "ws_h3".into(),
-            },
-            Creds::ss(),
-        )
-    })
-}
-
-#[test]
-fn tls_raw_quic_vless_dial_works() -> Result<(), BoxError> {
-    if !e2e_enabled() {
-        skip_notice("tls_raw_quic_vless_dial_works");
-        return Ok(());
-    }
-    run_tls_dial(|_tcp, h3| {
-        (
-            // Raw QUIC: only host:port matter (path ignored); ALPN "vless".
-            Wire::VlessWs {
-                url: format!("https://127.0.0.1:{}", h3.port()),
-                mode: "quic".into(),
-            },
-            Creds::vless(),
-        )
-    })
-}
-
-#[test]
-fn tls_raw_quic_ss_dial_works() -> Result<(), BoxError> {
-    if !e2e_enabled() {
-        skip_notice("tls_raw_quic_ss_dial_works");
-        return Ok(());
-    }
-    run_tls_dial(|_tcp, h3| {
-        (
-            // Raw QUIC Shadowsocks: ALPN "ss".
-            Wire::SsWs {
-                tcp_url: format!("https://127.0.0.1:{}", h3.port()),
-                udp_url: None,
-                mode: "quic".into(),
             },
             Creds::ss(),
         )

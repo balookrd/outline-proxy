@@ -15,7 +15,7 @@
 //! `throttle_detect` knobs. The signal only ever reaches a client that decodes
 //! padding cover frames, so it is meaningful only on a padded carrier — both
 //! VLESS-over-WS/XHTTP and SS-over-WS/XHTTP qualify (their relays share this
-//! monitor); unpadded and raw-QUIC carriers are never monitored.
+//! monitor); unpadded carriers are never monitored.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

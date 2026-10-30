@@ -11,7 +11,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 ///
 /// Carried by the client across reconnects in the `X-Outline-Resume`
 /// HTTP header (for WebSocket transports) or in the VLESS Addons
-/// `RESUME_ID` opcode (for raw QUIC). The token is meaningless to the
+/// `RESUME_ID` opcode (a carrier without HTTP headers). The token is meaningless to the
 /// client beyond echoing it back; ownership is enforced server-side
 /// against the authenticated user (see [`super::registry::OrphanRegistry`]).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]

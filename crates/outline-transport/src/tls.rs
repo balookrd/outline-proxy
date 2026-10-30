@@ -1,5 +1,6 @@
-//! Shared rustls `ClientConfig` builder used by HTTP/2, HTTP/3, and
-//! raw QUIC (VLESS / SS) transports.
+//! Shared rustls `ClientConfig` builders: one for the TCP TLS carriers (HTTP/1.1,
+//! HTTP/2) and the probe, one for the QUIC (HTTP/3) carrier, which shapes the
+//! ClientHello like the dial's browser.
 //!
 //! Each transport advertises its own ALPN list but shares the same
 //! webpki root store and no-client-auth setup; centralising the
@@ -11,7 +12,7 @@
 //! tests (`outline-ss-rust/tests`) generate a self-signed cert for
 //! an in-process server, install it via [`install_test_tls_root`],
 //! and every subsequent `build_client_config` call (XHTTP h2/h3,
-//! WS h2/h3, raw QUIC vless / ss) trusts that root instead of the
+//! WS h2/h3) trusts that root instead of the
 //! production webpki list. The override is consulted on each call,
 //! so adding a new ALPN-aware caller doesn't need bespoke wiring.
 
@@ -30,7 +31,7 @@ use crate::fingerprint_profile::TlsFingerprint;
 /// Cache of built client configs keyed by `(tls fingerprint, ALPN list)`.
 /// The fingerprint is the dial-scoped value set by
 /// [`crate::fingerprint_profile::with_dial_fingerprint`]; `None` (no active
-/// scope — probes, raw-QUIC, tests) reproduces the pre-fingerprint default
+/// scope — probes, tests) reproduces the pre-fingerprint default
 /// provider and the exact wire shape builds had before this knob landed.
 /// Builds are rare (one per distinct key, ever), so a single mutex is fine.
 ///
@@ -176,6 +177,10 @@ pub(crate) fn build_quic_client_config_uncached(
         .with_no_client_auth();
     config.alpn_protocols = alpn_protocols.iter().map(|p| p.to_vec()).collect();
     config.cert_decompressors = profile.cert_decompressors();
+    // TLS 1.3 tickets only (the config is TLS 1.3); no kx hint, so every hello keeps the
+    // profile's key shares.
+    config.resumption =
+        rustls::client::Resumption::store(Arc::new(tls_profile::NoKxHintStore::new()));
     crate::tls_vendored::apply_quic_tls_profile(&mut config, profile);
     Arc::new(config)
 }
@@ -199,7 +204,7 @@ fn roots() -> RootCertStore {
 /// across repeated runs in the same `cargo test` binary.
 static TEST_TLS_OVERRIDE_ROOTS: RwLock<Option<Arc<RootCertStore>>> = RwLock::new(None);
 
-/// Replace the TLS roots used by every XHTTP / WS / raw-QUIC dial
+/// Replace the TLS roots used by every XHTTP / WS / H3 dial
 /// in this process with a single caller-supplied DER certificate.
 /// Subsequent [`build_client_config`] calls trust only that root.
 ///

@@ -31,10 +31,6 @@ mod udp_mux;
 pub(crate) mod udp_mux_core;
 mod uuid;
 
-pub use header::{
-    build_vless_tcp_request_header, build_vless_tcp_request_header_with_resume,
-    build_vless_udp_request_header,
-};
 pub use tcp::{VlessTcpReader, VlessTcpWriter, vless_tcp_pair_from_ws};
 pub use udp::{VlessUdpTransport, VlessUdpWsTransport};
 pub use udp_mux::{VlessUdpCarrierNotifier, VlessUdpDowngradeNotifier, VlessUdpSessionMux};

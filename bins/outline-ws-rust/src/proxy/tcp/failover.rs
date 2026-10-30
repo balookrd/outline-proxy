@@ -411,12 +411,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
 /// at its WS branch with one restriction and one opt-in:
 ///
 /// * WS-family carriers only (`UplinkTransport::Ss` for SS-WS,
-///   `UplinkTransport::Vless` for VLESS-WS). raw-QUIC has no
-///   Ack-Prefix support in v1.1; the orchestrator degrades to
-///   "no retry" for those uplinks rather than redialling a path
-///   that would not give us the offset header.
-/// * No raw-QUIC fallback — even when the uplink is configured for
-///   QUIC, mid-session retry only operates on the WS dial path.
+///   `UplinkTransport::Vless` for VLESS-WS).
 /// * Advertises `X-Outline-Resume-Ack-Prefix: 1` so the server emits
 ///   the v1 control frame and the reader can park `up_acked`.
 /// * Asks for the wire's **configured** carrier, not its mode-downgrade
