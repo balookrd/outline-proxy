@@ -1,5 +1,6 @@
 package com.outline.proxy
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -31,7 +32,8 @@ class MobilePowerConfigTest {
         assertTrue(sanitized.contains("keepalive_timeout_secs = 20"))
         assertTrue(sanitized.contains("[quic]"))
         assertTrue(sanitized.contains("keepalive_secs = 25"))
-        assertTrue(sanitized.contains("idle_timeout_secs = 60"))
+        // The idle timeout stays on the browser profile, as a browser's Initial carries it.
+        assertFalse(sanitized.contains("idle_timeout_secs"))
     }
 
     @Test
@@ -70,6 +72,28 @@ class MobilePowerConfigTest {
         assertTrue(sanitized.contains("keepalive_interval_secs = 60"))
         assertTrue(sanitized.contains("keepalive_timeout_secs = 20"))
         assertTrue(sanitized.contains("keepalive_secs = 25"))
-        assertTrue(sanitized.contains("idle_timeout_secs = 60"))
+        // 30s already outlasts the clamped 25s keepalive, so it is kept.
+        assertTrue(sanitized.contains("idle_timeout_secs = 30"))
+    }
+
+    @Test
+    fun `raises the idle timeout only when the keepalive would not fit inside it`() {
+        val noIdle = MobilePowerConfig.sanitize(
+            """
+            [quic]
+            keepalive_secs = 40
+            """.trimIndent()
+        )
+        assertTrue(noIdle.contains("keepalive_secs = 40"))
+        assertTrue(noIdle.contains("idle_timeout_secs = 80"))
+
+        val shortIdle = MobilePowerConfig.sanitize(
+            """
+            [quic]
+            keepalive_secs = 25
+            idle_timeout_secs = 20
+            """.trimIndent()
+        )
+        assertTrue(shortIdle.contains("idle_timeout_secs = 50"))
     }
 }
