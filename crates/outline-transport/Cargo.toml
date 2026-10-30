@@ -8,8 +8,8 @@ workspace = true
 
 [features]
 default = []
-# Raw QUIC transport (no HTTP/3 framing). Required by `h3` since both share
-# the underlying quinn endpoint and TLS config builder.
+# QUIC plumbing under the HTTP/3 carrier: the quinn endpoint, the browser-shaped
+# transport parameters and the QUIC TLS config builder. Required by `h3`.
 quic = [
     "dep:quinn",
     "dep:quinn-proto",
