@@ -1827,15 +1827,15 @@ WS / XHTTP-дозвоны могут подмешивать браузерные
 идентификации (`User-Agent`, `Accept-*`, семейство Sec-CH-UA,
 Sec-Fetch-*), чтобы простое DPI-правило вида «WS-upgrade без
 User-Agent» больше не отделяло клиент от реального браузерного
-трафика. В каталоге девять профилей: Chrome 156 (Windows, macOS, Linux,
-Android), Firefox 159 (Windows, macOS, Linux), Safari 27 (macOS),
-Edge 156 (Windows).
+трафика. В каталоге шесть профилей: Chrome 156 (macOS, Linux, Android),
+Firefox 159 (macOS, Linux), Safari 27 (macOS). Клиента под Windows нет,
+поэтому нет и пула Windows.
 
 Профиль выбирается **только из пула той ОС, на которой клиент реально
 работает**: TCP SYN (TTL, раскладка опций) виден DPI рядом с
 ClientHello, и hello Safari из Linux-стека — несовместимая пара. macOS —
 Chrome, Firefox, Safari; Linux — Chrome, Firefox; Android — Chrome;
-Windows — Chrome, Firefox, Edge; любая другая ОС использует пул Linux.
+любая другая ОС использует пул Linux.
 Стратегии ниже работают внутри этого пула. TLS-семейство не зависит от
 ОС: Chrome на Android шлёт десктопный ClientHello Chromium, и это
 подтверждено замером 2026-10-30 (Chrome Android 156.0.8078.73 на

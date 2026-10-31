@@ -13,8 +13,7 @@
 //!
 //! Profiles are picked only from the sub-pool matching the OS the client
 //! really runs on ([`host_os`], see [`pool_for`]): macOS = Chrome / Firefox /
-//! Safari, Linux = Chrome / Firefox, Android = Chrome, Windows = Chrome /
-//! Firefox / Edge. The TLS family does not vary by OS: Chrome on Android
+//! Safari, Linux = Chrome / Firefox, Android = Chrome. The TLS family does not vary by OS: Chrome on Android
 //! sends the desktop Chromium ClientHello (confirmed 2026-10-30: Chrome
 //! Android 156.0.8078.73 on Android 17 matches desktop Chrome 156 byte for
 //! byte, trust anchors included). 0-RTT is not aligned with the browsers yet.
@@ -161,17 +160,16 @@ pub enum TlsFingerprint {
 /// picks profiles whose `os` matches the OS the client really runs on
 /// ([`host_os`]): the TCP SYN (TTL, option layout) is visible to a DPI
 /// right next to the ClientHello, so a Safari hello from a Linux stack
-/// (or an Edge/Windows one) is an incompatible pair.
+/// is an incompatible pair. There is no Windows client, so no Windows pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProfileOs {
-    Windows,
     MacOs,
     Linux,
     Android,
 }
 
 /// OS the running binary targets, resolved at compile time. Every OS
-/// without a dedicated pool (BSDs, ...) maps to [`ProfileOs::Linux`].
+/// without a dedicated pool (Windows, BSDs, ...) maps to [`ProfileOs::Linux`].
 /// Android is checked first: `target_os = "android"` is distinct from
 /// `"linux"` for rustc, but the explicit ordering keeps the intent clear.
 pub const fn host_os() -> ProfileOs {
@@ -179,8 +177,6 @@ pub const fn host_os() -> ProfileOs {
         ProfileOs::Android
     } else if cfg!(target_os = "macos") {
         ProfileOs::MacOs
-    } else if cfg!(target_os = "windows") {
-        ProfileOs::Windows
     } else {
         ProfileOs::Linux
     }
@@ -229,25 +225,10 @@ pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_793_381_218; // 2026-10-30 UTC
 pub const REFRESH_PERIOD_SECS: u64 = 180 * 24 * 60 * 60;
 
 /// Catalog of representative browser identities, one per (browser, OS)
-/// pair a real client of that OS can plausibly be: Chrome on all four
-/// OSes, Firefox on Windows / macOS / Linux, Safari on macOS, Edge on
-/// Windows. Only the sub-pool of the host OS is ever selected (see
+/// pair a real client of that OS can plausibly be: Chrome on all three
+/// OSes, Firefox on macOS / Linux, Safari on macOS. Only the sub-pool of the host OS is ever selected (see
 /// [`pool_for`]); the other entries stay for tests and snapshots.
 pub const PROFILES: &[Profile] = &[
-    Profile {
-        name: "chrome-156-windows",
-        os: ProfileOs::Windows,
-        tls: TlsFingerprint::Chromium,
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        accept_language: "en-US,en;q=0.9",
-        accept_encoding: "gzip, deflate, br, zstd",
-        sec_ch_ua: Some(
-            "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
-        ),
-        sec_ch_ua_mobile: Some("?0"),
-        sec_ch_ua_platform: Some("\"Windows\""),
-    },
     Profile {
         name: "chrome-156-macos",
         os: ProfileOs::MacOs,
@@ -304,20 +285,6 @@ pub const PROFILES: &[Profile] = &[
         sec_ch_ua_platform: Some("\"Android\""),
     },
     Profile {
-        name: "firefox-159-windows",
-        os: ProfileOs::Windows,
-        tls: TlsFingerprint::Firefox,
-        // Header values measured on macOS Firefox 159 and extrapolated to
-        // Windows (only the UA platform token differs).
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        accept_language: "en-US,en;q=0.9",
-        accept_encoding: "gzip, deflate, br, zstd",
-        sec_ch_ua: None,
-        sec_ch_ua_mobile: None,
-        sec_ch_ua_platform: None,
-    },
-    Profile {
         name: "firefox-159-macos",
         os: ProfileOs::MacOs,
         tls: TlsFingerprint::Firefox,
@@ -370,25 +337,6 @@ pub const PROFILES: &[Profile] = &[
         sec_ch_ua: None,
         sec_ch_ua_mobile: None,
         sec_ch_ua_platform: None,
-    },
-    Profile {
-        // Edge stable 156 (Chromium 156, 2026-10-22 per the Microsoft
-        // Edge stable release notes) tracks Chrome 156. Both the
-        // `Chrome/` compatibility token and the `Edg/` token carry 156.
-        name: "edge-156-windows",
-        os: ProfileOs::Windows,
-        tls: TlsFingerprint::Chromium,
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0",
-        // Copied from Chrome 156 (the same Chromium navigation Accept); not
-        // measured on Edge.
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        accept_language: "en-US,en;q=0.9",
-        accept_encoding: "gzip, deflate, br, zstd",
-        sec_ch_ua: Some(
-            "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Microsoft Edge\";v=\"156\"",
-        ),
-        sec_ch_ua_mobile: Some("?0"),
-        sec_ch_ua_platform: Some("\"Windows\""),
     },
 ];
 
@@ -604,8 +552,7 @@ pub(crate) fn note_first_use(url: &Url, profile: &'static Profile) -> bool {
 /// Profiles selectable on `os`, in [`PROFILES`] order. Profiles of
 /// other OSes stay in the catalog (tests, snapshots) but are never
 /// picked on this OS. Per-OS pools: macOS = Chrome, Firefox, Safari;
-/// Linux = Chrome, Firefox; Android = Chrome; Windows = Chrome,
-/// Firefox, Edge.
+/// Linux = Chrome, Firefox; Android = Chrome.
 pub(crate) fn pool_for(os: ProfileOs) -> impl Iterator<Item = &'static Profile> {
     PROFILES.iter().filter(move |p| p.os == os)
 }

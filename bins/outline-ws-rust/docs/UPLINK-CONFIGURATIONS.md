@@ -1800,16 +1800,16 @@ keep no UDP slot — UDP follows TCP's lifetime.
 WS / XHTTP dials can mix in browser-style identification headers
 (`User-Agent`, `Accept-*`, Sec-CH-UA family, Sec-Fetch-*) so a passive
 DPI rule keying on "WS upgrade missing User-Agent" stops separating
-this client from real browser traffic. The catalog ships nine profiles:
-Chrome 156 (Windows, macOS, Linux, Android), Firefox 159 (Windows,
-macOS, Linux), Safari 27 (macOS), Edge 156 (Windows).
+this client from real browser traffic. The catalog ships six profiles:
+Chrome 156 (macOS, Linux, Android), Firefox 159 (macOS, Linux),
+Safari 27 (macOS). There is no Windows client, so there is no Windows
+pool.
 
 The profile is picked **only from the pool of the OS the client really
 runs on**, because the TCP SYN (TTL, option layout) is visible to a DPI
 next to the ClientHello and a Safari hello from a Linux stack is an
 incompatible pair: macOS — Chrome, Firefox, Safari; Linux — Chrome,
-Firefox; Android — Chrome; Windows — Chrome, Firefox, Edge; any other OS
-uses the Linux pool. The strategies below work within that pool. The TLS
+Firefox; Android — Chrome; any other OS uses the Linux pool. The strategies below work within that pool. The TLS
 family does not vary by OS: Chrome on Android sends the desktop Chromium
 ClientHello, confirmed by measurement on 2026-10-30 (Chrome Android
 156.0.8078.73 on Android 17 matches desktop Chrome 156 byte for byte,
