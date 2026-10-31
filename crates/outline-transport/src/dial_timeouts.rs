@@ -44,7 +44,9 @@ const MAX_DIAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// H3 opens its stream on a connection whose handshake is already done, so it
 /// keeps the proportion the hand-tuned constants had: 7 s against 10 s. H2 keeps
 /// the full budget, as its constant did.
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
 const H3_STREAM_NUMERATOR: u32 = 7;
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
 const H3_STREAM_DENOMINATOR: u32 = 10;
 
 /// Configured budget in milliseconds, or `0` for "nothing set — use the
@@ -105,6 +107,7 @@ pub(crate) fn open_stream_timeout() -> Duration {
 }
 
 /// The H3 flavour of [`open_stream_timeout`].
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
 pub(crate) fn h3_open_stream_timeout() -> Duration {
     h3_stream_from(fresh_connect_timeout())
 }
@@ -113,6 +116,7 @@ fn clamp_dial_timeout(configured: Duration) -> Duration {
     configured.clamp(MIN_DIAL_TIMEOUT, MAX_DIAL_TIMEOUT)
 }
 
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
 fn h3_stream_from(base: Duration) -> Duration {
     (base * H3_STREAM_NUMERATOR / H3_STREAM_DENOMINATOR).max(Duration::from_secs(1))
 }

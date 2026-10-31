@@ -29,7 +29,7 @@
 //! * It does not shape the TLS ClientHello itself: that is done by
 //!   `crate::tcp_tls_profile` (TCP carriers, the certificate check and
 //!   the HTTPS probe) and `crate::quic::tls_profile` (H3), both through
-//!   the vendored rustls `ClientHelloShape`. This module only picks the
+//!   the vendored rustls client-hello shape. This module only picks the
 //!   profile they follow.
 //! * It does not shape HTTP/2 SETTINGS, windows or header order itself:
 //!   `crate::h2_profile` does, per the profile's browser family, as far
