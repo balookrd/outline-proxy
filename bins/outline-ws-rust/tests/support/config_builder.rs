@@ -493,6 +493,9 @@ pub struct ClientConfig {
     /// so a per-uplink `padding = true` override has a scheme even when the
     /// global default is off.
     padding: Option<(bool, bool)>,
+    /// Top-level `fingerprint_profile` strategy (`None` = key absent, the
+    /// default: no browser headers).
+    fingerprint_profile: Option<String>,
     groups: Vec<GroupSpec>,
 }
 
@@ -505,8 +508,15 @@ impl ClientConfig {
             state_path: path_str(state_path),
             probe,
             padding: None,
+            fingerprint_profile: None,
             groups: Vec::new(),
         }
+    }
+
+    /// Set the top-level `fingerprint_profile` strategy (`"random"`, ...).
+    pub fn with_fingerprint_profile(mut self, strategy: &str) -> Self {
+        self.fingerprint_profile = Some(strategy.to_string());
+        self
     }
 
     /// Enable carrier padding (global). `cover` toggles idle cover frames with
@@ -544,6 +554,9 @@ impl ClientConfig {
         let mut s = String::new();
         // Top-level keys must precede every [table] header in TOML.
         let _ = writeln!(s, "state_path = \"{}\"", self.state_path);
+        if let Some(strategy) = &self.fingerprint_profile {
+            let _ = writeln!(s, "fingerprint_profile = \"{strategy}\"");
+        }
 
         if let Some((enabled, cover)) = self.padding {
             let _ = writeln!(s, "\n[padding]");

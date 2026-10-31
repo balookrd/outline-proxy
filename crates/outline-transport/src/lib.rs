@@ -171,7 +171,9 @@ pub mod uplink_replay;
 pub mod vless;
 // Note: protocol-agnostic socket helpers now live in the `outline-net` crate.
 mod mode_health;
+mod request_headers;
 mod url_utils;
+mod ws_h1;
 mod ws_mode_cache;
 mod ws_stream;
 mod ws_writer_diag;

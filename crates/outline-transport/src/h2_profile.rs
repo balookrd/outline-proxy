@@ -12,8 +12,10 @@
 //! Chromium, exactly like the TLS ClientHello):
 //!
 //! * SETTINGS values ([`h2_shape`], applied by [`apply_h2_shape`]);
-//! * the connection window (hence the connection WINDOW_UPDATE increment);
-//! * the order of the profile's regular request headers ([`h2_header_order`]).
+//! * the connection window (hence the connection WINDOW_UPDATE increment).
+//!
+//! The regular request headers (set, order, values per request kind) are
+//! laid out by `crate::request_headers`, shared with HTTP/1.1 and HTTP/3.
 //!
 //! What stays different from the browsers (needs a vendored `h2`, which the
 //! owner declined):
@@ -25,9 +27,6 @@
 //! * pseudo-header order is always `m,s,a,p` (Chrome `m,a,s,p`, Firefox
 //!   `m,p,a,s`, Safari `m,s,p,a`), no priority flag on HEADERS, and the first
 //!   request stream is 1 (Firefox opens with 3);
-//! * the Chrome and Firefox header order was measured on a navigation request
-//!   and is applied to the XHR/CORS and WebSocket presets too (fetch / WS
-//!   order not measured);
 //! * SETTINGS_INITIAL_WINDOW_SIZE (4) and the connection WINDOW_UPDATE are
 //!   deliberately NOT browser values: they are the per-carrier defaults
 //!   ([`carrier_windows`], the pre-series values: `ws_h2` 8 MiB / 32 MiB,
@@ -42,8 +41,6 @@ use std::sync::OnceLock;
 use hyper::client::conn::http2;
 
 use crate::fingerprint_profile::TlsFingerprint;
-
-use self::BrowserHeader as B;
 
 /// SETTINGS one browser family advertises on an HTTP/2 connection, except
 /// the initial stream window and the connection window (see
@@ -197,89 +194,6 @@ pub(crate) fn operator_windows() -> OperatorWindows {
 pub(crate) fn apply_dial_h2_shape<E: Clone>(builder: &mut http2::Builder<E>, carrier: H2Carrier) {
     let shape = h2_shape(crate::fingerprint_profile::current_dial_fingerprint());
     apply_h2_shape(builder, &shape, carrier, operator_windows());
-}
-
-// ── Header order ──────────────────────────────────────────────────────────────
-
-/// A browser identification header a [`crate::fingerprint_profile::Profile`]
-/// contributes to a request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BrowserHeader {
-    UserAgent,
-    Accept,
-    AcceptLanguage,
-    AcceptEncoding,
-    SecChUa,
-    SecChUaMobile,
-    SecChUaPlatform,
-    SecFetchSite,
-    SecFetchMode,
-    SecFetchDest,
-}
-
-/// Historical insertion order of [`crate::fingerprint_profile::apply`]
-/// (h1 and h3 carriers). Also Safari's order on h2: its real header order was
-/// not measured, so the profile keeps the current one.
-pub(crate) const LEGACY_HEADER_ORDER: &[BrowserHeader] = &[
-    B::UserAgent,
-    B::Accept,
-    B::AcceptLanguage,
-    B::AcceptEncoding,
-    B::SecChUa,
-    B::SecChUaMobile,
-    B::SecChUaPlatform,
-    B::SecFetchSite,
-    B::SecFetchMode,
-    B::SecFetchDest,
-];
-
-/// Chrome and Firefox orders below were measured on a navigation request and
-/// are applied to the XHR/CORS and WebSocket presets too; the fetch / WebSocket
-/// header order was not measured.
-///
-/// Chrome 156 (measured): `sec-ch-ua`, `-mobile`, `-platform`, `user-agent`,
-/// `accept`, `sec-fetch-site`, `-mode`, `-dest`, `accept-encoding`,
-/// `accept-language` (navigation-only headers we do not send left out).
-const CHROMIUM_HEADER_ORDER: &[BrowserHeader] = &[
-    B::SecChUa,
-    B::SecChUaMobile,
-    B::SecChUaPlatform,
-    B::UserAgent,
-    B::Accept,
-    B::SecFetchSite,
-    B::SecFetchMode,
-    B::SecFetchDest,
-    B::AcceptEncoding,
-    B::AcceptLanguage,
-];
-
-/// Firefox 159 (measured): `user-agent`, `accept`, `accept-language`,
-/// `accept-encoding`, `sec-fetch-dest`, `-mode`, `-site`. No client hints.
-const FIREFOX_HEADER_ORDER: &[BrowserHeader] = &[
-    B::UserAgent,
-    B::Accept,
-    B::AcceptLanguage,
-    B::AcceptEncoding,
-    B::SecFetchDest,
-    B::SecFetchMode,
-    B::SecFetchSite,
-    // Never emitted for Firefox profiles (no client hints); listed so the
-    // table covers every header.
-    B::SecChUa,
-    B::SecChUaMobile,
-    B::SecChUaPlatform,
-];
-
-/// Order in which the profile headers of a browser family are inserted on an
-/// h2 request. `hyper`/`h2` encode regular headers in `HeaderMap` iteration
-/// (= insertion) order, so this is the order on the wire. Carrier-specific
-/// headers (`sec-websocket-*`, `x-outline-*`) are inserted after these.
-pub(crate) fn h2_header_order(fp: TlsFingerprint) -> &'static [BrowserHeader] {
-    match fp {
-        TlsFingerprint::Chromium => CHROMIUM_HEADER_ORDER,
-        TlsFingerprint::Firefox => FIREFOX_HEADER_ORDER,
-        TlsFingerprint::Safari => LEGACY_HEADER_ORDER,
-    }
 }
 
 #[cfg(test)]

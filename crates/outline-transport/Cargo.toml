@@ -46,6 +46,9 @@ http = "1.3"
 http-body-util = "0.1"
 hyper = { version = "1.7", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+# Parses the `ws_h1` upgrade response head (`ws_h1.rs`), whose request we write
+# ourselves in the browser's header order; already in the graph via tungstenite.
+httparse = "1.10"
 # Used only by the fingerprint-profile module to call `gethostname(2)`
 # on Unix — that's the only stable cross-restart seed we have on Linux
 # / macOS, since `$HOSTNAME` is a shell-internal variable and is NOT

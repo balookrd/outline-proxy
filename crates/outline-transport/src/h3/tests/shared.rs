@@ -1,17 +1,19 @@
 use super::{H3ConnectionKey, choose_slot};
+use crate::fingerprint_profile::{TlsFingerprint, dial_tls_family, with_dial_fingerprint};
 use crate::shared_cache::should_reuse_connection;
 
 const MIN: u8 = 4;
 const CAP: u64 = 32;
+const TLS: TlsFingerprint = TlsFingerprint::Chromium;
 
 #[test]
 fn h3_shared_connection_key_distinguishes_server_name_port_and_fwmark() {
-    let base = H3ConnectionKey::with_slot("example.com", 443, None, 0);
+    let base = H3ConnectionKey::with_slot("example.com", 443, None, 0, TLS);
 
-    assert_eq!(base, H3ConnectionKey::with_slot("example.com", 443, None, 0));
-    assert_ne!(base, H3ConnectionKey::with_slot("example.net", 443, None, 0));
-    assert_ne!(base, H3ConnectionKey::with_slot("example.com", 443, Some(100), 0));
-    assert_ne!(base, H3ConnectionKey::with_slot("example.com", 8443, None, 0));
+    assert_eq!(base, H3ConnectionKey::with_slot("example.com", 443, None, 0, TLS));
+    assert_ne!(base, H3ConnectionKey::with_slot("example.net", 443, None, 0, TLS));
+    assert_ne!(base, H3ConnectionKey::with_slot("example.com", 443, Some(100), 0, TLS));
+    assert_ne!(base, H3ConnectionKey::with_slot("example.com", 8443, None, 0, TLS));
 }
 
 #[test]
@@ -19,10 +21,10 @@ fn h3_connection_key_distinguishes_carrier_slots() {
     // Distinct carrier slots must hash/compare unequal so each occupies its own
     // registry entry — that independence is what bounds the reconnect blast
     // radius when one carrier collapses.
-    let slot0 = H3ConnectionKey::with_slot("example.com", 443, None, 0);
-    let slot1 = H3ConnectionKey::with_slot("example.com", 443, None, 1);
+    let slot0 = H3ConnectionKey::with_slot("example.com", 443, None, 0, TLS);
+    let slot1 = H3ConnectionKey::with_slot("example.com", 443, None, 1, TLS);
     assert_ne!(slot0, slot1);
-    assert_eq!(slot0, H3ConnectionKey::with_slot("example.com", 443, None, 0));
+    assert_eq!(slot0, H3ConnectionKey::with_slot("example.com", 443, None, 0, TLS));
 }
 
 #[test]
@@ -81,4 +83,40 @@ async fn fresh_dials_bind_distinct_local_ports() {
     let port_a = a.local_addr().expect("local addr a").port();
     let port_b = b.local_addr().expect("local addr b").port();
     assert_ne!(port_a, port_b, "two fresh dials must not share a local UDP port");
+}
+
+#[test]
+fn h3_connection_key_distinguishes_browser_families() {
+    let key = |tls| H3ConnectionKey::with_slot("example.com", 443, None, 0, tls);
+    assert_ne!(key(TlsFingerprint::Chromium), key(TlsFingerprint::Firefox));
+    assert_ne!(key(TlsFingerprint::Firefox), key(TlsFingerprint::Safari));
+    assert_eq!(key(TlsFingerprint::Firefox), key(TlsFingerprint::Firefox));
+}
+
+#[test]
+fn h3_pool_groups_slots_of_one_family_and_separates_families() {
+    let key = |slot, tls| H3ConnectionKey::with_slot("example.com", 443, None, slot, tls);
+    // Slots of one family are one pool (reaper census, slot loads).
+    assert_eq!(key(0, TlsFingerprint::Firefox).pool(), key(3, TlsFingerprint::Firefox).pool());
+    // Another family is another pool: it cannot count towards or evict the
+    // first family's warm floor.
+    assert_ne!(key(0, TlsFingerprint::Firefox).pool(), key(0, TlsFingerprint::Chromium).pool());
+}
+
+#[tokio::test]
+async fn dial_family_defaults_to_chromium_and_follows_the_pinned_one() {
+    // No profile: the Chromium hello is what is sent, so it is the Chromium key.
+    assert_eq!(dial_tls_family(), TlsFingerprint::Chromium);
+    with_dial_fingerprint(None, async {
+        assert_eq!(dial_tls_family(), TlsFingerprint::Chromium);
+    })
+    .await;
+    with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
+        assert_eq!(dial_tls_family(), TlsFingerprint::Chromium);
+    })
+    .await;
+    with_dial_fingerprint(Some(TlsFingerprint::Safari), async {
+        assert_eq!(dial_tls_family(), TlsFingerprint::Safari);
+    })
+    .await;
 }

@@ -106,6 +106,87 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
     Ok(())
 }
 
+/// Header-only h3 counterpart of
+/// `websocket_upgrade_ignores_the_browser_permessage_deflate_offer`
+/// (`tests/websocket.rs`): the extended CONNECT response to a Chrome-style
+/// `permessage-deflate` offer carries no `Sec-WebSocket-Extensions`. Data flow
+/// with the offer is covered end to end by the client's
+/// `e2e_tls_carriers::tls_carriers_work_with_browser_profiles` (`ws_h3`).
+#[tokio::test]
+async fn websocket_http3_connect_response_omits_sec_websocket_extensions() -> Result<()> {
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let config = sample_config(addr);
+    let metrics = Metrics::new(&config);
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        &config,
+        metrics,
+        nat_table,
+        dns_cache,
+        false,
+        config.http_root_realm.clone(),
+    );
+    let server = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                http_fallback: None,
+                cluster: None,
+            },
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://localhost:{}/tcp", addr.port()))
+        .version(Version::HTTP_3)
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .header(header::SEC_WEBSOCKET_EXTENSIONS, "permessage-deflate; client_max_window_bits")
+        .extension(H3Protocol::WEBSOCKET)
+        .body(())?;
+
+    let stream = send_request.send_request(request).await?;
+    let mut stream = stream;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.version(), Version::HTTP_3);
+    // The client offers it like Chrome but implements no extension; the
+    // server never accepts one (`build_extended_connect_response(_, None)`).
+    assert!(!response.headers().contains_key(header::SEC_WEBSOCKET_EXTENSIONS));
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+    socket.send(H3Message::Close(None)).await?;
+
+    driver.abort();
+    server.abort();
+    let _ = driver.await;
+    let _ = server.await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
     use super::super::resumption::{OrphanRegistry, ResumptionConfig};

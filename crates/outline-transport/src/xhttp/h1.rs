@@ -46,11 +46,13 @@ use crate::guards::AbortOnDrop;
 use crate::resumption::SessionId;
 
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
+use crate::request_headers::{HttpVersion, RequestKind};
+
 use super::{
-    ACK_PREFIX_HEADER, InboundSender, OutboundReceiver, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, RequestBody, SsPathKind, XhttpStream, XhttpSubmode, XhttpTarget,
-    default_port_for, empty_request_body, full_request_body, generate_session_id, inbound_channel,
-    outbound_channel, parse_ack_prefix_echo, parse_session_response,
+    InboundSender, OutboundReceiver, RequestBody, SessionRequest, SsPathKind, XhttpStream,
+    XhttpSubmode, XhttpTarget, build_session_request_headers, empty_request_body,
+    full_request_body, generate_session_id, inbound_channel, outbound_channel,
+    parse_ack_prefix_echo, parse_session_response,
 };
 
 /// Same dial budget as the h2/h3 paths — keeps fallback windows
@@ -115,15 +117,16 @@ pub(super) async fn connect_xhttp_h1(
         // serialised uplink POSTs on `up_send`. They cost two TCP
         // connections (and two TLS handshakes) per session — the
         // explicit price h1 charges for not multiplexing.
-        let down_send = h1_handshake(server_addr, &host, use_tls, network.fwmark).await?;
-        let up_send = h1_handshake(server_addr, &host, use_tls, network.fwmark).await?;
+        // Header case of both sockets follows the profile's browser as far
+        // as hyper allows (see `spawn_h1`).
+        let browser_case = crate::request_headers::h1_browser_case(profile);
+        let down_send =
+            h1_handshake(server_addr, &host, use_tls, network.fwmark, browser_case).await?;
+        let up_send =
+            h1_handshake(server_addr, &host, use_tls, network.fwmark, browser_case).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
-        let authority = if port == default_port_for(use_tls) {
-            host.clone()
-        } else {
-            format!("{host}:{port}")
-        };
+        let authority = super::authority_for(use_tls, &host, port);
         let scheme = if use_tls { "https" } else { "http" };
         let target = Arc::new(XhttpTarget {
             scheme: scheme.into(),
@@ -200,6 +203,7 @@ async fn h1_handshake(
     host: &str,
     use_tls: bool,
     fwmark: Option<u32>,
+    browser_case: bool,
 ) -> Result<http1::SendRequest<RequestBody>> {
     let tcp = connect_tcp_socket(addr, fwmark).await?;
     if use_tls {
@@ -214,17 +218,25 @@ async fn h1_handshake(
             .connect(server_name, tcp)
             .await
             .context("TLS handshake for xhttp/h1 failed")?;
-        spawn_h1(TokioIo::new(BoxedIo::Tls(Box::new(tls)))).await
+        spawn_h1(TokioIo::new(BoxedIo::Tls(Box::new(tls))), browser_case).await
     } else {
-        spawn_h1(TokioIo::new(BoxedIo::Plain(tcp))).await
+        spawn_h1(TokioIo::new(BoxedIo::Plain(tcp)), browser_case).await
     }
 }
 
-async fn spawn_h1<T>(io: TokioIo<T>) -> Result<http1::SendRequest<RequestBody>>
+/// `browser_case`: write header names Title-Case, as Chrome and Firefox do on
+/// HTTP/1.1. hyper can only Title-Case every name (its per-name case map is
+/// private), so Chrome's lowercase `sec-ch-ua*` go out as `Sec-Ch-Ua*`;
+/// without it (Safari, no profile) names stay lowercase, as before.
+pub(super) async fn spawn_h1<T>(
+    io: TokioIo<T>,
+    browser_case: bool,
+) -> Result<http1::SendRequest<RequestBody>>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let (send_request, conn) = http1::Builder::new()
+        .title_case_headers(browser_case)
         .handshake(io)
         .await
         .context("xhttp h1 handshake failed")?;
@@ -250,36 +262,27 @@ async fn open_h1_get(
     datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(Option<SessionId>, bool, bool, bool, hyper::body::Incoming)> {
-    let mut builder = Request::builder()
+    let mut req = Request::builder()
         .method(Method::GET)
-        .uri(target.full_uri())
+        .uri(target.origin_form_path())
         .version(Version::HTTP_11)
-        .header(http::header::HOST, target.authority.as_str())
-        .header(RESUME_CAPABLE_HEADER, "1");
-    if let Some(id) = resume_request {
-        builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
-    }
-    if ack_prefix_requested {
-        builder = builder.header(ACK_PREFIX_HEADER, "1");
-    }
-    if symmetric_replay_requested {
-        builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
-    }
-    if symmetric_replay_requested && client_acked_offset > 0 {
-        builder =
-            builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
-    }
-    builder = super::apply_udp_records_request_header(datagram_records, builder);
-    let mut req = builder
         .body(empty_request_body())
         .context("failed to build xhttp/h1 GET request")?;
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
+    let origin = target.web_origin();
+    *req.headers_mut() = build_session_request_headers(
+        SessionRequest {
             profile,
-            req.headers_mut(),
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
+            kind: RequestKind::FetchGet,
+            version: HttpVersion::H1,
+            origin: &origin,
+            host: Some(&target.authority),
+        },
+        resume_request,
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        client_acked_offset,
+        datagram_records,
+    )?;
     send.ready().await.context("xhttp h1 not ready for GET")?;
     let resp = send
         .send_request(req)
@@ -320,14 +323,11 @@ async fn driver_loop_h1(
         }
     }));
 
-    // Per-POST request template, built once per session. Unlike h2/h3,
-    // h1 also carries an explicit `Content-Length`; it is seeded with a
-    // placeholder here so its slot sits in the same position the old
-    // per-POST builder produced (Host, Content-Length, then the
-    // fingerprint headers). Each POST clones this map and overwrites the
-    // Content-Length value in place — `HeaderMap::insert` on an existing
-    // key keeps the entry's position, so the wire header order stays
-    // byte-identical while the fingerprint `apply` runs only once.
+    // Per-POST request template, built once per session. `Content-Length`
+    // is seeded with a placeholder at the browser's position; each POST
+    // clones this map and overwrites the value in place — that keeps the
+    // entry's position, so every POST has the same wire order while the
+    // browser headers are laid out only once.
     let base_headers = match build_post_headers(&target, datagram_records, profile) {
         Ok(headers) => headers,
         Err(error) => {
@@ -339,7 +339,8 @@ async fn driver_loop_h1(
         },
     };
     let base_headers = Arc::new(base_headers);
-    let uri_prefix: Arc<str> = Arc::from(target.uri_seq_prefix());
+    // Origin form on h1: see `XhttpTarget::origin_form_path`.
+    let uri_prefix: Arc<str> = Arc::from(target.origin_form_seq_prefix());
     // The closing FIN has to be issuable after this task is gone (a dropped
     // transport aborts it), and `http1::SendRequest` is not `Clone` — so the
     // uplink handle is shared instead. Uncontended in practice: the POST loop
@@ -431,39 +432,23 @@ async fn send_fin(
     }
 }
 
-/// Header map shared by every packet-up POST in an h1 session: `Host`,
-/// a placeholder `Content-Length`, then the browser fingerprint headers.
-/// Built once per session; each POST clones it and overwrites the
-/// Content-Length in place. The insertion order matches the old per-POST
-/// builder so `HeaderMap`'s iteration (and thus the wire header order)
-/// is byte-identical.
+/// Header map shared by every packet-up POST in an h1 session (see
+/// [`super::build_post_template`]): `Host` and the placeholder
+/// `Content-Length` sit at the browser's positions.
 pub(super) fn build_post_headers(
     target: &XhttpTarget,
     datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<HeaderMap> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        http::header::HOST,
-        HeaderValue::try_from(target.authority.as_str())
-            .context("invalid xhttp/h1 authority for POST host header")?,
-    );
-    headers.insert(http::header::CONTENT_LENGTH, HeaderValue::from(0_usize));
-    // Uplink POSTs advertise the capability too — see the h2 sibling.
-    if datagram_records {
-        headers.insert(
-            http::HeaderName::from_static(super::UDP_RECORDS_HEADER),
-            HeaderValue::from_static(super::UDP_RECORDS_ENABLED),
-        );
-    }
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
-            profile,
-            &mut headers,
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
-    Ok(headers)
+    let host = HeaderValue::try_from(target.authority.as_str())
+        .context("invalid xhttp/h1 authority for POST host header")?;
+    Ok(super::build_post_template(
+        profile,
+        HttpVersion::H1,
+        &target.web_origin(),
+        Some(host),
+        datagram_records,
+    ))
 }
 
 async fn post_one(
@@ -474,7 +459,7 @@ async fn post_one(
     payload: bytes::Bytes,
 ) -> Result<()> {
     // Path-based seq matches xray / sing-box's `PlacementPath` default
-    // and mirrors the h2/h3 siblings — the wire URL stays byte-identical
+    // and mirrors the h2/h3 siblings — the request path stays identical
     // across all three carriers.
     let content_length = payload.len();
     let mut req = Request::builder()
@@ -484,7 +469,7 @@ async fn post_one(
         .body(full_request_body(payload))
         .context("failed to build xhttp/h1 POST request")?;
     let mut headers = base_headers.clone();
-    headers.insert(http::header::CONTENT_LENGTH, HeaderValue::from(content_length));
+    super::set_post_content_length(&mut headers, content_length);
     *req.headers_mut() = headers;
     let resp = send
         .send_request(req)

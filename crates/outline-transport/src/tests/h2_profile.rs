@@ -25,6 +25,7 @@ use super::{H2Carrier, H2Shape, OperatorWindows, apply_h2_shape, carrier_windows
 use crate::dial_plan::DialResumeOptions;
 use crate::fingerprint_profile::{PROFILES, Profile, TlsFingerprint};
 use crate::resumption::SessionId;
+use crate::tests::{MeasuredKind, measured_browser_headers};
 
 /// Initial connection window of every h2 endpoint (RFC 9113 §6.9.2); the
 /// connection WINDOW_UPDATE carries `window - 65535`.
@@ -113,36 +114,39 @@ impl AsyncWrite for Tee {
 struct Exchange {
     /// Every byte the client wrote, starting with the connection preface.
     client_bytes: Vec<u8>,
-    /// Regular header names in the order the server decoded them.
-    server_header_names: Vec<String>,
+    /// Regular headers `(name, value)` in the order the server decoded them.
+    server_headers: Vec<(String, String)>,
 }
 
 /// Handshake a client configured by `apply_h2_shape(shape, operator)` with an
 /// in-process hyper h2 server (extended CONNECT enabled), send `request`,
 /// and return the client's bytes plus the header order the server decoded.
-async fn exchange(
-    shape: &H2Shape,
-    operator: OperatorWindows,
-    request: Request<Empty<Bytes>>,
-) -> Exchange {
+async fn exchange<B>(shape: &H2Shape, operator: OperatorWindows, request: Request<B>) -> Exchange
+where
+    B: hyper::body::Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     exchange_on(H2Carrier::Ws, shape, operator, request).await
 }
 
 /// [`exchange`] for a given carrier (selects the default windows).
-async fn exchange_on(
+async fn exchange_on<B>(
     carrier: H2Carrier,
     shape: &H2Shape,
     operator: OperatorWindows,
-    request: Request<Empty<Bytes>>,
-) -> Exchange {
+    request: Request<B>,
+) -> Exchange
+where
+    B: hyper::body::Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
     let log = Arc::new(Mutex::new(Vec::new()));
-    let (names_tx, mut names_rx) = mpsc::unbounded_channel::<Vec<String>>();
+    let (names_tx, mut names_rx) = mpsc::unbounded_channel::<Vec<(String, String)>>();
 
     let server = tokio::spawn(async move {
         let service = service_fn(move |req: Request<hyper::body::Incoming>| {
-            let names = req.headers().keys().map(|n| n.as_str().to_owned()).collect();
-            let _ = names_tx.send(names);
+            let _ = names_tx.send(crate::tests::header_pairs(req.headers()));
             async { Ok::<_, Infallible>(Response::new(Empty::<Bytes>::new())) }
         });
         let _ = ServerBuilder::new(TokioExecutor::new())
@@ -154,19 +158,19 @@ async fn exchange_on(
     let mut builder = http2::Builder::new(TokioExecutor::new());
     apply_h2_shape(&mut builder, shape, carrier, operator);
     let (mut send, conn) = builder
-        .handshake::<_, Empty<Bytes>>(TokioIo::new(Tee { inner: client_io, log: Arc::clone(&log) }))
+        .handshake::<_, B>(TokioIo::new(Tee { inner: client_io, log: Arc::clone(&log) }))
         .await
         .expect("h2 handshake");
     let driver = tokio::spawn(conn);
     send.ready().await.expect("h2 ready");
     let response = send.send_request(request).await.expect("h2 request");
     assert!(response.status().is_success());
-    let server_header_names = names_rx.recv().await.expect("server saw the request");
+    let server_headers = names_rx.recv().await.expect("server saw the request");
     drop(send);
     driver.abort();
     server.abort();
     let client_bytes = log.lock().unwrap().clone();
-    Exchange { client_bytes, server_header_names }
+    Exchange { client_bytes, server_headers }
 }
 
 const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -303,45 +307,12 @@ async fn operator_windows_override_the_profile() {
     }
 }
 
-// ── (3) request header order on the wire ──────────────────────────────────────
-
-/// Browser header order on h2 per family (Chrome / Firefox measured,
-/// Safari = the historical order), restricted to the headers a profile adds.
-fn expected_browser_order(profile: &Profile) -> Vec<&'static str> {
-    let order: &[&str] = match profile.tls {
-        TlsFingerprint::Chromium => &[
-            "sec-ch-ua",
-            "sec-ch-ua-mobile",
-            "sec-ch-ua-platform",
-            "user-agent",
-            "accept",
-            "sec-fetch-site",
-            "sec-fetch-mode",
-            "sec-fetch-dest",
-            "accept-encoding",
-            "accept-language",
-        ],
-        TlsFingerprint::Firefox => &[
-            "user-agent",
-            "accept",
-            "accept-language",
-            "accept-encoding",
-            "sec-fetch-dest",
-            "sec-fetch-mode",
-            "sec-fetch-site",
-        ],
-        TlsFingerprint::Safari => &[
-            "user-agent",
-            "accept",
-            "accept-language",
-            "accept-encoding",
-            "sec-fetch-site",
-            "sec-fetch-mode",
-            "sec-fetch-dest",
-        ],
-    };
-    order.to_vec()
-}
+// ── (3) request headers on the wire ───────────────────────────────────────────
+//
+// What the server decodes from the HEADERS hyper/h2 really write, for each
+// carrier request kind, against the measured browser requests
+// (`crate::tests::measured_browser_headers`). Carrier custom headers
+// (`X-Outline-*`) trail the browser ones; nothing else may differ.
 
 fn resume() -> DialResumeOptions {
     DialResumeOptions {
@@ -352,13 +323,24 @@ fn resume() -> DialResumeOptions {
     }
 }
 
-const RESUME_NAMES: &[&str] = &[
-    "x-outline-resume-capable",
-    "x-outline-resume",
-    "x-outline-resume-ack-prefix",
-    "x-outline-resume-symmetric-replay",
-    "x-outline-resume-down-acked",
-];
+/// `X-Outline-*` headers of [`resume`] (and `x-outline-udp-records`), in the
+/// order the carriers append them after the browser headers.
+fn resume_headers(udp_records: bool) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = [
+        ("x-outline-resume-capable", "1".to_owned()),
+        ("x-outline-resume", SessionId::from_bytes([7; 16]).to_hex()),
+        ("x-outline-resume-ack-prefix", "1".to_owned()),
+        ("x-outline-resume-symmetric-replay", "1".to_owned()),
+        ("x-outline-resume-down-acked", "42".to_owned()),
+    ]
+    .into_iter()
+    .map(|(n, v)| (n.to_owned(), v))
+    .collect();
+    if udp_records {
+        out.push(("x-outline-udp-records".to_owned(), "1".to_owned()));
+    }
+    out
+}
 
 fn profile_cases() -> Vec<Option<&'static Profile>> {
     let mut cases: Vec<Option<&'static Profile>> = vec![None];
@@ -366,11 +348,35 @@ fn profile_cases() -> Vec<Option<&'static Profile>> {
     cases
 }
 
+/// The browser part of a request the measured tables do not cover (Safari's
+/// historical headers, nothing without a profile), as `request_headers`
+/// renders it — pinned by its own snapshot test there.
+fn unmeasured_browser_headers(
+    profile: Option<&Profile>,
+    kind: crate::request_headers::RequestKind,
+) -> Vec<(String, String)> {
+    let mut headers = HeaderMap::new();
+    crate::request_headers::browser_headers(
+        profile,
+        kind,
+        crate::request_headers::HttpVersion::H2,
+        crate::tests::MEASURED_ORIGIN,
+        &crate::request_headers::CarrierSlots::default(),
+        &mut headers,
+    );
+    crate::tests::header_pairs(&headers)
+}
+
+fn is_measured(profile: Option<&Profile>) -> bool {
+    matches!(profile.map(|p| p.tls), Some(TlsFingerprint::Chromium | TlsFingerprint::Firefox))
+}
+
 #[tokio::test]
-async fn ws_h2_connect_headers_follow_the_browser_order() {
+async fn ws_h2_connect_sends_the_browser_websocket_request() {
+    use crate::request_headers::RequestKind;
     for profile in profile_cases() {
         let request = crate::h2::build_websocket_connect_request(
-            "https://example.test/ws",
+            "https://example.test:8443/ws",
             &resume(),
             profile,
         )
@@ -378,67 +384,118 @@ async fn ws_h2_connect_headers_follow_the_browser_order() {
         let fp = profile.map(|p| p.tls);
         let ex = exchange(&h2_shape(fp), (None, None), request).await;
 
-        let mut expected: Vec<&str> = profile.map(expected_browser_order).unwrap_or_default();
-        expected.push("sec-websocket-version");
-        expected.extend_from_slice(RESUME_NAMES);
-        assert_eq!(ex.server_header_names, expected, "profile={:?}", profile.map(|p| p.name));
-        assert!(!ex.server_header_names.iter().any(|n| n == "host"));
+        let mut expected = match profile {
+            Some(p) if is_measured(profile) => {
+                measured_browser_headers(p, MeasuredKind::WebSocket, false)
+            },
+            _ => unmeasured_browser_headers(profile, RequestKind::WebSocket),
+        };
+        if profile.is_none() {
+            assert_eq!(expected, [("sec-websocket-version".to_owned(), "13".to_owned())]);
+        }
+        expected.extend(resume_headers(false));
+        assert_eq!(ex.server_headers, expected, "profile={:?}", profile.map(|p| p.name));
     }
 }
 
 #[tokio::test]
-async fn xhttp_h2_session_headers_follow_the_browser_order_without_host() {
+async fn xhttp_h2_session_requests_send_the_browser_fetch_request() {
+    use crate::request_headers::{HttpVersion, RequestKind};
     for profile in profile_cases() {
-        let r = resume();
-        let mut request = simple_get();
-        *request.headers_mut() = crate::xhttp::build_session_request_headers(
-            r.resume_request,
-            r.ack_prefix_requested,
-            r.symmetric_replay_requested,
-            r.client_acked_offset,
-            true,
-            profile,
-        );
-        let fp = profile.map(|p| p.tls);
-        let ex = exchange(&h2_shape(fp), (None, None), request).await;
+        // The long-lived GET and the stream-one POST (a streaming body: no
+        // `content-length`).
+        for (kind, measured, method) in [
+            (RequestKind::FetchGet, MeasuredKind::FetchGet, Method::GET),
+            (RequestKind::FetchPost, MeasuredKind::FetchPost, Method::POST),
+        ] {
+            let r = resume();
+            // Stream-one's body is a live stream (unknown length), so hyper
+            // adds no `content-length`; an `Empty` POST body would get `0`.
+            let body = if method == Method::POST {
+                StreamBody::new(futures_util::stream::empty::<Result<Frame<Bytes>, Infallible>>())
+                    .boxed()
+            } else {
+                Empty::<Bytes>::new().boxed()
+            };
+            let mut request = Request::builder()
+                .method(method)
+                .uri("https://example.test:8443/xh/session")
+                .version(Version::HTTP_2)
+                .body(body)
+                .unwrap();
+            *request.headers_mut() = crate::xhttp::build_session_request_headers(
+                crate::xhttp::SessionRequest {
+                    profile,
+                    kind,
+                    version: HttpVersion::H2,
+                    origin: crate::tests::MEASURED_ORIGIN,
+                    host: None,
+                },
+                r.resume_request,
+                r.ack_prefix_requested,
+                r.symmetric_replay_requested,
+                r.client_acked_offset,
+                true,
+            )
+            .unwrap();
+            let fp = profile.map(|p| p.tls);
+            let ex = exchange_on(H2Carrier::Xhttp, &h2_shape(fp), (None, None), request).await;
 
-        let mut expected: Vec<&str> = profile.map(expected_browser_order).unwrap_or_default();
-        expected.extend_from_slice(RESUME_NAMES);
-        expected.push("x-outline-udp-records");
-        assert_eq!(ex.server_header_names, expected, "profile={:?}", profile.map(|p| p.name));
-        assert!(!ex.server_header_names.iter().any(|n| n == "host"));
+            let mut expected = match profile {
+                Some(p) if is_measured(profile) => measured_browser_headers(p, measured, false)
+                    .into_iter()
+                    .filter(|(n, _)| n != "content-length")
+                    .collect(),
+                _ => unmeasured_browser_headers(profile, kind),
+            };
+            expected.extend(resume_headers(true));
+            assert_eq!(
+                ex.server_headers,
+                expected,
+                "profile={:?} kind={kind:?}",
+                profile.map(|p| p.name)
+            );
+        }
     }
 }
 
-#[test]
-fn h1_insertion_order_is_unchanged() {
-    // `apply` (h1 / h3) keeps the historical order; a `Host` inserted first
-    // stays first.
-    let profile = PROFILES.iter().find(|p| p.tls == TlsFingerprint::Chromium).unwrap();
-    let mut headers = HeaderMap::new();
-    headers.insert(http::header::HOST, "example.test".parse().unwrap());
-    crate::fingerprint_profile::apply(
-        profile,
-        &mut headers,
-        crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
-    );
-    let names: Vec<&str> = headers.keys().map(|n| n.as_str()).collect();
-    assert_eq!(
-        names,
-        [
-            "host",
-            "user-agent",
-            "accept",
-            "accept-language",
-            "accept-encoding",
-            "sec-ch-ua",
-            "sec-ch-ua-mobile",
-            "sec-ch-ua-platform",
-            "sec-fetch-site",
-            "sec-fetch-mode",
-            "sec-fetch-dest",
-        ]
-    );
+#[tokio::test]
+async fn xhttp_h2_packet_up_post_sends_the_browser_fetch_post() {
+    for profile in profile_cases() {
+        // What `xhttp::h2::build_post_headers` builds, then one POST's length.
+        let mut headers = crate::xhttp::build_post_template(
+            profile,
+            crate::request_headers::HttpVersion::H2,
+            crate::tests::MEASURED_ORIGIN,
+            None,
+            true,
+        );
+        crate::xhttp::set_post_content_length(&mut headers, 4);
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("https://example.test:8443/xh/session/0")
+            .version(Version::HTTP_2)
+            .body(http_body_util::Full::new(Bytes::from_static(b"data")))
+            .unwrap();
+        *request.headers_mut() = headers;
+        let fp = profile.map(|p| p.tls);
+        let ex = exchange_on(H2Carrier::Xhttp, &h2_shape(fp), (None, None), request).await;
+
+        let mut expected = match profile {
+            Some(p) if is_measured(profile) => {
+                measured_browser_headers(p, MeasuredKind::FetchPost, false)
+            },
+            _ => {
+                unmeasured_browser_headers(profile, crate::request_headers::RequestKind::FetchPost)
+            },
+        };
+        expected.push(("x-outline-udp-records".to_owned(), "1".to_owned()));
+        if !is_measured(profile) {
+            // Safari / no profile: hyper appends its own, as before.
+            expected.push(("content-length".to_owned(), "4".to_owned()));
+        }
+        assert_eq!(ex.server_headers, expected, "profile={:?}", profile.map(|p| p.name));
+    }
 }
 
 // ── Firefox stream window: throughput measurement ────────────────────────────

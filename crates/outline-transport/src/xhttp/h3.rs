@@ -32,10 +32,12 @@ use crate::guards::AbortOnDrop;
 use crate::resumption::SessionId;
 
 use super::stream::io_ws_err;
+use crate::request_headers::{HttpVersion, RequestKind};
+
 use super::{
-    ACK_PREFIX_HEADER, InboundSender, OutboundReceiver, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, SsPathKind, XhttpStream, XhttpSubmode,
-    XhttpTarget, generate_session_id, inbound_channel, outbound_channel,
+    InboundSender, OutboundReceiver, SESSION_RESPONSE_HEADER, SessionRequest, SsPathKind,
+    XhttpStream, XhttpSubmode, XhttpTarget, build_session_request_headers, generate_session_id,
+    inbound_channel, outbound_channel,
 };
 
 /// Same dial budget the h2 path uses — keeps fallback windows
@@ -121,11 +123,7 @@ pub(super) async fn connect_xhttp_h3(
         } = super::h3_pool::acquire(server_addr, &host, port, network.fwmark).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
-        let authority = if port == 443 {
-            host.clone()
-        } else {
-            format!("{host}:{port}")
-        };
+        let authority = super::authority_for(true, &host, port);
         let target = Arc::new(XhttpTarget {
             scheme: "https".to_string(),
             authority,
@@ -290,33 +288,27 @@ async fn open_h3_get(
     bool,
     h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
 )> {
-    let mut builder = Request::builder()
+    let mut req = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
         .version(Version::HTTP_3)
-        .header(RESUME_CAPABLE_HEADER, "1");
-    if let Some(id) = resume_request {
-        builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
-    }
-    if ack_prefix_requested {
-        builder = builder.header(ACK_PREFIX_HEADER, "1");
-    }
-    if symmetric_replay_requested {
-        builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
-    }
-    if symmetric_replay_requested && client_acked_offset > 0 {
-        builder =
-            builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
-    }
-    builder = super::apply_udp_records_request_header(datagram_records, builder);
-    let mut req = builder.body(()).context("failed to build xhttp/h3 GET request")?;
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
+        .body(())
+        .context("failed to build xhttp/h3 GET request")?;
+    let origin = target.web_origin();
+    *req.headers_mut() = build_session_request_headers(
+        SessionRequest {
             profile,
-            req.headers_mut(),
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
+            kind: RequestKind::FetchGet,
+            version: HttpVersion::H3,
+            origin: &origin,
+            host: None,
+        },
+        resume_request,
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        client_acked_offset,
+        datagram_records,
+    )?;
     let mut stream = send
         .send_request(req)
         .await
@@ -378,12 +370,12 @@ async fn driver_loop_h3<T, S>(
     }));
 
     // Per-POST request template, built once per session: h3 puts the
-    // authority in the `:authority` pseudo-header (from the URI), so a
-    // packet-up POST carries only the browser fingerprint headers. We
-    // clone this map per POST and append the seq to the URL prefix
-    // instead of re-running `apply` and re-`format!`-ing the URI per
-    // frame.
-    let base_headers = Arc::new(build_post_headers(datagram_records, profile));
+    // authority in the `:authority` pseudo-header (from the URI). We clone
+    // this map per POST (setting its `Content-Length`) and append the seq to
+    // the URL prefix instead of rebuilding the browser headers and
+    // re-`format!`-ing the URI per frame.
+    let base_headers =
+        Arc::new(build_post_headers(&target.web_origin(), datagram_records, profile));
     let uri_prefix: Arc<str> = Arc::from(target.uri_seq_prefix());
 
     // POSTs run concurrently but stay owned by this driver: a detached
@@ -474,32 +466,15 @@ async fn send_fin<T>(
     }
 }
 
-/// Header map shared by every packet-up POST in an h3 session: just the
-/// browser fingerprint headers (the authority rides the `:authority`
-/// pseudo-header). Built once per session and cloned per POST; the clone
-/// reproduces the exact order the old per-POST `apply` produced.
+/// Header map shared by every packet-up POST in an h3 session (see
+/// [`super::build_post_template`]; h3 follows the h2 table). The authority
+/// rides the `:authority` pseudo-header.
 pub(super) fn build_post_headers(
+    origin: &str,
     datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    // Uplink POSTs carry the capability too, so a session opened by a POST
-    // (seq=0 racing the GET) reaches the server with the same negotiation
-    // state the GET carries.
-    if datagram_records {
-        headers.insert(
-            http::HeaderName::from_static(super::UDP_RECORDS_HEADER),
-            http::HeaderValue::from_static(super::UDP_RECORDS_ENABLED),
-        );
-    }
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
-            profile,
-            &mut headers,
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
-    headers
+    super::build_post_template(profile, HttpVersion::H3, origin, None, datagram_records)
 }
 
 /// Stream-one carrier on h3: a single bidirectional QUIC stream.
@@ -523,35 +498,29 @@ async fn open_h3_stream_one(
     bool,
     h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
 )> {
-    let mut builder = Request::builder()
+    let mut req = Request::builder()
         .method(Method::POST)
         .uri(target.full_uri_with_submode(XhttpSubmode::StreamOne))
         .version(Version::HTTP_3)
-        .header(RESUME_CAPABLE_HEADER, "1");
-    if let Some(id) = resume_request {
-        builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
-    }
-    if ack_prefix_requested {
-        builder = builder.header(ACK_PREFIX_HEADER, "1");
-    }
-    if symmetric_replay_requested {
-        builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
-    }
-    if symmetric_replay_requested && client_acked_offset > 0 {
-        builder =
-            builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
-    }
-    builder = super::apply_udp_records_request_header(datagram_records, builder);
-    let mut req = builder
         .body(())
         .context("failed to build xhttp/h3 stream-one request")?;
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
+    // A streaming `fetch()` POST: no `Content-Length` (the body is the live
+    // uplink).
+    let origin = target.web_origin();
+    *req.headers_mut() = build_session_request_headers(
+        SessionRequest {
             profile,
-            req.headers_mut(),
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
+            kind: RequestKind::FetchPost,
+            version: HttpVersion::H3,
+            origin: &origin,
+            host: None,
+        },
+        resume_request,
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        client_acked_offset,
+        datagram_records,
+    )?;
     let mut stream = send
         .send_request(req)
         .await
@@ -725,6 +694,7 @@ where
         .body(())
         .context("failed to build xhttp/h3 POST request")?;
     *req.headers_mut() = base_headers.clone();
+    super::set_post_content_length(req.headers_mut(), payload.len());
     let mut stream = send
         .send_request(req)
         .await

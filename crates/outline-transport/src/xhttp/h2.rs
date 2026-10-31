@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use bytes::Bytes;
-use http::{HeaderMap, HeaderValue, Method, Request, Version};
+use http::{HeaderMap, Method, Request, Version};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::client::conn::http2;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -36,11 +36,13 @@ use crate::resumption::SessionId;
 use crate::{TransportOperation, connect_tcp_socket};
 
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
+use crate::request_headers::{HttpVersion, RequestKind};
+
 use super::{
-    ACK_PREFIX_HEADER, InboundSender, OutboundReceiver, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, RequestBody, SsPathKind, XhttpStream, XhttpSubmode, XhttpTarget,
-    default_port_for, empty_request_body, full_request_body, generate_session_id, inbound_channel,
-    outbound_channel, parse_ack_prefix_echo, parse_session_response, resolve_effective_submode,
+    InboundSender, OutboundReceiver, RequestBody, SessionRequest, SsPathKind, XhttpStream,
+    XhttpSubmode, XhttpTarget, build_session_request_headers, empty_request_body,
+    full_request_body, generate_session_id, inbound_channel, outbound_channel,
+    parse_ack_prefix_echo, parse_session_response, resolve_effective_submode,
 };
 
 /// Time budget for the initial dial: TCP + TLS + h2 handshake +
@@ -124,11 +126,7 @@ pub(super) async fn connect_xhttp_h2(
         let (in_tx, in_rx) = inbound_channel();
         let (out_tx, out_rx) = outbound_channel();
 
-        let authority = if port == default_port_for(use_tls) {
-            host.clone()
-        } else {
-            format!("{host}:{port}")
-        };
+        let authority = super::authority_for(use_tls, &host, port);
         let scheme = if use_tls { "https" } else { "http" };
         let target = Arc::new(XhttpTarget {
             scheme: scheme.into(),
@@ -269,52 +267,6 @@ pub(super) async fn connect_xhttp_h2(
         .with_context(|| format!("xhttp dial to {url} failed"))
 }
 
-/// Headers of the session-opening request (the long-lived GET, or the
-/// stream-one POST): the profile's browser headers first, in its browser's
-/// h2 order, then the `X-Outline-*` negotiation headers. No `host` — on h2
-/// `:authority` carries it and browsers never send both.
-pub(crate) fn build_session_request_headers(
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
-    datagram_records: bool,
-    profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply_h2(
-            profile,
-            &mut headers,
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
-    headers.insert(RESUME_CAPABLE_HEADER, HeaderValue::from_static("1"));
-    if let Some(id) = resume_request {
-        headers.insert(
-            RESUME_REQUEST_HEADER,
-            HeaderValue::try_from(id.to_hex()).expect("hex Session ID is a valid header value"),
-        );
-    }
-    if ack_prefix_requested {
-        headers.insert(ACK_PREFIX_HEADER, HeaderValue::from_static("1"));
-    }
-    if symmetric_replay_requested {
-        headers.insert(crate::resumption::SYMMETRIC_REPLAY_HEADER, HeaderValue::from_static("1"));
-    }
-    if symmetric_replay_requested && client_acked_offset > 0 {
-        headers
-            .insert(crate::resumption::DOWN_ACKED_HEADER, HeaderValue::from(client_acked_offset));
-    }
-    if datagram_records {
-        headers.insert(
-            http::HeaderName::from_static(super::UDP_RECORDS_HEADER),
-            HeaderValue::from_static(super::UDP_RECORDS_ENABLED),
-        );
-    }
-    headers
-}
-
 /// Issues the long-lived GET, awaits response headers, and pulls
 /// out the optional `X-Outline-Session` resume token. The body is
 /// returned for the caller to drain in its own sub-task. Surfacing
@@ -338,14 +290,21 @@ async fn open_h2_get(
         .version(Version::HTTP_2)
         .body(empty_request_body())
         .context("failed to build xhttp GET request")?;
+    let origin = target.web_origin();
     *req.headers_mut() = build_session_request_headers(
+        SessionRequest {
+            profile,
+            kind: RequestKind::FetchGet,
+            version: HttpVersion::H2,
+            origin: &origin,
+            host: None,
+        },
         resume_request,
         ack_prefix_requested,
         symmetric_replay_requested,
         client_acked_offset,
         datagram_records,
-        profile,
-    );
+    )?;
     send.ready().await.context("xhttp h2 not ready for GET")?;
     let resp = send
         .send_request(req)
@@ -410,14 +369,23 @@ async fn open_h2_stream_one(
         .version(Version::HTTP_2)
         .body(body)
         .context("failed to build xhttp stream-one request")?;
+    // A streaming `fetch()` POST: no `Content-Length` (the body is the live
+    // uplink).
+    let origin = target.web_origin();
     *req.headers_mut() = build_session_request_headers(
+        SessionRequest {
+            profile,
+            kind: RequestKind::FetchPost,
+            version: HttpVersion::H2,
+            origin: &origin,
+            host: None,
+        },
         resume_request,
         ack_prefix_requested,
         symmetric_replay_requested,
         client_acked_offset,
         datagram_records,
-        profile,
-    );
+    )?;
     send.ready().await.context("xhttp h2 not ready for stream-one")?;
     let resp = send
         .send_request(req)
@@ -566,12 +534,13 @@ async fn driver_loop_h2(
     }));
 
     // Per-POST request template, built once per session: every POST in
-    // this session carries the same fingerprint headers and the
-    // same URL prefix, so we precompute both here and only clone the
-    // header map / append the seq per frame instead of re-running the
-    // fingerprint `apply` and re-`format!`-ing the whole absolute URI on
+    // this session carries the same browser headers and the same URL
+    // prefix, so we precompute both here and only clone the header map
+    // (setting its `Content-Length`) / append the seq per frame instead of
+    // rebuilding the headers and re-`format!`-ing the whole absolute URI on
     // every uplink write.
-    let base_headers = Arc::new(build_post_headers(datagram_records, profile));
+    let base_headers =
+        Arc::new(build_post_headers(&target.web_origin(), datagram_records, profile));
     let uri_prefix: Arc<str> = Arc::from(target.uri_seq_prefix());
 
     // POST loop: pop messages, send them with monotonically-
@@ -682,33 +651,14 @@ async fn send_fin(
     }
 }
 
-/// Header map shared by every packet-up POST in an h2 session: the
-/// browser fingerprint headers (in the profile browser's h2 order), then
-/// the carrier's own. No `host` — `:authority` carries it on h2. Built
-/// once per session and cloned per POST; `HeaderMap::clone` preserves
-/// iteration order, so every POST carries the same wire order.
+/// Header map shared by every packet-up POST in an h2 session (see
+/// [`super::build_post_template`]). No `host` — `:authority` carries it.
 pub(super) fn build_post_headers(
+    origin: &str,
     datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply_h2(
-            profile,
-            &mut headers,
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
-    // Uplink POSTs advertise the capability too: a session whose first
-    // request is a POST (seq=0 racing the GET) must reach the server with the
-    // same negotiation state the GET carries.
-    if datagram_records {
-        headers.insert(
-            http::HeaderName::from_static(super::UDP_RECORDS_HEADER),
-            HeaderValue::from_static(super::UDP_RECORDS_ENABLED),
-        );
-    }
-    headers
+    super::build_post_template(profile, HttpVersion::H2, origin, None, datagram_records)
 }
 
 /// One packet-up POST under [`POST_TIMEOUT`]. On expiry the inner future is
@@ -740,6 +690,7 @@ async fn post_one(
     // path-based here keeps the wire byte-identical to what xray
     // produces, so an on-path observer cannot tell our client apart
     // from a vanilla xray one.
+    let content_length = payload.len();
     let mut req = Request::builder()
         .method(Method::POST)
         .uri(format!("{uri_prefix}{seq}"))
@@ -747,6 +698,7 @@ async fn post_one(
         .body(full_request_body(payload))
         .context("failed to build xhttp POST request")?;
     *req.headers_mut() = base_headers.clone();
+    super::set_post_content_length(req.headers_mut(), content_length);
     let resp = send
         .send_request(req)
         .await

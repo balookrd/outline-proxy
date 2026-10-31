@@ -19,6 +19,7 @@ use url::Url;
 
 use outline_metrics as metrics;
 
+use crate::fingerprint_profile::TlsFingerprint;
 use crate::shared_cache::{
     CarrierIdleState, ConnLife, ConnLifeGuard, ConnLifeLevel, SharedConnectionRegistry,
     carriers_to_reap, classify_by_substrings,
@@ -74,6 +75,11 @@ use crate::dial_timeouts::fresh_connect_timeout;
 pub(super) struct H3ConnectionKey {
     base: crate::shared_cache::ConnectionKey,
     slot: u8,
+    // The browser TLS family fixes the QUIC ClientHello and transport
+    // parameters of the connection, so a connection opened as one family must
+    // not carry a dial pinned to another. Each family therefore owns its own
+    // set of slots. `None` (no profile) is normalised to Chromium by the caller.
+    tls: TlsFingerprint,
 }
 
 impl H3ConnectionKey {
@@ -82,11 +88,22 @@ impl H3ConnectionKey {
         server_port: u16,
         fwmark: Option<u32>,
         slot: u8,
+        tls: TlsFingerprint,
     ) -> Self {
         Self {
             base: crate::shared_cache::ConnectionKey::new(server_name, server_port, fwmark),
             slot,
+            tls,
         }
+    }
+}
+
+impl H3ConnectionKey {
+    /// The carrier pool this key's connection belongs to: one logical server
+    /// under one browser family. Slot picking and idle reaping operate per pool,
+    /// so carriers of different families neither count nor evict each other.
+    pub(super) fn pool(&self) -> (crate::shared_cache::ConnectionKey, TlsFingerprint) {
+        (self.base.clone(), self.tls)
     }
 }
 
@@ -180,13 +197,18 @@ pub(crate) fn choose_slot(loads: &[Option<u64>], min: u8, cap: u64) -> u8 {
     least_overall.map_or(0, |(slot, _)| slot)
 }
 
-/// Inspect every carrier slot for `(server_name, server_port, fwmark)` and pick
+/// Inspect every carrier slot for `(server_name, server_port, fwmark, tls)` and pick
 /// the one a fresh dial should target, per [`choose_slot`]. Read-only: uses
 /// `peek` so probing the pool never evicts a stale entry.
-async fn pick_h3_carrier_slot(server_name: &str, server_port: u16, fwmark: Option<u32>) -> u8 {
+async fn pick_h3_carrier_slot(
+    server_name: &str,
+    server_port: u16,
+    fwmark: Option<u32>,
+    tls: TlsFingerprint,
+) -> u8 {
     let mut loads: Vec<Option<u64>> = Vec::with_capacity(H3_CARRIER_MAX as usize);
     for slot in 0..H3_CARRIER_MAX {
-        let key = H3ConnectionKey::with_slot(server_name, server_port, fwmark, slot);
+        let key = H3ConnectionKey::with_slot(server_name, server_port, fwmark, slot, tls);
         let load = match h3_registry().peek(&key).await {
             Some(conn) if conn.is_open() => Some(conn.active()),
             _ => None,
@@ -326,21 +348,26 @@ impl SharedH3Connection {
             bail!("shared h3 connection is already closed");
         }
 
-        let request_builder = Request::builder()
+        let target_uri = websocket_h3_target_uri(server_name, server_port, path)?;
+        let origin = crate::request_headers::web_origin_of_uri(&target_uri)
+            .context("HTTP/3 websocket CONNECT target has no authority")?;
+        let mut request: Request<()> = Request::builder()
             .method(Method::CONNECT)
-            .uri(websocket_h3_target_uri(server_name, server_port, path)?)
+            .uri(target_uri)
             .extension(vendored::websocket_protocol())
-            .header("sec-websocket-version", "13");
-        let mut request: Request<()> =
-            request_builder.body(()).expect("request builder never fails");
+            .body(())
+            .expect("request builder never fails");
+        // The h2 table (h3 header order was not measured; Chromium and Gecko
+        // build both lists with the same code), then `X-Outline-Resume*`.
+        crate::request_headers::browser_headers(
+            profile,
+            crate::request_headers::RequestKind::WebSocket,
+            crate::request_headers::HttpVersion::H3,
+            &origin,
+            &crate::request_headers::CarrierSlots::default(),
+            request.headers_mut(),
+        );
         crate::resumption::apply_resume_request_headers(resume, request.headers_mut());
-        if let Some(profile) = profile {
-            crate::fingerprint_profile::apply(
-                profile,
-                request.headers_mut(),
-                crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
-            );
-        }
 
         let mut stream: H3RequestStreamHandle = timeout(h3_open_stream_timeout(), async {
             let mut send_request = self.send_request.lock().await;
@@ -368,6 +395,14 @@ impl SharedH3Connection {
             .context("failed to receive HTTP/3 websocket response")?;
         if !response.status().is_success() {
             bail!("HTTP/3 websocket CONNECT failed with status {}", response.status());
+        }
+        // The request offers `permessage-deflate` like a browser; this client
+        // does not implement it (see `crate::request_headers`).
+        if response
+            .headers()
+            .contains_key(http::header::SEC_WEBSOCKET_EXTENSIONS)
+        {
+            bail!("server negotiated a websocket extension this client does not implement");
         }
         let negotiated = crate::resumption::parse_resume_response_echo(resume, response.headers());
 
@@ -545,6 +580,9 @@ struct H3Dialer {
     /// single carrier. Chosen once per `connect_websocket_h3` call by
     /// `pick_h3_carrier_slot` and folded into every key this dialer makes.
     slot: u8,
+    /// Browser TLS family of this dial (no profile = Chromium), read once inside
+    /// the dial scope and folded into every key this dialer makes.
+    tls: TlsFingerprint,
 }
 
 impl crate::shared_dial::WsDialer for H3Dialer {
@@ -569,7 +607,7 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         server_port: u16,
         fwmark: Option<u32>,
     ) -> H3ConnectionKey {
-        H3ConnectionKey::with_slot(server_name, server_port, fwmark, self.slot)
+        H3ConnectionKey::with_slot(server_name, server_port, fwmark, self.slot, self.tls)
     }
 
     async fn establish(
@@ -621,8 +659,9 @@ pub(crate) async fn connect_websocket_h3(
         .ok_or_else(|| anyhow!("URL is missing port"))?;
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
-    let slot = pick_h3_carrier_slot(host, port, network.fwmark).await;
-    let dialer = H3Dialer { resume, profile, slot };
+    let tls = crate::fingerprint_profile::dial_tls_family();
+    let slot = pick_h3_carrier_slot(host, port, network.fwmark, tls).await;
+    let dialer = H3Dialer { resume, profile, slot, tls };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused
@@ -746,8 +785,10 @@ pub(crate) async fn gc_shared_h3_connections() {
 
     // Census after the sweep, so dead entries are already gone, and group by
     // logical server: the warm floor is per server, not per process.
+    // The pool is per (server, family): carriers of different families never
+    // share slots, so neither count nor evict each other.
     let mut by_server: HashMap<
-        crate::shared_cache::ConnectionKey,
+        (crate::shared_cache::ConnectionKey, TlsFingerprint),
         Vec<(H3ConnectionKey, Arc<SharedH3Connection>)>,
     > = HashMap::new();
     let (mut idle, mut busy) = (0usize, 0usize);
@@ -759,7 +800,7 @@ pub(crate) async fn gc_shared_h3_connections() {
             conn.idle_sweeps.store(0, Ordering::Relaxed);
             busy += 1;
         }
-        by_server.entry(key.base.clone()).or_default().push((key, conn));
+        by_server.entry(key.pool()).or_default().push((key, conn));
     }
     metrics::set_h3_pool_carriers(metrics::H3_ENDPOINT_KIND_WS, idle, busy);
 
