@@ -1,4 +1,5 @@
-use super::{XHTTP_H3_CARRIER_CAP, XHTTP_H3_CARRIER_MAX, XHTTP_H3_CARRIER_MIN};
+use super::{XHTTP_H3_CARRIER_CAP, XHTTP_H3_CARRIER_MAX, XHTTP_H3_CARRIER_MIN, XhttpH3Key};
+use crate::fingerprint_profile::TlsFingerprint;
 use crate::h3::choose_slot;
 
 /// Slot loads for a pool where `open` carriers hold the given session counts
@@ -56,4 +57,16 @@ fn at_max_the_pool_overflows_instead_of_growing() {
     let chosen = choose_slot(&slots, XHTTP_H3_CARRIER_MIN, XHTTP_H3_CARRIER_CAP);
     assert!(chosen < XHTTP_H3_CARRIER_MAX, "never picks a slot past the ceiling");
     assert_ne!(chosen, 3, "and never the most loaded carrier");
+}
+
+/// A QUIC connection's ClientHello and transport parameters belong to one
+/// browser family, so each family has its own key, and its own pool for slot
+/// picking and idle reaping.
+#[test]
+fn keys_and_pools_are_separate_per_browser_family() {
+    let key = |slot, tls| XhttpH3Key::new("example.com", 443, None, slot, tls);
+    assert_ne!(key(0, TlsFingerprint::Chromium), key(0, TlsFingerprint::Firefox));
+    assert_eq!(key(0, TlsFingerprint::Safari), key(0, TlsFingerprint::Safari));
+    assert_eq!(key(0, TlsFingerprint::Safari).pool(), key(5, TlsFingerprint::Safari).pool());
+    assert_ne!(key(0, TlsFingerprint::Safari).pool(), key(0, TlsFingerprint::Firefox).pool());
 }

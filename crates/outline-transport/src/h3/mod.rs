@@ -125,7 +125,8 @@ pub(super) use crate::url_utils::websocket_path;
 pub(super) fn websocket_h3_target_uri(host: &str, port: u16, path: &str) -> Result<Uri> {
     Uri::builder()
         .scheme("https")
-        .authority(format_authority(host, Some(port)))
+        // Browsers leave the scheme's default port out of `:authority`.
+        .authority(format_authority(host, (port != 443).then_some(port)))
         .path_and_query(path)
         .build()
         .context("failed to build HTTP/3 websocket target URI")

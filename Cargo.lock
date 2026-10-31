@@ -1900,6 +1900,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "http",
  "http-body-util",
+ "httparse",
  "hyper",
  "hyper-util",
  "libc",

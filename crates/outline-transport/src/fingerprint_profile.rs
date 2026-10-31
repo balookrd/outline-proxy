@@ -4,9 +4,10 @@
 //! Without a profile the dial path advertises no `User-Agent`, no
 //! `Accept-Language`, no `Sec-Fetch-*` — a regex-DPI rule like
 //! "WS upgrade missing User-Agent" trivially separates this client
-//! from real browser traffic. A profile mixes in the headers a
-//! representative browser would send for the equivalent navigation,
-//! and a per-host-stable selector makes the choice deterministic per
+//! from real browser traffic. A profile mixes in the headers its
+//! browser sends for the request the carrier really makes (a `fetch()`
+//! GET / POST for xhttp, a WebSocket for ws; laid out by
+//! `crate::request_headers`), and a per-host-stable selector makes the choice deterministic per
 //! `(host, port)` so a single observer sees a single identity per
 //! peer instead of a per-dial reshuffle (which is itself a signal).
 //!
@@ -44,7 +45,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::{OnceLock, RwLock};
 
 use anyhow::{Result, bail};
-use http::{HeaderMap, HeaderValue, header};
 use url::Url;
 
 /// How the dial path picks a profile from [`PROFILES`].
@@ -495,6 +495,17 @@ where
     DIAL_SCOPE.scope(DialScope::Profile(profile), f).await
 }
 
+/// Run `f` as a dial that pinned `profile` (the dial path's own
+/// [`with_dial_profile`] keeps an outer pin), so a test can drive a whole dial
+/// with one chosen browser.
+#[cfg(test)]
+pub(crate) async fn with_pinned_profile<F>(profile: Option<&'static Profile>, f: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    DIAL_SCOPE.scope(DialScope::Profile(profile), f).await
+}
+
 /// Run `f` with a bare dial-scoped TLS family (no profile pinned), as the
 /// TLS / h2 builders read it. `None` sends the Chromium ClientHello.
 #[cfg(test)]
@@ -514,6 +525,15 @@ pub(crate) fn current_dial_fingerprint() -> Option<TlsFingerprint> {
         Ok(DialScope::Fingerprint(fp)) => fp,
         Err(_) => None,
     }
+}
+
+/// The dial-scoped TLS family with the no-profile case normalised to
+/// Chromium, the ClientHello and transport parameters such a dial sends. Shared
+/// connection caches key on this so a connection opened as one browser never
+/// carries a dial pinned to another.
+#[cfg(feature = "h3")]
+pub(crate) fn dial_tls_family() -> TlsFingerprint {
+    current_dial_fingerprint().unwrap_or(TlsFingerprint::Chromium)
 }
 
 /// The profile pinned by an enclosing [`with_dial_profile`] scope:
@@ -714,115 +734,6 @@ fn read_hostname() -> Option<String> {
     // random seed. The caller treats `None` as "no stable seed
     // available, rotate on restart".
     None
-}
-
-/// Sec-Fetch-* triplet variant. The values browsers send depend on
-/// the request kind: a WebSocket upgrade gets `mode=websocket,dest=websocket`,
-/// an XHR/fetch carrying a body gets `mode=cors,dest=empty`. Picking
-/// the wrong triplet for the carrier is itself a fingerprint, so the
-/// caller specifies which one matches the request being built.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SecFetchPreset {
-    WebsocketUpgrade,
-    XhrCors,
-}
-
-impl SecFetchPreset {
-    fn site(self) -> &'static str {
-        "same-origin"
-    }
-    fn mode(self) -> &'static str {
-        match self {
-            Self::WebsocketUpgrade => "websocket",
-            Self::XhrCors => "cors",
-        }
-    }
-    fn dest(self) -> &'static str {
-        match self {
-            Self::WebsocketUpgrade => "websocket",
-            Self::XhrCors => "empty",
-        }
-    }
-}
-
-/// Append the profile's identification headers to `headers`, in the
-/// historical order (h1 and h3 carriers; on h1 the `Host` the caller put in
-/// first stays first).
-///
-/// Headers already present (`Accept` is the only realistic case —
-/// some XHTTP carriers may want to pin a specific value to mirror
-/// xray's wire shape) are left untouched. Everything else is
-/// inserted unconditionally; the caller is expected to pass a
-/// freshly-built `HeaderMap` that does not yet carry browser-style
-/// identity headers.
-pub fn apply(profile: &Profile, headers: &mut HeaderMap, sec_fetch: SecFetchPreset) {
-    apply_in_order(profile, headers, sec_fetch, crate::h2_profile::LEGACY_HEADER_ORDER);
-}
-
-/// [`apply`] for an HTTP/2 request: the headers go in the order the
-/// profile's browser sends them on h2 ([`crate::h2_profile::h2_header_order`]).
-/// Call it on an empty `HeaderMap` and insert carrier headers
-/// (`sec-websocket-*`, `x-outline-*`) afterwards, so they trail the
-/// browser ones like a page's custom headers do.
-pub(crate) fn apply_h2(profile: &Profile, headers: &mut HeaderMap, sec_fetch: SecFetchPreset) {
-    apply_in_order(profile, headers, sec_fetch, crate::h2_profile::h2_header_order(profile.tls));
-}
-
-fn apply_in_order(
-    profile: &Profile,
-    headers: &mut HeaderMap,
-    sec_fetch: SecFetchPreset,
-    order: &[crate::h2_profile::BrowserHeader],
-) {
-    use crate::h2_profile::BrowserHeader as B;
-    for slot in order {
-        match slot {
-            B::UserAgent => {
-                headers.insert(header::USER_AGENT, HeaderValue::from_static(profile.user_agent));
-            },
-            B::Accept => {
-                if !headers.contains_key(header::ACCEPT) {
-                    headers.insert(header::ACCEPT, HeaderValue::from_static(profile.accept));
-                }
-            },
-            B::AcceptLanguage => {
-                headers.insert(
-                    header::ACCEPT_LANGUAGE,
-                    HeaderValue::from_static(profile.accept_language),
-                );
-            },
-            B::AcceptEncoding => {
-                headers.insert(
-                    header::ACCEPT_ENCODING,
-                    HeaderValue::from_static(profile.accept_encoding),
-                );
-            },
-            B::SecChUa => {
-                if let Some(v) = profile.sec_ch_ua {
-                    headers.insert("sec-ch-ua", HeaderValue::from_static(v));
-                }
-            },
-            B::SecChUaMobile => {
-                if let Some(v) = profile.sec_ch_ua_mobile {
-                    headers.insert("sec-ch-ua-mobile", HeaderValue::from_static(v));
-                }
-            },
-            B::SecChUaPlatform => {
-                if let Some(v) = profile.sec_ch_ua_platform {
-                    headers.insert("sec-ch-ua-platform", HeaderValue::from_static(v));
-                }
-            },
-            B::SecFetchSite => {
-                headers.insert("sec-fetch-site", HeaderValue::from_static(sec_fetch.site()));
-            },
-            B::SecFetchMode => {
-                headers.insert("sec-fetch-mode", HeaderValue::from_static(sec_fetch.mode()));
-            },
-            B::SecFetchDest => {
-                headers.insert("sec-fetch-dest", HeaderValue::from_static(sec_fetch.dest()));
-            },
-        }
-    }
 }
 
 #[cfg(test)]

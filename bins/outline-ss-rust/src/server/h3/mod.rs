@@ -80,6 +80,9 @@ pub(in crate::server) fn spawn_h3_cert_reloader(
     );
 }
 
+// Compression must stay `Compression::Disabled` (the builder default; do not
+// call `.compression(..)`): clients offer `permessage-deflate` like browsers
+// but do not implement it, so an accepted extension would corrupt frames.
 fn build_h3_ws_config(profile: &TuningProfile) -> H3WebSocketConfig {
     H3WebSocketConfig::builder()
         // Same pre-auth message ceiling as the axum (h1/h2) upgrade paths: the

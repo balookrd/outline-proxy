@@ -1815,6 +1815,24 @@ ClientHello, confirmed by measurement on 2026-10-30 (Chrome Android
 156.0.8078.73 on Android 17 matches desktop Chrome 156 byte for byte,
 trust anchors included). 0-RTT is not aligned with the browsers.
 
+The headers follow the request the carrier really makes, as Chrome 156 and
+Firefox 159 send it (measured 2026-10-30, same-origin requests), separately
+for HTTP/1.1 and HTTP/2: xhttp's downlink GET is a `fetch()` GET, its uplink
+POST a `fetch()` POST, and the `ws_*` carriers open a WebSocket. So a Chrome
+WebSocket carries `Pragma`/`Cache-Control: no-cache`, `Origin` and
+`Sec-WebSocket-Extensions` but no client hints, `Sec-Fetch-*` or `Accept`;
+a fetch carries `Accept: */*`, `Referer`, `Priority` (and `Origin` on a
+POST); Firefox adds `te: trailers` on h2 and h3 and sends
+`Sec-Fetch-Dest: empty` for a WebSocket. HTTP/3 uses the HTTP/2 table (h3
+assumed, not measured), so Chrome's `priority: u=1, i` and Firefox's
+`te: trailers` go out on h3 too; Firefox `te: trailers` on h3 is the least
+certain assumption. With `random` or per-wire overrides, warm/idle H3
+carriers are counted per (server, family), so there can be up to one warm set
+per family per server. Safari keeps
+its previous browser headers (not measured: URLSession is not Safari). The carrier's
+own `X-Outline-*` headers follow the browser ones. Without a profile no
+browser header is sent at all.
+
 Two stable strategies are offered. **`process_stable` (the
 recommended default)** picks one identity at process start and uses
 it for every dial regardless of which uplink fires — matching how a

@@ -300,3 +300,98 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     let _ = std::fs::remove_file(key_path);
     Ok(())
 }
+
+/// The client offers `Sec-WebSocket-Extensions` exactly as Chrome and Firefox
+/// do but implements no extension, which is only sound because this server
+/// never accepts one. That is a code invariant, not a build feature (cargo
+/// feature unification enables `sockudo-ws`'s `permessage-deflate` in
+/// workspace builds): the h3 response is built with
+/// `build_extended_connect_response(_, None)`, the `sockudo-ws` `Config`
+/// default is `Compression::Disabled`, and axum's upgrade response never
+/// echoes the header. The client also refuses an accepted extension. Pin it
+/// on h1 and h2 for both browsers' offers, and check frames still flow on the
+/// upgraded socket.
+#[tokio::test]
+async fn websocket_upgrade_ignores_the_browser_permessage_deflate_offer() -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_tungstenite::tungstenite::handshake::client::generate_key;
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    let config = sample_config(addr);
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        &config,
+        Metrics::new(&config),
+        nat_table,
+        dns_cache,
+        false,
+        "Authorization required",
+    );
+    let app = build_app(routes, services, auth, None, None);
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+
+    async fn ping_pong<S>(socket: &mut WebSocketStream<S>) -> Result<()>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        socket.send(WsMessage::Ping(Bytes::from_static(b"p"))).await?;
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("socket closed before the pong"))??;
+        assert_eq!(reply, WsMessage::Pong(Bytes::from_static(b"p")));
+        Ok(())
+    }
+
+    for offer in ["permessage-deflate; client_max_window_bits", "permessage-deflate"] {
+        // HTTP/1.1 upgrade.
+        let mut tcp = TcpStream::connect(addr).await?;
+        let request = format!(
+            "GET /tcp HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\
+             Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {}\r\n\
+             Sec-WebSocket-Extensions: {offer}\r\n\r\n",
+            generate_key()
+        );
+        tcp.write_all(request.as_bytes()).await?;
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            assert_eq!(tcp.read(&mut byte).await?, 1, "server closed during the upgrade");
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head)?.to_ascii_lowercase();
+        assert!(head.starts_with("http/1.1 101"), "{head}");
+        assert!(!head.contains("sec-websocket-extensions"), "h1 accepted {offer}: {head}");
+        let mut socket = WebSocketStream::from_raw_socket(tcp, protocol::Role::Client, None).await;
+        ping_pong(&mut socket).await?;
+
+        // HTTP/2 extended CONNECT.
+        let client = Client::builder(TokioExecutor::new())
+            .http2_only(true)
+            .build_http::<Empty<Bytes>>();
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri(format!("http://{addr}/tcp"))
+            .version(Version::HTTP_2)
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .header(header::SEC_WEBSOCKET_EXTENSIONS, offer)
+            .extension(Protocol::from_static("websocket"))
+            .body(Empty::<Bytes>::new())?;
+        let mut response = client.request(req).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            !response.headers().contains_key(header::SEC_WEBSOCKET_EXTENSIONS),
+            "h2 accepted {offer}"
+        );
+        let upgraded = TokioIo::new(hyper::upgrade::on(&mut response).await?);
+        let mut socket =
+            WebSocketStream::from_raw_socket(upgraded, protocol::Role::Client, None).await;
+        ping_pong(&mut socket).await?;
+    }
+
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}

@@ -1842,6 +1842,24 @@ Windows — Chrome, Firefox, Edge; любая другая ОС использу
 Android 17 совпадает с десктопным Chrome 156 байт в байт, включая trust
 anchors). 0-RTT с браузерами не выровнен.
 
+Заголовки повторяют тот запрос, который носитель делает на самом деле, —
+так, как его шлют Chrome 156 и Firefox 159 (замер 2026-10-30, запросы
+same-origin), отдельно для HTTP/1.1 и HTTP/2: GET-даунлинк xhttp — это
+`fetch()` GET, его POST-аплинк — `fetch()` POST, а носители `ws_*` открывают
+WebSocket. Поэтому WebSocket Chrome несёт `Pragma`/`Cache-Control: no-cache`,
+`Origin` и `Sec-WebSocket-Extensions`, но без client hints, `Sec-Fetch-*` и
+`Accept`; fetch — `Accept: */*`, `Referer`, `Priority` (и `Origin` у POST);
+Firefox добавляет `te: trailers` на h2 и h3 и шлёт `Sec-Fetch-Dest: empty`
+у WebSocket. HTTP/3 использует таблицу HTTP/2 (h3 предположен, не замерен),
+поэтому `priority: u=1, i` у Chrome и `te: trailers` у Firefox уходят и на h3;
+`te: trailers` Firefox на h3 — наименее надёжное допущение. При `random` или
+переопределениях по wire тёплые и простаивающие H3-носители считаются по
+(сервер, семейство), так что на сервер может приходиться до одного тёплого
+набора на семейство. Safari оставляет
+прежние браузерные заголовки (не замерен: URLSession — не Safari). Собственные
+заголовки носителя `X-Outline-*` идут после браузерных. Без профиля
+браузерных заголовков нет вовсе.
+
 Доступны две стабильные стратегии. **`process_stable`
 (рекомендуемый дефолт)** выбирает одну идентичность на старте
 процесса и использует её на каждом дозвоне независимо от того, какой

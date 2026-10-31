@@ -27,6 +27,16 @@ type BoxError = Box<dyn std::error::Error>;
 fn run_tls_dial(
     make_wire: impl FnOnce(SocketAddr, SocketAddr) -> (Wire, Creds),
 ) -> Result<(), BoxError> {
+    run_tls_dial_with(None, 1, make_wire)
+}
+
+/// [`run_tls_dial`] with an optional client `fingerprint_profile` strategy
+/// and `roundtrips` echo round-trips (each a fresh SOCKS session).
+fn run_tls_dial_with(
+    fingerprint_profile: Option<&str>,
+    roundtrips: usize,
+    make_wire: impl FnOnce(SocketAddr, SocketAddr) -> (Wire, Creds),
+) -> Result<(), BoxError> {
     let dir = TestDir::new()?;
     let echo = EchoUpstream::start()?;
     let tls = TlsFixture::generate_into(dir.path())?;
@@ -46,14 +56,17 @@ fn run_tls_dial(
     let (wire, creds) = make_wire(tcp_addr, h3_addr);
     let socks = reserve_addr()?;
     let control = reserve_addr()?;
-    let client_cfg =
+    let mut client_cfg =
         ClientConfig::new(socks, &dir.path().join("c.state.toml"), ProbeSpec::disabled())
             .with_control(control, CONTROL_TOKEN)
             .group(
                 GroupSpec::new("active_passive", "global")
                     .uplink(UplinkSpec::new("up-a", wire, creds)),
-            )
-            .render();
+            );
+    if let Some(strategy) = fingerprint_profile {
+        client_cfg = client_cfg.with_fingerprint_profile(strategy);
+    }
+    let client_cfg = client_cfg.render();
     let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
     let ca = tls.ca_der.to_string_lossy().to_string();
     let mut client = ProxyProcess::start_with_env(
@@ -65,13 +78,17 @@ fn run_tls_dial(
         .wait_ready(socks.port(), Duration::from_secs(15))
         .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
 
-    socks5_echo_roundtrip(socks.port(), echo.tcp_addr(), b"tls-carrier-payload").map_err(|e| {
-        format!(
-            "round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
-            client.logs().unwrap_or_default(),
-            server.logs().unwrap_or_default()
-        )
-    })?;
+    for _ in 0..roundtrips {
+        socks5_echo_roundtrip(socks.port(), echo.tcp_addr(), b"tls-carrier-payload").map_err(
+            |e| {
+                format!(
+                    "round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+                    client.logs().unwrap_or_default(),
+                    server.logs().unwrap_or_default()
+                )
+            },
+        )?;
+    }
     assert!(
         echo.tcp_connections() >= 1,
         "traffic never reached the upstream over the TLS carrier"
@@ -117,6 +134,39 @@ fn tls_ws_h3_ss_dial_works() -> Result<(), BoxError> {
             Creds::ss(),
         )
     })
+}
+
+/// With browser profiles on (`fingerprint_profile = "random"`: a fresh
+/// profile per dial), every carrier sends its browser-shaped request headers
+/// to the real server — WebSocket upgrades offer `permessage-deflate` like
+/// Chrome and Firefox, which the server must decline (the client implements
+/// no extension and rejects a handshake that accepts one) — and data flows.
+#[test]
+fn tls_carriers_work_with_browser_profiles() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("tls_carriers_work_with_browser_profiles");
+        return Ok(());
+    }
+    for mode in ["ws_h1", "ws_h2", "ws_h3", "xhttp_h1", "xhttp_h2", "xhttp_h3"] {
+        run_tls_dial_with(Some("random"), 3, |tcp, h3| {
+            let port = if mode.ends_with("h3") { h3.port() } else { tcp.port() };
+            let wire = if mode.starts_with("ws") {
+                Wire::SsWs {
+                    tcp_url: format!("wss://127.0.0.1:{port}{PATH_SS_TCP}"),
+                    udp_url: None,
+                    mode: mode.into(),
+                }
+            } else {
+                Wire::SsXhttp {
+                    tcp_url: format!("https://127.0.0.1:{port}{PATH_SS_XHTTP}"),
+                    mode: mode.into(),
+                }
+            };
+            (wire, Creds::ss())
+        })
+        .map_err(|e| format!("{mode}: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Primary wire is cleartext `ws://` WS-over-H1 pointed at a dead endpoint; the

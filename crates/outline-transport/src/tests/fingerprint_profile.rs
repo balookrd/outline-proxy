@@ -7,12 +7,11 @@
 
 use std::str::FromStr;
 
-use http::{HeaderValue, header};
 use url::Url;
 
 use crate::fingerprint_profile::{
-    PROFILES, Profile, ProfileOs, SecFetchPreset, Strategy, TlsFingerprint, apply, host_os,
-    pool_for, select_with_strategy, select_with_strategy_for_os,
+    PROFILES, Profile, ProfileOs, Strategy, TlsFingerprint, host_os, pool_for,
+    select_with_strategy, select_with_strategy_for_os,
 };
 
 #[test]
@@ -79,75 +78,6 @@ fn select_with_per_host_stable_varies_across_hosts() {
         found_different,
         "per-host-stable selector should produce >1 distinct profile across many hostnames"
     );
-}
-
-#[test]
-fn apply_inserts_user_agent_and_accept_language() {
-    let mut headers = http::HeaderMap::new();
-    let profile = &PROFILES[0];
-    apply(profile, &mut headers, SecFetchPreset::WebsocketUpgrade);
-    assert_eq!(headers.get(header::USER_AGENT).unwrap(), profile.user_agent);
-    assert_eq!(headers.get(header::ACCEPT_LANGUAGE).unwrap(), profile.accept_language);
-    assert_eq!(headers.get(header::ACCEPT_ENCODING).unwrap(), profile.accept_encoding);
-}
-
-#[test]
-fn apply_websocket_preset_sets_websocket_dest() {
-    let mut headers = http::HeaderMap::new();
-    apply(&PROFILES[0], &mut headers, SecFetchPreset::WebsocketUpgrade);
-    assert_eq!(headers.get("sec-fetch-mode").unwrap(), "websocket");
-    assert_eq!(headers.get("sec-fetch-dest").unwrap(), "websocket");
-    assert_eq!(headers.get("sec-fetch-site").unwrap(), "same-origin");
-}
-
-#[test]
-fn apply_xhr_preset_sets_empty_dest() {
-    let mut headers = http::HeaderMap::new();
-    apply(&PROFILES[0], &mut headers, SecFetchPreset::XhrCors);
-    assert_eq!(headers.get("sec-fetch-mode").unwrap(), "cors");
-    assert_eq!(headers.get("sec-fetch-dest").unwrap(), "empty");
-    assert_eq!(headers.get("sec-fetch-site").unwrap(), "same-origin");
-}
-
-#[test]
-fn apply_omits_sec_ch_ua_for_firefox_profile() {
-    // Firefox does not advertise Client Hints by default — the absence
-    // is the signature, so the apply helper must NOT inject placeholder
-    // values when the profile leaves the field as None.
-    let firefox = PROFILES
-        .iter()
-        .find(|p| p.name.starts_with("firefox"))
-        .expect("firefox profile present");
-    assert!(firefox.sec_ch_ua.is_none());
-    let mut headers = http::HeaderMap::new();
-    apply(firefox, &mut headers, SecFetchPreset::WebsocketUpgrade);
-    assert!(headers.get("sec-ch-ua").is_none());
-    assert!(headers.get("sec-ch-ua-mobile").is_none());
-    assert!(headers.get("sec-ch-ua-platform").is_none());
-}
-
-#[test]
-fn apply_emits_sec_ch_ua_for_chrome_profile() {
-    let chrome = PROFILES
-        .iter()
-        .find(|p| p.name.starts_with("chrome"))
-        .expect("chrome profile present");
-    let mut headers = http::HeaderMap::new();
-    apply(chrome, &mut headers, SecFetchPreset::WebsocketUpgrade);
-    assert!(headers.get("sec-ch-ua").is_some());
-    assert_eq!(headers.get("sec-ch-ua-mobile").unwrap(), "?0");
-    assert!(headers.get("sec-ch-ua-platform").is_some());
-}
-
-#[test]
-fn apply_preserves_caller_supplied_accept_value() {
-    // A future XHTTP path may want to pin Accept to mirror what xray
-    // emits on a specific submode; apply() must not clobber a value
-    // the caller has already chosen.
-    let mut headers = http::HeaderMap::new();
-    headers.insert(header::ACCEPT, HeaderValue::from_static("application/octet-stream"));
-    apply(&PROFILES[0], &mut headers, SecFetchPreset::XhrCors);
-    assert_eq!(headers.get(header::ACCEPT).unwrap(), "application/octet-stream");
 }
 
 #[test]

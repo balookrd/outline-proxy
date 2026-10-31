@@ -313,6 +313,14 @@ impl SharedH2Connection {
         if !response.status().is_success() {
             bail!("HTTP/2 websocket CONNECT failed with status {}", response.status());
         }
+        // The request offers `permessage-deflate` like a browser; this client
+        // does not implement it (see `crate::request_headers`).
+        if response
+            .headers()
+            .contains_key(http::header::SEC_WEBSOCKET_EXTENSIONS)
+        {
+            bail!("server negotiated a websocket extension this client does not implement");
+        }
         let negotiated = crate::resumption::parse_resume_response_echo(resume, response.headers());
 
         let upgraded = timeout(open_stream_timeout(), hyper::upgrade::on(&mut response))
@@ -342,11 +350,19 @@ impl SharedH2Connection {
     }
 }
 
-/// The RFC 8441 extended CONNECT that opens a WebSocket stream: the browser
-/// headers of `profile` first, in its browser's h2 order, then
-/// `sec-websocket-version` and the `X-Outline-Resume*` headers — the shape of
-/// a page's request with a few custom headers. No `host`: `:authority`
-/// carries it on h2.
+/// Target URI of a `ws_h2` extended CONNECT. Like a browser, `:authority`
+/// leaves out the scheme's default port (`host` for 443 over TLS, 80 in clear).
+pub(crate) fn websocket_h2_target_uri(use_tls: bool, host: &str, port: u16, path: &str) -> String {
+    let (scheme, default_port) = if use_tls { ("https", 443) } else { ("http", 80) };
+    let port = (port != default_port).then_some(port);
+    format!("{scheme}://{}{path}", format_authority(host, port))
+}
+
+/// The RFC 8441 extended CONNECT that opens a WebSocket stream: the
+/// WebSocket request headers of `profile`'s browser on h2, in its order
+/// (`sec-websocket-version` at the browser's position), then the
+/// `X-Outline-Resume*` headers — the shape of a page's request with a few
+/// custom headers. No `host`: `:authority` carries it on h2.
 pub(crate) fn build_websocket_connect_request(
     target_uri: &str,
     resume: &crate::dial_plan::DialResumeOptions,
@@ -359,15 +375,17 @@ pub(crate) fn build_websocket_connect_request(
         .extension(Protocol::from_static("websocket"))
         .body(Empty::new())
         .context("invalid HTTP/2 websocket CONNECT target")?;
+    let origin = crate::request_headers::web_origin_of_uri(request.uri())
+        .context("HTTP/2 websocket CONNECT target has no authority")?;
     let headers = request.headers_mut();
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply_h2(
-            profile,
-            headers,
-            crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
-        );
-    }
-    headers.insert("sec-websocket-version", http::HeaderValue::from_static("13"));
+    crate::request_headers::browser_headers(
+        profile,
+        crate::request_headers::RequestKind::WebSocket,
+        crate::request_headers::HttpVersion::H2,
+        &origin,
+        &crate::request_headers::CarrierSlots::default(),
+        headers,
+    );
     crate::resumption::apply_resume_request_headers(resume, headers);
     Ok(request)
 }
@@ -495,15 +513,13 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         server_port: u16,
         path: &str,
     ) -> Result<TransportStream> {
-        let scheme = if self.use_tls { "https" } else { "http" };
         // `websocket_path` always returns a leading `/`, so concatenate
-        // directly — `format!("{scheme}://{}/{path}", …)` would produce
+        // directly — `format!("https://{}/{path}", …)` would produce
         // a `//{path}` :path pseudo-header that axum's router rejects
         // as 404 against a `/vless` route. The h1 fallback masked this
         // for years because tungstenite normalises the URL itself.
         let path = if path.is_empty() { "/" } else { path };
-        let target_uri =
-            format!("{scheme}://{}{path}", format_authority(server_name, Some(server_port)),);
+        let target_uri = websocket_h2_target_uri(self.use_tls, server_name, server_port, path);
         conn.open_websocket(&target_uri, &self.resume, self.profile).await
     }
 }

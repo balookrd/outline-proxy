@@ -49,8 +49,6 @@ use crate::resumption::SessionId;
 
 mod h1;
 mod h2;
-#[cfg(test)]
-pub(crate) use h2::build_session_request_headers;
 #[cfg(feature = "h3")]
 mod h3;
 #[cfg(feature = "h3")]
@@ -369,17 +367,121 @@ pub(super) fn parse_ack_prefix_echo(headers: &http::HeaderMap) -> bool {
     headers.get(ACK_PREFIX_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
 }
 
-/// Applies the datagram-record capability to an outgoing request when this
-/// dial carries datagrams. No-op otherwise, so a TCP / VLESS session's request
-/// headers stay byte-identical to what they were before the feature.
-pub(super) fn apply_udp_records_request_header(
-    requested: bool,
-    builder: http::request::Builder,
-) -> http::request::Builder {
-    if requested {
-        builder.header(UDP_RECORDS_HEADER, UDP_RECORDS_ENABLED)
-    } else {
-        builder
+/// What a session-opening request (the long-lived GET, or the stream-one
+/// POST) looks like to the browser-header layer.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SessionRequest<'a> {
+    pub(crate) profile: Option<&'static crate::fingerprint_profile::Profile>,
+    pub(crate) kind: crate::request_headers::RequestKind,
+    pub(crate) version: crate::request_headers::HttpVersion,
+    /// [`XhttpTarget::web_origin`] of the session.
+    pub(crate) origin: &'a str,
+    /// `Host` — HTTP/1.1 only.
+    pub(crate) host: Option<&'a str>,
+}
+
+/// Headers of the session-opening request: the profile browser's headers
+/// for this request kind and HTTP version, in its order, then the
+/// `X-Outline-*` negotiation headers (a page's custom headers trail the
+/// browser's own). No `host` on h2 / h3 — `:authority` carries it there.
+pub(crate) fn build_session_request_headers(
+    request: SessionRequest<'_>,
+    resume_request: Option<SessionId>,
+    ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
+    datagram_records: bool,
+) -> Result<HeaderMap> {
+    let host =
+        match request.host {
+            Some(host) => Some(HeaderValue::try_from(host).map_err(|_| {
+                anyhow::anyhow!("invalid xhttp authority for the host header: {host}")
+            })?),
+            None => None,
+        };
+    let slots = crate::request_headers::CarrierSlots { host, ..Default::default() };
+    let mut headers = HeaderMap::new();
+    crate::request_headers::browser_headers(
+        request.profile,
+        request.kind,
+        request.version,
+        request.origin,
+        &slots,
+        &mut headers,
+    );
+    headers.insert(RESUME_CAPABLE_HEADER, HeaderValue::from_static("1"));
+    if let Some(id) = resume_request {
+        headers.insert(
+            RESUME_REQUEST_HEADER,
+            HeaderValue::try_from(id.to_hex()).expect("hex Session ID is a valid header value"),
+        );
+    }
+    if ack_prefix_requested {
+        headers.insert(ACK_PREFIX_HEADER, HeaderValue::from_static("1"));
+    }
+    if symmetric_replay_requested {
+        headers.insert(crate::resumption::SYMMETRIC_REPLAY_HEADER, HeaderValue::from_static("1"));
+    }
+    if symmetric_replay_requested && client_acked_offset > 0 {
+        headers
+            .insert(crate::resumption::DOWN_ACKED_HEADER, HeaderValue::from(client_acked_offset));
+    }
+    if datagram_records {
+        headers.insert(
+            http::HeaderName::from_static(UDP_RECORDS_HEADER),
+            HeaderValue::from_static(UDP_RECORDS_ENABLED),
+        );
+    }
+    Ok(headers)
+}
+
+/// Header map shared by every packet-up POST of a session: the profile
+/// browser's `fetch()` POST headers for `version`, in its order, with a
+/// placeholder `Content-Length` at the browser's position (always on h1;
+/// on h2 / h3 only for the aligned families), then the carrier's own. Built
+/// once per session; each POST clones it and overwrites the length in place
+/// ([`set_post_content_length`]) — `HeaderMap::insert` on an existing key
+/// keeps its position, so every POST carries the same wire order.
+pub(super) fn build_post_template(
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
+    version: crate::request_headers::HttpVersion,
+    origin: &str,
+    host: Option<HeaderValue>,
+    datagram_records: bool,
+) -> HeaderMap {
+    let slots = crate::request_headers::CarrierSlots {
+        host,
+        content_length: Some(HeaderValue::from(0_usize)),
+        websocket_key: None,
+    };
+    let mut headers = HeaderMap::new();
+    crate::request_headers::browser_headers(
+        profile,
+        crate::request_headers::RequestKind::FetchPost,
+        version,
+        origin,
+        &slots,
+        &mut headers,
+    );
+    // Uplink POSTs advertise the capability too: a session whose first
+    // request is a POST (seq=0 racing the GET) must reach the server with the
+    // same negotiation state the GET carries.
+    if datagram_records {
+        headers.insert(
+            http::HeaderName::from_static(UDP_RECORDS_HEADER),
+            HeaderValue::from_static(UDP_RECORDS_ENABLED),
+        );
+    }
+    headers
+}
+
+/// Set the real body length of one POST cloned from a
+/// [`build_post_template`] map, in place. A template without the header
+/// (h2 / h3 under Safari or no profile) is left alone: hyper appends its own
+/// on h2, as before, and h3 sends none.
+pub(super) fn set_post_content_length(headers: &mut HeaderMap, len: usize) {
+    if let Some(value) = headers.get_mut(http::header::CONTENT_LENGTH) {
+        *value = HeaderValue::from(len);
     }
 }
 
@@ -406,6 +508,17 @@ pub(super) fn default_port_for(use_tls: bool) -> u16 {
     if use_tls { 443 } else { 80 }
 }
 
+/// `host[:port]` of an xhttp session, as a browser writes it in `:authority`,
+/// `Host`, `Origin` and `Referer`: the port only when it is not the scheme's
+/// default. `host` is the URL's (IPv6 already bracketed).
+pub(super) fn authority_for(use_tls: bool, host: &str, port: u16) -> String {
+    if port == default_port_for(use_tls) {
+        host.to_owned()
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
 pub(super) struct XhttpTarget {
     pub(super) scheme: String,
     pub(super) authority: String,
@@ -414,6 +527,24 @@ pub(super) struct XhttpTarget {
 }
 
 impl XhttpTarget {
+    /// `Origin` of the session's requests (same-origin: its own server).
+    pub(super) fn web_origin(&self) -> String {
+        crate::request_headers::web_origin(self.scheme == "https", &self.authority)
+    }
+
+    /// Origin-form request target of the session (`<base_path>/<session_id>`)
+    /// — what an HTTP/1.1 request line carries. hyper's h1 client writes the
+    /// URI it is given verbatim, so an absolute URI would go out in the
+    /// proxy-style absolute form no browser sends to an origin server.
+    pub(super) fn origin_form_path(&self) -> String {
+        format!("{}/{}", self.base_path, self.session_id)
+    }
+
+    /// [`Self::uri_seq_prefix`] in origin form (see [`Self::origin_form_path`]).
+    pub(super) fn origin_form_seq_prefix(&self) -> String {
+        format!("{}/{}/", self.base_path, self.session_id)
+    }
+
     pub(super) fn full_uri(&self) -> String {
         format!("{}://{}{}/{}", self.scheme, self.authority, self.base_path, self.session_id,)
     }

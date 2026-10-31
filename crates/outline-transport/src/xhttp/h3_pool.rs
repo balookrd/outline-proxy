@@ -34,6 +34,7 @@ use tracing::debug;
 use outline_metrics as metrics;
 
 use crate::AbortOnDrop;
+use crate::fingerprint_profile::TlsFingerprint;
 use crate::h3::{
     H3ConnectionGuard, TrackedEndpoint, choose_slot, classify_h3_close, client_endpoint,
     is_expected_h3_close,
@@ -93,14 +94,32 @@ const _: () = assert!(XHTTP_H3_CARRIER_CAP > 0);
 struct XhttpH3Key {
     base: ConnectionKey,
     slot: u8,
+    /// Browser TLS family (no profile = Chromium): it fixes the QUIC
+    /// ClientHello and transport parameters, so each family owns its own slots.
+    tls: TlsFingerprint,
 }
 
 impl XhttpH3Key {
-    fn new(server_name: &str, server_port: u16, fwmark: Option<u32>, slot: u8) -> Self {
+    fn new(
+        server_name: &str,
+        server_port: u16,
+        fwmark: Option<u32>,
+        slot: u8,
+        tls: TlsFingerprint,
+    ) -> Self {
         Self {
             base: ConnectionKey::new(server_name, server_port, fwmark),
             slot,
+            tls,
         }
+    }
+}
+
+impl XhttpH3Key {
+    /// The carrier pool this key's connection belongs to: one logical server
+    /// under one browser family. Slot picking and idle reaping operate per pool.
+    fn pool(&self) -> (ConnectionKey, TlsFingerprint) {
+        (self.base.clone(), self.tls)
     }
 }
 
@@ -201,10 +220,15 @@ fn registry() -> &'static SharedConnectionRegistry<XhttpH3Key, SharedXhttpH3Conn
 
 /// Read-only pass over the slots for one logical server, picking where a new
 /// session should land. Uses `peek`, so probing never evicts.
-async fn pick_slot(server_name: &str, server_port: u16, fwmark: Option<u32>) -> u8 {
+async fn pick_slot(
+    server_name: &str,
+    server_port: u16,
+    fwmark: Option<u32>,
+    tls: TlsFingerprint,
+) -> u8 {
     let mut loads: Vec<Option<u64>> = Vec::with_capacity(XHTTP_H3_CARRIER_MAX as usize);
     for slot in 0..XHTTP_H3_CARRIER_MAX {
-        let key = XhttpH3Key::new(server_name, server_port, fwmark, slot);
+        let key = XhttpH3Key::new(server_name, server_port, fwmark, slot, tls);
         let load = match registry().peek(&key).await {
             Some(conn) if conn.is_open() => Some(conn.active()),
             _ => None,
@@ -246,8 +270,9 @@ pub(super) async fn acquire(
     port: u16,
     fwmark: Option<u32>,
 ) -> Result<PooledCarrier> {
-    let slot = pick_slot(host, port, fwmark).await;
-    let key = XhttpH3Key::new(host, port, fwmark, slot);
+    let tls = crate::fingerprint_profile::dial_tls_family();
+    let slot = pick_slot(host, port, fwmark, tls).await;
+    let key = XhttpH3Key::new(host, port, fwmark, slot, tls);
 
     if let Some(carrier) = registry().cached(&key).await {
         return Ok(session_on(carrier));
@@ -356,11 +381,13 @@ async fn dial(
 pub(crate) async fn gc() {
     registry().gc().await;
 
-    // Group by logical server: the floor of warm carriers is per server, not
+    // Group by logical server and browser family: the floor of warm carriers is per server, not
     // per process — a node with twenty uplinks would otherwise keep one carrier
     // in total and dial on every uplink switch.
-    let mut by_server: HashMap<ConnectionKey, Vec<(XhttpH3Key, Arc<SharedXhttpH3Connection>)>> =
-        HashMap::new();
+    let mut by_server: HashMap<
+        (ConnectionKey, TlsFingerprint),
+        Vec<(XhttpH3Key, Arc<SharedXhttpH3Connection>)>,
+    > = HashMap::new();
     let (mut idle, mut busy) = (0usize, 0usize);
     for (key, carrier) in registry().entries().await {
         if carrier.active() == 0 {
@@ -370,7 +397,7 @@ pub(crate) async fn gc() {
             carrier.idle_sweeps.store(0, Ordering::Relaxed);
             busy += 1;
         }
-        by_server.entry(key.base.clone()).or_default().push((key, carrier));
+        by_server.entry(key.pool()).or_default().push((key, carrier));
     }
     metrics::set_h3_pool_carriers(metrics::H3_ENDPOINT_KIND_XHTTP, idle, busy);
 

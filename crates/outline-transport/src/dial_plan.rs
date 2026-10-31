@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::{Connector, client_async_tls_with_config};
+use tokio_tungstenite::MaybeTlsStream;
 use tracing::{debug, warn};
 use url::Url;
 
@@ -520,6 +519,28 @@ fn append_ws_token_segment(base: &Url, kind: SsPathKind) -> Result<Url> {
     Ok(url)
 }
 
+/// `host[:port]` of `url` as a browser writes it in `Host` / `Origin`: the
+/// port only when it is not the scheme's default.
+pub(crate) fn url_authority(url: &Url) -> Result<String> {
+    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
+    Ok(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    })
+}
+
+/// TLS server name (SNI / certificate identity) of `url`'s host.
+fn tls_server_name(url: &Url) -> Result<rustls::pki_types::ServerName<'static>> {
+    use rustls::pki_types::ServerName;
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => Ok(ServerName::IpAddress(std::net::IpAddr::V4(ip).into())),
+        Some(url::Host::Ipv6(ip)) => Ok(ServerName::IpAddress(std::net::IpAddr::V6(ip).into())),
+        Some(url::Host::Domain(domain)) => ServerName::try_from(domain.to_owned())
+            .map_err(|_| anyhow!("invalid TLS server name: {domain}")),
+        None => Err(anyhow!("URL is missing host: {url}")),
+    }
+}
+
 async fn connect_websocket_http1(
     options: TransportDialOptions<'_>,
 ) -> Result<(H1WsStream, Option<SessionId>, bool, bool)> {
@@ -555,52 +576,66 @@ async fn connect_websocket_http1(
         symmetric_replay_advertised_by_server,
     ) = timeout(http1_ws_connect_timeout(), async {
         let tcp = connect_tcp_socket(server_addr, options.network.fwmark).await?;
-        // Build a `Request` so we can attach `X-Outline-*` headers; the
-        // default form (`url.as_str().into_client_request()`) hides the
-        // builder behind tungstenite's `IntoClientRequest` glue. Errors
-        // from `into_client_request` are bubbled up unchanged so they
-        // keep the original `tungstenite::Error` causality chain.
-        let mut request = options
-            .url
-            .as_str()
-            .into_client_request()
-            .context("HTTP/1 websocket request builder failed")?;
-        let headers = request.headers_mut();
-        if let Some(profile) = crate::fingerprint_profile::select(options.url) {
-            // Insert the browser-style identification headers BEFORE the
-            // X-Outline-Resume-* pair so a passive observer reads the
-            // request as "browser headers, then a couple of custom
-            // app-specific ones" -- the same shape an XHR-flavoured WS
-            // upgrade from a real page produces.
-            crate::fingerprint_profile::apply(
-                profile,
-                headers,
-                crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
-            );
-        }
-        crate::resumption::apply_resume_request_headers(&options.resume, headers);
-        // Use our fingerprint-aware TLS config instead of tungstenite's
-        // built-in default rustls connector, so the dial-scoped browser
-        // family set by `DialPlan::connect` flows into the ClientHello via
-        // `build_client_config`. The connector is consulted only for `wss://`;
-        // `ws://` stays plain. ALPN is `http/1.1` only — this carrier speaks
-        // HTTP/1 WebSocket upgrade, so offering `h2` would let the server pick
-        // a protocol this dial cannot drive.
-        let connector = if options.url.scheme() == "wss" {
-            Connector::Rustls(crate::tls::build_client_config(&[b"http/1.1"]))
+        let secure = options.url.scheme() == "wss";
+        // Our fingerprint-aware TLS config, so the dial-scoped browser family
+        // set by `DialPlan::connect` flows into the ClientHello via
+        // `build_client_config`. ALPN is `http/1.1` only — this carrier
+        // speaks the HTTP/1 WebSocket upgrade, so offering `h2` would let the
+        // server pick a protocol this dial cannot drive.
+        let stream = if secure {
+            let server_name = tls_server_name(options.url)?;
+            let tls =
+                tokio_rustls::TlsConnector::from(crate::tls::build_client_config(&[b"http/1.1"]))
+                    .connect(server_name, tcp)
+                    .await
+                    .context("TLS handshake for HTTP/1 websocket failed")?;
+            MaybeTlsStream::Rustls(tls)
         } else {
-            Connector::Plain
+            MaybeTlsStream::Plain(tcp)
         };
-        let (ws_stream, response) = client_async_tls_with_config(
-            request,
-            tcp,
-            Some(crate::ws_client_config()),
-            Some(connector),
-        )
-        .await
-        .context("HTTP/1 websocket handshake failed")?;
+        // The upgrade request is written by hand (`crate::ws_h1`) in the
+        // profile browser's order and case: tungstenite's own handshake
+        // pins `Host`/`Connection`/`Upgrade`/`Sec-WebSocket-*` first and
+        // lowercases the rest. The `X-Outline-Resume*` headers trail the
+        // browser ones, like a page's custom headers.
+        let profile = crate::fingerprint_profile::select(options.url);
+        let authority = url_authority(options.url)?;
+        let key = crate::ws_h1::generate_key();
+        let slots = crate::request_headers::CarrierSlots {
+            host: Some(
+                http::HeaderValue::try_from(authority.as_str())
+                    .context("invalid HTTP/1 websocket host")?,
+            ),
+            content_length: None,
+            websocket_key: Some(
+                http::HeaderValue::try_from(key.as_str()).expect("base64 key is a header value"),
+            ),
+        };
+        let mut headers = http::HeaderMap::new();
+        crate::request_headers::browser_headers(
+            profile,
+            crate::request_headers::RequestKind::WebSocket,
+            crate::request_headers::HttpVersion::H1,
+            &crate::request_headers::web_origin(secure, &authority),
+            &slots,
+            &mut headers,
+        );
+        crate::resumption::apply_resume_request_headers(&options.resume, &mut headers);
+        let path_and_query = match options.url.query() {
+            Some(query) => format!("{}?{query}", options.url.path()),
+            None => options.url.path().to_owned(),
+        };
+        let head = crate::request_headers::encode_h1_request_head(
+            "GET",
+            &path_and_query,
+            &headers,
+            profile,
+        );
+        let (ws_stream, response_headers) = crate::ws_h1::client_handshake(stream, &head, &key)
+            .await
+            .context("HTTP/1 websocket handshake failed")?;
         let negotiated =
-            crate::resumption::parse_resume_response_echo(&options.resume, response.headers());
+            crate::resumption::parse_resume_response_echo(&options.resume, &response_headers);
         Ok::<_, anyhow::Error>((
             ws_stream,
             negotiated.issued_session_id,
