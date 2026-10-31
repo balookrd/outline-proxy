@@ -447,8 +447,7 @@ async fn dial_scope_without_profile_pins_none() {
     assert_eq!(fp, None);
 }
 
-const ALL_OS: [ProfileOs; 4] =
-    [ProfileOs::Windows, ProfileOs::MacOs, ProfileOs::Linux, ProfileOs::Android];
+const ALL_OS: [ProfileOs; 3] = [ProfileOs::MacOs, ProfileOs::Linux, ProfileOs::Android];
 
 fn names(os: ProfileOs) -> Vec<&'static str> {
     pool_for(os).map(|p| p.name).collect()
@@ -469,10 +468,6 @@ fn per_os_pools_have_the_decided_members() {
     );
     assert_eq!(names(ProfileOs::Linux), ["chrome-156-linux", "firefox-159-linux"]);
     assert_eq!(names(ProfileOs::Android), ["chrome-156-android"]);
-    assert_eq!(
-        names(ProfileOs::Windows),
-        ["chrome-156-windows", "firefox-159-windows", "edge-156-windows"]
-    );
 }
 
 #[test]
@@ -516,7 +511,7 @@ fn host_os_matches_the_compile_target() {
     #[cfg(target_os = "linux")]
     assert_eq!(host_os(), ProfileOs::Linux);
     #[cfg(target_os = "windows")]
-    assert_eq!(host_os(), ProfileOs::Windows);
+    assert_eq!(host_os(), ProfileOs::Linux);
     #[cfg(target_os = "android")]
     assert_eq!(host_os(), ProfileOs::Android);
 }
@@ -533,7 +528,6 @@ fn profile_names_are_unique() {
 fn user_agent_and_client_hints_agree_with_profile_os() {
     for p in PROFILES {
         let marker = match p.os {
-            ProfileOs::Windows => "Windows NT",
             ProfileOs::MacOs => "Macintosh",
             ProfileOs::Linux => "X11; Linux",
             ProfileOs::Android => "Linux; Android",
@@ -541,7 +535,6 @@ fn user_agent_and_client_hints_agree_with_profile_os() {
         assert!(p.user_agent.contains(marker), "{}: UA lacks {marker}", p.name);
         if let Some(platform) = p.sec_ch_ua_platform {
             let want = match p.os {
-                ProfileOs::Windows => "\"Windows\"",
                 ProfileOs::MacOs => "\"macOS\"",
                 ProfileOs::Linux => "\"Linux\"",
                 ProfileOs::Android => "\"Android\"",
@@ -566,7 +559,6 @@ fn chrome_156_values_match_the_measurement() {
     let ua = |os: &str, tail: &str| format!("Mozilla/5.0 ({os}) {CHROME_UA_TAIL} {tail}");
     for (name, os_part, tail) in [
         ("chrome-156-macos", "Macintosh; Intel Mac OS X 10_15_7", "Safari/537.36"),
-        ("chrome-156-windows", "Windows NT 10.0; Win64; x64", "Safari/537.36"),
         ("chrome-156-linux", "X11; Linux x86_64", "Safari/537.36"),
         ("chrome-156-android", "Linux; Android 10; K", "Mobile Safari/537.36"),
     ] {
@@ -581,26 +573,11 @@ fn chrome_156_values_match_the_measurement() {
 }
 
 #[test]
-fn edge_follows_chrome_156_with_its_own_brand() {
-    let p = by_name("edge-156-windows");
-    assert!(p.user_agent.ends_with("Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0"));
-    assert_eq!(
-        p.sec_ch_ua,
-        Some("\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Microsoft Edge\";v=\"156\"")
-    );
-    assert_eq!(p.accept, CHROME_ACCEPT);
-}
-
-#[test]
 fn firefox_159_values_match_the_measurement() {
     for (name, ua) in [
         (
             "firefox-159-macos",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:159.0) Gecko/20100101 Firefox/159.0",
-        ),
-        (
-            "firefox-159-windows",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0",
         ),
         (
             "firefox-159-linux",
