@@ -12,23 +12,28 @@
 //! `X-Xhttp-Fin`) are appended by the caller afterwards, the way a page's
 //! custom headers trail the browser's own.
 //!
-//! Measured 2026-10-30 against Chrome 156 and Firefox 159 on macOS, same-origin
-//! requests (page served by the same server):
+//! Measured against Chrome 156 and Firefox 159 (2026-10-30) and Safari 27.0.1
+//! (2026-10-31) on macOS, same-origin requests (page served by the same
+//! server):
 //!
-//! * Chromium (Chrome, Edge) and Firefox follow their measured tables
-//!   exactly, h1 and h2 separately.
-//! * **HTTP/3 uses the h2 table** (not measured: Chromium and Gecko build the
-//!   h3 header list with the same code as the h2 one).
-//! * **Safari is not aligned**: URLSession is not Safari, so its order and
-//!   values stay what they were (navigation `Accept`, historical order,
-//!   `Sec-Fetch-Dest: websocket` on WebSocket).
+//! * Chromium (Chrome, Edge), Firefox and Safari follow their measured tables
+//!   exactly, h1 and h2 separately. Safari's fetch GET and POST differ in
+//!   order, so it has a table per request kind; Safari 27 opens a WebSocket
+//!   over h2 as an RFC 8441 extended CONNECT.
+//! * **HTTP/3** (Chrome 156, Firefox 159 measured): Chromium sends exactly the
+//!   h2 headers, so it uses the h2 table. Firefox's fetch is the h2 set minus
+//!   `te: trailers` plus `alt-used: <authority>` right before
+//!   `sec-fetch-dest` (an `alt-used` on port 443 written without the port is
+//!   an assumption). Firefox's WebSocket did not go over h3 (kept on the h2
+//!   table), and Safari's h3 is not measured (assumed to be its h2 tables).
 //! * No profile ([`crate::fingerprint_profile::Strategy::None`]): no browser
 //!   headers at all, only the protocol headers the request needs.
 //!
 //! Deliberate gaps against the browsers:
-//! * xhttp's POST body is binary, so there is no `Content-Type` (a browser
-//!   `fetch()` with an `ArrayBuffer` body sends none either; the measured
-//!   `text/plain;charset=UTF-8` belongs to a string body).
+//! * xhttp's POST body is binary, so there is no `Content-Type`. This is
+//!   measured, not a gap: a `fetch()` POST with a binary body sends none in
+//!   Chrome, Firefox and Safari on h1, h2 and h3 alike
+//!   (`text/plain;charset=UTF-8` appears only for a string body).
 //! * `Referer` is the site root (`<origin>/`): the carrier has no page path.
 //! * `Sec-WebSocket-Extensions` offers `permessage-deflate` like the
 //!   browsers, but this client does not implement it, so it relies on the
@@ -40,10 +45,9 @@
 //!   `compression: Compression::Disabled`, and axum's `WebSocketUpgrade`
 //!   never echoes the header. A handshake response that does accept an
 //!   extension is rejected by the client rather than misread.
-//! * HTTP/1.1 header case is the browser's only where we write the request
-//!   ourselves (`ws_h1`, [`h1_wire_name`]); on `xhttp_h1` hyper can only
-//!   Title-Case every name, so Chrome's lowercase `sec-ch-ua*` go out as
-//!   `Sec-Ch-Ua*`.
+//! * HTTP/1.1 header case is the browser's ([`h1_wire_name`]): `ws_h1`
+//!   writes the request bytes itself, and `xhttp_h1` hands hyper a per-name
+//!   case map through the patched hyper API (`crate::hyper_vendored`).
 
 use std::borrow::Cow;
 
@@ -67,7 +71,8 @@ pub(crate) enum RequestKind {
 pub(crate) enum HttpVersion {
     H1,
     H2,
-    /// Uses the h2 table (not measured; see the module docs).
+    /// Chromium and Safari use their h2 tables; Firefox's fetch has its own
+    /// (see the module docs).
     #[cfg_attr(not(feature = "h3"), allow(dead_code))]
     H3,
 }
@@ -79,8 +84,8 @@ pub(crate) struct CarrierSlots {
     /// `Host` — HTTP/1.1 only (h2 / h3 carry `:authority`).
     pub(crate) host: Option<HeaderValue>,
     /// `Content-Length` of a POST with a known body size. On h2 / h3 it is
-    /// emitted only for the aligned families (Chromium, Firefox), at the
-    /// browser's position; otherwise hyper appends its own on h2, as before.
+    /// emitted only when a browser profile is set, at the browser's
+    /// position; otherwise hyper appends its own on h2, as before.
     pub(crate) content_length: Option<HeaderValue>,
     /// `Sec-WebSocket-Key` of an HTTP/1.1 upgrade.
     pub(crate) websocket_key: Option<HeaderValue>,
@@ -107,6 +112,7 @@ enum Field {
     AcceptLanguage,
     Priority,
     Te,
+    AltUsed,
     Pragma,
     CacheControl,
     SecWebSocketVersion,
@@ -218,6 +224,23 @@ const FIREFOX_FETCH_H2: &[Field] = &[
     F::Te,
 ];
 
+/// Firefox 159 over h3: the h2 set without `te`, plus `alt-used` (the
+/// authority the connection was reached through) before `sec-fetch-dest`.
+const FIREFOX_FETCH_H3: &[Field] = &[
+    F::UserAgent,
+    F::Accept,
+    F::AcceptLanguage,
+    F::AcceptEncoding,
+    F::Referer,
+    F::ContentLength,
+    F::Origin,
+    F::AltUsed,
+    F::SecFetchDest,
+    F::SecFetchMode,
+    F::SecFetchSite,
+    F::Priority,
+];
+
 const FIREFOX_WS_H1: &[Field] = &[
     F::Host,
     F::UserAgent,
@@ -252,55 +275,100 @@ const FIREFOX_WS_H2: &[Field] = &[
     F::CacheControl,
 ];
 
-// ── Safari (not aligned: the historical order and values) ─────────────────────
+// ── Safari 27.0.1 (2026-10-31) ────────────────────────────────────────────────
+//
+// GET and POST differ in order, hence a table per fetch kind.
 
-const SAFARI_FETCH_H1: &[Field] = &[
+const SAFARI_FETCH_GET_H1: &[Field] = &[
     F::Host,
+    F::SecFetchDest,
+    F::UserAgent,
+    F::Accept,
+    F::Referer,
+    F::SecFetchSite,
+    F::SecFetchMode,
+    F::AcceptLanguage,
+    F::Priority,
+    F::AcceptEncoding,
+    F::Connection,
+];
+
+const SAFARI_FETCH_POST_H1: &[Field] = &[
+    F::Host,
+    F::Accept,
+    F::Origin,
+    F::SecFetchSite,
+    F::SecFetchMode,
+    F::UserAgent,
+    F::Referer,
+    F::SecFetchDest,
     F::ContentLength,
-    F::UserAgent,
-    F::Accept,
     F::AcceptLanguage,
+    F::Priority,
     F::AcceptEncoding,
-    F::SecFetchSite,
-    F::SecFetchMode,
-    F::SecFetchDest,
+    F::Connection,
 ];
 
-const SAFARI_FETCH_H2: &[Field] = &[
+const SAFARI_FETCH_GET_H2: &[Field] = &[
+    F::SecFetchDest,
     F::UserAgent,
     F::Accept,
-    F::AcceptLanguage,
-    F::AcceptEncoding,
+    F::Referer,
     F::SecFetchSite,
     F::SecFetchMode,
-    F::SecFetchDest,
+    F::AcceptLanguage,
+    F::Priority,
+    F::AcceptEncoding,
 ];
 
-/// The five headers tungstenite used to write first, then the profile's.
+const SAFARI_FETCH_POST_H2: &[Field] = &[
+    F::Accept,
+    F::Origin,
+    F::SecFetchSite,
+    F::SecFetchMode,
+    F::UserAgent,
+    F::Referer,
+    F::SecFetchDest,
+    F::ContentLength,
+    F::AcceptLanguage,
+    F::Priority,
+    F::AcceptEncoding,
+];
+
 const SAFARI_WS_H1: &[Field] = &[
     F::Host,
-    F::Connection,
-    F::Upgrade,
+    F::Origin,
+    F::Pragma,
+    F::SecFetchSite,
     F::SecWebSocketVersion,
-    F::SecWebSocketKey,
+    F::SecFetchMode,
     F::UserAgent,
+    F::SecWebSocketExtensions,
+    F::CacheControl,
+    F::SecFetchDest,
     F::Accept,
     F::AcceptLanguage,
+    F::Priority,
     F::AcceptEncoding,
-    F::SecFetchSite,
-    F::SecFetchMode,
-    F::SecFetchDest,
+    F::SecWebSocketKey,
+    F::Connection,
+    F::Upgrade,
 ];
 
 const SAFARI_WS_H2: &[Field] = &[
+    F::Origin,
+    F::Pragma,
+    F::SecFetchSite,
+    F::SecWebSocketVersion,
+    F::SecFetchMode,
     F::UserAgent,
+    F::SecWebSocketExtensions,
+    F::CacheControl,
+    F::SecFetchDest,
     F::Accept,
     F::AcceptLanguage,
+    F::Priority,
     F::AcceptEncoding,
-    F::SecFetchSite,
-    F::SecFetchMode,
-    F::SecFetchDest,
-    F::SecWebSocketVersion,
 ];
 
 // ── No profile: protocol headers only ─────────────────────────────────────────
@@ -324,11 +392,20 @@ fn table(
         (Some(TlsFingerprint::Chromium), true, true) => CHROMIUM_WS_H1,
         (Some(TlsFingerprint::Chromium), true, false) => CHROMIUM_WS_H2,
         (Some(TlsFingerprint::Firefox), false, true) => FIREFOX_FETCH_H1,
+        (Some(TlsFingerprint::Firefox), false, false) if version == HttpVersion::H3 => {
+            FIREFOX_FETCH_H3
+        },
         (Some(TlsFingerprint::Firefox), false, false) => FIREFOX_FETCH_H2,
         (Some(TlsFingerprint::Firefox), true, true) => FIREFOX_WS_H1,
         (Some(TlsFingerprint::Firefox), true, false) => FIREFOX_WS_H2,
-        (Some(TlsFingerprint::Safari), false, true) => SAFARI_FETCH_H1,
-        (Some(TlsFingerprint::Safari), false, false) => SAFARI_FETCH_H2,
+        (Some(TlsFingerprint::Safari), false, true) => match kind {
+            RequestKind::FetchPost => SAFARI_FETCH_POST_H1,
+            _ => SAFARI_FETCH_GET_H1,
+        },
+        (Some(TlsFingerprint::Safari), false, false) => match kind {
+            RequestKind::FetchPost => SAFARI_FETCH_POST_H2,
+            _ => SAFARI_FETCH_GET_H2,
+        },
         (Some(TlsFingerprint::Safari), true, true) => SAFARI_WS_H1,
         (Some(TlsFingerprint::Safari), true, false) => SAFARI_WS_H2,
         (None, false, true) => BARE_FETCH_H1,
@@ -414,14 +491,7 @@ fn field_value(
             pair(HeaderName::from_static("sec-ch-ua-platform"), st(profile?.sec_ch_ua_platform?))
         },
         F::UserAgent => pair(header::USER_AGENT, st(profile?.user_agent)),
-        F::Accept => {
-            let value = match family {
-                // Not aligned: Safari keeps its navigation `Accept`.
-                Some(TlsFingerprint::Safari) => profile?.accept,
-                _ => "*/*",
-            };
-            pair(header::ACCEPT, st(value))
-        },
+        F::Accept => pair(header::ACCEPT, st("*/*")),
         F::Origin => {
             if kind == RequestKind::FetchGet {
                 return None;
@@ -440,8 +510,8 @@ fn field_value(
             st(if ws { "websocket" } else { "cors" }),
         ),
         F::SecFetchDest => {
-            // Firefox sends `empty` for a WebSocket too; Safari keeps the
-            // historical `websocket` (not aligned).
+            // Firefox sends `empty` for a WebSocket too; Safari sends
+            // `websocket` (measured).
             let dest = if ws && family == Some(TlsFingerprint::Safari) {
                 "websocket"
             } else {
@@ -455,11 +525,15 @@ fn field_value(
             let value = match family? {
                 TlsFingerprint::Chromium => "u=1, i",
                 TlsFingerprint::Firefox => "u=4",
-                TlsFingerprint::Safari => return None,
+                TlsFingerprint::Safari => "u=3, i",
             };
             pair(HeaderName::from_static("priority"), st(value))
         },
         F::Te => pair(header::TE, st("trailers")),
+        F::AltUsed => {
+            let authority = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+            pair(HeaderName::from_static("alt-used"), HeaderValue::try_from(authority).ok()?)
+        },
         F::Pragma => pair(header::PRAGMA, st("no-cache")),
         F::CacheControl => pair(header::CACHE_CONTROL, st("no-cache")),
         F::SecWebSocketVersion => pair(header::SEC_WEBSOCKET_VERSION, st("13")),
@@ -468,7 +542,7 @@ fn field_value(
             let value = match family? {
                 TlsFingerprint::Chromium => "permessage-deflate; client_max_window_bits",
                 TlsFingerprint::Firefox => "permessage-deflate",
-                TlsFingerprint::Safari => return None,
+                TlsFingerprint::Safari => "permessage-deflate",
             };
             pair(header::SEC_WEBSOCKET_EXTENSIONS, st(value))
         },
@@ -476,20 +550,21 @@ fn field_value(
 }
 
 /// Whether an HTTP/1.1 request of this profile should be written in the
-/// browser's header case. Chromium and Firefox: yes. Safari and no profile
-/// keep the historical case (lowercase, apart from the names the HTTP stack
-/// spells itself).
+/// browser's header case. Every profile: yes. No profile keeps the
+/// historical case (lowercase, apart from the names the HTTP stack spells
+/// itself).
 pub(crate) fn h1_browser_case(profile: Option<&Profile>) -> bool {
-    matches!(profile.map(|p| p.tls), Some(TlsFingerprint::Chromium | TlsFingerprint::Firefox))
+    profile.is_some()
 }
 
-/// The name of `name` as `profile`'s browser writes it on HTTP/1.1 — for the
-/// requests whose bytes we write ourselves (`ws_h1`).
+/// The name of `name` as `profile`'s browser writes it on HTTP/1.1 — for
+/// `ws_h1`, which writes the request bytes itself, and `xhttp_h1`'s hyper case
+/// map (`crate::hyper_vendored`).
 ///
 /// * Chromium: client hints (`sec-ch-ua*`) lowercase, every other name in
 ///   its canonical case (`User-Agent`, `Sec-WebSocket-Key`, `X-Outline-Resume`).
-/// * Firefox: canonical case throughout.
-/// * Safari / no profile: the case tungstenite used to write (`Host`,
+/// * Firefox, Safari: canonical case throughout.
+/// * No profile: the case tungstenite used to write (`Host`,
 ///   `Connection`, `Upgrade`, `Sec-WebSocket-Version`, `Sec-WebSocket-Key`,
 ///   `Origin`, `Sec-WebSocket-Protocol`; everything else lowercase).
 pub(crate) fn h1_wire_name<'a>(name: &'a HeaderName, profile: Option<&Profile>) -> Cow<'a, str> {

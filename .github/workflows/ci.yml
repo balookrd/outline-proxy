@@ -225,6 +225,25 @@ jobs:
           fi
           echo "ok: patched rustls API stays behind the gate module"
 
+      # Same rule for the patched hyper API (`hyper::ext::HeaderCaseMap`, the
+      # per-name HTTP/1.1 header case map xhttp_h1 writes browser case with):
+      # production code reaches it only through
+      # crates/outline-transport/src/hyper_vendored.rs (see PATCHES.md). Test
+      # modules are exempt. A glob import of `hyper::ext::*` would pull the
+      # patched API in without naming it, so it is matched too; android/rust is
+      # a detached workspace and is scanned explicitly.
+      - name: invariant — patched hyper API only behind the gate module
+        run: |
+          leaked=$(grep -rnE 'HeaderCaseMap|hyper::ext::\*' bins/*/src crates/*/src android/rust/src --include='*.rs' \
+            | grep -v '/tests/' \
+            | grep -v '^crates/outline-transport/src/hyper_vendored\.rs:' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::patched hyper API referenced outside the gate module:"
+            echo "$leaked"
+            exit 1
+          fi
+          echo "ok: patched hyper API stays behind the gate module"
+
       # Install-script invariants: syntax + shellcheck for the two root
       # installers, and byte-identity of the helpers deliberately duplicated
       # between install-server.sh and install-client.sh (single-file

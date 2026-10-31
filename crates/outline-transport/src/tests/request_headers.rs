@@ -53,7 +53,14 @@ fn chromium_and_firefox_follow_the_measured_requests() {
         for (kind, measured) in KINDS {
             for version in [HttpVersion::H1, HttpVersion::H2, HttpVersion::H3] {
                 let h1 = version == HttpVersion::H1;
-                // h3 uses the h2 table (not measured).
+                // h3 uses the h2 table, except Firefox's fetch (see
+                // `firefox_h3_fetch_*`).
+                if version == HttpVersion::H3
+                    && profile.tls == TlsFingerprint::Firefox
+                    && kind != RequestKind::WebSocket
+                {
+                    continue;
+                }
                 let expected = lowercased(measured_browser_headers(profile, measured, h1));
                 assert_eq!(
                     render(Some(profile), kind, version),
@@ -64,6 +71,65 @@ fn chromium_and_firefox_follow_the_measured_requests() {
             }
         }
     }
+}
+
+/// Chrome 156 over h3 sends exactly the h2 headers, in the h2 order.
+#[test]
+fn chromium_h3_equals_chromium_h2() {
+    let chrome = PROFILES.iter().find(|p| p.tls == TlsFingerprint::Chromium).unwrap();
+    for (kind, _) in KINDS {
+        assert_eq!(
+            render(Some(chrome), kind, HttpVersion::H3),
+            render(Some(chrome), kind, HttpVersion::H2),
+            "kind={kind:?}"
+        );
+    }
+}
+
+/// Firefox 159 over h3: the h2 fetch headers without `te: trailers`, with
+/// `alt-used: <authority>` right before `sec-fetch-dest`.
+#[test]
+fn firefox_h3_fetch_drops_te_and_adds_alt_used() {
+    let firefox = PROFILES.iter().find(|p| p.tls == TlsFingerprint::Firefox).unwrap();
+    for (kind, measured) in [
+        (RequestKind::FetchGet, MeasuredKind::FetchGet),
+        (RequestKind::FetchPost, MeasuredKind::FetchPost),
+    ] {
+        let mut expected: Vec<(String, String)> =
+            lowercased(measured_browser_headers(firefox, measured, false))
+                .into_iter()
+                .filter(|(n, _)| n != "te")
+                .collect();
+        let at = expected.iter().position(|(n, _)| n == "sec-fetch-dest").unwrap();
+        expected.insert(at, ("alt-used".into(), MEASURED_AUTHORITY.into()));
+        let got = render(Some(firefox), kind, HttpVersion::H3);
+        assert_eq!(got, expected, "kind={kind:?}");
+        assert!(got.iter().all(|(n, _)| n != "te"));
+        // h2 is unchanged: still `te: trailers`, no `alt-used`.
+        let h2 = render(Some(firefox), kind, HttpVersion::H2);
+        assert!(h2.contains(&("te".to_owned(), "trailers".to_owned())), "{h2:?}");
+        assert!(h2.iter().all(|(n, _)| n != "alt-used"), "{h2:?}");
+    }
+}
+
+#[test]
+fn alt_used_is_the_origin_authority_without_default_port() {
+    let firefox = PROFILES.iter().find(|p| p.tls == TlsFingerprint::Firefox).unwrap();
+    let alt_used = |origin: &str| {
+        let mut headers = HeaderMap::new();
+        browser_headers(
+            Some(firefox),
+            RequestKind::FetchGet,
+            HttpVersion::H3,
+            origin,
+            &CarrierSlots::default(),
+            &mut headers,
+        );
+        headers.get("alt-used").map(|v| v.to_str().unwrap().to_owned())
+    };
+    assert_eq!(alt_used("https://example.test").as_deref(), Some("example.test"));
+    assert_eq!(alt_used("https://example.test:8443").as_deref(), Some("example.test:8443"));
+    assert_eq!(alt_used("https://[::1]").as_deref(), Some("[::1]"));
 }
 
 #[test]
@@ -81,60 +147,87 @@ fn chrome_websocket_carries_no_client_hints_fetch_metadata_or_accept() {
     }
 }
 
-/// Safari is not aligned: its header set, order and values are exactly the
-/// historical ones (navigation `Accept`, `Sec-Fetch-Dest: websocket` on a
-/// WebSocket, no `Origin`/`Referer`/`Priority`/`Pragma`, no
-/// `Sec-WebSocket-Extensions`).
+/// Safari 27.0.1: fetch GET and POST have their own orders; the values are
+/// the measured ones (`Accept: */*`, `Priority: u=3, i`, `Sec-Fetch-Dest:
+/// websocket` and `Sec-WebSocket-Extensions: permessage-deflate` on a
+/// WebSocket, `Sec-Fetch-Dest: empty` on fetch). h3 uses the h2 tables.
 #[test]
-fn safari_keeps_the_historical_headers() {
+fn safari_follows_its_measured_tables() {
     let safari = PROFILES.iter().find(|p| p.tls == TlsFingerprint::Safari).unwrap();
-    let identity = |mode: &str, dest: &str| -> Vec<(String, String)> {
-        [
-            ("user-agent", safari.user_agent),
-            ("accept", safari.accept),
-            ("accept-language", safari.accept_language),
-            ("accept-encoding", safari.accept_encoding),
-            ("sec-fetch-site", "same-origin"),
-            ("sec-fetch-mode", mode),
-            ("sec-fetch-dest", dest),
-        ]
-        .iter()
-        .map(|(n, v)| (n.to_string(), v.to_string()))
-        .collect()
+    let names = |kind, version| -> Vec<String> {
+        render(Some(safari), kind, version)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect()
     };
-    let pair = |n: &str, v: &str| (n.to_owned(), v.to_owned());
-
-    // h1 fetch: Host, (Content-Length), identity.
-    let mut get = vec![pair("host", MEASURED_AUTHORITY)];
-    get.extend(identity("cors", "empty"));
-    assert_eq!(render(Some(safari), RequestKind::FetchGet, HttpVersion::H1), get);
-    let mut post = vec![pair("host", MEASURED_AUTHORITY), pair("content-length", "4")];
-    post.extend(identity("cors", "empty"));
-    assert_eq!(render(Some(safari), RequestKind::FetchPost, HttpVersion::H1), post);
-
-    // h2/h3 fetch: identity only (hyper appends `content-length` on h2).
+    let list = |s: &str| s.split(", ").map(str::to_owned).collect::<Vec<_>>();
+    assert_eq!(
+        names(RequestKind::FetchGet, HttpVersion::H1),
+        list(
+            "host, sec-fetch-dest, user-agent, accept, referer, sec-fetch-site, sec-fetch-mode, \
+             accept-language, priority, accept-encoding, connection"
+        )
+    );
+    assert_eq!(
+        names(RequestKind::FetchPost, HttpVersion::H1),
+        list(
+            "host, accept, origin, sec-fetch-site, sec-fetch-mode, user-agent, referer, \
+             sec-fetch-dest, content-length, accept-language, priority, accept-encoding, \
+             connection"
+        )
+    );
+    assert_eq!(
+        names(RequestKind::WebSocket, HttpVersion::H1),
+        list(
+            "host, origin, pragma, sec-fetch-site, sec-websocket-version, sec-fetch-mode, \
+             user-agent, sec-websocket-extensions, cache-control, sec-fetch-dest, accept, \
+             accept-language, priority, accept-encoding, sec-websocket-key, connection, upgrade"
+        )
+    );
     for version in [HttpVersion::H2, HttpVersion::H3] {
-        for kind in [RequestKind::FetchGet, RequestKind::FetchPost] {
-            assert_eq!(render(Some(safari), kind, version), identity("cors", "empty"), "{kind:?}");
-        }
+        assert_eq!(
+            names(RequestKind::FetchGet, version),
+            list(
+                "sec-fetch-dest, user-agent, accept, referer, sec-fetch-site, sec-fetch-mode, \
+                 accept-language, priority, accept-encoding"
+            )
+        );
+        assert_eq!(
+            names(RequestKind::FetchPost, version),
+            list(
+                "accept, origin, sec-fetch-site, sec-fetch-mode, user-agent, referer, \
+                 sec-fetch-dest, content-length, accept-language, priority, accept-encoding"
+            )
+        );
+        assert_eq!(
+            names(RequestKind::WebSocket, version),
+            list(
+                "origin, pragma, sec-fetch-site, sec-websocket-version, sec-fetch-mode, \
+                 user-agent, sec-websocket-extensions, cache-control, sec-fetch-dest, accept, \
+                 accept-language, priority, accept-encoding"
+            )
+        );
     }
 
-    // h1 WebSocket: tungstenite's five, then identity.
-    let mut ws = vec![
-        pair("host", MEASURED_AUTHORITY),
-        pair("connection", "Upgrade"),
-        pair("upgrade", "websocket"),
-        pair("sec-websocket-version", "13"),
-        pair("sec-websocket-key", MEASURED_WS_KEY),
-    ];
-    ws.extend(identity("websocket", "websocket"));
-    assert_eq!(render(Some(safari), RequestKind::WebSocket, HttpVersion::H1), ws);
-
-    // h2/h3 WebSocket: identity, then `sec-websocket-version`.
-    let mut ws = identity("websocket", "websocket");
-    ws.push(pair("sec-websocket-version", "13"));
-    for version in [HttpVersion::H2, HttpVersion::H3] {
-        assert_eq!(render(Some(safari), RequestKind::WebSocket, version), ws);
+    let value = |kind, version, name: &str| -> String {
+        render(Some(safari), kind, version)
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .unwrap()
+            .1
+    };
+    for version in [HttpVersion::H1, HttpVersion::H2] {
+        for kind in [RequestKind::FetchGet, RequestKind::FetchPost, RequestKind::WebSocket] {
+            assert_eq!(value(kind, version, "accept"), "*/*");
+            assert_eq!(value(kind, version, "priority"), "u=3, i");
+        }
+        assert_eq!(
+            value(RequestKind::WebSocket, version, "sec-websocket-extensions"),
+            "permessage-deflate"
+        );
+        assert_eq!(value(RequestKind::WebSocket, version, "sec-fetch-dest"), "websocket");
+        assert_eq!(value(RequestKind::FetchGet, version, "sec-fetch-dest"), "empty");
+        assert_eq!(value(RequestKind::FetchPost, version, "sec-fetch-dest"), "empty");
     }
 }
 
@@ -200,14 +293,18 @@ fn h1_name_case_follows_the_browser() {
     assert_eq!(case("sec-fetch-dest", Some(firefox)), "Sec-Fetch-Dest");
     assert_eq!(case("x-outline-resume-capable", Some(firefox)), "X-Outline-Resume-Capable");
 
-    // Safari / no profile: the case tungstenite used to write.
-    for profile in [Some(safari), None] {
-        assert_eq!(case("host", profile), "Host");
-        assert_eq!(case("sec-websocket-key", profile), "Sec-WebSocket-Key");
-        assert_eq!(case("origin", profile), "Origin");
-        assert_eq!(case("user-agent", profile), "user-agent");
-        assert_eq!(case("x-outline-resume-capable", profile), "x-outline-resume-capable");
-    }
+    // Safari: canonical case throughout, like Firefox.
+    assert_eq!(case("user-agent", Some(safari)), "User-Agent");
+    assert_eq!(case("sec-fetch-dest", Some(safari)), "Sec-Fetch-Dest");
+    assert_eq!(case("sec-websocket-key", Some(safari)), "Sec-WebSocket-Key");
+    assert_eq!(case("x-outline-resume-capable", Some(safari)), "X-Outline-Resume-Capable");
+
+    // No profile: the case tungstenite used to write.
+    assert_eq!(case("host", None), "Host");
+    assert_eq!(case("sec-websocket-key", None), "Sec-WebSocket-Key");
+    assert_eq!(case("origin", None), "Origin");
+    assert_eq!(case("user-agent", None), "user-agent");
+    assert_eq!(case("x-outline-resume-capable", None), "x-outline-resume-capable");
     assert_eq!(canonical_case("cache-control"), "Cache-Control");
     assert_eq!(canonical_case("te"), "Te");
 }

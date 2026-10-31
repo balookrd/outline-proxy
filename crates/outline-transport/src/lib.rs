@@ -152,6 +152,7 @@ mod h2;
 mod h2_profile;
 #[cfg(feature = "h3")]
 pub(crate) mod h3;
+mod hyper_vendored;
 #[cfg(feature = "quic")]
 pub mod quic;
 pub mod resumption;

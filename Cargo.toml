@@ -58,6 +58,9 @@ debug = 1
 # HTTP/3 WebSocket path depends on these patched copies — do not drop.
 [patch.crates-io]
 h3 = { path = "vendor/h3" }
+# outline-transport builds the patched hyper API (`ext::HeaderCaseMap`, see
+# PATCHES.md) to write xhttp_h1 header names in the browser's case.
+hyper = { path = "vendor/hyper" }
 quinn-proto = { path = "vendor/quinn-proto" }
 rustls = { path = "vendor/rustls" }
 sockudo-ws = { path = "vendor/sockudo-ws" }

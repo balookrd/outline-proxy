@@ -224,10 +224,12 @@ async fn h1_handshake(
     }
 }
 
-/// `browser_case`: write header names Title-Case, as Chrome and Firefox do on
-/// HTTP/1.1. hyper can only Title-Case every name (its per-name case map is
-/// private), so Chrome's lowercase `sec-ch-ua*` go out as `Sec-Ch-Ua*`;
-/// without it (Safari, no profile) names stay lowercase, as before.
+/// `browser_case`: the session has a browser profile, so its requests carry a
+/// header case map ([`crate::hyper_vendored::set_h1_header_case`]) and hyper
+/// writes each name the way that browser does. `preserve_header_case` only
+/// affects how hyper parses responses — the request case comes from the map
+/// alone — and is enabled together with it. Without a profile there is no map
+/// and hyper writes lowercase names, as before.
 pub(super) async fn spawn_h1<T>(
     io: TokioIo<T>,
     browser_case: bool,
@@ -236,7 +238,7 @@ where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let (send_request, conn) = http1::Builder::new()
-        .title_case_headers(browser_case)
+        .preserve_header_case(browser_case)
         .handshake(io)
         .await
         .context("xhttp h1 handshake failed")?;
@@ -262,6 +264,41 @@ async fn open_h1_get(
     datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(Option<SessionId>, bool, bool, bool, hyper::body::Incoming)> {
+    let req = get_request(
+        target,
+        resume_request,
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        client_acked_offset,
+        datagram_records,
+        profile,
+    )?;
+    send.ready().await.context("xhttp h1 not ready for GET")?;
+    let resp = send
+        .send_request(req)
+        .await
+        .context("xhttp/h1 GET send_request failed")?;
+    if !resp.status().is_success() {
+        bail!("xhttp/h1 GET returned {}", resp.status());
+    }
+    let issued = parse_session_response(resp.headers());
+    let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
+    let sym_echo =
+        symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
+    let udp_records = super::parse_udp_records_echo(datagram_records, resp.headers());
+    Ok((issued, echo, sym_echo, udp_records, resp.into_body()))
+}
+
+/// The session's downlink GET, header case included.
+pub(super) fn get_request(
+    target: &XhttpTarget,
+    resume_request: Option<SessionId>,
+    ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
+    datagram_records: bool,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
+) -> Result<Request<RequestBody>> {
     let mut req = Request::builder()
         .method(Method::GET)
         .uri(target.origin_form_path())
@@ -283,20 +320,8 @@ async fn open_h1_get(
         client_acked_offset,
         datagram_records,
     )?;
-    send.ready().await.context("xhttp h1 not ready for GET")?;
-    let resp = send
-        .send_request(req)
-        .await
-        .context("xhttp/h1 GET send_request failed")?;
-    if !resp.status().is_success() {
-        bail!("xhttp/h1 GET returned {}", resp.status());
-    }
-    let issued = parse_session_response(resp.headers());
-    let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
-    let sym_echo =
-        symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
-    let udp_records = super::parse_udp_records_echo(datagram_records, resp.headers());
-    Ok((issued, echo, sym_echo, udp_records, resp.into_body()))
+    crate::hyper_vendored::set_h1_header_case(&mut req, profile);
+    Ok(req)
 }
 
 async fn driver_loop_h1(
@@ -360,7 +385,7 @@ async fn driver_loop_h1(
         let uri_prefix = Arc::clone(&uri_prefix);
         let base_headers = Arc::clone(&base_headers);
         super::FinOnDrop::new(Arc::clone(&next_seq), move |seq| {
-            Box::pin(send_fin(up_send, uri_prefix, base_headers, seq))
+            Box::pin(send_fin(up_send, uri_prefix, base_headers, seq, profile))
         })
     };
     loop {
@@ -391,7 +416,9 @@ async fn driver_loop_h1(
             fin.disarm();
             break;
         }
-        if let Err(error) = post_one(&mut send, &uri_prefix, &base_headers, seq, bytes).await {
+        if let Err(error) =
+            post_one(&mut send, &uri_prefix, &base_headers, seq, bytes, profile).await
+        {
             warn!(?error, seq, "xhttp/h1 POST failed");
             let _ = in_tx
                 .send_control(Err(io_ws_err("xhttp/h1 uplink POST failed")))
@@ -418,13 +445,14 @@ async fn send_fin(
     uri_prefix: Arc<str>,
     base_headers: Arc<HeaderMap>,
     seq: u64,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) {
     let mut send = up_send.lock().await;
     if send.ready().await.is_err() {
         return;
     }
     let headers = super::fin_post_headers(&base_headers);
-    let post = post_one(&mut send, &uri_prefix, &headers, seq, bytes::Bytes::new());
+    let post = post_one(&mut send, &uri_prefix, &headers, seq, bytes::Bytes::new(), profile);
     match timeout(super::FIN_TIMEOUT, post).await {
         Ok(Ok(())) => {},
         Ok(Err(error)) => debug!(?error, seq, "xhttp/h1 FIN POST failed"),
@@ -451,13 +479,15 @@ pub(super) fn build_post_headers(
     ))
 }
 
-async fn post_one(
-    send: &mut http1::SendRequest<RequestBody>,
+/// One uplink POST (`seq`, `payload`) from the session's header template,
+/// header case included.
+pub(super) fn post_request(
     uri_prefix: &str,
     base_headers: &HeaderMap,
     seq: u64,
     payload: bytes::Bytes,
-) -> Result<()> {
+    profile: Option<&crate::fingerprint_profile::Profile>,
+) -> Result<Request<RequestBody>> {
     // Path-based seq matches xray / sing-box's `PlacementPath` default
     // and mirrors the h2/h3 siblings — the request path stays identical
     // across all three carriers.
@@ -471,6 +501,19 @@ async fn post_one(
     let mut headers = base_headers.clone();
     super::set_post_content_length(&mut headers, content_length);
     *req.headers_mut() = headers;
+    crate::hyper_vendored::set_h1_header_case(&mut req, profile);
+    Ok(req)
+}
+
+async fn post_one(
+    send: &mut http1::SendRequest<RequestBody>,
+    uri_prefix: &str,
+    base_headers: &HeaderMap,
+    seq: u64,
+    payload: bytes::Bytes,
+    profile: Option<&crate::fingerprint_profile::Profile>,
+) -> Result<()> {
+    let req = post_request(uri_prefix, base_headers, seq, payload, profile)?;
     let resp = send
         .send_request(req)
         .await

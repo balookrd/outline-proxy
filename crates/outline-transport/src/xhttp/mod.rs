@@ -477,7 +477,7 @@ pub(super) fn build_post_template(
 
 /// Set the real body length of one POST cloned from a
 /// [`build_post_template`] map, in place. A template without the header
-/// (h2 / h3 under Safari or no profile) is left alone: hyper appends its own
+/// (h2 / h3 without a profile) is left alone: hyper appends its own
 /// on h2, as before, and h3 sends none.
 pub(super) fn set_post_content_length(headers: &mut HeaderMap, len: usize) {
     if let Some(value) = headers.get_mut(http::header::CONTENT_LENGTH) {
