@@ -388,6 +388,7 @@ where
     /// that just became busy. (Evicting one would not break the session — it
     /// holds its own `Arc` — but it would throw away a connection someone is
     /// using and force the next session to dial.)
+    #[cfg_attr(not(feature = "h3"), allow(dead_code))]
     pub(crate) async fn remove_if(&self, key: &K, pred: impl Fn(&V) -> bool) -> bool {
         let mut map = self.map.write().await;
         if map.get(key).is_some_and(|conn| pred(conn)) {
@@ -399,6 +400,7 @@ where
 
     /// Every cached entry with its key, for the reaper: it groups carriers by
     /// logical server, which the key carries and the value does not.
+    #[cfg_attr(not(feature = "h3"), allow(dead_code))]
     pub(crate) async fn entries(&self) -> Vec<(K, Arc<V>)> {
         self.map
             .read()
@@ -439,6 +441,7 @@ where
 // ── Idle-carrier reaping ──────────────────────────────────────────────────────
 
 /// One carrier as the reaper sees it.
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CarrierIdleState {
     /// Slot this carrier occupies within its logical server.
@@ -462,6 +465,7 @@ pub(crate) struct CarrierIdleState {
 /// that on the next session — and closes the rest, oldest idle first. Carriers
 /// that have not been idle for `required_sweeps` are left alone, so a brief lull
 /// does not cost a connection.
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
 pub(crate) fn carriers_to_reap(
     carriers: &[CarrierIdleState],
     min_keep: u8,
