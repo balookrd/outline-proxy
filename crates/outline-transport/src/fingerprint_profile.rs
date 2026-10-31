@@ -191,7 +191,6 @@ pub struct Profile {
     /// OS this identity claims; selection is restricted to [`host_os`].
     pub os: ProfileOs,
     pub user_agent: &'static str,
-    pub accept: &'static str,
     pub accept_language: &'static str,
     pub accept_encoding: &'static str,
     /// Client Hints. `None` for browsers that do not emit them
@@ -241,7 +240,6 @@ pub const PROFILES: &[Profile] = &[
         // `Sec-CH-UA-Platform-Version` when negotiated; we don't
         // advertise that header in this pool.
         user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
@@ -257,7 +255,6 @@ pub const PROFILES: &[Profile] = &[
         // Chrome on Linux reports `x86_64` even on aarch64 hosts (UA
         // Reduction), so one string covers every Linux client.
         user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
@@ -275,7 +272,6 @@ pub const PROFILES: &[Profile] = &[
         // 2026-10-30, Chrome Android 156.0.8078.73 (Android 17) sends the
         // desktop Chrome 156 ClientHello byte for byte, trust anchors included.
         user_agent: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
@@ -297,7 +293,6 @@ pub const PROFILES: &[Profile] = &[
         // silicon machines still surface as `Intel Mac OS X` here —
         // Firefox has no separate ARM string in the UA.
         user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:159.0) Gecko/20100101 Firefox/159.0",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: None,
@@ -311,7 +306,6 @@ pub const PROFILES: &[Profile] = &[
         // Header values measured on macOS Firefox 159 and extrapolated to
         // Linux (only the UA platform token differs).
         user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:159.0) Gecko/20100101 Firefox/159.0",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: None,
@@ -328,7 +322,6 @@ pub const PROFILES: &[Profile] = &[
         os: ProfileOs::MacOs,
         tls: TlsFingerprint::Safari,
         user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         accept_language: "en-US,en;q=0.9",
         // Measured 2026-10-31 (Safari 27.0.1): over HTTPS Safari offers
         // `zstd` too (over plain http only `gzip, deflate`).

@@ -548,11 +548,9 @@ fn user_agent_and_client_hints_agree_with_profile_os() {
     }
 }
 
-const CHROME_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
 const CHROME_UA_TAIL: &str = "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0";
 const CHROME_HINTS: &str =
     "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"";
-const FIREFOX_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 
 #[test]
 fn chrome_156_values_match_the_measurement() {
@@ -564,7 +562,6 @@ fn chrome_156_values_match_the_measurement() {
     ] {
         let p = by_name(name);
         assert_eq!(p.user_agent, ua(os_part, tail), "{name}");
-        assert_eq!(p.accept, CHROME_ACCEPT, "{name}");
         assert_eq!(p.accept_language, "en-US,en;q=0.9", "{name}");
         assert_eq!(p.accept_encoding, "gzip, deflate, br, zstd", "{name}");
         assert_eq!(p.sec_ch_ua, Some(CHROME_HINTS), "{name}");
@@ -586,7 +583,6 @@ fn firefox_159_values_match_the_measurement() {
     ] {
         let p = by_name(name);
         assert_eq!(p.user_agent, ua, "{name}");
-        assert_eq!(p.accept, FIREFOX_ACCEPT, "{name}");
         assert_eq!(p.accept_language, "en-US,en;q=0.9", "{name}");
         assert_eq!(p.accept_encoding, "gzip, deflate, br, zstd", "{name}");
         assert!(p.sec_ch_ua.is_none(), "{name}");
