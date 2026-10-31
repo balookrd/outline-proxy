@@ -125,17 +125,19 @@
   let paddingCoverJitterMaxMs = $state<number>(1500);
   let paddingReactToThrottle = $state<boolean>(false);
 
-  // QUIC
-  let quicStreamReceiveWindow = $state<number>(1048576);
-  let quicReceiveWindow = $state<number>(2097152);
-  let quicKeepaliveSecs = $state<number>(15);
-  let quicIdleTimeoutSecs = $state<number>(30);
+  // QUIC. `null` = key absent: the client then uses its own default (browser
+  // profile in the Initial, raised after the handshake), shown as placeholder.
+  let quicStreamReceiveWindow = $state<number | null>(null);
+  let quicReceiveWindow = $state<number | null>(null);
+  let quicKeepaliveSecs = $state<number | null>(null);
+  let quicIdleTimeoutSecs = $state<number | null>(null);
 
   // H2
-  let h2StreamWindowSize = $state<number>(1048576);
-  let h2ConnWindowSize = $state<number>(2097152);
-  let h2KeepaliveIntervalSecs = $state<number>(20);
-  let h2KeepaliveTimeoutSecs = $state<number>(10);
+  // `null` = key absent: windows then follow the carrier (ws_h2 / xhttp_h2).
+  let h2StreamWindowSize = $state<number | null>(null);
+  let h2ConnWindowSize = $state<number | null>(null);
+  let h2KeepaliveIntervalSecs = $state<number | null>(null);
+  let h2KeepaliveTimeoutSecs = $state<number | null>(null);
 
   // TCP Timeouts
   let tcpPostClientEofDownstreamSecs = $state<number>(5);
@@ -260,18 +262,14 @@
         paddingCoverJitterMaxMs = config.padding.cover_jitter_max_ms ?? 1500;
         paddingReactToThrottle = config.padding.react_to_throttle ?? false;
       }
-      if (config.quic) {
-        quicStreamReceiveWindow = config.quic.stream_receive_window ?? 1048576;
-        quicReceiveWindow = config.quic.receive_window ?? 2097152;
-        quicKeepaliveSecs = config.quic.keepalive_secs ?? 15;
-        quicIdleTimeoutSecs = config.quic.idle_timeout_secs ?? 30;
-      }
-      if (config.h2) {
-        h2StreamWindowSize = config.h2.initial_stream_window_size ?? 1048576;
-        h2ConnWindowSize = config.h2.initial_connection_window_size ?? 2097152;
-        h2KeepaliveIntervalSecs = config.h2.keepalive_interval_secs ?? 20;
-        h2KeepaliveTimeoutSecs = config.h2.keepalive_timeout_secs ?? 10;
-      }
+      quicStreamReceiveWindow = config.quic?.stream_receive_window ?? null;
+      quicReceiveWindow = config.quic?.receive_window ?? null;
+      quicKeepaliveSecs = config.quic?.keepalive_secs ?? null;
+      quicIdleTimeoutSecs = config.quic?.idle_timeout_secs ?? null;
+      h2StreamWindowSize = config.h2?.initial_stream_window_size ?? null;
+      h2ConnWindowSize = config.h2?.initial_connection_window_size ?? null;
+      h2KeepaliveIntervalSecs = config.h2?.keepalive_interval_secs ?? null;
+      h2KeepaliveTimeoutSecs = config.h2?.keepalive_timeout_secs ?? null;
       if (config.tcp_timeouts) {
         tcpPostClientEofDownstreamSecs = config.tcp_timeouts.post_client_eof_downstream_secs ?? 5;
         tcpUpstreamResponseSecs = config.tcp_timeouts.upstream_response_secs ?? 15;
@@ -608,54 +606,36 @@
         patch.padding = paddingPatch;
       }
 
-      // 6. QUIC
-      if (orig.quic != null || quicStreamReceiveWindow !== 1048576 || quicReceiveWindow !== 2097152 || quicKeepaliveSecs !== 15 || quicIdleTimeoutSecs !== 30) {
-        const quicPatch: WsQuicConfig = {};
-        let quicChanged = false;
-        if (quicStreamReceiveWindow !== (orig.quic?.stream_receive_window ?? 1048576)) {
-          quicPatch.stream_receive_window = quicStreamReceiveWindow;
-          quicChanged = true;
+      // 6. QUIC / 7. H2 — empty fields mean "client default". The patch API
+      // only sets keys, so a field is sent once it holds a positive value that
+      // differs from the file; clearing a set value does not remove the key.
+      const setIfChanged = <T extends object>(target: T, key: keyof T, cur: number | null, prev: number | null | undefined): boolean => {
+        if (cur != null && cur > 0 && cur !== (prev ?? null)) {
+          (target as Record<keyof T, number>)[key] = cur;
+          return true;
         }
-        if (quicReceiveWindow !== (orig.quic?.receive_window ?? 2097152)) {
-          quicPatch.receive_window = quicReceiveWindow;
-          quicChanged = true;
-        }
-        if (quicKeepaliveSecs !== (orig.quic?.keepalive_secs ?? 15)) {
-          quicPatch.keepalive_secs = quicKeepaliveSecs;
-          quicChanged = true;
-        }
-        if (quicIdleTimeoutSecs !== (orig.quic?.idle_timeout_secs ?? 30)) {
-          quicPatch.idle_timeout_secs = quicIdleTimeoutSecs;
-          quicChanged = true;
-        }
-        if (quicChanged) {
-          patch.quic = quicPatch;
-        }
+        return false;
+      };
+      const quicPatch: WsQuicConfig = {};
+      const quicChanged = [
+        setIfChanged(quicPatch, 'stream_receive_window', quicStreamReceiveWindow, orig.quic?.stream_receive_window),
+        setIfChanged(quicPatch, 'receive_window', quicReceiveWindow, orig.quic?.receive_window),
+        setIfChanged(quicPatch, 'keepalive_secs', quicKeepaliveSecs, orig.quic?.keepalive_secs),
+        setIfChanged(quicPatch, 'idle_timeout_secs', quicIdleTimeoutSecs, orig.quic?.idle_timeout_secs),
+      ].some(Boolean);
+      if (quicChanged) {
+        patch.quic = quicPatch;
       }
 
-      // 7. H2
-      if (orig.h2 != null || h2StreamWindowSize !== 1048576 || h2ConnWindowSize !== 2097152 || h2KeepaliveIntervalSecs !== 20 || h2KeepaliveTimeoutSecs !== 10) {
-        const h2Patch: WsH2Config = {};
-        let h2Changed = false;
-        if (h2StreamWindowSize !== (orig.h2?.initial_stream_window_size ?? 1048576)) {
-          h2Patch.initial_stream_window_size = h2StreamWindowSize;
-          h2Changed = true;
-        }
-        if (h2ConnWindowSize !== (orig.h2?.initial_connection_window_size ?? 2097152)) {
-          h2Patch.initial_connection_window_size = h2ConnWindowSize;
-          h2Changed = true;
-        }
-        if (h2KeepaliveIntervalSecs !== (orig.h2?.keepalive_interval_secs ?? 20)) {
-          h2Patch.keepalive_interval_secs = h2KeepaliveIntervalSecs;
-          h2Changed = true;
-        }
-        if (h2KeepaliveTimeoutSecs !== (orig.h2?.keepalive_timeout_secs ?? 10)) {
-          h2Patch.keepalive_timeout_secs = h2KeepaliveTimeoutSecs;
-          h2Changed = true;
-        }
-        if (h2Changed) {
-          patch.h2 = h2Patch;
-        }
+      const h2Patch: WsH2Config = {};
+      const h2Changed = [
+        setIfChanged(h2Patch, 'initial_stream_window_size', h2StreamWindowSize, orig.h2?.initial_stream_window_size),
+        setIfChanged(h2Patch, 'initial_connection_window_size', h2ConnWindowSize, orig.h2?.initial_connection_window_size),
+        setIfChanged(h2Patch, 'keepalive_interval_secs', h2KeepaliveIntervalSecs, orig.h2?.keepalive_interval_secs),
+        setIfChanged(h2Patch, 'keepalive_timeout_secs', h2KeepaliveTimeoutSecs, orig.h2?.keepalive_timeout_secs),
+      ].some(Boolean);
+      if (h2Changed) {
+        patch.h2 = h2Patch;
       }
 
       // 8. TCP Timeouts
@@ -1522,6 +1502,7 @@
                   id="quic-stream-win"
                   type="number"
                   min="65536"
+                  placeholder="Default (profile, then 8 MiB)"
                   bind:value={quicStreamReceiveWindow}
                   oninput={markDirty}
                   class="field-mono"
@@ -1533,6 +1514,7 @@
                   id="quic-conn-win"
                   type="number"
                   min="65536"
+                  placeholder="Default (profile, then 64 MiB)"
                   bind:value={quicReceiveWindow}
                   oninput={markDirty}
                   class="field-mono"
@@ -1547,6 +1529,7 @@
                   id="quic-keepalive"
                   type="number"
                   min="1"
+                  placeholder="Default (8–12, jittered)"
                   bind:value={quicKeepaliveSecs}
                   oninput={markDirty}
                   class="field-mono"
@@ -1558,6 +1541,7 @@
                   id="quic-idle"
                   type="number"
                   min="1"
+                  placeholder="Default (30, profile)"
                   bind:value={quicIdleTimeoutSecs}
                   oninput={markDirty}
                   class="field-mono"
@@ -1574,6 +1558,7 @@
                   id="h2-stream-win"
                   type="number"
                   min="65536"
+                  placeholder="Default (ws 8 MiB / xhttp 2 MiB)"
                   bind:value={h2StreamWindowSize}
                   oninput={markDirty}
                   class="field-mono"
@@ -1585,6 +1570,7 @@
                   id="h2-conn-win"
                   type="number"
                   min="65536"
+                  placeholder="Default (ws 32 MiB / xhttp 5 MiB)"
                   bind:value={h2ConnWindowSize}
                   oninput={markDirty}
                   class="field-mono"
@@ -1599,6 +1585,7 @@
                   id="h2-keepalive"
                   type="number"
                   min="1"
+                  placeholder="Default (10)"
                   bind:value={h2KeepaliveIntervalSecs}
                   oninput={markDirty}
                   class="field-mono"
@@ -1610,6 +1597,7 @@
                   id="h2-timeout"
                   type="number"
                   min="1"
+                  placeholder="Default (10)"
                   bind:value={h2KeepaliveTimeoutSecs}
                   oninput={markDirty}
                   class="field-mono"
