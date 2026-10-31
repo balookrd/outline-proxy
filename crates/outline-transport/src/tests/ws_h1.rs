@@ -118,38 +118,65 @@ async fn ws_h1_dial_writes_the_measured_browser_request() {
     }
 }
 
-/// Safari and no profile keep the request tungstenite used to write: its
-/// five headers first in its case, everything else lowercase.
+/// Without a profile the request is what tungstenite used to write: its
+/// five headers first in its case, then only the carrier's own headers.
 #[tokio::test]
-async fn ws_h1_dial_without_an_aligned_profile_keeps_the_historical_request() {
+async fn ws_h1_dial_without_a_profile_keeps_the_historical_request() {
+    let head = dial_and_capture(None, DialResumeOptions::default()).await;
+    let names: Vec<&str> = head
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_once(": ").map(|(n, _)| n))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Host",
+            "Connection",
+            "Upgrade",
+            "Sec-WebSocket-Version",
+            "Sec-WebSocket-Key",
+            "x-outline-resume-capable"
+        ]
+    );
+}
+
+/// Safari writes the measured request in the canonical case, with the
+/// key, `Connection` and `Upgrade` at the end.
+#[tokio::test]
+async fn ws_h1_dial_with_safari_writes_canonical_case_and_the_measured_tail() {
     let safari = PROFILES.iter().find(|p| p.tls == TlsFingerprint::Safari).unwrap();
-    for profile in [Some(safari), None] {
-        let head = dial_and_capture(profile, DialResumeOptions::default()).await;
-        let names: Vec<&str> = head
-            .lines()
-            .skip(1)
-            .filter_map(|l| l.split_once(": ").map(|(n, _)| n))
-            .collect();
-        let mut expected =
-            vec!["Host", "Connection", "Upgrade", "Sec-WebSocket-Version", "Sec-WebSocket-Key"];
-        if profile.is_some() {
-            expected.extend([
-                "user-agent",
-                "accept",
-                "accept-language",
-                "accept-encoding",
-                "sec-fetch-site",
-                "sec-fetch-mode",
-                "sec-fetch-dest",
-            ]);
-        }
-        expected.push("x-outline-resume-capable");
-        assert_eq!(names, expected, "profile={:?}", profile.map(|p| p.name));
-        if profile.is_some() {
-            assert_eq!(header_value(&head, "sec-fetch-dest"), "websocket");
-            assert_eq!(header_value(&head, "accept"), safari.accept);
-        }
-    }
+    let head = dial_and_capture(Some(safari), DialResumeOptions::default()).await;
+    let names: Vec<&str> = head
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_once(": ").map(|(n, _)| n))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Host",
+            "Origin",
+            "Pragma",
+            "Sec-Fetch-Site",
+            "Sec-WebSocket-Version",
+            "Sec-Fetch-Mode",
+            "User-Agent",
+            "Sec-WebSocket-Extensions",
+            "Cache-Control",
+            "Sec-Fetch-Dest",
+            "Accept",
+            "Accept-Language",
+            "Priority",
+            "Accept-Encoding",
+            "Sec-WebSocket-Key",
+            "Connection",
+            "Upgrade",
+            "X-Outline-Resume-Capable"
+        ]
+    );
+    assert_eq!(header_value(&head, "sec-fetch-dest"), "websocket");
+    assert_eq!(header_value(&head, "accept"), "*/*");
 }
 
 const KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";

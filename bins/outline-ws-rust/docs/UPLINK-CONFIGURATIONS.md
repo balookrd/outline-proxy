@@ -1815,23 +1815,29 @@ ClientHello, confirmed by measurement on 2026-10-30 (Chrome Android
 156.0.8078.73 on Android 17 matches desktop Chrome 156 byte for byte,
 trust anchors included). 0-RTT is not aligned with the browsers.
 
-The headers follow the request the carrier really makes, as Chrome 156 and
-Firefox 159 send it (measured 2026-10-30, same-origin requests), separately
-for HTTP/1.1 and HTTP/2: xhttp's downlink GET is a `fetch()` GET, its uplink
-POST a `fetch()` POST, and the `ws_*` carriers open a WebSocket. So a Chrome
-WebSocket carries `Pragma`/`Cache-Control: no-cache`, `Origin` and
-`Sec-WebSocket-Extensions` but no client hints, `Sec-Fetch-*` or `Accept`;
-a fetch carries `Accept: */*`, `Referer`, `Priority` (and `Origin` on a
-POST); Firefox adds `te: trailers` on h2 and h3 and sends
-`Sec-Fetch-Dest: empty` for a WebSocket. HTTP/3 uses the HTTP/2 table (h3
-assumed, not measured), so Chrome's `priority: u=1, i` and Firefox's
-`te: trailers` go out on h3 too; Firefox `te: trailers` on h3 is the least
-certain assumption. With `random` or per-wire overrides, warm/idle H3
-carriers are counted per (server, family), so there can be up to one warm set
-per family per server. Safari keeps
-its previous browser headers (not measured: URLSession is not Safari). The carrier's
-own `X-Outline-*` headers follow the browser ones. Without a profile no
-browser header is sent at all.
+The headers follow the request the carrier really makes, as Chrome 156,
+Firefox 159 (measured 2026-10-30) and Safari 27.0.1 (2026-10-31) send it
+(same-origin requests), separately for HTTP/1.1, HTTP/2 and HTTP/3: xhttp's
+downlink GET is a `fetch()` GET, its uplink POST a `fetch()` POST, and the
+`ws_*` carriers open a WebSocket. So a Chrome WebSocket carries
+`Pragma`/`Cache-Control: no-cache`, `Origin` and `Sec-WebSocket-Extensions`
+but no client hints, `Sec-Fetch-*` or `Accept`; a fetch carries `Accept: */*`,
+`Referer`, `Priority` (and `Origin` on a POST); Firefox adds `te: trailers` on
+h2 and sends `Sec-Fetch-Dest: empty` for a WebSocket. Safari has its own table
+per request kind (its GET and POST differ in order), `Priority: u=3, i`,
+`Accept-Encoding` with `zstd`, and opens a WebSocket over h2 as an extended
+CONNECT. On HTTP/3 Chromium sends exactly its h2 headers; Firefox's fetch is
+its h2 set without `te: trailers` and with `alt-used: <authority>`. Two
+assumptions remain: Safari's h3 is not measured and uses its h2 tables, and
+`alt-used` was measured on a non-default port (on 443 the authority is written
+without the port). HTTP/1.1 header names go out in the browser's case on every
+carrier (`ws_h1` writes the request itself, `xhttp_h1` through a vendored
+hyper, see `PATCHES.md`). xhttp's POST body is binary, so there is no
+`Content-Type`, as in all three browsers (measured). With `random` or per-wire
+overrides, warm/idle H3 carriers are counted per (server, family), so there
+can be up to one warm set per family per server. The carrier's own
+`X-Outline-*` headers follow the browser ones. Without a profile no browser
+header is sent at all.
 
 Two stable strategies are offered. **`process_stable` (the
 recommended default)** picks one identity at process start and uses

@@ -21,6 +21,8 @@ double_must_use = "allow"
 # it or the upstream `h3` resolves and sockudo-ws fails to compile.
 [patch.crates-io]
 h3 = { path = "../../vendor/h3" }
+# outline-transport builds the patched hyper API too (see PATCHES.md).
+hyper = { path = "../../vendor/hyper" }
 # outline-transport sets the patched quinn-proto API (see PATCHES.md), so the
 # detached workspace must repeat this patch as well.
 quinn-proto = { path = "../../vendor/quinn-proto" }

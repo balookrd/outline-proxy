@@ -3,9 +3,10 @@
 Единый источник истины по локальным патчам на vendored-крейты.
 *English version: [PATCHES.md](PATCHES.md).*
 
-Монорепо vendor'ит и патчит четыре upstream-крейта, чтобы HTTP/3 WebSocket-путь
-был практичен. Пропатченные копии лежат в `vendor/h3`, `vendor/sockudo-ws`,
-`vendor/quinn-proto` и `vendor/rustls`, подключены через `[patch.crates-io]` в корневом `Cargo.toml`. Файлы `.patch` в
+Монорепо vendor'ит и патчит пять upstream-крейтов, чтобы HTTP/3 WebSocket-путь
+был практичен, а рукопожатия носителей походили на браузерные. Пропатченные копии
+лежат в `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`, `vendor/rustls` и
+`vendor/hyper`, подключены через `[patch.crates-io]` в корневом `Cargo.toml`. Файлы `.patch` в
 этом каталоге — review- и maintenance-артефакты; сами сборки используют
 vendored-копии.
 
@@ -16,6 +17,7 @@ vendored-копии.
   upstream-форматировании git (см. примечание ниже).
 - **quinn-proto** — crates.io `quinn-proto 0.11.15`.
 - **rustls** — crates.io `rustls 0.23.40`.
+- **hyper** — crates.io `hyper 1.10.1`.
 
 ## Артефакты-патчи
 
@@ -25,11 +27,13 @@ vendored-копии.
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws/src` (однострочное изменение `Cargo.toml` описано ниже, в патч не входит) |
 | [`quinn-proto-0.11.15.patch`](quinn-proto-0.11.15.patch) | все отличия `vendor/quinn-proto` от upstream `quinn-proto 0.11.15` (`src/` и `Cargo.toml`) |
 | [`rustls-0.23.40.patch`](rustls-0.23.40.patch) | все отличия `vendor/rustls` от upstream `rustls 0.23.40` (`src/` и `Cargo.toml`) |
+| [`hyper-1.10.1.patch`](hyper-1.10.1.patch) | все отличия `vendor/hyper` от upstream `hyper 1.10.1` (только `src/`) |
 
 ## Модули-гейты
 
-Весь production-код обращается к пропатченной поверхности API через четыре
-модуля-гейта (клиентский h3, серверный h3, клиентский QUIC, клиентский rustls):
+Весь production-код обращается к пропатченной поверхности API через пять
+модулей-гейтов (клиентский h3, серверный h3, клиентский QUIC, клиентский rustls,
+клиентский hyper):
 
 - [`crates/outline-transport/src/h3/vendored.rs`](crates/outline-transport/src/h3/vendored.rs) — клиент
   (`Protocol::WEBSOCKET` на Extended CONNECT, `Stream::from_h3_client` +
@@ -44,6 +48,10 @@ vendored-копии.
   `rustls` (`ClientConfig::client_hello_shape` с `ClientHelloShape` /
   `ExtensionOrder`, `kx_group::SECP521R1` и `apply_tls_hello_profile`, который
   превращает браузерный TLS-профиль hello — QUIC или TCP — в `ClientHelloShape`).
+- [`crates/outline-transport/src/hyper_vendored.rs`](crates/outline-transport/src/hyper_vendored.rs) — клиент, пропатченный
+  `hyper` (`ext::HeaderCaseMap`: `header_case_map` строит браузерное HTTP/1.1-написание
+  каждого заголовка через `request_headers::h1_wire_name`, а `set_h1_header_case`
+  прикрепляет карту к запросу `xhttp_h1` — без профиля ничего не прикрепляет).
 
 Ребейз vendored-крейтов на новый upstream начинай (и в идеале заканчивай) в
 этих файлах-гейтах. CI следит, чтобы `sockudo_ws` упоминался только в
@@ -53,8 +61,10 @@ vendored-копии.
 (`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
 `kx_group::SECP521R1`) — только в `crates/outline-transport/src/tls_vendored.rs`
 (шаг «invariant — patched rustls API only behind the gate module» в
-`.github/workflows/ci.yml`); тестовые модули — исключение: они намеренно изображают
-клиентскую сторону.
+`.github/workflows/ci.yml`), а пропатченный API hyper (`HeaderCaseMap`) — только в
+`crates/outline-transport/src/hyper_vendored.rs` (шаг «invariant — patched hyper
+API only behind the gate module»); тестовые модули — исключение: они намеренно
+изображают клиентскую сторону.
 
 ## h3 (0.0.8)
 
@@ -375,6 +385,29 @@ vendored-крейт с клиентом, получил бы компрессо�
 Проверка соответствия: применить патч к чистой копии crates.io 0.23.40 (в объёме
 vendored-файлов) и сравнить `diff -r` — пусто.
 
+## hyper (1.10.1)
+
+Базовая версия — crates.io `hyper 1.10.1`. Vendored-копия — upstream без изменений
+(`Cargo.toml`, `Cargo.toml.orig`, `LICENSE`, `src/`; без vendoring-обрезки:
+dev-зависимости hyper для path-крейта вне workspace не резолвятся). Изменения,
+которые несёт `hyper-1.10.1.patch`:
+
+1. **public-header-case-map** (`src/ext/mod.rs`) — только видимость:
+   `hyper::ext::HeaderCaseMap` становится `pub` (поле остаётся приватным), как и
+   его существующие `default()` (пустая карта) и `append(name, orig: Bytes)`; оба
+   получают doc-комментарии, которых требует `#![deny(missing_docs)]`. Поведение не
+   меняется: HTTP/1.1-клиент hyper и так пишет имя каждого заголовка из
+   request-extension `HeaderCaseMap`, если она есть (n-е написание имени — с его
+   n-м значением, имена без написания — как раньше), просто снаружи крейта её
+   нельзя было построить. `xhttp_h1` пользуется ею, чтобы писать имена заголовков в
+   регистре браузера — у Chrome `sec-ch-ua*` строчными, остальные имена
+   канонически, — чего не умеет единственная публичная опция hyper,
+   `title_case_headers` (Title-Case для всех имён). Серверные крейты карту не
+   строят, их провод не меняется.
+
+Проверка соответствия: применить патч к чистой копии crates.io 1.10.1 (в объёме
+vendored-файлов) и сравнить `diff -r` — пусто.
+
 ## Регенерация
 
 Чтобы пересобрать артефакты-патчи после правки vendored-исходников:
@@ -384,11 +417,17 @@ vendored-файлов) и сравнить `diff -r` — пусто.
   сделать `git diff vendor/h3` по изменённым файлам.
 - **sockudo-ws** — сделать diff `vendor/sockudo-ws/src` против `src/` чистого
   GitHub-checkout'а `v1.7.5` (оба уже в raw upstream-форматировании).
-- **quinn-proto / rustls** — распаковать чистый крейт с crates.io в новый
+- **quinn-proto / rustls / hyper** — распаковать чистый крейт с crates.io в новый
   одноразовый git-репозиторий (оставив только vendored-набор файлов),
   закоммитить, скопировать поверх vendored-файлы и взять `git diff` как патч;
   проверка — применить его `patch -p1` к другой чистой копии и сравнить `diff -r`
   (пусто).
 
+`cargo update`, сдвинувший `hyper` выше 1.10.1 в любом из lock-файлов (корневом
+или `android/rust`), оставляет патч как `[[patch.unused]]`, и сборка падает с
+E0603 (приватный `HeaderCaseMap`); вместо этого перевендорь новую версию вместе
+с патчем.
+
 Не поднимай upstream-версии и не убирай `[patch.crates-io]` без явной
-причины: HTTP/3 WebSocket-путь зависит от этих патчей.
+причины: HTTP/3 WebSocket-путь зависит от этих патчей, а браузерный регистр
+заголовков `xhttp_h1` — от патча hyper.

@@ -1,0 +1,36 @@
+diff --git a/src/ext/mod.rs b/src/ext/mod.rs
+index ac78879..477a79d 100644
+--- a/src/ext/mod.rs
++++ b/src/ext/mod.rs
+@@ -158,7 +158,7 @@ impl fmt::Debug for Protocol {
+ /// [`preserve_header_case`]: /client/struct.Client.html#method.preserve_header_case
+ #[cfg(all(any(feature = "client", feature = "server"), feature = "http1"))]
+ #[derive(Clone, Debug)]
+-pub(crate) struct HeaderCaseMap(HeaderMap<Bytes>);
++pub struct HeaderCaseMap(HeaderMap<Bytes>);
+ 
+ #[cfg(all(any(feature = "client", feature = "server"), feature = "http1"))]
+ impl HeaderCaseMap {
+@@ -179,8 +179,9 @@ impl HeaderCaseMap {
+         self.0.get_all(name).into_iter()
+     }
+ 
++    /// Returns an empty map.
+     #[cfg(any(feature = "client", feature = "server"))]
+-    pub(crate) fn default() -> Self {
++    pub fn default() -> Self {
+         Self(Default::default())
+     }
+ 
+@@ -189,8 +190,10 @@ impl HeaderCaseMap {
+         self.0.insert(name, orig);
+     }
+ 
++    /// Appends a spelling for that header name; the n-th spelling goes with
++    /// the n-th value of that name in the message's `HeaderMap`.
+     #[cfg(any(feature = "client", feature = "server"))]
+-    pub(crate) fn append<N>(&mut self, name: N, orig: Bytes)
++    pub fn append<N>(&mut self, name: N, orig: Bytes)
+     where
+         N: IntoHeaderName,
+     {

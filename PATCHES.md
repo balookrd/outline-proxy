@@ -3,9 +3,10 @@
 Single source of truth for the local patches applied to the vendored crates.
 *Русская версия: [PATCHES.ru.md](PATCHES.ru.md).*
 
-The monorepo vendors and patches four upstream crates to make the HTTP/3
-WebSocket path practical. The patched copies live in `vendor/h3`,
-`vendor/sockudo-ws`, `vendor/quinn-proto` and `vendor/rustls`, wired in through the root `Cargo.toml`
+The monorepo vendors and patches five upstream crates to make the HTTP/3
+WebSocket path practical and the carriers' handshakes browser-shaped. The patched
+copies live in `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`,
+`vendor/rustls` and `vendor/hyper`, wired in through the root `Cargo.toml`
 `[patch.crates-io]`. The `.patch` files in this directory are review and
 maintenance artifacts; actual builds use the vendored copies.
 
@@ -16,6 +17,7 @@ Regenerated against:
   git formatting (see the note below).
 - **quinn-proto** — crates.io `quinn-proto 0.11.15`.
 - **rustls** — crates.io `rustls 0.23.40`.
+- **hyper** — crates.io `hyper 1.10.1`.
 
 ## Patch artifacts
 
@@ -25,11 +27,12 @@ Regenerated against:
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | all `vendor/sockudo-ws/src` deviations (the one-line `Cargo.toml` change is documented below, not in the patch) |
 | [`quinn-proto-0.11.15.patch`](quinn-proto-0.11.15.patch) | all `vendor/quinn-proto` deviations from upstream `quinn-proto 0.11.15` (`src/` and `Cargo.toml`) |
 | [`rustls-0.23.40.patch`](rustls-0.23.40.patch) | all `vendor/rustls` deviations from upstream `rustls 0.23.40` (`src/` and `Cargo.toml`) |
+| [`hyper-1.10.1.patch`](hyper-1.10.1.patch) | all `vendor/hyper` deviations from upstream `hyper 1.10.1` (`src/` only) |
 
 ## Gate modules
 
-All production code reaches the patched API surface through four gate
-modules (client h3, server h3, client QUIC, client rustls):
+All production code reaches the patched API surface through five gate
+modules (client h3, server h3, client QUIC, client rustls, client hyper):
 
 - [`crates/outline-transport/src/h3/vendored.rs`](crates/outline-transport/src/h3/vendored.rs) — client
   (`Protocol::WEBSOCKET` on Extended CONNECT, `Stream::from_h3_client` +
@@ -44,6 +47,11 @@ modules (client h3, server h3, client QUIC, client rustls):
   `rustls` (`ClientConfig::client_hello_shape` with `ClientHelloShape` /
   `ExtensionOrder`, `kx_group::SECP521R1`, and `apply_tls_hello_profile`, which
   turns a browser TLS hello profile — QUIC or TCP — into a `ClientHelloShape`).
+- [`crates/outline-transport/src/hyper_vendored.rs`](crates/outline-transport/src/hyper_vendored.rs) — client, patched
+  `hyper` (`ext::HeaderCaseMap`: `header_case_map` builds the browser's HTTP/1.1
+  spelling of every header via `request_headers::h1_wire_name`, and
+  `set_h1_header_case` attaches it to an `xhttp_h1` request — nothing without a
+  profile).
 
 When rebasing the vendored crates onto a new upstream, start (and ideally
 end) at these gate files. CI enforces that `sockudo_ws` is referenced only
@@ -53,8 +61,11 @@ from the gate modules, and that the patched quinn-proto API
 (`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
 `kx_group::SECP521R1`) appears only in
 `crates/outline-transport/src/tls_vendored.rs` (the step "invariant — patched rustls
-API only behind the gate module" in `.github/workflows/ci.yml`); test modules are
-exempt because they impersonate the client side on purpose.
+API only behind the gate module" in `.github/workflows/ci.yml`), and that the
+patched hyper API (`HeaderCaseMap`) appears only in
+`crates/outline-transport/src/hyper_vendored.rs` (the step "invariant — patched
+hyper API only behind the gate module"); test modules are exempt because they
+impersonate the client side on purpose.
 
 ## h3 (0.0.8)
 
@@ -378,6 +389,28 @@ use them too.
 Conformance check: apply the patch to a clean copy of crates.io 0.23.40 (the
 retained file set) and compare with `diff -r` — empty.
 
+## hyper (1.10.1)
+
+Baseline — crates.io `hyper 1.10.1`. The vendored copy is verbatim upstream
+(`Cargo.toml`, `Cargo.toml.orig`, `LICENSE`, `src/`; no vendoring trim — hyper's
+dev-dependencies are not resolved for a non-member path crate). Changes carried by
+`hyper-1.10.1.patch`:
+
+1. **public-header-case-map** (`src/ext/mod.rs`) — visibility only:
+   `hyper::ext::HeaderCaseMap` becomes `pub` (its field stays private), and so do
+   its existing `default()` (an empty map) and `append(name, orig: Bytes)`; both
+   gain the doc comments `#![deny(missing_docs)]` requires. No behaviour changes:
+   hyper's HTTP/1.1 client already writes each header name from a `HeaderCaseMap`
+   request extension when one is present (the n-th spelling of a name with its
+   n-th value, names without a spelling as before), it simply could not be built
+   outside the crate. `xhttp_h1` uses it to write header names in the browser's
+   case — Chrome's `sec-ch-ua*` lowercase, every other name canonical — which
+   hyper's only public option, `title_case_headers` (every name Title-Case), cannot
+   do. The server crates never build the map, so their wire is unchanged.
+
+Conformance check: apply the patch to a clean copy of crates.io 1.10.1 (the
+retained file set) and compare with `diff -r` — empty.
+
 ## Regenerating
 
 To rebuild the patch artifacts after changing vendored source:
@@ -389,10 +422,15 @@ To rebuild the patch artifacts after changing vendored source:
   ```
 - **sockudo-ws** — diff `vendor/sockudo-ws/src` against a clean `v1.7.5`
   GitHub checkout's `src/` (both already in raw upstream formatting).
-- **quinn-proto / rustls** — unpack the clean crate from crates.io into a fresh
+- **quinn-proto / rustls / hyper** — unpack the clean crate from crates.io into a fresh
   throwaway git repository (keeping only the vendored file set), commit it, copy the
   vendored files over it and take `git diff` as the patch; check by applying it with
   `patch -p1` to another clean copy and comparing with `diff -r` (empty).
 
+A `cargo update` that moves `hyper` past 1.10.1 in either lockfile (root or
+`android/rust`) leaves the patch as `[[patch.unused]]` and the build then fails with
+E0603 (private `HeaderCaseMap`); re-vendor the new version with the patch instead.
+
 Do not raise the upstream versions or drop `[patch.crates-io]` without a
-deliberate reason: the HTTP/3 WebSocket path depends on these patches.
+deliberate reason: the HTTP/3 WebSocket path depends on these patches, and
+`xhttp_h1`'s browser header case on the hyper one.

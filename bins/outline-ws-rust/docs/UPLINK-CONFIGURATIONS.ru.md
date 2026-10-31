@@ -1843,22 +1843,28 @@ Android 17 совпадает с десктопным Chrome 156 байт в б�
 anchors). 0-RTT с браузерами не выровнен.
 
 Заголовки повторяют тот запрос, который носитель делает на самом деле, —
-так, как его шлют Chrome 156 и Firefox 159 (замер 2026-10-30, запросы
-same-origin), отдельно для HTTP/1.1 и HTTP/2: GET-даунлинк xhttp — это
-`fetch()` GET, его POST-аплинк — `fetch()` POST, а носители `ws_*` открывают
-WebSocket. Поэтому WebSocket Chrome несёт `Pragma`/`Cache-Control: no-cache`,
-`Origin` и `Sec-WebSocket-Extensions`, но без client hints, `Sec-Fetch-*` и
-`Accept`; fetch — `Accept: */*`, `Referer`, `Priority` (и `Origin` у POST);
-Firefox добавляет `te: trailers` на h2 и h3 и шлёт `Sec-Fetch-Dest: empty`
-у WebSocket. HTTP/3 использует таблицу HTTP/2 (h3 предположен, не замерен),
-поэтому `priority: u=1, i` у Chrome и `te: trailers` у Firefox уходят и на h3;
-`te: trailers` Firefox на h3 — наименее надёжное допущение. При `random` или
-переопределениях по wire тёплые и простаивающие H3-носители считаются по
-(сервер, семейство), так что на сервер может приходиться до одного тёплого
-набора на семейство. Safari оставляет
-прежние браузерные заголовки (не замерен: URLSession — не Safari). Собственные
-заголовки носителя `X-Outline-*` идут после браузерных. Без профиля
-браузерных заголовков нет вовсе.
+так, как его шлют Chrome 156, Firefox 159 (замер 2026-10-30) и Safari 27.0.1
+(2026-10-31; запросы same-origin), отдельно для HTTP/1.1, HTTP/2 и HTTP/3:
+GET-даунлинк xhttp — это `fetch()` GET, его POST-аплинк — `fetch()` POST, а
+носители `ws_*` открывают WebSocket. Поэтому WebSocket Chrome несёт
+`Pragma`/`Cache-Control: no-cache`, `Origin` и `Sec-WebSocket-Extensions`, но
+без client hints, `Sec-Fetch-*` и `Accept`; fetch — `Accept: */*`, `Referer`,
+`Priority` (и `Origin` у POST); Firefox добавляет `te: trailers` на h2 и шлёт
+`Sec-Fetch-Dest: empty` у WebSocket. У Safari своя таблица на каждый вид
+запроса (GET и POST различаются порядком), `Priority: u=3, i`,
+`Accept-Encoding` с `zstd`, а WebSocket по h2 он открывает как extended
+CONNECT. На HTTP/3 Chromium шлёт ровно свои h2-заголовки; fetch у Firefox —
+его набор h2 без `te: trailers` и с `alt-used: <authority>`. Остаются два
+допущения: h3 у Safari не замерен и берёт его таблицы h2, а `alt-used`
+замерен на нестандартном порту (для 443 authority пишется без порта).
+Имена заголовков HTTP/1.1 уходят в регистре браузера на каждом носителе
+(`ws_h1` пишет запрос сам, `xhttp_h1` — через вендоренный hyper, см.
+`PATCHES.ru.md`). Тело POST у xhttp бинарное, поэтому `Content-Type` нет —
+как у всех трёх браузеров (замерено). При `random` или переопределениях по
+wire тёплые и простаивающие H3-носители считаются по (сервер, семейство), так
+что на сервер может приходиться до одного тёплого набора на семейство.
+Собственные заголовки носителя `X-Outline-*` идут после браузерных. Без
+профиля браузерных заголовков нет вовсе.
 
 Доступны две стабильные стратегии. **`process_stable`
 (рекомендуемый дефолт)** выбирает одну идентичность на старте

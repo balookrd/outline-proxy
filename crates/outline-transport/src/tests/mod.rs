@@ -1142,7 +1142,8 @@ pub(crate) const MEASURED_CONTENT_LENGTH: &str = "4";
 /// carrier has no page path) and the POST has no `Content-Type` (xhttp's
 /// body is binary; the dump's `text/plain;charset=UTF-8` is a string body).
 ///
-/// Only Chromium and Firefox profiles are measured.
+/// Chromium and Firefox were measured 2026-10-30; Safari 27.0.1 on
+/// 2026-10-31 (its h3 is not measured and uses the h2 rows).
 pub(crate) fn measured_browser_headers(
     profile: &crate::fingerprint_profile::Profile,
     kind: MeasuredKind,
@@ -1282,7 +1283,93 @@ pub(crate) fn measured_browser_headers(
             ("priority", "u=4".into(), true),
             ("te", "trailers".into(), true),
         ],
-        (TlsFingerprint::Safari, ..) => panic!("Safari is not measured"),
+        // Safari 27.0.1 (2026-10-31): fetch GET and POST differ in order.
+        (TlsFingerprint::Safari, MeasuredKind::WebSocket, true) => vec![
+            ("Host", MEASURED_AUTHORITY.into(), true),
+            ("Origin", MEASURED_ORIGIN.into(), true),
+            ("Pragma", "no-cache".into(), true),
+            ("Sec-Fetch-Site", "same-origin".into(), true),
+            ("Sec-WebSocket-Version", "13".into(), true),
+            ("Sec-Fetch-Mode", "websocket".into(), true),
+            ("User-Agent", ua.into(), true),
+            ("Sec-WebSocket-Extensions", "permessage-deflate".into(), true),
+            ("Cache-Control", "no-cache".into(), true),
+            ("Sec-Fetch-Dest", "websocket".into(), true),
+            ("Accept", "*/*".into(), true),
+            ("Accept-Language", al.into(), true),
+            ("Priority", "u=3, i".into(), true),
+            ("Accept-Encoding", ae.into(), true),
+            ("Sec-WebSocket-Key", MEASURED_WS_KEY.into(), true),
+            ("Connection", "Upgrade".into(), true),
+            ("Upgrade", "websocket".into(), true),
+        ],
+        (TlsFingerprint::Safari, MeasuredKind::WebSocket, false) => vec![
+            ("origin", MEASURED_ORIGIN.into(), true),
+            ("pragma", "no-cache".into(), true),
+            ("sec-fetch-site", "same-origin".into(), true),
+            ("sec-websocket-version", "13".into(), true),
+            ("sec-fetch-mode", "websocket".into(), true),
+            ("user-agent", ua.into(), true),
+            ("sec-websocket-extensions", "permessage-deflate".into(), true),
+            ("cache-control", "no-cache".into(), true),
+            ("sec-fetch-dest", "websocket".into(), true),
+            ("accept", "*/*".into(), true),
+            ("accept-language", al.into(), true),
+            ("priority", "u=3, i".into(), true),
+            ("accept-encoding", ae.into(), true),
+        ],
+        (TlsFingerprint::Safari, MeasuredKind::FetchGet, true) => vec![
+            ("Host", MEASURED_AUTHORITY.into(), true),
+            ("Sec-Fetch-Dest", "empty".into(), true),
+            ("User-Agent", ua.into(), true),
+            ("Accept", "*/*".into(), true),
+            ("Referer", referer, true),
+            ("Sec-Fetch-Site", "same-origin".into(), true),
+            ("Sec-Fetch-Mode", "cors".into(), true),
+            ("Accept-Language", al.into(), true),
+            ("Priority", "u=3, i".into(), true),
+            ("Accept-Encoding", ae.into(), true),
+            ("Connection", "keep-alive".into(), true),
+        ],
+        (TlsFingerprint::Safari, MeasuredKind::FetchGet, false) => vec![
+            ("sec-fetch-dest", "empty".into(), true),
+            ("user-agent", ua.into(), true),
+            ("accept", "*/*".into(), true),
+            ("referer", referer, true),
+            ("sec-fetch-site", "same-origin".into(), true),
+            ("sec-fetch-mode", "cors".into(), true),
+            ("accept-language", al.into(), true),
+            ("priority", "u=3, i".into(), true),
+            ("accept-encoding", ae.into(), true),
+        ],
+        (TlsFingerprint::Safari, MeasuredKind::FetchPost, true) => vec![
+            ("Host", MEASURED_AUTHORITY.into(), true),
+            ("Accept", "*/*".into(), true),
+            ("Origin", MEASURED_ORIGIN.into(), true),
+            ("Sec-Fetch-Site", "same-origin".into(), true),
+            ("Sec-Fetch-Mode", "cors".into(), true),
+            ("User-Agent", ua.into(), true),
+            ("Referer", referer, true),
+            ("Sec-Fetch-Dest", "empty".into(), true),
+            ("Content-Length", MEASURED_CONTENT_LENGTH.into(), true),
+            ("Accept-Language", al.into(), true),
+            ("Priority", "u=3, i".into(), true),
+            ("Accept-Encoding", ae.into(), true),
+            ("Connection", "keep-alive".into(), true),
+        ],
+        (TlsFingerprint::Safari, MeasuredKind::FetchPost, false) => vec![
+            ("accept", "*/*".into(), true),
+            ("origin", MEASURED_ORIGIN.into(), true),
+            ("sec-fetch-site", "same-origin".into(), true),
+            ("sec-fetch-mode", "cors".into(), true),
+            ("user-agent", ua.into(), true),
+            ("referer", referer, true),
+            ("sec-fetch-dest", "empty".into(), true),
+            ("content-length", MEASURED_CONTENT_LENGTH.into(), true),
+            ("accept-language", al.into(), true),
+            ("priority", "u=3, i".into(), true),
+            ("accept-encoding", ae.into(), true),
+        ],
     };
     rows.into_iter()
         .filter(|(_, _, included)| *included)
@@ -1293,10 +1380,9 @@ pub(crate) fn measured_browser_headers(
         .collect()
 }
 
-/// Chromium and Firefox profiles of the catalog (the measured families).
+/// Every profile of the catalog (all three families are measured).
 pub(crate) fn measured_profiles() -> Vec<&'static crate::fingerprint_profile::Profile> {
-    use crate::fingerprint_profile::{PROFILES, TlsFingerprint};
-    PROFILES.iter().filter(|p| p.tls != TlsFingerprint::Safari).collect()
+    crate::fingerprint_profile::PROFILES.iter().collect()
 }
 
 /// `(lowercase name, value)` pairs in `HeaderMap` (= wire) order.

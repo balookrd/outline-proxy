@@ -1,12 +1,13 @@
 //! Request headers of the xhttp carriers: the per-session POST template
 //! (`build_post_headers` / `build_post_template`, cloned per POST with its
 //! `Content-Length` set in place) and the `xhttp_h1` requests as hyper really
-//! writes them (raw bytes through `spawn_h1`), against the measured browser
+//! writes them (`get_request` / `post_request` sent through `spawn_h1`, raw
+//! bytes, header case included), against the measured browser
 //! requests (`crate::tests::measured_browser_headers`). The h2 requests are
 //! checked on the wire in `tests/h2_profile.rs`.
 
 use bytes::Bytes;
-use http::{HeaderMap, Method, Request, Version, header};
+use http::{HeaderMap, HeaderName, Request, header};
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -14,9 +15,10 @@ use crate::fingerprint_profile::{PROFILES, Profile, TlsFingerprint};
 use crate::request_headers::{CarrierSlots, HttpVersion, RequestKind};
 use crate::resumption::SessionId;
 use crate::tests::{
-    MEASURED_ORIGIN, MeasuredKind, header_pairs, lowercased, measured_browser_headers,
+    MEASURED_AUTHORITY, MEASURED_ORIGIN, MeasuredKind, header_pairs, lowercased,
+    measured_browser_headers,
 };
-use crate::xhttp::{RequestBody, SessionRequest, XhttpTarget};
+use crate::xhttp::{RequestBody, XhttpTarget};
 
 fn target() -> XhttpTarget {
     XhttpTarget {
@@ -35,10 +37,10 @@ fn profile_cases() -> Vec<Option<&'static Profile>> {
 }
 
 fn is_measured(profile: Option<&Profile>) -> bool {
-    matches!(profile.map(|p| p.tls), Some(TlsFingerprint::Chromium | TlsFingerprint::Firefox))
+    profile.is_some()
 }
 
-/// Browser part of a request for the unmeasured cases (Safari, no profile),
+/// Browser part of a request for the unmeasured case (no profile),
 /// as `request_headers` renders it (pinned by its own snapshot test).
 fn unmeasured(
     profile: Option<&Profile>,
@@ -84,7 +86,15 @@ fn post_templates_follow_the_browser_fetch_post() {
                 let h1v = version == HttpVersion::H1;
                 let mut expected = match profile {
                     Some(p) if is_measured(profile) => {
-                        lowercased(measured_browser_headers(p, MeasuredKind::FetchPost, h1v))
+                        let mut rows =
+                            lowercased(measured_browser_headers(p, MeasuredKind::FetchPost, h1v));
+                        // Firefox over h3: no `te`, `alt-used` before `sec-fetch-dest`.
+                        if version == HttpVersion::H3 && p.tls == TlsFingerprint::Firefox {
+                            rows.retain(|(n, _)| n != "te");
+                            let at = rows.iter().position(|(n, _)| n == "sec-fetch-dest").unwrap();
+                            rows.insert(at, ("alt-used".into(), MEASURED_AUTHORITY.into()));
+                        }
+                        rows
                     },
                     _ => unmeasured(
                         profile,
@@ -114,7 +124,7 @@ fn post_templates_follow_the_browser_fetch_post() {
 
 /// Setting a POST's length keeps the header's position, so every POST of a
 /// session has the same wire order; a template without the header (h2/h3
-/// under Safari or no profile) stays without it.
+/// without a profile) stays without it.
 #[test]
 fn post_length_is_set_in_place() {
     for profile in profile_cases() {
@@ -194,25 +204,15 @@ async fn h1_wire_head(profile: Option<&Profile>, request: Request<RequestBody>) 
     server.await.unwrap()
 }
 
-/// hyper Title-Cases every name; this is the case it writes.
-fn hyper_title_case(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut upper = true;
-    for c in name.chars() {
-        out.push(if upper {
-            c.to_ascii_uppercase()
-        } else {
-            c.to_ascii_lowercase()
-        });
-        upper = c == '-';
-    }
-    out
+/// A name as the browser writes it on HTTP/1.1 (`request_headers::h1_wire_name`).
+fn wire_name(name: &str, profile: &Profile) -> String {
+    let name = HeaderName::from_bytes(name.as_bytes()).unwrap();
+    crate::request_headers::h1_wire_name(&name, Some(profile)).into_owned()
 }
 
-/// The measured h1 request head, with the one case deviation hyper forces:
-/// Chrome's lowercase client hints come out Title-Cased (hyper's per-name case
-/// map is private; it can only Title-Case every name). Carrier headers follow,
-/// Title-Cased.
+/// The measured h1 request head, byte for byte: names in the browser's case
+/// (Chrome's `sec-ch-ua*` lowercase, every other name canonical). Carrier
+/// headers follow, in the case the browser would give them (canonical).
 fn expected_h1_head(
     profile: &Profile,
     kind: MeasuredKind,
@@ -221,18 +221,46 @@ fn expected_h1_head(
 ) -> String {
     let mut out = format!("{request_line}\r\n");
     for (name, value) in measured_browser_headers(profile, kind, true) {
-        let name = if name.starts_with("sec-ch-ua") {
-            hyper_title_case(&name)
-        } else {
-            name
-        };
         out.push_str(&format!("{name}: {value}\r\n"));
     }
     for (name, value) in carrier {
-        out.push_str(&format!("{}: {value}\r\n", hyper_title_case(name)));
+        out.push_str(&format!("{}: {value}\r\n", wire_name(name, profile)));
     }
     out.push_str("\r\n");
     out
+}
+
+/// The case rule spelled out, independent of the measured tables: Chromium
+/// writes its client hints lowercase and every other name canonically;
+/// Firefox and Safari write every name canonically; without a profile every
+/// name stays lowercase.
+fn assert_browser_case(head: &str, profile: Option<&Profile>) {
+    let names: Vec<&str> = head
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_once(": ").map(|(n, _)| n))
+        .collect();
+    assert!(!names.is_empty());
+    for name in names {
+        let lower = name.to_ascii_lowercase();
+        let canonical: String = lower
+            .split('-')
+            .map(|seg| {
+                let mut seg = seg.to_owned();
+                seg[..1].make_ascii_uppercase();
+                seg
+            })
+            .collect::<Vec<_>>()
+            .join("-");
+        let want = match profile {
+            None => lower.clone(),
+            Some(p) if p.tls == TlsFingerprint::Chromium && lower.starts_with("sec-ch-ua") => {
+                lower.clone()
+            },
+            Some(_) => canonical,
+        };
+        assert_eq!(name, want, "profile={:?}", profile.map(|p| p.name));
+    }
 }
 
 /// Without an aligned profile, hyper writes lowercase names, as before.
@@ -261,28 +289,8 @@ async fn xhttp_h1_get_is_the_browser_fetch_get() {
     ];
     for profile in profile_cases() {
         // What `open_h1_get` sends.
-        let mut request = Request::builder()
-            .method(Method::GET)
-            .uri(target.origin_form_path())
-            .version(Version::HTTP_11)
-            .body(super::empty_request_body())
-            .unwrap();
-        let origin = target.web_origin();
-        *request.headers_mut() = super::build_session_request_headers(
-            SessionRequest {
-                profile,
-                kind: RequestKind::FetchGet,
-                version: HttpVersion::H1,
-                origin: &origin,
-                host: Some(&target.authority),
-            },
-            Some(id),
-            true,
-            false,
-            0,
-            true,
-        )
-        .unwrap();
+        let request =
+            super::h1::get_request(&target, Some(id), true, false, 0, true, profile).unwrap();
         let head = h1_wire_head(profile, request).await;
         let line = "GET /xh/abcDEF123456 HTTP/1.1";
         let expected = match profile {
@@ -304,6 +312,7 @@ async fn xhttp_h1_get_is_the_browser_fetch_get() {
             ),
         };
         assert_eq!(head, expected, "profile={:?}", profile.map(|p| p.name));
+        assert_browser_case(&head, profile);
     }
 }
 
@@ -313,15 +322,15 @@ async fn xhttp_h1_post_is_the_browser_fetch_post() {
     let carrier = vec![udp_records()];
     for profile in profile_cases() {
         // What `post_one` sends for a 4-byte frame with seq 0.
-        let mut headers = super::h1::build_post_headers(&target, true, profile).unwrap();
-        super::set_post_content_length(&mut headers, 4);
-        let mut request = Request::builder()
-            .method(Method::POST)
-            .uri(format!("{}0", target.origin_form_seq_prefix()))
-            .version(Version::HTTP_11)
-            .body(super::full_request_body(Bytes::from_static(b"data")))
-            .unwrap();
-        *request.headers_mut() = headers;
+        let base = super::h1::build_post_headers(&target, true, profile).unwrap();
+        let request = super::h1::post_request(
+            &target.origin_form_seq_prefix(),
+            &base,
+            0,
+            Bytes::from_static(b"data"),
+            profile,
+        )
+        .unwrap();
         let head = h1_wire_head(profile, request).await;
         let line = "POST /xh/abcDEF123456/0 HTTP/1.1";
         let expected = match profile {
@@ -344,5 +353,6 @@ async fn xhttp_h1_post_is_the_browser_fetch_post() {
             ),
         };
         assert_eq!(head, expected, "profile={:?}", profile.map(|p| p.name));
+        assert_browser_case(&head, profile);
     }
 }

@@ -327,13 +327,12 @@ pub const PROFILES: &[Profile] = &[
         name: "safari-27-macos",
         os: ProfileOs::MacOs,
         tls: TlsFingerprint::Safari,
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         accept_language: "en-US,en;q=0.9",
-        // Safari still does NOT advertise `zstd` — Apple has not
-        // shipped the algorithm in WebKit. Keep the list short so the
-        // profile reads as Safari rather than Chrome-with-different-UA.
-        accept_encoding: "gzip, deflate, br",
+        // Measured 2026-10-31 (Safari 27.0.1): over HTTPS Safari offers
+        // `zstd` too (over plain http only `gzip, deflate`).
+        accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: None,
         sec_ch_ua_mobile: None,
         sec_ch_ua_platform: None,

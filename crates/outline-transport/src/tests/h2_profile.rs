@@ -348,8 +348,8 @@ fn profile_cases() -> Vec<Option<&'static Profile>> {
     cases
 }
 
-/// The browser part of a request the measured tables do not cover (Safari's
-/// historical headers, nothing without a profile), as `request_headers`
+/// The browser part of a request the measured tables do not cover (nothing
+/// without a profile), as `request_headers`
 /// renders it — pinned by its own snapshot test there.
 fn unmeasured_browser_headers(
     profile: Option<&Profile>,
@@ -368,7 +368,7 @@ fn unmeasured_browser_headers(
 }
 
 fn is_measured(profile: Option<&Profile>) -> bool {
-    matches!(profile.map(|p| p.tls), Some(TlsFingerprint::Chromium | TlsFingerprint::Firefox))
+    profile.is_some()
 }
 
 #[tokio::test]
@@ -491,7 +491,7 @@ async fn xhttp_h2_packet_up_post_sends_the_browser_fetch_post() {
         };
         expected.push(("x-outline-udp-records".to_owned(), "1".to_owned()));
         if !is_measured(profile) {
-            // Safari / no profile: hyper appends its own, as before.
+            // No profile: hyper appends its own, as before.
             expected.push(("content-length".to_owned(), "4".to_owned()));
         }
         assert_eq!(ex.server_headers, expected, "profile={:?}", profile.map(|p| p.name));
