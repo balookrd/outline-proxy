@@ -28,8 +28,12 @@ use crate::{AbortOnDrop, DnsCache, TransportStream, bind_addr_for, bind_udp_sock
 
 use crate::resumption::NegotiatedResume;
 
+use outline_wire::h3_datagram::{DatagramDemux, DropReason};
+
 use super::vendored::{self, H3RequestStreamHandle, H3SendRequestHandle};
-use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri, websocket_path};
+use super::{
+    H3ConnectionGuard, H3DatagramBinding, H3WsStream, websocket_h3_target_uri, websocket_path,
+};
 
 // Upper bound for opening a new H3 WebSocket stream on top of an already
 // established QUIC connection.  Without this bound, a silently-broken shared
@@ -228,6 +232,11 @@ pub(super) struct SharedH3Connection {
     #[allow(dead_code)]
     endpoint: TrackedEndpoint,
     connection: quinn::Connection,
+    /// Routes inbound HTTP/3 datagrams to the request streams that negotiated
+    /// them. `Some` only when this connection may carry client UDP as
+    /// datagrams (see `connect_h3_connection`); a stream offers datagrams only
+    /// on such a connection.
+    datagrams: Option<Arc<DatagramDemux>>,
     // Kept alive to prevent the h3 driver from initiating graceful shutdown
     // (H3_NO_ERROR) prematurely. The h3 layer treats the last SendRequest
     // being dropped as a signal that no more requests will be made.
@@ -317,7 +326,7 @@ impl SharedH3Connection {
         path: &str,
         resume: &crate::dial_plan::DialResumeOptions,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
-    ) -> Result<(H3WsStream, NegotiatedResume)> {
+    ) -> Result<(H3WsStream, NegotiatedResume, Option<H3DatagramBinding>)> {
         match self
             .open_websocket_inner(server_name, server_port, path, resume, profile)
             .await
@@ -343,7 +352,7 @@ impl SharedH3Connection {
         path: &str,
         resume: &crate::dial_plan::DialResumeOptions,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
-    ) -> Result<(H3WsStream, NegotiatedResume)> {
+    ) -> Result<(H3WsStream, NegotiatedResume, Option<H3DatagramBinding>)> {
         if !self.is_open() {
             bail!("shared h3 connection is already closed");
         }
@@ -368,6 +377,16 @@ impl SharedH3Connection {
             request.headers_mut(),
         );
         crate::resumption::apply_resume_request_headers(resume, request.headers_mut());
+        // The datagram offer goes out only where datagrams can flow: the caller
+        // asked for it AND this connection has a demultiplexer. Narrowing the
+        // options here (not in the shared header writer) keeps the h1 / h2
+        // carriers, including this dial's own fallbacks, byte-for-byte as before;
+        // the narrowed copy also gates the echo parse below.
+        let resume = &crate::dial_plan::DialResumeOptions {
+            udp_datagram_requested: resume.udp_datagram_requested && self.datagrams.is_some(),
+            ..*resume
+        };
+        crate::resumption::apply_udp_datagram_request_header(resume, request.headers_mut());
 
         let mut stream: H3RequestStreamHandle = timeout(h3_open_stream_timeout(), async {
             let mut send_request = self.send_request.lock().await;
@@ -383,6 +402,17 @@ impl SharedH3Connection {
                 h3_open_stream_timeout().as_secs()
             )
         })??;
+
+        // Registered before the response is read: the server may send its first
+        // datagram right after accepting, and one arriving before the stream is
+        // registered would be dropped as unknown. Dropped again below unless
+        // the server accepts.
+        let quarter_stream_id = vendored::request_quarter_stream_id(&stream);
+        let registration = self
+            .datagrams
+            .as_ref()
+            .filter(|_| resume.udp_datagram_requested)
+            .map(|demux| demux.register(quarter_stream_id));
 
         let response = timeout(h3_open_stream_timeout(), stream.recv_response())
             .await
@@ -405,6 +435,22 @@ impl SharedH3Connection {
             bail!("server negotiated a websocket extension this client does not implement");
         }
         let negotiated = crate::resumption::parse_resume_response_echo(resume, response.headers());
+        if resume.udp_datagram_requested {
+            let state = if negotiated.udp_datagram_accepted {
+                "negotiated"
+            } else {
+                "declined"
+            };
+            metrics::record_udp_h3_datagram_session("ws_h3", state);
+        }
+        let datagram =
+            registration
+                .filter(|_| negotiated.udp_datagram_accepted)
+                .map(|registration| H3DatagramBinding {
+                    connection: self.connection.clone(),
+                    quarter_stream_id,
+                    registration,
+                });
 
         self.streams_opened.fetch_add(1, Ordering::Relaxed);
         Ok((
@@ -414,6 +460,7 @@ impl SharedH3Connection {
                 _shared_connection: Arc::clone(self),
             },
             negotiated,
+            datagram,
         ))
     }
 }
@@ -627,7 +674,7 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         server_port: u16,
         path: &str,
     ) -> Result<TransportStream> {
-        let (ws, negotiated) = conn
+        let (ws, negotiated, datagram) = conn
             .open_websocket(server_name, server_port, path, &self.resume, self.profile)
             .await?;
         Ok(TransportStream::H3 {
@@ -636,6 +683,7 @@ impl crate::shared_dial::WsDialer for H3Dialer {
             downgraded_from: None,
             ack_prefix_advertised_by_server: negotiated.ack_prefix_advertised_by_server,
             symmetric_replay_advertised_by_server: negotiated.symmetric_replay_advertised_by_server,
+            datagram,
         })
     }
 }
@@ -691,13 +739,17 @@ async fn connect_h3_connection(
     let connecting = endpoint
         .connect_with(client_config, server_addr, server_name)
         .with_context(|| format!("failed to initiate QUIC connection to {server_addr}"))?;
+    // Read inside the dial scope, like the client config above: the dial's
+    // browser profile decides whether this connection can receive datagrams.
+    let offers_datagrams = crate::quic::h3_dial_offers_udp_datagrams();
     let (connection_handle, mut driver, send_request) = timeout(fresh_connect_timeout(), async {
         let connection = connecting
             .await
             .with_context(|| format!("QUIC handshake failed for {server_addr}"))?;
         crate::quic::raise_h3_receive_window(&connection);
         let connection_handle = connection.clone();
-        let (driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection))
+        let (driver, send_request) = vendored::h3_client_builder(offers_datagrams)
+            .build(h3_quinn::Connection::new(connection))
             .await
             .context("HTTP/3 handshake failed")?;
         Ok::<_, anyhow::Error>((connection_handle, driver, send_request))
@@ -709,6 +761,12 @@ async fn connect_h3_connection(
             fresh_connect_timeout().as_secs()
         )
     })??;
+
+    // One demultiplexer per connection, and only where datagrams can flow both
+    // ways: we receive them (`offers_datagrams`) and the peer announced a
+    // datagram frame size (`max_datagram_size`).
+    let datagrams = (offers_datagrams && connection_handle.max_datagram_size().is_some())
+        .then(|| DatagramDemux::spawn(connection_handle.clone(), Arc::new(record_datagram_drop)));
 
     let id = h3_registry().next_id();
     // Counted only for pooled dials: a probe has no cache key, never enters the
@@ -742,6 +800,7 @@ async fn connect_h3_connection(
         id,
         endpoint,
         connection: connection_handle.clone(),
+        datagrams,
         send_request: Mutex::new(send_request),
         idle_sweeps: AtomicU32::new(0),
         closed: AtomicBool::new(false),
@@ -751,6 +810,15 @@ async fn connect_h3_connection(
         _driver_task: driver_task,
         _conn_life: ConnLifeGuard::new(conn_life),
     })
+}
+
+/// `on_drop` of every client datagram demux (ws_h3 and xhttp_h3 carriers).
+pub(crate) fn record_datagram_drop(reason: DropReason) {
+    metrics::record_udp_h3_datagram_dropped(match reason {
+        DropReason::UnknownStream => "unknown_stream",
+        DropReason::Malformed => "malformed",
+        DropReason::QueueFull => "queue_full",
+    });
 }
 
 pub(crate) fn classify_h3_close(err: &str) -> &'static str {

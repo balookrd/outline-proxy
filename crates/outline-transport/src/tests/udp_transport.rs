@@ -10,6 +10,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -17,33 +18,62 @@ use bytes::Bytes;
 use outline_wire::ss2022::Ss2022Error;
 use parking_lot::Mutex;
 use shadowsocks_crypto::CipherKind;
+use tokio::sync::Notify;
 
 use super::UdpWsTransport;
 use crate::carrier_padding::CarrierPadding;
 use crate::frame_io::DatagramChannel;
 
 /// Datagram channel that hands back a pre-queued sequence of inbound
-/// datagrams (one per `recv_datagram`). Uplink sends are discarded.
+/// datagrams (one per `recv_datagram`) and records every uplink send. Shared
+/// with the other datagram-channel tests of the crate (e.g. the HTTP/3
+/// datagram channel, which uses it as its stream fallback).
 #[derive(Default)]
-struct MockChannel {
+pub(crate) struct MockChannel {
     inbound: Mutex<VecDeque<Bytes>>,
+    /// Every datagram handed to `send_datagram`, in order.
+    pub(crate) sent: Mutex<Vec<Bytes>>,
+    pub(crate) closed: AtomicBool,
+    /// When set, an empty queue waits for the next `push` (or `close`) instead
+    /// of reporting EOF, like a live carrier with nothing to deliver yet.
+    wait_when_empty: bool,
+    pushed: Notify,
 }
 
 impl MockChannel {
-    fn push(&self, packet: Vec<u8>) {
+    /// A channel whose empty queue waits instead of reporting EOF.
+    #[cfg_attr(not(feature = "h3"), allow(dead_code))]
+    pub(crate) fn waiting() -> Self {
+        Self { wait_when_empty: true, ..Self::default() }
+    }
+
+    pub(crate) fn push(&self, packet: Vec<u8>) {
         self.inbound.lock().push_back(Bytes::from(packet));
+        self.pushed.notify_one();
     }
 }
 
 #[async_trait]
 impl DatagramChannel for MockChannel {
-    async fn send_datagram(&self, _data: Bytes) -> Result<()> {
+    async fn send_datagram(&self, data: Bytes) -> Result<()> {
+        self.sent.lock().push(data);
         Ok(())
     }
     async fn recv_datagram(&self) -> Result<Option<Bytes>> {
-        Ok(self.inbound.lock().pop_front())
+        loop {
+            if let Some(packet) = self.inbound.lock().pop_front() {
+                return Ok(Some(packet));
+            }
+            if !self.wait_when_empty || self.closed.load(Ordering::SeqCst) {
+                return Ok(None);
+            }
+            self.pushed.notified().await;
+        }
     }
-    async fn close(&self) {}
+    async fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.pushed.notify_one();
+    }
 }
 
 /// Builds a server→client SS2022-UDP AES datagram the client will accept:
@@ -265,4 +295,18 @@ async fn read_packet_payload_failures_classify_as_payload_integrity() {
         Some("udp_out_of_order"),
         "a replayed datagram must classify as a payload error: {err:#}",
     );
+}
+
+/// SS-UDP offers UDP over HTTP/3 datagrams on `ws_h3` dials only (xhttp is a
+/// separate step); every other carrier keeps the plain stream.
+#[test]
+fn only_h3_ss_udp_dials_offer_h3_datagrams() {
+    use crate::config::TransportMode;
+    assert!(super::udp_datagram_requested(TransportMode::WsH3));
+    assert!(super::udp_datagram_requested(TransportMode::XhttpH3));
+    for mode in
+        [TransportMode::WsH1, TransportMode::WsH2, TransportMode::XhttpH1, TransportMode::XhttpH2]
+    {
+        assert!(!super::udp_datagram_requested(mode), "{mode:?}");
+    }
 }

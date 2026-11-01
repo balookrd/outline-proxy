@@ -12,6 +12,10 @@ pub(super) struct CoreFields {
     pub(super) udp_datagrams_total: IntCounterVec,
     pub(super) udp_oversized_dropped_total: IntCounterVec,
     pub(super) udp_malformed_dropped_total: IntCounterVec,
+    pub(super) udp_h3_datagrams_total: IntCounterVec,
+    pub(super) udp_h3_datagram_fallback_total: IntCounterVec,
+    pub(super) udp_h3_datagram_dropped_total: IntCounterVec,
+    pub(super) udp_h3_datagram_sessions_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> CoreFields {
@@ -81,6 +85,44 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
          costs only the offending datagram; the association keeps serving.",
         ["cause"]
     );
+    let udp_h3_datagrams_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_udp_h3_datagrams_total",
+        "UDP packets carried as HTTP/3 datagrams (RFC 9297) on a negotiated \
+         session, by direction, transport (ws_h3 / xhttp_h3) and proto (ss / vless).",
+        ["direction", "transport", "proto"]
+    );
+    let udp_h3_datagram_fallback_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_udp_h3_datagram_fallback_total",
+        "UDP packets of a datagram-negotiated HTTP/3 session that rode the \
+         stream instead (too large for the current datagram size, the \
+         datagram send failed, or a VLESS packet sent before the server's \
+         first reply), by direction, transport and proto.",
+        ["direction", "transport", "proto"]
+    );
+    let udp_h3_datagram_dropped_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_udp_h3_datagram_dropped_total",
+        "Inbound HTTP/3 datagrams dropped, by reason: unknown_stream / malformed / queue_full \
+         (demultiplexer: no live stream for the id, bad prefix, the stream's receive \
+         queue is full; VLESS: not exactly one record, or a padded datagram that \
+         decodes to nothing) and early (VLESS: arrived before the response header). The connection keeps serving.",
+        ["reason"]
+    );
+    let udp_h3_datagram_sessions_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_udp_h3_datagram_sessions_total",
+        "HTTP/3 request streams that offered UDP over HTTP/3 datagrams, by \
+         transport and state (negotiated: the server echoed the offer; declined: \
+         it did not). Counts anchor streams, including standby-pool refills and \
+         probe dials, not user sessions.",
+        ["transport", "state"]
+    );
 
     build_info.with_label_values(&[env!("CARGO_PKG_VERSION")]).set(1);
     start_time_seconds.set(
@@ -100,5 +142,9 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
         udp_datagrams_total,
         udp_oversized_dropped_total,
         udp_malformed_dropped_total,
+        udp_h3_datagrams_total,
+        udp_h3_datagram_fallback_total,
+        udp_h3_datagram_dropped_total,
+        udp_h3_datagram_sessions_total,
     }
 }

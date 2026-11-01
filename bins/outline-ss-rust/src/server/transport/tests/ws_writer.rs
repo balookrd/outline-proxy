@@ -21,6 +21,7 @@ use crate::server::tests::sample_config;
 use crate::server::constants::WS_CONTROL_FLUSH_INTERVAL_SECS;
 
 use super::super::carrier_padding::CoverParams;
+use super::super::h3_datagram::DatagramActivity;
 use super::super::ws_socket::{WsFrame, WsSocket};
 use super::super::ws_writer::run_ws_writer;
 use outline_wire::padding::PaddingScheme;
@@ -146,6 +147,7 @@ async fn writer_flushes_periodically_without_sending_on_quiet_channel() {
         AppProtocol::Shadowsocks,
         None,
         None,
+        None,
     ));
 
     // Advance virtual time past three flush intervals.
@@ -199,6 +201,7 @@ async fn writer_emits_cover_frames_on_quiet_channel_when_enabled() {
         AppProtocol::Shadowsocks,
         cover,
         None,
+        None,
     ));
 
     // Five 100 ms gaps should fire roughly five cover frames; assert a safe
@@ -208,6 +211,60 @@ async fn writer_emits_cover_frames_on_quiet_channel_when_enabled() {
     assert!(
         counters.send.load(Ordering::SeqCst) >= 3,
         "cover frames must be sent on an idle channel when cover is enabled (got {})",
+        counters.send.load(Ordering::SeqCst),
+    );
+
+    drop(ctrl_tx);
+    drop(data_tx);
+    let _ = task.await;
+}
+
+/// On a stream that agreed HTTP/3 datagrams the downlink bypasses the writer.
+/// While datagrams keep going out within every cover gap, no cover frame may
+/// appear on the stream (it would interleave with live traffic); once they
+/// stop, cover resumes on the usual idle cadence.
+#[tokio::test(start_paused = true)]
+async fn writer_holds_cover_while_datagrams_flow_and_resumes_when_they_stop() {
+    let counters = Arc::new(Counters::default());
+    let writer = MockWriter(Arc::clone(&counters));
+    let (ctrl_tx, ctrl_rx) = mpsc::channel::<MockMsg>(8);
+    let (data_tx, data_rx) = mpsc::channel::<MockMsg>(8);
+    let activity = Arc::new(DatagramActivity::default());
+    let cover = Some(CoverParams {
+        scheme: PaddingScheme::new(8, 8),
+        jitter_min_ms: 100,
+        jitter_max_ms: 100,
+    });
+
+    let task = tokio::spawn(run_ws_writer::<MockWs>(
+        writer,
+        ctrl_rx,
+        data_rx,
+        test_metrics(),
+        Transport::Udp,
+        Protocol::Http3,
+        AppProtocol::Shadowsocks,
+        cover,
+        None,
+        Some(Arc::clone(&activity)),
+    ));
+
+    // Live datagram downlink: one send every 40 ms for a full second.
+    for _ in 0..25 {
+        activity.note_send();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert_eq!(
+        counters.send.load(Ordering::SeqCst),
+        0,
+        "no cover frame may hit the stream while datagrams are flowing",
+    );
+
+    // Traffic stops: cover comes back within a few gaps.
+    tokio::time::sleep(Duration::from_millis(550)).await;
+    assert!(
+        counters.send.load(Ordering::SeqCst) >= 2,
+        "cover must resume once the datagram downlink goes quiet (got {})",
         counters.send.load(Ordering::SeqCst),
     );
 

@@ -90,6 +90,7 @@ async fn xhttp_client_round_trip_through_mock_server() -> Result<()> {
         0,
         None,
         false,
+        false,
     )
     .await?;
     // The mock server does not echo `X-Outline-Session`, so the
@@ -175,6 +176,7 @@ async fn xhttp_client_stream_one_round_trip_through_mock_server() -> Result<()> 
         false,
         0,
         None,
+        false,
         false,
     )
     .await?;
@@ -375,4 +377,24 @@ fn stream_chunks(
         let chunk = rx.recv().await?;
         Some((Ok(Frame::data(chunk)), rx))
     })
+}
+
+/// A session that never POSTed sends no FIN — unless its uplink rode HTTP/3
+/// datagrams, in which case the server holds a session with seq 0 unspent and
+/// only the FIN tells it the client is gone.
+#[tokio::test]
+async fn fin_at_seq_zero_only_when_the_uplink_rode_datagrams() {
+    use std::sync::atomic::AtomicU64;
+
+    let fired = Arc::new(Mutex::new(Vec::<u64>::new()));
+    for even_unposted in [false, true] {
+        let log = Arc::clone(&fired);
+        let fin = super::FinOnDrop::new(Arc::new(AtomicU64::new(0)), move |seq| {
+            Box::pin(async move { log.lock().push(seq) })
+        })
+        .even_unposted(even_unposted);
+        drop(fin);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(*fired.lock(), vec![0], "only the datagram session sends the seq-0 FIN");
 }

@@ -263,6 +263,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `[[server.h3.certs]]` | SNI-selected cert array for the QUIC listener; same shape as `[[server.certs]]`. When the `[server.h3]` table omits this array entirely, it inherits `[[server.certs]]` |
 | `[server.h3].alpn` | List of ALPN protocols advertised on the QUIC endpoint. Only `"h3"` (HTTP/3 + WebSocket-over-HTTP/3) is supported. Defaults to `["h3"]` |
 | `[server.h3].initial_mtu` | Largest QUIC datagram the server starts with, as a **UDP payload** size (path MTU minus 28 for IPv4, 48 for IPv6). Range 1200–1452. Set it only on a host whose path is below the standard 1500: unset, the server starts at 1400, the kernel rejects every datagram with `EMSGSIZE`, and quinn falls back to the 1200-byte QUIC floor instead of the largest size that fits — costing ~12% of every packet plus retries on each handshake. A pinned host also stops probing above the pinned value |
+| `[server.h3].udp_datagrams` | Agree to UDP over HTTP/3 datagrams (RFC 9297) on `ws_h3` / `xhttp_h3`, default `true`. The client offers them with the request header `x-outline-udp-datagram: 1`; the server echoes it only when this is on and the connection has a datagram size. `false` never agrees, so UDP stays on the stream as before; read once at startup, so a change takes effect after a restart. See [UDP over HTTP/3 datagrams](#udp-over-http3-datagrams) |
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
 | `prefer_ipv4_upstream` | Prefer IPv4 for upstream DNS resolution and connects; useful when IPv6 paths are broken |
@@ -820,6 +821,7 @@ The metrics set includes:
 - Per-user UDP payload throughput
 - Aggregate per-client payload throughput across TCP and UDP
 - UDP response datagram counts
+- UDP over HTTP/3 datagrams: datagrams, stream fallback, drops and negotiation outcome
 - Process RSS / virtual memory gauges
 - Process thread count
 - Virtual memory category gauges for anonymous, file-backed, stack, and special mappings
@@ -845,6 +847,26 @@ The dashboard covers:
 - TCP and UDP throughput by user
 - UDP request rate and response datagram rate
 - UDP replay drops by user and protocol
+- UDP over HTTP/3 datagrams: datagram and fallback rates, drops by reason, negotiation outcome
+
+## UDP over HTTP/3 datagrams
+
+On `ws_h3` and `xhttp_h3` the server can carry client UDP (Shadowsocks / SS2022 and VLESS) in HTTP/3 DATAGRAM frames (RFC 9297) bound to the request stream, falling back to the stream per packet.
+
+```toml
+[server.h3]
+# Agree to UDP over HTTP/3 datagrams (default true). false: never agree,
+# UDP stays on the stream exactly as before. Read once at startup: takes effect after a restart.
+# udp_datagrams = true
+```
+
+- **Agreement.** The client sends `x-outline-udp-datagram: 1`; the server echoes it when `udp_datagrams` is on and `max_datagram_size()` is available. SETTINGS now also carry `H3_DATAGRAM=1` and `ENABLE_CONNECT_PROTOCOL=1`. No agreement leaves the wire unchanged.
+- **Sizes.** Maximum UDP payload 1452, starting MTU 1400 (`[server.h3].initial_mtu` overrides it; do not pin 1200 unless the path requires it, about 10% of packets then travel at 1200). A packet larger than the current `max_datagram_size()` goes over the stream. Datagram buffers are 1 MiB. Browsers' QUIC inside the tunnel is about 1250 bytes and fits the downlink after PMTUD; before it, large packets use the stream.
+- **VLESS.** Plain UDP only (mux / XUDP are declined). Downlink datagrams start after the first uplink datagram, so none overtakes the VLESS response header.
+- **Padding.** The writer holds cover frames while datagrams flow; cover never travels as a datagram.
+- **Rollout.** Deploy servers before clients so datagrams engage; either order is safe. Roll back with `udp_datagrams = false` (here or in the client's `[quic]`) and restart that service (no rebuild needed).
+
+Metrics: `outline_ss_udp_h3_datagrams_total{direction,proto}` (`up` received, `down` handed to QUIC), `outline_ss_udp_h3_datagram_fallback_total{direction,proto}` (packets that rode the stream on an agreed session), `outline_ss_udp_h3_datagram_dropped_total{reason}` (`unknown_stream`, `malformed`, `queue_full`) and `outline_ss_udp_h3_datagram_sessions_total{state}` (`negotiated` / `declined`). During a rollout watch `sessions_total{state="negotiated"}` per node.
 
 ## HTTP/3 Performance Tuning
 
@@ -885,7 +907,8 @@ sysctl -w kern.ipc.maxsockbuf=33554432
 | QUIC connection receive window | 64 MB | Aggregate throughput ceiling per connection |
 | WebSocket write buffer | 512 KB | Batches outbound data to reduce syscall overhead |
 | WebSocket backpressure limit | 16 MB | Maximum buffered data before a slow-client connection is dropped |
-| Max UDP payload size | 1 350 bytes | Safe value for internet paths; avoids IP fragmentation |
+| Max UDP payload size | 1 452 bytes | Largest payload that fits a 1500-byte path (1500 − 48 for IPv6 UDP); leaves room for HTTP/3 datagrams of a nested QUIC. The starting MTU stays 1 400 |
+| H3 datagram buffers (send + recv) | 1 MiB | UDP over HTTP/3 datagrams, per connection |
 | QUIC ping interval | 10 s | Keeps connections alive through NAT and firewalls |
 | QUIC idle timeout | 120 s | Maximum inactivity before the server closes a connection |
 

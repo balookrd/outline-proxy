@@ -31,9 +31,23 @@ pub(in crate::server) use sockudo_ws::{
     error::CloseReason as H3CloseReason,
 };
 
+/// Server h3 builder: HTTP/3 DATAGRAM (RFC 9297) and Extended CONNECT
+/// (RFC 9220) announced in SETTINGS.
+pub(super) fn h3_server_builder() -> h3::server::Builder {
+    let mut builder = h3::server::builder();
+    builder.enable_datagram(true).enable_extended_connect(true);
+    builder
+}
+
 /// Server-role h3 CONNECT request stream (the h3 side of one WebSocket).
 pub(in crate::server) type H3ServerRequestStream =
     h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
+
+/// Quarter stream id of a request stream (`stream_id >> 2`): the prefix of
+/// every HTTP/3 datagram bound to it (RFC 9297).
+pub(in crate::server) fn request_quarter_stream_id(stream: &H3ServerRequestStream) -> u64 {
+    stream.id().index()
+}
 
 /// FIN the send side of a request stream **without** emitting the GREASE frame.
 ///

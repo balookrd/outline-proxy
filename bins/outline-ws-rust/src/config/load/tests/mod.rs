@@ -291,4 +291,19 @@ idle_timeout_secs = 60
     let quic = load_quic_config(parsed.quic.as_ref());
     assert_eq!(quic.keepalive_secs, Some(25));
     assert_eq!(quic.idle_timeout_secs, Some(60));
+    assert!(quic.udp_datagrams, "udp_datagrams defaults to true");
+}
+
+#[test]
+fn quic_udp_datagrams_parses_and_unknown_key_is_rejected() {
+    use super::super::schema::ConfigFile;
+    use super::quic::load_quic_config;
+
+    let off: ConfigFile = toml::from_str("[quic]\nudp_datagrams = false\n").unwrap();
+    assert!(!load_quic_config(off.quic.as_ref()).udp_datagrams);
+    let on: ConfigFile = toml::from_str("[quic]\nudp_datagrams = true\n").unwrap();
+    assert!(load_quic_config(on.quic.as_ref()).udp_datagrams);
+    assert!(load_quic_config(None).udp_datagrams);
+
+    assert!(toml::from_str::<ConfigFile>("[quic]\nudp_datagram = false\n").is_err());
 }

@@ -26,6 +26,13 @@ pub const PADDING_HEADER: &str = "x-padding";
 /// a peer that predates the feature keeps the historical unframed wire.
 pub const UDP_RECORDS_HEADER: &str = "x-outline-udp-records";
 
+/// SS-UDP over an HTTP/3 carrier using QUIC DATAGRAM frames (see
+/// [`crate::h3_datagram`]). The client sends `1` on the request that opens a UDP
+/// session; the server echoes `1` when it will accept datagrams. Datagrams are
+/// used only when both sides said `1`, so a peer that predates the feature keeps
+/// the historical stream wire.
+pub const UDP_DATAGRAM_HEADER: &str = "x-outline-udp-datagram";
+
 /// The single value either side sends to opt into record framing. Any other
 /// value (or absence) means "not negotiated".
 pub const UDP_RECORDS_ENABLED: &str = "1";

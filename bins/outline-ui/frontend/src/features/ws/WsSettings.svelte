@@ -131,6 +131,7 @@
   let quicReceiveWindow = $state<number | null>(null);
   let quicKeepaliveSecs = $state<number | null>(null);
   let quicIdleTimeoutSecs = $state<number | null>(null);
+  let quicUdpDatagrams = $state<boolean>(true);
 
   // H2
   // `null` = key absent: windows then follow the carrier (ws_h2 / xhttp_h2).
@@ -266,6 +267,7 @@
       quicReceiveWindow = config.quic?.receive_window ?? null;
       quicKeepaliveSecs = config.quic?.keepalive_secs ?? null;
       quicIdleTimeoutSecs = config.quic?.idle_timeout_secs ?? null;
+      quicUdpDatagrams = config.quic?.udp_datagrams ?? true;
       h2StreamWindowSize = config.h2?.initial_stream_window_size ?? null;
       h2ConnWindowSize = config.h2?.initial_connection_window_size ?? null;
       h2KeepaliveIntervalSecs = config.h2?.keepalive_interval_secs ?? null;
@@ -617,12 +619,18 @@
         return false;
       };
       const quicPatch: WsQuicConfig = {};
-      const quicChanged = [
+      let quicUdpDatagramsChanged = false;
+      if (quicUdpDatagrams !== (orig.quic?.udp_datagrams ?? true)) {
+        quicPatch.udp_datagrams = quicUdpDatagrams;
+        quicUdpDatagramsChanged = true;
+      }
+      const quicNumbersChanged = [
         setIfChanged(quicPatch, 'stream_receive_window', quicStreamReceiveWindow, orig.quic?.stream_receive_window),
         setIfChanged(quicPatch, 'receive_window', quicReceiveWindow, orig.quic?.receive_window),
         setIfChanged(quicPatch, 'keepalive_secs', quicKeepaliveSecs, orig.quic?.keepalive_secs),
         setIfChanged(quicPatch, 'idle_timeout_secs', quicIdleTimeoutSecs, orig.quic?.idle_timeout_secs),
       ].some(Boolean);
+      const quicChanged = quicNumbersChanged || quicUdpDatagramsChanged;
       if (quicChanged) {
         patch.quic = quicPatch;
       }
@@ -1546,6 +1554,12 @@
                   oninput={markDirty}
                   class="field-mono"
                 />
+              </div>
+              <div class="fieldrow">
+                <label class="switch">
+                  <input type="checkbox" bind:checked={quicUdpDatagrams} onchange={markDirty} />
+                  <span>UDP over HTTP/3 datagrams (ws_h3 / xhttp_h3)</span>
+                </label>
               </div>
             </div>
 

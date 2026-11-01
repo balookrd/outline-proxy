@@ -22,6 +22,15 @@
 # cover_jitter_min_ms = 250
 # cover_jitter_max_ms = 1500
 
+# ── UDP over HTTP/3 datagrams (RFC 9297) ─────────────────────────────────────
+# On `ws_h3` / `xhttp_h3` the client offers to carry UDP in QUIC datagrams
+# (header `x-outline-udp-datagram: 1`); the server agrees by echoing it. Packets
+# that do not fit the current datagram size go over the stream. Never offered
+# with the Safari fingerprint profile. `false` keeps UDP on the stream as before.
+#
+# [quic]
+# udp_datagrams = true
+
 # ── TCP session timeouts ─────────────────────────────────────────────────────
 # post_client_eof_downstream_secs: after the client half-closes (sent full
 # request body), how long the downstream half-flow is allowed to keep

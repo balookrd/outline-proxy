@@ -315,3 +315,26 @@ fn endpoint_array_of_tables_parses_singular_key() {
     assert_eq!(eps.len(), 1);
     assert_eq!(eps[0].path, "/pss");
 }
+
+#[test]
+fn server_h3_udp_datagrams_defaults_to_unset_and_parses() {
+    let h3 = |toml: &str| {
+        toml::from_str::<FileConfig>(toml)
+            .unwrap()
+            .server
+            .unwrap()
+            .h3
+            .unwrap()
+            .udp_datagrams
+    };
+    // Unset stays `None`; the loader resolves it to `true`.
+    assert_eq!(h3("[server.h3]\nlisten = \"0.0.0.0:443\"\n"), None);
+    assert_eq!(h3("[server.h3]\nudp_datagrams = false\n"), Some(false));
+    assert_eq!(h3("[server.h3]\nudp_datagrams = true\n"), Some(true));
+}
+
+#[test]
+fn server_h3_rejects_unknown_key_next_to_udp_datagrams() {
+    let toml = "[server.h3]\nudp_datagrams = true\nudp_datagram = true\n";
+    assert!(toml::from_str::<FileConfig>(toml).is_err());
+}

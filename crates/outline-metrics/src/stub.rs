@@ -134,6 +134,20 @@ pub fn direct_udp_counters(_direction: &str) -> &'static UdpFlowCounters {
 
 pub fn record_dropped_oversized_udp_packet(_direction: &'static str, _cause: &'static str) {}
 pub fn record_dropped_malformed_udp_packet(_cause: &'static str) {}
+pub fn record_udp_h3_datagram(
+    _direction: &'static str,
+    _transport: &'static str,
+    _proto: &'static str,
+) {
+}
+pub fn record_udp_h3_datagram_fallback(
+    _direction: &'static str,
+    _transport: &'static str,
+    _proto: &'static str,
+) {
+}
+pub fn record_udp_h3_datagram_dropped(_reason: &'static str) {}
+pub fn record_udp_h3_datagram_session(_transport: &'static str, _state: &'static str) {}
 pub fn record_uplink_selected(_transport: &'static str, _group: &str, _uplink: &str) {}
 pub fn record_runtime_failure(_transport: &'static str, _group: &str, _uplink: &str) {}
 pub fn record_runtime_failure_cause(

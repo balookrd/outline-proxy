@@ -663,6 +663,7 @@ async fn boot_h3_edge_node(parts: ClusterParts) -> Result<(H3EdgeNode, UserKey)>
         routes, services, auth, cluster, user, ..
     } = parts;
     let ctx = H3ServeCtx {
+        udp_datagrams: true,
         routes,
         services,
         auth,
@@ -735,6 +736,7 @@ async fn spawn_combined_xhttp_h3_node(
     )?;
     let registry = Arc::clone(&services.orphan_registry);
     let ctx = H3ServeCtx {
+        udp_datagrams: true,
         routes,
         services,
         auth,

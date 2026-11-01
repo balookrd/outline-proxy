@@ -86,6 +86,9 @@ fn resume() -> DialResumeOptions {
         ack_prefix_requested: true,
         symmetric_replay_requested: false,
         client_acked_offset: 0,
+        // The h1 carrier must ignore the HTTP/3 datagram offer: the exact
+        // header lists below then prove it never reaches the wire.
+        udp_datagram_requested: true,
     }
 }
 

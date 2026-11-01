@@ -1850,6 +1850,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-util",
  "mimalloc",
+ "outline-metrics",
  "outline-net",
  "outline-transport",
  "outline-wire",
@@ -2030,9 +2031,12 @@ dependencies = [
  "clap",
  "md5",
  "proptest",
+ "quinn",
+ "rcgen",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "zeroize",
 ]
 

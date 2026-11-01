@@ -17,8 +17,10 @@ use crate::{
     carrier_padding::{self, CarrierPadding},
     config::TransportMode,
     connect_transport,
+    frame_io::{DatagramGate, PacketSource},
     frame_io_ws::carrier_liveness,
     resumption::SessionId,
+    udp_datagram_requested,
 };
 
 use super::header::{MAX_VLESS_UDP_PAYLOAD, VLESS_CMD_UDP, VLESS_VERSION, build_request_header};
@@ -28,6 +30,12 @@ use super::header::{MAX_VLESS_UDP_PAYLOAD, VLESS_CMD_UDP, VLESS_VERSION, build_r
 /// the first one. Inbound: the first datagram begins with the response
 /// header `[version, addons_len, addons…]`, followed by `len || payload`
 /// records (one or more per underlying datagram).
+///
+/// On an HTTP/3 carrier whose server agreed UDP over HTTP/3 datagrams, a
+/// record may instead ride one datagram — exactly one `len || payload` record,
+/// padded like a stream message on a padded path. The first packet (it carries
+/// the request header) always rides the stream, and datagrams go out only
+/// once the response header has been read (`DatagramGate`).
 ///
 /// Decoupled from the underlying transport via [`crate::frame_io::DatagramChannel`] —
 /// works identically over WS Binary frames or QUIC datagrams.
@@ -60,6 +68,10 @@ pub struct VlessUdpTransport {
     /// Fires the throttle handler at most once per carrier. `read_packet` is
     /// `&self`, so this is interior-mutable.
     throttle_fired: std::sync::atomic::AtomicBool,
+    /// Opened once the response header is parsed: until then the HTTP/3
+    /// datagram channel underneath keeps every packet on the stream. `None`
+    /// when the carrier agreed no datagrams.
+    datagram_gate: Option<Arc<DatagramGate>>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -80,7 +92,7 @@ pub type VlessUdpWsTransport = VlessUdpTransport;
 
 impl VlessUdpTransport {
     pub fn from_websocket(
-        ws_stream: TransportStream,
+        #[cfg_attr(not(feature = "h3"), allow(unused_mut))] mut ws_stream: TransportStream,
         uuid: &[u8; 16],
         target: &TargetAddr,
         source: &'static str,
@@ -89,9 +101,37 @@ impl VlessUdpTransport {
         // On H3 the QUIC layer owns liveness; disable the WS watchdog and the
         // keepalive Ping (the latter is unsafe on H3). See `carrier_liveness`.
         let (idle_timeout, keepalive) = carrier_liveness(ws_stream.is_h3(), keepalive_interval);
+        // Taken before the stream is consumed, as on SS-UDP: a stream on which
+        // the server agreed UDP over HTTP/3 datagrams carries its datagram slot,
+        // and the stream channel stays underneath as the per-packet fallback.
+        #[cfg(feature = "h3")]
+        let datagram = ws_stream.take_h3_datagram();
+        #[cfg(feature = "h3")]
+        let datagram_transport = if ws_stream.xhttp_active_submode().is_some() {
+            "xhttp_h3"
+        } else {
+            "ws_h3"
+        };
         let chan: Arc<dyn crate::frame_io::DatagramChannel> =
             Arc::new(crate::frame_io_ws::from_ws_datagrams(ws_stream, idle_timeout, keepalive));
-        Self::from_channel(chan, uuid, target, source)
+        // Gated: datagrams go out only once `read_packet` has parsed the
+        // response header (see `DatagramGate`).
+        #[cfg(feature = "h3")]
+        let (chan, datagram_gate): (Arc<dyn crate::frame_io::DatagramChannel>, _) = match datagram {
+            Some(binding) => {
+                let gate = Arc::new(DatagramGate::default());
+                let channel =
+                    crate::h3::H3DatagramChannel::new(binding, chan, datagram_transport, "vless")
+                        .with_gate(Arc::clone(&gate));
+                (Arc::new(channel), Some(gate))
+            },
+            None => (chan, None),
+        };
+        #[cfg(not(feature = "h3"))]
+        let datagram_gate = None;
+        let mut transport = Self::from_channel(chan, uuid, target, source)?;
+        transport.datagram_gate = datagram_gate;
+        Ok(transport)
     }
 
     /// Build a VLESS UDP transport over an arbitrary
@@ -117,6 +157,7 @@ impl VlessUdpTransport {
             padding,
             throttle: None,
             throttle_fired: std::sync::atomic::AtomicBool::new(false),
+            datagram_gate: None,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         })
     }
@@ -151,13 +192,16 @@ impl VlessUdpTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
-        let ws_stream =
-            connect_transport(
-                TransportDialOptions::new(cache, url, mode, source)
-                    .with_network(DialNetworkOptions { fwmark, ipv6_first, ipv4_only }),
-            )
-            .await
-            .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+        let ws_stream = connect_transport(
+            TransportDialOptions::new(cache, url, mode, source)
+                .with_network(DialNetworkOptions { fwmark, ipv6_first, ipv4_only })
+                .with_resume(DialResumeOptions {
+                    udp_datagram_requested: udp_datagram_requested(mode),
+                    ..DialResumeOptions::default()
+                }),
+        )
+        .await
+        .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
         Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval)
     }
 
@@ -205,6 +249,8 @@ impl VlessUdpTransport {
                     symmetric_replay_requested: false,
                     // No prior downstream offset to claim on UDP transports.
                     client_acked_offset: 0,
+                    // Offered on the HTTP/3 carriers, as on SS-UDP.
+                    udp_datagram_requested: udp_datagram_requested(mode),
                 }),
         )
         .await
@@ -284,11 +330,20 @@ impl VlessUdpTransport {
                     return Ok(payload);
                 }
             }
-            let next = self
+            let (source, next) = self
                 .chan
-                .recv_datagram()
+                .recv_datagram_with_source()
                 .await?
                 .ok_or_else(|| anyhow::Error::from(WsClosed))?;
+            if source == PacketSource::Datagram {
+                // Bypassed the stream, so it stays out of the stream's
+                // reassembly buffer (which may hold the head of a record an
+                // XHTTP body chunk split).
+                match self.datagram_record(&next) {
+                    Some(payload) => return Ok(payload),
+                    None => continue,
+                }
+            }
             let mut state = self.recv_state.lock();
             {
                 // Strip carrier padding before reassembly when this session
@@ -326,11 +381,50 @@ impl VlessUdpTransport {
                 }
                 let _ = state.buf.split_to(2 + addons_len);
                 state.pending_header = false;
+                if let Some(gate) = &self.datagram_gate {
+                    gate.open();
+                }
             }
             if let Some(payload) = try_split_packet(&mut state.buf)? {
                 return Ok(payload);
             }
         }
+    }
+
+    /// The payload of one HTTP/3 datagram: exactly one `len || payload` record
+    /// (inside one padding frame on a padded path). Anything else is dropped
+    /// and counted without ending the session: `early` before the response
+    /// header, `malformed` otherwise. Cover never travels as a datagram, so a
+    /// datagram that decodes to nothing (a truncated padding frame, say) is
+    /// malformed too.
+    fn datagram_record(&self, datagram: &Bytes) -> Option<Bytes> {
+        // The server sends datagrams only after the response header, which
+        // rides the stream; one that arrives first cannot be parsed.
+        if self.recv_state.lock().pending_header {
+            outline_metrics::record_udp_h3_datagram_dropped("early");
+            return None;
+        }
+        let mut record = if self.padding.scheme.is_enabled() {
+            // One datagram is one padding frame, so each decodes on its own and
+            // a bad one cannot desync the stream's decoder.
+            let mut decoder = PaddingDecoder::new();
+            let mut decoded = Vec::with_capacity(datagram.len());
+            decoder.push(datagram, &mut decoded);
+            if let Some(signal) = decoder.take_control() {
+                self.fire_throttle(signal);
+            }
+            BytesMut::from(&decoded[..])
+        } else {
+            BytesMut::from(&datagram[..])
+        };
+        let payload = try_split_packet(&mut record)
+            .ok()
+            .flatten()
+            .filter(|_| record.is_empty());
+        if payload.is_none() {
+            outline_metrics::record_udp_h3_datagram_dropped("malformed");
+        }
+        payload
     }
 
     pub async fn close(&self) -> Result<()> {
@@ -353,3 +447,7 @@ fn try_split_packet(buf: &mut BytesMut) -> Result<Option<Bytes>> {
     let _ = buf.split_to(2);
     Ok(Some(buf.split_to(len).freeze()))
 }
+
+#[cfg(test)]
+#[path = "tests/udp.rs"]
+mod tests;

@@ -30,6 +30,7 @@ pub const PATH_VLESS_XHTTP: &str = "/vlessx";
 /// them by a hidden token bit. Distinct from every split / vless path so it can
 /// coexist with `all_paths()`.
 pub const PATH_SS_WS_COMBINED: &str = "/sscomb";
+pub const PATH_SS_XHTTP_COMBINED: &str = "/ssxcomb";
 
 // ── Server config ────────────────────────────────────────────────────────────
 
@@ -121,6 +122,14 @@ impl ServerConfig {
     /// legs by listing the combined path in [`Self::with_padding`].
     pub fn with_combined_ss_ws_path(mut self) -> Self {
         self.push_endpoint(PATH_SS_WS_COMBINED, "ws_ss");
+        self
+    }
+
+    /// Add a combined SS-over-XHTTP base path ([`PATH_SS_XHTTP_COMBINED`]): the
+    /// TCP and UDP legs share it (the server's `xhttp_ss` kind registers both
+    /// the TCP and the UDP route on one path).
+    pub fn with_combined_ss_xhttp_path(mut self) -> Self {
+        self.push_endpoint(PATH_SS_XHTTP_COMBINED, "xhttp_ss");
         self
     }
 
@@ -234,6 +243,12 @@ pub enum Wire {
         url: String,
         mode: String,
     },
+    /// Combined SS-over-XHTTP: one URL carries both legs. Renders
+    /// `ss_xhttp_url` + `ss_mode`.
+    SsXhttpCombined {
+        url: String,
+        mode: String,
+    },
     VlessWs {
         url: String,
         mode: String,
@@ -247,7 +262,10 @@ pub enum Wire {
 impl Wire {
     pub fn transport(&self) -> &'static str {
         match self {
-            Wire::SsWs { .. } | Wire::SsXhttp { .. } | Wire::SsWsCombined { .. } => "ss",
+            Wire::SsWs { .. }
+            | Wire::SsXhttp { .. }
+            | Wire::SsWsCombined { .. }
+            | Wire::SsXhttpCombined { .. } => "ss",
             Wire::VlessWs { .. } | Wire::VlessXhttp { .. } => "vless",
         }
     }
@@ -268,6 +286,10 @@ impl Wire {
             },
             Wire::SsWsCombined { url, mode } => {
                 let _ = writeln!(out, "ss_ws_url = \"{url}\"");
+                let _ = writeln!(out, "ss_mode = \"{mode}\"");
+            },
+            Wire::SsXhttpCombined { url, mode } => {
+                let _ = writeln!(out, "ss_xhttp_url = \"{url}\"");
                 let _ = writeln!(out, "ss_mode = \"{mode}\"");
             },
             Wire::VlessWs { url, mode } => {

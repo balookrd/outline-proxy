@@ -132,6 +132,7 @@ pub struct QuicConfigView {
     pub receive_window: Option<u32>,
     pub keepalive_secs: Option<u64>,
     pub idle_timeout_secs: Option<u64>,
+    pub udp_datagrams: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,6 +260,7 @@ pub struct QuicConfigPatch {
     pub receive_window: Option<u32>,
     pub keepalive_secs: Option<u64>,
     pub idle_timeout_secs: Option<u64>,
+    pub udp_datagrams: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -668,6 +670,7 @@ fn extract_quic(doc: &DocumentMut) -> Option<QuicConfigView> {
             .get("idle_timeout_secs")
             .and_then(|v| v.as_integer())
             .map(|n| n as u64),
+        udp_datagrams: tbl.get("udp_datagrams").and_then(|v| v.as_bool()),
     })
 }
 
@@ -1298,6 +1301,9 @@ fn apply_quic_patch(doc: &mut DocumentMut, patch: &QuicConfigPatch) {
     }
     if let Some(v) = patch.idle_timeout_secs {
         tbl.insert("idle_timeout_secs", value(v as i64));
+    }
+    if let Some(v) = patch.udp_datagrams {
+        tbl.insert("udp_datagrams", value(v));
     }
 }
 

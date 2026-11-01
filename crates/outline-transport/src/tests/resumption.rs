@@ -116,3 +116,46 @@ fn resume_cache_forget_then_reinsert_treats_key_as_newest() {
     assert!(cache.get("uplink-1#tcp").is_none());
     assert_eq!(cache.get("uplink-0#tcp"), Some(id));
 }
+
+fn datagram_offer() -> crate::dial_plan::DialResumeOptions {
+    crate::dial_plan::DialResumeOptions {
+        udp_datagram_requested: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn udp_datagram_offer_sets_the_request_header() {
+    let mut headers = http::HeaderMap::new();
+    apply_udp_datagram_request_header(&datagram_offer(), &mut headers);
+    assert_eq!(headers.get(UDP_DATAGRAM_HEADER).unwrap(), "1");
+
+    let mut headers = http::HeaderMap::new();
+    apply_udp_datagram_request_header(&Default::default(), &mut headers);
+    assert!(headers.get(UDP_DATAGRAM_HEADER).is_none());
+}
+
+#[test]
+fn shared_resume_headers_never_carry_the_udp_datagram_offer() {
+    // The h1 / h2 carriers (also an h3 dial's fallbacks) write only these, so
+    // the offer must not leak onto them.
+    let mut headers = http::HeaderMap::new();
+    apply_resume_request_headers(&datagram_offer(), &mut headers);
+    assert!(headers.get(UDP_DATAGRAM_HEADER).is_none());
+}
+
+#[test]
+fn udp_datagram_accepted_needs_offer_and_echo() {
+    let mut echo = http::HeaderMap::new();
+    echo.insert(UDP_DATAGRAM_HEADER, http::HeaderValue::from_static("1"));
+    assert!(parse_resume_response_echo(&datagram_offer(), &echo).udp_datagram_accepted);
+    // Echo without an offer: spurious.
+    assert!(!parse_resume_response_echo(&Default::default(), &echo).udp_datagram_accepted);
+    // Offer without an echo: declined.
+    let none = http::HeaderMap::new();
+    assert!(!parse_resume_response_echo(&datagram_offer(), &none).udp_datagram_accepted);
+    // Any value other than `1` is not an acceptance.
+    let mut other = http::HeaderMap::new();
+    other.insert(UDP_DATAGRAM_HEADER, http::HeaderValue::from_static("0"));
+    assert!(!parse_resume_response_echo(&datagram_offer(), &other).udp_datagram_accepted);
+}

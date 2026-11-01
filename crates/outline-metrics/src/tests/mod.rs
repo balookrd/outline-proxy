@@ -1031,7 +1031,6 @@ fn init_exports_zero_value_request_and_session_series() {
     ));
 }
 
-#[cfg(feature = "tun")]
 fn metric_value(rendered: &str, metric: &str) -> Option<f64> {
     rendered
         .lines()
@@ -1427,4 +1426,44 @@ fn tun_tcp_bbr_handles_emit_gauges_and_a_monotonic_loss_counter() {
     ] {
         assert!(rendered.contains(expected), "missing `{expected}` in:\n{rendered}");
     }
+}
+
+#[test]
+fn render_prometheus_exports_udp_h3_datagram_series() {
+    let _guard = test_guard();
+    record_udp_h3_datagram("up", "ws_h3", "ss");
+    record_udp_h3_datagram_fallback("down", "ws_h3", "ss");
+    record_udp_h3_datagram_dropped("unknown_stream");
+    record_udp_h3_datagram_session("ws_h3", "negotiated");
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    for series in [
+        "outline_ws_udp_h3_datagrams_total{direction=\"up\",proto=\"ss\",transport=\"ws_h3\"}",
+        "outline_ws_udp_h3_datagram_fallback_total{direction=\"down\",proto=\"ss\",transport=\"ws_h3\"}",
+        "outline_ws_udp_h3_datagram_dropped_total{reason=\"unknown_stream\"}",
+        "outline_ws_udp_h3_datagram_sessions_total{state=\"negotiated\",transport=\"ws_h3\"}",
+    ] {
+        let value = metric_value(&rendered, series).unwrap_or_else(|| panic!("{series} missing"));
+        assert!(value >= 1.0, "{series} = {value}");
+    }
+}
+
+#[test]
+fn init_exports_zero_value_udp_h3_datagram_series() {
+    let _guard = test_guard();
+    init();
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    assert!(rendered.contains(
+        "outline_ws_udp_h3_datagrams_total{direction=\"down\",proto=\"vless\",transport=\"xhttp_h3\"} 0"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_udp_h3_datagram_fallback_total{direction=\"up\",proto=\"ss\",transport=\"ws_h3\"} 0"
+    ));
+    assert!(rendered.contains("outline_ws_udp_h3_datagram_dropped_total{reason=\"malformed\"} 0"));
+    assert!(rendered.contains("outline_ws_udp_h3_datagram_dropped_total{reason=\"early\"} 0"));
+    assert!(rendered.contains("outline_ws_udp_h3_datagram_dropped_total{reason=\"queue_full\"} 0"));
+    assert!(rendered.contains(
+        "outline_ws_udp_h3_datagram_sessions_total{state=\"declined\",transport=\"xhttp_h3\"} 0"
+    ));
 }

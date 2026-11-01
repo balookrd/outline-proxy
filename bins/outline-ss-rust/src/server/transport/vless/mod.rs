@@ -21,12 +21,16 @@ use super::super::{
     resumption::{Parked, ResumeOutcome, SessionId},
 };
 use super::carrier_padding;
+use super::h3_datagram::{
+    DatagramAnchor, DatagramDownlink, DatagramLink, DatagramTarget, H3DatagramRoute, LinkPolicy,
+    VLESS_PROTO_LABEL, next_link_datagram,
+};
 use super::resume_headers::ResumeContext;
 use super::sink;
 use super::throughput_monitor;
 use super::upstream_source::UpstreamSource;
 use super::vless_mux::{self, MuxAccounting, MuxRouteCtx, MuxServerCtx, MuxState};
-use super::vless_udp::{self, forward_vless_udp_client_frames};
+use super::vless_udp::{self, forward_vless_udp_client_frames, forward_vless_udp_datagram};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
 use crate::server::abort::AbortOnDrop;
@@ -65,12 +69,19 @@ use udp::try_park_vless_udp_single;
 /// shape keeps the relay — a byte-stream park for `Tcp`, a single-target
 /// VLESS-UDP one for `Udp`, a whole mux bundle for `Mux`. Any other pairing
 /// releases the relay and is served locally ([`keep_mesh_upstream_for`]).
+///
+/// `datagram` is the anchor of an HTTP/3 stream that may carry UDP over HTTP/3
+/// datagrams (`ws_h3`, `xhttp_h3`). Which command the session is decides what
+/// becomes of it, so it is only read once the upstream is established: a plain
+/// VLESS-UDP session uses its routes ([`LinkPolicy::AfterUplink`]), any other
+/// command declines them ([`LinkPolicy::Decline`]).
 pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     socket: T,
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     resume: ResumeContext,
     upstream: UpstreamSource,
+    datagram: Option<Arc<DatagramAnchor>>,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) =
@@ -81,6 +92,22 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     // identical.
     let throttle_monitor = carrier_padding::throttle_params_for_path(&route.path)
         .map(throughput_monitor::ThroughputMonitor::new);
+    // Downlink datagram output, idle (no target) until a plain VLESS-UDP
+    // session's link arms it; its activity holds the writer's cover meanwhile.
+    let datagram_downlink = datagram.as_ref().map(|anchor| {
+        Arc::new(DatagramDownlink {
+            target: Arc::new(DatagramTarget::empty()),
+            monitor: throttle_monitor.clone(),
+            metrics: Arc::clone(&server.metrics),
+            activity: anchor.downlink_activity(),
+            transport: Transport::Tcp,
+            protocol: route.protocol,
+            app_protocol: AppProtocol::Vless,
+            proto: VLESS_PROTO_LABEL,
+        })
+    });
+    let mut datagram_anchor = datagram;
+    let mut datagram_link: Option<DatagramLink> = None;
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -95,6 +122,9 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
         // drops transparently.
         carrier_padding::cover_for_path(&route.path),
         throttle_monitor.clone(),
+        datagram_downlink
+            .as_ref()
+            .map(|downlink| Arc::clone(&downlink.activity)),
     ));
     // Detection tick. Bounded: aborted when this handle drops at carrier
     // teardown, so it never outlives the carrier.
@@ -159,7 +189,11 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
                             },
                             None => data,
                         };
-                        if let Err(frame_err) = handle_vless_binary_frame(
+                        let datagrams_agreed = datagram_link.as_mut().is_some_and(|link| {
+                            link.apply_pending();
+                            link.agreed()
+                        });
+                        let result = handle_vless_binary_frame(
                             &mut state,
                             data,
                             server,
@@ -168,10 +202,28 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
                                 data_tx: &outbound_data_tx,
                                 make_binary: T::binary_msg,
                                 make_close: T::close_msg,
+                                datagram: datagram_downlink.as_ref(),
                             },
                         )
-                        .await
-                        {
+                        .await;
+                        start_datagram_link(
+                            &state,
+                            &mut datagram_anchor,
+                            &mut datagram_link,
+                            datagram_downlink.as_deref(),
+                            server,
+                        );
+                        // Records on the stream of a session that agreed
+                        // datagrams: too large for one, or sent before the
+                        // client read the response header.
+                        if let Ok(records) = result && datagrams_agreed {
+                            for _ in 0..records {
+                                server
+                                    .metrics
+                                    .record_udp_h3_datagram_fallback("up", VLESS_PROTO_LABEL);
+                            }
+                        }
+                        if let Err(frame_err) = result {
                             // Mirror the SS path: send a graceful WS close
                             // frame before tearing the channels down.  Without
                             // this the writer task exits silently and the peer
@@ -224,6 +276,28 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
                     },
                     WsFrame::Pong => {},
                     WsFrame::Text => return Err(anyhow!("text websocket frames are not supported")),
+                }
+            },
+            // Client datagrams of a plain VLESS-UDP session (the only link that
+            // yields any). The client is authenticated by now, so a failed
+            // upstream send gets the "try again" close, as on the stream.
+            datagram = next_link_datagram(&mut datagram_link), if datagram_link.is_some() => {
+                last_inbound = std::time::Instant::now();
+                if let UpstreamSession::Udp(udp) = &mut state.upstream
+                    && let Err(error) = forward_vless_udp_datagram(
+                        udp,
+                        datagram,
+                        state.user_counters.as_deref(),
+                        &server.metrics,
+                        route,
+                    )
+                    .await
+                {
+                    let _ = outbound_ctrl_tx.send(T::close_try_again_msg()).await;
+                    drop(outbound_ctrl_tx);
+                    drop(outbound_data_tx);
+                    let _ = writer_task.await;
+                    return Err(error);
                 }
             },
             // Disabled on the H3 carrier (see `WsSocket::is_h3`): a server
@@ -378,13 +452,15 @@ async fn try_park_vless_mux(
     true
 }
 
+/// Handles one decoded client frame. `Ok` carries how many VLESS-UDP records
+/// it forwarded upstream (`0` for every other command).
 async fn handle_vless_binary_frame<Msg>(
     state: &mut VlessRelayState,
     data: Bytes,
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     outbound: VlessWsOutbound<'_, Msg>,
-) -> Result<(), VlessFrameError>
+) -> Result<usize, VlessFrameError>
 where
     Msg: Send + 'static,
 {
@@ -436,7 +512,7 @@ where
             state
                 .upstream_bytes_acked
                 .fetch_add(payload_len, std::sync::atomic::Ordering::Relaxed);
-            return Ok(());
+            return Ok(0);
         },
         UpstreamSession::Udp(udp) => {
             // A relayed datagram sink that fails is retryable, not a protocol
@@ -444,7 +520,7 @@ where
             // is already authenticated, so it gets a "try again" close instead
             // of the anti-fingerprinting sink meant for unauthenticated probes.
             let is_mesh = udp.sink.is_mesh();
-            forward_vless_udp_client_frames(
+            let records = forward_vless_udp_client_frames(
                 &mut udp.client_buffer,
                 &data,
                 &mut udp.sink,
@@ -460,7 +536,7 @@ where
                     VlessFrameError::Fatal(error)
                 }
             })?;
-            return Ok(());
+            return Ok(records);
         },
         UpstreamSession::Mux(upstream) => {
             // Contexts were snapshotted when the mux upstream was established;
@@ -475,7 +551,7 @@ where
                 outbound.make_binary,
             )
             .await?;
-            return Ok(());
+            return Ok(0);
         },
         UpstreamSession::None => {},
     }
@@ -489,7 +565,7 @@ where
                 warn!(path = %route.path, buffered = state.header_buffer.len(), "vless parse error: request header too large");
                 return Err(VlessFrameError::Fatal(anyhow!("vless request header too large")));
             }
-            return Ok(());
+            return Ok(0);
         },
         Err(vless::VlessError::UnsupportedCommand(command)) => {
             warn!(path = %route.path, command, "unsupported vless command");
@@ -532,16 +608,23 @@ where
     match request.command {
         VlessCommand::Tcp => {
             keep_mesh_upstream_for(state, MeshShape::Stream, "tcp");
-            establish_vless_tcp_upstream(state, request, user, server, route, outbound).await
+            establish_vless_tcp_upstream(state, request, user, server, route, outbound)
+                .await
+                .map(|()| 0)
         },
         VlessCommand::Udp => {
             keep_mesh_upstream_for(state, MeshShape::VlessUdpSingle, "udp");
+            // The request frame's own records are not counted: no session has
+            // agreed datagrams before its header.
             vless_udp::establish_vless_udp_upstream(state, request, user, server, route, outbound)
                 .await
+                .map(|()| 0)
         },
         VlessCommand::Mux => {
             keep_mesh_upstream_for(state, MeshShape::VlessMux, "mux");
-            establish_vless_mux_upstream(state, request, user, server, route, outbound).await
+            establish_vless_mux_upstream(state, request, user, server, route, outbound)
+                .await
+                .map(|()| 0)
         },
     }
 }
@@ -760,6 +843,33 @@ fn mux_upstream(mux: MuxState, server: &VlessWsServerCtx, route: &VlessWsRouteCt
     }
 }
 
+/// Once a session's upstream is established, turns its datagram anchor into
+/// the link its command calls for: a plain VLESS-UDP session uses the routes,
+/// any other command (TCP, mux / XUDP) declines them. Runs once; a session
+/// without an anchor, or still before its request header, is left alone.
+fn start_datagram_link(
+    state: &VlessRelayState,
+    anchor: &mut Option<Arc<DatagramAnchor>>,
+    link: &mut Option<DatagramLink>,
+    downlink: Option<&DatagramDownlink>,
+    server: &VlessWsServerCtx,
+) {
+    let policy = match &state.upstream {
+        UpstreamSession::None => return,
+        UpstreamSession::Udp(_) => LinkPolicy::AfterUplink,
+        UpstreamSession::Tcp(_) | UpstreamSession::Mux(_) => LinkPolicy::Decline,
+    };
+    let (Some(anchor), Some(downlink)) = (anchor.take(), downlink) else {
+        return;
+    };
+    *link = Some(DatagramLink::new(
+        anchor,
+        Arc::clone(&downlink.target),
+        policy,
+        Arc::clone(&server.metrics),
+    ));
+}
+
 pub(super) async fn handle_vless_connection(
     socket: WebSocket,
     server: Arc<VlessWsServerCtx>,
@@ -770,15 +880,18 @@ pub(super) async fn handle_vless_connection(
     // Client-terminating carrier either way, so local throttle detection is the
     // right one — including for a relayed session, where this node still owns
     // the last mile to the client.
-    run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, upstream).await
+    run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, upstream, None).await
 }
 
+/// `datagram`: the route of a CONNECT that agreed UDP over HTTP/3 datagrams.
 pub(in crate::server) async fn handle_vless_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     server: Arc<VlessWsServerCtx>,
     route: VlessWsRouteCtx,
     resume: ResumeContext,
     upstream: UpstreamSource,
+    datagram: Option<H3DatagramRoute>,
 ) -> Result<()> {
-    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, upstream).await
+    let anchor = datagram.map(DatagramAnchor::with_route);
+    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, upstream, anchor).await
 }

@@ -293,6 +293,7 @@ async fn setup_vless_ws_h3_server(
         serve_h3_server(
             h3_server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -952,6 +953,7 @@ async fn setup_vless_ws_h3_server_with_resumption(
         serve_h3_server(
             h3_server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,

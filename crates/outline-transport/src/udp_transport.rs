@@ -128,9 +128,17 @@ pub fn is_dropped_oversized_udp_error(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Whether an SS-UDP dial of `mode` offers UDP over HTTP/3 datagrams. Only the
+/// HTTP/3 carriers (`ws_h3`, `xhttp_h3`) do; the carrier itself still drops the
+/// offer when its connection cannot carry datagrams, and every h2 / h1
+/// fallback ignores it.
+pub fn udp_datagram_requested(mode: TransportMode) -> bool {
+    matches!(mode, TransportMode::WsH3 | TransportMode::XhttpH3)
+}
+
 impl UdpWsTransport {
     pub fn from_websocket(
-        ws_stream: TransportStream,
+        #[cfg_attr(not(feature = "h3"), allow(unused_mut))] mut ws_stream: TransportStream,
         cipher: CipherKind,
         password: &str,
         source: &'static str,
@@ -144,8 +152,32 @@ impl UdpWsTransport {
         // and client keepalive Ping are both disabled (the latter is unsafe
         // on H3) — see `carrier_liveness`.
         let (idle_timeout, keepalive) = carrier_liveness(ws_stream.is_h3(), keepalive_interval);
+        // Taken before the stream is consumed: a `ws_h3` stream or an
+        // `xhttp_h3` session on which the server accepted UDP over HTTP/3
+        // datagrams carries its datagram slot. The datagram then carries the
+        // same (padded) frame a Binary would — on xhttp without the UDP record
+        // framing the stream channel adds below it — and the stream channel
+        // stays underneath as the per-packet fallback.
+        #[cfg(feature = "h3")]
+        let datagram = ws_stream.take_h3_datagram();
+        #[cfg(feature = "h3")]
+        let datagram_transport = if ws_stream.xhttp_active_submode().is_some() {
+            "xhttp_h3"
+        } else {
+            "ws_h3"
+        };
         let channel: Arc<dyn DatagramChannel> =
             Arc::new(from_ws_datagrams(ws_stream, idle_timeout, keepalive));
+        #[cfg(feature = "h3")]
+        let channel: Arc<dyn DatagramChannel> = match datagram {
+            Some(binding) => Arc::new(crate::h3::H3DatagramChannel::new(
+                binding,
+                channel,
+                datagram_transport,
+                "ss",
+            )),
+            None => channel,
+        };
         // Padding is a WS / XHTTP-carrier feature, read here (after the dial,
         // inside the manager's `with_uplink_padding_scope`).
         let padding = carrier_padding::effective_carrier_padding();
@@ -287,7 +319,11 @@ impl UdpWsTransport {
                 // Datagram session: ask an XHTTP carrier to frame packets as
                 // length-prefixed records so the byte stream underneath cannot
                 // coalesce or split them (WS carriers ignore the flag).
-                .with_datagram_records(true),
+                .with_datagram_records(true)
+                .with_resume(DialResumeOptions {
+                    udp_datagram_requested: udp_datagram_requested(mode),
+                    ..DialResumeOptions::default()
+                }),
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
@@ -342,6 +378,7 @@ impl UdpWsTransport {
                     symmetric_replay_requested: false,
                     // No prior downstream offset to claim on UDP transports.
                     client_acked_offset: 0,
+                    udp_datagram_requested: udp_datagram_requested(mode),
                 }),
         )
         .await
@@ -546,7 +583,7 @@ impl UdpWsTransport {
 
 #[cfg(test)]
 #[path = "tests/udp_transport.rs"]
-mod tests;
+pub(crate) mod tests;
 
 /// Protocol-agnostic UDP session transport. Present as a single public type
 /// across the proxy, TUN, and uplink layers so callers don't need to branch

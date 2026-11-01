@@ -633,6 +633,7 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -745,6 +746,7 @@ async fn h3_fallback_rejects_oversized_request_body() -> Result<()> {
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,

@@ -394,6 +394,46 @@ impl Metrics {
         });
     }
 
+    /// One SS-UDP packet carried as an HTTP/3 datagram. `direction` is `"up"` /
+    /// `"down"`, `proto` the app protocol label (`"ss"`).
+    pub fn record_udp_h3_datagram(&self, direction: &'static str, proto: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_udp_h3_datagrams_total",
+                "direction" => direction,
+                "proto"     => proto
+            )
+            .increment(1);
+        });
+    }
+
+    /// One SS-UDP packet that rode the stream on a datagram-agreed session.
+    pub fn record_udp_h3_datagram_fallback(&self, direction: &'static str, proto: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_udp_h3_datagram_fallback_total",
+                "direction" => direction,
+                "proto"     => proto
+            )
+            .increment(1);
+        });
+    }
+
+    /// One received HTTP/3 datagram dropped (`"unknown_stream"` / `"malformed"` / `"queue_full"`).
+    pub fn record_udp_h3_datagram_dropped(&self, reason: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_udp_h3_datagram_dropped_total", "reason" => reason).increment(1);
+        });
+    }
+
+    /// One request stream that offered HTTP/3 datagrams (`"negotiated"` /
+    /// `"declined"`).
+    pub fn record_udp_h3_datagram_session(&self, state: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_udp_h3_datagram_sessions_total", "state" => state).increment(1);
+        });
+    }
+
     pub fn record_udp_relay_drop(
         &self,
         transport: Transport,

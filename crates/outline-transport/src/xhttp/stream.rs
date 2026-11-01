@@ -76,6 +76,12 @@ pub(crate) struct XhttpStream {
     /// descriptor (see `CarrierLossProbe::Tcp`), which needs no owned handle
     /// here to self-heal.
     pub(super) _quic_carrier: Option<Arc<dyn crate::CarrierLossCounters>>,
+    /// `Some` when the server accepted UDP over HTTP/3 datagrams on this
+    /// session's anchor stream (the GET of packet-up, the POST of stream-one):
+    /// its datagram slot, taken once by the UDP transport
+    /// ([`Self::take_h3_datagram`]). `None` for every other session.
+    #[cfg(feature = "h3")]
+    pub(super) h3_datagram: Option<crate::h3::H3DatagramBinding>,
     // The driver task owns the h2 SendRequest, the GET reader
     // sub-task and the POST fan-out sub-tasks. Dropping the stream
     // aborts the driver, which cancels every sub-task and frees the
@@ -154,8 +160,29 @@ impl XhttpStream {
             pending_in: VecDeque::new(),
             loss_probe,
             _quic_carrier: quic_carrier,
+            #[cfg(feature = "h3")]
+            h3_datagram: None,
             _driver: driver,
         }
+    }
+
+    /// Attaches the datagram slot the h3 carrier negotiated (see
+    /// [`Self::h3_datagram`]).
+    #[cfg(feature = "h3")]
+    pub(super) fn with_h3_datagram(
+        mut self,
+        binding: Option<crate::h3::H3DatagramBinding>,
+    ) -> Self {
+        self.h3_datagram = binding;
+        self
+    }
+
+    /// Takes the HTTP/3 datagram binding the server negotiated on this
+    /// session, if any. `None` on h1/h2, on an h3 session without one, and on
+    /// every call after the first.
+    #[cfg(feature = "h3")]
+    pub(crate) fn take_h3_datagram(&mut self) -> Option<crate::h3::H3DatagramBinding> {
+        self.h3_datagram.take()
     }
 
     /// Test-only: an otherwise inert stream carrying just the loss probe, so
@@ -177,6 +204,8 @@ impl XhttpStream {
             pending_in: Default::default(),
             loss_probe,
             _quic_carrier: None,
+            #[cfg(feature = "h3")]
+            h3_datagram: None,
             _driver: crate::guards::AbortOnDrop::noop(),
         }
     }

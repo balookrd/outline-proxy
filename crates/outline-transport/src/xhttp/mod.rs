@@ -90,7 +90,9 @@ pub(crate) use stream::XhttpStream;
 pub(super) use outline_wire::resume::{
     ACK_PREFIX_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER,
 };
-pub(super) use outline_wire::xhttp::{FIN_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER};
+pub(super) use outline_wire::xhttp::{
+    FIN_HEADER, UDP_DATAGRAM_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER,
+};
 pub use outline_wire::xhttp::{SsPathKind, XhttpSubmode};
 
 /// Deadline for the closing FIN POST (see [`fin_post_headers`]). Much shorter
@@ -120,6 +122,8 @@ pub(super) struct FinOnDrop {
     /// Builds the FIN POST future for a given seq. `None` once fired or
     /// disarmed.
     emit: Option<Box<dyn FnOnce(u64) -> BoxFuture<'static, ()> + Send>>,
+    /// Send the FIN even when nothing was POSTed (see [`Self::even_unposted`]).
+    even_unposted: bool,
 }
 
 impl FinOnDrop {
@@ -127,7 +131,26 @@ impl FinOnDrop {
         next_seq: Arc<AtomicU64>,
         emit: impl FnOnce(u64) -> BoxFuture<'static, ()> + Send + 'static,
     ) -> Self {
-        Self { next_seq, emit: Some(Box::new(emit)) }
+        Self {
+            next_seq,
+            emit: Some(Box::new(emit)),
+            even_unposted: false,
+        }
+    }
+
+    /// Sends the FIN even if the session never POSTed. Set when the session
+    /// agreed UDP over HTTP/3 datagrams: its uplink may then have gone out
+    /// entirely as datagrams, so a session the server holds can still have seq
+    /// 0 to spend, and without the FIN it would outlive the client by the
+    /// whole idle-eviction window. The anchor GET already created the session,
+    /// so the seq-0 FIN closes it rather than conjuring a new one.
+    #[cfg_attr(
+        all(not(feature = "h3"), not(test)),
+        expect(dead_code, reason = "only the h3 carrier offers UDP over HTTP/3 datagrams")
+    )]
+    pub(super) fn even_unposted(mut self, even_unposted: bool) -> Self {
+        self.even_unposted = even_unposted;
+        self
     }
 
     /// Cancels the FIN. Used when the loop ends on a broken carrier: there is
@@ -146,8 +169,9 @@ impl Drop for FinOnDrop {
         let seq = self.next_seq.load(Ordering::Relaxed);
         // Nothing was ever POSTed on this session, so there is no server-side
         // state to collapse — and seq 0 is the session-*creating* shape, so a
-        // FIN there could conjure the very session it means to end.
-        if seq == 0 {
+        // FIN there could conjure the very session it means to end. Unless the
+        // uplink rode datagrams (`even_unposted`).
+        if seq == 0 && !self.even_unposted {
             return;
         }
         // Drop can run outside a runtime (a caller tearing the transport down
@@ -280,6 +304,10 @@ pub(super) fn message_bytes(msg: &Message) -> usize {
 /// server registers `<base>/<id>` and we generate `<id>` randomly.
 /// This is the dispatcher: each `TransportMode::Xhttp*` arm hands
 /// off to the corresponding carrier submodule.
+///
+/// `udp_datagram` offers this session's UDP as HTTP/3 datagrams. Only the h3
+/// carrier reads it (and only on a connection that can carry them); the h2 /
+/// h1 carriers ignore it, so their wire is unchanged.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_xhttp(
     cache: &DnsCache,
@@ -292,6 +320,7 @@ pub(crate) async fn connect_xhttp(
     client_acked_offset: u64,
     combined_ss_kind: Option<SsPathKind>,
     datagram_records: bool,
+    #[cfg_attr(not(feature = "h3"), allow(unused_variables))] udp_datagram: bool,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     match mode {
         TransportMode::XhttpH2 => {
@@ -339,6 +368,7 @@ pub(crate) async fn connect_xhttp(
                 client_acked_offset,
                 combined_ss_kind,
                 datagram_records,
+                udp_datagram,
             )
             .await
         },
@@ -384,6 +414,11 @@ pub(crate) struct SessionRequest<'a> {
 /// for this request kind and HTTP version, in its order, then the
 /// `X-Outline-*` negotiation headers (a page's custom headers trail the
 /// browser's own). No `host` on h2 / h3 — `:authority` carries it there.
+///
+/// `udp_datagram` offers UDP over HTTP/3 datagrams; only the h3 carrier sets
+/// it, and only on the anchor request (the GET of packet-up, the POST of
+/// stream-one), never on the uplink POSTs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_session_request_headers(
     request: SessionRequest<'_>,
     resume_request: Option<SessionId>,
@@ -391,6 +426,7 @@ pub(crate) fn build_session_request_headers(
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
     datagram_records: bool,
+    udp_datagram: bool,
 ) -> Result<HeaderMap> {
     let host =
         match request.host {
@@ -430,6 +466,12 @@ pub(crate) fn build_session_request_headers(
         headers.insert(
             http::HeaderName::from_static(UDP_RECORDS_HEADER),
             HeaderValue::from_static(UDP_RECORDS_ENABLED),
+        );
+    }
+    if udp_datagram {
+        headers.insert(
+            http::HeaderName::from_static(UDP_DATAGRAM_HEADER),
+            HeaderValue::from_static("1"),
         );
     }
     Ok(headers)
@@ -492,6 +534,17 @@ pub(super) fn parse_udp_records_echo(requested: bool, headers: &http::HeaderMap)
     requested
         && headers.get(UDP_RECORDS_HEADER).and_then(|v| v.to_str().ok())
             == Some(UDP_RECORDS_ENABLED)
+}
+
+/// Reads the server-side echo of `X-Outline-Udp-Datagram: 1`. Datagrams are on
+/// only when we offered AND the server confirmed — an unsolicited echo (or a
+/// server that never learned the header) leaves every packet on the stream.
+#[cfg_attr(
+    all(not(feature = "h3"), not(test)),
+    expect(dead_code, reason = "only the h3 carrier offers UDP over HTTP/3 datagrams")
+)]
+pub(super) fn parse_udp_datagram_echo(requested: bool, headers: &http::HeaderMap) -> bool {
+    requested && headers.get(UDP_DATAGRAM_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
 }
 
 /// Reads the server-side echo of `X-Outline-Resume-Symmetric-Replay: 1`.

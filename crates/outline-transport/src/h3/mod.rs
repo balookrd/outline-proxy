@@ -7,15 +7,20 @@
 //              message-format conversion helpers, URI builder.
 //   shared   — connection infrastructure: QUIC/TLS configs, shared endpoints,
 //              per-key connect locks, shared-connection cache, connect / gc fns.
+//   datagram — client UDP over HTTP/3 datagrams (RFC 9297) on one request
+//              stream, with the stream channel as per-packet fallback.
 //   vendored — gate over the patched `h3` / `sockudo-ws` API surface; every
 //              direct sockudo-ws reference lives there (CI-enforced).
 
+mod datagram;
 mod shared;
 pub(crate) mod vendored;
 
+pub(crate) use datagram::{H3DatagramBinding, H3DatagramChannel};
+
 pub(crate) use shared::{
     TrackedEndpoint, choose_slot, classify_h3_close, client_endpoint, connect_websocket_h3,
-    gc_shared_h3_connections, is_expected_h3_close,
+    gc_shared_h3_connections, is_expected_h3_close, record_datagram_drop,
 };
 
 use std::sync::Arc;

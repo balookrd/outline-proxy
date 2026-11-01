@@ -77,6 +77,9 @@ pub struct Config {
     /// probing above the pinned value, because a host is only pinned
     /// where the path is known to be smaller.
     pub h3_initial_mtu: Option<u16>,
+    /// `[server.h3].udp_datagrams`: whether UDP may be carried over HTTP/3
+    /// DATAGRAM when the client asks for it (default `true`).
+    pub h3_udp_datagrams: bool,
     pub metrics_listen: Option<SocketAddr>,
     pub metrics_path: String,
     pub prefer_ipv4_upstream: bool,

@@ -339,6 +339,8 @@ pub(super) struct QuicSection {
     pub(super) keepalive_secs: Option<u64>,
     /// QUIC idle timeout in seconds (default: 30s from the browser profile, no jitter).
     pub(super) idle_timeout_secs: Option<u64>,
+    /// Offer client UDP over HTTP/3 DATAGRAM on h3 carriers (default true).
+    pub(super) udp_datagrams: Option<bool>,
 }
 
 #[cfg(feature = "tun")]

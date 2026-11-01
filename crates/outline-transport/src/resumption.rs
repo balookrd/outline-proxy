@@ -101,6 +101,7 @@ pub use outline_wire::resume::{
     ACK_PREFIX_HEADER, DOWN_ACKED_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
     SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
 };
+use outline_wire::xhttp::UDP_DATAGRAM_HEADER;
 
 /// Writes the request-side resume negotiation headers. One
 /// implementation shared by the h1 upgrade, h2 CONNECT and h3 Extended
@@ -147,6 +148,24 @@ pub(crate) fn apply_resume_request_headers(
     }
 }
 
+/// Writes the HTTP/3 datagram offer (`x-outline-udp-datagram: 1`) when the
+/// dial asks for it. Kept out of [`apply_resume_request_headers`] on purpose:
+/// that one is shared by the h1 / h2 carriers too, and the offer must only go
+/// out on an HTTP/3 request whose connection can actually carry datagrams. The
+/// h3 carrier calls this after checking that.
+#[cfg_attr(
+    all(not(feature = "h3"), not(test)),
+    expect(dead_code, reason = "only the h3 carrier offers HTTP/3 datagrams")
+)]
+pub(crate) fn apply_udp_datagram_request_header(
+    resume: &crate::dial_plan::DialResumeOptions,
+    headers: &mut http::HeaderMap,
+) {
+    if resume.udp_datagram_requested {
+        headers.insert(UDP_DATAGRAM_HEADER, http::HeaderValue::from_static("1"));
+    }
+}
+
 /// Server's response-side echo of the resume negotiation, parsed with
 /// identical gating on every dial path.
 pub(crate) struct NegotiatedResume {
@@ -161,6 +180,13 @@ pub(crate) struct NegotiatedResume {
     /// on — the v2-on-v1 invariant is enforced locally even if a buggy
     /// server echoes v2 alone.
     pub(crate) symmetric_replay_advertised_by_server: bool,
+    /// HTTP/3 datagram negotiation result: we offered AND the server echoed
+    /// `x-outline-udp-datagram: 1`. A spurious echo is reported as `false`.
+    #[cfg_attr(
+        all(not(feature = "h3"), not(test)),
+        expect(dead_code, reason = "read only by the h3 carrier")
+    )]
+    pub(crate) udp_datagram_accepted: bool,
 }
 
 /// Parses the `X-Outline-*` response headers against what the request
@@ -178,10 +204,13 @@ pub(crate) fn parse_resume_response_echo(
     let symmetric_replay_advertised_by_server = resume.symmetric_replay_requested
         && ack_prefix_advertised_by_server
         && headers.get(SYMMETRIC_REPLAY_HEADER).and_then(|v| v.to_str().ok()) == Some("1");
+    let udp_datagram_accepted = resume.udp_datagram_requested
+        && headers.get(UDP_DATAGRAM_HEADER).and_then(|v| v.to_str().ok()) == Some("1");
     NegotiatedResume {
         issued_session_id,
         ack_prefix_advertised_by_server,
         symmetric_replay_advertised_by_server,
+        udp_datagram_accepted,
     }
 }
 

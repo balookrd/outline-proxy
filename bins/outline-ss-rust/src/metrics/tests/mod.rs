@@ -16,6 +16,7 @@ pub(super) fn test_config() -> Config {
         h3_certs: Vec::new(),
         h3_alpn: vec![crate::config::H3Alpn::H3],
         h3_initial_mtu: None,
+        h3_udp_datagrams: true,
         metrics_listen: Some("127.0.0.1:9090".parse().unwrap()),
         metrics_path: "/metrics".to_owned(),
         prefer_ipv4_upstream: false,
@@ -552,4 +553,40 @@ fn orphan_downlink_v2_metrics_render() {
         rendered.contains("outline_ss_orphan_downlink_buf_bytes 8192"),
         "buf-bytes gauge missing or wrong value:\n{rendered}",
     );
+}
+
+#[test]
+fn h3_datagram_metrics_render_with_low_cardinality_labels() {
+    let metrics = Metrics::new(&test_config());
+    metrics.record_udp_h3_datagram("up", "ss");
+    metrics.record_udp_h3_datagram("up", "ss");
+    metrics.record_udp_h3_datagram("down", "ss");
+    metrics.record_udp_h3_datagram_fallback("down", "ss");
+    metrics.record_udp_h3_datagram_dropped("unknown_stream");
+    metrics.record_udp_h3_datagram_dropped("malformed");
+    metrics.record_udp_h3_datagram_dropped("queue_full");
+    metrics.record_udp_h3_datagram_session("negotiated");
+    metrics.record_udp_h3_datagram_session("declined");
+
+    let rendered = metrics.render_prometheus();
+    for line in [
+        "outline_ss_udp_h3_datagrams_total{direction=\"up\",proto=\"ss\"} 2",
+        "outline_ss_udp_h3_datagrams_total{direction=\"down\",proto=\"ss\"} 1",
+        "outline_ss_udp_h3_datagram_fallback_total{direction=\"down\",proto=\"ss\"} 1",
+        "outline_ss_udp_h3_datagram_dropped_total{reason=\"unknown_stream\"} 1",
+        "outline_ss_udp_h3_datagram_dropped_total{reason=\"malformed\"} 1",
+        "outline_ss_udp_h3_datagram_dropped_total{reason=\"queue_full\"} 1",
+        "outline_ss_udp_h3_datagram_sessions_total{state=\"negotiated\"} 1",
+        "outline_ss_udp_h3_datagram_sessions_total{state=\"declined\"} 1",
+    ] {
+        assert!(rendered.contains(line), "missing `{line}` in:\n{rendered}");
+    }
+    for metric in [
+        "outline_ss_udp_h3_datagrams_total",
+        "outline_ss_udp_h3_datagram_fallback_total",
+        "outline_ss_udp_h3_datagram_dropped_total",
+        "outline_ss_udp_h3_datagram_sessions_total",
+    ] {
+        help_line(&rendered, metric);
+    }
 }

@@ -52,6 +52,39 @@ pub trait FrameSource: Send + Sync + 'static {
     fn set_throttle_handle(&mut self, _handle: crate::ThrottleSignalHandle) {}
 }
 
+/// Holds a channel's outbound packets on its stream until the protocol above
+/// opens it. VLESS-UDP needs it: its first packet carries the request header,
+/// which must ride the stream, and the server takes datagrams only once the
+/// client has read its response header — so the VLESS layer opens the gate
+/// when it parses that header, not on whatever inbound packet comes first (a
+/// cover frame on a padded path may precede it).
+#[derive(Debug, Default)]
+pub(crate) struct DatagramGate(std::sync::atomic::AtomicBool);
+
+impl DatagramGate {
+    pub(crate) fn open(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg_attr(
+        all(not(feature = "h3"), not(test)),
+        expect(dead_code, reason = "only the HTTP/3 datagram channel reads the gate")
+    )]
+    pub(crate) fn is_open(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Where a received packet came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PacketSource {
+    /// The channel's own carrier stream: a WS Binary frame or an XHTTP body
+    /// chunk, which may continue a record an earlier one began.
+    Stream,
+    /// An HTTP/3 datagram bound to the stream: always one whole packet.
+    Datagram,
+}
+
 /// Bidirectional packet-oriented channel. Each `send_datagram` yields
 /// exactly one packet on the wire; each `recv_datagram` returns one.
 /// Shared (`&self`) so both halves can be held by the protocol layer
@@ -61,6 +94,16 @@ pub trait DatagramChannel: Send + Sync + 'static {
     async fn send_datagram(&self, data: Bytes) -> Result<()>;
     /// `Ok(None)` on clean EOF, `Err` on transport failure.
     async fn recv_datagram(&self) -> Result<Option<Bytes>>;
+    /// [`Self::recv_datagram`], plus where the packet came from. A protocol
+    /// that reassembles records out of its stream (VLESS-UDP over an XHTTP
+    /// byte stream) must keep a packet that bypassed the stream out of that
+    /// reassembly. Default: every packet came from the stream.
+    async fn recv_datagram_with_source(&self) -> Result<Option<(PacketSource, Bytes)>> {
+        Ok(self
+            .recv_datagram()
+            .await?
+            .map(|packet| (PacketSource::Stream, packet)))
+    }
     /// Idempotent.
     async fn close(&self);
 }

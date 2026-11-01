@@ -357,6 +357,7 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
         // Covers SS-over-WS and SS-over-XHTTP alike (both ride this writer).
         carrier_padding::cover_for_path(&route.path),
         throttle_monitor.clone(),
+        None,
     ));
     // Detection tick. Bounded: aborted when this handle drops at carrier
     // teardown, so it never outlives the carrier.

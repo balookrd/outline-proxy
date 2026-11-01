@@ -30,11 +30,18 @@ impl<'a> StandbyCtx<'a> {
     /// The UDP pool keeps the plain shape: SS-UDP has no v1/v2 protocol to
     /// negotiate — it neither emits the control frames nor keeps a ring — so
     /// advertising there would claim a capability the datagram path does not
-    /// have.
-    fn pool_resume_options(&self) -> outline_transport::DialResumeOptions {
+    /// have. What it does offer, like an on-demand SS-UDP dial, is UDP over
+    /// HTTP/3 datagrams on an HTTP/3 (`ws_h3`, `xhttp_h3`) SS wire: the offer
+    /// rides the request headers, so a pooled carrier that skipped it could
+    /// never use them.
+    pub(super) fn pool_resume_options(&self) -> outline_transport::DialResumeOptions {
         match self.transport {
             TransportKind::Tcp => outline_transport::DialResumeOptions::new_session(),
-            TransportKind::Udp => outline_transport::DialResumeOptions::default(),
+            TransportKind::Udp => outline_transport::DialResumeOptions {
+                udp_datagram_requested: self.dial_datagram_records()
+                    && outline_transport::udp_datagram_requested(self.mode),
+                ..outline_transport::DialResumeOptions::default()
+            },
         }
     }
 

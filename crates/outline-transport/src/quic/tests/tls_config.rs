@@ -1690,3 +1690,41 @@ async fn h3_initial_datagram_stays_1200_for_every_profile() {
         assert_eq!(len, want, "{fp:?}");
     }
 }
+
+/// UDP over H3 DATAGRAM is offered unless `[quic] udp_datagrams = false`; tests never
+/// call the init (process-global `OnceLock`), so the default is what they observe.
+#[test]
+fn udp_datagrams_default_to_enabled() {
+    assert!(super::super::tls_config::quic_udp_datagrams_enabled());
+}
+
+/// UDP over HTTP/3 datagrams is offered only on a profile that receives them:
+/// Chromium, Firefox and the no-profile dial (Chromium), never Safari.
+#[cfg(feature = "h3")]
+#[tokio::test]
+async fn udp_datagram_offer_follows_the_dial_profile() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+
+    for (fp, expected) in [
+        (None, true),
+        (Some(TlsFingerprint::Chromium), true),
+        (Some(TlsFingerprint::Firefox), true),
+        (Some(TlsFingerprint::Safari), false),
+    ] {
+        let offers =
+            with_dial_fingerprint(fp, async { super::h3_dial_offers_udp_datagrams() }).await;
+        assert_eq!(offers, expected, "{fp:?}");
+        // The same decision feeds the H3 SETTINGS `H3_DATAGRAM` flag; the
+        // `[quic] udp_datagrams = false` switch turns every profile off.
+        let with_switch_on = with_dial_fingerprint(fp, async {
+            super::super::tls_config::offers_udp_datagrams_with(true)
+        })
+        .await;
+        let with_switch_off = with_dial_fingerprint(fp, async {
+            super::super::tls_config::offers_udp_datagrams_with(false)
+        })
+        .await;
+        assert_eq!(with_switch_on, expected, "{fp:?}");
+        assert!(!with_switch_off, "{fp:?}");
+    }
+}

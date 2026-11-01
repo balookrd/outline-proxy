@@ -13,13 +13,15 @@ use axum::http::{self, HeaderMap, Method, StatusCode, Version};
 use bytes::{Buf, Bytes, BytesMut};
 use h3::server::RequestStream;
 use h3_quinn::BidiStream;
+use outline_wire::h3_datagram::DatagramDemux;
 use tracing::{debug, warn};
 
 use crate::metrics::Protocol;
 use crate::server::cluster::ClusterCtx;
-use crate::server::h3::vendored::finish_send_side_without_grease;
+use crate::server::h3::vendored::{finish_send_side_without_grease, request_quarter_stream_id};
 
 use super::super::super::state::Services;
+use super::super::h3_datagram::{H3DatagramRoute, apply_udp_datagram_echo, offers_udp_datagrams};
 use super::super::is_normal_h3_shutdown;
 use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
 use super::handlers::{
@@ -48,6 +50,61 @@ pub(in crate::server) struct XhttpH3Ctx {
     /// Mesh-cluster runtime; `Some` only when clustered. Read on a session-
     /// creating request to relay a foreign-shard resume to its home.
     pub(in crate::server) cluster: Option<Arc<ClusterCtx>>,
+    /// The QUIC connection and its datagram demux, when this connection may
+    /// carry UDP over HTTP/3 DATAGRAM (see `h3/http.rs`). Read only by the
+    /// anchor requests of an SS-UDP session.
+    pub(in crate::server) datagram: Option<(quinn::Connection, Arc<DatagramDemux>)>,
+}
+
+/// Agrees UDP over HTTP/3 datagrams on a session's anchor request (the GET of
+/// packet-up, the POST of stream-one): SS-UDP or VLESS route, client offer, and
+/// a connection that carries datagrams. On agreement the request's stream is
+/// registered and attached to the session — before the response goes out, so
+/// the client's first datagram after it is not lost — and `true` asks the
+/// caller to echo and, when the request ends, to detach. Must run with the GET
+/// slot held, so a conflicting GET can never replace the live anchor.
+///
+/// A VLESS session is counted later, by its relay: only the VLESS command says
+/// whether it uses the route (plain UDP) or declines it (TCP, mux / XUDP).
+fn negotiate_udp_datagram(
+    ctx: &XhttpH3Ctx,
+    session: &XhttpSession,
+    headers: &HeaderMap,
+    stream: &RequestStream<BidiStream<Bytes>, Bytes>,
+) -> bool {
+    let counted_here = match ctx.route {
+        XhttpRoute::SsUdp(_) => true,
+        XhttpRoute::Vless(_) => false,
+        XhttpRoute::Ss(_) => return false,
+    };
+    if !offers_udp_datagrams(headers) {
+        return false;
+    }
+    let metrics = &ctx.services.udp_server.metrics;
+    let Some((connection, demux)) = ctx.datagram.as_ref() else {
+        metrics.record_udp_h3_datagram_session("declined");
+        return false;
+    };
+    let quarter_stream_id = request_quarter_stream_id(stream);
+    session.attach_datagram(H3DatagramRoute {
+        connection: connection.clone(),
+        quarter_stream_id,
+        registration: demux.register(quarter_stream_id),
+    });
+    if counted_here {
+        metrics.record_udp_h3_datagram_session("negotiated");
+    }
+    true
+}
+
+/// Ends an anchor request's hold: its datagram route first (when it attached
+/// one), then the GET slot, so the next anchor can only attach after this one
+/// detached.
+fn release_anchor(session: &XhttpSession, udp_datagram: bool) {
+    if udp_datagram {
+        session.detach_datagram();
+    }
+    session.detach_get();
 }
 
 /// Dispatcher entry. Called from `h3/http.rs` once a non-CONNECT
@@ -189,9 +246,10 @@ async fn xhttp_h3_get(
         AttachOutcome::Gone => return finish_with_status(stream, StatusCode::GONE).await,
     }
 
+    let udp_datagram = negotiate_udp_datagram(ctx, &session, &request_headers, &stream);
     debug!(
         method = "GET", version = ?version, base = %ctx.base_path, %peer_addr,
-        session = %session_id, created, udp_records,
+        session = %session_id, created, udp_records, udp_datagram,
         "xhttp/h3 downlink attached"
     );
 
@@ -210,13 +268,16 @@ async fn xhttp_h3_get(
         })
         .apply(response.headers_mut());
     apply_udp_records_echo(response.headers_mut(), udp_records);
+    if udp_datagram {
+        apply_udp_datagram_echo(response.headers_mut());
+    }
     if let Err(error) = stream.send_response(response).await {
-        session.detach_get();
+        release_anchor(&session, udp_datagram);
         return Err(anyhow!(error)).context("failed to send xhttp/h3 GET response head");
     }
 
     let (send_side, result) = drive_downlink_h3(&mut stream, Arc::clone(&session)).await;
-    session.detach_get();
+    release_anchor(&session, udp_datagram);
     match send_side {
         SendSide::Healthy => {
             let _ = stream.finish().await;
@@ -258,7 +319,14 @@ async fn xhttp_h3_post(
     // Only `seq == 0` can create a session, so only `seq == 0` may open a mesh
     // relay. A later POST that opened one would drop it unused — or, against a
     // swept session, open a relay on the home and then answer 410.
-    let edge = if seq == 0 {
+    //
+    // A seq-0 FIN is the exception: it closes a session whose uplink rode
+    // HTTP/3 datagrams and never POSTed (see the client's `FinOnDrop`), so it
+    // only ever looks the session up. Against a swept session it answers 410
+    // instead of creating one (and a relay) just to close it. Older clients
+    // never send a FIN at seq 0, so this changes nothing for them.
+    let creates = seq == 0 && !fin;
+    let edge = if creates {
         xhttp_edge(
             ctx.cluster.as_ref(),
             &ctx.services,
@@ -273,7 +341,7 @@ async fn xhttp_h3_post(
         XhttpEdge::local()
     };
     // The edge decision is recorded on the session; see `xhttp_h3_get`.
-    let (session, created) = if seq == 0 {
+    let (session, created) = if creates {
         match ctx.registry.get_or_create(
             &session_id,
             peer_addr.ip(),
@@ -477,9 +545,10 @@ async fn xhttp_h3_stream_one(
         AttachOutcome::Conflict => return finish_with_status(stream, StatusCode::CONFLICT).await,
         AttachOutcome::Gone => return finish_with_status(stream, StatusCode::GONE).await,
     }
+    let udp_datagram = negotiate_udp_datagram(ctx, &session, &headers, &stream);
     debug!(
         method = "POST", mode = "stream-one", version = ?version, base = %ctx.base_path,
-        %peer_addr, session = %session_id, created,
+        %peer_addr, session = %session_id, created, udp_datagram,
         "xhttp/h3 stream-one duplex attached"
     );
 
@@ -497,8 +566,11 @@ async fn xhttp_h3_stream_one(
         })
         .apply(response.headers_mut());
     apply_udp_records_echo(response.headers_mut(), udp_records);
+    if udp_datagram {
+        apply_udp_datagram_echo(response.headers_mut());
+    }
     if let Err(error) = stream.send_response(response).await {
-        session.detach_get();
+        release_anchor(&session, udp_datagram);
         return Err(anyhow!(error)).context("failed to send xhttp/h3 stream-one response head");
     }
 
@@ -542,7 +614,7 @@ async fn xhttp_h3_stream_one(
     // `drive_downlink_h3` so a chunk pushed between drain and notify
     // is not lost.
     let result = drive_downlink_send_only(send_half, Arc::clone(&session)).await;
-    session.detach_get();
+    release_anchor(&session, udp_datagram);
     let _ = uplink_task.await;
     result
 }

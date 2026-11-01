@@ -244,6 +244,7 @@ pub use dial_plan::{
 };
 pub use udp_transport::{
     OversizedUdpDatagram, UdpSessionTransport, UdpWsTransport, is_dropped_oversized_udp_error,
+    udp_datagram_requested,
 };
 pub use vless::{
     VlessTcpReader, VlessTcpWriter, VlessUdpCarrierNotifier, VlessUdpDowngradeNotifier,
@@ -280,7 +281,10 @@ pub use h2_profile::init_h2_window_sizes;
 
 // QUIC tuning: called once during startup from the main binary.
 #[cfg(feature = "quic")]
-pub use quic::{init_quic_idle_timeout, init_quic_keepalive_interval, init_quic_window_sizes};
+pub use quic::{
+    init_quic_idle_timeout, init_quic_keepalive_interval, init_quic_udp_datagrams,
+    init_quic_window_sizes,
+};
 
 // Per-host downgrade cache TTL: called once during startup from the
 // main binary, fed from the `mode_downgrade_secs` config knob. All

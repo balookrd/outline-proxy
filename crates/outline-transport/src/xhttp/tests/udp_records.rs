@@ -141,3 +141,41 @@ async fn passes_control_frames_through_unframed() {
         other => panic!("expected the close frame, got {other:?}"),
     }
 }
+
+/// The UDP-over-HTTP/3-datagram offer rides the session-opening request next to
+/// the record-framing one, and only when asked for; the echo counts only when
+/// it answers an offer.
+#[test]
+fn udp_datagram_offer_and_echo() {
+    use crate::request_headers::{HttpVersion, RequestKind};
+    use crate::xhttp::{
+        SessionRequest, UDP_DATAGRAM_HEADER, UDP_RECORDS_HEADER, build_session_request_headers,
+        parse_udp_datagram_echo,
+    };
+
+    let request = SessionRequest {
+        profile: None,
+        kind: RequestKind::FetchGet,
+        version: HttpVersion::H3,
+        origin: "https://example.com",
+        host: None,
+    };
+    let offered =
+        build_session_request_headers(request, None, false, false, 0, true, true).expect("headers");
+    assert_eq!(offered.get(UDP_DATAGRAM_HEADER).map(|v| v.as_bytes()), Some(&b"1"[..]));
+    assert_eq!(offered.get(UDP_RECORDS_HEADER).map(|v| v.as_bytes()), Some(&b"1"[..]));
+    let plain = build_session_request_headers(request, None, false, false, 0, true, false)
+        .expect("headers");
+    assert!(plain.get(UDP_DATAGRAM_HEADER).is_none(), "no offer unless asked");
+    let mut without_offer = offered.clone();
+    without_offer.remove(UDP_DATAGRAM_HEADER);
+    assert_eq!(plain, without_offer, "the offer adds exactly one header");
+
+    let mut echo = http::HeaderMap::new();
+    echo.insert(UDP_DATAGRAM_HEADER, http::HeaderValue::from_static("1"));
+    assert!(parse_udp_datagram_echo(true, &echo));
+    assert!(!parse_udp_datagram_echo(false, &echo), "an unsolicited echo is ignored");
+    assert!(!parse_udp_datagram_echo(true, &http::HeaderMap::new()));
+    echo.insert(UDP_DATAGRAM_HEADER, http::HeaderValue::from_static("0"));
+    assert!(!parse_udp_datagram_echo(true, &echo));
+}

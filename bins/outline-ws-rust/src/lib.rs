@@ -96,6 +96,7 @@ pub async fn run_with_options(args: Args, opts: RunOptions) -> Result<()> {
         if let Some(idle) = config.quic.idle_timeout_secs {
             outline_transport::init_quic_idle_timeout(Duration::from_secs(idle));
         }
+        outline_transport::init_quic_udp_datagrams(config.quic.udp_datagrams);
     }
     outline_transport::init_dial_timeout(config.dial_timeout);
     outline_net::init_udp_socket_bufs(config.udp_recv_buf_bytes, config.udp_send_buf_bytes);

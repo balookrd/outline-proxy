@@ -348,6 +348,7 @@ async fn response_sender_is_built_once_per_stream() -> Result<()> {
         test_route_ctx(&user),
         ResumeContext::default(),
         UpstreamSource::Direct,
+        None,
     ));
 
     const DATAGRAMS: usize = 3;
@@ -398,6 +399,7 @@ async fn replayed_legacy_udp_datagram_is_dropped() -> Result<()> {
         test_route_ctx(&user),
         ResumeContext::default(),
         UpstreamSource::Direct,
+        None,
     ));
 
     let datagram = client_datagram(&user, upstream_addr, b"once")?;
@@ -436,6 +438,7 @@ async fn reused_response_sender_still_delivers_the_downlink() -> Result<()> {
         test_route_ctx(&user),
         ResumeContext::default(),
         UpstreamSource::Direct,
+        None,
     ));
 
     // Two datagrams to the same target: the second re-registers the session on
@@ -489,6 +492,7 @@ async fn teardown_without_resumption_releases_the_writer() -> Result<()> {
         test_route_ctx(&user),
         ResumeContext::default(),
         UpstreamSource::Direct,
+        None,
     ));
 
     inbound_tx
@@ -547,6 +551,7 @@ async fn teardown_with_resumption_still_parks_the_nat_keys() -> Result<()> {
             ..ResumeContext::default()
         },
         UpstreamSource::Direct,
+        None,
     ));
 
     inbound_tx
@@ -694,6 +699,7 @@ async fn a_burst_of_datagrams_stays_framed_under_concurrent_relays() -> Result<(
         test_route_ctx(&user),
         ResumeContext::default(),
         UpstreamSource::Direct,
+        None,
     ));
 
     let datagrams = (0..BURST)
@@ -986,6 +992,7 @@ impl UdpEdgeHarness {
             Arc::clone(&self.route),
             edge.resume,
             edge.source,
+            None,
         ));
         (inbound_tx, downlink_rx, relay)
     }
@@ -1272,4 +1279,306 @@ async fn a_refused_udp_relay_echoes_a_local_id() {
         echo.session_id, local.issued_session_id,
         "the id echoed must be the one this node will park under",
     );
+}
+
+// ── HTTP/3 datagrams on a padded path ───────────────────────────────────────
+
+/// A padded SS-UDP stream that agreed HTTP/3 datagrams: an uplink datagram
+/// carrying one padding frame decodes to the SS packet and reaches the
+/// upstream, the reply comes back as one padded datagram (no stream frame), and
+/// a cover datagram (`real_len = 0`) is dropped without being counted.
+#[tokio::test]
+async fn padded_datagram_ingest_and_reply_round_trip() -> Result<()> {
+    use outline_wire::h3_datagram::{DatagramDemux, decode_datagram, encode_datagram};
+    use outline_wire::padding::PaddingDecoder;
+
+    use crate::server::transport::carrier_padding::{CoverParams, frame_downlink_message};
+    use crate::server::transport::h3_datagram::tests::quic_datagram_pair;
+    use crate::server::transport::h3_datagram::{DatagramAnchor, H3DatagramRoute};
+
+    const SLOT: usize = 8;
+    let scheme = PaddingScheme::new(4, 16);
+    let quarter_id = 3;
+
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let user = UserKey::new("alice", "secret", None, CipherKind::Aes256Gcm, None)?;
+    let pair = quic_datagram_pair().await?;
+    let demux = DatagramDemux::spawn(pair.server.clone(), Arc::new(|_| {}));
+    let route_ctx = Arc::new(UdpRouteCtx {
+        users: Arc::from(vec![user.clone()]),
+        protocol: Protocol::Http3,
+        path: Arc::from("/udp"),
+        candidate_users: Arc::from(vec![Arc::from("alice")]),
+        padding: scheme,
+    });
+    let server = test_server_ctx();
+
+    let (_inbound_tx, inbound_rx) = mpsc::channel::<Bytes>(4);
+    let (downlink_tx, mut downlink_rx) = mpsc::unbounded_channel::<Bytes>();
+    let relay = tokio::spawn(run_udp_relay::<CountingCarrier<SLOT>>(
+        CountingCarrier {
+            inbound: inbound_rx,
+            downlink: downlink_tx,
+        },
+        Arc::clone(&server),
+        route_ctx,
+        ResumeContext::default(),
+        UpstreamSource::Direct,
+        Some(DatagramAnchor::with_route(H3DatagramRoute {
+            connection: pair.server.clone(),
+            quarter_stream_id: quarter_id,
+            registration: demux.register(quarter_id),
+        })),
+    ));
+
+    let cover = CoverParams {
+        scheme,
+        jitter_min_ms: 100,
+        jitter_max_ms: 100,
+    };
+    pair.client
+        .send_datagram(encode_datagram(quarter_id, &cover.frame()))?;
+    let packet = client_datagram(&user, upstream_addr, b"query")?;
+    pair.client
+        .send_datagram(encode_datagram(quarter_id, &frame_downlink_message(scheme, packet)))?;
+
+    let mut buf = [0_u8; 64];
+    let (n, source) = timeout(Duration::from_secs(5), upstream.recv_from(&mut buf)).await??;
+    assert_eq!(&buf[..n], b"query");
+    upstream.send_to(b"answer", source).await?;
+
+    let datagram = timeout(Duration::from_secs(5), pair.client.read_datagram()).await??;
+    let (id, body) = decode_datagram(datagram).expect("datagram prefix");
+    assert_eq!(id, quarter_id);
+    let mut sealed = Vec::new();
+    PaddingDecoder::new().push(&body, &mut sealed);
+    assert!(!sealed.is_empty() && sealed.len() < body.len(), "reply must be padded");
+    let reply = decrypt_udp_packet(std::slice::from_ref(&user), &sealed)?;
+    assert!(reply.payload.ends_with(b"answer"));
+    assert!(downlink_rx.try_recv().is_err(), "the reply must not also ride the stream");
+
+    let rendered = server.metrics.render_prometheus();
+    assert!(
+        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"up\",proto=\"ss\"} 1"),
+        "only the real packet is counted, not the cover datagram:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"down\",proto=\"ss\"} 1")
+    );
+    assert!(!rendered.contains("outline_ss_udp_h3_datagram_fallback_total"));
+
+    relay.abort();
+    Ok(())
+}
+
+/// An `xhttp_h3` relay starts before its anchor agrees datagrams (the session
+/// can be created by a POST, or the relay spawned before the GET attaches): it
+/// answers on the stream until the anchor attaches, on datagrams to that
+/// anchor afterwards, and on the stream again once the anchor detaches.
+#[tokio::test]
+async fn anchor_attached_after_relay_start_moves_replies_to_datagrams_until_detached() -> Result<()>
+{
+    use outline_wire::h3_datagram::{DatagramDemux, decode_datagram, encode_datagram};
+
+    use crate::server::transport::h3_datagram::tests::quic_datagram_pair;
+    use crate::server::transport::h3_datagram::{DatagramAnchor, H3DatagramRoute};
+
+    const SLOT: usize = 8;
+    let quarter_id = 9;
+
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let user = UserKey::new("alice", "secret", None, CipherKind::Aes256Gcm, None)?;
+    let pair = quic_datagram_pair().await?;
+    let demux = DatagramDemux::spawn(pair.server.clone(), Arc::new(|_| {}));
+    let server = test_server_ctx();
+    let anchor = Arc::new(DatagramAnchor::default());
+
+    let (inbound_tx, inbound_rx) = mpsc::channel::<Bytes>(4);
+    let (downlink_tx, mut downlink_rx) = mpsc::unbounded_channel::<Bytes>();
+    let relay = tokio::spawn(run_udp_relay::<CountingCarrier<SLOT>>(
+        CountingCarrier {
+            inbound: inbound_rx,
+            downlink: downlink_tx,
+        },
+        Arc::clone(&server),
+        test_route_ctx(&user),
+        ResumeContext::default(),
+        UpstreamSource::Direct,
+        Some(Arc::clone(&anchor)),
+    ));
+    let mut buf = [0_u8; 64];
+
+    // No anchor yet: the stream path, as on a session that never offered.
+    inbound_tx
+        .send(client_datagram(&user, upstream_addr, b"one")?)
+        .await?;
+    let (n, source) = timeout(Duration::from_secs(5), upstream.recv_from(&mut buf)).await??;
+    assert_eq!(&buf[..n], b"one");
+    upstream.send_to(b"reply-one", source).await?;
+    let reply = timeout(Duration::from_secs(5), downlink_rx.recv())
+        .await?
+        .expect("stream reply");
+    assert!(
+        decrypt_udp_packet(std::slice::from_ref(&user), &reply)?
+            .payload
+            .ends_with(b"reply-one")
+    );
+    assert!(
+        !server
+            .metrics
+            .render_prometheus()
+            .contains("outline_ss_udp_h3_datagram")
+    );
+
+    // The anchor attaches while the relay runs: uplink and downlink datagrams.
+    anchor.attach(H3DatagramRoute {
+        connection: pair.server.clone(),
+        quarter_stream_id: quarter_id,
+        registration: demux.register(quarter_id),
+    });
+    let packet = client_datagram(&user, upstream_addr, b"two")?;
+    pair.client.send_datagram(encode_datagram(quarter_id, &packet))?;
+    let (n, source) = timeout(Duration::from_secs(5), upstream.recv_from(&mut buf)).await??;
+    assert_eq!(&buf[..n], b"two");
+    upstream.send_to(b"reply-two", source).await?;
+    let datagram = timeout(Duration::from_secs(5), pair.client.read_datagram()).await??;
+    let (id, body) = decode_datagram(datagram).expect("datagram prefix");
+    assert_eq!(id, quarter_id);
+    assert!(
+        decrypt_udp_packet(std::slice::from_ref(&user), &body)?
+            .payload
+            .ends_with(b"reply-two")
+    );
+    assert!(downlink_rx.try_recv().is_err(), "the reply must not also ride the stream");
+
+    // The anchor ends: replies go back to the stream.
+    anchor.detach();
+    inbound_tx
+        .send(client_datagram(&user, upstream_addr, b"three")?)
+        .await?;
+    let (n, source) = timeout(Duration::from_secs(5), upstream.recv_from(&mut buf)).await??;
+    assert_eq!(&buf[..n], b"three");
+    upstream.send_to(b"reply-three", source).await?;
+    let reply = timeout(Duration::from_secs(5), downlink_rx.recv())
+        .await?
+        .expect("stream reply");
+    assert!(
+        decrypt_udp_packet(std::slice::from_ref(&user), &reply)?
+            .payload
+            .ends_with(b"reply-three")
+    );
+
+    let rendered = server.metrics.render_prometheus();
+    assert!(
+        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"up\",proto=\"ss\"} 1"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"down\",proto=\"ss\"} 1"),
+        "{rendered}"
+    );
+    // Neither the pre-attach nor the post-detach packets count as fallbacks:
+    // datagrams were not agreed for them.
+    assert!(!rendered.contains("outline_ss_udp_h3_datagram_fallback_total"), "{rendered}");
+
+    relay.abort();
+    Ok(())
+}
+
+/// A reconnected xhttp GET replaces the anchor while the relay runs, with no
+/// stream packet in between to trigger the per-packet check: the select arm
+/// alone must move the relay to the new anchor. Downlink then goes to B, A's
+/// registration is gone from the demux, and nothing falls back to the stream.
+#[tokio::test]
+async fn anchor_replaced_without_a_stream_packet_moves_the_relay_to_the_new_route() -> Result<()> {
+    use std::sync::atomic::AtomicUsize;
+
+    use outline_wire::h3_datagram::{DatagramDemux, DropReason, decode_datagram, encode_datagram};
+
+    use crate::server::transport::h3_datagram::tests::quic_datagram_pair;
+    use crate::server::transport::h3_datagram::{DatagramAnchor, H3DatagramRoute};
+
+    const SLOT: usize = 8;
+    const A: u64 = 4;
+    const B: u64 = 8;
+
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let user = UserKey::new("alice", "secret", None, CipherKind::Aes256Gcm, None)?;
+    let pair = quic_datagram_pair().await?;
+    let unknown = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&unknown);
+    let demux = DatagramDemux::spawn(
+        pair.server.clone(),
+        Arc::new(move |reason| {
+            if reason == DropReason::UnknownStream {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+        }),
+    );
+    let route = |id: u64| H3DatagramRoute {
+        connection: pair.server.clone(),
+        quarter_stream_id: id,
+        registration: demux.register(id),
+    };
+    let server = test_server_ctx();
+    let anchor = Arc::new(DatagramAnchor::default());
+
+    let (_inbound_tx, inbound_rx) = mpsc::channel::<Bytes>(4);
+    let (downlink_tx, mut downlink_rx) = mpsc::unbounded_channel::<Bytes>();
+    let relay = tokio::spawn(run_udp_relay::<CountingCarrier<SLOT>>(
+        CountingCarrier {
+            inbound: inbound_rx,
+            downlink: downlink_tx,
+        },
+        Arc::clone(&server),
+        test_route_ctx(&user),
+        ResumeContext::default(),
+        UpstreamSource::Direct,
+        Some(Arc::clone(&anchor)),
+    ));
+    let mut buf = [0_u8; 64];
+    let mut exchange = async |id: u64, payload: &[u8], reply: &[u8]| -> Result<()> {
+        let packet = client_datagram(&user, upstream_addr, payload)?;
+        pair.client.send_datagram(encode_datagram(id, &packet))?;
+        let (n, source) = timeout(Duration::from_secs(5), upstream.recv_from(&mut buf)).await??;
+        assert_eq!(&buf[..n], payload);
+        upstream.send_to(reply, source).await?;
+        let datagram = timeout(Duration::from_secs(5), pair.client.read_datagram()).await??;
+        let (got_id, body) = decode_datagram(datagram).expect("datagram prefix");
+        assert_eq!(got_id, id, "the reply must go to the current anchor");
+        let decrypted = decrypt_udp_packet(std::slice::from_ref(&user), &body)?;
+        assert!(decrypted.payload.ends_with(reply));
+        Ok(())
+    };
+
+    anchor.attach(route(A));
+    exchange(A, b"on-a", b"reply-a").await?;
+
+    // The GET ends and a new one attaches: no stream packet in between.
+    anchor.detach();
+    anchor.attach(route(B));
+    exchange(B, b"on-b", b"reply-b").await?;
+    assert!(downlink_rx.try_recv().is_err(), "nothing may fall back to the stream");
+
+    // A's registration went with the replacement.
+    let before = unknown.load(Ordering::SeqCst);
+    pair.client.send_datagram(encode_datagram(A, b"stale"))?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while unknown.load(Ordering::SeqCst) == before {
+        assert!(tokio::time::Instant::now() < deadline, "A is still registered");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let rendered = server.metrics.render_prometheus();
+    assert!(
+        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"down\",proto=\"ss\"} 2"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("outline_ss_udp_h3_datagram_fallback_total"), "{rendered}");
+
+    relay.abort();
+    Ok(())
 }

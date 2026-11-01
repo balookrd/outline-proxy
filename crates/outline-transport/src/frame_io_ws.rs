@@ -554,7 +554,11 @@ pub fn from_ws_datagrams(
     keepalive: Option<Duration>,
 ) -> WsDatagramChannel {
     // No cover on the datagram pipe: SS-UDP stays plain, and VLESS-UDP is
-    // padded per-datagram inside `VlessUdpTransport`, not here.
+    // padded per-datagram inside `VlessUdpTransport`, not here. Should cover
+    // ever be enabled here, its idle timer must also count the packets
+    // `H3DatagramChannel` sends as HTTP/3 datagrams past this writer, or it
+    // would fire during live traffic (the server writer does this through
+    // its datagram activity counter).
     let (writer_task, data_tx, ctrl_tx, mut stream, writer_exit) = spawn_ws_writer(ws_stream, None);
     let keepalive_task = keepalive.map(|i| spawn_keepalive(ctrl_tx.clone(), i));
     let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Bytes>>(64);

@@ -242,13 +242,14 @@ impl WsSocket for XhttpDuplex {
     }
     fn make_udp_response_sender(
         tx: mpsc::Sender<XhttpMsg>,
-        _protocol: Protocol,
+        protocol: Protocol,
         app_protocol: AppProtocol,
         scheme: PaddingScheme,
         monitor: Option<Arc<crate::server::transport::throughput_monitor::ThroughputMonitor>>,
     ) -> UdpResponseSender {
         UdpResponseSender::new(Arc::new(XhttpUdpResponseSender {
             tx,
+            protocol,
             app_protocol,
             padding: scheme,
             monitor,
@@ -288,14 +289,14 @@ fn frame_datagram(payload: &[u8]) -> Option<Bytes> {
     }
 }
 
-/// Wraps the duplex outbound channel as a UDP response sender.
-/// XHTTP carries VLESS only and VLESS UDP rides through mux.cool
-/// XUDP frames on the same binary channel — so this path is
-/// exercised by tests that drive the SS-UDP relay through an
-/// XHTTP transport. It just re-tags any byte payload as a binary
-/// frame.
+/// Wraps the duplex outbound channel as the downlink sender of an
+/// SS-UDP-over-XHTTP session: it re-tags each (padded) packet as a binary
+/// frame for the writer.
 struct XhttpUdpResponseSender {
     tx: mpsc::Sender<XhttpMsg>,
+    /// The session's carrier (`XhttpH1` / `XhttpH2` / `XhttpH3`), as the relay's
+    /// route context has it: the `protocol` label of the NAT downlink series.
+    protocol: Protocol,
     app_protocol: AppProtocol,
     /// Carrier-padding scheme for this path; when enabled each downlink
     /// datagram is framed before it goes on the wire (plain otherwise).
@@ -316,14 +317,7 @@ impl ResponseSender for XhttpUdpResponseSender {
     }
 
     fn protocol(&self) -> Protocol {
-        // The wire-side carrier is XhttpH2 or XhttpH3 but the trait
-        // does not let us thread that distinction through this
-        // synthesised sender. Pick `XhttpH2` as the conservative
-        // default — it's still distinct from the WS family on
-        // the metrics dashboard, and the SS-UDP-over-XHTTP path
-        // that would actually exercise this codepath does not
-        // exist in this build (XHTTP carries VLESS only).
-        Protocol::XhttpH2
+        self.protocol
     }
 
     fn app_protocol(&self) -> AppProtocol {

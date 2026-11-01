@@ -4,7 +4,8 @@
 //! same Shadowsocks AEAD / SS2022 / VLESS wire formats. This crate owns the
 //! format-level vocabulary — cipher identifiers, target addresses, header
 //! layouts, protocol constants — as pure parsing/encoding logic with no
-//! async runtime and no AEAD backend. AEAD sealing/opening stays on each
+//! async runtime (except the opt-in `h3-datagram` feature, which adds quinn and
+//! tokio for the datagram demultiplexer) and no AEAD backend. AEAD sealing/opening stays on each
 //! side (`ring` on the server, RustCrypto on the client); the only crypto
 //! hosted here is the backend-neutral key material both sides must derive
 //! identically (EVP_BytesToKey, the BLAKE3 SS2022 session subkey). Functions
@@ -13,6 +14,7 @@
 
 pub mod cipher;
 pub mod cluster;
+pub mod h3_datagram;
 pub mod padding;
 pub mod resume;
 pub mod ss2022;

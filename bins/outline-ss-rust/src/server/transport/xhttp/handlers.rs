@@ -1057,9 +1057,16 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                     None => (resume, UpstreamSource::Direct),
                 };
                 let socket = XhttpDuplex::with_udp_records(Arc::clone(&session_for_task), false);
-                let result =
-                    run_vless_relay::<XhttpDuplex>(socket, &server, &route_ctx, resume, upstream)
-                        .await;
+                // UDP over HTTP/3 datagrams, on the h3 carrier only, read from
+                // the session as its anchor requests attach them (as on the
+                // SS-UDP arm below). Only a plain VLESS-UDP session uses them;
+                // the relay declines them for any other command.
+                let datagram =
+                    (protocol == Protocol::XhttpH3).then(|| session_for_task.datagram_anchor());
+                let result = run_vless_relay::<XhttpDuplex>(
+                    socket, &server, &route_ctx, resume, upstream, datagram,
+                )
+                .await;
                 // Always drop the registry slot: even on a clean exit
                 // the session id should not be reused for a fresh
                 // handshake.
@@ -1151,8 +1158,18 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                     Arc::clone(&session_for_task),
                     session_for_task.udp_records(),
                 );
-                let result =
-                    run_udp_relay::<XhttpDuplex>(socket, server, route_ctx, resume, upstream).await;
+                // UDP over HTTP/3 datagrams, on the h3 carrier only. The anchor
+                // request may attach its route after this relay starts (a
+                // packet-up POST can create the session before the GET), so
+                // the relay reads routes from the session as they come; the
+                // datagram carries the bare packet, without the record
+                // framing the stream above uses.
+                let datagram =
+                    (protocol == Protocol::XhttpH3).then(|| session_for_task.datagram_anchor());
+                let result = run_udp_relay::<XhttpDuplex>(
+                    socket, server, route_ctx, resume, upstream, datagram,
+                )
+                .await;
                 session_for_task.close();
                 registry.remove(&session_id);
                 finish_ws_session(metrics_session, classify_relay_result(result), "ss-udp");

@@ -25,10 +25,15 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, warn};
 use url::Url;
 
+use outline_metrics as metrics;
+use outline_wire::h3_datagram::DatagramDemux;
+
 use crate::TransportOperation;
 use crate::dns::resolve_host_with_preference;
 use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
+use crate::h3::H3DatagramBinding;
+use crate::h3::vendored::{H3RequestStreamHandle, request_quarter_stream_id};
 use crate::resumption::SessionId;
 
 use super::stream::io_ws_err;
@@ -64,8 +69,25 @@ mod tests;
 // The H3 QUIC client config is shared with the WS-over-H3 carrier in
 // `crate::quic` (`h3_quic_client_config`): keyed by dial fingerprint so the
 // XHTTP-over-H3 ClientHello mimics the same browser family as the other
-// carriers, with the same per-process keep-alive / idle jitter and QUIC
-// datagrams left off (a browser HTTP/3 stack does not enable them).
+// carriers, with the same per-process keep-alive / idle jitter and the same
+// QUIC datagram settings.
+
+/// Where an anchor request may bind UDP over HTTP/3 datagrams: the session's
+/// QUIC connection and its datagram demux. Passed only when the dial offers
+/// datagrams and the connection can carry them.
+type DatagramOffer<'a> = (&'a quinn::Connection, &'a Arc<DatagramDemux>);
+
+/// What a session-opening request (the packet-up GET, or the stream-one POST)
+/// negotiated. Returned next to the request stream, which goes to the driver.
+struct OpenedSession {
+    issued: Option<SessionId>,
+    ack_prefix_echo: bool,
+    symmetric_replay_echo: bool,
+    udp_records: bool,
+    /// `Some` when the server accepted UDP over HTTP/3 datagrams on this
+    /// request's stream.
+    datagram: Option<H3DatagramBinding>,
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn connect_xhttp_h3(
@@ -79,6 +101,7 @@ pub(super) async fn connect_xhttp_h3(
     client_acked_offset: u64,
     combined_ss_kind: Option<SsPathKind>,
     datagram_records: bool,
+    udp_datagram: bool,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     let host = url
         .host_str()
@@ -120,7 +143,15 @@ pub(super) async fn connect_xhttp_h3(
             send_request,
             loss_probe,
             carrier: quic_carrier,
+            connection,
+            datagrams,
         } = super::h3_pool::acquire(server_addr, &host, port, network.fwmark).await?;
+        // The offer goes out only where datagrams can flow: the dial asked for
+        // it (an SS-UDP session) AND this connection has a demultiplexer.
+        let datagram_offer: Option<DatagramOffer<'_>> = datagrams
+            .as_ref()
+            .filter(|_| udp_datagram)
+            .map(|demux| (&connection, demux));
         let session_id = generate_session_id(combined_ss_kind)?;
 
         let authority = super::authority_for(true, &host, port);
@@ -134,16 +165,9 @@ pub(super) async fn connect_xhttp_h3(
         let (in_tx, in_rx) = inbound_channel();
         let (out_tx, out_rx) = outbound_channel();
 
-        let (
-            issued_session_id,
-            ack_prefix_echo,
-            symmetric_replay_echo,
-            udp_records,
-            driver,
-            active_submode,
-        ) = match submode {
+        let (opened, driver, active_submode) = match submode {
             XhttpSubmode::PacketUp => {
-                let (issued, echo, sym_echo, records, request_stream) = open_h3_get(
+                let (opened, request_stream) = open_h3_get(
                     send_request.clone(),
                     &target,
                     resume_request,
@@ -151,6 +175,7 @@ pub(super) async fn connect_xhttp_h3(
                     symmetric_replay_requested,
                     client_acked_offset,
                     datagram_records,
+                    datagram_offer,
                     profile,
                 )
                 .await?;
@@ -161,9 +186,10 @@ pub(super) async fn connect_xhttp_h3(
                     out_rx,
                     request_stream,
                     datagram_records,
+                    opened.datagram.is_some(),
                     profile,
                 ));
-                (issued, echo, sym_echo, records, driver, XhttpSubmode::PacketUp)
+                (opened, driver, XhttpSubmode::PacketUp)
             },
             XhttpSubmode::StreamOne => {
                 // The h3 client closes the connection with `H3_NO_ERROR`
@@ -190,11 +216,12 @@ pub(super) async fn connect_xhttp_h3(
                     symmetric_replay_requested,
                     client_acked_offset,
                     datagram_records,
+                    datagram_offer,
                     profile,
                 )
                 .await
                 {
-                    Ok((issued, echo, sym_echo, records, request_stream)) => {
+                    Ok((opened, request_stream)) => {
                         let driver = tokio::spawn(driver_loop_h3_stream_one(
                             send_request,
                             in_tx,
@@ -203,7 +230,7 @@ pub(super) async fn connect_xhttp_h3(
                         ));
                         crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
                             .await;
-                        (issued, echo, sym_echo, records, driver, XhttpSubmode::StreamOne)
+                        (opened, driver, XhttpSubmode::StreamOne)
                     },
                     Err(stream_err) => {
                         warn!(
@@ -213,7 +240,7 @@ pub(super) async fn connect_xhttp_h3(
                         );
                         crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
                             .await;
-                        let (issued, echo, sym_echo, records, request_stream) = open_h3_get(
+                        let (opened, request_stream) = open_h3_get(
                             send_request.clone(),
                             &target,
                             resume_request,
@@ -221,6 +248,7 @@ pub(super) async fn connect_xhttp_h3(
                             symmetric_replay_requested,
                             client_acked_offset,
                             datagram_records,
+                            datagram_offer,
                             profile,
                         )
                         .await?;
@@ -231,17 +259,27 @@ pub(super) async fn connect_xhttp_h3(
                             out_rx,
                             request_stream,
                             datagram_records,
+                            opened.datagram.is_some(),
                             profile,
                         ));
-                        (issued, echo, sym_echo, records, driver, XhttpSubmode::PacketUp)
+                        (opened, driver, XhttpSubmode::PacketUp)
                     },
                 }
             },
         };
 
+        let OpenedSession {
+            issued: issued_session_id,
+            ack_prefix_echo,
+            symmetric_replay_echo,
+            udp_records,
+            datagram,
+            ..
+        } = opened;
         debug!(
             %url, %session_id, mode = "xhttp_h3", ?submode, ?active_submode,
             ?issued_session_id, ?resume_request, ack_prefix_requested, ack_prefix_echo,
+            udp_datagram = datagram.is_some(),
             "xhttp h3 session opened"
         );
         Ok::<_, anyhow::Error>((
@@ -254,7 +292,8 @@ pub(super) async fn connect_xhttp_h3(
                 udp_records,
                 loss_probe,
                 quic_carrier,
-            ),
+            )
+            .with_h3_datagram(datagram),
             issued_session_id,
             ack_prefix_echo,
             symmetric_replay_echo,
@@ -280,14 +319,9 @@ async fn open_h3_get(
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
     datagram_records: bool,
+    datagram_offer: Option<DatagramOffer<'_>>,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(
-    Option<SessionId>,
-    bool,
-    bool,
-    bool,
-    h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
-)> {
+) -> Result<(OpenedSession, H3RequestStreamHandle)> {
     let mut req = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
@@ -308,12 +342,14 @@ async fn open_h3_get(
         symmetric_replay_requested,
         client_acked_offset,
         datagram_records,
+        datagram_offer.is_some(),
     )?;
     let mut stream = send
         .send_request(req)
         .await
         .map_err(|error| anyhow!(error))
         .context("xhttp/h3 GET send_request failed")?;
+    let registration = register_anchor(datagram_offer, &stream);
     stream
         .finish()
         .await
@@ -327,20 +363,76 @@ async fn open_h3_get(
     if !resp.status().is_success() {
         bail!("xhttp/h3 GET returned {}", resp.status());
     }
-    let issued = resp
-        .headers()
-        .get(SESSION_RESPONSE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(SessionId::parse_hex);
-    let echo = ack_prefix_requested && super::parse_ack_prefix_echo(resp.headers());
-    let sym_echo =
-        symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
-    let udp_records = super::parse_udp_records_echo(datagram_records, resp.headers());
-    Ok((issued, echo, sym_echo, udp_records, stream))
+    let opened = OpenedSession::negotiated(
+        resp.headers(),
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        datagram_records,
+        registration,
+    );
+    Ok((opened, stream))
+}
+
+/// Registers an anchor request's stream in the connection's datagram demux
+/// right after the request goes out, before the response is read: the server
+/// may send its first datagram as soon as it accepts, and one arriving for an
+/// unregistered stream is dropped as unknown. `None` when not offering.
+fn register_anchor(
+    offer: Option<DatagramOffer<'_>>,
+    stream: &H3RequestStreamHandle,
+) -> Option<H3DatagramBinding> {
+    offer.map(|(connection, demux)| {
+        let quarter_stream_id = request_quarter_stream_id(stream);
+        H3DatagramBinding {
+            connection: connection.clone(),
+            quarter_stream_id,
+            registration: demux.register(quarter_stream_id),
+        }
+    })
+}
+
+impl OpenedSession {
+    /// Reads the negotiation echoes off the anchor's response. `registration`
+    /// is `Some` iff this request offered datagrams; it is kept only when the
+    /// server accepted, and dropped (unregistered) otherwise.
+    fn negotiated(
+        headers: &HeaderMap,
+        ack_prefix_requested: bool,
+        symmetric_replay_requested: bool,
+        datagram_records: bool,
+        registration: Option<H3DatagramBinding>,
+    ) -> Self {
+        let issued = headers
+            .get(SESSION_RESPONSE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(SessionId::parse_hex);
+        let ack_prefix_echo = ack_prefix_requested && super::parse_ack_prefix_echo(headers);
+        let symmetric_replay_echo = symmetric_replay_requested
+            && ack_prefix_echo
+            && super::parse_symmetric_replay_echo(headers);
+        let udp_records = super::parse_udp_records_echo(datagram_records, headers);
+        let offered = registration.is_some();
+        let accepted = super::parse_udp_datagram_echo(offered, headers);
+        if offered {
+            let state = if accepted { "negotiated" } else { "declined" };
+            metrics::record_udp_h3_datagram_session("xhttp_h3", state);
+        }
+        Self {
+            issued,
+            ack_prefix_echo,
+            symmetric_replay_echo,
+            udp_records,
+            datagram: registration.filter(|_| accepted),
+        }
+    }
 }
 
 /// Generic over the QUIC types for the same reason [`post_one`] is: production
 /// instantiates it with `h3_quinn`, tests with an in-process stub.
+///
+/// `udp_datagrams`: the session agreed UDP over HTTP/3 datagrams, so its
+/// uplink may never POST and the closing FIN goes out regardless.
+#[allow(clippy::too_many_arguments)]
 async fn driver_loop_h3<T, S>(
     send_request: SendRequest<T, Bytes>,
     target: Arc<XhttpTarget>,
@@ -348,6 +440,7 @@ async fn driver_loop_h3<T, S>(
     mut out_rx: OutboundReceiver,
     body_stream: h3::client::RequestStream<S, Bytes>,
     datagram_records: bool,
+    udp_datagrams: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) where
     T: h3::quic::OpenStreams<Bytes> + Clone + Send + 'static,
@@ -394,6 +487,7 @@ async fn driver_loop_h3<T, S>(
         super::FinOnDrop::new(Arc::clone(&next_seq), move |seq| {
             Box::pin(send_fin(send_request, uri_prefix, base_headers, seq))
         })
+        .even_unposted(udp_datagrams)
     };
     loop {
         let queued = match out_rx.recv().await {
@@ -490,14 +584,9 @@ async fn open_h3_stream_one(
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
     datagram_records: bool,
+    datagram_offer: Option<DatagramOffer<'_>>,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(
-    Option<SessionId>,
-    bool,
-    bool,
-    bool,
-    h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
-)> {
+) -> Result<(OpenedSession, H3RequestStreamHandle)> {
     let mut req = Request::builder()
         .method(Method::POST)
         .uri(target.full_uri_with_submode(XhttpSubmode::StreamOne))
@@ -520,12 +609,14 @@ async fn open_h3_stream_one(
         symmetric_replay_requested,
         client_acked_offset,
         datagram_records,
+        datagram_offer.is_some(),
     )?;
     let mut stream = send
         .send_request(req)
         .await
         .map_err(|error| anyhow!(error))
         .context("xhttp/h3 stream-one send_request failed")?;
+    let registration = register_anchor(datagram_offer, &stream);
     // Unlike packet-up GET we DO NOT call `finish()` here — the
     // request body is the live uplink.
     let resp = stream
@@ -536,16 +627,14 @@ async fn open_h3_stream_one(
     if !resp.status().is_success() {
         bail!("xhttp/h3 stream-one returned {}", resp.status());
     }
-    let issued = resp
-        .headers()
-        .get(SESSION_RESPONSE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(SessionId::parse_hex);
-    let echo = ack_prefix_requested && super::parse_ack_prefix_echo(resp.headers());
-    let sym_echo =
-        symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
-    let udp_records = super::parse_udp_records_echo(datagram_records, resp.headers());
-    Ok((issued, echo, sym_echo, udp_records, stream))
+    let opened = OpenedSession::negotiated(
+        resp.headers(),
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        datagram_records,
+        registration,
+    );
+    Ok((opened, stream))
 }
 
 /// Generic over the QUIC types for the same reason [`driver_loop_h3`] is:

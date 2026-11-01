@@ -38,6 +38,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
+use super::h3_datagram::{DatagramAnchor, H3DatagramRoute};
 use super::resume_headers::ResumeResponseEcho;
 use crate::server::resumption::SessionId;
 
@@ -456,6 +457,13 @@ pub(in crate::server) struct XhttpSession {
     /// to build the duplex. Never set on a TCP / VLESS path, so those wires
     /// stay byte-for-byte as they were.
     udp_records: AtomicBool,
+    /// UDP over HTTP/3 datagrams of an `xhttp_h3` SS-UDP session. The anchor
+    /// request — the GET (packet-up) or the single POST (stream-one) — attaches
+    /// the route it agreed and detaches it when it ends; the relay, which may
+    /// already be running by then, reads the changes from here. The uplink
+    /// POSTs of a packet-up session never bind datagrams: they are separate
+    /// streams. Untouched on every other session.
+    datagram: Arc<DatagramAnchor>,
 }
 
 pub(in crate::server) struct UplinkState {
@@ -512,7 +520,27 @@ impl XhttpSession {
             issued_resume_id,
             relayed_echo,
             udp_records: AtomicBool::new(false),
+            datagram: Arc::default(),
         }
+    }
+
+    /// Makes `route` the session's datagram anchor, replacing any earlier one
+    /// (a reconnected GET). Called by the anchor request once its stream is
+    /// registered and the GET slot is held.
+    pub(in crate::server) fn attach_datagram(&self, route: H3DatagramRoute) {
+        self.datagram.attach(route);
+    }
+
+    /// Ends the current datagram anchor: called when the anchor request that
+    /// attached it ends, so downlink packets wait in the ring for the next GET
+    /// instead of going to a stream nobody reads.
+    pub(in crate::server) fn detach_datagram(&self) {
+        self.datagram.detach();
+    }
+
+    /// The anchor the relay reads datagram routes from.
+    pub(in crate::server) fn datagram_anchor(&self) -> Arc<DatagramAnchor> {
+        Arc::clone(&self.datagram)
     }
 
     /// Latches datagram record framing for this session. Called by the request
@@ -574,7 +602,15 @@ impl XhttpSession {
     ///   empty session; a healthy quiet session stays alive because its
     ///   keepalive keeps `keepalive` fresh and it has nothing pending.
     pub(in crate::server) fn is_evictable(&self, cutoff: Instant) -> bool {
+        // UDP over HTTP/3 datagrams bypasses the rings, so it never stamps
+        // `progress` on its own: an uplink datagram counts like an ingested
+        // POST. Downlink datagrams do not — exactly as downlink bytes that
+        // were never drained do not, so a stuck downlink still ages out.
         let progress = self.instant_of(&self.last_progress_nanos);
+        let progress = self
+            .datagram
+            .last_uplink()
+            .map_or(progress, |uplink| progress.max(uplink));
         if self.downlink_pending_bytes() > 0 && progress < cutoff {
             return true;
         }

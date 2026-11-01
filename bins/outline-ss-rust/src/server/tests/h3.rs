@@ -20,6 +20,8 @@ use tokio::{
     net::{TcpListener, UdpSocket},
 };
 
+use super::super::h3::build_h3_quinn_server_config;
+use super::super::h3::vendored::h3_ws_server_from_endpoint;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
@@ -60,6 +62,7 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -106,6 +109,105 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn h3_max_udp_payload_size_is_1452() {
+    assert_eq!(super::super::constants::H3_MAX_UDP_PAYLOAD_SIZE, 1452);
+}
+
+/// A client announcing HTTP/3 DATAGRAM in SETTINGS gets a usable datagram size
+/// from the server (> the 1200-byte QUIC floor) and CONNECT still works.
+#[tokio::test]
+async fn http3_datagram_client_sees_max_datagram_size_and_connect_works() -> Result<()> {
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    // Build the endpoint with the production QUIC server config, so the
+    // datagram buffers under test are the ones the real listener uses.
+    let probe_config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
+    let server_config = build_h3_quinn_server_config(tls_config, &probe_config.tuning, None)?;
+    let socket = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(server_config),
+        socket,
+        Arc::new(quinn::TokioRuntime),
+    )?;
+    let addr = endpoint.local_addr()?;
+    let server = h3_ws_server_from_endpoint(endpoint, H3WsConfig::default());
+
+    let config = sample_config(addr);
+    let metrics = Metrics::new(&config);
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        &config,
+        metrics,
+        nat_table,
+        dns_cache,
+        false,
+        config.http_root_realm.clone(),
+    );
+    let server = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            H3ServeCtx {
+                udp_datagrams: true,
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                http_fallback: None,
+                cluster: None,
+            },
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let mut client_config = test_h3_client_config(cert_der)?;
+    // Start above the 1200-byte QUIC floor, as the real listener does for its
+    // own sends; otherwise the client's datagram size waits on MTU discovery.
+    let mut client_transport = quinn::TransportConfig::default();
+    client_transport.initial_mtu(1400);
+    client_config.transport_config(Arc::new(client_transport));
+    endpoint.set_default_client_config(client_config);
+
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let quic = connection.clone();
+    let (mut driver, mut send_request) = h3::client::builder()
+        .enable_datagram(true)
+        .build(h3_quinn::Connection::new(connection))
+        .await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let size = quic.max_datagram_size();
+    assert!(
+        size.is_some_and(|n| n > 1200),
+        "expected a negotiated datagram size above 1200, got {size:?}"
+    );
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://localhost:{}/tcp", addr.port()))
+        .version(Version::HTTP_3)
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .extension(H3Protocol::WEBSOCKET)
+        .body(())?;
+    let mut stream = send_request.send_request(request).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+    socket.send(H3Message::Close(None)).await?;
+
+    driver.abort();
+    server.abort();
+    let _ = driver.await;
+    let _ = server.await;
+    Ok(())
+}
+
 /// Header-only h3 counterpart of
 /// `websocket_upgrade_ignores_the_browser_permessage_deflate_offer`
 /// (`tests/websocket.rs`): the extended CONNECT response to a Chrome-style
@@ -137,6 +239,7 @@ async fn websocket_http3_connect_response_omits_sec_websocket_extensions() -> Re
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -242,6 +345,7 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -398,6 +502,7 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -560,6 +665,7 @@ async fn ws_h3_send_failure_does_not_collapse_the_shared_connection() -> Result<
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -682,6 +788,7 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -757,6 +864,7 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -867,6 +975,7 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -1008,6 +1117,7 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -1143,6 +1253,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -1300,6 +1411,7 @@ async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
         serve_h3_server(
             server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes: serve_routes,
                 services,
                 auth,

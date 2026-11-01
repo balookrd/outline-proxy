@@ -319,6 +319,8 @@ pub(super) fn get_request(
         symmetric_replay_requested,
         client_acked_offset,
         datagram_records,
+        // UDP over HTTP/3 datagrams is an h3-only offer.
+        false,
     )?;
     crate::hyper_vendored::set_h1_header_case(&mut req, profile);
     Ok(req)

@@ -155,6 +155,8 @@ pub struct QuicConfig {
     pub keepalive_secs: Option<u64>,
     /// QUIC idle timeout in seconds (default: 30 s from the browser profile).
     pub idle_timeout_secs: Option<u64>,
+    /// Offer client UDP over HTTP/3 DATAGRAM (RFC 9297) on h3 carriers (default true).
+    pub udp_datagrams: bool,
 }
 
 #[derive(Debug, Clone)]

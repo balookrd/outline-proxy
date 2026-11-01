@@ -33,11 +33,13 @@ use tracing::debug;
 
 use outline_metrics as metrics;
 
+use outline_wire::h3_datagram::DatagramDemux;
+
 use crate::AbortOnDrop;
 use crate::fingerprint_profile::TlsFingerprint;
 use crate::h3::{
     H3ConnectionGuard, TrackedEndpoint, choose_slot, classify_h3_close, client_endpoint,
-    is_expected_h3_close,
+    is_expected_h3_close, record_datagram_drop,
 };
 use crate::shared_cache::{
     CachedEntry, CarrierIdleState, ConnLife, ConnLifeGuard, ConnLifeLevel, ConnectionKey,
@@ -132,6 +134,11 @@ pub(super) struct SharedXhttpH3Connection {
     #[allow(dead_code)]
     endpoint: TrackedEndpoint,
     connection: quinn::Connection,
+    /// Routes inbound HTTP/3 datagrams to the session streams that negotiated
+    /// them. `Some` only when this connection may carry client UDP as
+    /// datagrams (see `dial`); a session offers datagrams only on such a
+    /// connection.
+    datagrams: Option<Arc<DatagramDemux>>,
     /// The pool's own handle. Never handed out — sessions get clones — but kept
     /// so the h3 driver never sees the last `SendRequest` go away, which it
     /// would read as "no more requests" and answer with a graceful shutdown.
@@ -243,6 +250,10 @@ pub(super) struct PooledCarrier {
     pub(super) send_request: SendRequest<h3_quinn::OpenStreams, Bytes>,
     pub(super) loss_probe: Option<crate::CarrierLossProbe>,
     pub(super) carrier: Option<Arc<dyn crate::CarrierLossCounters>>,
+    /// The QUIC connection under the session: where its HTTP/3 datagrams go.
+    pub(super) connection: quinn::Connection,
+    /// The connection's datagram demux; `None` when it cannot carry them.
+    pub(super) datagrams: Option<Arc<DatagramDemux>>,
 }
 
 /// Hand a session onto `carrier`: a private `SendRequest` clone, a loss probe
@@ -250,6 +261,8 @@ pub(super) struct PooledCarrier {
 /// as long as the session runs.
 fn session_on(carrier: Arc<SharedXhttpH3Connection>) -> PooledCarrier {
     let send_request = carrier.send_request.clone();
+    let connection = carrier.connection.clone();
+    let datagrams = carrier.datagrams.clone();
     let identity = carrier.connection.stable_id() as u64;
     let session: Arc<dyn crate::CarrierLossCounters> = Arc::new(PooledSession::new(carrier));
     // `Weak`, so the probe reports itself dead once the session lets go rather
@@ -259,6 +272,8 @@ fn session_on(carrier: Arc<SharedXhttpH3Connection>) -> PooledCarrier {
         send_request,
         loss_probe: Some(crate::CarrierLossProbe::Quic { counters, identity }),
         carrier: Some(session),
+        connection,
+        datagrams,
     }
 }
 
@@ -316,12 +331,16 @@ async fn dial(
     let connecting = endpoint
         .connect_with(crate::quic::h3_quic_client_config(), server_addr, &server_name_str)
         .with_context(|| format!("failed to initiate xhttp/h3 QUIC connection to {server_addr}"))?;
+    // Read inside the dial scope, like the client config above: the dial's
+    // browser profile decides whether this connection can receive datagrams.
+    let offers_datagrams = crate::quic::h3_dial_offers_udp_datagrams();
     let (connection, mut driver, send_request) = timeout(fresh_connect_timeout(), async {
         let connection = connecting
             .await
             .with_context(|| format!("xhttp/h3 QUIC handshake failed for {server_addr}"))?;
         crate::quic::raise_h3_receive_window(&connection);
-        let (driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection.clone()))
+        let (driver, send_request) = crate::h3::vendored::h3_client_builder(offers_datagrams)
+            .build(h3_quinn::Connection::new(connection.clone()))
             .await
             .context("xhttp/h3 HTTP/3 handshake failed")?;
         Ok::<_, anyhow::Error>((connection, driver, send_request))
@@ -333,6 +352,12 @@ async fn dial(
             fresh_connect_timeout().as_secs()
         )
     })??;
+
+    // One demultiplexer per connection, and only where datagrams can flow both
+    // ways: we receive them (`offers_datagrams`) and the peer announced a
+    // datagram frame size (`max_datagram_size`). Same rule as the ws_h3 pool.
+    let datagrams = (offers_datagrams && connection.max_datagram_size().is_some())
+        .then(|| DatagramDemux::spawn(connection.clone(), Arc::new(record_datagram_drop)));
 
     let id = registry().next_id();
     // Sessions, not streams: the counter feeds the same `conn_life` diagnostics
@@ -365,6 +390,7 @@ async fn dial(
         id,
         endpoint,
         connection: connection.clone(),
+        datagrams,
         send_request,
         active_sessions: Arc::new(AtomicU64::new(0)),
         idle_sweeps: AtomicU32::new(0),
