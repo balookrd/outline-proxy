@@ -19,7 +19,10 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use bytes::Bytes;
-use outline_wire::padding::{MAX_PADDING_SEGMENT, PaddingScheme, encode_frame_into};
+use outline_wire::padding::{
+    MAX_PADDING_SEGMENT, PADDING_FRAME_HEADER_LEN, PaddingScheme, datagram_pad_budget,
+    encode_frame_into,
+};
 use rand::{Rng, RngCore};
 
 use super::throughput_monitor::ThrottleDetectParams;
@@ -166,6 +169,27 @@ pub(in crate::server) fn frame_downlink_message(scheme: PaddingScheme, bytes: By
     } else {
         bytes
     }
+}
+
+/// The frame `record` takes as one HTTP/3 datagram of `room` payload bytes: the
+/// record itself on an unpadded path, else one padding frame whose pad is cut to
+/// what is left. `None` when even the bare record does not fit — the caller
+/// sends it on the stream, framed as usual.
+pub(in crate::server) fn frame_datagram_message(
+    scheme: PaddingScheme,
+    record: &Bytes,
+    room: usize,
+) -> Option<Bytes> {
+    if !scheme.is_enabled() {
+        return (record.len() <= room).then(|| record.clone());
+    }
+    let budget = datagram_pad_budget(room, record.len())?;
+    let mut rng = rand::rng();
+    let mut pad = vec![0u8; scheme.pad_len_capped(rng.random::<u16>(), budget) as usize];
+    rng.fill_bytes(&mut pad);
+    let mut out = Vec::with_capacity(PADDING_FRAME_HEADER_LEN + record.len() + pad.len());
+    encode_frame_into(&mut out, record, &pad).expect("datagram-sized segments cannot overflow u16");
+    Some(out.into())
 }
 
 /// Draws a fresh pad buffer of random length in the scheme's range. Contents

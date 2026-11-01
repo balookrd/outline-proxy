@@ -28,6 +28,13 @@ use thiserror::Error;
 /// `pad_len:u16`, both big-endian.
 pub const PADDING_FRAME_HEADER_LEN: usize = 4;
 
+/// Pad bytes one frame can carry when the whole frame (header, `real_len`
+/// payload bytes and pad) must fit in `room` bytes; `None` when even the
+/// unpadded frame does not fit.
+pub fn datagram_pad_budget(room: usize, real_len: usize) -> Option<usize> {
+    room.checked_sub(PADDING_FRAME_HEADER_LEN + real_len)
+}
+
 /// Largest `real` or `pad` segment a single frame can carry (the `u16` length
 /// ceiling). Exposed so the transport layers can chunk to it before framing.
 pub const MAX_PADDING_SEGMENT: usize = u16::MAX as usize;
@@ -137,6 +144,19 @@ impl PaddingScheme {
     pub fn pad_len(self, rand: u16) -> u16 {
         let span = (self.max_pad - self.min_pad) as u32 + 1;
         self.min_pad + (rand as u32 % span) as u16
+    }
+
+    /// Draws uniformly from the scheme's range clipped to `cap` bytes, i.e.
+    /// uniformly within `[min(min_pad, cap), min(max_pad, cap)]`. Used where
+    /// the frame must fit a size limit (one HTTP/3 datagram). Clipping the
+    /// range, rather than clamping each draw to `cap`, keeps the sizes spread
+    /// out instead of piling onto `cap` (a size fingerprint). The pad may
+    /// therefore go below `min_pad`, which the decoder never checks, so a
+    /// capped frame stays valid on every peer. A `cap` above `u16::MAX` is
+    /// treated as `u16::MAX`.
+    pub fn pad_len_capped(self, rand: u16, cap: usize) -> u16 {
+        let cap16 = u16::try_from(cap).unwrap_or(u16::MAX);
+        Self::new(self.min_pad.min(cap16), self.max_pad.min(cap16)).pad_len(rand)
     }
 }
 

@@ -607,10 +607,15 @@ where
         let mut framed = BytesMut::with_capacity(2 + len);
         framed.put_u16(len as u16);
         framed.extend_from_slice(&buf[..len]);
-        let datagram = carrier_padding::frame_downlink_message(ctx.padding, framed.freeze());
-        if send_downlink(&ctx.tx, ctx.make_binary, ctx.datagram.as_deref(), datagram)
-            .await
-            .is_err()
+        if send_downlink(
+            &ctx.tx,
+            ctx.make_binary,
+            ctx.datagram.as_deref(),
+            ctx.padding,
+            framed.freeze(),
+        )
+        .await
+        .is_err()
         {
             debug!("relayed vless udp response dropped: the client carrier is gone");
             return Ok(VlessRelayOutcome::Closed);
@@ -694,33 +699,37 @@ where
                         m.note_backlog();
                     }
                 }
-                let mut framed = BytesMut::with_capacity(2 + read);
-                framed.put_u16(read as u16);
-                framed.extend_from_slice(&buffer[..read]);
-                let message = carrier_padding::frame_downlink_message(padding, framed.freeze());
-                send_downlink(&tx, make_binary, datagram.as_deref(), message).await.map_err(
-                    |error| anyhow!("failed to queue vless udp websocket frame: {error}"),
-                )?;
+                let mut record = BytesMut::with_capacity(2 + read);
+                record.put_u16(read as u16);
+                record.extend_from_slice(&buffer[..read]);
+                send_downlink(&tx, make_binary, datagram.as_deref(), padding, record.freeze())
+                    .await
+                    .map_err(|error| anyhow!("failed to queue vless udp websocket frame: {error}"))?;
             }
         }
     }
 }
 
-/// Queues one downlink record — exactly the bytes one Binary message would
-/// carry — as an HTTP/3 datagram when the session agreed them and it fits, and
-/// as that Binary message on the stream otherwise. The record framing is the
+/// Queues one downlink record — the unpadded frame one Binary message would
+/// carry — as an HTTP/3 datagram when the session agreed them and it fits (its
+/// padding cut to the room left), and as that Binary message on the stream
+/// otherwise, padded over the scheme's full range. The record framing is the
 /// same either way, so the client reads both through one parser.
 async fn send_downlink<Msg>(
     tx: &mpsc::Sender<Msg>,
     make_binary: fn(Bytes) -> Msg,
     datagram: Option<&DatagramDownlink>,
-    message: Bytes,
+    padding: PaddingScheme,
+    record: Bytes,
 ) -> Result<(), mpsc::error::SendError<Msg>> {
     // The pump already fed the throttle monitor the upstream bytes.
-    if datagram.is_some_and(|datagram| datagram.send(&message, None) == DownlinkSend::Sent) {
+    if datagram
+        .is_some_and(|datagram| datagram.send_record(padding, &record, None) == DownlinkSend::Sent)
+    {
         return Ok(());
     }
-    tx.send(make_binary(message)).await
+    tx.send(make_binary(carrier_padding::frame_downlink_message(padding, record)))
+        .await
 }
 
 /// Forwards one client HTTP/3 datagram of a plain VLESS-UDP session: exactly

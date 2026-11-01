@@ -57,6 +57,21 @@ The shield icon will appear in your macOS menu bar.
    Open Preferences (`Cmd+,`) and select the desired mode from the top banner dropdown.
    If connected, Outline Proxy will seamlessly reconnect using the newly selected mode.
 
+## Installing from a DMG
+
+Download `OutlineProxy-*-macOS-Universal.dmg` from GitHub Releases (`macos-nightly` or a `macos-v*` tag), open it and drag Outline Proxy into Applications.
+
+On the first launch macOS will most likely refuse to open the app and offer to move it to the Trash. The browser marks downloaded files with the `com.apple.quarantine` attribute, the mark carries over to the app copied out of the DMG, and Gatekeeper checks every marked app. The build is signed ad-hoc, without an Apple Developer ID or notarization, so the check fails. The build itself is fine. Allow it in one of two ways:
+
+- **Through System Settings:** close the dialog with "Done", open **System Settings → Privacy & Security**, find the message about Outline Proxy at the bottom and click **"Open Anyway"**, then confirm with your password. Recent macOS versions no longer offer the right-click → "Open" shortcut, so Settings is the only way through the UI.
+- **From Terminal:** remove the mark from the installed app:
+
+  ```bash
+  xattr -dr com.apple.quarantine "/Applications/Outline Proxy.app"
+  ```
+
+This is needed only once, for an app installed from a browser-downloaded DMG. Updates installed by the app itself (see below) download the DMG without a browser, carry no quarantine mark and open without the dialog.
+
 ## Updates
 
 The app updates itself from GitHub Releases, following its own build channel: a release build (`macos-v*` tag) moves to the newest `macos-v*` version, a nightly build follows the rolling `macos-nightly` tag and updates whenever the published DMG was built from a different commit.

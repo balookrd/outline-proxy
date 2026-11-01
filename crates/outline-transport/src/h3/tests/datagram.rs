@@ -256,3 +256,19 @@ async fn gated_channel_keeps_the_stream_until_the_gate_opens() {
     assert_eq!(decode_datagram(datagram), Some((ID, third)));
     assert_eq!(*f.mock.sent.lock(), vec![first, second], "an open gate stays open");
 }
+
+#[tokio::test]
+async fn datagram_room_is_the_payload_room_and_none_while_gated() {
+    let f = fixture().await;
+    let max = f.channel.connection.max_datagram_size().expect("datagrams enabled");
+    assert_eq!(
+        f.channel.datagram_room(),
+        Some(max - outline_wire::h3_datagram::datagram_overhead(ID))
+    );
+
+    let gate = Arc::new(DatagramGate::default());
+    let gated = fixture_with(Some(Arc::clone(&gate))).await;
+    assert_eq!(gated.channel.datagram_room(), None, "closed gate: everything rides the stream");
+    gate.open();
+    assert!(gated.channel.datagram_room().is_some());
+}

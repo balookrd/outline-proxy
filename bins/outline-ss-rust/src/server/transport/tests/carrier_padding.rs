@@ -43,3 +43,23 @@ fn oversize_payload_is_chunked_and_recovered() {
     dec.push(&framed, &mut decoded);
     assert_eq!(decoded, data);
 }
+
+#[test]
+fn datagram_message_fits_or_declines() {
+    let scheme = PaddingScheme::new(0, 256);
+    let record = Bytes::from(vec![0x33; 1352]);
+    for _ in 0..500 {
+        let framed = frame_datagram_message(scheme, &record, 1396).expect("fits unpadded");
+        assert!(framed.len() <= 1396);
+        let mut decoded = Vec::new();
+        PaddingDecoder::new().push(&framed, &mut decoded);
+        assert_eq!(decoded, record);
+    }
+    assert!(frame_datagram_message(scheme, &record, 1355).is_none());
+    // Unpadded path: the record itself, when it fits.
+    assert_eq!(
+        frame_datagram_message(PaddingScheme::disabled(), &record, 1352).as_ref(),
+        Some(&record)
+    );
+    assert!(frame_datagram_message(PaddingScheme::disabled(), &record, 1351).is_none());
+}

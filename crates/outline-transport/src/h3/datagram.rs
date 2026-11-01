@@ -98,6 +98,15 @@ async fn next_registered(registration: &mut Option<DatagramRegistration>) -> Opt
 
 #[async_trait]
 impl DatagramChannel for H3DatagramChannel {
+    fn datagram_room(&self) -> Option<usize> {
+        if *self.closed.borrow() || !self.gate.as_deref().is_none_or(DatagramGate::is_open) {
+            return None;
+        }
+        self.connection
+            .max_datagram_size()?
+            .checked_sub(datagram_overhead(self.quarter_stream_id))
+    }
+
     async fn send_datagram(&self, data: Bytes) -> Result<()> {
         if *self.closed.borrow() {
             bail!("HTTP/3 datagram channel is closed");
