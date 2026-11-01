@@ -108,75 +108,26 @@ public final class UpdateController {
 
     private func presentDialog(for update: UpdateChecker.Update) {
         let blocker = UpdateInstaller.inPlaceBlocker()
-        let alert = NSAlert()
-        alert.messageText = "Доступно обновление"
-        var info = "Для канала \(AppVersion.channel) опубликована сборка \(update.label)."
+        var message = "Для канала \(AppVersion.channel) опубликована сборка \(update.label)."
+        let confirmTitle: String
         if let blocker {
-            info += "\n\nАвтоустановка недоступна: \(blocker). DMG будет сохранён в «Загрузки» и открыт — перетащите приложение в «Программы»."
-            alert.addButton(withTitle: "Скачать")
+            message += "\n\nАвтоустановка недоступна: \(blocker). DMG будет сохранён в «Загрузки» и открыт — перетащите приложение в «Программы»."
+            confirmTitle = "Скачать"
         } else {
-            info += "\n\nПриложение скачает её, заменит себя и перезапустится."
+            message += "\n\nПриложение скачает её, заменит себя и перезапустится."
             if AppState.shared.isConnected {
-                info += " Туннель переподключится сам."
+                message += " Туннель переподключится сам."
             }
-            alert.addButton(withTitle: "Установить и перезапустить")
+            confirmTitle = "Установить и перезапустить"
         }
-        alert.informativeText = info
-        alert.addButton(withTitle: "Позже")
-
-        let notes = ReleaseNotes.format(update.notes)
-        if !notes.isEmpty {
-            alert.accessoryView = notesView(notes)
+        UpdateDialog.show(
+            title: "Доступно обновление",
+            message: message,
+            notes: ReleaseNotes.format(update.notes),
+            confirmTitle: confirmTitle
+        ) { [weak self] in
+            self?.install(update)
         }
-
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            install(update)
-        }
-    }
-
-    /// A long changelog scrolls inside the dialog instead of growing it off-screen.
-    private func notesView(_ notes: [NoteLine]) -> NSView {
-        let text = NSMutableAttributedString()
-        let body = NSFont.systemFont(ofSize: 12)
-        let bold = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        let bullet = NSMutableParagraphStyle()
-        bullet.headIndent = 14
-        bullet.paragraphSpacing = 2
-        let header = NSMutableParagraphStyle()
-        header.paragraphSpacingBefore = 8
-        header.paragraphSpacing = 2
-
-        text.append(NSAttributedString(string: "Что нового\n", attributes: [.font: bold, .foregroundColor: NSColor.labelColor]))
-        for line in notes {
-            switch line {
-            case .header(let s):
-                text.append(NSAttributedString(string: s + "\n", attributes: [
-                    .font: bold, .paragraphStyle: header, .foregroundColor: NSColor.labelColor,
-                ]))
-            case .bullet(let s):
-                text.append(NSAttributedString(string: "•  " + s + "\n", attributes: [
-                    .font: body, .paragraphStyle: bullet, .foregroundColor: NSColor.labelColor,
-                ]))
-            case .text(let s):
-                text.append(NSAttributedString(string: s + "\n", attributes: [
-                    .font: body, .foregroundColor: NSColor.labelColor,
-                ]))
-            }
-        }
-
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 380, height: 240))
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        let textView = NSTextView(frame: scroll.contentView.bounds)
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.drawsBackground = false
-        textView.textContainerInset = NSSize(width: 6, height: 6)
-        textView.autoresizingMask = [.width]
-        textView.textStorage?.setAttributedString(text)
-        scroll.documentView = textView
-        return scroll
     }
 
     // MARK: - Install
