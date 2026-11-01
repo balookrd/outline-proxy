@@ -408,3 +408,148 @@ async fn per_user_slots_are_reclaimed_by_idle_eviction() -> Result<()> {
     assert_eq!(nat_table.len(), 1);
     Ok(())
 }
+
+/// Sender whose sends wait until `release` is notified, like a carrier whose
+/// channel is full because the client stopped reading it.
+struct StalledSender {
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl ResponseSender for StalledSender {
+    fn send_bytes(&self, _data: Bytes) -> BoxFuture<'_, bool> {
+        Box::pin(async move {
+            self.release.notified().await;
+            true
+        })
+    }
+
+    fn protocol(&self) -> Protocol {
+        Protocol::Http3
+    }
+
+    fn app_protocol(&self) -> crate::metrics::AppProtocol {
+        crate::metrics::AppProtocol::Shadowsocks
+    }
+}
+
+fn attach(slot: &super::entry::ActiveSlot, sender: &UdpResponseSender, stream_id: u64) {
+    slot.set(Some(super::entry::ActiveSession {
+        sender: sender.clone(),
+        coding: super::UdpResponseCoding::Plaintext,
+        stream_id,
+    }));
+}
+
+/// A reader waiting on a full carrier keeps waiting while the slot still leads
+/// there (backpressure, and the per-packet re-registration of the same carrier,
+/// change nothing) and gives the response up once a resume re-points the slot
+/// or a detach empties it.
+#[tokio::test]
+async fn reader_send_gives_up_a_carrier_the_slot_moved_away_from() -> Result<()> {
+    use super::entry::ActiveSlot;
+    use super::reader::send_until_moved;
+
+    for detach in [false, true] {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let stalled =
+            UdpResponseSender::new(Arc::new(StalledSender { release: Arc::clone(&release) }));
+        let slot = ActiveSlot::new();
+        attach(&slot, &stalled, 1);
+        let mut moved = slot.subscribe();
+        moved.borrow_and_update();
+
+        let wait = tokio::spawn({
+            let slot = Arc::clone(&slot);
+            let stalled = stalled.clone();
+            async move { send_until_moved(&stalled, Bytes::from_static(b"r"), &slot, &mut moved).await }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        // The same carrier re-registering is not a move.
+        attach(&slot, &stalled, 1);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!wait.is_finished(), "the send must keep its backpressure");
+
+        if detach {
+            slot.set(None);
+        } else {
+            attach(&slot, &test_sender(Protocol::Http3), 2);
+        }
+        let outcome = tokio::time::timeout(Duration::from_secs(1), wait).await??;
+        assert_eq!(outcome, None, "the stalled carrier must be given up (detach: {detach})");
+    }
+    Ok(())
+}
+
+/// The production detach and re-attach paths on a `NatEntry` must wake a reader
+/// blocked on the old carrier, not just a bare `ActiveSlot::set`.
+#[tokio::test]
+async fn entry_detach_and_resume_register_wake_a_blocked_reader() -> Result<()> {
+    use super::reader::send_until_moved;
+
+    let config = crate::server::tests::sample_config("127.0.0.1:3000".parse().unwrap());
+    let metrics = Metrics::new(&config);
+    let nat_table = NatTable::new(Duration::from_secs(300));
+    let user = UserKey::new("dave", "secret-d", None, CipherKind::Chacha20IetfPoly1305, None)?;
+
+    for detach in [true, false] {
+        let entry = nat_table
+            .get_or_create(
+                nat_key(&user, if detach { 7201 } else { 7202 }),
+                ServerSessionId::Omit,
+                Arc::clone(&metrics),
+            )
+            .await?;
+        let release = Arc::new(tokio::sync::Notify::new());
+        let stalled =
+            UdpResponseSender::new(Arc::new(StalledSender { release: Arc::clone(&release) }));
+        entry.register_session(stalled.clone(), super::UdpResponseCoding::Plaintext, 1);
+        let slot = Arc::clone(entry.active_slot());
+        let mut moved = slot.subscribe();
+        moved.borrow_and_update();
+
+        let wait = tokio::spawn({
+            let stalled = stalled.clone();
+            async move { send_until_moved(&stalled, Bytes::from_static(b"r"), &slot, &mut moved).await }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!wait.is_finished(), "the send must keep its backpressure");
+
+        if detach {
+            assert!(entry.detach_session_for_stream(1));
+        } else {
+            // A resume installs another carrier's sender under a new stream.
+            entry.register_session(
+                test_sender(Protocol::Http3),
+                super::UdpResponseCoding::Plaintext,
+                2,
+            );
+        }
+        let outcome = tokio::time::timeout(Duration::from_secs(1), wait).await??;
+        assert_eq!(outcome, None, "the stalled carrier must be given up (detach: {detach})");
+    }
+    Ok(())
+}
+
+/// While the slot is unchanged, a backed-up send is waited out and delivered.
+#[tokio::test]
+async fn reader_send_waits_out_backpressure_on_an_unchanged_slot() -> Result<()> {
+    use super::entry::ActiveSlot;
+    use super::reader::send_until_moved;
+
+    let release = Arc::new(tokio::sync::Notify::new());
+    let stalled = UdpResponseSender::new(Arc::new(StalledSender { release: Arc::clone(&release) }));
+    let slot = ActiveSlot::new();
+    attach(&slot, &stalled, 1);
+    let mut moved = slot.subscribe();
+    moved.borrow_and_update();
+    let wait = tokio::spawn({
+        let slot = Arc::clone(&slot);
+        let stalled = stalled.clone();
+        async move { send_until_moved(&stalled, Bytes::from_static(b"r"), &slot, &mut moved).await }
+    });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    release.notify_one();
+    let outcome = tokio::time::timeout(Duration::from_secs(1), wait).await??;
+    assert_eq!(outcome, Some(true));
+    Ok(())
+}

@@ -240,6 +240,47 @@ pub(super) async fn spawn_udp_echo() -> Result<(SocketAddr, Sources)> {
     Ok((addr, sources))
 }
 
+/// UDP upstream that, once it hears from a peer, streams `size`-byte packets at
+/// it in bursts (a video download in miniature) and keeps echoing whatever it
+/// receives. Records every distinct source, as [`spawn_udp_echo`] does.
+pub(super) async fn spawn_udp_blaster(size: usize) -> Result<(SocketAddr, Sources)> {
+    let socket = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
+    let addr = socket.local_addr()?;
+    let sources: Sources = Arc::default();
+    let seen = Arc::clone(&sources);
+    let peer = Arc::new(Mutex::new(None::<SocketAddr>));
+    let blast_peer = Arc::clone(&peer);
+    let blast_socket = Arc::clone(&socket);
+    tokio::spawn(async move {
+        let packet = vec![0xb1_u8; size];
+        loop {
+            let target = *blast_peer.lock().await;
+            match target {
+                Some(target) => {
+                    for _ in 0..20 {
+                        let _ = blast_socket.send_to(&packet, target).await;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                },
+                None => tokio::time::sleep(Duration::from_millis(5)).await,
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let mut buf = vec![0_u8; 4096];
+        while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+            seen.lock().await.insert(from);
+            *peer.lock().await = Some(from);
+            let _ = socket.send_to(&buf[..n], from).await;
+        }
+    });
+    Ok((addr, sources))
+}
+
+/// How long a busy-downlink test stops reading before it retires the carrier,
+/// so the downlink backs up into the server.
+pub(super) const STALL: Duration = Duration::from_millis(1000);
+
 /// SOCKS5 IPv4 target header + payload: the plaintext of one SS-UDP packet.
 fn ss_first_chunk(target: SocketAddr, payload: &[u8]) -> Vec<u8> {
     let mut chunk = vec![0x01];
@@ -491,6 +532,100 @@ async fn resume_moves_datagrams_to_the_new_anchor(carrier: Carrier) -> Result<()
     Ok(())
 }
 
+/// Sends `data` up (which also points the blaster at this session's source)
+/// and waits for [`BUSY_RECEIVED`] downlink packets. Echoes are not waited for:
+/// under the blast one may be lost to a full socket buffer.
+async fn downlink_flows(
+    transport: &UdpWsTransport,
+    upstream: SocketAddr,
+    data: &[u8],
+) -> Result<()> {
+    transport.send_packet(&ss_first_chunk(upstream, data)).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    for received in 0..BUSY_RECEIVED {
+        tokio::time::timeout_at(deadline, transport.read_packet())
+            .await
+            .with_context(|| format!("downlink stalled after {received} packets"))??;
+    }
+    Ok(())
+}
+
+/// Waits for the retired carrier's session to land in the orphan registry, so
+/// the resume that follows cannot outrun the park on a loaded machine. Generous:
+/// a park that never lands (the session could not be harvested) is the failure
+/// a busy-downlink test exists to catch, and it fails here.
+pub(super) async fn wait_for_park(server: &DatagramTestServer) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while server.orphans.len() == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the retired carrier was never parked (misses: {})",
+            server.counter("outline_ss_orphan_resume_miss_total", &[]),
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// Downlink packets a busy-downlink test reads to call the downlink flowing.
+pub(super) const BUSY_RECEIVED: usize = 200;
+
+const RESUME_HITS: &str = "outline_ss_orphan_resume_hit_total";
+const RESUME_MISSES: &str = "outline_ss_orphan_resume_miss_total";
+
+/// The soft switch of the incident on SS-UDP: the downlink is busy when the
+/// client retires the carrier and comes back on a new one with its Session ID.
+/// `packet` either fits a loopback datagram or rides the stream.
+async fn resume_under_a_busy_downlink(
+    carrier: Carrier,
+    udp_datagrams: bool,
+    packet: usize,
+) -> Result<()> {
+    let (upstream, sources) = spawn_udp_blaster(packet).await?;
+    let server = setup_ss_udp_h3_server(udp_datagrams).await?;
+
+    let (first, issued) = connect_with_resume(&server, carrier, None).await?;
+    let session_id = issued.context("server minted no Session ID")?;
+    downlink_flows(&first, upstream, &payload(SMALL_PAYLOAD, 11))
+        .await
+        .context("first carrier")?;
+    let reading = tokio::time::Instant::now() + Duration::from_millis(200);
+    while tokio::time::Instant::now() < reading {
+        let _ = tokio::time::timeout(Duration::from_millis(50), first.read_packet()).await;
+    }
+    tokio::time::sleep(STALL).await;
+    first.close().await?;
+    drop(first);
+    wait_for_park(&server).await;
+
+    let (second, _) = connect_with_resume(&server, carrier, Some(session_id)).await?;
+    for tag in 21..26 {
+        downlink_flows(&second, upstream, &payload(SMALL_PAYLOAD, tag))
+            .await
+            .with_context(|| {
+                format!(
+                    "resumed carrier, packet {tag} (hits {}, misses {})",
+                    server.counter(RESUME_HITS, &[]),
+                    server.counter(RESUME_MISSES, &[]),
+                )
+            })?;
+    }
+    assert_eq!(
+        server.counter(RESUME_HITS, &[("kind", "ss_udp_stream")]),
+        1.0,
+        "the session was not resumed (misses: unknown {}, total {})",
+        server.counter(RESUME_MISSES, &[("reason", "unknown")]),
+        server.counter(RESUME_MISSES, &[]),
+    );
+    assert_eq!(sources.lock().await.len(), 1, "the upstream saw a second source");
+    second.close().await?;
+    Ok(())
+}
+
+/// A googlevideo-sized packet: fits one datagram on loopback.
+const BUSY_FITS: usize = 1350;
+/// Past every datagram size on loopback: rides the stream.
+const BUSY_TOO_LARGE: usize = 1600;
+
 macro_rules! carrier_tests {
     ($($module:ident => $carrier:expr),+ $(,)?) => {$(
         mod $module {
@@ -514,6 +649,21 @@ macro_rules! carrier_tests {
             #[tokio::test]
             async fn resume_moves_datagrams_to_the_new_anchor() -> Result<()> {
                 super::resume_moves_datagrams_to_the_new_anchor($carrier).await
+            }
+
+            #[tokio::test]
+            async fn resume_under_a_busy_datagram_downlink() -> Result<()> {
+                super::resume_under_a_busy_downlink($carrier, true, BUSY_FITS).await
+            }
+
+            #[tokio::test]
+            async fn resume_under_a_busy_stream_downlink() -> Result<()> {
+                super::resume_under_a_busy_downlink($carrier, true, BUSY_TOO_LARGE).await
+            }
+
+            #[tokio::test]
+            async fn resume_under_a_busy_downlink_without_datagrams() -> Result<()> {
+                super::resume_under_a_busy_downlink($carrier, false, BUSY_FITS).await
             }
         }
     )+};

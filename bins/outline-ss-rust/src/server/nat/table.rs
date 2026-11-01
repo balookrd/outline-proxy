@@ -9,7 +9,6 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use dashmap::{DashMap, mapref::entry::Entry};
-use parking_lot::Mutex;
 use tokio::{net::UdpSocket, sync::OnceCell};
 use tracing::debug;
 
@@ -22,7 +21,7 @@ use crate::{
 };
 
 use super::{
-    entry::{NatEntry, NatKey, UdpResponseCoding, random_session_id},
+    entry::{ActiveSlot, NatEntry, NatKey, UdpResponseCoding, random_session_id},
     reader::{NatReaderCtx, nat_reader_task},
 };
 
@@ -304,7 +303,7 @@ impl NatTable {
             .with_context(|| format!("failed to apply fwmark {:?} to NAT socket", key.fwmark))?;
         let socket = Arc::new(socket);
 
-        let active = Arc::new(Mutex::new(None));
+        let active = ActiveSlot::new();
         let last_active_secs = Arc::new(AtomicU64::new(clock::current_unix_secs()));
         let next_packet_id = Arc::new(AtomicU64::new(0));
         let server_session_id = match server_session {

@@ -22,6 +22,7 @@ pub(super) use parked::{
     ParkedVlessMux, ParkedVlessUdpSingle,
 };
 pub(super) use registry::{
-    ClusterIdentity, OrphanRegistry, ParkProbe, ParkQuery, ParkShape, ResumeMiss, ResumeOutcome,
+    ClusterIdentity, OrphanRegistry, PARK_HARVEST_WAIT, ParkProbe, ParkQuery, ParkShape,
+    ResumeMiss, ResumeOutcome,
 };
 pub(super) use session_id::SessionId;

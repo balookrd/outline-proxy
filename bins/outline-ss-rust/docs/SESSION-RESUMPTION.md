@@ -181,6 +181,7 @@ UDP cannot be back-pressured the same way. While the client is gone:
 - For each parked UDP entry, the reader task **continues running** on the upstream socket. Each received datagram is appended to a per-entry **back-buffer**.
 - The back-buffer is a bounded FIFO measured in bytes. When full, the oldest datagram is dropped, and `orphan_udp_pkt_dropped_total{reason="backbuf_overflow"}` increments.
 - The `UdpResponseSender` slot in the `NatEntry` is `None` while parked; the reader sees this and routes to the back-buffer instead of the client.
+- The park must not depend on the old carrier draining. A VLESS-UDP downlink pump blocked on a full stream observes the park signal, a stream that is already closed at park time still parks the socket, and the wait for the pump is bounded (`PARK_HARVEST_WAIT`, 2 s). An SS-UDP NAT reader on `xhttp_h3` stops waiting on the sender of a carrier the session moved away from: on the slot change it drops the one in-flight packet and delivers to the new carrier.
 
 #### Why bytes, not packet count
 

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tracing::{debug, warn};
 
-use super::super::super::resumption::{Parked, ParkedVlessUdpSingle, SessionId};
+use super::super::super::resumption::{PARK_HARVEST_WAIT, Parked, ParkedVlessUdpSingle, SessionId};
 use super::ctx::{
     UdpUpstream, UpstreamSession, VlessRelayOutcome, VlessRelayState, VlessWsRouteCtx,
     VlessWsServerCtx,
@@ -55,7 +55,19 @@ pub(super) async fn try_park_vless_udp_single(
         return false;
     };
     cancel.notify_one();
-    match reader_task.into_inner().await {
+    // Bounded: a pump that never acknowledges must not hold the reservation —
+    // and with it a waiting resume — forever. On timeout the task is aborted
+    // and the session is not parked.
+    let mut reader_task = reader_task.into_inner();
+    let harvested = match tokio::time::timeout(PARK_HARVEST_WAIT, &mut reader_task).await {
+        Ok(harvested) => harvested,
+        Err(_) => {
+            reader_task.abort();
+            warn!("vless udp relay task did not stop for the park in time; not parking");
+            return false;
+        },
+    };
+    match harvested {
         Ok(Ok(VlessRelayOutcome::UdpCancelled)) => {},
         Ok(Ok(VlessRelayOutcome::Closed)) => return false,
         Ok(Ok(VlessRelayOutcome::Cancelled(_))) => {
