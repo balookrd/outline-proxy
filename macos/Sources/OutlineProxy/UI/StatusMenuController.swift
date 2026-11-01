@@ -28,6 +28,12 @@ public final class StatusMenuController: NSObject, NSMenuDelegate {
             name: NSNotification.Name("AppStateUpdated"),
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleStateUpdate),
+            name: UpdateController.didChange,
+            object: nil
+        )
 
         ProfileStore.shared.onProfilesChanged = { [weak self] in
             DispatchQueue.main.async {
@@ -161,6 +167,20 @@ public final class StatusMenuController: NSObject, NSMenuDelegate {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
+        let updates = UpdateController.shared
+        let updateTitle: String
+        if updates.busy, let status = updates.status {
+            updateTitle = "Обновление: \(status)"
+        } else if let available = updates.available {
+            updateTitle = "Установить обновление \(available.label)..."
+        } else {
+            updateTitle = "Проверить обновления..."
+        }
+        // The menu auto-enables items, so a busy updater is greyed out by having no action.
+        let updateItem = NSMenuItem(title: updateTitle, action: updates.busy ? nil : #selector(checkUpdatesAction), keyEquivalent: "")
+        updateItem.target = self
+        menu.addItem(updateItem)
+
         // Theme selection submenu
         let themeMenu = NSMenu()
         for mode in AppThemeMode.allCases {
@@ -243,6 +263,10 @@ public final class StatusMenuController: NSObject, NSMenuDelegate {
 
     @objc private func openSettingsAction() {
         SettingsWindowController.shared.show()
+    }
+
+    @objc private func checkUpdatesAction() {
+        UpdateController.shared.checkInteractively()
     }
 
     @objc private func quitAction() {

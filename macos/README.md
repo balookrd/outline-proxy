@@ -57,6 +57,16 @@ The shield icon will appear in your macOS menu bar.
    Open Preferences (`Cmd+,`) and select the desired mode from the top banner dropdown.
    If connected, Outline Proxy will seamlessly reconnect using the newly selected mode.
 
+## Updates
+
+The app updates itself from GitHub Releases, following its own build channel: a release build (`macos-v*` tag) moves to the newest `macos-v*` version, a nightly build follows the rolling `macos-nightly` tag and updates whenever the published DMG was built from a different commit.
+
+- **Checking:** click the version line at the bottom of the main window, or choose **"Check for updates..."** in the menu-bar menu. A quiet check also runs at most once a day; a found build only shows up in the footer and the menu, nothing is downloaded until you ask.
+- **Installing:** the dialog shows the release notes and offers **"Install and relaunch"**. The app downloads the DMG while bypassing the system proxy (so in SOCKS5 mode the download does not depend on the tunnel being fixed), verifies it against the release's `SHA256SUMS.txt`, unpacks it next to the installed bundle, checks the bundle signature and identifier, quits, swaps the bundles and relaunches. A tunnel that was up reconnects by itself (for TUN without a password only if the sudoers rule is configured). If the swap fails, the old bundle is restored. The swap log is at `~/Library/Logs/OutlineProxy/update.log`.
+- **Manual fallback (as on Android):** when the bundle cannot be replaced in place (no write access to its folder, the app runs from an App Translocation copy, a development run outside an `.app`) or the in-place install fails, the verified DMG is saved to `~/Downloads` and opened in Finder; drag Outline Proxy into Applications, replacing the old copy.
+
+Builds without this updater (nightly `4c7821c4` and older) have to be updated manually once.
+
 ## Packaging DMG Disk Images
 
 To package the application into a compressed `.dmg` disk image with an `/Applications` drag-and-drop symlink:

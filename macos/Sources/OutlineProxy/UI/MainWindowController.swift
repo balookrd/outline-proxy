@@ -350,12 +350,19 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         spacer.setContentHuggingPriority(.defaultLow, for: .vertical)
         rootStack.addArrangedSubview(spacer)
 
-        // 6. Version Footer
-        footerLabel.stringValue = AppVersion.displayString
-        footerLabel.toolTip = AppVersion.fullDiagnosticString
+        // 6. Version Footer — a click checks for updates, as on Android.
+        refreshFooter()
         footerLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         footerLabel.alignment = .center
+        footerLabel.lineBreakMode = .byTruncatingTail
+        footerLabel.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(footerClicked)))
         rootStack.addArrangedSubview(footerLabel)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(refreshFooter),
+            name: UpdateController.didChange,
+            object: nil
+        )
     }
 
     // MARK: - Subviews Setup
@@ -841,12 +848,24 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         // 7. Footer
         footerLabel.textColor = palette.secondaryText
-        footerLabel.stringValue = AppVersion.displayString
-        footerLabel.toolTip = AppVersion.fullDiagnosticString
+        refreshFooter()
 
         // Refresh State & Server Info
         refreshServerInfo()
         handleStateUpdate()
+    }
+
+    @objc private func footerClicked() {
+        UpdateController.shared.checkInteractively()
+    }
+
+    @objc private func refreshFooter() {
+        var text = AppVersion.displayString
+        if let status = UpdateController.shared.status {
+            text += " · " + status
+        }
+        footerLabel.stringValue = text
+        footerLabel.toolTip = AppVersion.fullDiagnosticString + "\nНажмите, чтобы проверить обновления"
     }
 
     // MARK: - State Updates
