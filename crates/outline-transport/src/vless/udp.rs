@@ -72,6 +72,10 @@ pub struct VlessUdpTransport {
     /// datagram channel underneath keeps every packet on the stream. `None`
     /// when the carrier agreed no datagrams.
     datagram_gate: Option<Arc<DatagramGate>>,
+    /// `transport` label of the datagram counters when the carrier agreed
+    /// datagrams: every record split out of the stream then counts as one
+    /// downlink fallback (the channel underneath counts chunks, not records).
+    datagram_transport: Option<&'static str>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -117,20 +121,26 @@ impl VlessUdpTransport {
         // Gated: datagrams go out only once `read_packet` has parsed the
         // response header (see `DatagramGate`).
         #[cfg(feature = "h3")]
-        let (chan, datagram_gate): (Arc<dyn crate::frame_io::DatagramChannel>, _) = match datagram {
+        let (chan, datagram_gate, datagram_transport): (
+            Arc<dyn crate::frame_io::DatagramChannel>,
+            _,
+            _,
+        ) = match datagram {
             Some(binding) => {
                 let gate = Arc::new(DatagramGate::default());
                 let channel =
                     crate::h3::H3DatagramChannel::new(binding, chan, datagram_transport, "vless")
-                        .with_gate(Arc::clone(&gate));
-                (Arc::new(channel), Some(gate))
+                        .with_gate(Arc::clone(&gate))
+                        .counting_stream_down_above();
+                (Arc::new(channel), Some(gate), Some(datagram_transport))
             },
-            None => (chan, None),
+            None => (chan, None, None),
         };
         #[cfg(not(feature = "h3"))]
-        let datagram_gate = None;
+        let (datagram_gate, datagram_transport) = (None, None);
         let mut transport = Self::from_channel(chan, uuid, target, source)?;
         transport.datagram_gate = datagram_gate;
+        transport.datagram_transport = datagram_transport;
         Ok(transport)
     }
 
@@ -158,6 +168,7 @@ impl VlessUdpTransport {
             throttle: None,
             throttle_fired: std::sync::atomic::AtomicBool::new(false),
             datagram_gate: None,
+            datagram_transport: None,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         })
     }
@@ -168,6 +179,15 @@ impl VlessUdpTransport {
     pub fn with_throttle_handle(mut self, handle: crate::ThrottleSignalHandle) -> Self {
         self.throttle = Some(handle);
         self
+    }
+
+    /// Returns `payload`, a record split out of the stream, counting it as one
+    /// downlink fallback on a datagram-negotiated session.
+    fn stream_record(&self, payload: Bytes) -> Bytes {
+        if let Some(transport) = self.datagram_transport {
+            outline_metrics::record_udp_h3_datagram_fallback("down", transport, "vless");
+        }
+        payload
     }
 
     /// Invokes the throttle handler for `signal`, once per carrier.
@@ -328,7 +348,7 @@ impl VlessUdpTransport {
                 if !state.pending_header
                     && let Some(payload) = try_split_packet(&mut state.buf)?
                 {
-                    return Ok(payload);
+                    return Ok(self.stream_record(payload));
                 }
             }
             let (source, next) = self
@@ -387,7 +407,7 @@ impl VlessUdpTransport {
                 }
             }
             if let Some(payload) = try_split_packet(&mut state.buf)? {
-                return Ok(payload);
+                return Ok(self.stream_record(payload));
             }
         }
     }

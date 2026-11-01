@@ -138,6 +138,45 @@ fn dropped(reason: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Process-wide, like `dropped`: callers compare deltas.
+fn down_fallbacks(transport: &str) -> f64 {
+    let rendered = outline_metrics::render_prometheus(&[]).unwrap_or_default();
+    let series = format!(
+        "outline_ws_udp_h3_datagram_fallback_total{{direction=\"down\",proto=\"vless\",transport=\"{transport}\"}} "
+    );
+    rendered
+        .lines()
+        .find_map(|line| line.strip_prefix(&series)?.parse().ok())
+        .unwrap_or(0.0)
+}
+
+/// On a datagram-negotiated session the client counts one downlink fallback
+/// per VLESS-UDP record that rode the stream, however the carrier chunked the
+/// body (an xhttp body arrives in HTTP/3 DATA chunks that split records), and
+/// none for the response header or a datagram.
+#[tokio::test]
+async fn counts_one_down_fallback_per_stream_record() {
+    let mut transport = transport(&[
+        // Header plus the head of the first record.
+        (STREAM, &[VERSION_BYTE, 0, 0, 3, b'a']),
+        (STREAM, b"bc"),
+        // Second record split mid-length.
+        (STREAM, &[0]),
+        (STREAM, &[2, b'd', b'e']),
+        (DATAGRAM, &[0, 1, b'x']),
+        // Two whole records in one chunk.
+        (STREAM, &[0, 1, b'f', 0, 1, b'g']),
+    ]);
+    transport.datagram_transport = Some("xhttp_h3");
+    let before = down_fallbacks("xhttp_h3");
+    for expected in [&b"abc"[..], b"de", b"x", b"f", b"g"] {
+        assert_eq!(&transport.read_packet().await.unwrap()[..], expected);
+    }
+    if cfg!(feature = "metrics") {
+        assert_eq!(down_fallbacks("xhttp_h3") - before, 4.0);
+    }
+}
+
 /// Counters are real only with the `metrics` feature (a no-op stub otherwise).
 fn assert_counted(before: f64, after: f64, at_least: f64) {
     if cfg!(feature = "metrics") {

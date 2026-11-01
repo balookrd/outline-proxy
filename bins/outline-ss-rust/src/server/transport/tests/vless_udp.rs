@@ -13,10 +13,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::{Notify, mpsc};
 
 use super::super::carrier_padding::frame_downlink_message;
-use super::super::h3_datagram::tests::{QuicDatagramPair, quic_datagram_pair};
-use super::super::h3_datagram::{
-    DatagramActivity, DatagramPeer, DatagramTarget, VLESS_PROTO_LABEL,
-};
+use super::super::h3_datagram::tests::{QuicDatagramPair, quic_datagram_pair, target_on};
+use super::super::h3_datagram::{DatagramActivity, DatagramPeer, VLESS_PROTO_LABEL, WS_H3_CARRIER};
 use super::super::upstream_source::VlessUdpSink;
 use super::super::vless::{UdpUpstream, VlessRelayOutcome, VlessWsRouteCtx};
 use super::{DatagramDownlink, forward_vless_udp_datagram, send_downlink};
@@ -68,14 +66,29 @@ async fn padded_datagrams_reach_the_upstream_only_as_one_whole_record() -> Resul
     // A truncated padding frame decodes to nothing: not a cover (none travels
     // as a datagram), so malformed.
     let truncated = padded(&[0, 3, b'x', b'y', b'z']).slice(..6);
-    forward_vless_udp_datagram(&mut udp, truncated, None, &metrics, &route).await?;
+    forward_vless_udp_datagram(&mut udp, truncated, None, &metrics, &route, WS_H3_CARRIER).await?;
     // A whole frame around a record whose length overruns it.
-    forward_vless_udp_datagram(&mut udp, padded(&[0, 9, b'q']), None, &metrics, &route).await?;
+    forward_vless_udp_datagram(
+        &mut udp,
+        padded(&[0, 9, b'q']),
+        None,
+        &metrics,
+        &route,
+        WS_H3_CARRIER,
+    )
+    .await?;
     assert_eq!(counter(&metrics, malformed[0], &malformed[1..]), 2.0);
 
     // One padded record goes out, alone.
-    forward_vless_udp_datagram(&mut udp, padded(&[0, 3, b'a', b'b', b'c']), None, &metrics, &route)
-        .await?;
+    forward_vless_udp_datagram(
+        &mut udp,
+        padded(&[0, 3, b'a', b'b', b'c']),
+        None,
+        &metrics,
+        &route,
+        WS_H3_CARRIER,
+    )
+    .await?;
     let mut buf = [0_u8; 64];
     let n = tokio::time::timeout(Duration::from_secs(5), target.recv(&mut buf)).await??;
     assert_eq!(&buf[..n], b"abc");
@@ -89,7 +102,7 @@ async fn padded_datagrams_reach_the_upstream_only_as_one_whole_record() -> Resul
         counter(
             &metrics,
             "outline_ss_udp_h3_datagrams_total",
-            &["direction=\"up\"", "proto=\"vless\""]
+            &["direction=\"up\"", "transport=\"ws_h3\"", "proto=\"vless\""]
         ),
         1.0
     );
@@ -99,10 +112,10 @@ async fn padded_datagrams_reach_the_upstream_only_as_one_whole_record() -> Resul
 
 fn datagram_downlink(pair: &QuicDatagramPair) -> DatagramDownlink {
     DatagramDownlink {
-        target: Arc::new(DatagramTarget::from_pointee(DatagramPeer {
+        target: target_on(DatagramPeer {
             connection: pair.server.clone(),
             quarter_stream_id: 70,
-        })),
+        }),
         monitor: None,
         metrics: Metrics::new(&sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))),
         activity: Arc::new(DatagramActivity::default()),
@@ -110,6 +123,7 @@ fn datagram_downlink(pair: &QuicDatagramPair) -> DatagramDownlink {
         protocol: Protocol::Http3,
         app_protocol: AppProtocol::Vless,
         proto: VLESS_PROTO_LABEL,
+        carrier: WS_H3_CARRIER,
     }
 }
 

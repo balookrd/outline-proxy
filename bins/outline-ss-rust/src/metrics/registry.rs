@@ -22,6 +22,10 @@ const WS_FRAME_SIZE_BUCKETS: &[f64] =
 // that is where backpressure-induced stalls become visible.
 const WS_DATA_CHANNEL_FILL_BUCKETS: &[f64] =
     &[0.0, 8.0, 32.0, 64.0, 96.0, 120.0, 128.0, 192.0, 256.0, 384.0, 512.0];
+// QUIC minimum (1200) up to a plain Ethernet path; the 1250..1452 rungs split
+// the band where a datagram-carried UDP packet starts or stops fitting.
+const QUIC_PATH_MTU_BUCKETS: &[f64] =
+    &[1200.0, 1250.0, 1280.0, 1300.0, 1350.0, 1380.0, 1400.0, 1420.0, 1440.0, 1452.0, 1500.0];
 
 pub(super) fn build_recorder(idle_timeout: Duration) -> (PrometheusRecorder, PrometheusHandle) {
     let recorder = PrometheusBuilder::new()
@@ -50,6 +54,11 @@ pub(super) fn build_recorder(idle_timeout: Duration) -> (PrometheusRecorder, Pro
             WS_DATA_CHANNEL_FILL_BUCKETS,
         )
         .expect("invalid WS data channel fill bucket config")
+        .set_buckets_for_metric(
+            Matcher::Full("outline_ss_quic_path_mtu_bytes".into()),
+            QUIC_PATH_MTU_BUCKETS,
+        )
+        .expect("invalid QUIC path MTU bucket config")
         // Only evict idle histograms. Counters in Prometheus are monotonic
         // by contract: evicting and re-creating one between scrapes appears
         // to PromQL as a `rate()` reset, dropping every accumulated value.
@@ -168,27 +177,47 @@ pub(super) fn register_descriptions() {
     describe_counter!(
         "outline_ss_udp_h3_datagrams_total",
         "UDP packets carried as HTTP/3 datagrams (RFC 9297) on a session that agreed \
-         them, by direction (\"up\" received, \"down\" handed to QUIC) and proto (\"ss\" \
-         or \"vless\")."
+         them, by direction (\"up\" received, \"down\" handed to QUIC), transport \
+         (the carrier: \"ws_h3\" or \"xhttp_h3\") and proto (\"ss\" or \"vless\")."
     );
     describe_counter!(
         "outline_ss_udp_h3_datagram_fallback_total",
-        "UDP packets that rode the stream on a session that agreed HTTP/3 datagrams: \
-         \"down\" did not fit the datagram size or failed to send, \"up\" arrived on the \
-         stream (an SS Binary frame, a VLESS record)."
+        "UDP packets that rode the stream on a session that agreed HTTP/3 datagrams, by \
+         direction, transport (\"ws_h3\" or \"xhttp_h3\"), proto and reason: \"down\" \
+         is \"too_large\" (did not fit the datagram size), \"send_failed\" (QUIC \
+         refused it) or \"unarmed\" (a VLESS session before the client's first uplink \
+         datagram); \"up\" is \"stream\" (the client sent it on the stream: an SS \
+         Binary frame, a VLESS record)."
     );
     describe_counter!(
         "outline_ss_udp_h3_datagram_dropped_total",
-        "HTTP/3 datagrams dropped on receive, by reason (\"unknown_stream\": no live \
-         request stream bound to the id, \"malformed\": truncated stream-id prefix, or \
+        "HTTP/3 datagrams dropped on receive, by reason (\"unknown_stream\": no \
+         request stream bound to the id, \"closed_stream\": the stream unregistered \
+         less than 10 s ago (the expected tail of a closed session), \"malformed\": truncated stream-id prefix, or \
          not exactly one VLESS-UDP record, \"queue_full\": the stream's bounded \
-         receive queue was full)."
+         receive queue overflowed in a burst, \"queue_stalled\": it overflowed and its \
+         consumer had not read for 50 ms)."
     );
     describe_counter!(
         "outline_ss_udp_h3_datagram_sessions_total",
-        "UDP request streams that offered HTTP/3 datagrams, by state (\"negotiated\" \
-         or \"declined\"); a VLESS stream is counted once its command is known, \
+        "UDP request streams that offered HTTP/3 datagrams, by transport (\"ws_h3\" \
+         or \"xhttp_h3\") and state (\"negotiated\" or \"declined\"); a VLESS stream is counted once its command is known, \
          \"declined\" for any but plain UDP."
+    );
+    describe_histogram!(
+        "outline_ss_quic_path_mtu_bytes",
+        "Path MTU of HTTP/3 connections that may carry UDP datagrams, sampled every \
+         10 s per connection (not at close). A sample at 1200 after a black hole \
+         is what pushes UDP packets of roughly 1100+ bytes onto the stream."
+    );
+    describe_counter!(
+        "outline_ss_quic_black_holes_total",
+        "MTU black holes quinn detected on HTTP/3 connections that may carry UDP \
+         datagrams (each one drops the path MTU to the QUIC minimum)."
+    );
+    describe_counter!(
+        "outline_ss_quic_mtu_probes_lost_total",
+        "Lost DPLPMTUD probes on HTTP/3 connections that may carry UDP datagrams."
     );
     describe_counter!(
         "outline_ss_udp_oversized_datagrams_dropped_total",

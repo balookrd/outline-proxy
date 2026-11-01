@@ -28,7 +28,7 @@ use crate::{AbortOnDrop, DnsCache, TransportStream, bind_addr_for, bind_udp_sock
 
 use crate::resumption::NegotiatedResume;
 
-use outline_wire::h3_datagram::{DatagramDemux, DropReason};
+use outline_wire::h3_datagram::{DatagramDemux, DropReason, PathSample};
 
 use super::vendored::{self, H3RequestStreamHandle, H3SendRequestHandle};
 use super::{
@@ -765,8 +765,21 @@ async fn connect_h3_connection(
     // One demultiplexer per connection, and only where datagrams can flow both
     // ways: we receive them (`offers_datagrams`) and the peer announced a
     // datagram frame size (`max_datagram_size`).
-    let datagrams = (offers_datagrams && connection_handle.max_datagram_size().is_some())
-        .then(|| DatagramDemux::spawn(connection_handle.clone(), Arc::new(record_datagram_drop)));
+    let datagrams =
+        (offers_datagrams && connection_handle.max_datagram_size().is_some()).then(|| {
+            DatagramDemux::spawn_watched(
+                connection_handle.clone(),
+                Arc::new(record_datagram_drop),
+                Arc::new(|s: PathSample| {
+                    metrics::record_quic_path_sample(
+                        "ws_h3",
+                        s.current_mtu,
+                        s.black_holes,
+                        s.lost_probes,
+                    )
+                }),
+            )
+        });
 
     let id = h3_registry().next_id();
     // Counted only for pooled dials: a probe has no cache key, never enters the
@@ -816,8 +829,10 @@ async fn connect_h3_connection(
 pub(crate) fn record_datagram_drop(reason: DropReason) {
     metrics::record_udp_h3_datagram_dropped(match reason {
         DropReason::UnknownStream => "unknown_stream",
+        DropReason::ClosedStream => "closed_stream",
         DropReason::Malformed => "malformed",
         DropReason::QueueFull => "queue_full",
+        DropReason::QueueStalled => "queue_stalled",
     });
 }
 

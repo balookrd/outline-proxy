@@ -65,7 +65,7 @@ struct Fixture {
     mock: Arc<MockChannel>,
     server: quinn::Connection,
     demux: Arc<DatagramDemux>,
-    unknown_drops: Arc<AtomicUsize>,
+    closed_drops: Arc<AtomicUsize>,
     _endpoints: (quinn::Endpoint, quinn::Endpoint),
 }
 
@@ -76,12 +76,12 @@ async fn fixture() -> Fixture {
 /// `gate`: the VLESS-UDP channel, which keeps the stream until the gate opens.
 async fn fixture_with(gate: Option<Arc<DatagramGate>>) -> Fixture {
     let (client, server, client_ep, server_ep) = pair().await;
-    let unknown_drops = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&unknown_drops);
+    let closed_drops = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&closed_drops);
     let demux = DatagramDemux::spawn(
         client.clone(),
         Arc::new(move |reason| {
-            if reason == DropReason::UnknownStream {
+            if reason == DropReason::ClosedStream {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
         }),
@@ -103,7 +103,7 @@ async fn fixture_with(gate: Option<Arc<DatagramGate>>) -> Fixture {
         mock,
         server,
         demux,
-        unknown_drops,
+        closed_drops,
         _endpoints: (client_ep, server_ep),
     }
 }
@@ -189,15 +189,15 @@ async fn close_closes_the_stream_and_unregisters() {
     assert_eq!(recv(&f.channel).await, None);
     assert!(f.channel.send_datagram(Bytes::from_static(b"late")).await.is_err());
 
-    // The id is gone from the demux: its datagrams now count as unknown.
+    // The id is gone from the demux: its tail now counts as a closed stream.
     f.server.send_datagram(encode_datagram(ID, b"orphan")).unwrap();
     for _ in 0..200 {
-        if f.unknown_drops.load(Ordering::SeqCst) >= 1 {
+        if f.closed_drops.load(Ordering::SeqCst) >= 1 {
             return;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("datagram for a closed channel was not dropped as unknown");
+    panic!("datagram for a closed channel was not dropped as closed_stream");
 }
 
 #[tokio::test]

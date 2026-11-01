@@ -1728,3 +1728,36 @@ async fn udp_datagram_offer_follows_the_dial_profile() {
         assert!(!with_switch_off, "{fp:?}");
     }
 }
+
+/// The local datagram receive buffer is sized for a burst the demultiplexer has
+/// not read yet (1 MiB), while the advertised `max_datagram_frame_size` stays
+/// the browser's exact value (part of the fingerprint).
+#[test]
+fn datagram_receive_buffer_is_local_not_advertised() {
+    use super::super::vendored::apply_browser_tp_options;
+
+    for (profile, advertised) in [
+        (&super::super::tp_profile::CHROMIUM, "65536"),
+        (&super::super::tp_profile::FIREFOX, "65535"),
+    ] {
+        let mut transport = quinn::TransportConfig::default();
+        apply_browser_tp_options(&mut transport, &profile.options);
+        let debug = format!("{transport:?}");
+        let field = |name: &str| -> String {
+            let start = debug
+                .find(&format!("{name}: "))
+                .unwrap_or_else(|| panic!("{name} in {debug}"));
+            debug[start..].split(", ").next().unwrap().to_owned()
+        };
+        assert!(
+            field("datagram_receive_buffer_size").contains("1048576"),
+            "{}",
+            field("datagram_receive_buffer_size")
+        );
+        assert!(
+            field("advertised_max_datagram_frame_size").contains(advertised),
+            "{}",
+            field("advertised_max_datagram_frame_size")
+        );
+    }
+}

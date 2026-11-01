@@ -111,7 +111,10 @@ pub(crate) fn apply_browser_tp_options(
         Some(size) => {
             transport
                 .datagram_send_buffer_size(super::tls_config::H3_DATAGRAM_BUFFER_BYTES)
-                .datagram_receive_buffer_size(Some(size as usize))
+                // Local only: room for datagrams the demultiplexer has not read
+                // yet, so a short stall of its task does not silently drop
+                // them. The peer sees `advertised_max_datagram_frame_size`.
+                .datagram_receive_buffer_size(Some(super::tls_config::H3_DATAGRAM_BUFFER_BYTES))
                 .advertised_max_datagram_frame_size(Some(quinn::VarInt::from_u32(size)));
         },
         None => {

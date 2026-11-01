@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::http::{self, Method, StatusCode};
 use bytes::Bytes;
 use h3::server::Connection as H3Connection;
-use outline_wire::h3_datagram::{DatagramDemux, DropReason};
+use outline_wire::h3_datagram::{DatagramDemux, DropReason, PathSample};
 use outline_wire::xhttp::{SsPathKind, decode_kind};
 use tracing::{debug, warn};
 
@@ -22,7 +22,7 @@ use super::super::{
     state::{RoutesSnapshot, empty_transport_route, empty_vless_transport_route},
     transport::{
         H3DatagramRoute, ResumeContext, UdpRouteCtx, UpstreamSource, VlessWsRouteCtx,
-        WsTcpRouteCtx, XhttpH3Ctx, XhttpRoute, apply_udp_datagram_echo, edge_route,
+        WS_H3_CARRIER, WsTcpRouteCtx, XhttpH3Ctx, XhttpRoute, apply_udp_datagram_echo, edge_route,
         finish_ws_session, generate_anonymous_xhttp_session_id, h3_fallback_handle,
         handle_tcp_h3_connection, handle_udp_h3_connection, handle_vless_h3_connection,
         handle_xhttp_h3_request, is_normal_h3_shutdown,
@@ -125,11 +125,17 @@ fn h3_connection_datagrams(
     let on_drop = Arc::new(move |reason: DropReason| {
         metrics.record_udp_h3_datagram_dropped(match reason {
             DropReason::UnknownStream => "unknown_stream",
+            DropReason::ClosedStream => "closed_stream",
             DropReason::Malformed => "malformed",
             DropReason::QueueFull => "queue_full",
+            DropReason::QueueStalled => "queue_stalled",
         });
     });
-    let demux = DatagramDemux::spawn(connection.clone(), on_drop);
+    let path_metrics = Arc::clone(&ctx.udp_server.metrics);
+    let on_path = Arc::new(move |s: PathSample| {
+        path_metrics.record_quic_path_sample(s.current_mtu, s.black_holes, s.lost_probes);
+    });
+    let demux = DatagramDemux::spawn_watched(connection.clone(), on_drop, on_path);
     Some((connection.clone(), demux))
 }
 
@@ -352,9 +358,13 @@ async fn handle_h3_request(
                 }
             });
             if route.is_none() {
-                ctx.udp_server.metrics.record_udp_h3_datagram_session("declined");
+                ctx.udp_server
+                    .metrics
+                    .record_udp_h3_datagram_session(WS_H3_CARRIER, "declined");
             } else if path_is_udp {
-                ctx.udp_server.metrics.record_udp_h3_datagram_session("negotiated");
+                ctx.udp_server
+                    .metrics
+                    .record_udp_h3_datagram_session(WS_H3_CARRIER, "negotiated");
             }
             if route.is_some() {
                 apply_udp_datagram_echo(response.headers_mut());

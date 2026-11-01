@@ -1449,6 +1449,27 @@ fn render_prometheus_exports_udp_h3_datagram_series() {
 }
 
 #[test]
+fn render_prometheus_exports_quic_path_series() {
+    let _guard = test_guard();
+    record_quic_path_sample("xhttp_h3", Some(1200), 1, 2);
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    assert!(
+        rendered
+            .contains("outline_ws_quic_path_mtu_bytes_bucket{transport=\"xhttp_h3\",le=\"1200\"}")
+    );
+    assert!(rendered.contains("outline_ws_quic_black_holes_total{transport=\"xhttp_h3\"}"));
+    assert!(rendered.contains("outline_ws_quic_mtu_probes_lost_total{transport=\"xhttp_h3\"}"));
+
+    // A close-time sample (no MTU) adds counters but no histogram point.
+    record_quic_path_sample("xhttp_h3", None, 0, 1);
+    let after = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    let count =
+        |r: &str| metric_value(r, "outline_ws_quic_path_mtu_bytes_count{transport=\"xhttp_h3\"}");
+    assert_eq!(count(&rendered), count(&after));
+}
+
+#[test]
 fn init_exports_zero_value_udp_h3_datagram_series() {
     let _guard = test_guard();
     init();
@@ -1463,6 +1484,9 @@ fn init_exports_zero_value_udp_h3_datagram_series() {
     assert!(rendered.contains("outline_ws_udp_h3_datagram_dropped_total{reason=\"malformed\"} 0"));
     assert!(rendered.contains("outline_ws_udp_h3_datagram_dropped_total{reason=\"early\"} 0"));
     assert!(rendered.contains("outline_ws_udp_h3_datagram_dropped_total{reason=\"queue_full\"} 0"));
+    assert!(
+        rendered.contains("outline_ws_udp_h3_datagram_dropped_total{reason=\"queue_stalled\"} 0")
+    );
     assert!(rendered.contains(
         "outline_ws_udp_h3_datagram_sessions_total{state=\"declined\",transport=\"xhttp_h3\"} 0"
     ));

@@ -104,6 +104,7 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
             protocol: route.protocol,
             app_protocol: AppProtocol::Vless,
             proto: VLESS_PROTO_LABEL,
+            carrier: anchor.carrier(),
         })
     });
     let mut datagram_anchor = datagram;
@@ -193,6 +194,7 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
                             link.apply_pending();
                             link.agreed()
                         });
+                        let carrier = datagram_link.as_ref().map(DatagramLink::carrier);
                         let result = handle_vless_binary_frame(
                             &mut state,
                             data,
@@ -216,11 +218,17 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
                         // Records on the stream of a session that agreed
                         // datagrams: too large for one, or sent before the
                         // client read the response header.
-                        if let Ok(records) = result && datagrams_agreed {
+                        if let Ok(records) = result
+                            && datagrams_agreed
+                            && let Some(carrier) = carrier
+                        {
                             for _ in 0..records {
-                                server
-                                    .metrics
-                                    .record_udp_h3_datagram_fallback("up", VLESS_PROTO_LABEL);
+                                server.metrics.record_udp_h3_datagram_fallback(
+                                    "up",
+                                    carrier,
+                                    VLESS_PROTO_LABEL,
+                                    "stream",
+                                );
                             }
                         }
                         if let Err(frame_err) = result {
@@ -283,6 +291,10 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
             // upstream send gets the "try again" close, as on the stream.
             datagram = next_link_datagram(&mut datagram_link), if datagram_link.is_some() => {
                 last_inbound = std::time::Instant::now();
+                // The datagram came through the link, so it is in place.
+                let Some(carrier) = datagram_link.as_ref().map(DatagramLink::carrier) else {
+                    continue;
+                };
                 if let UpstreamSession::Udp(udp) = &mut state.upstream
                     && let Err(error) = forward_vless_udp_datagram(
                         udp,
@@ -290,6 +302,7 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
                         state.user_counters.as_deref(),
                         &server.metrics,
                         route,
+                        carrier,
                     )
                     .await
                 {

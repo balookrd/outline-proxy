@@ -21,7 +21,9 @@ use crate::server::cluster::ClusterCtx;
 use crate::server::h3::vendored::{finish_send_side_without_grease, request_quarter_stream_id};
 
 use super::super::super::state::Services;
-use super::super::h3_datagram::{H3DatagramRoute, apply_udp_datagram_echo, offers_udp_datagrams};
+use super::super::h3_datagram::{
+    H3DatagramRoute, XHTTP_H3_CARRIER, apply_udp_datagram_echo, offers_udp_datagrams,
+};
 use super::super::is_normal_h3_shutdown;
 use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
 use super::handlers::{
@@ -82,7 +84,7 @@ fn negotiate_udp_datagram(
     }
     let metrics = &ctx.services.udp_server.metrics;
     let Some((connection, demux)) = ctx.datagram.as_ref() else {
-        metrics.record_udp_h3_datagram_session("declined");
+        metrics.record_udp_h3_datagram_session(XHTTP_H3_CARRIER, "declined");
         return false;
     };
     let quarter_stream_id = request_quarter_stream_id(stream);
@@ -92,7 +94,7 @@ fn negotiate_udp_datagram(
         registration: demux.register(quarter_stream_id),
     });
     if counted_here {
-        metrics.record_udp_h3_datagram_session("negotiated");
+        metrics.record_udp_h3_datagram_session(XHTTP_H3_CARRIER, "negotiated");
     }
     true
 }
@@ -444,6 +446,10 @@ async fn xhttp_h3_post(
         }
     }
     if fin {
+        // The client dropped its transport: stop its downlink datagrams now,
+        // not when the GET ends — which, for a GET abandoned on a dead
+        // carrier, may be never.
+        session.detach_datagram();
         session.close_uplink();
     }
 
@@ -605,6 +611,11 @@ async fn xhttp_h3_stream_one(
                     break;
                 },
             }
+        }
+        // The body ended: the client is gone, so its downlink datagrams stop
+        // here rather than after the relay parks.
+        if udp_datagram {
+            session_for_uplink.detach_datagram();
         }
         session_for_uplink.close_uplink();
     });

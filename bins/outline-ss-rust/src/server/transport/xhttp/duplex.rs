@@ -165,6 +165,8 @@ impl WsSocket for XhttpDuplex {
             // with a lull longer than `SESSION_IDLE_EVICTION` (DNS
             // between lookups, a quiet QUIC connection) is torn down
             // mid-session and the client sees a spurious `ws closed`.
+            // A session riding HTTP/3 datagrams still ages out after the
+            // window without an uplink datagram (`is_evictable`).
             // Deliberately `touch_keepalive`, not `touch_progress`: a
             // keepalive proves the carrier is alive but not that the
             // downlink is draining, so a stuck GET consumer cannot ride

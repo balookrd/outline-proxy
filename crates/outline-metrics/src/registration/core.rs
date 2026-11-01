@@ -16,6 +16,9 @@ pub(super) struct CoreFields {
     pub(super) udp_h3_datagram_fallback_total: IntCounterVec,
     pub(super) udp_h3_datagram_dropped_total: IntCounterVec,
     pub(super) udp_h3_datagram_sessions_total: IntCounterVec,
+    pub(super) quic_path_mtu_bytes: HistogramVec,
+    pub(super) quic_black_holes_total: IntCounterVec,
+    pub(super) quic_mtu_probes_lost_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> CoreFields {
@@ -107,9 +110,11 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
         registry,
         IntCounterVec,
         "outline_ws_udp_h3_datagram_dropped_total",
-        "Inbound HTTP/3 datagrams dropped, by reason: unknown_stream / malformed / queue_full \
-         (demultiplexer: no live stream for the id, bad prefix, the stream's receive \
-         queue is full; VLESS: not exactly one record, or a padded datagram that \
+        "Inbound HTTP/3 datagrams dropped, by reason: unknown_stream / closed_stream / \
+         malformed / queue_full / queue_stalled (demultiplexer: no stream for the id, the \
+         stream unregistered less than 10 s ago (the expected tail of a closed session), bad \
+         prefix, the stream's receive queue overflowed in a burst, the stream's receive \
+         queue overflowed and its consumer had not read for 50 ms; VLESS: not exactly one record, or a padded datagram that \
          decodes to nothing) and early (VLESS: arrived before the response header). The connection keeps serving.",
         ["reason"]
     );
@@ -122,6 +127,31 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
          it did not). Counts anchor streams, including standby-pool refills and \
          probe dials, not user sessions.",
         ["transport", "state"]
+    );
+    let quic_path_mtu_bytes = register_histogram!(
+        registry,
+        "outline_ws_quic_path_mtu_bytes",
+        "Path MTU of HTTP/3 connections that carry UDP datagrams, sampled every \
+         10 s per connection (not at close), by transport (ws_h3 / xhttp_h3). A \
+         sample at 1200 after a black hole is what pushes UDP packets of roughly \
+         1100+ bytes onto the stream.",
+        [1200.0, 1250.0, 1280.0, 1300.0, 1350.0, 1380.0, 1400.0, 1420.0, 1440.0, 1452.0, 1500.0],
+        ["transport"]
+    );
+    let quic_black_holes_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_quic_black_holes_total",
+        "MTU black holes quinn detected on HTTP/3 connections that carry UDP \
+         datagrams (each one drops the path MTU to the QUIC minimum), by transport.",
+        ["transport"]
+    );
+    let quic_mtu_probes_lost_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_quic_mtu_probes_lost_total",
+        "Lost DPLPMTUD probes on HTTP/3 connections that carry UDP datagrams, by transport.",
+        ["transport"]
     );
 
     build_info.with_label_values(&[env!("CARGO_PKG_VERSION")]).set(1);
@@ -146,5 +176,8 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
         udp_h3_datagram_fallback_total,
         udp_h3_datagram_dropped_total,
         udp_h3_datagram_sessions_total,
+        quic_path_mtu_bytes,
+        quic_black_holes_total,
+        quic_mtu_probes_lost_total,
     }
 }
