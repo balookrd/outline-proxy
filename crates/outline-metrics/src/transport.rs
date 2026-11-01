@@ -309,7 +309,10 @@ pub fn record_udp_h3_datagram_fallback(
 }
 
 /// One inbound HTTP/3 datagram dropped. `reason` is `"unknown_stream"`,
-/// `"queue_full"` (the stream's receive queue is full) or `"malformed"`
+/// `"closed_stream"` (the stream unregistered less than 10 s ago),
+/// `"queue_full"` (the stream's receive queue overflowed in a burst),
+/// `"queue_stalled"` (it overflowed and its consumer had not read for 50 ms)
+/// or `"malformed"`
 /// (demultiplexer, or a VLESS datagram that is not one record),
 /// or `"early"` (a VLESS datagram before the response header).
 pub fn record_udp_h3_datagram_dropped(reason: &'static str) {
@@ -328,6 +331,31 @@ pub fn record_udp_h3_datagram_session(transport: &'static str, state: &'static s
         .udp_h3_datagram_sessions_total
         .with_label_values(&[transport, state])
         .inc();
+}
+
+/// One path sample of an HTTP/3 connection that carries UDP datagrams;
+/// `black_holes` / `lost_probes` are deltas since its previous sample;
+/// `current_mtu` is `None` on the close-time sample (not a histogram point).
+pub fn record_quic_path_sample(
+    transport: &'static str,
+    current_mtu: Option<u16>,
+    black_holes: u64,
+    lost_probes: u64,
+) {
+    if let Some(mtu) = current_mtu {
+        METRICS
+            .quic_path_mtu_bytes
+            .with_label_values(&[transport])
+            .observe(f64::from(mtu));
+    }
+    METRICS
+        .quic_black_holes_total
+        .with_label_values(&[transport])
+        .inc_by(black_holes);
+    METRICS
+        .quic_mtu_probes_lost_total
+        .with_label_values(&[transport])
+        .inc_by(lost_probes);
 }
 
 pub fn record_uplink_selected(transport: &'static str, group: &str, uplink: &str) {

@@ -813,8 +813,11 @@ Metrics (all on the `/metrics` endpoint):
 | --- | --- | --- |
 | `outline_ws_udp_h3_datagrams_total` | `direction`, `transport`, `proto` | UDP packets carried as H3 datagrams (`up` = handed to quinn, which may drop the oldest when its send buffer is full) |
 | `outline_ws_udp_h3_datagram_fallback_total` | `direction`, `transport`, `proto` | packets / VLESS records of a negotiated session that rode the stream (too large, send failed, or sent before the server's first VLESS reply) |
-| `outline_ws_udp_h3_datagram_dropped_total` | `reason` | inbound datagrams dropped: `unknown_stream`, `malformed`, `queue_full` (the stream's bounded receive queue was full), `early` (VLESS, before the response header) |
+| `outline_ws_udp_h3_datagram_dropped_total` | `reason` | inbound datagrams dropped: `unknown_stream`, `closed_stream` (the stream closed less than 10 s ago), `malformed`, `queue_full` (a burst overflowed the stream's bounded receive queue), `queue_stalled` (it overflowed while its consumer had not read for 50 ms), `early` (VLESS, before the response header) |
 | `outline_ws_udp_h3_datagram_sessions_total` | `transport`, `state` | offers by outcome, `negotiated` / `declined`; counts anchor streams, including standby-pool refills and probe dials |
+| `outline_ws_quic_path_mtu_bytes` | `transport` | histogram of the path MTU of datagram connections, sampled every 10 s, not at close (a connection shorter than 10 s adds no point; black holes and lost probes are still flushed on close); 1200 is the QUIC minimum after a black hole, where packets of roughly 1100+ bytes ride the stream |
+| `outline_ws_quic_black_holes_total` | `transport` | MTU black holes quinn detected on datagram connections (each drops the path MTU to 1200) |
+| `outline_ws_quic_mtu_probes_lost_total` | `transport` | lost DPLPMTUD probes on datagram connections |
 
 ## Carrier Padding
 

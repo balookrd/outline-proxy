@@ -43,6 +43,10 @@ use crate::server::nat::{ResponseSender, UdpResponseSender};
 pub(in crate::server) const SS_PROTO_LABEL: &str = "ss";
 /// `proto` label of the VLESS-UDP datagram counters.
 pub(in crate::server) const VLESS_PROTO_LABEL: &str = "vless";
+/// `transport` label of the datagram counters for a CONNECT (WebSocket) carrier.
+pub(in crate::server) const WS_H3_CARRIER: &str = "ws_h3";
+/// `transport` label of the datagram counters for an xhttp carrier.
+pub(in crate::server) const XHTTP_H3_CARRIER: &str = "xhttp_h3";
 
 /// Count of downlink datagrams a stream has sent, shared with its WS writer.
 /// Datagrams bypass the writer, so its idle cover timer reads this to tell a
@@ -91,8 +95,41 @@ pub(in crate::server) struct DatagramPeer {
 /// The current downlink target of a relay, shared between the relay (which
 /// swaps it when the anchor changes) and its [`DatagramResponseSender`].
 /// Empty while no anchor has agreed datagrams; every packet then rides the
-/// stream exactly as on a session that never offered them.
-pub(in crate::server) type DatagramTarget = ArcSwapOption<DatagramPeer>;
+/// stream exactly as on a session that never offered them. It also records
+/// whether its link agreed datagrams but waits for the first uplink one
+/// ([`LinkPolicy::AfterUplink`]), so a packet that rides the stream meanwhile
+/// is counted.
+#[derive(Default)]
+pub(in crate::server) struct DatagramTarget {
+    peer: ArcSwapOption<DatagramPeer>,
+    unarmed: AtomicBool,
+}
+
+impl DatagramTarget {
+    pub(in crate::server) fn empty() -> Self {
+        Self::default()
+    }
+
+    pub(in crate::server) fn load(&self) -> arc_swap::Guard<Option<Arc<DatagramPeer>>> {
+        self.peer.load()
+    }
+
+    /// Sets (or clears) the peer; either way the target is no longer unarmed.
+    pub(in crate::server) fn store(&self, peer: Option<Arc<DatagramPeer>>) {
+        self.unarmed.store(false, Ordering::Relaxed);
+        self.peer.store(peer);
+    }
+
+    /// No peer yet, but datagrams are agreed and arm with the first uplink one.
+    pub(in crate::server) fn store_unarmed(&self) {
+        self.peer.store(None);
+        self.unarmed.store(true, Ordering::Relaxed);
+    }
+
+    pub(in crate::server) fn is_unarmed(&self) -> bool {
+        self.unarmed.load(Ordering::Relaxed)
+    }
+}
 
 /// A change of a relay's datagram anchor.
 pub(in crate::server) enum AnchorUpdate {
@@ -130,10 +167,13 @@ pub(in crate::server) struct DatagramAnchor {
     /// one (`0` = never).
     last_uplink_nanos: AtomicU64,
     created: Instant,
+    /// `transport` label of the datagram counters.
+    carrier: &'static str,
 }
 
-impl Default for DatagramAnchor {
-    fn default() -> Self {
+impl DatagramAnchor {
+    /// `carrier` is the `transport` label of the datagram counters.
+    pub(in crate::server) fn new(carrier: &'static str) -> Self {
         Self {
             pending: Mutex::default(),
             dirty: AtomicBool::default(),
@@ -141,14 +181,17 @@ impl Default for DatagramAnchor {
             downlink: Arc::default(),
             last_uplink_nanos: AtomicU64::new(0),
             created: Instant::now(),
+            carrier,
         }
     }
-}
 
-impl DatagramAnchor {
+    pub(in crate::server) fn carrier(&self) -> &'static str {
+        self.carrier
+    }
+
     /// An anchor whose route is already agreed (`ws_h3`).
     pub(in crate::server) fn with_route(route: H3DatagramRoute) -> Arc<Self> {
-        let anchor = Arc::new(Self::default());
+        let anchor = Arc::new(Self::new(WS_H3_CARRIER));
         anchor.attach(route);
         anchor
     }
@@ -219,7 +262,9 @@ impl DatagramAnchor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::server) enum DownlinkSend {
     /// No anchor agreed datagrams (yet, or any more): the stream path, untouched
-    /// and uncounted, as on a session that never offered them.
+    /// and uncounted, as on a session that never offered them. The one exception
+    /// is an unarmed target (agreed, waiting for the first uplink datagram),
+    /// whose stream packets are counted as `reason="unarmed"` fallbacks.
     NoTarget,
     /// Went out as one datagram.
     Sent,
@@ -242,6 +287,8 @@ pub(in crate::server) struct DatagramDownlink {
     pub(in crate::server) app_protocol: AppProtocol,
     /// `proto` label of the datagram counters.
     pub(in crate::server) proto: &'static str,
+    /// `transport` label of the datagram counters (the anchor's carrier).
+    pub(in crate::server) carrier: &'static str,
 }
 
 impl DatagramDownlink {
@@ -264,6 +311,14 @@ impl DatagramDownlink {
     ) -> DownlinkSend {
         let target = self.target.load();
         let Some(peer) = target.as_deref() else {
+            if self.target.is_unarmed() {
+                self.metrics.record_udp_h3_datagram_fallback(
+                    "down",
+                    self.carrier,
+                    self.proto,
+                    "unarmed",
+                );
+            }
             return DownlinkSend::NoTarget;
         };
         let framed = peer
@@ -273,22 +328,40 @@ impl DatagramDownlink {
             .and_then(|room| carrier_padding::frame_datagram_message(scheme, record, room));
         // `try_send` re-checks the fit against the live size as a guard against
         // the MTU shrinking between the room calculation and the send.
-        if framed.is_some_and(|framed| self.try_send(peer, &framed, upstream_len)) {
-            self.metrics.record_udp_h3_datagram("down", self.proto);
-            DownlinkSend::Sent
-        } else {
-            self.metrics.record_udp_h3_datagram_fallback("down", self.proto);
-            DownlinkSend::Fallback
+        let outcome = match framed {
+            Some(framed) => self.try_send(peer, &framed, upstream_len),
+            None => Err("too_large"),
+        };
+        match outcome {
+            Ok(()) => {
+                self.metrics.record_udp_h3_datagram("down", self.carrier, self.proto);
+                DownlinkSend::Sent
+            },
+            Err(reason) => {
+                self.metrics.record_udp_h3_datagram_fallback(
+                    "down",
+                    self.carrier,
+                    self.proto,
+                    reason,
+                );
+                DownlinkSend::Fallback
+            },
         }
     }
 
-    fn try_send(&self, peer: &DatagramPeer, framed: &Bytes, upstream_len: Option<usize>) -> bool {
+    /// `Err` carries the `reason` label of the fallback counter.
+    fn try_send(
+        &self,
+        peer: &DatagramPeer,
+        framed: &Bytes,
+        upstream_len: Option<usize>,
+    ) -> Result<(), &'static str> {
         let fits = peer
             .connection
             .max_datagram_size()
             .is_some_and(|max| datagram_overhead(peer.quarter_stream_id) + framed.len() <= max);
         if !fits {
-            return false;
+            return Err("too_large");
         }
         // Backlog as the stream senders see it, measured on the datagram send
         // buffer instead of the data channel.
@@ -301,7 +374,7 @@ impl DatagramDownlink {
             .send_datagram(encode_datagram(peer.quarter_stream_id, framed))
             .is_err()
         {
-            return false;
+            return Err("send_failed");
         }
         self.activity.note_send();
         // Same accounting the stream path does: the sender notes the upstream
@@ -321,7 +394,7 @@ impl DatagramDownlink {
             "down",
             framed.len(),
         );
-        true
+        Ok(())
     }
 }
 
@@ -414,6 +487,11 @@ impl DatagramLink {
         link
     }
 
+    /// `transport` label of the datagram counters (the anchor's carrier).
+    pub(in crate::server) fn carrier(&self) -> &'static str {
+        self.anchor.carrier()
+    }
+
     /// Whether a route is in force (uplink datagrams accepted).
     pub(in crate::server) fn agreed(&self) -> bool {
         self.agreed
@@ -441,7 +519,8 @@ impl DatagramLink {
                 match self.policy {
                     LinkPolicy::Decline => {
                         // `registration` drops at the end of this arm.
-                        self.metrics.record_udp_h3_datagram_session("declined");
+                        self.metrics
+                            .record_udp_h3_datagram_session(self.anchor.carrier(), "declined");
                         self.target.store(None);
                         self.registration = None;
                         self.agreed = false;
@@ -452,8 +531,9 @@ impl DatagramLink {
                         self.unarmed = None;
                     },
                     LinkPolicy::AfterUplink => {
-                        self.metrics.record_udp_h3_datagram_session("negotiated");
-                        self.target.store(None);
+                        self.metrics
+                            .record_udp_h3_datagram_session(self.anchor.carrier(), "negotiated");
+                        self.target.store_unarmed();
                         self.unarmed = Some(peer);
                     },
                 }
@@ -511,7 +591,7 @@ impl Drop for DatagramLink {
 /// Next datagram of a registration; never resolves without one.
 async fn next_registered(registration: &mut Option<DatagramRegistration>) -> Option<Bytes> {
     match registration {
-        Some(registration) => registration.rx.recv().await,
+        Some(registration) => registration.recv().await,
         None => std::future::pending().await,
     }
 }

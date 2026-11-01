@@ -558,26 +558,28 @@ fn orphan_downlink_v2_metrics_render() {
 #[test]
 fn h3_datagram_metrics_render_with_low_cardinality_labels() {
     let metrics = Metrics::new(&test_config());
-    metrics.record_udp_h3_datagram("up", "ss");
-    metrics.record_udp_h3_datagram("up", "ss");
-    metrics.record_udp_h3_datagram("down", "ss");
-    metrics.record_udp_h3_datagram_fallback("down", "ss");
+    metrics.record_udp_h3_datagram("up", "ws_h3", "ss");
+    metrics.record_udp_h3_datagram("up", "ws_h3", "ss");
+    metrics.record_udp_h3_datagram("down", "xhttp_h3", "ss");
+    metrics.record_udp_h3_datagram_fallback("down", "ws_h3", "vless", "unarmed");
+    metrics.record_udp_h3_datagram_fallback("up", "xhttp_h3", "ss", "stream");
     metrics.record_udp_h3_datagram_dropped("unknown_stream");
     metrics.record_udp_h3_datagram_dropped("malformed");
     metrics.record_udp_h3_datagram_dropped("queue_full");
-    metrics.record_udp_h3_datagram_session("negotiated");
-    metrics.record_udp_h3_datagram_session("declined");
+    metrics.record_udp_h3_datagram_session("ws_h3", "negotiated");
+    metrics.record_udp_h3_datagram_session("xhttp_h3", "declined");
 
     let rendered = metrics.render_prometheus();
     for line in [
-        "outline_ss_udp_h3_datagrams_total{direction=\"up\",proto=\"ss\"} 2",
-        "outline_ss_udp_h3_datagrams_total{direction=\"down\",proto=\"ss\"} 1",
-        "outline_ss_udp_h3_datagram_fallback_total{direction=\"down\",proto=\"ss\"} 1",
+        "outline_ss_udp_h3_datagrams_total{direction=\"up\",transport=\"ws_h3\",proto=\"ss\"} 2",
+        "outline_ss_udp_h3_datagrams_total{direction=\"down\",transport=\"xhttp_h3\",proto=\"ss\"} 1",
+        "outline_ss_udp_h3_datagram_fallback_total{direction=\"down\",transport=\"ws_h3\",proto=\"vless\",reason=\"unarmed\"} 1",
+        "outline_ss_udp_h3_datagram_fallback_total{direction=\"up\",transport=\"xhttp_h3\",proto=\"ss\",reason=\"stream\"} 1",
         "outline_ss_udp_h3_datagram_dropped_total{reason=\"unknown_stream\"} 1",
         "outline_ss_udp_h3_datagram_dropped_total{reason=\"malformed\"} 1",
         "outline_ss_udp_h3_datagram_dropped_total{reason=\"queue_full\"} 1",
-        "outline_ss_udp_h3_datagram_sessions_total{state=\"negotiated\"} 1",
-        "outline_ss_udp_h3_datagram_sessions_total{state=\"declined\"} 1",
+        "outline_ss_udp_h3_datagram_sessions_total{transport=\"ws_h3\",state=\"negotiated\"} 1",
+        "outline_ss_udp_h3_datagram_sessions_total{transport=\"xhttp_h3\",state=\"declined\"} 1",
     ] {
         assert!(rendered.contains(line), "missing `{line}` in:\n{rendered}");
     }
@@ -586,6 +588,29 @@ fn h3_datagram_metrics_render_with_low_cardinality_labels() {
         "outline_ss_udp_h3_datagram_fallback_total",
         "outline_ss_udp_h3_datagram_dropped_total",
         "outline_ss_udp_h3_datagram_sessions_total",
+    ] {
+        help_line(&rendered, metric);
+    }
+}
+
+#[test]
+fn quic_path_sample_renders_mtu_histogram_and_black_hole_counters() {
+    let metrics = Metrics::new(&test_config());
+    metrics.record_quic_path_sample(Some(1200), 1, 0);
+    metrics.record_quic_path_sample(None, 0, 0);
+
+    let rendered = metrics.render_prometheus();
+    for line in [
+        "outline_ss_quic_path_mtu_bytes_bucket{le=\"1200\"} 1",
+        "outline_ss_quic_black_holes_total 1",
+        "outline_ss_quic_mtu_probes_lost_total 0",
+    ] {
+        assert!(rendered.contains(line), "missing `{line}` in:\n{rendered}");
+    }
+    for metric in [
+        "outline_ss_quic_path_mtu_bytes",
+        "outline_ss_quic_black_holes_total",
+        "outline_ss_quic_mtu_probes_lost_total",
     ] {
         help_line(&rendered, metric);
     }

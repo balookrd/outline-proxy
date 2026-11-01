@@ -822,6 +822,7 @@ pub(super) async fn forward_vless_udp_datagram(
     user_counters: Option<&PerUserCounters>,
     metrics: &Metrics,
     route: &VlessWsRouteCtx,
+    carrier: &'static str,
 ) -> Result<()> {
     let record = if route.padding.is_enabled() {
         // One datagram is one padding frame, so each decodes on its own and a
@@ -843,7 +844,7 @@ pub(super) async fn forward_vless_udp_datagram(
         metrics.record_udp_h3_datagram_dropped("malformed");
         return Ok(());
     }
-    metrics.record_udp_h3_datagram("up", VLESS_PROTO_LABEL);
+    metrics.record_udp_h3_datagram("up", carrier, VLESS_PROTO_LABEL);
     metrics.record_websocket_binary_frame(
         Transport::Tcp,
         route.protocol,

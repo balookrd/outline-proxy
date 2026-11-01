@@ -394,43 +394,86 @@ impl Metrics {
         });
     }
 
-    /// One SS-UDP packet carried as an HTTP/3 datagram. `direction` is `"up"` /
-    /// `"down"`, `proto` the app protocol label (`"ss"`).
-    pub fn record_udp_h3_datagram(&self, direction: &'static str, proto: &'static str) {
+    /// One UDP packet carried as an HTTP/3 datagram. `direction` is `"up"` /
+    /// `"down"`, `transport` the carrier (`"ws_h3"` / `"xhttp_h3"`), `proto`
+    /// the app protocol label (`"ss"` / `"vless"`).
+    pub fn record_udp_h3_datagram(
+        &self,
+        direction: &'static str,
+        transport: &'static str,
+        proto: &'static str,
+    ) {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_h3_datagrams_total",
                 "direction" => direction,
+                "transport" => transport,
                 "proto"     => proto
             )
             .increment(1);
         });
     }
 
-    /// One SS-UDP packet that rode the stream on a datagram-agreed session.
-    pub fn record_udp_h3_datagram_fallback(&self, direction: &'static str, proto: &'static str) {
+    /// One UDP packet that rode the stream on a datagram-agreed session.
+    /// `reason`: `"too_large"` (did not fit the route's datagram size),
+    /// `"send_failed"` (quinn refused it), `"unarmed"` (VLESS before the first
+    /// uplink datagram) for `"down"`; `"stream"` for `"up"` (the client sent it
+    /// on the stream).
+    pub fn record_udp_h3_datagram_fallback(
+        &self,
+        direction: &'static str,
+        transport: &'static str,
+        proto: &'static str,
+        reason: &'static str,
+    ) {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_h3_datagram_fallback_total",
                 "direction" => direction,
-                "proto"     => proto
+                "transport" => transport,
+                "proto"     => proto,
+                "reason"    => reason
             )
             .increment(1);
         });
     }
 
-    /// One received HTTP/3 datagram dropped (`"unknown_stream"` / `"malformed"` / `"queue_full"`).
+    /// One received HTTP/3 datagram dropped (`"unknown_stream"` / `"closed_stream"` /
+    /// `"malformed"` / `"queue_full"` / `"queue_stalled"`).
     pub fn record_udp_h3_datagram_dropped(&self, reason: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_udp_h3_datagram_dropped_total", "reason" => reason).increment(1);
         });
     }
 
-    /// One request stream that offered HTTP/3 datagrams (`"negotiated"` /
-    /// `"declined"`).
-    pub fn record_udp_h3_datagram_session(&self, state: &'static str) {
+    /// One request stream that offered HTTP/3 datagrams, by carrier
+    /// (`"ws_h3"` / `"xhttp_h3"`) and state (`"negotiated"` / `"declined"`).
+    pub fn record_udp_h3_datagram_session(&self, transport: &'static str, state: &'static str) {
         with_local_recorder(&self.recorder, || {
-            counter!("outline_ss_udp_h3_datagram_sessions_total", "state" => state).increment(1);
+            counter!(
+                "outline_ss_udp_h3_datagram_sessions_total",
+                "transport" => transport,
+                "state"     => state
+            )
+            .increment(1);
+        });
+    }
+
+    /// One path sample of an HTTP/3 connection that may carry UDP datagrams;
+    /// `black_holes` / `lost_probes` are deltas since its previous sample;
+    /// `current_mtu` is `None` on the close-time sample (no histogram point).
+    pub fn record_quic_path_sample(
+        &self,
+        current_mtu: Option<u16>,
+        black_holes: u64,
+        lost_probes: u64,
+    ) {
+        with_local_recorder(&self.recorder, || {
+            if let Some(mtu) = current_mtu {
+                histogram!("outline_ss_quic_path_mtu_bytes").record(f64::from(mtu));
+            }
+            counter!("outline_ss_quic_black_holes_total").increment(black_holes);
+            counter!("outline_ss_quic_mtu_probes_lost_total").increment(lost_probes);
         });
     }
 

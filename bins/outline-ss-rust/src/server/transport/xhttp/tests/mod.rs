@@ -333,6 +333,31 @@ async fn stalled_downlink_evicted_despite_fresh_keepalive() {
     );
 }
 
+/// A session whose UDP rides HTTP/3 datagrams queues nothing in the ring, so a
+/// client that vanished without a FIN would live forever on the relay's
+/// keepalive. Once it has sent datagrams, uplink silence for the whole window
+/// evicts it despite a fresh keepalive.
+#[tokio::test]
+async fn silent_datagram_session_evicted_despite_fresh_keepalive() {
+    let session = XhttpSession::new(Arc::from("silent"), None, None, None);
+    session.datagram_anchor().note_uplink();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    session.touch_keepalive();
+    let cutoff = Instant::now() - Duration::from_millis(20);
+    assert!(session.is_evictable(cutoff));
+}
+
+/// The same session stays while its uplink datagrams keep coming.
+#[tokio::test]
+async fn datagram_session_with_recent_uplink_is_kept() {
+    let session = XhttpSession::new(Arc::from("talking"), None, None, None);
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    session.datagram_anchor().note_uplink();
+    session.touch_keepalive();
+    let cutoff = Instant::now() - Duration::from_millis(20);
+    assert!(!session.is_evictable(cutoff));
+}
+
 /// A genuinely quiet-but-live session — nothing pending in either direction —
 /// is kept alive by its keepalive and must NOT be evicted.
 #[tokio::test]

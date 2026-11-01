@@ -148,6 +148,13 @@ pub fn record_udp_h3_datagram_fallback(
 }
 pub fn record_udp_h3_datagram_dropped(_reason: &'static str) {}
 pub fn record_udp_h3_datagram_session(_transport: &'static str, _state: &'static str) {}
+pub fn record_quic_path_sample(
+    _transport: &'static str,
+    _current_mtu: Option<u16>,
+    _black_holes: u64,
+    _lost_probes: u64,
+) {
+}
 pub fn record_uplink_selected(_transport: &'static str, _group: &str, _uplink: &str) {}
 pub fn record_runtime_failure(_transport: &'static str, _group: &str, _uplink: &str) {}
 pub fn record_runtime_failure_cause(

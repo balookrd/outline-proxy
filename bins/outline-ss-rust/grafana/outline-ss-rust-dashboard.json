@@ -6737,8 +6737,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (direction, proto) (rate(outline_ss_udp_h3_datagrams_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{direction}} {{proto}}",
+          "expr": "sum by (direction, transport, proto) (rate(outline_ss_udp_h3_datagrams_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{direction}} {{transport}} {{proto}}",
           "refId": "A"
         }
       ],
@@ -6750,7 +6750,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Packets of a datagram-negotiated session that rode the stream instead: too large for the current datagram size (normal right after connect, before PMTUD), the datagram send failed, or (VLESS) a packet sent before the server's first reply. On the server `up` counts packets that arrived on the stream.",
+      "description": "Packets of a datagram-negotiated session that rode the stream instead: too large for the current datagram size (normal right after connect, before PMTUD), the datagram send failed, or (VLESS) a packet sent before the server's first reply. On the server `reason` says which: `too_large`, `send_failed`, or `unarmed` (VLESS downlink before the client's first uplink datagram) for `down`; `up` is always `stream` (packets that arrived on the stream).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -6831,8 +6831,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (direction, proto) (rate(outline_ss_udp_h3_datagram_fallback_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{direction}} {{proto}}",
+          "expr": "sum by (direction, transport, proto, reason) (rate(outline_ss_udp_h3_datagram_fallback_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{direction}} {{transport}} {{proto}} {{reason}}",
           "refId": "A"
         }
       ],
@@ -6844,7 +6844,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "fallback / (fallback + datagrams) by direction. A high share that does not fall after connect points at packets larger than the datagram room (check PMTUD, `[server.h3] initial_mtu`).",
+      "description": "fallback / (fallback + datagrams) by direction and carrier (`transport`: `ws_h3` / `xhttp_h3`). A high share that does not fall after connect points at packets larger than the datagram room (check PMTUD, `[server.h3] initial_mtu`).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -6925,8 +6925,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "(sum by (direction) (rate(outline_ss_udp_h3_datagram_fallback_total{instance=~\"$instance\"}[$__rate_interval])) or 0 * sum by (direction) (rate(outline_ss_udp_h3_datagrams_total{instance=~\"$instance\"}[$__rate_interval]))) / clamp_min((sum by (direction) (rate(outline_ss_udp_h3_datagram_fallback_total{instance=~\"$instance\"}[$__rate_interval])) or 0 * sum by (direction) (rate(outline_ss_udp_h3_datagrams_total{instance=~\"$instance\"}[$__rate_interval]))) + (sum by (direction) (rate(outline_ss_udp_h3_datagrams_total{instance=~\"$instance\"}[$__rate_interval])) or 0 * sum by (direction) (rate(outline_ss_udp_h3_datagram_fallback_total{instance=~\"$instance\"}[$__rate_interval]))), 1e-9)",
-          "legendFormat": "{{direction}}",
+          "expr": "(sum by (direction, transport) (rate(outline_ss_udp_h3_datagram_fallback_total{instance=~\"$instance\"}[$__rate_interval])) or 0 * sum by (direction, transport) (rate(outline_ss_udp_h3_datagrams_total{instance=~\"$instance\"}[$__rate_interval]))) / clamp_min((sum by (direction, transport) (rate(outline_ss_udp_h3_datagram_fallback_total{instance=~\"$instance\"}[$__rate_interval])) or 0 * sum by (direction, transport) (rate(outline_ss_udp_h3_datagrams_total{instance=~\"$instance\"}[$__rate_interval]))) + (sum by (direction, transport) (rate(outline_ss_udp_h3_datagrams_total{instance=~\"$instance\"}[$__rate_interval])) or 0 * sum by (direction, transport) (rate(outline_ss_udp_h3_datagram_fallback_total{instance=~\"$instance\"}[$__rate_interval]))), 1e-9)",
+          "legendFormat": "{{direction}} {{transport}}",
           "refId": "A"
         }
       ],
@@ -6938,7 +6938,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "`unknown_stream`: no live request stream for the id (a datagram that arrived just after its stream closed is normal in small numbers); `queue_full`: the stream's bounded receive queue was full (the consumer is too slow); `malformed`: bad stream-id prefix or not exactly one VLESS record; `early` (client): VLESS datagram before the response header. The connection keeps serving.",
+      "description": "`unknown_stream`: no request stream for the id (a real routing error); `closed_stream`: the stream closed less than 10 s ago (the expected tail of a closed session); `queue_full`: a burst overflowed the stream's bounded receive queue; `queue_stalled`: it overflowed while the consumer had not read for 50 ms (the consumer is stuck); `malformed`: bad stream-id prefix or not exactly one VLESS record; `early` (client): VLESS datagram before the response header. The connection keeps serving.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -7032,6 +7032,211 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Path MTU quinn reports for HTTP/3 connections that carry UDP datagrams, sampled every 10 s per connection. A p10 at 1200 is the QUIC minimum a black hole resets the path to: datagrams from roughly 1100 bytes stop fitting and ride the stream, so read it together with the stream-fallback panels above.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 244
+      },
+      "id": 218,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.1, sum by (le) (rate(outline_ss_quic_path_mtu_bytes_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "p10",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(outline_ss_quic_path_mtu_bytes_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "B"
+        }
+      ],
+      "title": "QUIC path MTU of datagram connections (p10 / p50)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "MTU black holes quinn detected (each one drops the path MTU to 1200) and lost DPLPMTUD probes, on HTTP/3 connections that carry UDP datagrams.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 244
+      },
+      "id": 219,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(outline_ss_quic_black_holes_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "black holes",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(outline_ss_quic_mtu_probes_lost_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "lost probes",
+          "refId": "B"
+        }
+      ],
+      "title": "QUIC MTU black holes / lost probes (rate)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Request streams that offered (client) or were offered (server) UDP over HTTP/3 datagrams, by outcome. `declined` dominating `negotiated` means the peer or a toggle refuses them. Client counts anchor streams, including standby-pool refills and probe dials, not user sessions.",
       "fieldConfig": {
         "defaults": {
@@ -7113,8 +7318,8 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (state) (rate(outline_ss_udp_h3_datagram_sessions_total{instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{state}}",
+          "expr": "sum by (transport, state) (rate(outline_ss_udp_h3_datagram_sessions_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{transport}} {{state}}",
           "refId": "A"
         }
       ],

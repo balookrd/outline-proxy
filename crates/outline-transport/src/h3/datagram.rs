@@ -42,6 +42,11 @@ pub(crate) struct H3DatagramChannel {
     closed: watch::Sender<bool>,
     /// While set and closed, every packet rides the stream ([`Self::with_gate`]).
     gate: Option<Arc<DatagramGate>>,
+    /// Whether a downlink packet that rode the stream is counted here as a
+    /// fallback. Off when the protocol above counts it instead, because the
+    /// stream channel's messages are not its packets (a VLESS-UDP body over
+    /// xhttp arrives in HTTP/3 DATA chunks that split records).
+    count_stream_down: bool,
     transport: &'static str,
     proto: &'static str,
 }
@@ -74,6 +79,7 @@ impl H3DatagramChannel {
             fallback,
             closed: watch::channel(false).0,
             gate: None,
+            count_stream_down: true,
             transport,
             proto,
         }
@@ -85,13 +91,20 @@ impl H3DatagramChannel {
         self.gate = Some(gate);
         self
     }
+
+    /// Leaves counting downlink packets that ride the stream to the protocol
+    /// above (see `count_stream_down`).
+    pub(crate) fn counting_stream_down_above(mut self) -> Self {
+        self.count_stream_down = false;
+        self
+    }
 }
 
 /// Next datagram of the registration; never resolves once it is gone, so the
 /// select below then waits on the stream alone.
 async fn next_registered(registration: &mut Option<DatagramRegistration>) -> Option<Bytes> {
     match registration {
-        Some(registration) => registration.rx.recv().await,
+        Some(registration) => registration.recv().await,
         None => std::future::pending().await,
     }
 }
@@ -164,7 +177,13 @@ impl DatagramChannel for H3DatagramChannel {
                 // the session: the stream still carries it.
                 Inbound::Datagram(None) => *registration = None,
                 Inbound::Stream(Ok(Some(packet))) => {
-                    metrics::record_udp_h3_datagram_fallback("down", self.transport, self.proto);
+                    if self.count_stream_down {
+                        metrics::record_udp_h3_datagram_fallback(
+                            "down",
+                            self.transport,
+                            self.proto,
+                        );
+                    }
                     return Ok(Some((PacketSource::Stream, packet)));
                 },
                 // The stream is the session: its end or failure ends the channel.

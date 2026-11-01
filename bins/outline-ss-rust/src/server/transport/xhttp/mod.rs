@@ -38,7 +38,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
-use super::h3_datagram::{DatagramAnchor, H3DatagramRoute};
+use super::h3_datagram::{DatagramAnchor, H3DatagramRoute, XHTTP_H3_CARRIER};
 use super::resume_headers::ResumeResponseEcho;
 use crate::server::resumption::SessionId;
 
@@ -102,7 +102,7 @@ const UPLINK_REORDER_MAX_GAP: u64 = 64;
 /// the byte-budget in `outline_transport::carrier_queue`.
 const UPLINK_READY_BYTES_CAP: usize = 256 * 1024;
 /// Time a session may sit idle before the registry janitor evicts it (see
-/// [`XhttpSession::is_evictable`] for the two ways a session counts as idle).
+/// [`XhttpSession::is_evictable`] for the three ways a session counts as idle).
 /// Must stay comfortably above the relay's keepalive cadence
 /// (`WS_TCP_KEEPALIVE_PING_INTERVAL_SECS`, 60 s): on an idle-but-live UDP
 /// datagram channel the relay's keepalive tick `touch_keepalive()`s the session
@@ -110,12 +110,15 @@ const UPLINK_READY_BYTES_CAP: usize = 256 * 1024;
 /// a missed keepalive or two before declaring a live relay dead — otherwise the
 /// janitor races the keepalive and tears down quiet-but-healthy UDP sessions
 /// (DNS between lookups, an idle QUIC connection), surfacing as a spurious `ws
-/// closed` on the client. 180 s = 3× keepalive mirrors the
+/// closed` on the client. A session that carries its UDP as HTTP/3 datagrams
+/// is the exception: keepalives alone keep it only until the window passes
+/// without an uplink datagram or ring progress (see below). 180 s = 3× keepalive mirrors the
 /// `WS_PONG_DEADLINE_MULTIPLIER` budget while still being generous enough that a
 /// CDN reconnect (10–20 s gap while the client picks a new edge) is not yet
 /// eviction-eligible. The same window also bounds how long a downlink-stalled
 /// session lingers before the `progress`-clock check reaps it despite ongoing
-/// keepalives.
+/// keepalives, and how long a session that carries its UDP as HTTP/3 datagrams
+/// may go without any uplink before it is reaped the same way.
 pub(in crate::server) const SESSION_IDLE_EVICTION: Duration = Duration::from_secs(180);
 
 /// Process-wide caps for [`XhttpRegistry`]. Sourced from `[tuning]`
@@ -520,7 +523,7 @@ impl XhttpSession {
             issued_resume_id,
             relayed_echo,
             udp_records: AtomicBool::new(false),
-            datagram: Arc::default(),
+            datagram: Arc::new(DatagramAnchor::new(XHTTP_H3_CARRIER)),
         }
     }
 
@@ -533,7 +536,9 @@ impl XhttpSession {
 
     /// Ends the current datagram anchor: called when the anchor request that
     /// attached it ends, so downlink packets wait in the ring for the next GET
-    /// instead of going to a stream nobody reads.
+    /// instead of going to a stream nobody reads — and earlier, as soon as the
+    /// client ends its uplink (a FIN-POST, the end of a stream-one body).
+    /// Idempotent.
     pub(in crate::server) fn detach_datagram(&self) {
         self.datagram.detach();
     }
@@ -590,7 +595,7 @@ impl XhttpSession {
     /// Whether the registry janitor should evict this session at `cutoff`
     /// (= `now - SESSION_IDLE_EVICTION`).
     ///
-    /// Two independent reasons, either sufficient:
+    /// Three independent reasons, any one sufficient:
     /// * **Downlink-stalled.** Bytes are queued for a GET consumer that has not
     ///   drained any within the window (`progress` older than `cutoff`). This
     ///   fires even while the relay's keepalive keeps ticking — the whole point,
@@ -601,6 +606,10 @@ impl XhttpSession {
     ///   window. This preserves the historical behaviour for an abandoned,
     ///   empty session; a healthy quiet session stays alive because its
     ///   keepalive keeps `keepalive` fresh and it has nothing pending.
+    /// * **Datagram-silent.** The session has carried uplink as HTTP/3
+    ///   datagrams, and neither an uplink datagram nor ring progress (an
+    ///   ingested POST or a drained downlink) landed within the window. Datagrams bypass the ring, so a client that vanished without a
+    ///   FIN would otherwise stay alive on the relay's keepalive alone.
     pub(in crate::server) fn is_evictable(&self, cutoff: Instant) -> bool {
         // UDP over HTTP/3 datagrams bypasses the rings, so it never stamps
         // `progress` on its own: an uplink datagram counts like an ingested
@@ -612,6 +621,15 @@ impl XhttpSession {
             .last_uplink()
             .map_or(progress, |uplink| progress.max(uplink));
         if self.downlink_pending_bytes() > 0 && progress < cutoff {
+            return true;
+        }
+        // A session whose UDP rides datagrams queues nothing in the ring, and
+        // the relay's keepalive keeps it "alive" forever: a client that vanished
+        // without a FIN (a GET abandoned on a dead carrier) would get downlink
+        // datagrams for as long as its upstream talks. Once it has used them,
+        // no uplink at all for the whole window is enough — a live UDP client
+        // always sends something within it.
+        if self.datagram.last_uplink().is_some() && progress < cutoff {
             return true;
         }
         let keepalive = self.instant_of(&self.last_keepalive_nanos);

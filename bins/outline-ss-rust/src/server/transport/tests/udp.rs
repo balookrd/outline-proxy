@@ -1360,12 +1360,14 @@ async fn padded_datagram_ingest_and_reply_round_trip() -> Result<()> {
 
     let rendered = server.metrics.render_prometheus();
     assert!(
-        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"up\",proto=\"ss\"} 1"),
+        rendered.contains(
+            "outline_ss_udp_h3_datagrams_total{direction=\"up\",transport=\"ws_h3\",proto=\"ss\"} 1"
+        ),
         "only the real packet is counted, not the cover datagram:\n{rendered}"
     );
-    assert!(
-        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"down\",proto=\"ss\"} 1")
-    );
+    assert!(rendered.contains(
+        "outline_ss_udp_h3_datagrams_total{direction=\"down\",transport=\"ws_h3\",proto=\"ss\"} 1"
+    ));
     assert!(!rendered.contains("outline_ss_udp_h3_datagram_fallback_total"));
 
     relay.abort();
@@ -1382,7 +1384,9 @@ async fn anchor_attached_after_relay_start_moves_replies_to_datagrams_until_deta
     use outline_wire::h3_datagram::{DatagramDemux, decode_datagram, encode_datagram};
 
     use crate::server::transport::h3_datagram::tests::quic_datagram_pair;
-    use crate::server::transport::h3_datagram::{DatagramAnchor, H3DatagramRoute};
+    use crate::server::transport::h3_datagram::{
+        DatagramAnchor, H3DatagramRoute, XHTTP_H3_CARRIER,
+    };
 
     const SLOT: usize = 8;
     let quarter_id = 9;
@@ -1393,7 +1397,7 @@ async fn anchor_attached_after_relay_start_moves_replies_to_datagrams_until_deta
     let pair = quic_datagram_pair().await?;
     let demux = DatagramDemux::spawn(pair.server.clone(), Arc::new(|_| {}));
     let server = test_server_ctx();
-    let anchor = Arc::new(DatagramAnchor::default());
+    let anchor = Arc::new(DatagramAnchor::new(XHTTP_H3_CARRIER));
 
     let (inbound_tx, inbound_rx) = mpsc::channel::<Bytes>(4);
     let (downlink_tx, mut downlink_rx) = mpsc::unbounded_channel::<Bytes>();
@@ -1472,11 +1476,11 @@ async fn anchor_attached_after_relay_start_moves_replies_to_datagrams_until_deta
 
     let rendered = server.metrics.render_prometheus();
     assert!(
-        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"up\",proto=\"ss\"} 1"),
+        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"up\",transport=\"xhttp_h3\",proto=\"ss\"} 1"),
         "{rendered}"
     );
     assert!(
-        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"down\",proto=\"ss\"} 1"),
+        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"down\",transport=\"xhttp_h3\",proto=\"ss\"} 1"),
         "{rendered}"
     );
     // Neither the pre-attach nor the post-detach packets count as fallbacks:
@@ -1498,7 +1502,9 @@ async fn anchor_replaced_without_a_stream_packet_moves_the_relay_to_the_new_rout
     use outline_wire::h3_datagram::{DatagramDemux, DropReason, decode_datagram, encode_datagram};
 
     use crate::server::transport::h3_datagram::tests::quic_datagram_pair;
-    use crate::server::transport::h3_datagram::{DatagramAnchor, H3DatagramRoute};
+    use crate::server::transport::h3_datagram::{
+        DatagramAnchor, H3DatagramRoute, XHTTP_H3_CARRIER,
+    };
 
     const SLOT: usize = 8;
     const A: u64 = 4;
@@ -1508,12 +1514,12 @@ async fn anchor_replaced_without_a_stream_packet_moves_the_relay_to_the_new_rout
     let upstream_addr = upstream.local_addr()?;
     let user = UserKey::new("alice", "secret", None, CipherKind::Aes256Gcm, None)?;
     let pair = quic_datagram_pair().await?;
-    let unknown = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&unknown);
+    let closed = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&closed);
     let demux = DatagramDemux::spawn(
         pair.server.clone(),
         Arc::new(move |reason| {
-            if reason == DropReason::UnknownStream {
+            if reason == DropReason::ClosedStream {
                 counted.fetch_add(1, Ordering::SeqCst);
             }
         }),
@@ -1524,7 +1530,7 @@ async fn anchor_replaced_without_a_stream_packet_moves_the_relay_to_the_new_rout
         registration: demux.register(id),
     };
     let server = test_server_ctx();
-    let anchor = Arc::new(DatagramAnchor::default());
+    let anchor = Arc::new(DatagramAnchor::new(XHTTP_H3_CARRIER));
 
     let (_inbound_tx, inbound_rx) = mpsc::channel::<Bytes>(4);
     let (downlink_tx, mut downlink_rx) = mpsc::unbounded_channel::<Bytes>();
@@ -1564,17 +1570,17 @@ async fn anchor_replaced_without_a_stream_packet_moves_the_relay_to_the_new_rout
     assert!(downlink_rx.try_recv().is_err(), "nothing may fall back to the stream");
 
     // A's registration went with the replacement.
-    let before = unknown.load(Ordering::SeqCst);
+    let before = closed.load(Ordering::SeqCst);
     pair.client.send_datagram(encode_datagram(A, b"stale"))?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while unknown.load(Ordering::SeqCst) == before {
+    while closed.load(Ordering::SeqCst) == before {
         assert!(tokio::time::Instant::now() < deadline, "A is still registered");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     let rendered = server.metrics.render_prometheus();
     assert!(
-        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"down\",proto=\"ss\"} 2"),
+        rendered.contains("outline_ss_udp_h3_datagrams_total{direction=\"down\",transport=\"xhttp_h3\",proto=\"ss\"} 2"),
         "{rendered}"
     );
     assert!(!rendered.contains("outline_ss_udp_h3_datagram_fallback_total"), "{rendered}");

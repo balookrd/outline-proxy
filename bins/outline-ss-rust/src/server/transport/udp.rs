@@ -1098,13 +1098,14 @@ struct UdpIngest<'a> {
 
 /// Which HTTP/3 datagram counter an ingested uplink packet feeds, on a stream
 /// that agreed datagrams. Counted after the padding decode, so a cover frame
-/// (which decodes to nothing) is not a packet.
+/// (which decodes to nothing) is not a packet. The field is the `transport`
+/// label (the anchor's carrier).
 #[derive(Clone, Copy)]
 enum H3UplinkCounter {
     /// Arrived as a datagram.
-    Datagram,
+    Datagram(&'static str),
     /// Arrived as a Binary frame on the stream.
-    Fallback,
+    Fallback(&'static str),
 }
 
 /// Ingests one client packet — the payload of a WS Binary frame or of an
@@ -1135,11 +1136,13 @@ async fn ingest_udp_binary(
         None => data,
     };
     match h3_counter {
-        Some(H3UplinkCounter::Datagram) => {
-            server.metrics.record_udp_h3_datagram("up", SS_PROTO_LABEL)
+        Some(H3UplinkCounter::Datagram(carrier)) => {
+            server.metrics.record_udp_h3_datagram("up", carrier, SS_PROTO_LABEL)
         },
-        Some(H3UplinkCounter::Fallback) => {
-            server.metrics.record_udp_h3_datagram_fallback("up", SS_PROTO_LABEL)
+        Some(H3UplinkCounter::Fallback(carrier)) => {
+            server
+                .metrics
+                .record_udp_h3_datagram_fallback("up", carrier, SS_PROTO_LABEL, "stream")
         },
         None => {},
     }
@@ -1294,6 +1297,7 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                 protocol: stream_sender.protocol(),
                 app_protocol: stream_sender.app_protocol(),
                 proto: SS_PROTO_LABEL,
+                carrier: anchor.carrier(),
             };
             let sender = UdpResponseSender::new(Arc::new(DatagramResponseSender {
                 downlink,
@@ -1310,6 +1314,9 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         },
         None => (stream_sender, None, None),
     };
+    // The anchor's carrier is fixed for the relay's life: the `transport` label
+    // of its uplink datagram counters.
+    let datagram_carrier = datagram_link.as_ref().map(DatagramLink::carrier);
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -1388,7 +1395,7 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                             &mut in_flight,
                             &mut decoder,
                             data,
-                            Some(H3UplinkCounter::Datagram),
+                            datagram_carrier.map(H3UplinkCounter::Datagram),
                         )
                         .await
                         {
@@ -1421,7 +1428,9 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                     &mut in_flight,
                     &mut padding_decoder,
                     data,
-                    datagrams_agreed.then_some(H3UplinkCounter::Fallback),
+                    datagram_carrier
+                        .filter(|_| datagrams_agreed)
+                        .map(H3UplinkCounter::Fallback),
                 )
                 .await
                 {

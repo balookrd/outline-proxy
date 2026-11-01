@@ -194,7 +194,8 @@ async fn small_packets_ride_h3_datagrams_after_the_header(carrier: Carrier) -> R
     assert!(server.counter(SERVER_DATAGRAMS, &[UP, VLESS]) >= 2.0, "no uplink datagram");
     assert!(server.counter(SERVER_DATAGRAMS, &[DOWN, VLESS]) >= 1.0, "no downlink datagram");
     assert_eq!(server.counter(SERVER_FALLBACK, &[UP, VLESS]), 0.0);
-    assert_eq!(server.counter(SERVER_FALLBACK, &[DOWN, VLESS]), 0.0);
+    assert_eq!(server.counter(SERVER_FALLBACK, &[DOWN, VLESS, ("reason", "too_large")]), 0.0);
+    assert_eq!(server.counter(SERVER_FALLBACK, &[DOWN, VLESS, ("reason", "send_failed")]), 0.0);
     assert_eq!(server.counter(SERVER_DATAGRAMS, &[("proto", "ss")]), 0.0);
     assert!(client_counter(CLIENT_DATAGRAMS, &[UP, label, VLESS]) - client_up >= 2.0);
     assert!(
@@ -222,7 +223,7 @@ async fn oversized_packet_falls_back_to_the_stream(carrier: Carrier) -> Result<(
 
     assert_eq!(server.counter(SERVER_SESSIONS, &[("state", "negotiated")]), 1.0);
     assert_eq!(server.counter(SERVER_FALLBACK, &[UP, VLESS]), 1.0);
-    assert_eq!(server.counter(SERVER_FALLBACK, &[DOWN, VLESS]), 1.0);
+    assert_eq!(server.counter(SERVER_FALLBACK, &[DOWN, VLESS, ("reason", "too_large")]), 1.0);
     assert!(server.counter(SERVER_DATAGRAMS, &[UP, VLESS]) >= 2.0);
     assert!(server.counter(SERVER_DATAGRAMS, &[DOWN, VLESS]) >= 2.0);
     // The header packet and the oversized one.
@@ -347,7 +348,8 @@ async fn resume_moves_datagrams_to_the_new_anchor(
             server.counter(SERVER_DATAGRAMS, &[DOWN, VLESS]) > down_before,
             "the resumed session sent no downlink datagram"
         );
-        assert_eq!(server.counter(SERVER_FALLBACK, &[DOWN, VLESS]), 0.0);
+        assert_eq!(server.counter(SERVER_FALLBACK, &[DOWN, VLESS, ("reason", "too_large")]), 0.0);
+        assert_eq!(server.counter(SERVER_FALLBACK, &[DOWN, VLESS, ("reason", "send_failed")]), 0.0);
     } else {
         assert_eq!(server.counter(SERVER_DATAGRAMS, &[]), 0.0);
     }
@@ -425,6 +427,47 @@ async fn resume_under_a_busy_downlink(
     Ok(())
 }
 
+/// Before the first uplink datagram the server keeps VLESS downlink on the
+/// stream and counts each packet as an `unarmed` fallback under its carrier.
+async fn unarmed_downlink_is_counted_per_carrier(carrier: Carrier) -> Result<()> {
+    let (upstream, _) = spawn_udp_echo().await?;
+    let server = setup_vless_h3_server(true).await?;
+    let transport = connect(&server, carrier, upstream).await?;
+    // The header packet rides the stream; its echo comes back before any
+    // uplink datagram armed the downlink.
+    round_trip(&transport, b"ping").await?;
+    let transport_label = carrier.label();
+    assert_eq!(
+        server.counter(SERVER_FALLBACK, &[DOWN, VLESS, transport_label, ("reason", "unarmed")]),
+        1.0
+    );
+    transport.close().await?;
+    Ok(())
+}
+
+/// Once the client drops its transport, the server stops sending its downlink
+/// datagrams within a short grace (FIN on packet-up, the body's end on
+/// stream-one, RESET on ws), instead of when the anchor request ends.
+async fn dropped_client_stops_downlink_datagrams(carrier: Carrier) -> Result<()> {
+    let (upstream, _) = spawn_udp_blaster(BUSY_FITS).await?;
+    let server = setup_vless_h3_server(true).await?;
+    let transport = connect(&server, carrier, upstream).await?;
+    transport.send_packet(b"ping").await?;
+    downlink_flows(&transport, &[7u8; 64]).await?;
+    transport.close().await?;
+    drop(transport);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let before = server.counter(SERVER_DATAGRAMS, &[DOWN, VLESS]);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let after = server.counter(SERVER_DATAGRAMS, &[DOWN, VLESS]);
+    assert_eq!(
+        after - before,
+        0.0,
+        "{carrier:?}: server kept sending datagrams to a closed client"
+    );
+    Ok(())
+}
+
 macro_rules! carrier_tests {
     ($($module:ident => $carrier:expr),+ $(,)?) => {$(
         mod $module {
@@ -443,6 +486,11 @@ macro_rules! carrier_tests {
             #[tokio::test]
             async fn server_with_datagrams_off_declines_and_keeps_the_stream() -> Result<()> {
                 super::server_with_datagrams_off_declines_and_keeps_the_stream($carrier).await
+            }
+
+            #[tokio::test]
+            async fn unarmed_downlink_is_counted_per_carrier() -> Result<()> {
+                super::unarmed_downlink_is_counted_per_carrier($carrier).await
             }
 
             #[tokio::test]
@@ -473,6 +521,11 @@ macro_rules! carrier_tests {
             #[tokio::test]
             async fn resume_without_datagrams_reattaches_the_socket() -> Result<()> {
                 super::resume_moves_datagrams_to_the_new_anchor($carrier, false).await
+            }
+
+            #[tokio::test]
+            async fn dropped_client_stops_downlink_datagrams() -> Result<()> {
+                super::dropped_client_stops_downlink_datagrams($carrier).await
             }
         }
     )+};

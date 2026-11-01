@@ -49,7 +49,7 @@ pub(in crate::server) use fallback::{
     HttpFallbackContext, h3_fallback_handle, http_fallback_handler,
 };
 pub(in crate::server) use h3_datagram::{
-    H3DatagramRoute, apply_udp_datagram_echo, offers_udp_datagrams,
+    H3DatagramRoute, WS_H3_CARRIER, apply_udp_datagram_echo, offers_udp_datagrams,
 };
 pub(in crate::server) use resume_headers::{ResumeContext, edge_route};
 pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};

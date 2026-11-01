@@ -14,7 +14,7 @@ use tokio::time::timeout;
 
 use super::{
     AnchorUpdate, DatagramActivity, DatagramAnchor, DatagramDownlink, DatagramPeer,
-    DatagramResponseSender, DatagramTarget, H3DatagramRoute,
+    DatagramResponseSender, DatagramTarget, H3DatagramRoute, WS_H3_CARRIER,
 };
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::constants::H3_DATAGRAM_BUFFER_BYTES;
@@ -83,6 +83,13 @@ impl ResponseSender for Arc<RecordingSender> {
     }
 }
 
+/// A downlink target already pointing at `peer`.
+pub(in crate::server::transport) fn target_on(peer: DatagramPeer) -> Arc<DatagramTarget> {
+    let target = Arc::new(DatagramTarget::empty());
+    target.store(Some(Arc::new(peer)));
+    target
+}
+
 const SCHEME: PaddingScheme = PaddingScheme::new(4, 16);
 const QUARTER_ID: u64 = 70; // two-byte varint prefix
 
@@ -93,10 +100,10 @@ fn padded_sender(
 ) -> DatagramResponseSender {
     DatagramResponseSender {
         downlink: DatagramDownlink {
-            target: Arc::new(DatagramTarget::from_pointee(DatagramPeer {
+            target: target_on(DatagramPeer {
                 connection: pair.server.clone(),
                 quarter_stream_id: QUARTER_ID,
-            })),
+            }),
             monitor: None,
             metrics: Metrics::new(&sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))),
             activity: Arc::clone(activity),
@@ -104,6 +111,7 @@ fn padded_sender(
             protocol: Protocol::Http3,
             app_protocol: AppProtocol::Shadowsocks,
             proto: super::SS_PROTO_LABEL,
+            carrier: WS_H3_CARRIER,
         },
         stream: UdpResponseSender::new(Arc::new(Arc::clone(stream))),
         padding: SCHEME,
@@ -245,17 +253,17 @@ async fn anchor_keeps_the_latest_update_and_unregisters_the_superseded_route() -
     use outline_wire::h3_datagram::{DatagramDemux, DropReason, encode_datagram};
 
     let pair = quic_datagram_pair().await?;
-    let unknown = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counted = Arc::clone(&unknown);
+    let closed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&closed);
     let demux = DatagramDemux::spawn(
         pair.server.clone(),
         Arc::new(move |reason| {
-            if reason == DropReason::UnknownStream {
+            if reason == DropReason::ClosedStream {
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
         }),
     );
-    let anchor = DatagramAnchor::default();
+    let anchor = DatagramAnchor::new(WS_H3_CARRIER);
     assert!(anchor.take_update().is_none());
 
     anchor.attach(route_on(&pair, &demux, 4));
@@ -269,7 +277,7 @@ async fn anchor_keeps_the_latest_update_and_unregisters_the_superseded_route() -
     // The superseded route for id 4 is gone from the demux.
     pair.client.send_datagram(encode_datagram(4, b"late"))?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while unknown.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+    while closed.load(std::sync::atomic::Ordering::SeqCst) == 0 {
         assert!(tokio::time::Instant::now() < deadline, "superseded route still registered");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -289,7 +297,7 @@ async fn anchor_next_update_wakes_on_attach() -> Result<()> {
 
     let pair = quic_datagram_pair().await?;
     let demux = DatagramDemux::spawn(pair.server.clone(), Arc::new(|_| {}));
-    let anchor = Arc::new(DatagramAnchor::default());
+    let anchor = Arc::new(DatagramAnchor::new(WS_H3_CARRIER));
 
     let waiter = tokio::spawn({
         let anchor = Arc::clone(&anchor);
@@ -334,5 +342,46 @@ async fn link_empties_the_target_when_its_route_stops_delivering() -> Result<()>
         target.load().is_none(),
         "a route that stopped delivering must not take downlink"
     );
+    Ok(())
+}
+
+/// A VLESS link that agreed datagrams but has not seen the first uplink one yet
+/// sends downlink on the stream and counts it as an `unarmed` fallback, so the
+/// server's fallback share matches what the client sees.
+#[test]
+fn target_tracks_unarmed() {
+    let target = DatagramTarget::empty();
+    target.store_unarmed();
+    assert!(target.load().is_none());
+    assert!(target.is_unarmed());
+    target.store(None);
+    assert!(!target.is_unarmed());
+}
+
+/// An unarmed target keeps the packet on the stream (`NoTarget`) but counts it
+/// under its carrier with `reason="unarmed"`; a plain empty target counts nothing.
+#[tokio::test]
+async fn unarmed_target_counts_the_stream_packet() -> Result<()> {
+    let pair = quic_datagram_pair().await?;
+    let stream = Arc::new(RecordingSender::default());
+    let activity = Arc::new(DatagramActivity::default());
+    let mut sender = padded_sender(&pair, &stream, &activity);
+    let target = Arc::new(DatagramTarget::empty());
+    target.store_unarmed();
+    sender.downlink.target = Arc::clone(&target);
+
+    let data = Bytes::from_static(b"sealed packet");
+    assert_eq!(sender.downlink.send_record(SCHEME, &data, None), super::DownlinkSend::NoTarget);
+    let rendered = sender.downlink.metrics.render_prometheus();
+    let line = rendered
+        .lines()
+        .find(|line| line.starts_with("outline_ss_udp_h3_datagram_fallback_total{"))
+        .expect("an unarmed packet is counted");
+    for label in ["direction=\"down\"", "transport=\"ws_h3\"", "proto=\"ss\"", "reason=\"unarmed\""]
+    {
+        assert!(line.contains(label), "{label} missing in {line}");
+    }
+    assert!(line.ends_with(" 1"), "{line}");
+    assert_eq!(activity.sends(), 0);
     Ok(())
 }

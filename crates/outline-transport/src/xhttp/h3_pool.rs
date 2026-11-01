@@ -33,7 +33,7 @@ use tracing::debug;
 
 use outline_metrics as metrics;
 
-use outline_wire::h3_datagram::DatagramDemux;
+use outline_wire::h3_datagram::{DatagramDemux, PathSample};
 
 use crate::AbortOnDrop;
 use crate::fingerprint_profile::TlsFingerprint;
@@ -356,8 +356,20 @@ async fn dial(
     // One demultiplexer per connection, and only where datagrams can flow both
     // ways: we receive them (`offers_datagrams`) and the peer announced a
     // datagram frame size (`max_datagram_size`). Same rule as the ws_h3 pool.
-    let datagrams = (offers_datagrams && connection.max_datagram_size().is_some())
-        .then(|| DatagramDemux::spawn(connection.clone(), Arc::new(record_datagram_drop)));
+    let datagrams = (offers_datagrams && connection.max_datagram_size().is_some()).then(|| {
+        DatagramDemux::spawn_watched(
+            connection.clone(),
+            Arc::new(record_datagram_drop),
+            Arc::new(|s: PathSample| {
+                metrics::record_quic_path_sample(
+                    "xhttp_h3",
+                    s.current_mtu,
+                    s.black_holes,
+                    s.lost_probes,
+                )
+            }),
+        )
+    });
 
     let id = registry().next_id();
     // Sessions, not streams: the counter feeds the same `conn_life` diagnostics

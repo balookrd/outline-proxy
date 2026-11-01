@@ -12,6 +12,9 @@ pub fn init() {
     METRICS.udp_h3_datagram_fallback_total.reset();
     METRICS.udp_h3_datagram_dropped_total.reset();
     METRICS.udp_h3_datagram_sessions_total.reset();
+    METRICS.quic_path_mtu_bytes.reset();
+    METRICS.quic_black_holes_total.reset();
+    METRICS.quic_mtu_probes_lost_total.reset();
     #[cfg(feature = "tun")]
     {
         METRICS.tun_ip_fragments_total.reset();
@@ -100,8 +103,13 @@ pub fn init() {
                 .udp_h3_datagram_sessions_total
                 .with_label_values(&[transport, state]);
         }
+        let _ = METRICS.quic_path_mtu_bytes.with_label_values(&[transport]);
+        let _ = METRICS.quic_black_holes_total.with_label_values(&[transport]);
+        let _ = METRICS.quic_mtu_probes_lost_total.with_label_values(&[transport]);
     }
-    for reason in ["unknown_stream", "malformed", "queue_full", "early"] {
+    for reason in
+        ["unknown_stream", "closed_stream", "malformed", "queue_full", "queue_stalled", "early"]
+    {
         let _ = METRICS.udp_h3_datagram_dropped_total.with_label_values(&[reason]);
     }
     for protocol in ["tcp", "udp"] {
