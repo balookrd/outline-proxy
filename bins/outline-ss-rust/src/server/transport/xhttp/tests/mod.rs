@@ -359,3 +359,25 @@ async fn fully_idle_session_is_evicted() {
     let cutoff = Instant::now() - Duration::from_millis(20);
     assert!(session.is_evictable(cutoff), "an abandoned empty session ages out");
 }
+
+/// UDP over HTTP/3 datagrams bypasses the rings, so it never stamps `progress`
+/// itself: uplink datagrams must keep the session live for the janitor, while
+/// downlink datagrams alone must not (they prove nothing about the client).
+#[tokio::test]
+async fn uplink_datagrams_count_as_progress_downlink_ones_do_not() {
+    let session = XhttpSession::new(Arc::from("datagrams"), None, None, None);
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    let cutoff = Instant::now() - Duration::from_millis(20);
+
+    session.datagram_anchor().downlink_activity().note_send();
+    assert!(session.is_evictable(cutoff), "downlink datagrams alone are not progress");
+    session.datagram_anchor().note_uplink();
+    assert!(!session.is_evictable(cutoff), "an uplink datagram is progress");
+    // The predicate has no side effect: the same answer twice.
+    assert!(!session.is_evictable(cutoff));
+
+    // Uplink datagrams stopped: the session ages out again.
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    let cutoff = Instant::now() - Duration::from_millis(20);
+    assert!(session.is_evictable(cutoff), "a session whose datagrams stopped ages out");
+}

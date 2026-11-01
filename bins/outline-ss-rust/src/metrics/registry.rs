@@ -166,6 +166,31 @@ pub(super) fn register_descriptions() {
          or an identity the carrier never attested to its cluster home."
     );
     describe_counter!(
+        "outline_ss_udp_h3_datagrams_total",
+        "UDP packets carried as HTTP/3 datagrams (RFC 9297) on a session that agreed \
+         them, by direction (\"up\" received, \"down\" handed to QUIC) and proto (\"ss\" \
+         or \"vless\")."
+    );
+    describe_counter!(
+        "outline_ss_udp_h3_datagram_fallback_total",
+        "UDP packets that rode the stream on a session that agreed HTTP/3 datagrams: \
+         \"down\" did not fit the datagram size or failed to send, \"up\" arrived on the \
+         stream (an SS Binary frame, a VLESS record)."
+    );
+    describe_counter!(
+        "outline_ss_udp_h3_datagram_dropped_total",
+        "HTTP/3 datagrams dropped on receive, by reason (\"unknown_stream\": no live \
+         request stream bound to the id, \"malformed\": truncated stream-id prefix, or \
+         not exactly one VLESS-UDP record, \"queue_full\": the stream's bounded \
+         receive queue was full)."
+    );
+    describe_counter!(
+        "outline_ss_udp_h3_datagram_sessions_total",
+        "UDP request streams that offered HTTP/3 datagrams, by state (\"negotiated\" \
+         or \"declined\"); a VLESS stream is counted once its command is known, \
+         \"declined\" for any but plain UDP."
+    );
+    describe_counter!(
         "outline_ss_udp_oversized_datagrams_dropped_total",
         "UDP datagrams dropped because they exceeded the maximum payload size supported by the transport path."
     );

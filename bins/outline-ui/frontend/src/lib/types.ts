@@ -552,6 +552,7 @@ export interface WsQuicConfig {
   receive_window?: number | null;
   keepalive_secs?: number | null;
   idle_timeout_secs?: number | null;
+  udp_datagrams?: boolean | null;
 }
 
 export interface WsH2Config {

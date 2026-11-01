@@ -11,6 +11,7 @@ use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 
 use super::super::constants::WS_CONTROL_FLUSH_INTERVAL_SECS;
 use super::carrier_padding::CoverParams;
+use super::h3_datagram::DatagramActivity;
 use super::throughput_monitor::ThroughputMonitor;
 use super::ws_socket::WsSocket;
 
@@ -37,6 +38,10 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
     // tick pings `signal()`, emits one control frame nudging the client to
     // switch uplinks. `None` keeps the legacy path byte-for-byte identical.
     monitor: Option<Arc<ThroughputMonitor>>,
+    // `Some` on an SS-UDP stream that agreed HTTP/3 datagrams: downlink
+    // packets sent as datagrams bypass this writer, and the cover timer must
+    // still count them as live traffic. `None` everywhere else.
+    datagram_activity: Option<Arc<DatagramActivity>>,
 ) -> Result<()> {
     let result = async {
         // Periodically drain any control-frame responses the transport
@@ -68,6 +73,9 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
         if let Some(c) = &cover {
             cover_sleep.as_mut().reset(tokio::time::Instant::now() + c.next_gap());
         }
+        // Datagram sends seen when the cover timer last fired: a newer count
+        // means the downlink was live meanwhile, so the gap restarts instead.
+        let mut datagrams_seen = datagram_activity.as_ref().map_or(0, |a| a.sends());
 
         let mut ctrl_open = true;
         loop {
@@ -90,9 +98,12 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
                     },
                     _ = flush_tick.tick() => T::flush(&mut writer).await?,
                     _ = cover_sleep.as_mut(), if cover.is_some() => {
-                        send_cover::<T>(
-                            &mut writer, &metrics, transport_kind, protocol, app_protocol, &cover,
-                        ).await?;
+                        if !datagrams_since(&datagram_activity, &mut datagrams_seen) {
+                            send_cover::<T>(
+                                &mut writer, &metrics, transport_kind, protocol, app_protocol,
+                                &cover,
+                            ).await?;
+                        }
                         arm_cover(cover_sleep.as_mut(), &cover);
                     },
                     _ = throttle_signalled(&monitor), if monitor.is_some() => {
@@ -114,9 +125,12 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
                     },
                     _ = flush_tick.tick() => T::flush(&mut writer).await?,
                     _ = cover_sleep.as_mut(), if cover.is_some() => {
-                        send_cover::<T>(
-                            &mut writer, &metrics, transport_kind, protocol, app_protocol, &cover,
-                        ).await?;
+                        if !datagrams_since(&datagram_activity, &mut datagrams_seen) {
+                            send_cover::<T>(
+                                &mut writer, &metrics, transport_kind, protocol, app_protocol,
+                                &cover,
+                            ).await?;
+                        }
                         arm_cover(cover_sleep.as_mut(), &cover);
                     },
                     _ = throttle_signalled(&monitor), if monitor.is_some() => {
@@ -130,6 +144,18 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
     .await;
     T::finish(&mut writer).await;
     result
+}
+
+/// Whether datagrams went out since the last check (and records the new count).
+/// Always `false` without datagrams, which keeps the cover cadence unchanged.
+fn datagrams_since(activity: &Option<Arc<DatagramActivity>>, seen: &mut u64) -> bool {
+    let Some(activity) = activity else {
+        return false;
+    };
+    let now = activity.sends();
+    let fresh = now != *seen;
+    *seen = now;
+    fresh
 }
 
 /// Re-arms the cover timer to the next jittered idle gap. No-op when cover is

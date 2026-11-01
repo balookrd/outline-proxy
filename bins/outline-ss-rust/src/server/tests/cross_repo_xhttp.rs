@@ -658,6 +658,7 @@ async fn setup_xhttp_h3_server(
         serve_h3_server(
             h3_server,
             H3ServeCtx {
+                udp_datagrams: true,
                 routes,
                 services,
                 auth,
@@ -1250,6 +1251,65 @@ async fn cross_repo_xhttp_h3_to_h2_fallback_with_resume_token() -> Result<()> {
     assert_eq!(&second, b"helo");
 
     drop(stream_b);
+    server.abort();
+    Ok(())
+}
+
+/// A seq-0 FIN closes a session whose uplink rode HTTP/3 datagrams and never
+/// POSTed. It only ever looks the session up: against an unknown (already
+/// swept) id it answers 410 and creates nothing, against a live session it
+/// closes the uplink and the session goes away.
+#[tokio::test]
+async fn xhttp_h3_seq_zero_fin_is_lookup_only() -> Result<()> {
+    let (listen_addr, server, registry) = setup_xhttp_h3_server("/xh", false).await?;
+    let (_, _, _, ca_der) = super::cross_repo_shared_test_cert();
+    let mut endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(super::test_h3_client_config(ca_der.clone())?);
+    let connection = endpoint.connect(listen_addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+    let port = listen_addr.port();
+    let fin_post = |session: &str| {
+        axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(format!("https://localhost:{port}/xh/{session}/0"))
+            .version(axum::http::Version::HTTP_3)
+            .header(outline_wire::xhttp::FIN_HEADER, "1")
+            .body(())
+    };
+
+    // Unknown session: 410, nothing created.
+    let mut stray = send_request.send_request(fin_post("00112233445566cc")?).await?;
+    stray.finish().await?;
+    assert_eq!(stray.recv_response().await?.status(), 410);
+    assert!(
+        registry.get("00112233445566cc").is_none(),
+        "a seq-0 FIN must not create a session"
+    );
+
+    // Live session (created by its GET): the FIN closes it.
+    let get = axum::http::Request::builder()
+        .method(axum::http::Method::GET)
+        .uri(format!("https://localhost:{port}/xh/00112233445566dd"))
+        .version(axum::http::Version::HTTP_3)
+        .body(())?;
+    let mut get = send_request.send_request(get).await?;
+    get.finish().await?;
+    assert_eq!(get.recv_response().await?.status(), 200);
+    assert!(registry.get("00112233445566dd").is_some());
+    let mut fin = send_request.send_request(fin_post("00112233445566dd")?).await?;
+    fin.finish().await?;
+    assert_eq!(fin.recv_response().await?.status(), 200);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while registry.get("00112233445566dd").is_some() {
+        assert!(tokio::time::Instant::now() < deadline, "the FIN did not end the session");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    drop(get);
+    driver_task.abort();
     server.abort();
     Ok(())
 }

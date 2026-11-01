@@ -17,8 +17,10 @@ use arc_swap::ArcSwap;
 
 mod auth;
 mod connect;
+mod cross_repo_ss_h3_datagram;
 mod cross_repo_ss_xhttp;
 mod cross_repo_vless;
+mod cross_repo_vless_h3_datagram;
 mod cross_repo_xhttp;
 mod dns_cache;
 mod fallback;
@@ -148,6 +150,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         h3_certs: Vec::new(),
         h3_alpn: vec![crate::config::H3Alpn::H3],
         h3_initial_mtu: None,
+        h3_udp_datagrams: true,
         metrics_listen: None,
         metrics_path: "/metrics".into(),
         prefer_ipv4_upstream: false,
@@ -203,7 +206,8 @@ fn set_cookie_pair<T>(response: &axum::http::Response<T>) -> Result<String> {
         .to_owned())
 }
 
-fn test_h3_server_tls() -> Result<(rustls::ServerConfig, CertificateDer<'static>)> {
+pub(in crate::server) fn test_h3_server_tls()
+-> Result<(rustls::ServerConfig, CertificateDer<'static>)> {
     super::ensure_rustls_provider_installed();
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
     let cert_der = CertificateDer::from(cert.cert.der().to_vec());
@@ -216,7 +220,9 @@ fn test_h3_server_tls() -> Result<(rustls::ServerConfig, CertificateDer<'static>
     Ok((tls_config, cert_der))
 }
 
-fn test_h3_client_config(cert_der: CertificateDer<'static>) -> Result<quinn::ClientConfig> {
+pub(in crate::server) fn test_h3_client_config(
+    cert_der: CertificateDer<'static>,
+) -> Result<quinn::ClientConfig> {
     super::ensure_rustls_provider_installed();
     let mut roots = rustls::RootCertStore::empty();
     roots.add(cert_der)?;
@@ -329,6 +335,7 @@ async fn connect_websocket_with_resume(
         ack_prefix_requested,
         symmetric_replay_requested,
         client_acked_offset,
+        udp_datagram_requested: false,
     };
     let options = outline_transport::TransportDialOptions::new(cache, url, mode, source)
         .with_network(network)

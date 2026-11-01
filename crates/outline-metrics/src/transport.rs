@@ -282,6 +282,54 @@ pub fn record_dropped_malformed_udp_packet(cause: &'static str) {
     METRICS.udp_malformed_dropped_total.with_label_values(&[cause]).inc();
 }
 
+/// One UDP packet carried as an HTTP/3 datagram. `direction` is `"up"` /
+/// `"down"`, `transport` `"ws_h3"` / `"xhttp_h3"`, `proto` `"ss"` / `"vless"`.
+pub fn record_udp_h3_datagram(
+    direction: &'static str,
+    transport: &'static str,
+    proto: &'static str,
+) {
+    METRICS
+        .udp_h3_datagrams_total
+        .with_label_values(&[direction, transport, proto])
+        .inc();
+}
+
+/// One UDP packet of a datagram-negotiated session that rode the stream
+/// instead. Labels as in [`record_udp_h3_datagram`].
+pub fn record_udp_h3_datagram_fallback(
+    direction: &'static str,
+    transport: &'static str,
+    proto: &'static str,
+) {
+    METRICS
+        .udp_h3_datagram_fallback_total
+        .with_label_values(&[direction, transport, proto])
+        .inc();
+}
+
+/// One inbound HTTP/3 datagram dropped. `reason` is `"unknown_stream"`,
+/// `"queue_full"` (the stream's receive queue is full) or `"malformed"`
+/// (demultiplexer, or a VLESS datagram that is not one record),
+/// or `"early"` (a VLESS datagram before the response header).
+pub fn record_udp_h3_datagram_dropped(reason: &'static str) {
+    METRICS
+        .udp_h3_datagram_dropped_total
+        .with_label_values(&[reason])
+        .inc();
+}
+
+/// One HTTP/3 request stream that offered UDP over HTTP/3 datagrams. `state`
+/// is `"negotiated"` (the server echoed the offer) or `"declined"`. Counts
+/// anchor streams, including standby-pool refills and probe dials, not user
+/// sessions.
+pub fn record_udp_h3_datagram_session(transport: &'static str, state: &'static str) {
+    METRICS
+        .udp_h3_datagram_sessions_total
+        .with_label_values(&[transport, state])
+        .inc();
+}
+
 pub fn record_uplink_selected(transport: &'static str, group: &str, uplink: &str) {
     METRICS
         .uplink_selected_total

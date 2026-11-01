@@ -8,6 +8,10 @@ pub fn init() {
     METRICS.udp_datagrams_total.reset();
     METRICS.udp_oversized_dropped_total.reset();
     METRICS.udp_malformed_dropped_total.reset();
+    METRICS.udp_h3_datagrams_total.reset();
+    METRICS.udp_h3_datagram_fallback_total.reset();
+    METRICS.udp_h3_datagram_dropped_total.reset();
+    METRICS.udp_h3_datagram_sessions_total.reset();
     #[cfg(feature = "tun")]
     {
         METRICS.tun_ip_fragments_total.reset();
@@ -82,6 +86,23 @@ pub fn init() {
     }
     for cause in ["parse", "reassembly"] {
         let _ = METRICS.udp_malformed_dropped_total.with_label_values(&[cause]);
+    }
+    for transport in ["ws_h3", "xhttp_h3"] {
+        for direction in ["up", "down"] {
+            for proto in ["ss", "vless"] {
+                let labels = [direction, transport, proto];
+                let _ = METRICS.udp_h3_datagrams_total.with_label_values(&labels);
+                let _ = METRICS.udp_h3_datagram_fallback_total.with_label_values(&labels);
+            }
+        }
+        for state in ["negotiated", "declined"] {
+            let _ = METRICS
+                .udp_h3_datagram_sessions_total
+                .with_label_values(&[transport, state]);
+        }
+    }
+    for reason in ["unknown_stream", "malformed", "queue_full", "early"] {
+        let _ = METRICS.udp_h3_datagram_dropped_total.with_label_values(&[reason]);
     }
     for protocol in ["tcp", "udp"] {
         for direction in ["up", "down"] {

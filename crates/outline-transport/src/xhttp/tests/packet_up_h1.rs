@@ -69,6 +69,7 @@ async fn xhttp_h1_client_round_trip_through_mock_server() -> Result<()> {
         0,
         None,
         false,
+        false,
     )
     .await?;
     // The mock does not echo `X-Outline-Session`; the resume token
@@ -131,6 +132,7 @@ async fn xhttp_h1_close_sends_fin_post_after_the_uplink() -> Result<()> {
         false,
         0,
         None,
+        false,
         false,
     )
     .await?;
@@ -207,6 +209,7 @@ async fn xhttp_h1_silently_coerces_stream_one_to_packet_up() -> Result<()> {
         false,
         0,
         None,
+        false,
         false,
     )
     .await;

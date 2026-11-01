@@ -17,6 +17,7 @@ use super::super::super::{
     dns_cache::DnsCache,
     resumption::{OrphanRegistry, SessionId},
 };
+use super::super::h3_datagram::DatagramDownlink;
 use super::super::resume_headers::ResumeContext;
 use super::super::upstream_source::{
     HarvestedUpstream, MeshUpstreamSetup, UpstreamSource, UpstreamWriter, VlessUdpSink,
@@ -240,6 +241,10 @@ pub(in crate::server::transport) struct VlessWsOutbound<'a, Msg> {
     pub(in crate::server::transport) data_tx: &'a mpsc::Sender<Msg>,
     pub(in crate::server::transport) make_binary: fn(Bytes) -> Msg,
     pub(in crate::server::transport) make_close: fn() -> Msg,
+    /// The HTTP/3 datagram output of a stream that may agree UDP over HTTP/3
+    /// datagrams; `None` on every other carrier. Only a plain VLESS-UDP
+    /// session's downlink uses it, for each record that fits.
+    pub(in crate::server::transport) datagram: Option<&'a Arc<DatagramDownlink>>,
 }
 
 impl VlessRelayState {

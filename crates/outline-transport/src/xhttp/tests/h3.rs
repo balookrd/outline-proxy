@@ -341,6 +341,7 @@ async fn dropping_the_session_kills_in_flight_posts() {
         out_rx,
         get_stream,
         false,
+        false,
         None,
     ));
 

@@ -8,11 +8,11 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
-use outline_wire::padding::PaddingScheme;
+use outline_wire::padding::{PaddingDecoder, PaddingScheme};
 
 use crate::{
     fwmark::apply_fwmark_if_needed,
-    metrics::{AppProtocol, Metrics, PerUserCounters, Protocol},
+    metrics::{AppProtocol, Metrics, PerUserCounters, Protocol, Transport},
     outbound::OutboundIpv6,
     protocol::vless::{self, VlessUser},
 };
@@ -20,6 +20,7 @@ use crate::{
 use crate::server::cluster::mesh::{MeshShape, read_datagram};
 
 use super::carrier_padding;
+use super::h3_datagram::{DatagramDownlink, DownlinkSend, VLESS_PROTO_LABEL};
 use super::upstream_source::{MeshDatagramHalves, MeshUpstreamSetup, VlessUdpSink};
 use super::{
     super::{
@@ -102,6 +103,7 @@ where
                 let cancel = Arc::new(Notify::new());
                 let cancel_for_task = Arc::clone(&cancel);
                 let monitor_for_task = state.throttle_monitor.clone();
+                let datagram = outbound.datagram.cloned();
                 let reader_task = AbortOnDrop::new(tokio::spawn(async move {
                     relay_vless_udp_upstream_to_client(
                         reader_socket,
@@ -114,6 +116,7 @@ where
                         Some(cancel_for_task),
                         padding,
                         monitor_for_task,
+                        datagram,
                     )
                     .await
                 }));
@@ -229,6 +232,7 @@ where
     let cancel = Arc::new(Notify::new());
     let cancel_for_task = Arc::clone(&cancel);
     let monitor_for_task = state.throttle_monitor.clone();
+    let datagram = outbound.datagram.cloned();
     let reader_task = AbortOnDrop::new(tokio::spawn(async move {
         relay_vless_udp_upstream_to_client(
             reader_socket,
@@ -241,6 +245,7 @@ where
             Some(cancel_for_task),
             padding,
             monitor_for_task,
+            datagram,
         )
         .await
     }));
@@ -302,6 +307,8 @@ async fn bind_and_connect_udp(
 /// Per-user accounting happens **here**, on the node that terminates the client
 /// session; a relayed session's home deliberately counts this traffic only on
 /// its `role="home"` mesh counters.
+///
+/// Returns how many datagrams went out.
 pub(super) async fn forward_vless_udp_client_frames(
     buffer: &mut BytesMut,
     data: &Bytes,
@@ -309,7 +316,8 @@ pub(super) async fn forward_vless_udp_client_frames(
     user_counters: Option<&PerUserCounters>,
     protocol: Protocol,
     path: &str,
-) -> Result<()> {
+) -> Result<usize> {
+    let mut sent = 0;
     buffer.extend_from_slice(data);
     loop {
         if buffer.len() < 2 {
@@ -337,11 +345,12 @@ pub(super) async fn forward_vless_udp_client_frames(
             warn!(path = %path, error = %error, "vless udp send failed");
             return Err(error);
         }
+        sent += 1;
     }
     if buffer.len() > MAX_VLESS_UDP_CLIENT_BUFFER {
         return Err(anyhow!("vless udp client buffer overflow: {}", buffer.len()));
     }
-    Ok(())
+    Ok(sent)
 }
 
 /// Cluster edge: completes the v5 mesh hand-off for a VLESS-UDP session whose
@@ -446,6 +455,7 @@ where
     let monitor_for_task = state.throttle_monitor.clone();
     let make_binary = outbound.make_binary;
     let make_close = outbound.make_close;
+    let datagram = outbound.datagram.cloned();
     let permit_for_task = Arc::clone(&permit);
     // Present because `UdpUpstream` carries one, and deliberately never
     // notified: the only notifier is `vless::udp::try_park_vless_udp_single`,
@@ -469,6 +479,7 @@ where
                 monitor: monitor_for_task,
                 down_bytes,
                 down_datagrams,
+                datagram,
                 _permit: permit_for_task,
             },
         )
@@ -534,6 +545,8 @@ struct MeshUdpDownlink<Msg> {
     monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
     down_bytes: metrics::Counter,
     down_datagrams: metrics::Counter,
+    /// HTTP/3 datagram output of an agreed stream (see [`send_downlink`]).
+    datagram: Option<Arc<DatagramDownlink>>,
     /// Keeps the relay's pool slot counted for as long as this half lives.
     _permit: Arc<tokio::sync::OwnedSemaphorePermit>,
 }
@@ -595,7 +608,10 @@ where
         framed.put_u16(len as u16);
         framed.extend_from_slice(&buf[..len]);
         let datagram = carrier_padding::frame_downlink_message(ctx.padding, framed.freeze());
-        if ctx.tx.send((ctx.make_binary)(datagram)).await.is_err() {
+        if send_downlink(&ctx.tx, ctx.make_binary, ctx.datagram.as_deref(), datagram)
+            .await
+            .is_err()
+        {
             debug!("relayed vless udp response dropped: the client carrier is gone");
             return Ok(VlessRelayOutcome::Closed);
         }
@@ -620,6 +636,8 @@ async fn relay_vless_udp_upstream_to_client<Msg>(
     // with detection on. Fed inbound (from-internet) bytes + send backlog. The
     // control frame + outbound side are fed by the shared `run_ws_writer`.
     monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
+    // HTTP/3 datagram output of an agreed stream (see `send_downlink`).
+    datagram: Option<Arc<DatagramDownlink>>,
 ) -> Result<VlessRelayOutcome>
 where
     Msg: Send + 'static,
@@ -679,11 +697,88 @@ where
                 let mut framed = BytesMut::with_capacity(2 + read);
                 framed.put_u16(read as u16);
                 framed.extend_from_slice(&buffer[..read]);
-                let datagram = carrier_padding::frame_downlink_message(padding, framed.freeze());
-                tx.send(make_binary(datagram)).await.map_err(|error| {
-                    anyhow!("failed to queue vless udp websocket frame: {error}")
-                })?;
+                let message = carrier_padding::frame_downlink_message(padding, framed.freeze());
+                send_downlink(&tx, make_binary, datagram.as_deref(), message).await.map_err(
+                    |error| anyhow!("failed to queue vless udp websocket frame: {error}"),
+                )?;
             }
         }
     }
 }
+
+/// Queues one downlink record — exactly the bytes one Binary message would
+/// carry — as an HTTP/3 datagram when the session agreed them and it fits, and
+/// as that Binary message on the stream otherwise. The record framing is the
+/// same either way, so the client reads both through one parser.
+async fn send_downlink<Msg>(
+    tx: &mpsc::Sender<Msg>,
+    make_binary: fn(Bytes) -> Msg,
+    datagram: Option<&DatagramDownlink>,
+    message: Bytes,
+) -> Result<(), mpsc::error::SendError<Msg>> {
+    // The pump already fed the throttle monitor the upstream bytes.
+    if datagram.is_some_and(|datagram| datagram.send(&message, None) == DownlinkSend::Sent) {
+        return Ok(());
+    }
+    tx.send(make_binary(message)).await
+}
+
+/// Forwards one client HTTP/3 datagram of a plain VLESS-UDP session: exactly
+/// one `len || payload` record, inside one padding frame on a padded path. It
+/// bypassed the stream, so it is de-framed on its own — never through the
+/// stream's reassembly buffer, which may hold the head of a record the carrier
+/// split — and a malformed one (not exactly one record, or a padded datagram
+/// that decodes to nothing) is dropped and counted without ending the session.
+/// `Err` is a failed upstream send only.
+pub(super) async fn forward_vless_udp_datagram(
+    udp: &mut UdpUpstream,
+    datagram: Bytes,
+    user_counters: Option<&PerUserCounters>,
+    metrics: &Metrics,
+    route: &VlessWsRouteCtx,
+) -> Result<()> {
+    let record = if route.padding.is_enabled() {
+        // One datagram is one padding frame, so each decodes on its own and a
+        // bad one cannot desync the stream's decoder.
+        let mut decoded = Vec::with_capacity(datagram.len());
+        PaddingDecoder::new().push(&datagram, &mut decoded);
+        Bytes::from(decoded)
+    } else {
+        datagram
+    };
+    // Cover never travels as a datagram (the client's uplink sends none, and
+    // downlink cover rides the stream), so a datagram that decodes to nothing —
+    // a truncated padding frame, say — is malformed like any other short one.
+    let whole = record.len() >= 2
+        && usize::from(u16::from_be_bytes([record[0], record[1]])) == record.len() - 2
+        && record.len() - 2 <= MAX_UDP_PAYLOAD_SIZE;
+    if !whole {
+        debug!(path = %route.path, len = record.len(), "dropping a malformed vless udp datagram");
+        metrics.record_udp_h3_datagram_dropped("malformed");
+        return Ok(());
+    }
+    metrics.record_udp_h3_datagram("up", VLESS_PROTO_LABEL);
+    metrics.record_websocket_binary_frame(
+        Transport::Tcp,
+        route.protocol,
+        AppProtocol::Vless,
+        "up",
+        record.len(),
+    );
+    // The stream's record parser over a buffer of its own: one record, one send.
+    let mut buffer = BytesMut::new();
+    forward_vless_udp_client_frames(
+        &mut buffer,
+        &record,
+        &mut udp.sink,
+        user_counters,
+        route.protocol,
+        &route.path,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[cfg(test)]
+#[path = "tests/vless_udp.rs"]
+mod tests;

@@ -1441,8 +1441,10 @@ dependencies = [
  "blake3",
  "bytes",
  "md5",
+ "quinn",
  "serde",
  "thiserror",
+ "tokio",
  "zeroize",
 ]
 

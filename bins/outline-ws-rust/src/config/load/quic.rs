@@ -9,5 +9,6 @@ pub(super) fn load_quic_config(quic: Option<&QuicSection>) -> QuicConfig {
         receive_window: quic.and_then(|q| q.receive_window),
         keepalive_secs: quic.and_then(|q| q.keepalive_secs),
         idle_timeout_secs: quic.and_then(|q| q.idle_timeout_secs),
+        udp_datagrams: quic.and_then(|q| q.udp_datagrams).unwrap_or(true),
     }
 }

@@ -36,6 +36,42 @@ fn quic_param_seed() -> u16 {
 // `quic/tests/tls_config.rs` would see overrides instead of profile values.
 static QUIC_CUSTOM_KEEPALIVE: OnceLock<Duration> = OnceLock::new();
 static QUIC_CUSTOM_IDLE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+static QUIC_UDP_DATAGRAMS: OnceLock<bool> = OnceLock::new();
+
+/// Local QUIC datagram send-buffer budget (bytes). Not a transport parameter, so
+/// it never reaches the Initial.
+pub(crate) const H3_DATAGRAM_BUFFER_BYTES: usize = 1 << 20;
+
+/// Initialise whether client UDP may be offered over HTTP/3 DATAGRAM
+/// (`[quic] udp_datagrams`, default on).
+pub fn init_quic_udp_datagrams(enabled: bool) {
+    QUIC_UDP_DATAGRAMS.get_or_init(|| enabled);
+}
+
+/// Whether client UDP may be offered over HTTP/3 DATAGRAM. Defaults to `true`.
+pub(crate) fn quic_udp_datagrams_enabled() -> bool {
+    QUIC_UDP_DATAGRAMS.get().copied().unwrap_or(true)
+}
+
+/// Whether a QUIC connection dialed in the current dial scope may carry client
+/// UDP as HTTP/3 datagrams on our side: `[quic] udp_datagrams` is on and the
+/// dial's browser profile advertises a datagram frame size. A profile that
+/// does not (Safari) never receives datagrams, so it never offers them either.
+#[cfg(feature = "h3")]
+pub(crate) fn h3_dial_offers_udp_datagrams() -> bool {
+    offers_udp_datagrams_with(quic_udp_datagrams_enabled())
+}
+
+/// [`h3_dial_offers_udp_datagrams`] with the `[quic] udp_datagrams` switch
+/// passed in, so the profile rule is testable without the process-global.
+#[cfg(feature = "h3")]
+pub(crate) fn offers_udp_datagrams_with(enabled: bool) -> bool {
+    enabled
+        && super::tp_profile::for_fingerprint(crate::fingerprint_profile::current_dial_fingerprint())
+            .options
+            .datagram_frame_size
+            .is_some()
+}
 
 /// Initialise the QUIC keep-alive PING interval from config. Independent of
 /// the idle timeout: setting only this leaves `max_idle_timeout` on the

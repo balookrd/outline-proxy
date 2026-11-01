@@ -320,6 +320,9 @@ fn resume() -> DialResumeOptions {
         ack_prefix_requested: true,
         symmetric_replay_requested: true,
         client_acked_offset: 42,
+        // The h2 carrier must ignore the HTTP/3 datagram offer: the exact
+        // header lists below then prove it never reaches the wire.
+        udp_datagram_requested: true,
     }
 }
 
@@ -436,6 +439,7 @@ async fn xhttp_h2_session_requests_send_the_browser_fetch_request() {
                 r.symmetric_replay_requested,
                 r.client_acked_offset,
                 true,
+                false,
             )
             .unwrap();
             let fp = profile.map(|p| p.tls);

@@ -304,6 +304,8 @@ async fn open_h2_get(
         symmetric_replay_requested,
         client_acked_offset,
         datagram_records,
+        // UDP over HTTP/3 datagrams is an h3-only offer.
+        false,
     )?;
     send.ready().await.context("xhttp h2 not ready for GET")?;
     let resp = send
@@ -385,6 +387,8 @@ async fn open_h2_stream_one(
         symmetric_replay_requested,
         client_acked_offset,
         datagram_records,
+        // UDP over HTTP/3 datagrams is an h3-only offer.
+        false,
     )?;
     send.ready().await.context("xhttp h2 not ready for stream-one")?;
     let resp = send

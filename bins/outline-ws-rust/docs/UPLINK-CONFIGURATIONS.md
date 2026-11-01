@@ -1795,6 +1795,40 @@ previously-closed flow had parked, and a hit on that re-attaches
 Configurations where UDP rides the TCP carrier (VLESS/WS, VLESS/XHTTP)
 keep no UDP slot — UDP follows TCP's lifetime.
 
+## UDP over HTTP/3 datagrams
+
+`ws_h3` and `xhttp_h3` can carry client UDP in HTTP/3 DATAGRAM frames (RFC 9297) instead of inside the carrier stream. The datagram is bound to the request stream that anchors the session (the WebSocket CONNECT stream, the xhttp GET or the stream-one stream), so authentication, NAT, session resumption and the uplink lifetime stay exactly as they were. On the wire a datagram is the QUIC varint of `stream_id >> 2` followed by the payload; outside the encrypted QUIC it is indistinguishable from stream data, so the fingerprint is unchanged.
+
+### Switches and negotiation
+
+| Side | Key | Default |
+| --- | --- | --- |
+| Client | `[quic] udp_datagrams` | `true` |
+| Server | `[server.h3] udp_datagrams` | `true` |
+
+The client offers datagrams with the request header `x-outline-udp-datagram: 1`; the server agrees by echoing the header in its response. The client offers only when `[quic] udp_datagrams` is on, the carrier is `ws_h3` or `xhttp_h3`, the plan is UDP, and the dial's browser profile advertises `max_datagram_frame_size` (Chromium, Firefox, no profile). The Safari profile advertises none and never offers. The server agrees only when its switch is on, the client sent the header and the connection has a datagram size. Both sides send HTTP/3 SETTINGS `H3_DATAGRAM=1` (the server also `ENABLE_CONNECT_PROTOCOL=1`). With no agreement nothing on the wire changes.
+
+### Sizes and fallback
+
+The choice is made per packet: if the varint plus the payload fit the connection's current `max_datagram_size()`, the packet is a datagram; otherwise it goes over the stream. Right after connect the client's MTU is 1200 (before PMTUD), so most full-size packets use the stream until PMTUD raises the room. The server's maximum UDP payload size is 1452 (it was 1350) and its starting MTU is 1400 (`[server.h3] initial_mtu` overrides it; a node pinned to 1200 sends about 10% of packets at 1200). Measured: a browser's QUIC inside the tunnel is about 1250 bytes and, with SS2022 and the stream id, about 1312, which fits the downlink after PMTUD. Datagram send and receive buffers are 1 MiB on both sides; when quinn's send buffer is full it drops the oldest datagram, so `datagrams_total{up}` counts packets handed to quinn.
+
+### Per protocol
+
+- **Shadowsocks / SS2022.** One datagram carries one UDP packet in the same encrypted form as a WebSocket binary frame.
+- **VLESS.** Plain UDP command only; mux and XUDP stay on the stream. The first packet (the VLESS header) always goes over the stream and the client sends datagrams only after the response header. The server sends downlink datagrams only after the first uplink datagram, so a datagram never overtakes the header. One `len||payload` record per datagram.
+- **xhttp.** Datagrams bind to the GET (`packet-up`) or the stream-one stream and carry the bare packet without an xhttp record. A re-attached GET recounts the agreement; on VLESS the downlink waits on the stream until the next uplink datagram.
+- **Cover traffic (padding).** While datagrams flow the server holds cover frames; cover never travels as a datagram.
+
+An unknown stream id, a malformed varint or a full per-stream receive queue (`queue_full`) drops the datagram and bumps `datagram_dropped_total{reason}`; the connection is not closed. Datagrams that quinn evicts from its own send buffer are not counted: `datagrams_total{up}` counts datagrams handed to quinn.
+
+### Observability
+
+Client: `outline_ws_udp_h3_datagrams_total{direction,transport,proto}`, `outline_ws_udp_h3_datagram_fallback_total{direction,transport,proto}`, `outline_ws_udp_h3_datagram_dropped_total{reason}` (`unknown_stream`, `malformed`, `queue_full`, `early`) and `outline_ws_udp_h3_datagram_sessions_total{transport,state}` (`negotiated` / `declined`; counts anchor streams, including standby-pool refills and probe dials). Server: `outline_ss_udp_h3_datagrams_total{direction,proto}`, `outline_ss_udp_h3_datagram_fallback_total{direction,proto}`, `outline_ss_udp_h3_datagram_dropped_total{reason}` and `outline_ss_udp_h3_datagram_sessions_total{state}`. A healthy rollout shows `datagrams_total` growing on both sides and `sessions_total{state="negotiated"}` dominating `declined`. Both Grafana dashboards have a "UDP over HTTP/3 datagrams" row.
+
+### Rollout and rollback
+
+Deploy servers before clients so datagrams can engage; either order is safe because no agreement means the stream, as before. Both switches are read once at startup, so a change takes effect after a service restart. Roll back by setting `udp_datagrams = false` on the side that misbehaves and restarting that service (no rebuild needed).
+
 ## Browser fingerprint diversification
 
 WS / XHTTP dials can mix in browser-style identification headers

@@ -37,6 +37,12 @@ pub struct DialResumeOptions {
     pub ack_prefix_requested: bool,
     pub symmetric_replay_requested: bool,
     pub client_acked_offset: u64,
+    /// Offer to carry this dial's UDP as HTTP/3 datagrams (RFC 9297). Read
+    /// only by the HTTP/3 carriers (`ws_h3`, `xhttp_h3`), and only when their
+    /// QUIC connection can carry datagrams; every other carrier (including an
+    /// h3 -> h2 / h1 fallback of the same dial) ignores it, so the wire there
+    /// stays as before.
+    pub udp_datagram_requested: bool,
 }
 
 impl DialResumeOptions {
@@ -60,6 +66,7 @@ impl DialResumeOptions {
             ack_prefix_requested: true,
             symmetric_replay_requested: true,
             client_acked_offset: 0,
+            udp_datagram_requested: false,
         }
     }
 }
@@ -376,6 +383,7 @@ impl DialPlan {
             options.resume.client_acked_offset,
             options.combined_ss_kind,
             options.datagram_records,
+            options.resume.udp_datagram_requested,
         )
         .await
         {
@@ -416,6 +424,7 @@ impl DialPlan {
             options.resume.client_acked_offset,
             options.combined_ss_kind,
             options.datagram_records,
+            false,
         )
         .await
         {
@@ -456,6 +465,7 @@ impl DialPlan {
                         options.resume.client_acked_offset,
                         options.combined_ss_kind,
                         options.datagram_records,
+                        false,
                     )
                     .await?;
                 debug!(
@@ -486,6 +496,7 @@ impl DialPlan {
                 options.resume.client_acked_offset,
                 options.combined_ss_kind,
                 options.datagram_records,
+                false,
             )
             .await?;
         debug!(url = %options.url, selected_mode = "xhttp_h1", ?issued, "xhttp h1 connected");

@@ -28,6 +28,7 @@ use super::state::{AppState, empty_transport_route, empty_vless_transport_route}
 
 pub(in crate::server) mod carrier_padding;
 mod fallback;
+mod h3_datagram;
 pub(in crate::server) mod mesh_relay;
 mod proxy_protocol;
 mod resume_headers;
@@ -46,6 +47,9 @@ mod xhttp;
 
 pub(in crate::server) use fallback::{
     HttpFallbackContext, h3_fallback_handle, http_fallback_handler,
+};
+pub(in crate::server) use h3_datagram::{
+    H3DatagramRoute, apply_udp_datagram_echo, offers_udp_datagrams,
 };
 pub(in crate::server) use resume_headers::{ResumeContext, edge_route};
 pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};

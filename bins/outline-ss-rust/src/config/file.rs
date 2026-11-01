@@ -137,6 +137,10 @@ pub(crate) struct ServerH3Section {
     /// 1500-Ethernet defaults. See [`super::loader::resolve_h3_initial_mtu`].
     #[serde(default)]
     pub initial_mtu: Option<u16>,
+    /// Allow client UDP over HTTP/3 DATAGRAM (RFC 9297) on this listener.
+    /// Defaults to `true`.
+    #[serde(default)]
+    pub udp_datagrams: Option<bool>,
 }
 
 /// One entry in `[[server.certs]]` / `[[server.h3.certs]]`. Each maps

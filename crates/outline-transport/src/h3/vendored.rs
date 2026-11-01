@@ -25,11 +25,20 @@ pub(super) use sockudo_ws::{
 };
 
 /// Client-role h3 CONNECT request stream (the h3 side of one WebSocket).
-pub(super) type H3RequestStreamHandle = H3RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
+pub(crate) type H3RequestStreamHandle = H3RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
 /// Handle for opening new request streams on a shared h3 connection.
 pub(super) type H3SendRequestHandle = H3SendRequest<h3_quinn::OpenStreams, Bytes>;
 /// Sockudo WebSocket running over one h3 CONNECT stream.
 pub(super) type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>>;
+
+/// Client h3 builder. HTTP/3 DATAGRAM (RFC 9297) is announced in SETTINGS only
+/// when `enable_datagram` is set: the dial offers datagrams (profile that
+/// advertises a datagram frame size and `[quic] udp_datagrams` on).
+pub(crate) fn h3_client_builder(enable_datagram: bool) -> h3::client::Builder {
+    let mut builder = h3::client::builder();
+    builder.enable_datagram(enable_datagram);
+    builder
+}
 
 /// RFC 9220 `:protocol = websocket` pseudo-header value for Extended CONNECT
 /// requests.
@@ -57,6 +66,12 @@ where
     S: h3::quic::SendStream<Bytes>,
 {
     std::future::poll_fn(|cx| stream.poll_quic_finish(cx)).await
+}
+
+/// Quarter stream id of a request stream (`stream_id >> 2`): the prefix of
+/// every HTTP/3 datagram bound to it (RFC 9297).
+pub(crate) fn request_quarter_stream_id(stream: &H3RequestStreamHandle) -> u64 {
+    stream.id().index()
 }
 
 /// Wraps an established h3 CONNECT request stream into a client-role sockudo

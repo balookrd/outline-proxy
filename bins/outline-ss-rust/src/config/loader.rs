@@ -131,6 +131,7 @@ fn resolve(args: ConfigArgs, file: FileConfig, config_path: Option<PathBuf>) -> 
         h3_certs,
         h3_alpn: resolve_h3_alpn(server_h3.alpn.as_deref())?,
         h3_initial_mtu: resolve_h3_initial_mtu(server_h3.initial_mtu)?,
+        h3_udp_datagrams: server_h3.udp_datagrams.unwrap_or(true),
         metrics_listen: args.metrics_listen.or(metrics.listen),
         metrics_path: args
             .metrics_path

@@ -112,6 +112,7 @@ fn resume_options(dial: &FreshTcpDial) -> DialResumeOptions {
             ack_prefix_requested: dial.ack_prefix_requested,
             symmetric_replay_requested: dial.symmetric_replay_requested,
             client_acked_offset: dial.client_acked_offset,
+            udp_datagram_requested: false,
         },
     }
 }

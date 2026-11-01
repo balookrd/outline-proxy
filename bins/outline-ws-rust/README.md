@@ -791,6 +791,31 @@ When a timeout fires, the error is treated as an upstream runtime failure: the s
 
 **SOCKS5 negotiation abort classification:** when a local SOCKS5 client (TUN interceptor such as Sing-box or Clash) aborts the handshake early — closing the TCP connection after the method-negotiation greeting but before or during the CONNECT request — the resulting `early eof` / `failed to read request header` errors are classified as expected client disconnects and logged at `debug` level rather than `warn`. This is normal behaviour during reconnect storms when the TUN interceptor flushes its connection pool.
 
+## UDP over HTTP/3 datagrams
+
+On `ws_h3` and `xhttp_h3`, client UDP (Shadowsocks / SS2022 and VLESS) can ride HTTP/3 DATAGRAM frames (RFC 9297) bound to the carrier's request stream instead of the reliable stream. This removes head-of-line blocking and the double retransmission under a nested QUIC. Details and the per-protocol rules are in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#udp-over-http3-datagrams).
+
+```toml
+[quic]
+# Offer UDP over HTTP/3 datagrams (default true). false: never offer them,
+# UDP stays on the stream exactly as before. Read once at startup: takes effect after a restart.
+# udp_datagrams = true
+```
+
+- **Agreement.** The client sends `x-outline-udp-datagram: 1`; the server echoes it to agree (its own `[server.h3] udp_datagrams`, default `true`). No echo means the stream, byte for byte as before, so either side may be older.
+- **Where it applies.** Only `ws_h3` / `xhttp_h3`, only UDP plans, never with the Safari profile (it advertises no `max_datagram_frame_size`).
+- **Sizes.** The choice is per packet by the current `max_datagram_size()`; a packet that does not fit goes over the stream. The client starts at an MTU of 1200 before PMTUD, so right after connect most full-size packets still use the stream. The server's maximum UDP payload is 1452. Datagram buffers are 1 MiB on both sides.
+- **Rollout.** Servers first, then clients (either order is safe). Rollback: set `udp_datagrams = false` on the side that misbehaves and restart that service (no rebuild needed).
+
+Metrics (all on the `/metrics` endpoint):
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `outline_ws_udp_h3_datagrams_total` | `direction`, `transport`, `proto` | UDP packets carried as H3 datagrams (`up` = handed to quinn, which may drop the oldest when its send buffer is full) |
+| `outline_ws_udp_h3_datagram_fallback_total` | `direction`, `transport`, `proto` | packets / VLESS records of a negotiated session that rode the stream (too large, send failed, or sent before the server's first VLESS reply) |
+| `outline_ws_udp_h3_datagram_dropped_total` | `reason` | inbound datagrams dropped: `unknown_stream`, `malformed`, `queue_full` (the stream's bounded receive queue was full), `early` (VLESS, before the response header) |
+| `outline_ws_udp_h3_datagram_sessions_total` | `transport`, `state` | offers by outcome, `negotiated` / `declined`; counts anchor streams, including standby-pool refills and probe dials |
+
 ## Carrier Padding
 
 Optional application-layer padding for the WebSocket / XHTTP dials — the client half of the server's `[padding]` feature. Each Shadowsocks chunk or VLESS frame is wrapped in a length-delimited `real_len | pad_len | real | pad` frame so the outer TLS record size no longer tracks the payload size, defeating the record-size correlation TLS-in-TLS classifiers key on.

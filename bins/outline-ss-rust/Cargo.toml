@@ -33,7 +33,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-util = { version = "0.20", default-features = false, features = ["recency"] }
 outline-net = { path = "../../crates/outline-net" }
-outline-wire = { path = "../../crates/outline-wire", features = ["clap"] }
+outline-wire = { path = "../../crates/outline-wire", features = ["clap", "h3-datagram"] }
 parking_lot = "0.12"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
 rand = "0.9"
@@ -86,5 +86,8 @@ tokio-tungstenite = "0.29"
 tower = "0.5"
 # End-to-end tests dial the outline-ws-rust client transport against this
 # server. Now an in-workspace path dependency (previously cross-repo).
-outline-transport = { path = "../../crates/outline-transport", features = ["h3", "test-tls"] }
+# `metrics` turns the client's counters on, so the HTTP/3 datagram e2e tests
+# can read both sides' counters (`outline-metrics` renders the client's).
+outline-transport = { path = "../../crates/outline-transport", features = ["h3", "metrics", "test-tls"] }
+outline-metrics = { path = "../../crates/outline-metrics" }
 url = "2.5"

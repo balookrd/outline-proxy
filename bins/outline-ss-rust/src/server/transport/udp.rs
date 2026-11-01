@@ -43,6 +43,10 @@ use super::super::dns_cache::DnsCache;
 use super::super::resumption::{
     OrphanRegistry, Parked, ParkedSsUdpStream, ResumeOutcome, SessionId,
 };
+use super::h3_datagram::{
+    DatagramAnchor, DatagramDownlink, DatagramLink, DatagramResponseSender, DatagramTarget,
+    H3DatagramRoute, LinkPolicy, SS_PROTO_LABEL, next_link_datagram,
+};
 use super::resume_headers::ResumeContext;
 use super::upstream_source::{MeshDatagramHalves, MeshUpstreamSetup, UpstreamSource};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
@@ -1083,12 +1087,150 @@ impl MeshUdpEdge {
     }
 }
 
+/// What every ingested SS-UDP packet needs from its stream, fixed for the
+/// stream's life.
+struct UdpIngest<'a> {
+    server: &'a Arc<UdpServerCtx>,
+    route: &'a Arc<UdpRouteCtx>,
+    session: &'a Arc<UdpSessionState>,
+    response_sender: &'a UdpResponseSender,
+}
+
+/// Which HTTP/3 datagram counter an ingested uplink packet feeds, on a stream
+/// that agreed datagrams. Counted after the padding decode, so a cover frame
+/// (which decodes to nothing) is not a packet.
+#[derive(Clone, Copy)]
+enum H3UplinkCounter {
+    /// Arrived as a datagram.
+    Datagram,
+    /// Arrived as a Binary frame on the stream.
+    Fallback,
+}
+
+/// Ingests one client packet — the payload of a WS Binary frame or of an
+/// HTTP/3 datagram, which carry the same bytes: strips the carrier padding,
+/// counts the frame, then forwards it over the mesh (cluster edge) or fans it
+/// out to a local relay task. `Err` ends the session (a broken mesh upstream).
+async fn ingest_udp_binary(
+    ingest: &UdpIngest<'_>,
+    mesh: &mut Option<MeshUdpEdge>,
+    in_flight: &mut FuturesUnordered<BoxFuture<'static, ()>>,
+    padding_decoder: &mut Option<PaddingDecoder>,
+    data: Bytes,
+    h3_counter: Option<H3UplinkCounter>,
+) -> Result<()> {
+    let UdpIngest { server, route, session, response_sender } = *ingest;
+    // Strip the padding frame (when this path pads) before anything else
+    // touches the datagram. A cover frame (real_len = 0) decodes to nothing —
+    // drop it. The decoded buffer is the bare SS packet the relay expects.
+    let data = match padding_decoder.as_mut() {
+        Some(decoder) => {
+            let mut decoded = Vec::with_capacity(data.len());
+            decoder.push(&data, &mut decoded);
+            if decoded.is_empty() {
+                return Ok(());
+            }
+            Bytes::from(decoded)
+        },
+        None => data,
+    };
+    match h3_counter {
+        Some(H3UplinkCounter::Datagram) => {
+            server.metrics.record_udp_h3_datagram("up", SS_PROTO_LABEL)
+        },
+        Some(H3UplinkCounter::Fallback) => {
+            server.metrics.record_udp_h3_datagram_fallback("up", SS_PROTO_LABEL)
+        },
+        None => {},
+    }
+    server.metrics.record_websocket_binary_frame(
+        Transport::Udp,
+        route.protocol,
+        AppProtocol::Shadowsocks,
+        "up",
+        data.len(),
+    );
+    // Cluster edge: forward inline instead of fanning out. The edge resolves no
+    // DNS and binds no socket — the home does both — so the only awaited work is
+    // the mesh write, and doing it in the read loop is what keeps one client
+    // packet one mesh datagram (concurrent writers would interleave mid-frame).
+    // Backpressure rides the QUIC send window, as it does for every other single
+    // writer on a mesh stream.
+    if let Some(edge) = mesh.as_mut() {
+        let started_at = std::time::Instant::now();
+        match authenticate_udp_datagram(server, route, session, &data) {
+            Ok(Some(packet)) => {
+                // The mesh is this carrier's only upstream, so a broken one ends
+                // the session: the client redials and the home still holds the
+                // park.
+                edge.forward(server, route, &packet, response_sender, started_at)
+                    .await?;
+            },
+            // Dropped on purpose (a replay, or the replay store full).
+            Ok(None) => {},
+            Err(error) => warn!(?error, "udp datagram relay failed"),
+        }
+        return Ok(());
+    }
+    if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+        server.metrics.record_udp_relay_drop(
+            Transport::Udp,
+            route.protocol,
+            AppProtocol::Shadowsocks,
+            "concurrency_limit",
+        );
+        warn!("udp concurrent relay limit reached, dropping datagram");
+        return Ok(());
+    }
+    // Reserve a slot against the process-wide cap so that fan-out across
+    // WebSocket sessions cannot blow up the total in-flight task count. Drop the
+    // datagram with a distinct label when the global ceiling is reached.
+    let global_permit = match server
+        .relay_semaphore
+        .as_ref()
+        .map(|sem| Arc::clone(sem).try_acquire_owned())
+    {
+        Some(Ok(permit)) => Some(permit),
+        Some(Err(_)) => {
+            server.metrics.record_udp_relay_drop(
+                Transport::Udp,
+                route.protocol,
+                AppProtocol::Shadowsocks,
+                "global_concurrency_limit",
+            );
+            warn!("global udp concurrent relay limit reached, dropping datagram");
+            return Ok(());
+        },
+        None => None,
+    };
+    let server = Arc::clone(server);
+    let route = Arc::clone(route);
+    let session = Arc::clone(session);
+    let response_sender = response_sender.clone();
+    in_flight.push(
+        async move {
+            if let Err(error) =
+                handle_udp_datagram_common(&server, &route, &session, data, response_sender).await
+            {
+                warn!(?error, "udp datagram relay failed");
+            }
+            // Hold the permit until the relay future completes so the semaphore
+            // accurately reflects in-flight work; dropping here releases the
+            // slot.
+            drop(global_permit);
+        }
+        .boxed(),
+    );
+    Ok(())
+}
+
 pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     socket: T,
     server: Arc<UdpServerCtx>,
     route: Arc<UdpRouteCtx>,
     resume: ResumeContext,
     upstream: UpstreamSource,
+    datagram: Option<Arc<DatagramAnchor>>,
 ) -> Result<()> {
     // Cluster edge: the session being served lives on another node, so this
     // relay owns the client's crypto and nothing else — no NAT entry, no park.
@@ -1125,13 +1267,49 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     // is the `UdpCipherMode`, which the NAT entry stores next to the sender. So
     // build it once here and let each datagram clone the `Arc` instead of
     // allocating a fresh `Arc<dyn ResponseSender>` per packet.
-    let response_sender = T::make_udp_response_sender(
+    let stream_sender = T::make_udp_response_sender(
         outbound_data_tx.clone(),
         route.protocol,
         AppProtocol::Shadowsocks,
         route.padding,
         throttle_monitor.clone(),
     );
+    // A datagram-capable stream sends what fits as HTTP/3 datagrams to its
+    // current anchor and hands the rest — everything, while no anchor agreed
+    // them — to the stream sender. NAT entries and resume re-point at this one
+    // handle, so a resumed session follows its new anchor's datagrams.
+    //
+    // A route agreed before the relay started (every `ws_h3` stream, and an
+    // xhttp anchor that beat the spawn) is in force from the first packet.
+    let (response_sender, mut datagram_link, datagram_activity) = match datagram {
+        Some(anchor) => {
+            let activity = anchor.downlink_activity();
+            let target = Arc::new(DatagramTarget::empty());
+            let downlink = DatagramDownlink {
+                target: Arc::clone(&target),
+                monitor: throttle_monitor.clone(),
+                metrics: Arc::clone(&server.metrics),
+                activity: Arc::clone(&activity),
+                transport: Transport::Udp,
+                protocol: stream_sender.protocol(),
+                app_protocol: stream_sender.app_protocol(),
+                proto: SS_PROTO_LABEL,
+            };
+            let sender = UdpResponseSender::new(Arc::new(DatagramResponseSender {
+                downlink,
+                stream: stream_sender,
+                padding: route.padding,
+            }));
+            let link = DatagramLink::new(
+                anchor,
+                target,
+                LinkPolicy::Immediate,
+                Arc::clone(&server.metrics),
+            );
+            (sender, Some(link), Some(activity))
+        },
+        None => (stream_sender, None, None),
+    };
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -1146,6 +1324,7 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         // an unpadded path keeps the plain wire unchanged.
         carrier_padding::cover_for_path(&route.path),
         throttle_monitor.clone(),
+        datagram_activity,
     ));
     // Detection tick. Bounded: aborted when this handle drops at carrier
     // teardown, so it never outlives the carrier.
@@ -1162,6 +1341,12 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     // Decoding runs here in the relay loop — serially, before the per-datagram
     // relay future is spawned — so the decoder needs no cross-task locking.
     let mut padding_decoder = route.padding.is_enabled().then(PaddingDecoder::new);
+    let ingest = UdpIngest {
+        server: &server,
+        route: &route,
+        session: &session,
+        response_sender: &response_sender,
+    };
 
     let mut loop_result = Ok(());
     loop {
@@ -1179,12 +1364,37 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         // `FuturesUnordered` advances only while polled, so an otherwise idle
         // session would stall its own DNS and sends until the next datagram
         // arrived — and this is how the two coexist.
+        //
+        // Datagrams of an agreed HTTP/3 stream are ingested from the same inner
+        // select, so the pinned read keeps its place while they flow. Their
+        // queue ending (connection closed, or the id re-registered) only
+        // disables the arm: the stream stays the source of truth for the end of
+        // the session. Anchor changes (an xhttp GET attaching after the relay
+        // started, or a later one replacing it) are picked up here too.
         let msg = {
             let read = T::recv(&mut reader);
             tokio::pin!(read);
             loop {
                 tokio::select! {
                     Some(()) = in_flight.next(), if !in_flight.is_empty() => {},
+                    data = next_link_datagram(&mut datagram_link), if datagram_link.is_some() => {
+                        // One datagram is one padding frame, so each decodes on
+                        // its own: a bad datagram cannot desync the stream's
+                        // decoder.
+                        let mut decoder = route.padding.is_enabled().then(PaddingDecoder::new);
+                        if let Err(error) = ingest_udp_binary(
+                            &ingest,
+                            &mut mesh,
+                            &mut in_flight,
+                            &mut decoder,
+                            data,
+                            Some(H3UplinkCounter::Datagram),
+                        )
+                        .await
+                        {
+                            break Err(error);
+                        }
+                    },
                     result = &mut read => break result,
                 }
             }
@@ -1199,112 +1409,25 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         };
         match T::classify(frame) {
             WsFrame::Binary(data) => {
-                // Strip the padding frame (when this path pads) before anything
-                // else touches the datagram. A cover frame (real_len = 0)
-                // decodes to nothing — drop it and read the next frame. The
-                // decoded buffer is the bare SS packet the relay expects.
-                let data = match padding_decoder.as_mut() {
-                    Some(decoder) => {
-                        let mut decoded = Vec::with_capacity(data.len());
-                        decoder.push(&data, &mut decoded);
-                        if decoded.is_empty() {
-                            continue;
-                        }
-                        Bytes::from(decoded)
-                    },
-                    None => data,
-                };
-                server.metrics.record_websocket_binary_frame(
-                    Transport::Udp,
-                    route.protocol,
-                    AppProtocol::Shadowsocks,
-                    "up",
-                    data.len(),
-                );
-                // Cluster edge: forward inline instead of fanning out. The edge
-                // resolves no DNS and binds no socket — the home does both — so
-                // the only awaited work is the mesh write, and doing it in the
-                // read loop is what keeps one client packet one mesh datagram
-                // (concurrent writers would interleave mid-frame). Backpressure
-                // rides the QUIC send window, as it does for every other single
-                // writer on a mesh stream.
-                if let Some(edge) = mesh.as_mut() {
-                    let started_at = std::time::Instant::now();
-                    match authenticate_udp_datagram(&server, &route, &session, &data) {
-                        Ok(Some(packet)) => {
-                            if let Err(error) = edge
-                                .forward(&server, &route, &packet, &response_sender, started_at)
-                                .await
-                            {
-                                // The mesh is this carrier's only upstream, so a
-                                // broken one ends the session: the client redials
-                                // and the home still holds the park.
-                                loop_result = Err(error);
-                                break;
-                            }
-                        },
-                        // Dropped on purpose (a replay, or the replay store full).
-                        Ok(None) => {},
-                        Err(error) => warn!(?error, "udp datagram relay failed"),
-                    }
-                    continue;
-                }
-                if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
-                    server.metrics.record_udp_relay_drop(
-                        Transport::Udp,
-                        route.protocol,
-                        AppProtocol::Shadowsocks,
-                        "concurrency_limit",
-                    );
-                    warn!("udp concurrent relay limit reached, dropping datagram");
-                    continue;
-                }
-                // Reserve a slot against the process-wide cap so that fan-out
-                // across WebSocket sessions cannot blow up the total in-flight
-                // task count. Drop the datagram with a distinct label when the
-                // global ceiling is reached.
-                let global_permit = match server
-                    .relay_semaphore
-                    .as_ref()
-                    .map(|sem| Arc::clone(sem).try_acquire_owned())
+                // An anchor that attached before this packet was sent is in
+                // force for it, whichever select arm won the race above.
+                let datagrams_agreed = datagram_link.as_mut().is_some_and(|link| {
+                    link.apply_pending();
+                    link.agreed()
+                });
+                if let Err(error) = ingest_udp_binary(
+                    &ingest,
+                    &mut mesh,
+                    &mut in_flight,
+                    &mut padding_decoder,
+                    data,
+                    datagrams_agreed.then_some(H3UplinkCounter::Fallback),
+                )
+                .await
                 {
-                    Some(Ok(permit)) => Some(permit),
-                    Some(Err(_)) => {
-                        server.metrics.record_udp_relay_drop(
-                            Transport::Udp,
-                            route.protocol,
-                            AppProtocol::Shadowsocks,
-                            "global_concurrency_limit",
-                        );
-                        warn!("global udp concurrent relay limit reached, dropping datagram");
-                        continue;
-                    },
-                    None => None,
-                };
-                let server = Arc::clone(&server);
-                let route = Arc::clone(&route);
-                let session = Arc::clone(&session);
-                let response_sender = response_sender.clone();
-                in_flight.push(
-                    async move {
-                        if let Err(error) = handle_udp_datagram_common(
-                            &server,
-                            &route,
-                            &session,
-                            data,
-                            response_sender,
-                        )
-                        .await
-                        {
-                            warn!(?error, "udp datagram relay failed");
-                        }
-                        // Hold the permit until the relay future completes so
-                        // the semaphore accurately reflects in-flight work;
-                        // dropping here releases the slot.
-                        drop(global_permit);
-                    }
-                    .boxed(),
-                );
+                    loop_result = Err(error);
+                    break;
+                }
             },
             WsFrame::Close => {
                 debug!("client closed udp websocket");
@@ -1346,6 +1469,10 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     drop(outbound_data_tx);
     // The stream-scoped sender holds its own clone of the data channel, so it
     // must go too — otherwise the writer task never sees the channel close.
+    // A datagram registration goes with it: the stream is over. Clearing the
+    // target also lets go of the anchor's connection should a clone of the
+    // sender outlive the relay.
+    drop(datagram_link);
     drop(response_sender);
     writer_task.await.context("websocket writer task join failed")??;
     loop_result
@@ -1417,7 +1544,7 @@ pub(super) async fn handle_udp_connection(
     // Client-facing carrier either way, so local throttle detection is the right
     // one — this node owns the last mile whether the upstream is its own NAT or
     // a home's.
-    run_udp_relay::<AxumWs>(AxumWs(socket), server, route, resume, upstream).await
+    run_udp_relay::<AxumWs>(AxumWs(socket), server, route, resume, upstream, None).await
 }
 
 pub(in crate::server) async fn handle_udp_h3_connection(
@@ -1426,8 +1553,10 @@ pub(in crate::server) async fn handle_udp_h3_connection(
     route: Arc<UdpRouteCtx>,
     resume: ResumeContext,
     upstream: UpstreamSource,
+    datagram: Option<H3DatagramRoute>,
 ) -> Result<()> {
-    run_udp_relay::<H3Ws>(H3Ws(socket), server, route, resume, upstream).await
+    let anchor = datagram.map(DatagramAnchor::with_route);
+    run_udp_relay::<H3Ws>(H3Ws(socket), server, route, resume, upstream, anchor).await
 }
 
 #[cfg(test)]

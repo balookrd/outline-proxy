@@ -70,9 +70,11 @@ pub use self::transport::{
     record_resume_lookup, record_runtime_failure, record_runtime_failure_cause,
     record_runtime_failure_other_detail, record_runtime_failure_signature,
     record_runtime_failure_suppressed, record_socks_tcp_strict_abort, record_soft_switch,
-    record_transport_connect, record_uplink_connection_close, record_uplink_reselect,
-    record_uplink_selected, record_upstream_transport, record_warm_standby_acquire,
-    record_warm_standby_refill, set_h3_pool_carriers, udp_flow_counters,
+    record_transport_connect, record_udp_h3_datagram, record_udp_h3_datagram_dropped,
+    record_udp_h3_datagram_fallback, record_udp_h3_datagram_session,
+    record_uplink_connection_close, record_uplink_reselect, record_uplink_selected,
+    record_upstream_transport, record_warm_standby_acquire, record_warm_standby_refill,
+    set_h3_pool_carriers, udp_flow_counters,
 };
 #[cfg(all(feature = "prometheus", feature = "tun"))]
 pub use self::tun::{
@@ -106,6 +108,10 @@ struct Metrics {
     udp_datagrams_total: IntCounterVec,
     udp_oversized_dropped_total: IntCounterVec,
     udp_malformed_dropped_total: IntCounterVec,
+    udp_h3_datagrams_total: IntCounterVec,
+    udp_h3_datagram_fallback_total: IntCounterVec,
+    udp_h3_datagram_dropped_total: IntCounterVec,
+    udp_h3_datagram_sessions_total: IntCounterVec,
     uplink_selected_total: IntCounterVec,
     uplink_runtime_failures_total: IntCounterVec,
     uplink_runtime_failures_suppressed_total: IntCounterVec,

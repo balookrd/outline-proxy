@@ -100,6 +100,36 @@ async fn a_udp_refill_on_the_vless_primary_does_not_ask_for_datagram_records() {
     );
 }
 
+/// A pooled SS-UDP carrier offers UDP over HTTP/3 datagrams exactly like an
+/// on-demand dial: the offer rides the request headers, so a carrier pooled
+/// without it could never use them. Only an SS-UDP pool on an HTTP/3 carrier
+/// (`ws_h3`, `xhttp_h3`) offers; TCP, VLESS and every other carrier keep the
+/// plain shape.
+#[tokio::test]
+async fn only_an_h3_ss_udp_refill_offers_h3_datagrams() {
+    let manager = sample_manager_with_vless_primary_and_ss_fallback().await;
+    manager.test_set_active_wire(0, TransportKind::Udp, 1);
+    let mut ss_udp = manager.standby_ctx_for_test(0, TransportKind::Udp).await;
+    ss_udp.mode = TransportMode::WsH3;
+    assert!(ss_udp.pool_resume_options().udp_datagram_requested);
+    ss_udp.mode = TransportMode::WsH2;
+    assert!(!ss_udp.pool_resume_options().udp_datagram_requested);
+    ss_udp.mode = TransportMode::XhttpH3;
+    assert!(ss_udp.pool_resume_options().udp_datagram_requested);
+    ss_udp.mode = TransportMode::XhttpH2;
+    assert!(!ss_udp.pool_resume_options().udp_datagram_requested);
+
+    manager.test_set_active_wire(0, TransportKind::Udp, 0);
+    let mut vless_udp = manager.standby_ctx_for_test(0, TransportKind::Udp).await;
+    vless_udp.mode = TransportMode::WsH3;
+    assert!(!vless_udp.pool_resume_options().udp_datagram_requested);
+
+    manager.test_set_active_wire(0, TransportKind::Tcp, 1);
+    let mut ss_tcp = manager.standby_ctx_for_test(0, TransportKind::Tcp).await;
+    ss_tcp.mode = TransportMode::WsH3;
+    assert!(!ss_tcp.pool_resume_options().udp_datagram_requested);
+}
+
 /// The remaining two wire-dependent dial inputs. They are not a corruption
 /// bug like the two above — a fallback pinned to another egress simply gets
 /// prewarmed out of the wrong interface — but they came from the same wrong

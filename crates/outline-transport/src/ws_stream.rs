@@ -11,7 +11,8 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use crate::config::TransportMode;
 #[cfg(feature = "h3")]
 use crate::h3::{
-    H3WsStream, sockudo_to_tungstenite_message, sockudo_to_ws_error, tungstenite_to_sockudo_message,
+    H3DatagramBinding, H3WsStream, sockudo_to_tungstenite_message, sockudo_to_ws_error,
+    tungstenite_to_sockudo_message,
 };
 use crate::resumption::SessionId;
 use crate::xhttp::XhttpStream;
@@ -87,6 +88,10 @@ impl H1Activity {
 pin_project! {
     struct H3WsStream { _never: std::convert::Infallible }
 }
+
+/// Uninhabited stand-in for the HTTP/3 datagram binding without the h3 feature.
+#[cfg(not(feature = "h3"))]
+enum H3DatagramBinding {}
 
 #[cfg(not(feature = "h3"))]
 impl Stream for H3WsStream {
@@ -198,6 +203,10 @@ pin_project! {
             // See `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`
             // § Symmetric Downlink Replay (v2).
             symmetric_replay_advertised_by_server: bool,
+            // `Some` when the server accepted UDP over HTTP/3 datagrams on
+            // this stream: the stream's datagram slot, taken once by the UDP
+            // transport (`take_h3_datagram`). `None` for every other dial.
+            datagram: Option<H3DatagramBinding>,
         },
         /// VLESS-over-XHTTP packet-up. The inner stream multiplexes a
         /// long-lived GET (downlink) and a sequence of POSTs (uplink)
@@ -274,6 +283,19 @@ impl TransportStream {
             TransportStream::Xhttp { inner, .. } => {
                 inner.loss_probe().and_then(|probe| probe.try_clone())
             },
+        }
+    }
+
+    /// Takes the HTTP/3 datagram binding the server negotiated on this stream
+    /// (`ws_h3`) or session (`xhttp_h3`), if any. `None` on every other
+    /// carrier, on an HTTP/3 stream without one, and on every call after the
+    /// first.
+    #[cfg(feature = "h3")]
+    pub(crate) fn take_h3_datagram(&mut self) -> Option<H3DatagramBinding> {
+        match self {
+            TransportStream::H3 { datagram, .. } => datagram.take(),
+            TransportStream::Xhttp { inner, .. } => inner.take_h3_datagram(),
+            _ => None,
         }
     }
 

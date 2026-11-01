@@ -12,9 +12,9 @@ use super::{
     bootstrap::{h3_cert_paths, load_h3_tls_config, spawn_cert_reloader},
     cluster::ClusterCtx,
     constants::{
-        CERT_RELOAD_POLL_INTERVAL_SECS, H3_DEFAULT_INITIAL_MTU, H3_MAX_CONCURRENT_CONNECTIONS,
-        H3_MAX_CONCURRENT_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE, H3_MTU_DISCOVERY_UPPER_BOUND,
-        H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
+        CERT_RELOAD_POLL_INTERVAL_SECS, H3_DATAGRAM_BUFFER_BYTES, H3_DEFAULT_INITIAL_MTU,
+        H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE,
+        H3_MTU_DISCOVERY_UPPER_BOUND, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
     },
     state::{AuthPolicy, RoutesSnapshot, Services},
     transport::{
@@ -83,7 +83,7 @@ pub(in crate::server) fn spawn_h3_cert_reloader(
 // Compression must stay `Compression::Disabled` (the builder default; do not
 // call `.compression(..)`): clients offer `permessage-deflate` like browsers
 // but do not implement it, so an accepted extension would corrupt frames.
-fn build_h3_ws_config(profile: &TuningProfile) -> H3WebSocketConfig {
+pub(in crate::server) fn build_h3_ws_config(profile: &TuningProfile) -> H3WebSocketConfig {
     H3WebSocketConfig::builder()
         // Same pre-auth message ceiling as the axum (h1/h2) upgrade paths: the
         // vendored sockudo-ws default is also 64 MiB message / 16 MiB frame.
@@ -100,7 +100,7 @@ fn build_h3_ws_config(profile: &TuningProfile) -> H3WebSocketConfig {
         .build()
 }
 
-fn build_h3_quinn_server_config(
+pub(in crate::server) fn build_h3_quinn_server_config(
     tls_config: rustls::ServerConfig,
     profile: &TuningProfile,
     pinned_initial_mtu: Option<u16>,
@@ -143,8 +143,8 @@ fn build_h3_transport_config(
                 .expect("h3_connection_window_bytes exceeds u32"),
         ))
         .send_window(profile.h3_connection_window_bytes)
-        .datagram_receive_buffer_size(Some(profile.h3_connection_window_bytes as usize))
-        .datagram_send_buffer_size(profile.h3_connection_window_bytes as usize);
+        .datagram_receive_buffer_size(Some(H3_DATAGRAM_BUFFER_BYTES))
+        .datagram_send_buffer_size(H3_DATAGRAM_BUFFER_BYTES);
     // The default initial_mtu of 1200 caps the server→client QUIC
     // payload for the first few RTTs of every connection while
     // DPLPMTUD probes upward — long enough to hurt real traffic on a
@@ -259,6 +259,8 @@ struct H3ConnectionCtx {
     /// Mesh-cluster runtime; `Some` only when clustered. Read by the h3
     /// CONNECT accept path to relay a foreign-shard resume over the mesh.
     cluster: Option<Arc<ClusterCtx>>,
+    /// `[server.h3] udp_datagrams`; consulted when agreeing UDP over DATAGRAM.
+    udp_datagrams: bool,
 }
 
 fn negotiated_alpn(connection: &quinn::Connection) -> Option<H3Alpn> {
@@ -281,6 +283,8 @@ pub(in crate::server) struct H3ServeCtx {
     /// Mesh-cluster runtime; `Some` only when `[cluster]` is configured. The h3
     /// CONNECT accept path reads it to relay a foreign-shard resume.
     pub(in crate::server) cluster: Option<Arc<ClusterCtx>>,
+    /// `[server.h3] udp_datagrams`: whether UDP-over-DATAGRAM may be agreed.
+    pub(in crate::server) udp_datagrams: bool,
 }
 
 pub(in crate::server) async fn serve_h3_server(
@@ -295,6 +299,7 @@ pub(in crate::server) async fn serve_h3_server(
         alpn,
         http_fallback,
         cluster,
+        udp_datagrams,
     } = ctx;
     let initial = routes.load();
     let tcp_paths: Arc<BTreeSet<String>> =
@@ -374,6 +379,7 @@ pub(in crate::server) async fn serve_h3_server(
             alpn: Arc::clone(&alpn),
             http_fallback: http_fallback.clone(),
             cluster: cluster.clone(),
+            udp_datagrams,
         });
 
         tokio::spawn(async move {

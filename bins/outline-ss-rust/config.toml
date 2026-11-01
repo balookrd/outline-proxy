@@ -38,6 +38,10 @@ listen = "0.0.0.0:3000"
 # cert block covers both transports.
 # [server.h3]
 # listen = "0.0.0.0:3000"
+# Agree to UDP over HTTP/3 datagrams (RFC 9297) on ws_h3 / xhttp_h3 when the
+# client offers them (`x-outline-udp-datagram: 1`). `false` never agrees: UDP
+# stays on the stream as before. Deploy servers before clients.
+# udp_datagrams = true
 # cert_path = "./cert.pem"
 # key_path  = "./key.pem"
 #

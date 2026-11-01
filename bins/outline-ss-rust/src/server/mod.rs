@@ -174,10 +174,12 @@ pub async fn run(config: Config) -> Result<()> {
         let h3_fallback = built.http_fallback.clone();
         let h3_cluster = built.cluster.clone();
         let shutdown = shutdown_signal.clone();
+        let h3_udp_datagrams = config.h3_udp_datagrams;
         tasks.spawn(async move {
             serve_h3_server(
                 h3_server,
                 H3ServeCtx {
+                    udp_datagrams: h3_udp_datagrams,
                     routes,
                     services,
                     auth,

@@ -110,6 +110,7 @@ pub(crate) fn apply_browser_tp_options(
     match opts.datagram_frame_size {
         Some(size) => {
             transport
+                .datagram_send_buffer_size(super::tls_config::H3_DATAGRAM_BUFFER_BYTES)
                 .datagram_receive_buffer_size(Some(size as usize))
                 .advertised_max_datagram_frame_size(Some(quinn::VarInt::from_u32(size)));
         },

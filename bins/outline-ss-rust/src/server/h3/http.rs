@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::http::{self, Method, StatusCode};
 use bytes::Bytes;
 use h3::server::Connection as H3Connection;
+use outline_wire::h3_datagram::{DatagramDemux, DropReason};
 use outline_wire::xhttp::{SsPathKind, decode_kind};
 use tracing::{debug, warn};
 
@@ -20,11 +21,13 @@ use super::super::{
     },
     state::{RoutesSnapshot, empty_transport_route, empty_vless_transport_route},
     transport::{
-        ResumeContext, UdpRouteCtx, UpstreamSource, VlessWsRouteCtx, WsTcpRouteCtx, XhttpH3Ctx,
-        XhttpRoute, edge_route, finish_ws_session, generate_anonymous_xhttp_session_id,
-        h3_fallback_handle, handle_tcp_h3_connection, handle_udp_h3_connection,
-        handle_vless_h3_connection, handle_xhttp_h3_request, is_normal_h3_shutdown,
+        H3DatagramRoute, ResumeContext, UdpRouteCtx, UpstreamSource, VlessWsRouteCtx,
+        WsTcpRouteCtx, XhttpH3Ctx, XhttpRoute, apply_udp_datagram_echo, edge_route,
+        finish_ws_session, generate_anonymous_xhttp_session_id, h3_fallback_handle,
+        handle_tcp_h3_connection, handle_udp_h3_connection, handle_vless_h3_connection,
+        handle_xhttp_h3_request, is_normal_h3_shutdown,
         mesh_relay::{edge_echo, edge_udp_echo, edge_upstream, open_edge_relay},
+        offers_udp_datagrams,
     },
 };
 use super::H3ConnectionCtx;
@@ -39,8 +42,18 @@ pub(super) async fn handle_h3_connection(
     ctx: Arc<H3ConnectionCtx>,
 ) -> Result<()> {
     let peer_addr = connection.remote_address();
+    debug!(
+        peer = %peer_addr,
+        udp_datagrams = ctx.udp_datagrams,
+        datagram_size = ?connection.max_datagram_size(),
+        "HTTP/3 connection accepted"
+    );
+    // One datagram reader per connection, and only where UDP over DATAGRAM can
+    // be agreed at all; dropped with the connection loop and the last stream.
+    let datagrams = h3_connection_datagrams(&connection, &ctx);
     let mut h3_conn: H3Connection<h3_quinn::Connection, Bytes> =
-        H3Connection::new(h3_quinn::Connection::new(connection))
+        super::vendored::h3_server_builder()
+            .build(h3_quinn::Connection::new(connection))
             .await
             .context("failed to initialize HTTP/3 connection")?;
 
@@ -69,9 +82,11 @@ pub(super) async fn handle_h3_connection(
                 };
 
                 let ctx = Arc::clone(&ctx);
+                let datagrams = datagrams.clone();
                 tokio::spawn(async move {
                     let _stream_permit = stream_permit;
-                    if let Err(error) = handle_h3_request(request, stream, ctx, peer_addr).await
+                    if let Err(error) =
+                        handle_h3_request(request, stream, ctx, peer_addr, datagrams).await
                         && !is_normal_h3_shutdown(&error)
                     {
                         warn!(?error, "HTTP/3 request terminated with error");
@@ -92,11 +107,38 @@ pub(super) async fn handle_h3_connection(
     Ok(())
 }
 
+/// The QUIC connection and its datagram demux, when this connection may carry
+/// UDP over HTTP/3 DATAGRAM.
+type H3ConnectionDatagrams = Option<(quinn::Connection, Arc<DatagramDemux>)>;
+
+/// `Some` only when `[server.h3] udp_datagrams` is on and the peer accepted
+/// QUIC datagrams. The peer's HTTP/3 SETTINGS are not readable here, so the
+/// client's request header plus this transport-level check decide.
+fn h3_connection_datagrams(
+    connection: &quinn::Connection,
+    ctx: &H3ConnectionCtx,
+) -> H3ConnectionDatagrams {
+    if !ctx.udp_datagrams || connection.max_datagram_size().is_none() {
+        return None;
+    }
+    let metrics = Arc::clone(&ctx.udp_server.metrics);
+    let on_drop = Arc::new(move |reason: DropReason| {
+        metrics.record_udp_h3_datagram_dropped(match reason {
+            DropReason::UnknownStream => "unknown_stream",
+            DropReason::Malformed => "malformed",
+            DropReason::QueueFull => "queue_full",
+        });
+    });
+    let demux = DatagramDemux::spawn(connection.clone(), on_drop);
+    Some((connection.clone(), demux))
+}
+
 async fn handle_h3_request(
     request: http::Request<()>,
     mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     ctx: Arc<H3ConnectionCtx>,
     peer_addr: std::net::SocketAddr,
+    datagrams: H3ConnectionDatagrams,
 ) -> Result<()> {
     let path = request.uri().path().to_owned();
 
@@ -126,6 +168,7 @@ async fn handle_h3_request(
                 route,
                 base_path: base,
                 cluster: ctx.cluster.clone(),
+                datagram: datagrams,
             };
             return handle_xhttp_h3_request(
                 request, stream, xhttp_ctx, session_id, path_seq, peer_addr,
@@ -294,6 +337,32 @@ async fn handle_h3_request(
     };
     let mut response = build_extended_connect_response(None, None);
     echo.apply(response.headers_mut());
+    // UDP over HTTP/3 DATAGRAM, on SS-UDP and VLESS paths. Registered before the
+    // response goes out, so the client's first datagram after it is not lost.
+    // An SS-UDP stream is counted here; a VLESS one by its relay, once the
+    // VLESS command says whether it uses the route (plain UDP) or declines it.
+    let datagram_route =
+        if (path_is_udp || path_is_vless) && offers_udp_datagrams(request.headers()) {
+            let route = datagrams.map(|(connection, demux)| {
+                let quarter_stream_id = vendored::request_quarter_stream_id(&stream);
+                H3DatagramRoute {
+                    connection,
+                    quarter_stream_id,
+                    registration: demux.register(quarter_stream_id),
+                }
+            });
+            if route.is_none() {
+                ctx.udp_server.metrics.record_udp_h3_datagram_session("declined");
+            } else if path_is_udp {
+                ctx.udp_server.metrics.record_udp_h3_datagram_session("negotiated");
+            }
+            if route.is_some() {
+                apply_udp_datagram_echo(response.headers_mut());
+            }
+            route
+        } else {
+            None
+        };
 
     stream
         .send_response(response)
@@ -366,6 +435,7 @@ async fn handle_h3_request(
             route_ctx,
             resume,
             upstream,
+            datagram_route,
         )
         .await;
         finish_ws_session(session, result, "udp");
@@ -397,6 +467,7 @@ async fn handle_h3_request(
             route_ctx,
             resume,
             upstream,
+            datagram_route,
         )
         .await;
         finish_ws_session(session, result, "vless");
@@ -405,6 +476,7 @@ async fn handle_h3_request(
     Ok(())
 }
 
+/// The client asked for UDP over HTTP/3 DATAGRAM (`x-outline-udp-datagram: 1`).
 /// Returns `Some((base, session_id, path_seq))` for any of:
 /// - `<base>` or `<base>/` — `session_id = None`, `path_seq = None`.
 ///   xray / sing-box stream-one wire shape (the client passes
