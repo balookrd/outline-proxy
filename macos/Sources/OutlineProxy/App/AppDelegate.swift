@@ -23,6 +23,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Show Android-styled main window upon application launch
         MainWindowController.shared.show()
+
+        // Daily update check, cleanup after a finished update, reconnect after a restart for one
+        UpdateController.shared.start()
     }
 
     /// Invoked when user clicks the Dock/taskbar icon while the application is already running.
