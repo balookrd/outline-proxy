@@ -488,8 +488,13 @@ impl DatagramLink {
                 },
                 // The route stopped delivering (connection closed, or the id was
                 // registered again). Not the end of the session: the stream
-                // still carries it, and the next anchor may bring a new route.
-                Ok(None) => self.registration = None,
+                // still carries it, and the next anchor may bring a new route —
+                // until then downlink rides the stream too, never the dead route.
+                Ok(None) => {
+                    self.registration = None;
+                    self.unarmed = None;
+                    self.target.store(None);
+                },
                 Err(update) => self.apply(update),
             }
         }

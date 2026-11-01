@@ -11,6 +11,7 @@ use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use parking_lot::Mutex;
 use tokio::net::UdpSocket;
+use tokio::sync::watch;
 
 use crate::server::abort::AbortOnDrop;
 use crate::{
@@ -136,6 +137,11 @@ impl UdpResponseSender {
     pub(crate) async fn send_bytes(&self, data: Bytes) -> bool {
         self.inner.send_bytes(data).await
     }
+
+    /// Whether both handles lead to the same outbound path (one carrier).
+    fn same_path(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(Arc::as_ptr(&self.inner), Arc::as_ptr(&other.inner))
+    }
 }
 
 // ── NAT entry ─────────────────────────────────────────────────────────────────
@@ -153,6 +159,67 @@ pub(crate) struct ActiveSession {
     pub(crate) stream_id: u64,
 }
 
+/// An entry's active-session slot, shared with its reader, plus a signal that
+/// fires whenever the slot starts leading somewhere else: another carrier's
+/// sender (a resume or reconnect re-pointing it), or nowhere (a detach).
+///
+/// The reader waits on a response send with backpressure, and that wait may sit
+/// on a carrier the client stopped reading. The signal is what lets it give up
+/// on that carrier once the slot has moved on, rather than holding every later
+/// response behind it.
+pub(crate) struct ActiveSlot {
+    session: Mutex<Option<ActiveSession>>,
+    /// Bumped (under the slot lock) on every change of path; never carries a
+    /// value. A receiver that marked the version seen before reading the slot
+    /// cannot miss a change made after that read.
+    moved: watch::Sender<()>,
+}
+
+impl ActiveSlot {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            session: Mutex::new(None),
+            moved: watch::Sender::new(()),
+        })
+    }
+
+    /// The current sender and coding, if a session is attached.
+    pub(crate) fn snapshot(&self) -> Option<(UdpResponseSender, UdpResponseCoding)> {
+        self.session
+            .lock()
+            .as_ref()
+            .map(|active| (active.sender.clone(), active.coding.clone()))
+    }
+
+    /// Whether the slot still leads to `sender`'s carrier.
+    pub(crate) fn leads_to(&self, sender: &UdpResponseSender) -> bool {
+        self.session
+            .lock()
+            .as_ref()
+            .is_some_and(|active| active.sender.same_path(sender))
+    }
+
+    /// Subscribes to path changes, with the current version already seen.
+    pub(crate) fn subscribe(&self) -> watch::Receiver<()> {
+        self.moved.subscribe()
+    }
+
+    pub(super) fn set(&self, next: Option<ActiveSession>) {
+        let mut guard = self.session.lock();
+        let moved = match (guard.as_ref(), next.as_ref()) {
+            (Some(current), Some(next)) => !current.sender.same_path(&next.sender),
+            (None, None) => false,
+            _ => true,
+        };
+        *guard = next;
+        // Only a change of path is signalled: the same carrier re-registers on
+        // every uplink packet, and waking the reader for that would be noise.
+        if moved {
+            self.moved.send_replace(());
+        }
+    }
+}
+
 pub(crate) struct NatEntry {
     socket: Arc<UdpSocket>,
     /// The currently active client session: where to deliver upstream responses
@@ -161,7 +228,7 @@ pub(crate) struct NatEntry {
     /// one plaintext). Replaced atomically on every reconnect so the NAT socket
     /// — and therefore the source port and server_session_id — survives client
     /// session changes.
-    active: Arc<Mutex<Option<ActiveSession>>>,
+    active: Arc<ActiveSlot>,
     /// Pre-resolved per-user metrics counters, shared with the reader task.
     /// Lets the per-datagram client→upstream and upstream→client paths skip the
     /// `counter!()` registry lookup and the per-call `Arc<str>` clone.
@@ -175,7 +242,7 @@ pub(crate) struct NatEntry {
 impl NatEntry {
     pub(crate) fn new(
         socket: Arc<UdpSocket>,
-        active: Arc<Mutex<Option<ActiveSession>>>,
+        active: Arc<ActiveSlot>,
         user_counters: Arc<PerUserCounters>,
         last_active_secs: Arc<AtomicU64>,
         reader: tokio::task::JoinHandle<()>,
@@ -207,7 +274,7 @@ impl NatEntry {
         coding: UdpResponseCoding,
         stream_id: u64,
     ) {
-        *self.active.lock() = Some(ActiveSession { sender, coding, stream_id });
+        self.active.set(Some(ActiveSession { sender, coding, stream_id }));
     }
 
     /// Atomically clears the active session slot iff its `stream_id`
@@ -216,14 +283,22 @@ impl NatEntry {
     /// without disrupting other streams that may have taken over
     /// in the meantime.
     pub(crate) fn detach_session_for_stream(&self, expected: u64) -> bool {
-        let mut guard = self.active.lock();
+        let mut guard = self.active.session.lock();
         match guard.as_ref() {
             Some(active) if active.stream_id == expected => {
                 *guard = None;
+                // A reader blocked on this stream's sender gives it up.
+                self.active.moved.send_replace(());
                 true
             },
             _ => false,
         }
+    }
+
+    /// The entry's active-session slot, for tests that drive a reader against it.
+    #[cfg(test)]
+    pub(super) fn active_slot(&self) -> &Arc<ActiveSlot> {
+        &self.active
     }
 
     /// Reset the idle-eviction timer.  Call after every successful outbound send.

@@ -396,14 +396,21 @@ pub(crate) mod tests_support {
     /// A probe whose carrier is already gone. The FIN exchange is
     /// asynchronous, so poll until the socket leaves ESTABLISHED rather than
     /// sleeping a guessed interval.
+    ///
+    /// The deadline is generous and missing it panics: handing back a probe
+    /// that is still alive lets the FIN's ACK land after the caller registers
+    /// it, which moves `tcpi_segs_out` and reads as a traffic window — a
+    /// failure that only shows under a loaded parallel test run.
     pub(crate) async fn dead_probe() -> CarrierLossProbe {
         let (probe, client, server) = live_pair().await;
         drop(server);
         drop(client);
-        for _ in 0..50 {
-            if !probe.sample().map(|s| s.alive).unwrap_or(false) {
-                break;
-            }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while probe.sample().is_some_and(|s| s.alive) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "loopback carrier still alive 10 s after both ends were dropped"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         probe

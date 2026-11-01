@@ -26,6 +26,15 @@ use super::{config::ResumptionConfig, parked::Parked, session_id::SessionId};
 /// panicking parker can never hang a resume indefinitely.
 const RESERVATION_WAIT: Duration = Duration::from_secs(5);
 
+/// Upper bound on how long a park waits for a downlink pump to acknowledge its
+/// stop before giving up on the park. Kept well under [`RESERVATION_WAIT`] so a
+/// resume waiting on the reservation still sees the park's outcome — committed,
+/// or abandoned and so a clean miss — before its own wait runs out, instead of
+/// timing out against a wedged parker. The pumps select on the stop signal even
+/// while their send waits on a full carrier, so this is a guard, not a path
+/// expected to fire.
+pub(crate) const PARK_HARVEST_WAIT: Duration = Duration::from_secs(2);
+
 /// This server's cluster identity: the shard it owns and the key that
 /// obfuscates it inside minted session ids. `None` when the server is not part
 /// of a cluster, in which case ids are plain random. Wired from `[cluster]`

@@ -151,12 +151,14 @@ async fn near_full_packet_goes_as_a_datagram_with_a_cut_pad() -> Result<()> {
         - datagram_overhead(QUARTER_ID);
     let data = Bytes::from(vec![0x5b; room - PADDING_FRAME_HEADER_LEN - 8]);
     for _ in 0..50 {
-        // PMTU discovery may grow the datagram size during the test, so the
-        // room is read right before each send.
-        let room_now = pair.server.max_datagram_size().context("datagrams negotiated")?
-            - datagram_overhead(QUARTER_ID);
         assert!(sender.send_bytes(data.clone()).await);
         let datagram = timeout(Duration::from_secs(5), pair.client.read_datagram()).await??;
+        // PMTU discovery may grow the datagram size during the test, even
+        // between a read of the room and the send that uses it. On loopback it
+        // only grows, so the room read after the datagram arrived bounds the
+        // one the send cut the pad to.
+        let room_now = pair.server.max_datagram_size().context("datagrams negotiated")?
+            - datagram_overhead(QUARTER_ID);
         let (_, body) = decode_datagram(datagram).context("datagram prefix")?;
         let pad_len = u16::from_be_bytes([body[2], body[3]]) as usize;
         let budget = room_now - PADDING_FRAME_HEADER_LEN - data.len();
@@ -301,5 +303,36 @@ async fn anchor_next_update_wakes_on_attach() -> Result<()> {
     anchor.detach();
     let update = timeout(Duration::from_secs(5), anchor.next_update()).await?;
     assert!(matches!(update, AnchorUpdate::Detach));
+    Ok(())
+}
+
+/// A route that stops delivering (its id registered again, or its connection
+/// closed) must not keep the downlink: from then on packets ride the stream
+/// until the next anchor brings a live route.
+#[tokio::test]
+async fn link_empties_the_target_when_its_route_stops_delivering() -> Result<()> {
+    use outline_wire::h3_datagram::DatagramDemux;
+
+    use super::{DatagramLink, LinkPolicy};
+
+    let pair = quic_datagram_pair().await?;
+    let demux = DatagramDemux::spawn(pair.server.clone(), Arc::new(|_| {}));
+    let anchor = DatagramAnchor::with_route(route_on(&pair, &demux, QUARTER_ID));
+    let target = Arc::new(DatagramTarget::empty());
+    let mut link = DatagramLink::new(
+        Arc::clone(&anchor),
+        Arc::clone(&target),
+        LinkPolicy::Immediate,
+        Metrics::new(&sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))),
+    );
+    assert!(target.load().is_some());
+
+    // Re-registering the id ends the link's registration.
+    let _stolen = demux.register(QUARTER_ID);
+    let _ = timeout(Duration::from_millis(300), link.next_datagram()).await;
+    assert!(
+        target.load().is_none(),
+        "a route that stopped delivering must not take downlink"
+    );
     Ok(())
 }

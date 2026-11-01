@@ -465,6 +465,7 @@ where
     // what ends it. Safe only because nothing survives that abort: there is no
     // local socket to harvest and no park to hand it to.
     let cancel = Arc::new(Notify::new());
+    let cancel_for_task = Arc::clone(&cancel);
     let reader_task = AbortOnDrop::new(tokio::spawn(async move {
         relay_mesh_udp_to_client(
             recv,
@@ -480,6 +481,7 @@ where
                 down_bytes,
                 down_datagrams,
                 datagram,
+                cancel: cancel_for_task,
                 _permit: permit_for_task,
             },
         )
@@ -547,6 +549,10 @@ struct MeshUdpDownlink<Msg> {
     down_datagrams: metrics::Counter,
     /// HTTP/3 datagram output of an agreed stream (see [`send_downlink`]).
     datagram: Option<Arc<DatagramDownlink>>,
+    /// The session's stop signal. Never notified today (see where it is
+    /// built), but a send waiting on a full carrier still selects on it, as on
+    /// a direct session, so a future stop cannot be held up by backpressure.
+    cancel: Arc<Notify>,
     /// Keeps the relay's pool slot counted for as long as this half lives.
     _permit: Arc<tokio::sync::OwnedSemaphorePermit>,
 }
@@ -607,18 +613,22 @@ where
         let mut framed = BytesMut::with_capacity(2 + len);
         framed.put_u16(len as u16);
         framed.extend_from_slice(&buf[..len]);
-        if send_downlink(
+        match send_downlink_or_stop(
             &ctx.tx,
             ctx.make_binary,
             ctx.datagram.as_deref(),
             ctx.padding,
             framed.freeze(),
+            Some(&ctx.cancel),
         )
         .await
-        .is_err()
         {
-            debug!("relayed vless udp response dropped: the client carrier is gone");
-            return Ok(VlessRelayOutcome::Closed);
+            PumpSend::Sent => {},
+            PumpSend::Stopped => return Ok(VlessRelayOutcome::UdpCancelled),
+            PumpSend::CarrierGone => {
+                debug!("relayed vless udp response dropped: the client carrier is gone");
+                return Ok(VlessRelayOutcome::Closed);
+            },
         }
     }
     let _ = ctx.tx.send((ctx.make_close)()).await;
@@ -702,9 +712,37 @@ where
                 let mut record = BytesMut::with_capacity(2 + read);
                 record.put_u16(read as u16);
                 record.extend_from_slice(&buffer[..read]);
-                send_downlink(&tx, make_binary, datagram.as_deref(), padding, record.freeze())
-                    .await
-                    .map_err(|error| anyhow!("failed to queue vless udp websocket frame: {error}"))?;
+                match send_downlink_or_stop(
+                    &tx,
+                    make_binary,
+                    datagram.as_deref(),
+                    padding,
+                    record.freeze(),
+                    cancel.as_deref(),
+                )
+                .await
+                {
+                    PumpSend::Sent => {},
+                    // The park asked us to stop while the send waited on a full
+                    // carrier: the record is dropped (UDP), the socket parks.
+                    PumpSend::Stopped => return Ok(VlessRelayOutcome::UdpCancelled),
+                    // The carrier went away under the send. Its relay is about
+                    // to park this session or tear it down; when it can park
+                    // (`cancel` is armed), wait for that instead of failing, so
+                    // a carrier that died first does not cost the session its
+                    // socket. A teardown aborts this wait with the task.
+                    PumpSend::CarrierGone => match cancel.as_deref() {
+                        Some(notify) => {
+                            notify.notified().await;
+                            return Ok(VlessRelayOutcome::UdpCancelled);
+                        },
+                        None => {
+                            return Err(anyhow!(
+                                "failed to queue vless udp websocket frame: channel closed"
+                            ));
+                        },
+                    },
+                }
             }
         }
     }
@@ -730,6 +768,45 @@ async fn send_downlink<Msg>(
     }
     tx.send(make_binary(carrier_padding::frame_downlink_message(padding, record)))
         .await
+}
+
+/// How [`send_downlink_or_stop`] ended.
+enum PumpSend {
+    /// Queued on the stream or sent as a datagram.
+    Sent,
+    /// The session's stop signal fired first; the record was dropped.
+    Stopped,
+    /// The carrier's channel is closed: the client carrier is gone.
+    CarrierGone,
+}
+
+/// [`send_downlink`] for a pump the park may stop. The send keeps its
+/// backpressure — it waits on a full carrier as before — but no longer
+/// unconditionally: the stop signal (`cancel`) is selected alongside it, so a
+/// park never waits on a carrier the client stopped reading. Losing the record
+/// in flight is fine for UDP. `None` never stops.
+async fn send_downlink_or_stop<Msg>(
+    tx: &mpsc::Sender<Msg>,
+    make_binary: fn(Bytes) -> Msg,
+    datagram: Option<&DatagramDownlink>,
+    padding: PaddingScheme,
+    record: Bytes,
+    cancel: Option<&Notify>,
+) -> PumpSend {
+    let stop = async {
+        match cancel {
+            Some(notify) => notify.notified().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        biased;
+        () = stop => PumpSend::Stopped,
+        sent = send_downlink(tx, make_binary, datagram, padding, record) => match sent {
+            Ok(()) => PumpSend::Sent,
+            Err(_) => PumpSend::CarrierGone,
+        },
+    }
 }
 
 /// Forwards one client HTTP/3 datagram of a plain VLESS-UDP session: exactly
