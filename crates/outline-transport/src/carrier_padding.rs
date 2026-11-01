@@ -24,7 +24,9 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use outline_wire::padding::{MAX_PADDING_SEGMENT, PaddingScheme, encode_frame_into};
+use outline_wire::padding::{
+    MAX_PADDING_SEGMENT, PaddingScheme, datagram_pad_budget, encode_frame_into,
+};
 use rand::{Rng, RngCore};
 
 /// Resolved carrier-padding knobs for this process. `Copy` so the transport
@@ -219,6 +221,28 @@ pub(crate) fn frame_payload_into<R: RngCore>(
         // ceiling, so neither segment can overflow the frame length field.
         encode_frame_into(out, chunk, &pad).expect("bounded segments cannot overflow u16");
     }
+}
+
+/// Frames one datagram-bound payload. When it fits `room` (the channel's
+/// [`crate::frame_io::DatagramChannel::datagram_room`]) unpadded, the pad is
+/// cut to what is left, so padding never pushes a packet onto the stream;
+/// otherwise the frame is the stream's own (full-range pad) — it will ride the
+/// stream anyway.
+pub(crate) fn frame_datagram_into<R: RngCore>(
+    scheme: PaddingScheme,
+    data: &[u8],
+    room: Option<usize>,
+    rng: &mut R,
+    out: &mut Vec<u8>,
+) {
+    let Some(budget) = room.and_then(|room| datagram_pad_budget(room, data.len())) else {
+        frame_payload_into(scheme, data, rng, out);
+        return;
+    };
+    let mut pad = vec![0u8; scheme.pad_len_capped(rng.random::<u16>(), budget) as usize];
+    rng.fill_bytes(&mut pad);
+    // `data` fits one datagram, far below the u16 segment ceiling.
+    encode_frame_into(out, data, &pad).expect("datagram-sized segments cannot overflow u16");
 }
 
 /// Draws a fresh pad buffer of random length in the scheme's range. Contents

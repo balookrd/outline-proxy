@@ -1,6 +1,6 @@
 use super::{
     ControlSignal, MAX_PADDING_SEGMENT, PaddingDecoder, PaddingError, PaddingScheme,
-    encode_control_frame_into, encode_frame_into,
+    datagram_pad_budget, encode_control_frame_into, encode_frame_into,
 };
 
 /// Deterministic, position-dependent bytes so a misordered or truncated
@@ -263,4 +263,50 @@ fn max_size_segment_is_accepted() {
     let mut out = Vec::new();
     PaddingDecoder::new().push(&wire, &mut out);
     assert_eq!(out, real);
+}
+
+#[test]
+fn pad_len_capped_never_exceeds_the_cap() {
+    let scheme = PaddingScheme::new(0, 256);
+    for rand in [0u16, 1, 40, 255, 256, 1000, u16::MAX] {
+        assert!(scheme.pad_len_capped(rand, 10) <= 10);
+        assert_eq!(scheme.pad_len_capped(rand, 10_000), scheme.pad_len(rand));
+    }
+}
+
+#[test]
+fn pad_len_capped_spreads_draws_instead_of_piling_on_the_cap() {
+    // Cap well below max_pad: draws must stay spread over [0, cap], not
+    // collapse onto `cap` (a size fingerprint on padded datagrams).
+    let scheme = PaddingScheme::new(0, 256);
+    let cap = 40usize;
+    let mut at_cap = 0usize;
+    for rand in 0..=u16::MAX {
+        let n = scheme.pad_len_capped(rand, cap);
+        assert!(n as usize <= cap, "rand={rand} -> {n}");
+        if n as usize == cap {
+            at_cap += 1;
+        }
+    }
+    let total = u32::from(u16::MAX) + 1;
+    assert!((at_cap as u32) * 100 < total * 5, "{at_cap} of {total} draws landed on the cap");
+}
+
+#[test]
+fn pad_len_capped_may_go_below_min_and_still_decodes() {
+    let scheme = PaddingScheme::new(32, 64);
+    assert_eq!(scheme.pad_len_capped(0, 0), 0);
+    let mut wire = Vec::new();
+    encode_frame_into(&mut wire, b"payload", &[]).unwrap();
+    let mut out = Vec::new();
+    PaddingDecoder::new().push(&wire, &mut out);
+    assert_eq!(out, b"payload");
+}
+
+#[test]
+fn datagram_pad_budget_is_the_room_left_after_header_and_payload() {
+    assert_eq!(datagram_pad_budget(1396, 1352), Some(1396 - 4 - 1352));
+    assert_eq!(datagram_pad_budget(1356, 1352), Some(0));
+    assert_eq!(datagram_pad_budget(1355, 1352), None);
+    assert_eq!(datagram_pad_budget(0, 0), None);
 }

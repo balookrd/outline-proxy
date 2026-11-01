@@ -250,20 +250,30 @@ impl DatagramDownlink {
         self.target.load().is_some()
     }
 
-    /// Sends `framed` as one datagram when it fits. `upstream_len` is the
-    /// packet's size as read from upstream, for a caller whose stream path
-    /// feeds the throttle monitor only once the packet reaches the stream
-    /// sender (SS-UDP); `None` when the caller already fed it (VLESS-UDP).
-    pub(in crate::server) fn send(
+    /// Sends `record` (the unpadded frame the stream would write) as one
+    /// datagram when it fits the route, padding it within the room left.
+    /// `upstream_len` is the packet's size as read from upstream, for a caller
+    /// whose stream path feeds the throttle monitor only once the packet reaches
+    /// the stream sender (SS-UDP); `None` when the caller already fed it
+    /// (VLESS-UDP).
+    pub(in crate::server) fn send_record(
         &self,
-        framed: &Bytes,
+        scheme: PaddingScheme,
+        record: &Bytes,
         upstream_len: Option<usize>,
     ) -> DownlinkSend {
         let target = self.target.load();
         let Some(peer) = target.as_deref() else {
             return DownlinkSend::NoTarget;
         };
-        if self.try_send(peer, framed, upstream_len) {
+        let framed = peer
+            .connection
+            .max_datagram_size()
+            .and_then(|max| max.checked_sub(datagram_overhead(peer.quarter_stream_id)))
+            .and_then(|room| carrier_padding::frame_datagram_message(scheme, record, room));
+        // `try_send` re-checks the fit against the live size as a guard against
+        // the MTU shrinking between the room calculation and the send.
+        if framed.is_some_and(|framed| self.try_send(peer, &framed, upstream_len)) {
             self.metrics.record_udp_h3_datagram("down", self.proto);
             DownlinkSend::Sent
         } else {
@@ -331,9 +341,8 @@ impl ResponseSender for DatagramResponseSender {
         }
         // The same frame the stream sender would write as a Binary message (on
         // xhttp, before the stream's UDP record framing, which a datagram does
-        // not need).
-        let framed = carrier_padding::frame_downlink_message(self.padding, data.clone());
-        match self.downlink.send(&framed, Some(data.len())) {
+        // not need), with its padding cut to the datagram's room.
+        match self.downlink.send_record(self.padding, &data, Some(data.len())) {
             DownlinkSend::Sent => Box::pin(async { true }),
             // The original packet: the stream sender pads it itself.
             DownlinkSend::NoTarget | DownlinkSend::Fallback => {

@@ -178,3 +178,32 @@ fn cover_datagram_decodes_to_nothing() {
     assert!(cover_decoded.is_empty(), "cover frame yields no real bytes");
     assert!(dec.is_at_frame_boundary());
 }
+
+#[test]
+fn datagram_frame_fits_the_room_whatever_pad_is_drawn() {
+    let scheme = PaddingScheme::new(0, 256);
+    let data = vec![0x11; 1352];
+    let room = 1396;
+    let mut rng = rand::rng();
+    for _ in 0..500 {
+        let mut out = Vec::new();
+        frame_datagram_into(scheme, &data, Some(room), &mut rng, &mut out);
+        assert!(out.len() <= room, "frame {} over room {room}", out.len());
+        let mut decoded = Vec::new();
+        PaddingDecoder::new().push(&out, &mut decoded);
+        assert_eq!(decoded, data);
+    }
+}
+
+#[test]
+fn datagram_frame_without_room_is_the_stream_frame() {
+    let scheme = PaddingScheme::new(200, 256);
+    let data = vec![0x22; 1352];
+    let mut rng = rand::rng();
+    for room in [None, Some(1355)] {
+        let mut out = Vec::new();
+        frame_datagram_into(scheme, &data, room, &mut rng, &mut out);
+        let pad = u16::from_be_bytes([out[2], out[3]]) as usize;
+        assert!((200..=256).contains(&pad), "full-range pad when it cannot fit, got {pad}");
+    }
+}

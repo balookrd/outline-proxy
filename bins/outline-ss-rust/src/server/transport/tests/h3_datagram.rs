@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
-use outline_wire::h3_datagram::decode_datagram;
+use outline_wire::h3_datagram::{datagram_overhead, decode_datagram};
 use outline_wire::padding::{PADDING_FRAME_HEADER_LEN, PaddingDecoder, PaddingScheme};
 use tokio::time::timeout;
 
@@ -136,6 +136,37 @@ async fn padded_downlink_datagram_carries_the_stream_frame() -> Result<()> {
 
     assert!(stream.0.lock().expect("recording lock").is_empty(), "nothing rode the stream");
     assert_eq!(activity.sends(), 1, "the writer's cover timer sees the datagram");
+    Ok(())
+}
+
+#[tokio::test]
+async fn near_full_packet_goes_as_a_datagram_with_a_cut_pad() -> Result<()> {
+    let pair = quic_datagram_pair().await?;
+    let stream = Arc::new(RecordingSender::default());
+    let activity = Arc::new(DatagramActivity::default());
+    let mut sender = padded_sender(&pair, &stream, &activity);
+    sender.padding = PaddingScheme::new(0, 256);
+
+    let room = pair.server.max_datagram_size().context("datagrams negotiated")?
+        - datagram_overhead(QUARTER_ID);
+    let data = Bytes::from(vec![0x5b; room - PADDING_FRAME_HEADER_LEN - 8]);
+    for _ in 0..50 {
+        // PMTU discovery may grow the datagram size during the test, so the
+        // room is read right before each send.
+        let room_now = pair.server.max_datagram_size().context("datagrams negotiated")?
+            - datagram_overhead(QUARTER_ID);
+        assert!(sender.send_bytes(data.clone()).await);
+        let datagram = timeout(Duration::from_secs(5), pair.client.read_datagram()).await??;
+        let (_, body) = decode_datagram(datagram).context("datagram prefix")?;
+        let pad_len = u16::from_be_bytes([body[2], body[3]]) as usize;
+        let budget = room_now - PADDING_FRAME_HEADER_LEN - data.len();
+        assert!(pad_len <= budget, "pad {pad_len} must be cut to the room left ({budget})");
+        assert!(body.len() <= room_now);
+        let mut decoded = Vec::new();
+        PaddingDecoder::new().push(&body, &mut decoded);
+        assert_eq!(decoded, data);
+    }
+    assert!(stream.0.lock().expect("recording lock").is_empty(), "nothing rode the stream");
     Ok(())
 }
 

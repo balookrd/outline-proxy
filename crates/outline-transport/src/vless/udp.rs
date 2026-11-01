@@ -304,9 +304,10 @@ impl VlessUdpTransport {
         // hand it through unchanged (plain wire, like SS-UDP).
         let datagram: Bytes = if self.padding.scheme.is_enabled() {
             let mut out = Vec::with_capacity(frame.len() + 8);
-            carrier_padding::frame_payload_into(
+            carrier_padding::frame_datagram_into(
                 self.padding.scheme,
                 &frame,
+                self.chan.datagram_room(),
                 &mut rand::rng(),
                 &mut out,
             );

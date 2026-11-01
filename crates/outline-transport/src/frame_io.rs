@@ -104,6 +104,13 @@ pub trait DatagramChannel: Send + Sync + 'static {
             .await?
             .map(|packet| (PacketSource::Stream, packet)))
     }
+    /// Bytes a payload may take to go out as one datagram right now, when this
+    /// channel sends datagrams at all; `None` means every packet rides the
+    /// stream. A hint for framing (padding is cut to fit it): `send_datagram`
+    /// still checks, since the room can shrink before the send.
+    fn datagram_room(&self) -> Option<usize> {
+        None
+    }
     /// Idempotent.
     async fn close(&self);
 }

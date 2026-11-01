@@ -418,9 +418,10 @@ impl UdpWsTransport {
                 // through unchanged (plain wire).
                 let datagram = if self.padding.scheme.is_enabled() {
                     let mut out = Vec::with_capacity(packet.len() + 8);
-                    carrier_padding::frame_payload_into(
+                    carrier_padding::frame_datagram_into(
                         self.padding.scheme,
                         &packet,
+                        chan.datagram_room(),
                         &mut rand::rng(),
                         &mut out,
                     );
