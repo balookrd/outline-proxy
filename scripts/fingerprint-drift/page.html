@@ -1,7 +1,11 @@
 <!doctype html>
 <html><body><script>
-fetch("/get-xhr");
-fetch("/post-xhr", {method: "POST", body: "abcd"});
-new WebSocket("wss://" + location.host + "/ws");
+// The WebSocket waits for the fetches: Chrome sends it over h2 (RFC 8441)
+// only on a session that already has the server's SETTINGS, and stable
+// Chrome may not reuse the navigation's connection for subresources.
+Promise.all([
+  fetch("/get-xhr"),
+  fetch("/post-xhr", {method: "POST", body: "abcd"}),
+]).finally(() => new WebSocket("wss://" + location.host + "/ws"));
 setTimeout(() => fetch("/again"), 1500);
 </script></body></html>
