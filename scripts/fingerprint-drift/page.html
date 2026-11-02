@@ -1,11 +1,15 @@
 <!doctype html>
 <html><body><script>
-// The WebSocket waits for the fetches: Chrome sends it over h2 (RFC 8441)
-// only on a session that already has the server's SETTINGS, and stable
-// Chrome may not reuse the navigation's connection for subresources.
-Promise.all([
-  fetch("/get-xhr"),
-  fetch("/post-xhr", {method: "POST", body: "abcd"}),
-]).finally(() => new WebSocket("wss://" + location.host + "/ws"));
-setTimeout(() => fetch("/again"), 1500);
+// A fresh Google Chrome rebuilds its cert verifier during its first moments
+// (component updates of the root store, CRLSet, CT logs) and marks every
+// session going away each time, so the requests wait for that to settle.
+// The WebSocket then waits for the fetches: Chrome sends it over h2
+// (RFC 8441) only on a live session that already has the server's SETTINGS.
+setTimeout(() => {
+  Promise.all([
+    fetch("/get-xhr"),
+    fetch("/post-xhr", {method: "POST", body: "abcd"}),
+  ]).finally(() => new WebSocket("wss://" + location.host + "/ws"));
+  setTimeout(() => fetch("/again"), 1500);
+}, 2000);
 </script></body></html>
