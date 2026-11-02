@@ -149,8 +149,9 @@ vendored-крейты, которые держим в upstream-стиле.
   `from_h3_server`, тогда как `from_h2` и `from_quic` остаются vanilla).
   Ищешь close-логику — она в
   `transport_stream.rs::poll_shutdown`, а НЕ в `protocol.rs`: там ни у нас, ни
-  в upstream нет ни одного `shutdown()`. Остальные файлы `vendor/sockudo-ws`
-  обязаны быть побайтово равны upstream — сверка описана в
+  в upstream нет ни одного `shutdown()`. Кроме них патч несёт `Cargo.toml`
+  (провайдер aws-lc-rs, `socket2` 0.6, vendoring-trim). Остальные файлы
+  `vendor/sockudo-ws` обязаны быть побайтово равны upstream — сверка описана в
   [`PATCHES.ru.md`](PATCHES.ru.md). Не плоди вторые копии vendored и не поднимай
   версии без явной причины. `vendor/quinn-proto` = upstream 0.11.15 + три
   логических патча (advertised-stream-window, browser-shaped-transport-parameters,

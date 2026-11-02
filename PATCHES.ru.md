@@ -24,7 +24,7 @@ vendored-копии.
 | Файл | Что покрывает |
 |------|---------------|
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | все отличия `vendor/h3` от upstream `h3 0.0.8` |
-| [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws/src` (однострочное изменение `Cargo.toml` описано ниже, в патч не входит) |
+| [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws` от GitHub-тега `v1.7.5` (`src/` и `Cargo.toml`) |
 | [`quinn-proto-0.11.15.patch`](quinn-proto-0.11.15.patch) | все отличия `vendor/quinn-proto` от upstream `quinn-proto 0.11.15` (`src/` и `Cargo.toml`) |
 | [`rustls-0.23.40.patch`](rustls-0.23.40.patch) | все отличия `vendor/rustls` от upstream `rustls 0.23.40` (`src/` и `Cargo.toml`) |
 | [`hyper-1.10.1.patch`](hyper-1.10.1.patch) | все отличия `vendor/hyper` от upstream `hyper 1.10.1` (только `src/`) |
@@ -91,9 +91,9 @@ API only behind the gate module»); тестовые модули — исклю
 > `v1.7.5`. Vendored `src/` хранится в **upstream-форматировании git** (не в
 > переформатировании crates.io-publish), поэтому `sockudo-ws-1.7.5.patch`
 > применяется напрямую к чистому `git clone` этого тега — без шага rustfmt.
-> Library-`Cargo.toml` по-прежнему отбрасывает upstream `[[bin]]` /
-> bench-таргеты, как и опубликованный library-крейт (поэтому `src/bin/` здесь
-> нет и в патч он не входит).
+> Library-`Cargo.toml` отбрасывает upstream `[[bin]]` / bench-таргеты, как и
+> опубликованный library-крейт; это изменение `Cargo.toml` входит в патч, а
+> удаление ставшего ненужным `src/bin/` — нет.
 >
 > **От дрейфа форматирования ничто не защищает автоматически.** Ключ `ignore`
 > у rustfmt — nightly-only, поэтому строка `ignore = ["vendor"]` в
@@ -103,7 +103,9 @@ API only behind the gate module»); тестовые модули — исклю
 > 2026-08-08 уехал 21 файл). Гонять `cargo fmt` только по явному списку пакетов
 > из `AGENTS.md`, а format-only diff в `vendor/` откатывать. Проверка
 > соответствия: склонировать тег, `git apply sockudo-ws-1.7.5.patch` и сравнить
-> `diff -r` два дерева `src/` — они обязаны совпасть побайтово, кроме `src/bin/`.
+> с результатом каждый файл `vendor/sockudo-ws` — `Cargo.toml` и `src/` обязаны
+> совпасть побайтово (файлы, которые есть только в upstream, — `src/bin/`,
+> бенчмарки, примеры — не вендорятся).
 
 Логические изменения в `sockudo-ws-1.7.5.patch`:
 
@@ -164,13 +166,21 @@ API only behind the gate module»); тестовые модули — исклю
    принцип, по которому `fix-h3-poll-write` живёт только в двух живых типах
    стрима.
 
-**`Cargo.toml`** (в патч не входит): зависимости rustls-стека запинены с
-`default-features = false` и provider-фичей `aws_lc_rs`
-(`tokio-rustls = { features = ["aws_lc_rs", "tls12"] }`, `quinn` на
-`rustls-aws-lc-rs`, `rustls` на `aws_lc_rs`), чтобы vendored-крейт оставался
-на том же крипто-провайдере, что и остальной workspace, и в графе был ровно
-один `CryptoProvider` (см. инвариант о единственном провайдере в корневом
-`AGENTS.md`).
+**`Cargo.toml`** (входит в патч):
+
+- **Провайдер aws-lc-rs** — зависимости rustls-стека запинены с
+  `default-features = false` и provider-фичей `aws_lc_rs`
+  (`tokio-rustls = { features = ["aws_lc_rs", "tls12"] }`, `quinn` на
+  `runtime-tokio` + `rustls-aws-lc-rs`, `rustls` на `aws_lc_rs` вместо `ring`),
+  чтобы vendored-крейт оставался на том же крипто-провайдере, что и остальной
+  workspace, и в графе был ровно один `CryptoProvider` (см. инвариант о
+  единственном провайдере в корневом `AGENTS.md`).
+- **socket2 0.6** — `socket2 = "^0.5"` поднят до `"^0.6"`, той же версии, что у
+  остального workspace, чтобы в графе был один `socket2`.
+- **Vendoring-trim** — убраны таргеты `[[bin]]` (`sockudo-bench`,
+  `autobahn-server`), `[[example]]` и `[[bench]]`, опциональная зависимость
+  `criterion`, `[dev-dependencies]` и секции `[profile.*]` (в некорневом пакете
+  они всё равно игнорируются).
 
 ## quinn-proto (0.11.15)
 
@@ -415,8 +425,10 @@ vendored-файлов) и сравнить `diff -r` — пусто.
 - **h3** — сравнить vendored-копию с чистым upstream-checkout'ом: взять
   свежий `h3 0.0.8` с crates.io (например через одноразовый git-baseline) и
   сделать `git diff vendor/h3` по изменённым файлам.
-- **sockudo-ws** — сделать diff `vendor/sockudo-ws/src` против `src/` чистого
-  GitHub-checkout'а `v1.7.5` (оба уже в raw upstream-форматировании).
+- **sockudo-ws** — в чистом GitHub-checkout'е `v1.7.5` скопировать поверх дерева
+  `vendor/sockudo-ws/src` и `vendor/sockudo-ws/Cargo.toml` и взять
+  `git diff -- Cargo.toml src` как патч (оба уже в raw upstream-форматировании);
+  проверка — как выше.
 - **quinn-proto / rustls / hyper** — распаковать чистый крейт с crates.io в новый
   одноразовый git-репозиторий (оставив только vendored-набор файлов),
   закоммитить, скопировать поверх vendored-файлы и взять `git diff` как патч;

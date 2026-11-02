@@ -24,7 +24,7 @@ Regenerated against:
 | File | Covers |
 |------|--------|
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | all `vendor/h3` deviations from upstream `h3 0.0.8` |
-| [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | all `vendor/sockudo-ws/src` deviations (the one-line `Cargo.toml` change is documented below, not in the patch) |
+| [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | all `vendor/sockudo-ws` deviations from GitHub tag `v1.7.5` (`src/` and `Cargo.toml`) |
 | [`quinn-proto-0.11.15.patch`](quinn-proto-0.11.15.patch) | all `vendor/quinn-proto` deviations from upstream `quinn-proto 0.11.15` (`src/` and `Cargo.toml`) |
 | [`rustls-0.23.40.patch`](rustls-0.23.40.patch) | all `vendor/rustls` deviations from upstream `rustls 0.23.40` (`src/` and `Cargo.toml`) |
 | [`hyper-1.10.1.patch`](hyper-1.10.1.patch) | all `vendor/hyper` deviations from upstream `hyper 1.10.1` (`src/` only) |
@@ -92,9 +92,9 @@ Logical changes carried by `h3-0.0.8.patch`:
 > `v1.7.5`. The vendored `src/` is kept in the **upstream git formatting**
 > (not the crates.io-published reformatting), so `sockudo-ws-1.7.5.patch`
 > applies directly to a clean `git clone` of that tag — no rustfmt step. The
-> library `Cargo.toml` still drops the upstream `[[bin]]` / bench targets, as
-> a published library crate would (so `src/bin/` is absent here and is not
-> part of the patch).
+> library `Cargo.toml` drops the upstream `[[bin]]` / bench targets, as a
+> published library crate would; that `Cargo.toml` change is in the patch, the
+> removal of the now-unreferenced `src/bin/` is not.
 >
 > **Formatting drift is not prevented automatically.** rustfmt's `ignore` key
 > is nightly-only, so the `ignore = ["vendor"]` line in `rustfmt.toml` is inert
@@ -104,8 +104,9 @@ Logical changes carried by `h3-0.0.8.patch`:
 > 2026-08-08). Keep `cargo fmt` scoped to the explicit package list in
 > `AGENTS.md`, and revert any format-only diff under `vendor/`. To verify the
 > tree still matches: clone the tag, `git apply sockudo-ws-1.7.5.patch`, and
-> `diff -r` the two `src/` trees — they must be byte-identical apart from
-> `src/bin/`.
+> compare every file of `vendor/sockudo-ws` with the result — `Cargo.toml` and
+> `src/` must be byte-identical (upstream-only files such as `src/bin/`,
+> benches and examples are not vendored).
 
 Logical changes carried by `sockudo-ws-1.7.5.patch`:
 
@@ -164,13 +165,21 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
    the data plane never instantiates them — the same rule that keeps
    `fix-h3-poll-write` confined to the two live stream types.
 
-**`Cargo.toml`** (kept out of the patch): the rustls-stack dependencies are
-pinned with `default-features = false` and the `aws_lc_rs` provider feature
-(`tokio-rustls = { features = ["aws_lc_rs", "tls12"] }`, `quinn` on
-`rustls-aws-lc-rs`, `rustls` on `aws_lc_rs`) so the vendored crate stays on
-the same crypto provider as the rest of the workspace and the graph keeps
-exactly one `CryptoProvider` (see the single-provider invariant in the root
-`AGENTS.md`).
+**`Cargo.toml`** (in the patch):
+
+- **aws-lc-rs provider** — the rustls-stack dependencies are pinned with
+  `default-features = false` and the `aws_lc_rs` provider feature
+  (`tokio-rustls = { features = ["aws_lc_rs", "tls12"] }`, `quinn` on
+  `runtime-tokio` + `rustls-aws-lc-rs`, `rustls` on `aws_lc_rs` instead of
+  `ring`) so the vendored crate stays on the same crypto provider as the rest
+  of the workspace and the graph keeps exactly one `CryptoProvider` (see the
+  single-provider invariant in the root `AGENTS.md`).
+- **socket2 0.6** — `socket2 = "^0.5"` raised to `"^0.6"`, the version the
+  rest of the workspace uses, so the graph carries a single `socket2`.
+- **Vendoring trim** — the `[[bin]]` (`sockudo-bench`, `autobahn-server`),
+  `[[example]]` and `[[bench]]` targets, the optional `criterion` dependency,
+  `[dev-dependencies]` and the `[profile.*]` sections (ignored in a non-root
+  package anyway) are removed.
 
 ## quinn-proto (0.11.15)
 
@@ -420,8 +429,10 @@ To rebuild the patch artifacts after changing vendored source:
   diff against a fresh `h3 0.0.8` from crates.io, e.g. via a throwaway git
   baseline, then `git diff vendor/h3` over the changed files.
   ```
-- **sockudo-ws** — diff `vendor/sockudo-ws/src` against a clean `v1.7.5`
-  GitHub checkout's `src/` (both already in raw upstream formatting).
+- **sockudo-ws** — in a clean `v1.7.5` GitHub checkout copy `vendor/sockudo-ws/src`
+  and `vendor/sockudo-ws/Cargo.toml` over the tree and take
+  `git diff -- Cargo.toml src` as the patch (both already in raw upstream
+  formatting); check as above.
 - **quinn-proto / rustls / hyper** — unpack the clean crate from crates.io into a fresh
   throwaway git repository (keeping only the vendored file set), commit it, copy the
   vendored files over it and take `git diff` as the patch; check by applying it with
