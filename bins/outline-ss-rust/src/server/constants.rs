@@ -53,6 +53,12 @@ pub(super) const H3_DEFAULT_INITIAL_MTU: u16 = 1_400;
 /// How far DPLPMTUD may probe upward from the default. Unused when the host
 /// pins its own value — there, probing above the pin is exactly what fails.
 pub(super) const H3_MTU_DISCOVERY_UPPER_BOUND: u16 = 1_452;
+/// Smallest step DPLPMTUD keeps searching with (quinn's default is 20). With 20
+/// the binary search stops up to ~20 bytes short of the path: behind a provider
+/// tunnel that carries 1448-byte UDP payloads it settles at 1426, where an
+/// SS2022 record of a 1350-byte packet no longer fits a datagram. 4 costs a few extra
+/// probes per connection.
+pub(super) const H3_MTU_DISCOVERY_MINIMUM_CHANGE: u16 = 4;
 // Cap on concurrent active HTTP/3 QUIC connections. Matches the TLS listener
 // so an attacker cannot force unbounded per-connection task spawns by opening
 // many QUIC handshakes in parallel.

@@ -1468,3 +1468,88 @@ async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
     let _ = server_task.await;
     Ok(())
 }
+
+/// UDP relay standing in for a path narrower than both hosts (nuxt2 sits behind a
+/// provider tunnel that carries at most 1448-byte UDP payloads): it forwards
+/// datagrams both ways and drops every server→client datagram larger than `limit`.
+async fn spawn_narrow_downlink(
+    server: SocketAddr,
+    limit: usize,
+) -> Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    let front = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+    let back = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+    back.connect(server).await?;
+    let addr = front.local_addr()?;
+    let task = tokio::spawn(async move {
+        let mut client = None;
+        let mut up = vec![0u8; 65_536];
+        let mut down = vec![0u8; 65_536];
+        loop {
+            tokio::select! {
+                Ok((n, from)) = front.recv_from(&mut up) => {
+                    client = Some(from);
+                    let _ = back.send(&up[..n]).await;
+                }
+                Ok(n) = back.recv(&mut down) => {
+                    if n <= limit
+                        && let Some(to) = client
+                    {
+                        let _ = front.send_to(&down[..n], to).await;
+                    }
+                }
+            }
+        }
+    });
+    Ok((addr, task))
+}
+
+/// Path MTU discovery on the production server config gets within a few bytes of
+/// a narrow path instead of stopping ~20 short. On a 1448-byte path the default
+/// step (20) settles at 1426, where an SS2022 record of a 1350-byte packet
+/// (~1408 bytes plus ~36 of QUIC and datagram overhead) no longer fits a datagram.
+#[tokio::test]
+async fn mtu_discovery_gets_within_a_few_bytes_of_a_narrow_path() -> Result<()> {
+    const PATH_LIMIT: u16 = 1448;
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let probe_config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
+    let server_config = build_h3_quinn_server_config(tls_config, &probe_config.tuning, None)?;
+    let mut endpoint_config = quinn::EndpointConfig::default();
+    endpoint_config.max_udp_payload_size(super::super::constants::H3_MAX_UDP_PAYLOAD_SIZE)?;
+    let socket = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let server = quinn::Endpoint::new(
+        endpoint_config,
+        Some(server_config),
+        socket,
+        Arc::new(quinn::TokioRuntime),
+    )?;
+    let (path, relay) = spawn_narrow_downlink(server.local_addr()?, PATH_LIMIT.into()).await?;
+
+    let accept = tokio::spawn({
+        let server = server.clone();
+        async move {
+            server
+                .accept()
+                .await
+                .context("server endpoint closed")?
+                .await
+                .map_err(anyhow::Error::from)
+        }
+    });
+    let mut client = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    client.set_default_client_config(test_h3_client_config(cert_der)?);
+    let _client_conn = client.connect(path, "localhost")?.await?;
+    let conn = accept.await??;
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut mtu = conn.stats().path.current_mtu;
+    while mtu < PATH_LIMIT && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        mtu = conn.stats().path.current_mtu;
+    }
+    relay.abort();
+    assert!(
+        (1444..=PATH_LIMIT).contains(&mtu),
+        "server path MTU settled at {mtu}, expected 1444..={PATH_LIMIT}"
+    );
+    Ok(())
+}

@@ -1761,3 +1761,32 @@ fn datagram_receive_buffer_is_local_not_advertised() {
         );
     }
 }
+
+/// The H3 client transport's path MTU discovery gets within a few bytes of a
+/// narrow uplink instead of stopping ~20 short: on a 1448-byte path quinn's
+/// default step (20) settles at 1420, too small for an SS2022 record of a
+/// 1350-byte packet (~1408 bytes plus ~36 of QUIC and datagram overhead).
+#[tokio::test]
+async fn h3_mtu_discovery_gets_within_a_few_bytes_of_a_narrow_path() {
+    const PATH_LIMIT: u16 = 1448;
+    let lb = loopback::Loopback::new();
+    let (via, relay) = loopback::narrow_uplink(lb.addr, PATH_LIMIT.into()).await;
+    let server = lb.server.clone();
+    let accept = tokio::spawn(async move { server.accept().await.unwrap().await.unwrap() });
+    let tp = &super::super::tp_profile::CHROMIUM;
+    let transport = super::build_h3_transport(tp, super::RuntimeWindows::current(tp));
+    let (_ep, conn) = lb.connect_via(via, quinn::EndpointConfig::default(), transport).await;
+    let _server_conn = accept.await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut mtu = conn.stats().path.current_mtu;
+    while mtu < PATH_LIMIT && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        mtu = conn.stats().path.current_mtu;
+    }
+    relay.abort();
+    assert!(
+        (1444..=PATH_LIMIT).contains(&mtu),
+        "client path MTU settled at {mtu}, expected 1444..={PATH_LIMIT}"
+    );
+}

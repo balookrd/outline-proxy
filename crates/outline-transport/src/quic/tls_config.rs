@@ -209,9 +209,17 @@ pub(crate) fn raise_h3_receive_window(connection: &quinn::Connection) {
     );
 }
 
-/// Apply carrier congestion control to a QUIC transport config (windows come
-/// from [`build_h3_transport`]) so the H3 carrier survives a lossy / throttled
-/// WAN path.
+/// Smallest step DPLPMTUD keeps searching with (quinn's default is 20). With 20
+/// the binary search stops up to ~20 bytes short of the path: on a 1448-byte
+/// uplink it settles at 1420, where an SS2022 record of a 1350-byte packet no
+/// longer fits a datagram. The upper bound stays quinn's 1452 and the Initial
+/// stays 1200, as Chrome's; only the search gets finer (at the cost of a few
+/// extra probes per connection).
+const QUIC_MTU_DISCOVERY_MINIMUM_CHANGE: u16 = 4;
+
+/// Apply carrier congestion control and path MTU discovery to a QUIC transport
+/// config (windows come from [`build_h3_transport`]) so the H3 carrier survives
+/// a lossy / throttled WAN path.
 fn apply_quic_carrier_tuning(transport: &mut quinn::TransportConfig) {
     // BBR instead of quinn's default (Cubic): on a lossy / DPI-throttled
     // international path Cubic reads loss as congestion and collapses the
@@ -219,6 +227,9 @@ fn apply_quic_carrier_tuning(transport: &mut quinn::TransportConfig) {
     // that a larger receive window alone cannot lift. BBR is model-based and
     // does not treat loss as a backoff signal, so it keeps the pipe full.
     transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+    let mut mtu = quinn::MtuDiscoveryConfig::default();
+    mtu.minimum_change(QUIC_MTU_DISCOVERY_MINIMUM_CHANGE);
+    transport.mtu_discovery_config(Some(mtu));
 }
 
 /// Cache of the H3 QUIC client config, keyed by dial fingerprint with a build
