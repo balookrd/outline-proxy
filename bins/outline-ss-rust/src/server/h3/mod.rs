@@ -14,7 +14,8 @@ use super::{
     constants::{
         CERT_RELOAD_POLL_INTERVAL_SECS, H3_DATAGRAM_BUFFER_BYTES, H3_DEFAULT_INITIAL_MTU,
         H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE,
-        H3_MTU_DISCOVERY_UPPER_BOUND, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
+        H3_MTU_DISCOVERY_MINIMUM_CHANGE, H3_MTU_DISCOVERY_UPPER_BOUND, H3_QUIC_IDLE_TIMEOUT_SECS,
+        H3_QUIC_PING_INTERVAL_SECS,
     },
     state::{AuthPolicy, RoutesSnapshot, Services},
     transport::{
@@ -165,7 +166,8 @@ fn build_h3_transport_config(
     };
     transport.initial_mtu(initial_mtu);
     let mut mtu = quinn::MtuDiscoveryConfig::default();
-    mtu.upper_bound(discovery_upper_bound);
+    mtu.upper_bound(discovery_upper_bound)
+        .minimum_change(H3_MTU_DISCOVERY_MINIMUM_CHANGE);
     transport.mtu_discovery_config(Some(mtu));
     // BBR instead of quinn's default (Cubic) for the server→client (downlink)
     // sender. On a lossy / DPI-throttled international path Cubic treats loss as

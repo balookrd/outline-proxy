@@ -86,6 +86,28 @@ impl Loopback {
         endpoint_config: quinn::EndpointConfig,
         transport: quinn::TransportConfig,
     ) -> (quinn::Endpoint, quinn::Connection) {
+        self.dial(client_tls, endpoint_config, transport, self.addr).await
+    }
+
+    /// Like [`Loopback::connect`], dialling `via` (a relay in front of this server)
+    /// instead of the server's own address.
+    pub(super) async fn connect_via(
+        &self,
+        via: SocketAddr,
+        endpoint_config: quinn::EndpointConfig,
+        transport: quinn::TransportConfig,
+    ) -> (quinn::Endpoint, quinn::Connection) {
+        self.dial(self.client_tls.clone(), endpoint_config, transport, via)
+            .await
+    }
+
+    async fn dial(
+        &self,
+        client_tls: Arc<quinn::crypto::rustls::QuicClientConfig>,
+        endpoint_config: quinn::EndpointConfig,
+        transport: quinn::TransportConfig,
+        target: SocketAddr,
+    ) -> (quinn::Endpoint, quinn::Connection) {
         let mut client_config = quinn::ClientConfig::new(client_tls);
         client_config.transport_config(Arc::new(transport));
         let socket = UdpSocket::bind(loopback()).unwrap();
@@ -93,7 +115,7 @@ impl Loopback {
             quinn::Endpoint::new(endpoint_config, None, socket, Arc::new(quinn::TokioRuntime))
                 .unwrap();
         let conn = endpoint
-            .connect_with(client_config, self.addr, "localhost")
+            .connect_with(client_config, target, "localhost")
             .unwrap()
             .await
             .unwrap();
@@ -103,4 +125,37 @@ impl Loopback {
 
 pub(super) fn loopback() -> SocketAddr {
     (Ipv4Addr::LOCALHOST, 0).into()
+}
+
+/// UDP relay standing in for a path narrower than both hosts: it forwards
+/// datagrams both ways and drops every client→server datagram larger than `limit`.
+pub(super) async fn narrow_uplink(
+    server: SocketAddr,
+    limit: usize,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let front = tokio::net::UdpSocket::bind(loopback()).await.unwrap();
+    let back = tokio::net::UdpSocket::bind(loopback()).await.unwrap();
+    back.connect(server).await.unwrap();
+    let addr = front.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let mut client = None;
+        let mut up = vec![0u8; 65_536];
+        let mut down = vec![0u8; 65_536];
+        loop {
+            tokio::select! {
+                Ok((n, from)) = front.recv_from(&mut up) => {
+                    client = Some(from);
+                    if n <= limit {
+                        let _ = back.send(&up[..n]).await;
+                    }
+                }
+                Ok(n) = back.recv(&mut down) => {
+                    if let Some(to) = client {
+                        let _ = front.send_to(&down[..n], to).await;
+                    }
+                }
+            }
+        }
+    });
+    (addr, task)
 }
