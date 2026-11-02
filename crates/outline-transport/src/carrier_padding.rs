@@ -24,6 +24,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use outline_wire::early_shape::EarlyShaper;
 use outline_wire::padding::{
     MAX_PADDING_SEGMENT, PaddingScheme, datagram_pad_budget, encode_frame_into,
 };
@@ -243,6 +244,42 @@ pub(crate) fn frame_datagram_into<R: RngCore>(
     rng.fill_bytes(&mut pad);
     // `data` fits one datagram, far below the u16 segment ceiling.
     encode_frame_into(out, data, &pad).expect("datagram-sized segments cannot overflow u16");
+}
+
+/// Adapts `rng` to the `draw(lo, hi)` callback the early-shape planner takes
+/// (uniform in `lo..=hi`).
+pub(crate) fn draw_in(rng: &mut impl rand::Rng) -> impl FnMut(usize, usize) -> usize + '_ {
+    move |lo, hi| rng.random_range(lo..=hi)
+}
+
+/// Cuts one encrypted frame into the messages the early-shape plan asks for:
+/// lead-in pad-only cover frames first, then one padded message per piece.
+/// Each returned buffer is a ready `Message::Binary` payload. Past the shaping
+/// window (or for a small frame) this is a single ordinary padded message.
+/// Caller must have checked [`PaddingScheme::is_enabled`].
+pub(crate) fn shaped_messages<R: RngCore>(
+    scheme: PaddingScheme,
+    shaper: &mut EarlyShaper,
+    frame: &[u8],
+    rng: &mut R,
+) -> Vec<Vec<u8>> {
+    let plan = shaper.plan(frame.len(), &mut draw_in(rng));
+    let mut msgs = Vec::with_capacity(plan.covers.len() + plan.pieces.len());
+    for pad_len in plan.covers {
+        let mut pad = vec![0u8; pad_len.min(usize::from(u16::MAX))];
+        rng.fill_bytes(&mut pad);
+        let mut out = Vec::with_capacity(pad.len() + 4);
+        encode_frame_into(&mut out, &[], &pad).expect("bounded cover pad cannot overflow u16");
+        msgs.push(out);
+    }
+    let mut offset = 0;
+    for len in plan.pieces {
+        let mut out = Vec::with_capacity(len + 8);
+        frame_payload_into(scheme, &frame[offset..offset + len], rng, &mut out);
+        offset += len;
+        msgs.push(out);
+    }
+    msgs
 }
 
 /// Draws a fresh pad buffer of random length in the scheme's range. Contents

@@ -69,7 +69,7 @@ class UserUrlsTest(unittest.TestCase):
     def test_txt_starts_with_ssconf_then_lists_every_uri(self):
         lines = artifacts.user_urls(self.user("both"), self.server)
         self.assertTrue(lines[0].startswith("ssconf://"))
-        self.assertEqual(len(lines), 7)
+        self.assertEqual(len(lines), 10)
         self.assertEqual(
             [line.split("#", 1)[1] for line in lines[1:]],
             [
@@ -77,6 +77,9 @@ class UserUrlsTest(unittest.TestCase):
                 "keys:both-ss-xhttp-packet-up",
                 "keys:both-ss-xhttp-stream-one",
                 "keys:both-vless-ws",
+                "keys:both-vless-ws",
+                "keys:both-vless-xhttp-packet-up",
+                "keys:both-vless-xhttp-stream-one",
                 "keys:both-vless-xhttp-packet-up",
                 "keys:both-vless-xhttp-stream-one",
             ],
@@ -97,7 +100,7 @@ class UserUrlsTest(unittest.TestCase):
     def test_vless_only_user_has_no_ssconf_line(self):
         lines = artifacts.user_urls(self.user("vless-only"), self.server)
         self.assertFalse(any(line.startswith("ssconf://") for line in lines))
-        self.assertEqual(len(lines), 3)
+        self.assertEqual(len(lines), 6)
 
     def test_ss_only_user_has_no_vless_lines(self):
         lines = artifacts.user_urls(self.user("ss-only"), self.server)
@@ -108,6 +111,14 @@ class UrlHelpersTest(unittest.TestCase):
     def setUp(self):
         self.server = cm.load(GOLDEN)
         self.ak = self.server.access_keys
+
+    def test_no_subscription_when_every_vless_endpoint_is_padded(self):
+        server = replace(
+            self.server,
+            endpoints=(cm.Endpoint("/PAD/vless", "ws_vless", True),),
+        )
+        self.assertFalse(artifacts.has_subscription(self.user("both"), server))
+        self.assertTrue(artifacts.has_subscription(self.user("both"), self.server))
 
     def user(self, name):
         return next(u for u in self.server.users if u.name == name)

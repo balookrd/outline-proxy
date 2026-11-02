@@ -58,20 +58,28 @@ class LoadTest(unittest.TestCase):
                 ("xhttp_ss", "/GLOBAL/ssx"),
                 ("ws_vless", "/GLOBAL/vless"),
                 ("xhttp_vless", "/GLOBAL/xhttp"),
+                ("ws_vless", "/GLOBAL/vless-plain"),
+                ("xhttp_vless", "/GLOBAL/xhttp-plain"),
             ],
         )
 
     def test_endpoint_padded_flag_is_read(self):
-        by_kind = {e.kind: e for e in self.server.endpoints}
+        by_kind = {}
+        for e in self.server.endpoints:
+            by_kind.setdefault(e.kind, e)  # first of each kind
         # The combined/VLESS carriers are marked padded; the split legs are not.
         self.assertTrue(by_kind["ws_ss"].padded)
         self.assertTrue(by_kind["xhttp_vless"].padded)
         self.assertFalse(by_kind["ws_ss_tcp"].padded)
         self.assertFalse(by_kind["ws_ss_udp"].padded)
+        plain = [e.path for e in self.server.endpoints if e.kind.endswith("_vless") and not e.padded]
+        self.assertEqual(plain, ["/GLOBAL/vless-plain", "/GLOBAL/xhttp-plain"])
 
     def test_endpoints_of_kind_filters_and_preserves_order(self):
         vless = cm.endpoints_of_kind(self.server, "ws_vless", "xhttp_vless")
-        self.assertEqual([e.kind for e in vless], ["ws_vless", "xhttp_vless"])
+        self.assertEqual(
+            [e.kind for e in vless], ["ws_vless", "xhttp_vless", "ws_vless", "xhttp_vless"]
+        )
         self.assertEqual(cm.endpoints_of_kind(self.server, "ws_ss_tcp")[0].path, "/GLOBAL/tcp")
         self.assertEqual(cm.endpoints_of_kind(self.server, "nonexistent"), [])
 

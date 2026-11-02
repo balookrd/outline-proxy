@@ -401,6 +401,26 @@ impl AsyncWrite for BoxedIo {
             BoxedIo::Tls(s) => Pin::new(s).poll_write(cx, buf),
         }
     }
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        // Forward vectored writes: without this the h2 crate falls back to separate
+        // writes for the frame header and payload (and 1024-byte chunks), which
+        // rustls turns into separate TLS records (26 B / 1041 B markers).
+        let this = self.get_mut();
+        match this {
+            BoxedIo::Plain(s) => Pin::new(s).poll_write_vectored(cx, bufs),
+            BoxedIo::Tls(s) => Pin::new(s).poll_write_vectored(cx, bufs),
+        }
+    }
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            BoxedIo::Plain(s) => s.is_write_vectored(),
+            BoxedIo::Tls(s) => s.is_write_vectored(),
+        }
+    }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let this = self.get_mut();
         match this {

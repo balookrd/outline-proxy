@@ -444,11 +444,18 @@ async fn do_tcp_ss_setup(
         return Ok((TcpWriter::Vless(writer), reader, issued_session_id));
     }
 
+    // Early-session shaping is an h1/h2 trick; h3 carriers are never cut.
+    let shape = !ws_stream.is_h3();
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = wire.cipher.derive_master_key(wire.password)?;
-    let (mut writer, ctrl_tx) =
-        TcpShadowsocksWriter::connect(ws_sink, wire.cipher, &master_key, Arc::clone(&lifetime))
-            .await?;
+    let (mut writer, ctrl_tx) = TcpShadowsocksWriter::connect(
+        ws_sink,
+        wire.cipher,
+        &master_key,
+        Arc::clone(&lifetime),
+        shape,
+    )
+    .await?;
     let request_salt = writer.request_salt();
     let reader = TcpShadowsocksReader::new(ws_stream, wire.cipher, &master_key, lifetime, ctrl_tx)
         .with_request_salt(request_salt)

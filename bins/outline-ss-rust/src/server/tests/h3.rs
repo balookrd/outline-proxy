@@ -549,17 +549,12 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
     payload.extend_from_slice(b"ping");
     socket.send(H3Message::Binary(payload.into())).await?;
 
-    let response_header = match socket.next().await {
-        Some(Ok(H3Message::Binary(bytes))) => bytes,
-        other => anyhow::bail!("missing vless response header: {other:?}"),
-    };
-    assert_eq!(response_header.as_ref(), &[VERSION, 0x00]);
-
+    // The response header rides in the same message as the first upstream bytes.
     let reply = match socket.next().await {
         Some(Ok(H3Message::Binary(bytes))) => bytes,
         other => anyhow::bail!("missing vless upstream reply: {other:?}"),
     };
-    assert_eq!(reply.as_ref(), b"pong");
+    assert_eq!(reply.as_ref(), &[VERSION, 0x00, b'p', b'o', b'n', b'g']);
 
     socket.send(H3Message::Close(None)).await?;
     assert_eq!(upstream_task.await??, *b"ping");
@@ -1165,17 +1160,12 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
     payload_frame.extend_from_slice(&payload);
     socket.send(H3Message::Binary(payload_frame.into())).await?;
 
-    let response_header = match socket.next().await {
-        Some(Ok(H3Message::Binary(bytes))) => bytes,
-        other => anyhow::bail!("missing vless response header: {other:?}"),
-    };
-    assert_eq!(response_header.as_ref(), &[VERSION, 0x00]);
-
+    // The response header rides in the same message as the first upstream bytes.
     let reply = match socket.next().await {
         Some(Ok(H3Message::Binary(bytes))) => bytes,
         other => anyhow::bail!("missing vless upstream reply: {other:?}"),
     };
-    assert_eq!(reply.as_ref(), b"pong");
+    assert_eq!(reply.as_ref(), &[VERSION, 0x00, b'p', b'o', b'n', b'g']);
 
     socket.send(H3Message::Close(None)).await?;
     assert_eq!(upstream_task.await??, payload);

@@ -40,8 +40,11 @@ def outline_url(user: User, ak: AccessKeys) -> str | None:
 
 
 def has_subscription(user: User, server: ServerConfig) -> bool:
-    """Whether this user gets a <user>.json — a VLESS id plus a VLESS endpoint."""
-    return bool(user.vless_id) and bool(endpoints_of_kind(server, "ws_vless", "xhttp_vless"))
+    """Whether this user gets a <user>.json — a VLESS id plus a plain VLESS endpoint
+    (Xray cannot speak the carrier padding)."""
+    return bool(user.vless_id) and any(
+        not e.padded for e in endpoints_of_kind(server, "ws_vless", "xhttp_vless")
+    )
 
 
 def happ_url(user: User, server: ServerConfig) -> str | None:

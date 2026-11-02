@@ -433,6 +433,7 @@ where
                 ring_for_task,
                 padding,
                 monitor_for_task,
+                None,
             )
             .await
         }));
@@ -518,14 +519,9 @@ where
     };
 
     let (upstream_reader, writer) = stream.into_split();
-    outbound
-        .data_tx
-        .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
-            route.padding,
-            Bytes::from_static(&[vless::VERSION, 0x00]),
-        )))
-        .await
-        .map_err(|error| anyhow!("failed to queue vless response header: {error}"))?;
+    // The response header is not sent here: the relay prepends it to the
+    // first upstream bytes so it never travels as its own tiny record.
+    let response_header = Bytes::from_static(&[vless::VERSION, 0x00]);
 
     let tx = outbound.data_tx.clone();
     let metrics = Arc::clone(&server.metrics);
@@ -566,6 +562,7 @@ where
             ring_for_task,
             padding,
             monitor_for_task,
+            Some(response_header),
         )
         .await
     }));
@@ -789,6 +786,7 @@ where
             None,
             padding,
             monitor_for_task,
+            None,
         )
         .await
     }));
@@ -872,6 +870,11 @@ async fn relay_vless_upstream_to_client<R, Msg>(
     // Per-carrier downstream-throttle monitor; `Some` only on a padded path
     // with detection on. Fed inbound (from-internet) bytes + send backlog.
     monitor: Option<Arc<super::super::throughput_monitor::ThroughputMonitor>>,
+    // VLESS response header to hold back and ship in the same message as the
+    // first upstream bytes (or alone just before close if there are none), so
+    // no tiny standalone server→client record precedes the real flight.
+    // `None` on resume / mesh paths that send their own header.
+    response_header: Option<Bytes>,
 ) -> VlessRelayTaskOutput
 where
     R: UpstreamRead,
@@ -884,6 +887,8 @@ where
     // unallocated) until the first ready read, so a parked/idle session holds
     // nothing; it drops when this relay call returns on park or close.
     let mut downlink_buf = BytesMut::new();
+    let mut header = response_header;
+    let mut shaper = carrier_padding::new_server_shaper(protocol, padding);
     loop {
         // Cancel arm: when no notify is registered, substitute a never-
         // resolving future so the select degenerates to a single-arm
@@ -962,6 +967,32 @@ where
                 // the unpadded path. `split_to` keeps any spare tail capacity in
                 // `downlink_buf` for the next read.
                 let payload = downlink_buf.split_to(total).freeze();
+                // The header is prepended only to the outgoing message, after
+                // the ring capture above, so it is never replayed as data.
+                let payload = match header.take() {
+                    Some(h) => {
+                        let mut joined = BytesMut::with_capacity(h.len() + payload.len());
+                        joined.extend_from_slice(&h);
+                        joined.extend_from_slice(&payload);
+                        joined.freeze()
+                    },
+                    None => payload,
+                };
+                if let Some(s) = shaper.as_mut() {
+                    // Early shaping: the combined first message (header + data)
+                    // goes out as several padded pieces.
+                    let msgs =
+                        carrier_padding::shaped_messages(padding, s, &payload, &mut rand::rng());
+                    if !s.is_active() {
+                        shaper = None;
+                    }
+                    for m in msgs {
+                        tx.send(make_binary(Bytes::from(m))).await.map_err(|error| {
+                            anyhow!("failed to queue vless websocket frame: {error}")
+                        })?;
+                    }
+                    continue;
+                }
                 let frame = carrier_padding::frame_downlink_message(padding, payload);
                 tx.send(make_binary(frame))
                     .await
@@ -969,6 +1000,15 @@ where
             }
         }
     }
+    if let Some(h) = header.take() {
+        let _ = tx
+            .send(make_binary(carrier_padding::frame_downlink_message(padding, h)))
+            .await;
+    }
     let _ = tx.send(make_close()).await;
     Ok(VlessRelayOutcome::Closed)
 }
+
+#[cfg(test)]
+#[path = "tests/tcp.rs"]
+mod tests;

@@ -61,7 +61,7 @@
             "fingerprint": "chrome"
           },
           "xhttpSettings": {
-            "path": "/GLOBAL/xhttp",
+            "path": "/GLOBAL/xhttp-plain",
             "host": "cloud1.beerloga.su",
             "mode": "stream-one"
           }
@@ -96,7 +96,7 @@
             "fingerprint": "chrome"
           },
           "xhttpSettings": {
-            "path": "/GLOBAL/xhttp",
+            "path": "/GLOBAL/xhttp-plain",
             "host": "cloud2.beerloga.su",
             "mode": "stream-one"
           }
@@ -131,7 +131,7 @@
             "fingerprint": "chrome"
           },
           "xhttpSettings": {
-            "path": "/GLOBAL/xhttp",
+            "path": "/GLOBAL/xhttp-plain",
             "host": "cloud1.beerloga.su",
             "mode": "stream-one"
           }
@@ -166,7 +166,7 @@
             "fingerprint": "chrome"
           },
           "xhttpSettings": {
-            "path": "/GLOBAL/xhttp",
+            "path": "/GLOBAL/xhttp-plain",
             "host": "cloud2.beerloga.su",
             "mode": "stream-one"
           }
@@ -201,7 +201,7 @@
             "fingerprint": "chrome"
           },
           "wsSettings": {
-            "path": "/GLOBAL/vless",
+            "path": "/GLOBAL/vless-plain",
             "host": "cloud1.beerloga.su"
           }
         }
@@ -235,7 +235,7 @@
             "fingerprint": "chrome"
           },
           "wsSettings": {
-            "path": "/GLOBAL/vless",
+            "path": "/GLOBAL/vless-plain",
             "host": "cloud2.beerloga.su"
           }
         }

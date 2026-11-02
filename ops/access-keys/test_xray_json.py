@@ -153,6 +153,23 @@ class BuildOutboundsTest(unittest.TestCase):
 
 
 class BuildConfigTest(unittest.TestCase):
+    def test_padded_endpoints_are_skipped_even_when_listed_first(self):
+        server = ServerConfig(
+            access_keys=AK,
+            users=(),
+            alpn_has_h3=True,
+            endpoints=(
+                Endpoint("/PAD/vless", "ws_vless", True),
+                Endpoint("/PAD/xhttp", "xhttp_vless", True),
+                Endpoint("/PLAIN/vless", "ws_vless", False),
+                Endpoint("/PLAIN/xhttp", "xhttp_vless", False),
+            ),
+        )
+        doc = json.dumps(gen.build_config(make_user(), NODES, server))
+        self.assertIn("/PLAIN/vless", doc)
+        self.assertIn("/PLAIN/xhttp", doc)
+        self.assertNotIn("/PAD/", doc)
+
     def setUp(self):
         self.user = make_user()
         self.doc = gen.build_config(self.user, NODES, make_server())

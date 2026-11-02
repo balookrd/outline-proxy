@@ -9,7 +9,7 @@ ws-rust-конфиг — [`docs/superpowers/specs/2026-08-15-ws-rust-config-gene
 | Файл | Условие | Содержимое |
 |---|---|---|
 | `<user>.conf` | есть `password` | Outline YAML |
-| `<user>.json` | есть `vless_id` и VLESS-эндпоинт | Xray-подписка с балансером cloud1+cloud2 |
+| `<user>.json` | есть `vless_id` и непадед VLESS-эндпоинт | Xray-подписка с балансером cloud1+cloud2 |
 | `<user>.toml` | есть хоть один wire | Конфиг `outline-ws-rust` для Android-клиента |
 | `<user>.txt` | есть хоть один URL | все URL юзера, по одному в строке |
 
@@ -118,7 +118,7 @@ cloud1+cloud2 (дефолт). На `nuxt` / `nuxt2` передаётся соб�
 ```
 user: <id>
 written_conf: <путь>        # если есть password
-written_json: <путь>        # если есть vless_id и VLESS-эндпоинт
+written_json: <путь>        # если есть vless_id и непадед VLESS-эндпоинт
 written_toml: <путь>        # если есть хоть один wire
 written_txt: <путь>
 outline_url: ssconf://…/<user>.conf    # ссылка для Outline-клиента
@@ -174,7 +174,7 @@ sudo jq -r '.[0].outbounds[].tag' <keys-dir>/<user>.json   # <keys-dir> = [acces
 разрешает сервер.
 
 `enabled = false` исключает юзера целиком. Юзер без `password` не получает
-`.conf`, без `vless_id` — не получает `.json`. Дубликат `id` — ошибка.
+`.conf`, без `vless_id` (или без непадед VLESS-эндпоинта на сервере) — не получает `.json`. Дубликат `id` — ошибка.
 
 ## ⚠️ ALPN — селектор, а не список предпочтений
 
@@ -273,6 +273,10 @@ edge-каналах, ради которых всё затевалось, — т
 согласуется по проводу — падёные кадры на непадёном пути убивают сессию,
 поэтому цепочка держится одного класса. Когда часть плоских фолбэков при этом
 отброшена, генератор перечисляет отброшенные пути строкой `warning:`.
+
+Xray-подписка (`<user>.json`) строится только по **непадед** VLESS-эндпоинтам:
+Xray паддинг не умеет. Если у сервера все VLESS-эндпоинты padded, `.json` не
+создаётся.
 
 Формат закреплён фикстурами в [`golden/expected-ws/`](golden/expected-ws/). В
 отличие от `golden/expected/`, это не снимок с бинаря, а зафиксированный формат:

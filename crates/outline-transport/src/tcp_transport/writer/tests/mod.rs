@@ -115,3 +115,139 @@ async fn send_chunks_matches_a_single_send_chunk_over_the_concatenation() {
     let _ = vec_task.await.unwrap();
     let _ = scalar_task.await.unwrap();
 }
+
+// ── SS2022 header hold (`write_frame_held`) ─────────────────────────────────
+
+use crate::tcp_transport::writer::transport::SS2022_HEADER_HOLD;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
+use std::time::Duration;
+use tokio_tungstenite::tungstenite::error::Error as WsError;
+
+/// Sink that records every message handed to it, plus a `Close(None)` marker
+/// when the writer task closes it.
+struct RecordingSink(mpsc::UnboundedSender<Message>);
+
+impl futures_util::Sink<Message> for RecordingSink {
+    type Error = WsError;
+    fn poll_ready(self: Pin<&mut Self>, _: &mut TaskContext<'_>) -> Poll<Result<(), WsError>> {
+        Poll::Ready(Ok(()))
+    }
+    fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), WsError> {
+        let _ = self.0.send(item);
+        Ok(())
+    }
+    fn poll_flush(self: Pin<&mut Self>, _: &mut TaskContext<'_>) -> Poll<Result<(), WsError>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_close(self: Pin<&mut Self>, _: &mut TaskContext<'_>) -> Poll<Result<(), WsError>> {
+        let _ = self.0.send(Message::Close(None));
+        Poll::Ready(Ok(()))
+    }
+}
+
+fn ws_transport() -> (WsWriteTransport, mpsc::Sender<Message>, mpsc::UnboundedReceiver<Message>) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (transport, ctrl_tx) = WsWriteTransport::spawn(RecordingSink(tx), false);
+    (transport, ctrl_tx, rx)
+}
+
+fn binary(payload: &[u8]) -> Message {
+    Message::Binary(payload.to_vec().into())
+}
+
+#[tokio::test(start_paused = true)]
+async fn held_header_merges_with_the_next_data_frame_into_one_message() {
+    let (mut t, _ctrl, mut rx) = ws_transport();
+    t.write_frame_held(b"HEADER".to_vec()).await.unwrap();
+    tokio::time::advance(Duration::from_millis(4)).await;
+    t.write_frame(b"CLIENTHELLO".to_vec()).await.unwrap();
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(rx.try_recv().unwrap(), binary(b"HEADERCLIENTHELLO"));
+    assert!(rx.try_recv().is_err(), "header and data must share ONE message");
+}
+
+#[tokio::test(start_paused = true)]
+async fn held_header_goes_out_alone_after_the_hold_window() {
+    let (mut t, _ctrl, mut rx) = ws_transport();
+    t.write_frame_held(b"HEADER".to_vec()).await.unwrap();
+    tokio::time::advance(SS2022_HEADER_HOLD / 2).await;
+    tokio::task::yield_now().await;
+    assert!(rx.try_recv().is_err(), "header must still be held inside the window");
+
+    tokio::time::advance(SS2022_HEADER_HOLD).await;
+    tokio::task::yield_now().await;
+    assert_eq!(rx.try_recv().unwrap(), binary(b"HEADER"));
+    assert!(rx.try_recv().is_err());
+
+    // Later data is a normal standalone message.
+    t.write_frame(b"LATE".to_vec()).await.unwrap();
+    tokio::task::yield_now().await;
+    assert_eq!(rx.try_recv().unwrap(), binary(b"LATE"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn held_header_is_flushed_before_the_writer_closes() {
+    let (mut t, _ctrl, mut rx) = ws_transport();
+    t.write_frame_held(b"HEADER".to_vec()).await.unwrap();
+    t.close().await.unwrap();
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(rx.try_recv().unwrap(), binary(b"HEADER"));
+    assert_eq!(rx.try_recv().unwrap(), Message::Close(None));
+}
+
+#[tokio::test(start_paused = true)]
+async fn held_header_is_flushed_before_a_control_message() {
+    let (mut t, ctrl, mut rx) = ws_transport();
+    t.write_frame_held(b"HEADER".to_vec()).await.unwrap();
+    ctrl.send(Message::Pong(vec![1].into())).await.unwrap();
+    tokio::task::yield_now().await;
+
+    assert_eq!(rx.try_recv().unwrap(), binary(b"HEADER"));
+    assert_eq!(rx.try_recv().unwrap(), Message::Pong(vec![1].into()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn socket_transport_default_held_write_is_immediate() {
+    let (mut writer, mut reader) = ss_socket_pair().await;
+    writer.send_chunk(b"plain").await.unwrap();
+    assert_eq!(read_exact_bytes(&mut reader, 5).await, b"plain");
+}
+
+/// Collects Binary payloads up to the writer's `Close` marker.
+async fn collect_until_close(rx: &mut mpsc::UnboundedReceiver<Message>) -> Vec<u8> {
+    let mut out = Vec::new();
+    while let Some(m) = rx.recv().await {
+        match m {
+            Message::Binary(b) => out.extend_from_slice(&b),
+            Message::Close(_) => break,
+            _ => {},
+        }
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn held_header_precedes_data_under_multithread_races() {
+    for _ in 0..200 {
+        let (mut t, _ctrl, mut rx) = ws_transport();
+        t.write_frame_held(b"HEADER".to_vec()).await.unwrap();
+        t.write_frame(b"DATA".to_vec()).await.unwrap();
+        t.close().await.unwrap();
+        assert_eq!(collect_until_close(&mut rx).await, b"HEADERDATA");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn held_header_survives_immediate_close_under_multithread_races() {
+    for _ in 0..200 {
+        let (mut t, _ctrl, mut rx) = ws_transport();
+        t.write_frame_held(b"HEADER".to_vec()).await.unwrap();
+        t.close().await.unwrap();
+        assert_eq!(collect_until_close(&mut rx).await, b"HEADER");
+    }
+}

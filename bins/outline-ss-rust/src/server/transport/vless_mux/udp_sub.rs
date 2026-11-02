@@ -2,6 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
+use outline_wire::padding::PaddingScheme;
 use tokio::{
     net::UdpSocket,
     sync::{Notify, mpsc},
@@ -11,6 +12,7 @@ use tracing::{debug, warn};
 use super::super::super::{
     connect::resolve_udp_target, dns_cache::DnsCache, nat::bind_nat_udp_socket, scratch::UdpRecvBuf,
 };
+use super::super::carrier_padding;
 use super::frames::send_end;
 use super::state::{
     MuxClientMetrics, MuxReaderHarvest, MuxRouteCtx, MuxServerCtx, MuxState, MuxSubConn,
@@ -52,7 +54,7 @@ where
                     error = %error,
                     "mux udp dns resolution failed"
                 );
-                send_end(tx, make_binary, session_id, true).await?;
+                send_end(tx, make_binary, state.padding, session_id, true).await?;
                 return Ok(());
             },
         };
@@ -70,7 +72,7 @@ where
                 error = %error,
                 "mux udp bind failed"
             );
-            send_end(tx, make_binary, session_id, true).await?;
+            send_end(tx, make_binary, state.padding, session_id, true).await?;
             return Ok(());
         },
     };
@@ -88,6 +90,7 @@ where
         make_binary,
         client,
         protocol,
+        state.padding,
         cancel_for_task,
     ));
 
@@ -121,6 +124,7 @@ where
 /// `client` is `None` on a relayed mux: the edge that terminates the client
 /// session has already counted these bytes and frames once (see
 /// [`MuxClientMetrics`]).
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_udp_reader<Msg>(
     session_id: u16,
     socket: Arc<UdpSocket>,
@@ -128,6 +132,7 @@ pub(super) async fn run_udp_reader<Msg>(
     make_binary: fn(Bytes) -> Msg,
     client: Option<MuxClientMetrics>,
     protocol: Protocol,
+    padding: PaddingScheme,
     cancel: Arc<Notify>,
 ) -> MuxReaderHarvest
 where
@@ -199,7 +204,9 @@ where
                         frame.len(),
                     );
                 }
-                if tx.send(make_binary(frame)).await.is_err() {
+                if tx.send(make_binary(carrier_padding::frame_downlink_message(padding, frame)))
+                    .await
+                    .is_err() {
                     return MuxReaderHarvest::Closed;
                 }
             }
@@ -208,7 +215,12 @@ where
     let mut frame_buf = BytesMut::with_capacity(6);
     encode_frame(&mut frame_buf, session_id, SessionStatus::End, 0, None, None, None)
         .expect("End frame carries neither target nor data");
-    let _ = tx.send(make_binary(frame_buf.split().freeze())).await;
+    let _ = tx
+        .send(make_binary(carrier_padding::frame_downlink_message(
+            padding,
+            frame_buf.split().freeze(),
+        )))
+        .await;
     MuxReaderHarvest::Closed
 }
 

@@ -359,7 +359,8 @@ async fn serve_connection(
     let master_key = cipher.derive_master_key("Secret0").unwrap();
     let lifetime = UpstreamTransportGuard::new("test", "tcp");
     let (mut writer, ctrl_tx) =
-        TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime)).await?;
+        TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime), false)
+            .await?;
     let request_salt = writer.request_salt();
     let mut reader = TcpShadowsocksReader::new(source, cipher, &master_key, lifetime, ctrl_tx)
         .with_request_salt(request_salt);

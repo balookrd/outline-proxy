@@ -131,13 +131,16 @@ PRIVATE_CIDRS = [
 
 
 def _vless_path(server: ServerConfig, kind: str) -> str | None:
-    """The first VLESS endpoint path of a kind, or None if the server has none.
+    """The first plain VLESS endpoint path of a kind, or None if the server has none.
+
+    Xray cannot speak the carrier padding, so padded endpoints are skipped even
+    when listed first.
 
     The subscription rides a single ws and a single xhttp path, mirroring the
-    old per-user single-path fields; a server that offers several endpoints of a
-    kind contributes its first, in config order.
+    old per-user single-path fields; a server that offers several plain endpoints
+    of a kind contributes its first, in config order.
     """
-    endpoints = endpoints_of_kind(server, kind)
+    endpoints = [e for e in endpoints_of_kind(server, kind) if not e.padded]
     return endpoints[0].path if endpoints else None
 
 

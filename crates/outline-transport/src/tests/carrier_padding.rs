@@ -1,5 +1,6 @@
 use super::*;
 
+use outline_wire::early_shape::ShapeDirection;
 use outline_wire::padding::PaddingDecoder;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -206,4 +207,53 @@ fn datagram_frame_without_room_is_the_stream_frame() {
         let pad = u16::from_be_bytes([out[2], out[3]]) as usize;
         assert!((200..=256).contains(&pad), "full-range pad when it cannot fit, got {pad}");
     }
+}
+
+fn shaper_with(rng: &mut StdRng) -> EarlyShaper {
+    EarlyShaper::new(ShapeDirection::ClientToServer, &mut draw_in(rng))
+}
+
+/// A ClientHello-sized frame is cut into >= 2 messages (after any lead-in
+/// covers) and the decoder recovers exactly the original bytes in order.
+#[test]
+fn shaped_messages_split_a_large_frame_and_round_trip() {
+    let scheme = PaddingScheme::new(0, 64);
+    for seed in 0..32u64 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut shaper = shaper_with(&mut rng);
+        let frame: Vec<u8> = (0..1964u32).map(|i| (i % 251) as u8).collect();
+        let msgs = shaped_messages(scheme, &mut shaper, &frame, &mut rng);
+
+        let mut decoded = Vec::new();
+        let mut dec = PaddingDecoder::new();
+        let mut data_msgs = 0;
+        for m in &msgs {
+            let before = decoded.len();
+            dec.push(m, &mut decoded);
+            if decoded.len() > before {
+                data_msgs += 1;
+            }
+        }
+        assert!(data_msgs >= 2, "seed {seed}: expected >= 2 data messages, got {data_msgs}");
+        assert_eq!(decoded, frame, "seed {seed}");
+        assert!(dec.is_at_frame_boundary());
+    }
+}
+
+/// Once the window is spent, a frame is one ordinary padded message.
+#[test]
+fn shaped_messages_pass_through_after_window() {
+    let scheme = PaddingScheme::new(0, 64);
+    let mut rng = StdRng::seed_from_u64(7);
+    let mut shaper = shaper_with(&mut rng);
+    let big = vec![0xAB; 1964];
+    for _ in 0..64 {
+        let _ = shaped_messages(scheme, &mut shaper, &big, &mut rng);
+    }
+    assert!(!shaper.is_active());
+    let msgs = shaped_messages(scheme, &mut shaper, &big, &mut rng);
+    assert_eq!(msgs.len(), 1);
+    let mut decoded = Vec::new();
+    PaddingDecoder::new().push(&msgs[0], &mut decoded);
+    assert_eq!(decoded, big);
 }

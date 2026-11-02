@@ -89,6 +89,47 @@ a binary data frame (never a WebSocket Ping), so it is safe on the H3 carrier â€
 it cannot escalate to the connection-level `H3_INTERNAL_ERROR` a server-
 originated Ping risks. The receiver's decoder drops cover frames transparently.
 
+## Early-session shaping
+
+The first bytes of a TCP session are what a length-based classifier sees best:
+a TLS-in-tunnel handshake leaves as a few records of characteristic sizes.
+On **padded h1 / h2 TCP sessions** the first messages are therefore cut into
+pieces, in both directions:
+
+- **Window.** Per session, the first 6..=10 messages or the first 16..=24 KiB
+  (whichever comes first); after that the session is unshaped.
+- **Client to server.** A message larger than 900 B is split into pieces of
+  300..=850 B. With probability 1/2 per session, 1-2 lead-in **covers**
+  (pad-only frames of 40..=100 B of pad each) precede the first split message.
+- **Server to client.** A message larger than 1500 B is split into pieces of
+  600..=2800 B.
+
+Each piece is an ordinary padded frame (it still gets its random pad tail), so
+the receiver's decoder needs no change. There are no new config keys: shaping
+is on exactly where padding is on.
+
+### What applies regardless of padding
+
+Three fixes remove "markers" of the carrier itself and are always on:
+
+- **h2: one TLS record per frame.** The client's h2 IO forwards vectored writes,
+  so a frame header and its payload leave in one record instead of two.
+- **VLESS response header with the first data.** The server holds the response
+  header and sends it together with the first upstream bytes.
+- **SS2022 request header with the first data.** The client holds the request
+  header for up to 50 ms so that it leaves together with the first data.
+
+### Out of scope
+
+h3 (QUIC has its own packetisation), UDP, and timing: shaping changes sizes
+only, not the delays between messages (cover frames aside).
+
+### Compatibility
+
+The wire format is unchanged: pieces are normal padding frames and the bundled
+writes are ordinary byte streams. Old peers interoperate in both directions;
+they simply do not shape their own side.
+
 ## Covered carriers
 
 Padding rides the `Message` layer shared by every WS / XHTTP carrier, so one

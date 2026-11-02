@@ -33,8 +33,9 @@ path = "/GLOBAL/ssx"
 kind = "xhttp_ss"
 padded = true
 
-# VLESS carriers for the xray subscription and the vless:// share links. Padded
-# too, so the whole chain stays one padding class.
+# VLESS carriers for the vless:// share links: padded first (as on node .104),
+# so the ws-rust chain stays one padding class; the plain ones below them are the
+# only ones the xray subscription may use (xray cannot speak the padding).
 [[endpoint]]
 path = "/GLOBAL/vless"
 kind = "ws_vless"
@@ -44,6 +45,14 @@ padded = true
 path = "/GLOBAL/xhttp"
 kind = "xhttp_vless"
 padded = true
+
+[[endpoint]]
+path = "/GLOBAL/vless-plain"
+kind = "ws_vless"
+
+[[endpoint]]
+path = "/GLOBAL/xhttp-plain"
+kind = "xhttp_vless"
 
 [access_keys]
 public_host = "keys.example.com"

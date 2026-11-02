@@ -24,6 +24,7 @@ use futures_util::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
+use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
 use outline_wire::padding::PaddingDecoder;
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::time::timeout;
@@ -277,6 +278,9 @@ pub struct WsFrameSink {
     /// in which case `send_frame` leaves the bytes untouched and the wire stays
     /// byte-for-byte identical to the unpadded carrier.
     padding: CarrierPadding,
+    /// Early-session shaper (h1/h2 carriers with padding only). `None`
+    /// otherwise, including every h3 carrier.
+    shaper: Option<EarlyShaper>,
 }
 
 #[async_trait]
@@ -291,6 +295,21 @@ impl FrameSink for WsFrameSink {
         // payload size; otherwise hand the bytes through unchanged (wire stays
         // byte-for-byte identical). The server decodes symmetrically only when
         // its matching path also opted in (config-synchronised gate).
+        if let Some(shaper) = self.shaper.as_mut().filter(|s| s.is_active()) {
+            let msgs = carrier_padding::shaped_messages(
+                self.padding.scheme,
+                shaper,
+                &data,
+                &mut rand::rng(),
+            );
+            for payload in msgs {
+                let bytes = payload.len();
+                tx.send(Message::Binary(payload.into()), bytes)
+                    .await
+                    .context(TransportOperation::WebSocketSend)?;
+            }
+            return Ok(());
+        }
         let payload: Bytes = if self.padding.scheme.is_enabled() {
             let mut out = Vec::with_capacity(data.len() + 8);
             carrier_padding::frame_payload_into(
@@ -465,6 +484,13 @@ pub fn from_ws_frames(
     // datagram pipe (`from_ws_datagrams`, used by SS-UDP / VLESS-UDP) does not.
     let padding = carrier_padding::effective_carrier_padding();
     let cover = padding.cover_enabled().then_some(padding);
+    // Early-session shaping applies to h1/h2 carriers only, never h3.
+    let shaper = (padding.scheme.is_enabled() && !ws_stream.is_h3()).then(|| {
+        EarlyShaper::new(
+            ShapeDirection::ClientToServer,
+            &mut carrier_padding::draw_in(&mut rand::rng()),
+        )
+    });
     let (writer_task, data_tx, ctrl_tx, stream, writer_exit) = spawn_ws_writer(ws_stream, cover);
     let keepalive_task = keepalive.map(|i| spawn_keepalive(ctrl_tx.clone(), i));
     let sink = WsFrameSink {
@@ -473,6 +499,7 @@ pub fn from_ws_frames(
         writer_exit,
         _keepalive_task: keepalive_task,
         padding,
+        shaper,
     };
     let source = WsFrameSource {
         stream,

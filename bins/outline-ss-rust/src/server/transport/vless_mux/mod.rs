@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use outline_wire::padding::PaddingScheme;
 use tokio::sync::{Notify, mpsc};
 
 use super::super::resumption::{ParkedMuxSubKind, ParkedVlessMux};
@@ -42,12 +43,14 @@ pub(in crate::server::transport) fn attach_parked<Msg>(
     metrics: &Arc<Metrics>,
     protocol: Protocol,
     accounting: MuxAccounting,
+    padding: PaddingScheme,
 ) -> MuxState
 where
     Msg: Send + 'static,
 {
     let client = client_metrics(accounting, metrics, &parked.user_counters);
-    let mut mux = MuxState::new(parked.user, Arc::clone(&parked.user_counters), accounting);
+    let mut mux =
+        MuxState::new(parked.user, Arc::clone(&parked.user_counters), accounting, padding);
     mux.buffer = parked.buffer;
     for (id, parked_sub) in parked.sub_conns {
         let cancel = Arc::new(Notify::new());
@@ -61,6 +64,7 @@ where
                     make_binary,
                     client.clone(),
                     protocol,
+                    padding,
                     cancel_for_task,
                 ));
                 mux.sub_conns.insert(
@@ -81,6 +85,7 @@ where
                     make_binary,
                     client.clone(),
                     protocol,
+                    padding,
                     cancel_for_task,
                 ));
                 mux.sub_conns.insert(

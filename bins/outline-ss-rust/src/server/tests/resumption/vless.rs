@@ -438,10 +438,9 @@ async fn vless_resume_hit_after_dirty_carrier_death() -> Result<()> {
     socket
         .send(WsMessage::Binary(vless_tcp_request(uuid, target_addr, b"ping")?))
         .await?;
-    let response_header = expect_binary_reply(&mut socket).await?;
-    assert_eq!(response_header.as_ref(), &[VLESS_VERSION, 0x00]);
+    // Fresh path: the response header rides with the first upstream bytes.
     let echoed = expect_binary_reply(&mut socket).await?;
-    assert_eq!(echoed.as_ref(), b"ping");
+    assert_eq!(echoed.as_ref(), &[VLESS_VERSION, 0x00, b'p', b'i', b'n', b'g']);
     assert_eq!(target_accepts.load(Ordering::SeqCst), 1);
 
     // Kill the carrier: RST, no Close frame, no FIN.
@@ -490,10 +489,9 @@ async fn vless_resume_hit_skips_fresh_upstream() -> Result<()> {
     socket
         .send(WsMessage::Binary(vless_tcp_request(uuid, target_addr, b"ping")?))
         .await?;
-    let response_header = expect_binary_reply(&mut socket).await?;
-    assert_eq!(response_header.as_ref(), &[VLESS_VERSION, 0x00]);
+    // Fresh path: the response header rides with the first upstream bytes.
     let echoed = expect_binary_reply(&mut socket).await?;
-    assert_eq!(echoed.as_ref(), b"ping");
+    assert_eq!(echoed.as_ref(), &[VLESS_VERSION, 0x00, b'p', b'i', b'n', b'g']);
     assert_eq!(target_accepts.load(Ordering::SeqCst), 1);
     socket.close(None).await?;
     drop(socket);

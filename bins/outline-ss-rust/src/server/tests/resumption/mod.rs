@@ -49,7 +49,7 @@ use crate::crypto::UserKey;
 use crate::metrics::Metrics;
 use crate::protocol::vless::VlessUser;
 
-mod cluster;
+pub(in crate::server::tests) mod cluster;
 mod cross_protocol;
 mod ss;
 mod vless;
