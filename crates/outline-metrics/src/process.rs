@@ -95,7 +95,16 @@ pub fn init() {
             for proto in ["ss", "vless"] {
                 let labels = [direction, transport, proto];
                 let _ = METRICS.udp_h3_datagrams_total.with_label_values(&labels);
-                let _ = METRICS.udp_h3_datagram_fallback_total.with_label_values(&labels);
+                let reasons: &[&str] = if direction == "up" {
+                    &["unarmed", "too_large", "send_failed"]
+                } else {
+                    &["stream"]
+                };
+                for reason in reasons {
+                    let _ = METRICS
+                        .udp_h3_datagram_fallback_total
+                        .with_label_values(&[direction, transport, proto, reason]);
+                }
             }
         }
         for state in ["negotiated", "declined"] {

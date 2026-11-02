@@ -272,3 +272,27 @@ async fn datagram_room_is_the_payload_room_and_none_while_gated() {
     gate.open();
     assert!(gated.channel.datagram_room().is_some());
 }
+
+/// Each way an outbound packet misses the datagram path names its own reason:
+/// a closed gate, a packet larger than the room, and quinn refusing it (here,
+/// a lost connection).
+#[tokio::test]
+async fn send_fallback_reasons_tell_the_causes_apart() {
+    let gate = Arc::new(DatagramGate::default());
+    let f = fixture_with(Some(Arc::clone(&gate))).await;
+    let small = Bytes::from_static(b"small");
+    assert_eq!(f.channel.try_send_datagram(&small), Err("unarmed"));
+
+    gate.open();
+    assert_eq!(f.channel.try_send_datagram(&small), Ok(()));
+    let room = f.channel.datagram_room().expect("room once the gate is open");
+    let oversized = Bytes::from(vec![0u8; room + 1]);
+    assert_eq!(f.channel.try_send_datagram(&oversized), Err("too_large"));
+
+    f.server.close(0u32.into(), b"bye");
+    let closed = f.channel.connection.closed();
+    tokio::time::timeout(Duration::from_secs(5), closed)
+        .await
+        .expect("close timed out");
+    assert_eq!(f.channel.try_send_datagram(&small), Err("send_failed"));
+}

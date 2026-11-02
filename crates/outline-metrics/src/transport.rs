@@ -296,15 +296,20 @@ pub fn record_udp_h3_datagram(
 }
 
 /// One UDP packet of a datagram-negotiated session that rode the stream
-/// instead. Labels as in [`record_udp_h3_datagram`].
+/// instead. Labels as in [`record_udp_h3_datagram`], plus `reason`: on `"up"`
+/// `"unarmed"` (a VLESS packet before the server's first reply opened the
+/// datagram gate), `"too_large"` (did not fit the current datagram size) or
+/// `"send_failed"` (quinn refused it for another reason); on `"down"` always
+/// `"stream"` (the server chose the stream; its own counter says why).
 pub fn record_udp_h3_datagram_fallback(
     direction: &'static str,
     transport: &'static str,
     proto: &'static str,
+    reason: &'static str,
 ) {
     METRICS
         .udp_h3_datagram_fallback_total
-        .with_label_values(&[direction, transport, proto])
+        .with_label_values(&[direction, transport, proto, reason])
         .inc();
 }
 
@@ -334,7 +339,8 @@ pub fn record_udp_h3_datagram_session(transport: &'static str, state: &'static s
 }
 
 /// One path sample of an HTTP/3 connection that carries UDP datagrams;
-/// `black_holes` / `lost_probes` are deltas since its previous sample;
+/// `black_holes` is 0 or 1 (capped per sample), `lost_probes` a delta since
+/// its previous sample;
 /// `current_mtu` is `None` on the close-time sample (not a histogram point).
 pub fn record_quic_path_sample(
     transport: &'static str,

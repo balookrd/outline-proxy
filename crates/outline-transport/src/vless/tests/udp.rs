@@ -142,7 +142,7 @@ fn dropped(reason: &str) -> f64 {
 fn down_fallbacks(transport: &str) -> f64 {
     let rendered = outline_metrics::render_prometheus(&[]).unwrap_or_default();
     let series = format!(
-        "outline_ws_udp_h3_datagram_fallback_total{{direction=\"down\",proto=\"vless\",transport=\"{transport}\"}} "
+        "outline_ws_udp_h3_datagram_fallback_total{{direction=\"down\",proto=\"vless\",reason=\"stream\",transport=\"{transport}\"}} "
     );
     rendered
         .lines()

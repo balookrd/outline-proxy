@@ -101,10 +101,13 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
         IntCounterVec,
         "outline_ws_udp_h3_datagram_fallback_total",
         "UDP packets of a datagram-negotiated HTTP/3 session that rode the \
-         stream instead (too large for the current datagram size, the \
-         datagram send failed, or a VLESS packet sent before the server's \
-         first reply), by direction, transport and proto.",
-        ["direction", "transport", "proto"]
+         stream instead, by direction, transport, proto and reason: \"up\" is \
+         \"unarmed\" (a VLESS packet sent before the server's first reply), \
+         \"too_large\" (did not fit the current datagram size) or \
+         \"send_failed\" (quinn refused it for another reason); \"down\" is \
+         \"stream\" (the server sent it on the stream; its own fallback \
+         counter says why).",
+        ["direction", "transport", "proto", "reason"]
     );
     let udp_h3_datagram_dropped_total = register_labeled!(
         registry,
@@ -142,8 +145,9 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
         registry,
         IntCounterVec,
         "outline_ws_quic_black_holes_total",
-        "MTU black holes quinn detected on HTTP/3 connections that carry UDP \
-         datagrams (each one drops the path MTU to the QUIC minimum), by transport.",
+        "10 s samples in which an HTTP/3 connection that carries UDP datagrams \
+         detected an MTU black hole (each detection drops the path MTU to the QUIC \
+         minimum), at most one per sample, by transport.",
         ["transport"]
     );
     let quic_mtu_probes_lost_total = register_labeled!(

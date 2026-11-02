@@ -172,15 +172,22 @@ mod demux {
         }
     }
 
-    /// A QUIC connection's path MTU state; counts are deltas since the previous
-    /// sample of the same connection. `current_mtu` is `None` on the sample
-    /// taken at close: a short-lived connection (a probe) closes before
-    /// DPLPMTUD lifts the MTU off 1200, and observing it would flood the
-    /// histogram with the starting value.
+    /// A QUIC connection's path MTU state since the previous sample of the
+    /// same connection. `current_mtu` is `None` on the sample taken at close: a
+    /// short-lived connection (a probe) closes before DPLPMTUD lifts the MTU
+    /// off 1200, and observing it would flood the histogram with the starting
+    /// value.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct PathSample {
         pub current_mtu: Option<u16>,
+        /// 1 if quinn detected at least one black hole since the previous
+        /// sample, else 0. Not the raw delta: on a dying connection (the peer
+        /// gone, the sender still pushing full-size packets) every loss burst
+        /// stays "suspicious" even after the MTU fell to 1200, so quinn counts
+        /// a new black hole every few bursts, thousands in a minute, and one
+        /// such connection would read as a fleet-wide MTU problem.
         pub black_holes: u64,
+        /// Lost DPLPMTUD probes since the previous sample.
         pub lost_probes: u64,
     }
 
@@ -188,8 +195,9 @@ mod demux {
 
     pub const PATH_SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
 
-    /// Turns cumulative counters into a sample of deltas against `base`, then
-    /// advances `base`. The MTU is carried only on periodic samples.
+    /// Turns cumulative counters into a sample against `base` (see
+    /// [`PathSample`] for the black-hole cap), then advances `base`. The MTU is
+    /// carried only on periodic samples.
     pub(crate) fn next_sample(
         base: &mut (u64, u64),
         current_mtu: u16,
@@ -199,7 +207,7 @@ mod demux {
     ) -> PathSample {
         let sample = PathSample {
             current_mtu: (!closed).then_some(current_mtu),
-            black_holes: black_holes.saturating_sub(base.0),
+            black_holes: black_holes.saturating_sub(base.0).min(1),
             lost_probes: lost_probes.saturating_sub(base.1),
         };
         *base = (black_holes, lost_probes);

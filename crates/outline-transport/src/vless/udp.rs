@@ -185,7 +185,7 @@ impl VlessUdpTransport {
     /// downlink fallback on a datagram-negotiated session.
     fn stream_record(&self, payload: Bytes) -> Bytes {
         if let Some(transport) = self.datagram_transport {
-            outline_metrics::record_udp_h3_datagram_fallback("down", transport, "vless");
+            outline_metrics::record_udp_h3_datagram_fallback("down", transport, "vless", "stream");
         }
         payload
     }
