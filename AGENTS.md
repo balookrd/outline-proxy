@@ -118,6 +118,15 @@ vendored-крейты, которые держим в upstream-стиле.
 см. [Монорепо-инварианты](#монорепо-инварианты-специфичны-для-слияния) и
 [Vendored patches](#vendored-patches).
 
+Отдельный workflow `.github/workflows/fingerprint-drift.yml` (по понедельникам
+и вручную) снимает свежие Chrome stable и Firefox release и сравнивает их
+отпечаток (TCP/QUIC hello, h2-преамбула, заголовки, мажор) с эталоном
+`scripts/fingerprint-drift/baseline/*.json`. При расхождении он держит открытой
+одну issue `fingerprint-drift`. Обновил UA/hello в `PROFILES`
+(`fingerprint_profile.rs`) — пересобери эталон из новых захватов
+(`scripts/fingerprint-drift/README.ru.md`): тест
+`drift_baselines_describe_the_profiled_browser_majors` сверяет мажоры.
+
 ## Монорепо-инварианты (специфичны для слияния)
 
 - **rustls — только `aws-lc-rs`.** Ровно один CryptoProvider в графе: два
