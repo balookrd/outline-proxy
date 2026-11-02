@@ -7134,7 +7134,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "MTU black holes quinn detected (each one drops the path MTU to 1200) and lost DPLPMTUD probes, on HTTP/3 connections that carry UDP datagrams.",
+      "description": "Black holes: 10-second samples in which a connection's MTU black-hole detector fired (each detection drops the path MTU to 1200), counted at most once per sample, because a dying connection re-fires the detector thousands of times a minute. Lost probes: lost DPLPMTUD probes. Both on HTTP/3 connections that carry UDP datagrams.",
       "fieldConfig": {
         "defaults": {
           "color": {

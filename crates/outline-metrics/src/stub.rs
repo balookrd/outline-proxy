@@ -144,6 +144,7 @@ pub fn record_udp_h3_datagram_fallback(
     _direction: &'static str,
     _transport: &'static str,
     _proto: &'static str,
+    _reason: &'static str,
 ) {
 }
 pub fn record_udp_h3_datagram_dropped(_reason: &'static str) {}

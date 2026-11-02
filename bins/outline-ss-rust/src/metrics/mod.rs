@@ -460,7 +460,8 @@ impl Metrics {
     }
 
     /// One path sample of an HTTP/3 connection that may carry UDP datagrams;
-    /// `black_holes` / `lost_probes` are deltas since its previous sample;
+    /// `black_holes` is 0 or 1 (capped per sample), `lost_probes` a delta since
+    /// its previous sample;
     /// `current_mtu` is `None` on the close-time sample (no histogram point).
     pub fn record_quic_path_sample(
         &self,

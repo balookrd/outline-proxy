@@ -98,6 +98,30 @@ impl H3DatagramChannel {
         self.count_stream_down = false;
         self
     }
+
+    /// Hands `data` to quinn as one datagram. `Err` carries the `reason` label
+    /// of the fallback counter: the gate is still closed (`"unarmed"`), the
+    /// packet does not fit the current datagram size (`"too_large"`, also when
+    /// quinn re-checks it against an MTU that just shrank), or quinn refused it
+    /// otherwise (`"send_failed"`: the connection is lost, or the peer stopped
+    /// accepting datagrams).
+    fn try_send_datagram(&self, data: &Bytes) -> Result<(), &'static str> {
+        if !self.gate.as_deref().is_none_or(DatagramGate::is_open) {
+            return Err("unarmed");
+        }
+        let room = self.connection.max_datagram_size().unwrap_or(0);
+        if datagram_overhead(self.quarter_stream_id) + data.len() > room {
+            return Err("too_large");
+        }
+        match self
+            .connection
+            .send_datagram(encode_datagram(self.quarter_stream_id, data))
+        {
+            Ok(()) => Ok(()),
+            Err(quinn::SendDatagramError::TooLarge) => Err("too_large"),
+            Err(_) => Err("send_failed"),
+        }
+    }
 }
 
 /// Next datagram of the registration; never resolves once it is gone, so the
@@ -124,24 +148,18 @@ impl DatagramChannel for H3DatagramChannel {
         if *self.closed.borrow() {
             bail!("HTTP/3 datagram channel is closed");
         }
-        let room = self.connection.max_datagram_size().unwrap_or(0);
-        if self.gate.as_deref().is_none_or(DatagramGate::is_open)
-            && datagram_overhead(self.quarter_stream_id) + data.len() <= room
-            && self
-                .connection
-                .send_datagram(encode_datagram(self.quarter_stream_id, &data))
-                .is_ok()
-        {
-            // Counts datagrams handed to quinn, which may still drop the oldest
-            // one when its send buffer is full.
-            metrics::record_udp_h3_datagram("up", self.transport, self.proto);
-            return Ok(());
+        match self.try_send_datagram(&data) {
+            Ok(()) => {
+                // Counts datagrams handed to quinn, which may still drop the
+                // oldest one when its send buffer is full.
+                metrics::record_udp_h3_datagram("up", self.transport, self.proto);
+                Ok(())
+            },
+            Err(reason) => {
+                metrics::record_udp_h3_datagram_fallback("up", self.transport, self.proto, reason);
+                self.fallback.send_datagram(data).await
+            },
         }
-        // Gate still closed, too large for the current datagram size, or the
-        // send failed (too large after an MTU drop, or the peer stopped
-        // accepting): use the stream.
-        metrics::record_udp_h3_datagram_fallback("up", self.transport, self.proto);
-        self.fallback.send_datagram(data).await
     }
 
     async fn recv_datagram(&self) -> Result<Option<Bytes>> {
@@ -182,6 +200,7 @@ impl DatagramChannel for H3DatagramChannel {
                             "down",
                             self.transport,
                             self.proto,
+                            "stream",
                         );
                     }
                     return Ok(Some((PacketSource::Stream, packet)));

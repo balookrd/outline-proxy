@@ -521,30 +521,31 @@ mod demux {
         drop(demux);
     }
 
-    /// Cumulative counters come out as deltas, and the close-time sample
-    /// carries the counters but no MTU.
+    /// Cumulative counters come out as deltas, black holes capped at one per
+    /// sample (a dying connection racks up thousands), and the close-time
+    /// sample carries the counters but no MTU.
     #[test]
     fn next_sample_reports_deltas_and_no_mtu_at_close() {
         let mut base = (0, 0);
-        let first = next_sample(&mut base, 1200, 3, 5, false);
+        let first = next_sample(&mut base, 1200, 3758, 5, false);
         assert_eq!(
             first,
             PathSample {
                 current_mtu: Some(1200),
-                black_holes: 3,
+                black_holes: 1,
                 lost_probes: 5
             }
         );
-        let second = next_sample(&mut base, 1400, 5, 5, false);
+        let second = next_sample(&mut base, 1400, 3758, 5, false);
         assert_eq!(
             second,
             PathSample {
                 current_mtu: Some(1400),
-                black_holes: 2,
+                black_holes: 0,
                 lost_probes: 0
             }
         );
-        let last = next_sample(&mut base, 1400, 6, 9, true);
+        let last = next_sample(&mut base, 1400, 3760, 9, true);
         assert_eq!(
             last,
             PathSample {
@@ -553,6 +554,6 @@ mod demux {
                 lost_probes: 4
             }
         );
-        assert_eq!(base, (6, 9));
+        assert_eq!(base, (3760, 9));
     }
 }

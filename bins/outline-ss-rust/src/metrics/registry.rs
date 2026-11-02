@@ -212,8 +212,10 @@ pub(super) fn register_descriptions() {
     );
     describe_counter!(
         "outline_ss_quic_black_holes_total",
-        "MTU black holes quinn detected on HTTP/3 connections that may carry UDP \
-         datagrams (each one drops the path MTU to the QUIC minimum)."
+        "10 s samples in which an HTTP/3 connection that may carry UDP datagrams \
+         detected an MTU black hole (each detection drops the path MTU to the QUIC \
+         minimum); at most one per sample, since a dying connection re-detects \
+         thousands a minute."
     );
     describe_counter!(
         "outline_ss_quic_mtu_probes_lost_total",

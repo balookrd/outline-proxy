@@ -812,11 +812,11 @@ Warm-standby соединения учитывают активное состо
 | Метрика | Метки | Смысл |
 | --- | --- | --- |
 | `outline_ws_udp_h3_datagrams_total` | `direction`, `transport`, `proto` | UDP-пакеты, пошедшие H3-датаграммами (`up` = переданы в quinn, который при заполнении буфера отправки может выбросить самый старый) |
-| `outline_ws_udp_h3_datagram_fallback_total` | `direction`, `transport`, `proto` | пакеты / записи VLESS согласованной сессии, пошедшие по потоку (велики, отправка не удалась или ушли до первого ответа VLESS) |
+| `outline_ws_udp_h3_datagram_fallback_total` | `direction`, `transport`, `proto`, `reason` | пакеты / записи VLESS согласованной сессии, пошедшие по потоку; `reason` для `up`: `unarmed` (VLESS, ушёл до первого ответа сервера), `too_large` (не влез в размер датаграммы), `send_failed` (quinn отказал по другой причине); для `down` всегда `stream` (причину пишет счётчик сервера) |
 | `outline_ws_udp_h3_datagram_dropped_total` | `reason` | отброшенные входящие датаграммы: `unknown_stream`, `closed_stream` (поток закрыт менее 10 с назад), `malformed`, `queue_full` (ограниченную очередь приёма потока переполнил всплеск), `queue_stalled` (она переполнилась, когда потребитель не читал 50 мс), `early` (VLESS, до заголовка ответа) |
 | `outline_ws_udp_h3_datagram_sessions_total` | `transport`, `state` | предложения по исходу, `negotiated` / `declined`; считает потоки-якоря, включая пополнение standby-пула и пробы |
 | `outline_ws_quic_path_mtu_bytes` | `transport` | гистограмма MTU пути у соединений с датаграммами, сэмпл раз в 10 с, не при закрытии (соединение короче 10 с точку не добавляет; black holes и потерянные пробы при закрытии всё равно сбрасываются); 1200 — минимум QUIC после black hole, при нём пакеты примерно от 1100 байт идут по потоку |
-| `outline_ws_quic_black_holes_total` | `transport` | MTU black holes, обнаруженные quinn на соединениях с датаграммами (каждый сбрасывает MTU пути до 1200) |
+| `outline_ws_quic_black_holes_total` | `transport` | 10-секундные сэмплы, в которых соединение с датаграммами обнаружило MTU black hole (каждое обнаружение сбрасывает MTU пути до 1200), не больше одного на сэмпл: умирающее соединение срабатывает тысячи раз в минуту |
 | `outline_ws_quic_mtu_probes_lost_total` | `transport` | потерянные пробы DPLPMTUD на соединениях с датаграммами |
 
 ## Carrier-padding

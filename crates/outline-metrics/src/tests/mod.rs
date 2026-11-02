@@ -1432,14 +1432,16 @@ fn tun_tcp_bbr_handles_emit_gauges_and_a_monotonic_loss_counter() {
 fn render_prometheus_exports_udp_h3_datagram_series() {
     let _guard = test_guard();
     record_udp_h3_datagram("up", "ws_h3", "ss");
-    record_udp_h3_datagram_fallback("down", "ws_h3", "ss");
+    record_udp_h3_datagram_fallback("down", "ws_h3", "ss", "stream");
+    record_udp_h3_datagram_fallback("up", "ws_h3", "vless", "unarmed");
     record_udp_h3_datagram_dropped("unknown_stream");
     record_udp_h3_datagram_session("ws_h3", "negotiated");
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     for series in [
         "outline_ws_udp_h3_datagrams_total{direction=\"up\",proto=\"ss\",transport=\"ws_h3\"}",
-        "outline_ws_udp_h3_datagram_fallback_total{direction=\"down\",proto=\"ss\",transport=\"ws_h3\"}",
+        "outline_ws_udp_h3_datagram_fallback_total{direction=\"down\",proto=\"ss\",reason=\"stream\",transport=\"ws_h3\"}",
+        "outline_ws_udp_h3_datagram_fallback_total{direction=\"up\",proto=\"vless\",reason=\"unarmed\",transport=\"ws_h3\"}",
         "outline_ws_udp_h3_datagram_dropped_total{reason=\"unknown_stream\"}",
         "outline_ws_udp_h3_datagram_sessions_total{state=\"negotiated\",transport=\"ws_h3\"}",
     ] {
@@ -1478,8 +1480,13 @@ fn init_exports_zero_value_udp_h3_datagram_series() {
     assert!(rendered.contains(
         "outline_ws_udp_h3_datagrams_total{direction=\"down\",proto=\"vless\",transport=\"xhttp_h3\"} 0"
     ));
+    for reason in ["unarmed", "too_large", "send_failed"] {
+        assert!(rendered.contains(&format!(
+            "outline_ws_udp_h3_datagram_fallback_total{{direction=\"up\",proto=\"ss\",reason=\"{reason}\",transport=\"ws_h3\"}} 0"
+        )));
+    }
     assert!(rendered.contains(
-        "outline_ws_udp_h3_datagram_fallback_total{direction=\"up\",proto=\"ss\",transport=\"ws_h3\"} 0"
+        "outline_ws_udp_h3_datagram_fallback_total{direction=\"down\",proto=\"vless\",reason=\"stream\",transport=\"xhttp_h3\"} 0"
     ));
     assert!(rendered.contains("outline_ws_udp_h3_datagram_dropped_total{reason=\"malformed\"} 0"));
     assert!(rendered.contains("outline_ws_udp_h3_datagram_dropped_total{reason=\"early\"} 0"));
