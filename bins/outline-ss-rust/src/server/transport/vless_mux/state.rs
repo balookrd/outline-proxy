@@ -1,6 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use bytes::BytesMut;
+use outline_wire::padding::PaddingScheme;
 use tokio::{
     net::{
         UdpSocket,
@@ -103,6 +104,11 @@ pub(in crate::server::transport) struct MuxState {
     /// it left off, exactly as the other relayed shapes do.
     pub(super) user_counters: Arc<PerUserCounters>,
     pub(super) accounting: MuxAccounting,
+    /// Carrier-padding scheme of the path this mux rides. Every downlink message
+    /// (response header, sub-connection data, End frames) is framed with it, so a
+    /// padded client's decoder never sees an unwrapped message. Disabled on an
+    /// unpadded path and on a relayed mux (the edge pads the whole stream).
+    pub(super) padding: PaddingScheme,
 }
 
 /// Output of a sub-connection reader task. Distinguishes the natural
@@ -198,6 +204,7 @@ impl MuxState {
         user: VlessUser,
         user_counters: Arc<PerUserCounters>,
         accounting: MuxAccounting,
+        padding: PaddingScheme,
     ) -> Self {
         Self {
             sub_conns: HashMap::new(),
@@ -205,6 +212,7 @@ impl MuxState {
             user,
             user_counters,
             accounting,
+            padding,
         }
     }
 

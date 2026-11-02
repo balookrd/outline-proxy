@@ -55,3 +55,32 @@ fn probe_sources_do_not_reuse_shared_h2_connections() {
     assert!(!should_reuse_connection("probe_ws"));
     assert!(!should_reuse_connection("probe_http"));
 }
+
+/// `H2Io` must forward vectored writes: otherwise h2 writes the frame header and
+/// payload separately and rustls emits a TLS record for each.
+#[tokio::test]
+async fn h2_io_forwards_vectored_writes() {
+    use std::io::IoSlice;
+    use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (client, server) = tokio::join!(TcpStream::connect(addr), listener.accept());
+    let mut io = super::H2Io::Plain { inner: client.unwrap() };
+    let mut server = server.unwrap().0;
+    assert!(AsyncWrite::is_write_vectored(&io));
+
+    let header = [1u8; 9];
+    let payload = vec![7u8; 1572];
+    let n = io
+        .write_vectored(&[IoSlice::new(&header), IoSlice::new(&payload)])
+        .await
+        .unwrap();
+    assert_eq!(n, 9 + 1572, "loopback accepts the whole gather");
+    io.shutdown().await.unwrap();
+    let mut got = Vec::new();
+    server.read_to_end(&mut got).await.unwrap();
+    assert_eq!(got.len(), 9 + 1572);
+    assert_eq!(&got[..9], &header);
+}

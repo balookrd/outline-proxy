@@ -30,6 +30,7 @@ use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use metrics::Counter;
 use outline_wire::cluster::ShardId;
+use outline_wire::padding::PaddingScheme;
 use quinn::{RecvStream, SendStream, VarInt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc};
@@ -2432,6 +2433,8 @@ async fn splice_plaintext_vless_mux(
         &vless.metrics,
         Protocol::Http3,
         MuxAccounting::OnTheEdge,
+        // Plaintext mux frames over the mesh: the edge pads the client stream.
+        PaddingScheme::disabled(),
     );
 
     let up_bytes = cluster.metrics.mesh_bytes_counter("home", "up", "tcp");

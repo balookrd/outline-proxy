@@ -175,8 +175,11 @@ async fn a_vless_park_resumes_on_an_ss_carrier() -> Result<()> {
     socket
         .send(WsMessage::Binary(vless_tcp_request(BOB_UUID, target_addr, b"ping")?))
         .await?;
-    assert_eq!(expect_binary_reply(&mut socket).await?.as_ref(), &[VLESS_VERSION, 0x00]);
-    assert_eq!(expect_binary_reply(&mut socket).await?.as_ref(), b"ping");
+    // Fresh path: the response header rides with the first upstream bytes.
+    assert_eq!(
+        expect_binary_reply(&mut socket).await?.as_ref(),
+        &[VLESS_VERSION, 0x00, b'p', b'i', b'n', b'g']
+    );
     assert_eq!(target_accepts.load(Ordering::SeqCst), 1);
 
     socket.close(None).await?;
@@ -257,8 +260,10 @@ async fn a_vless_carrier_of_another_account_still_cannot_take_the_park() -> Resu
     socket2
         .send(WsMessage::Binary(vless_tcp_request(ALICE_UUID, target_addr, b"pong")?))
         .await?;
-    assert_eq!(expect_binary_reply(&mut socket2).await?.as_ref(), &[VLESS_VERSION, 0x00]);
-    assert_eq!(expect_binary_reply(&mut socket2).await?.as_ref(), b"pong");
+    assert_eq!(
+        expect_binary_reply(&mut socket2).await?.as_ref(),
+        &[VLESS_VERSION, 0x00, b'p', b'o', b'n', b'g']
+    );
     assert_eq!(
         target_accepts.load(Ordering::SeqCst),
         2,

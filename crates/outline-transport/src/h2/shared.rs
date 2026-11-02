@@ -129,6 +129,27 @@ impl tokio::io::AsyncWrite for H2Io {
         }
     }
 
+    fn poll_write_vectored(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        // Forward vectored writes: without this the h2 crate falls back to separate
+        // writes for the frame header and payload (and 1024-byte chunks), which
+        // rustls turns into separate TLS records (26 B / 1041 B markers).
+        match self.project() {
+            H2IoProj::Plain { inner } => inner.poll_write_vectored(cx, bufs),
+            H2IoProj::Tls { inner } => inner.poll_write_vectored(cx, bufs),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            H2Io::Plain { inner } => inner.is_write_vectored(),
+            H2Io::Tls { inner } => inner.is_write_vectored(),
+        }
+    }
+
     fn poll_flush(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,

@@ -19,6 +19,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use bytes::Bytes;
+use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
 use outline_wire::padding::{
     MAX_PADDING_SEGMENT, PADDING_FRAME_HEADER_LEN, PaddingScheme, datagram_pad_budget,
     encode_frame_into,
@@ -27,6 +28,7 @@ use rand::{Rng, RngCore};
 
 use super::throughput_monitor::ThrottleDetectParams;
 use crate::config::PaddingConfig;
+use crate::metrics::Protocol;
 
 static PADDING: OnceLock<PaddingConfig> = OnceLock::new();
 
@@ -190,6 +192,64 @@ pub(in crate::server) fn frame_datagram_message(
     let mut out = Vec::with_capacity(PADDING_FRAME_HEADER_LEN + record.len() + pad.len());
     encode_frame_into(&mut out, record, &pad).expect("datagram-sized segments cannot overflow u16");
     Some(out.into())
+}
+
+/// Whether the first downlink messages of a TCP session on `protocol` are cut
+/// into the early-shape pieces: only padded h1/h2 carriers (the inner TLS
+/// flight there is what a record-size classifier sees). H3 / socket carriers
+/// and unpadded paths keep their wire.
+pub(in crate::server) fn shape_eligible(protocol: Protocol, scheme: PaddingScheme) -> bool {
+    scheme.is_enabled()
+        && matches!(
+            protocol,
+            Protocol::Http1 | Protocol::Http2 | Protocol::XhttpH1 | Protocol::XhttpH2
+        )
+}
+
+/// A fresh server-side shaper when `protocol` / `scheme` qualify, else `None`.
+pub(in crate::server) fn new_server_shaper(
+    protocol: Protocol,
+    scheme: PaddingScheme,
+) -> Option<EarlyShaper> {
+    shape_eligible(protocol, scheme)
+        .then(|| EarlyShaper::new(ShapeDirection::ServerToClient, &mut draw_in(&mut rand::rng())))
+}
+
+/// Adapts `rng` to the `draw(lo, hi)` callback the early-shape planner takes
+/// (uniform in `lo..=hi`).
+pub(in crate::server) fn draw_in(rng: &mut impl Rng) -> impl FnMut(usize, usize) -> usize + '_ {
+    move |lo, hi| rng.random_range(lo..=hi)
+}
+
+/// Cuts one downlink buffer into the messages the early-shape plan asks for:
+/// lead-in pad-only cover frames first (none for `ServerToClient`), then one
+/// padded message per piece. Mirrors the client's
+/// `outline_transport::carrier_padding::shaped_messages`. Past the shaping
+/// window (or for a small buffer) this is a single ordinary padded message.
+/// Caller must have checked [`PaddingScheme::is_enabled`].
+pub(in crate::server) fn shaped_messages<R: RngCore>(
+    scheme: PaddingScheme,
+    shaper: &mut EarlyShaper,
+    data: &[u8],
+    rng: &mut R,
+) -> Vec<Vec<u8>> {
+    let plan = shaper.plan(data.len(), &mut draw_in(rng));
+    let mut msgs = Vec::with_capacity(plan.covers.len() + plan.pieces.len());
+    for pad_len in plan.covers {
+        let mut pad = vec![0u8; pad_len.min(usize::from(u16::MAX))];
+        rng.fill_bytes(&mut pad);
+        let mut out = Vec::with_capacity(pad.len() + 4);
+        encode_frame_into(&mut out, &[], &pad).expect("bounded cover pad cannot overflow u16");
+        msgs.push(out);
+    }
+    let mut offset = 0;
+    for len in plan.pieces {
+        let mut out = Vec::with_capacity(len + 8);
+        frame_payload_into(scheme, &data[offset..offset + len], rng, &mut out);
+        offset += len;
+        msgs.push(out);
+    }
+    msgs
 }
 
 /// Draws a fresh pad buffer of random length in the scheme's range. Contents

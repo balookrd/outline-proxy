@@ -43,11 +43,12 @@ impl TcpShadowsocksWriter<WsWriteTransport> {
         cipher: CipherKind,
         master_key: &[u8],
         lifetime: Arc<UpstreamTransportGuard>,
+        shape: bool,
     ) -> Result<(Self, mpsc::Sender<Message>)> {
         let mut salt = [0u8; 32];
         rand::rng().fill_bytes(&mut salt[..cipher.salt_len()]);
 
-        let (transport, ctrl_tx) = WsWriteTransport::spawn(sink);
+        let (transport, ctrl_tx) = WsWriteTransport::spawn(sink, shape);
 
         let key = derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?;
         let cipher_state = AeadCipher::new(cipher, &key[..cipher.key_len()])?;
@@ -134,7 +135,7 @@ impl<T: WriteTransport> TcpShadowsocksWriter<T> {
             increment_nonce(&mut self.nonce)?;
             state.header_sent = true;
 
-            self.write_frame(frame).await?;
+            self.transport.write_frame_held(frame).await?;
             return Ok(());
         }
 

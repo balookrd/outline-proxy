@@ -1,8 +1,10 @@
 use anyhow::{Result, anyhow};
 use bytes::{Bytes, BytesMut};
+use outline_wire::padding::PaddingScheme;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::{debug, warn};
 
+use super::super::carrier_padding;
 use super::state::{MAX_MUX_SUB_CONNS, MuxRouteCtx, MuxServerCtx, MuxState, SubConnKind};
 use super::tcp_sub::open_tcp_sub;
 use super::udp_sub::{open_udp_sub, resolve_packet_addr, send_udp_payload};
@@ -92,12 +94,12 @@ where
 
     if state.sub_conns.contains_key(&session_id) {
         warn!(path = %route.path, session_id, "mux duplicate New for session");
-        send_end(tx, make_binary, session_id, true).await?;
+        send_end(tx, make_binary, state.padding, session_id, true).await?;
         return Ok(());
     }
     if state.sub_conns.len() >= MAX_MUX_SUB_CONNS {
         warn!(path = %route.path, session_id, "mux sub-conn limit reached; rejecting");
-        send_end(tx, make_binary, session_id, true).await?;
+        send_end(tx, make_binary, state.padding, session_id, true).await?;
         return Ok(());
     }
 
@@ -196,6 +198,7 @@ async fn finish_sub(state: &mut MuxState, session_id: u16) {
 pub(super) async fn send_end<Msg>(
     tx: &mpsc::Sender<Msg>,
     make_binary: fn(Bytes) -> Msg,
+    padding: PaddingScheme,
     session_id: u16,
     error: bool,
 ) -> Result<()>
@@ -205,7 +208,7 @@ where
     let mut frame = BytesMut::with_capacity(8);
     let option = if error { OPTION_ERROR } else { 0 };
     encode_frame(&mut frame, session_id, SessionStatus::End, option, None, None, None)?;
-    tx.send(make_binary(frame.freeze()))
+    tx.send(make_binary(carrier_padding::frame_downlink_message(padding, frame.freeze())))
         .await
         .map_err(|_| anyhow!("failed to queue mux End frame"))?;
     Ok(())

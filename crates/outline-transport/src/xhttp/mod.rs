@@ -79,6 +79,10 @@ mod tests_post_headers;
 #[path = "tests/udp_records.rs"]
 mod tests_udp_records;
 
+#[cfg(test)]
+#[path = "tests/boxed_io.rs"]
+mod tests_boxed_io;
+
 // Re-exports kept at the previous `super::*` paths so sibling carrier
 // modules (`h1`, `h2`, `h3`) and the rest of the crate keep working
 // after the file split — h1 still does `use super::{XhttpStream, …}`.

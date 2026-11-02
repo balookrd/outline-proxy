@@ -146,7 +146,7 @@ async fn ss_xhttp_round_trip(url: Url) -> Result<()> {
     let lifetime = UpstreamTransportGuard::new("cross-repo-ss-test", "tcp");
     let (sink, source) = stream.split();
     let (mut writer, ctrl_tx) =
-        TcpShadowsocksWriter::connect(sink, TEST_CIPHER, &master_key, Arc::clone(&lifetime))
+        TcpShadowsocksWriter::connect(sink, TEST_CIPHER, &master_key, Arc::clone(&lifetime), false)
             .await?;
     let request_salt = writer.request_salt();
     let mut reader = TcpShadowsocksReader::new(source, TEST_CIPHER, &master_key, lifetime, ctrl_tx)
@@ -387,7 +387,7 @@ async fn cross_repo_ss_combined_xhttp_both_legs_one_path() -> Result<()> {
     let lifetime = UpstreamTransportGuard::new("combined-tcp", "tcp");
     let (sink, source) = stream.split();
     let (mut writer, ctrl_tx) =
-        TcpShadowsocksWriter::connect(sink, TEST_CIPHER, &master_key, Arc::clone(&lifetime))
+        TcpShadowsocksWriter::connect(sink, TEST_CIPHER, &master_key, Arc::clone(&lifetime), false)
             .await?;
     let request_salt = writer.request_salt();
     let mut reader = TcpShadowsocksReader::new(source, TEST_CIPHER, &master_key, lifetime, ctrl_tx)

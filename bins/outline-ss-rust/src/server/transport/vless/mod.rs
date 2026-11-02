@@ -751,7 +751,10 @@ where
                 );
                 outbound
                     .data_tx
-                    .send((outbound.make_binary)(Bytes::from_static(&[vless::VERSION, 0x00])))
+                    .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
+                        route.padding,
+                        Bytes::from_static(&[vless::VERSION, 0x00]),
+                    )))
                     .await
                     .map_err(|error| {
                         anyhow!("failed to queue vless mux response header on resume: {error}")
@@ -765,6 +768,7 @@ where
                     route.protocol,
                     // This node terminates the client session, so it counts.
                     MuxAccounting::Local,
+                    route.padding,
                 );
                 state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
                 state.authenticated_user = Some(user);
@@ -808,12 +812,20 @@ where
 
     outbound
         .data_tx
-        .send((outbound.make_binary)(Bytes::from_static(&[vless::VERSION, 0x00])))
+        .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
+            route.padding,
+            Bytes::from_static(&[vless::VERSION, 0x00]),
+        )))
         .await
         .map_err(|error| anyhow!("failed to queue vless mux response header: {error}"))?;
 
     let user_counters = server.metrics.user_counters(&user.label_arc());
-    let mux = MuxState::new(user.clone(), Arc::clone(&user_counters), MuxAccounting::Local);
+    let mux = MuxState::new(
+        user.clone(),
+        Arc::clone(&user_counters),
+        MuxAccounting::Local,
+        route.padding,
+    );
     state.user_counters = Some(user_counters);
     state.authenticated_user = Some(user);
 

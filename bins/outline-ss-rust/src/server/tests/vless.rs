@@ -98,15 +98,11 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
     request.extend_from_slice(b"ping");
     socket.send(WsMessage::Binary(request.into())).await?;
 
-    let Some(Ok(WsMessage::Binary(response_header))) = socket.next().await else {
-        anyhow::bail!("missing vless response header");
-    };
-    assert_eq!(response_header.as_ref(), &[VERSION, 0x00]);
-
+    // The response header rides in the same message as the first upstream bytes.
     let Some(Ok(WsMessage::Binary(reply))) = socket.next().await else {
         anyhow::bail!("missing vless upstream reply");
     };
-    assert_eq!(reply.as_ref(), b"pong");
+    assert_eq!(reply.as_ref(), &[VERSION, 0x00, b'p', b'o', b'n', b'g']);
     socket.close(None).await?;
 
     assert_eq!(upstream_task.await??, *b"ping");
@@ -284,15 +280,11 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
     request.extend_from_slice(&payload);
     socket.send(WsMessage::Binary(request.into())).await?;
 
-    let Some(Ok(WsMessage::Binary(response_header))) = socket.next().await else {
-        anyhow::bail!("missing vless response header");
-    };
-    assert_eq!(response_header.as_ref(), &[VERSION, 0x00]);
-
+    // The response header rides in the same message as the first upstream bytes.
     let Some(Ok(WsMessage::Binary(reply))) = socket.next().await else {
         anyhow::bail!("missing vless upstream reply");
     };
-    assert_eq!(reply.as_ref(), b"pong");
+    assert_eq!(reply.as_ref(), &[VERSION, 0x00, b'p', b'o', b'n', b'g']);
     socket.close(None).await?;
 
     assert_eq!(upstream_task.await??, payload);
@@ -399,6 +391,136 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
     let ParsedFrame { meta, data, consumed } =
         parse_frame(&reply)?.expect("complete mux frame in single binary message");
     assert_eq!(consumed, reply.len());
+    assert_eq!(meta.session_id, 1);
+    assert_eq!(meta.status, SessionStatus::Keep);
+    assert_eq!(data, Some(b"pong".as_ref()));
+
+    socket.close(None).await?;
+    assert_eq!(upstream_task.await??, *b"ping");
+    server.abort();
+    Ok(())
+}
+
+/// A VLESS-over-WS path the shared padding globals pad (see
+/// `enable_combined_padding_globals`).
+pub(in crate::server::tests) const VLESS_MUX_PADDED_PATH: &str = "/vless-mux-pad";
+
+/// VLESS mux on a padded path: the whole downlink (response header, sub-connection
+/// data, End frames) must be carrier-padded, or a padded client's decoder desyncs.
+#[tokio::test]
+async fn vless_websocket_mux_tcp_relay_padded() -> Result<()> {
+    // Padding is a first-call-wins process global shared with the cluster tests; this
+    // wires the same config, which also covers this path.
+    super::resumption::cluster::enable_combined_padding_globals();
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut request = [0_u8; 4];
+        stream.read_exact(&mut request).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(request)
+    });
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let config = sample_config(listen_addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+        None,
+    )?;
+    let vless_routes =
+        super::vless_ws_route_map(VLESS_MUX_PADDED_PATH, std::slice::from_ref(&vless_user));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: vless_routes,
+        xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+                0,
+            ),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
+        crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let app = build_app(routes, services, auth, None, None);
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+
+    let (mut socket, _) =
+        connect_async(format!("ws://{listen_addr}{VLESS_MUX_PADDED_PATH}")).await?;
+
+    // VLESS MUX request header. Both Xray-core and sing-box omit the
+    // port/atyp/address for the Mux command and start the mux frame stream
+    // right after the command byte; real sub-connection targets ride inside
+    // the mux New frames that follow.
+    let mut request = Vec::new();
+    request.push(VERSION);
+    request.extend_from_slice(&parse_uuid("550e8400-e29b-41d4-a716-446655440000")?);
+    request.push(0);
+    request.push(COMMAND_MUX);
+
+    let mut new_frame = BytesMut::new();
+    let target =
+        TargetAddr::from(std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, upstream_addr.port())));
+    encode_frame(
+        &mut new_frame,
+        1,
+        SessionStatus::New,
+        OPTION_DATA,
+        Some(crate::protocol::vless_mux::Network::Tcp),
+        Some(&target),
+        Some(b"ping"),
+    )?;
+    request.extend_from_slice(&new_frame);
+    let mut framed = Vec::new();
+    outline_wire::padding::encode_frame_into(&mut framed, &request, &[])
+        .expect("padding frame within u16 bounds");
+    socket.send(WsMessage::Binary(framed.into())).await?;
+
+    // On a padded path every downlink message is a padding frame, the mux
+    // response header, the sub-connection data and End frames included.
+    let mut decoder = outline_wire::padding::PaddingDecoder::new();
+    let mut plain = Vec::new();
+    let parsed = loop {
+        let Some(Ok(WsMessage::Binary(message))) = socket.next().await else {
+            anyhow::bail!("downlink ended before a complete padded mux frame");
+        };
+        decoder.push(&message, &mut plain);
+        if plain.len() > 2
+            && let Some(frame) = parse_frame(&plain[2..])?
+        {
+            break frame;
+        }
+    };
+    assert_eq!(&plain[..2], &[VERSION, 0x00]);
+    let ParsedFrame { meta, data, consumed } = parsed;
+    assert_eq!(consumed, plain.len() - 2);
     assert_eq!(meta.session_id, 1);
     assert_eq!(meta.status, SessionStatus::Keep);
     assert_eq!(data, Some(b"pong".as_ref()));

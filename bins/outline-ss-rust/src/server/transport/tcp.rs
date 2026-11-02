@@ -65,6 +65,7 @@ use super::upstream_source::{
 };
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
+use outline_wire::early_shape::EarlyShaper;
 use outline_wire::padding::{PaddingDecoder, PaddingScheme};
 
 /// Process-wide services shared by every TCP relay session.
@@ -275,6 +276,11 @@ struct ChannelSink<Msg: Send + 'static> {
     /// Per-carrier downstream-throttle monitor; `Some` only on a padded path
     /// with detection on. Fed the send backlog (data channel past half-full).
     monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
+    /// Early-shape state; `Some` only on a padded h1/h2 carrier (see
+    /// [`carrier_padding::shape_eligible`]). While active, the first downlink
+    /// buffers are cut into several messages. On a mesh edge this sink sits on
+    /// the client-facing carrier, so shaping happens once, at the edge.
+    shaper: Option<EarlyShaper>,
 }
 
 impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg> {
@@ -294,6 +300,26 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
             && used.saturating_mul(2) >= self.tx.max_capacity()
         {
             m.note_backlog();
+        }
+        if let Some(shaper) = self.shaper.as_mut() {
+            let msgs = carrier_padding::shaped_messages(
+                self.padding,
+                shaper,
+                &ciphertext,
+                &mut rand::rng(),
+            );
+            if !shaper.is_active() {
+                self.shaper = None;
+            }
+            for m in msgs {
+                self.tx
+                    .send((self.make_binary)(Bytes::from(m)))
+                    .await
+                    .map_err(|error| {
+                        anyhow!("failed to queue encrypted websocket frame: {error}")
+                    })?;
+            }
+            return Ok(());
         }
         let payload: Bytes = if self.padding.is_enabled() {
             let mut out = Vec::with_capacity(ciphertext.len() + 8);
@@ -819,6 +845,7 @@ where
                 metrics: sink_metrics,
                 padding: sink_padding,
                 monitor: monitor_for_sink,
+                shaper: carrier_padding::new_server_shaper(protocol, sink_padding),
             },
             &mut encryptor,
             relay_metrics,
@@ -1233,6 +1260,7 @@ where
                             metrics: sink_metrics,
                             padding: sink_padding,
                             monitor: monitor_for_sink,
+                            shaper: carrier_padding::new_server_shaper(protocol, sink_padding),
                         },
                         &mut encryptor,
                         relay_metrics,
@@ -1364,6 +1392,7 @@ where
                         metrics: sink_metrics,
                         padding: sink_padding,
                         monitor: monitor_for_sink,
+                        shaper: carrier_padding::new_server_shaper(protocol, sink_padding),
                     },
                     &mut encryptor,
                     relay_metrics,

@@ -717,11 +717,18 @@ async fn do_tcp_ss_setup(
         return Ok((TcpWriter::Vless(writer), reader));
     }
 
+    // Early-session shaping is an h1/h2 trick; h3 carriers are never cut.
+    let shape = !ws_stream.is_h3();
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = setup.cipher.derive_master_key(setup.password)?;
-    let (writer, ctrl_tx) =
-        TcpShadowsocksWriter::connect(ws_sink, setup.cipher, &master_key, Arc::clone(&lifetime))
-            .await?;
+    let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
+        ws_sink,
+        setup.cipher,
+        &master_key,
+        Arc::clone(&lifetime),
+        shape,
+    )
+    .await?;
     let reader = TcpShadowsocksReader::new(ws_stream, setup.cipher, &master_key, lifetime, ctrl_tx);
     let mut writer = TcpWriter::Ws(writer);
     let reader = TcpReader::Ws(Box::new(reader))

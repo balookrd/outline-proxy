@@ -113,6 +113,7 @@ async fn connect_probe_tcp_inner(
                 uplink.cipher,
                 &master_key,
                 Arc::clone(&lifetime),
+                !is_h3,
             )
             .await?;
             let request_salt = writer.request_salt();

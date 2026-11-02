@@ -1905,6 +1905,7 @@ async fn cluster_xhttp_edge_relays_to_home() -> Result<()> {
         CipherKind::Chacha20IetfPoly1305,
         &master_key,
         Arc::clone(&lifetime),
+        false,
     )
     .await?;
     let request_salt = writer.request_salt();
@@ -2717,14 +2718,18 @@ const SS_TCP_PADDED_PATH: &str = "/tcp-pad";
 /// `cargo test` run that test is skipped, so this config wins deterministically;
 /// only a `--include-ignored` run can race the two, and they scope to different
 /// paths so the loser's path simply stays unpadded.
-fn enable_combined_padding_globals() {
+pub(in crate::server::tests) fn enable_combined_padding_globals() {
     carrier_padding::init(PaddingConfig {
         min_bytes: 4,
         max_bytes: 32,
         cover: false,
         cover_jitter_min_ms: 0,
         cover_jitter_max_ms: 0,
-        padded_paths: vec![COMBINED_PADDED_PATH.to_string(), SS_TCP_PADDED_PATH.to_string()],
+        padded_paths: vec![
+            COMBINED_PADDED_PATH.to_string(),
+            SS_TCP_PADDED_PATH.to_string(),
+            crate::server::tests::vless::VLESS_MUX_PADDED_PATH.to_string(),
+        ],
         throttle_detect_enabled: false,
         throttle_ratio_percent: 200,
         throttle_window_secs: 1,
