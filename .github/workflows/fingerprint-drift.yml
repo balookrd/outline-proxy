@@ -11,6 +11,11 @@ on:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
+    inputs:
+      chrome_flags:
+        description: "Extra Chrome flags for a diagnosis run (the issue is not touched)"
+        required: false
+        default: ""
   pull_request:
     paths:
       - "scripts/fingerprint-drift/**"
@@ -44,6 +49,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/fingerprint-drift/tests -t scripts/fingerprint-drift/tests -v
 
       - name: capture fresh browsers
+        env:
+          CHROME_FLAGS: ${{ inputs.chrome_flags }}
         run: scripts/fingerprint-drift/capture.sh --install "$RUNNER_TEMP/capture"
 
       - name: normalize
@@ -75,7 +82,9 @@ jobs:
           retention-days: 30
 
       - name: update the drift issue
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.compare.outcome == 'success'
+        if: >-
+          github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+          inputs.chrome_flags == '' && steps.compare.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           CODE: ${{ steps.compare.outputs.code }}

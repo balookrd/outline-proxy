@@ -8,6 +8,9 @@
 #
 # CHROME / FIREFOX override the browser binaries (default google-chrome,
 # firefox), e.g. CHROME=chromium for a local arm64 run without --install.
+# CHROME_FLAGS adds whitespace-separated flags to every Chrome run (a
+# diagnosis aid; the baseline is Chrome's defaults). Each Chrome run also
+# writes a net-log next to its log (<scenario>.netlog.json).
 #
 # Writes <out-dir>/versions.json and, per browser, <out-dir>/<browser>/
 # {h2,h1}-{hello,plain}.pcap and quic.pcap — the layout normalize.py reads.
@@ -88,9 +91,11 @@ require_packets() { # <pcap>: a QUIC sink that saw nothing leaves only the 24-by
 chrome() { # <log> <args...>
   local log=$1; shift
   local sandbox=(); [ "$(id -u)" = 0 ] && sandbox=(--no-sandbox)
+  local extra=(); read -ra extra <<<"${CHROME_FLAGS:-}"
   timeout "$BROWSER_SECS" xvfb-run -a "$CHROME" "${sandbox[@]}" \
     --user-data-dir="$(mktemp -d)" --no-first-run --no-default-browser-check \
-    --ignore-certificate-errors-spki-list="$spki" "$@" >"$log" 2>&1 || true
+    --ignore-certificate-errors-spki-list="$spki" --log-net-log="${log%.log}.netlog.json" \
+    "${extra[@]}" "$@" >"$log" 2>&1 || true
 }
 
 firefox_profile() {
