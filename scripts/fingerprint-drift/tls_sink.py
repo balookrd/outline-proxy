@@ -28,7 +28,7 @@ import time
 
 from pcapwrite import PcapWriter
 
-HOLD = 4.0
+HOLD = 8.0  # the page starts its requests 2 s in (page.html)
 PAGE = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page.html"), "rb").read()
 WS_GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
