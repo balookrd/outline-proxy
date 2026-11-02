@@ -1,0 +1,833 @@
+{
+  "browser": "chrome",
+  "h1": {
+    "fetch_get": [
+      [
+        "Host",
+        "<volatile>"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "<platform>"
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "Accept",
+        "*/*"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "same-origin"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "cors"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "empty"
+      ],
+      [
+        "Referer",
+        "<volatile>"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "<volatile>"
+      ]
+    ],
+    "fetch_post": [
+      [
+        "Host",
+        "<volatile>"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "Content-Length",
+        "4"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "<platform>"
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+      ],
+      [
+        "Content-Type",
+        "text/plain;charset=UTF-8"
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "Accept",
+        "*/*"
+      ],
+      [
+        "Origin",
+        "<volatile>"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "same-origin"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "cors"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "empty"
+      ],
+      [
+        "Referer",
+        "<volatile>"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "<volatile>"
+      ]
+    ],
+    "navigate": [
+      [
+        "Host",
+        "<volatile>"
+      ],
+      [
+        "Connection",
+        "keep-alive"
+      ],
+      [
+        "sec-ch-ua",
+        "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+      ],
+      [
+        "sec-ch-ua-mobile",
+        "?0"
+      ],
+      [
+        "sec-ch-ua-platform",
+        "<platform>"
+      ],
+      [
+        "Upgrade-Insecure-Requests",
+        "1"
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+      ],
+      [
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+      ],
+      [
+        "Sec-Fetch-Site",
+        "none"
+      ],
+      [
+        "Sec-Fetch-Mode",
+        "navigate"
+      ],
+      [
+        "Sec-Fetch-User",
+        "?1"
+      ],
+      [
+        "Sec-Fetch-Dest",
+        "document"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "<volatile>"
+      ]
+    ],
+    "ws": [
+      [
+        "Host",
+        "<volatile>"
+      ],
+      [
+        "Connection",
+        "Upgrade"
+      ],
+      [
+        "Pragma",
+        "no-cache"
+      ],
+      [
+        "Cache-Control",
+        "no-cache"
+      ],
+      [
+        "User-Agent",
+        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+      ],
+      [
+        "Upgrade",
+        "websocket"
+      ],
+      [
+        "Origin",
+        "<volatile>"
+      ],
+      [
+        "Sec-WebSocket-Version",
+        "13"
+      ],
+      [
+        "Accept-Encoding",
+        "gzip, deflate, br, zstd"
+      ],
+      [
+        "Accept-Language",
+        "<volatile>"
+      ],
+      [
+        "Sec-WebSocket-Key",
+        "<volatile>"
+      ],
+      [
+        "Sec-WebSocket-Extensions",
+        "permessage-deflate; client_max_window_bits"
+      ]
+    ]
+  },
+  "h2": {
+    "headers": {
+      "fetch_get": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":authority",
+          "<volatile>"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/get-xhr"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "<platform>"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "sec-fetch-dest",
+          "empty"
+        ],
+        [
+          "referer",
+          "<volatile>"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "<volatile>"
+        ],
+        [
+          "priority",
+          "u=1, i"
+        ]
+      ],
+      "fetch_post": [
+        [
+          ":method",
+          "POST"
+        ],
+        [
+          ":authority",
+          "<volatile>"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/post-xhr"
+        ],
+        [
+          "content-length",
+          "4"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "<platform>"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+        ],
+        [
+          "content-type",
+          "text/plain;charset=UTF-8"
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "accept",
+          "*/*"
+        ],
+        [
+          "origin",
+          "<volatile>"
+        ],
+        [
+          "sec-fetch-site",
+          "same-origin"
+        ],
+        [
+          "sec-fetch-mode",
+          "cors"
+        ],
+        [
+          "sec-fetch-dest",
+          "empty"
+        ],
+        [
+          "referer",
+          "<volatile>"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "<volatile>"
+        ],
+        [
+          "priority",
+          "u=1, i"
+        ]
+      ],
+      "navigate": [
+        [
+          ":method",
+          "GET"
+        ],
+        [
+          ":authority",
+          "<volatile>"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/page"
+        ],
+        [
+          "sec-ch-ua",
+          "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+        ],
+        [
+          "sec-ch-ua-mobile",
+          "?0"
+        ],
+        [
+          "sec-ch-ua-platform",
+          "<platform>"
+        ],
+        [
+          "upgrade-insecure-requests",
+          "1"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+        ],
+        [
+          "accept",
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+        ],
+        [
+          "sec-fetch-site",
+          "none"
+        ],
+        [
+          "sec-fetch-mode",
+          "navigate"
+        ],
+        [
+          "sec-fetch-user",
+          "?1"
+        ],
+        [
+          "sec-fetch-dest",
+          "document"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "<volatile>"
+        ],
+        [
+          "priority",
+          "u=0, i"
+        ]
+      ],
+      "ws": [
+        [
+          ":method",
+          "CONNECT"
+        ],
+        [
+          ":authority",
+          "<volatile>"
+        ],
+        [
+          ":scheme",
+          "https"
+        ],
+        [
+          ":path",
+          "/ws"
+        ],
+        [
+          ":protocol",
+          "websocket"
+        ],
+        [
+          "pragma",
+          "no-cache"
+        ],
+        [
+          "cache-control",
+          "no-cache"
+        ],
+        [
+          "user-agent",
+          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+        ],
+        [
+          "origin",
+          "<volatile>"
+        ],
+        [
+          "sec-websocket-version",
+          "13"
+        ],
+        [
+          "accept-encoding",
+          "gzip, deflate, br, zstd"
+        ],
+        [
+          "accept-language",
+          "<volatile>"
+        ],
+        [
+          "sec-websocket-extensions",
+          "permessage-deflate; client_max_window_bits"
+        ]
+      ]
+    },
+    "priority": {
+      "fetch_get": {
+        "exclusive": 1,
+        "weight": 219
+      },
+      "fetch_post": {
+        "exclusive": 1,
+        "weight": 219
+      },
+      "navigate": {
+        "exclusive": 1,
+        "weight": 255
+      },
+      "ws": {
+        "exclusive": 1,
+        "weight": 146
+      }
+    },
+    "settings": [
+      [
+        1,
+        65536
+      ],
+      [
+        2,
+        0
+      ],
+      [
+        4,
+        6291456
+      ],
+      [
+        6,
+        262144
+      ]
+    ],
+    "stream_window_update": null,
+    "window_update": 15663105
+  },
+  "major": 156,
+  "quic": {
+    "alpn": [
+      "h3"
+    ],
+    "alps": {
+      "codepoint": 17613,
+      "protocols": [
+        "h3"
+      ]
+    },
+    "ciphers": [
+      4865,
+      4866,
+      4867
+    ],
+    "compress_cert": [
+      2
+    ],
+    "ech": true,
+    "extensions": [
+      0,
+      10,
+      13,
+      16,
+      27,
+      43,
+      45,
+      51,
+      57,
+      17613,
+      51764,
+      65037
+    ],
+    "groups": [
+      4588,
+      29,
+      23,
+      24
+    ],
+    "ja4_ab": "q13d0312h3_55b375c5d22e",
+    "key_share": [
+      4588,
+      29
+    ],
+    "sig_algs": [
+      1027,
+      2052,
+      1025,
+      1283,
+      2053,
+      1281,
+      2054,
+      1537,
+      513
+    ],
+    "supported_versions": [
+      772
+    ],
+    "transport_parameters": [
+      [
+        1,
+        "80007530"
+      ],
+      [
+        3,
+        "45c0"
+      ],
+      [
+        4,
+        "80f00000"
+      ],
+      [
+        5,
+        "80600000"
+      ],
+      [
+        6,
+        "80600000"
+      ],
+      [
+        7,
+        "80600000"
+      ],
+      [
+        8,
+        "4064"
+      ],
+      [
+        9,
+        "4067"
+      ],
+      [
+        15,
+        "len:0"
+      ],
+      [
+        17,
+        [
+          "00000001",
+          "00000001",
+          "grease"
+        ]
+      ],
+      [
+        32,
+        "80010000"
+      ],
+      [
+        12584,
+        "4f524947"
+      ],
+      [
+        "grease",
+        null
+      ]
+    ],
+    "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f"
+  },
+  "tcp_h1": {
+    "alpn": [
+      "http/1.1"
+    ],
+    "alps": null,
+    "ciphers": [
+      "grease",
+      4865,
+      4866,
+      4867,
+      49195,
+      49199,
+      49196,
+      49200,
+      52393,
+      52392,
+      49171,
+      49172,
+      156,
+      157,
+      47,
+      53
+    ],
+    "compress_cert": [
+      2
+    ],
+    "ech": true,
+    "extensions": [
+      0,
+      5,
+      10,
+      11,
+      13,
+      16,
+      18,
+      23,
+      27,
+      35,
+      43,
+      45,
+      51,
+      51764,
+      65037,
+      65281,
+      "grease",
+      "grease"
+    ],
+    "groups": [
+      "grease",
+      4588,
+      29,
+      23,
+      24
+    ],
+    "ja4_ab": "t13d1516h1_8daaf6152771",
+    "key_share": [
+      "grease",
+      4588,
+      29
+    ],
+    "sig_algs": [
+      "grease",
+      2308,
+      2309,
+      2310,
+      1027,
+      2052,
+      1025,
+      1283,
+      2053,
+      1281,
+      2054,
+      1537
+    ],
+    "supported_versions": [
+      "grease",
+      772,
+      771
+    ],
+    "transport_parameters": null,
+    "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f"
+  },
+  "tcp_h2": {
+    "alpn": [
+      "h2",
+      "http/1.1"
+    ],
+    "alps": {
+      "codepoint": 17613,
+      "protocols": [
+        "h2"
+      ]
+    },
+    "ciphers": [
+      "grease",
+      4865,
+      4866,
+      4867,
+      49195,
+      49199,
+      49196,
+      49200,
+      52393,
+      52392,
+      49171,
+      49172,
+      156,
+      157,
+      47,
+      53
+    ],
+    "compress_cert": [
+      2
+    ],
+    "ech": true,
+    "extensions": [
+      0,
+      5,
+      10,
+      11,
+      13,
+      16,
+      18,
+      23,
+      27,
+      35,
+      43,
+      45,
+      51,
+      17613,
+      51764,
+      65037,
+      65281,
+      "grease",
+      "grease"
+    ],
+    "groups": [
+      "grease",
+      4588,
+      29,
+      23,
+      24
+    ],
+    "ja4_ab": "t13d1517h2_8daaf6152771",
+    "key_share": [
+      "grease",
+      4588,
+      29
+    ],
+    "sig_algs": [
+      "grease",
+      2308,
+      2309,
+      2310,
+      1027,
+      2052,
+      1025,
+      1283,
+      2053,
+      1281,
+      2054,
+      1537
+    ],
+    "supported_versions": [
+      "grease",
+      772,
+      771
+    ],
+    "transport_parameters": null,
+    "trust_anchors": "00b80582df1302010582df1302060582df13020d0582df13020e0582df13020f0582df1302120582df1302130582df13021408839a648c9b2d010708839a648c9b2d010808839a648c9b2d010908839a648c9b2d010a08839a648c9b2d010b08839a648c9b2d010c08839a648c9b2d010d08839a648c9b2d011208839a648c9b2d011304d679090104d679090404d679090504d679090604d679090704d679090804d679090a04d679090b04d679090c04d679090d04d679090f"
+  }
+}

@@ -1,0 +1,7 @@
+<!doctype html>
+<html><body><script>
+fetch("/get-xhr");
+fetch("/post-xhr", {method: "POST", body: "abcd"});
+new WebSocket("wss://" + location.host + "/ws");
+setTimeout(() => fetch("/again"), 1500);
+</script></body></html>

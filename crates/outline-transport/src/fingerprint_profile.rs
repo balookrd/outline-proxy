@@ -214,7 +214,10 @@ pub struct Profile {
 /// reads "Chrome 130 in 2027" as an obvious old client and starts
 /// re-detecting this binary). To refresh: update each `user_agent`
 /// and `sec_ch_ua` field in the table below, bump the constant to
-/// the current `date +%s`, then re-run the suite.
+/// the current `date +%s`, re-measure the browser hellos and rebuild
+/// `scripts/fingerprint-drift/baseline/*.json` from the new captures
+/// (`scripts/fingerprint-drift/README.md`; a test ties the baseline
+/// majors to this table), then re-run the suite.
 pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_793_381_218; // 2026-10-30 UTC
 
 /// Maximum tolerated age of [`PROFILES`] before the staleness test

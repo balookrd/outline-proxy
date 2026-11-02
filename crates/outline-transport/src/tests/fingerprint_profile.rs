@@ -297,6 +297,62 @@ fn profile_pool_must_be_refreshed_at_least_every_refresh_period() {
     );
 }
 
+/// `"major": N` at the top of a drift baseline (`normalize.py` writes it with
+/// `indent=2, sort_keys=True`; no other key of the snapshot is named `major`).
+fn drift_baseline_major(json: &str) -> u32 {
+    let rest = json
+        .split("\"major\": ")
+        .nth(1)
+        .expect("drift baseline has a \"major\" key");
+    rest.chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .expect("drift baseline major is a number")
+}
+
+#[test]
+fn drift_baselines_describe_the_profiled_browser_majors() {
+    // scripts/fingerprint-drift/baseline/*.json are the browser snapshots the
+    // weekly drift monitor compares fresh browsers with. They must describe the
+    // releases PROFILES imitates: refreshing one without the other makes the
+    // monitor report drift against the wrong reference (or stay silent on it).
+    let baselines: [(&str, &str, &str); 2] = [
+        (
+            include_str!("../../../../scripts/fingerprint-drift/baseline/chrome.json"),
+            "chrome-",
+            "Chrome/",
+        ),
+        (
+            include_str!("../../../../scripts/fingerprint-drift/baseline/firefox.json"),
+            "firefox-",
+            "Firefox/",
+        ),
+    ];
+    for (json, name_prefix, ua_token) in baselines {
+        let major = drift_baseline_major(json);
+        let profiles: Vec<&Profile> =
+            PROFILES.iter().filter(|p| p.name.starts_with(name_prefix)).collect();
+        assert!(!profiles.is_empty(), "no {name_prefix}* profile in PROFILES");
+        for p in profiles {
+            assert!(
+                p.user_agent.contains(&format!("{ua_token}{major}.")),
+                "{}: user_agent {:?} does not match drift baseline major {major}; \
+                 update both (see scripts/fingerprint-drift/README.md)",
+                p.name,
+                p.user_agent,
+            );
+            if let Some(sec_ch_ua) = p.sec_ch_ua {
+                assert!(
+                    sec_ch_ua.contains(&format!("\"Chromium\";v=\"{major}\"")),
+                    "{}: sec_ch_ua {sec_ch_ua:?} does not match drift baseline major {major}",
+                    p.name,
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn note_first_use_treats_distinct_ports_as_distinct_entries() {
     // Two URLs with the same host but different ports are different
