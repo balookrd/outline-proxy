@@ -45,6 +45,7 @@ use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
 use crate::resumption::SessionId;
 
+use super::post_status::{BusyRetry, check_post_status};
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
 use crate::request_headers::{HttpVersion, RequestKind};
 
@@ -418,9 +419,20 @@ async fn driver_loop_h1(
             fin.disarm();
             break;
         }
-        if let Err(error) =
-            post_one(&mut send, &uri_prefix, &base_headers, seq, bytes, profile).await
-        {
+        // Re-sent while the server answers busy (503, see `super::post_status`).
+        let mut retry = BusyRetry::new();
+        let result = loop {
+            let result =
+                post_one(&mut send, &uri_prefix, &base_headers, seq, bytes.clone(), profile).await;
+            if !retry.again(&result).await {
+                break result;
+            }
+            if let Err(error) = send.ready().await {
+                break Err(anyhow::Error::new(error)
+                    .context("xhttp h1 uplink connection lost before a POST retry"));
+            }
+        };
+        if let Err(error) = result {
             warn!(?error, seq, "xhttp/h1 POST failed");
             let _ = in_tx
                 .send_control(Err(io_ws_err("xhttp/h1 uplink POST failed")))
@@ -524,8 +536,5 @@ async fn post_one(
     // Drain the (small) response body so hyper releases the keep-alive
     // socket back into the ready state for the next POST.
     let _ = resp.into_body().collect().await;
-    if !status.is_success() {
-        bail!("xhttp/h1 POST seq={seq} returned {status}");
-    }
-    Ok(())
+    check_post_status("xhttp/h1", seq, status)
 }

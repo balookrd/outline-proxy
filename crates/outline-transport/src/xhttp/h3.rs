@@ -36,7 +36,9 @@ use crate::h3::H3DatagramBinding;
 use crate::h3::vendored::{H3RequestStreamHandle, request_quarter_stream_id};
 use crate::resumption::SessionId;
 
+use super::post_status::{BusyRetry, check_post_status};
 use super::stream::io_ws_err;
+use super::window::UplinkWindow;
 use crate::request_headers::{HttpVersion, RequestKind};
 
 use super::{
@@ -477,6 +479,7 @@ async fn driver_loop_h3<T, S>(
     // enough to keep the QUIC connection, its driver task and the endpoint
     // underneath alive until the POST's own deadline expires.
     let mut posts: JoinSet<()> = JoinSet::new();
+    let window = UplinkWindow::new();
     // Shared with the FIN guard — see the h2 sibling; an aborted driver never
     // reaches the bottom of this function, but its locals still drop.
     let next_seq = Arc::new(AtomicU64::new(0));
@@ -507,7 +510,10 @@ async fn driver_loop_h3<T, S>(
             Message::Close(_) => break,
             _ => continue,
         };
-        let seq = next_seq.fetch_add(1, Ordering::Relaxed);
+        // Claim the seq only once the window admits it — see the h2 sibling.
+        let seq = next_seq.load(Ordering::Relaxed);
+        let slot = window.admit(seq).await;
+        next_seq.store(seq + 1, Ordering::Relaxed);
         let send = send_request.clone();
         let base_headers = Arc::clone(&base_headers);
         let uri_prefix = Arc::clone(&uri_prefix);
@@ -516,6 +522,7 @@ async fn driver_loop_h3<T, S>(
             // Permit rides the POST — the bytes are resident until h3 has sent
             // them, so the queue budget must keep covering them.
             let _permit = permit;
+            let _slot = slot;
             if let Err(error) = post_one_bounded(send, &uri_prefix, &base_headers, seq, bytes).await
             {
                 warn!(?error, seq, "xhttp/h3 POST failed");
@@ -739,7 +746,8 @@ where
     Ok(())
 }
 
-/// One packet-up POST under [`POST_TIMEOUT`]. On expiry the inner future is
+/// One packet-up POST under [`POST_TIMEOUT`], re-sent while the server answers
+/// it as busy (503, see [`super::post_status`]). On expiry the inner future is
 /// dropped, which drops both the request stream and this task's `SendRequest`
 /// clone — the last of those is what lets h3 close the QUIC connection instead
 /// of parking it on an unresponsive server forever.
@@ -751,9 +759,19 @@ async fn post_one_bounded<T>(
     payload: Bytes,
 ) -> Result<()>
 where
-    T: h3::quic::OpenStreams<Bytes>,
+    T: h3::quic::OpenStreams<Bytes> + Clone,
 {
-    match timeout(POST_TIMEOUT, post_one(send, uri_prefix, base_headers, seq, payload)).await {
+    let attempts = async move {
+        let mut retry = BusyRetry::new();
+        loop {
+            let result =
+                post_one(send.clone(), uri_prefix, base_headers, seq, payload.clone()).await;
+            if !retry.again(&result).await {
+                return result;
+            }
+        }
+    };
+    match timeout(POST_TIMEOUT, attempts).await {
         Ok(result) => result,
         Err(_) => bail!("xhttp/h3 POST seq={seq} timed out after {}s", POST_TIMEOUT.as_secs()),
     }
@@ -809,8 +827,5 @@ where
     // promptly (server-side `post_response_headers` mirrors content,
     // not bytes).
     while let Ok(Some(_)) = stream.recv_data().await {}
-    if !status.is_success() {
-        bail!("xhttp/h3 POST seq={seq} returned {status}");
-    }
-    Ok(())
+    check_post_status("xhttp/h3", seq, status)
 }
