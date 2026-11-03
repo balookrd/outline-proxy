@@ -36,7 +36,9 @@ use crate::guards::AbortOnDrop;
 use crate::resumption::SessionId;
 use crate::{TransportOperation, connect_tcp_socket};
 
+use super::post_status::{BusyRetry, check_post_status};
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
+use super::window::UplinkWindow;
 use crate::request_headers::{HttpVersion, RequestKind};
 
 use super::{
@@ -558,6 +560,7 @@ async fn driver_loop_h2(
     // keep hyper's connection, and the socket under it, alive until the POST's
     // own deadline expires.
     let mut posts: JoinSet<()> = JoinSet::new();
+    let window = UplinkWindow::new();
     // Shared with the FIN guard, which needs the current seq even when this task
     // is aborted mid-loop rather than reaching the bottom of the function.
     let next_seq = Arc::new(AtomicU64::new(0));
@@ -598,8 +601,13 @@ async fn driver_loop_h2(
             Message::Close(_) => break,
             _ => continue,
         };
+        // Claim the seq only once the window admits it: an abort while waiting
+        // must leave `next_seq` at the last POST actually sent, or the FIN would
+        // name a seq the server never sees.
+        let seq = next_seq.load(Ordering::Relaxed);
+        let slot = window.admit(seq).await;
+        next_seq.store(seq + 1, Ordering::Relaxed);
         let pieces = shaped_post_pieces(&mut shaper, bytes, &mut rand::rng());
-        let seq = next_seq.fetch_add(1, Ordering::Relaxed);
         let mut send = send_request.clone();
         let base_headers = Arc::clone(&base_headers);
         let uri_prefix = Arc::clone(&uri_prefix);
@@ -619,6 +627,7 @@ async fn driver_loop_h2(
             // The permit rides the POST: these bytes are still resident until
             // hyper has written them, so the budget must keep covering them.
             let _permit = permit;
+            let _slot = slot;
             if let Err(error) =
                 post_one_bounded(send, &uri_prefix, &base_headers, seq, pieces).await
             {
@@ -751,7 +760,8 @@ pub(super) fn build_post_headers(
     super::build_post_template(profile, HttpVersion::H2, origin, None, datagram_records)
 }
 
-/// One packet-up POST under [`POST_TIMEOUT`]. On expiry the inner future is
+/// One packet-up POST under [`POST_TIMEOUT`], re-sent while the server answers
+/// it as busy (503, see [`super::post_status`]). On expiry the inner future is
 /// dropped, which resets the h2 stream and drops this task's `SendRequest`
 /// clone — the last of those is what lets hyper close the connection instead
 /// of parking it on an unresponsive server forever.
@@ -762,7 +772,21 @@ async fn post_one_bounded(
     seq: u64,
     pieces: Vec<Bytes>,
 ) -> Result<()> {
-    match timeout(POST_TIMEOUT, post_one(send, uri_prefix, base_headers, seq, pieces)).await {
+    let attempts = async {
+        let mut retry = BusyRetry::new();
+        let mut send = send;
+        loop {
+            let result =
+                post_one(send.clone(), uri_prefix, base_headers, seq, pieces.clone()).await;
+            if !retry.again(&result).await {
+                return result;
+            }
+            send.ready()
+                .await
+                .context("xhttp h2 connection lost before a POST retry")?;
+        }
+    };
+    match timeout(POST_TIMEOUT, attempts).await {
         Ok(result) => result,
         Err(_) => bail!("xhttp POST seq={seq} timed out after {}s", POST_TIMEOUT.as_secs()),
     }
@@ -796,8 +820,5 @@ async fn post_one(
     let status = resp.status();
     // Drain the (small) response body so hyper releases the stream.
     let _ = resp.into_body().collect().await;
-    if !status.is_success() {
-        bail!("xhttp POST seq={seq} returned {status}");
-    }
-    Ok(())
+    check_post_status("xhttp", seq, status)
 }

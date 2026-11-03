@@ -52,6 +52,7 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 ### Fixed
 
+- **XHTTP packet-up no longer breaks on a long upload.** Two client faults ended the session whenever the upload outran the server. (1) A 503 from the server means its uplink buffers are full (the in-order queue its relay has not drained, or the reorder buffer); the seq is not consumed and the POST is expected again. The client treated it as fatal: the session broke and the uplink was downgraded. It now re-sends the same POST after a doubling pause of 5..=200 ms for up to 30 s, on `xhttp_h1`, `xhttp_h2` and `xhttp_h3`; any other status (409 seq gap, 410 closed session) still ends the session. (2) On `xhttp_h2` / `xhttp_h3` every POST started as soon as the data arrived, and a parked POST is answered at once, so one slow POST let the client run more than 64 seqs ahead and the server tore the session down (409, `seq gap too large`). The client now keeps a per-session window of 30 POSTs (Xray's default `scMaxBufferedPosts`) anchored at the oldest unfinished one; a write beyond it waits, which backs the uplink queue up to the sender. On the test stand every 100 MiB upload over `xhttp_h2` / `xhttp_h3` packet-up failed this way. No config keys; the wire format is unchanged.
 - `outline_ws_udp_h3_datagram_fallback_total{direction="down",proto="vless"}`
   now counts one per VLESS-UDP record that rode the stream. It used to count
   HTTP/3 body chunks, which on `xhttp_h3` split a record about twice, so the

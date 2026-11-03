@@ -504,3 +504,184 @@ async fn fin_at_seq_zero_only_when_the_uplink_rode_datagrams() {
     }
     assert_eq!(*fired.lock(), vec![0], "only the datagram session sends the seq-0 FIN");
 }
+
+/// A stalled POST must hold the uplink back instead of letting later POSTs run
+/// past the server's reorder window: ours answers 503 once a POST arrives 64
+/// seqs ahead, Xray once 30 are buffered. Parked POSTs are answered at once, so
+/// it is the stalled seq, not the POSTs in flight, that the client must anchor on.
+#[tokio::test(flavor = "multi_thread")]
+async fn packet_up_h2_stays_within_the_reorder_window_behind_a_stalled_post() -> Result<()> {
+    const WRITES: u64 = 3 * super::window::UPLINK_WINDOW_POSTS;
+    let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let (seen_srv, release_srv) = (Arc::clone(&seen), Arc::clone(&release));
+    let _server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let svc = service_fn(move |req: Request<Incoming>| {
+            let (seen, release) = (Arc::clone(&seen_srv), Arc::clone(&release_srv));
+            async move {
+                if req.method() == Method::POST {
+                    let seq: u64 = req
+                        .uri()
+                        .path()
+                        .rsplit_once('/')
+                        .and_then(|(_, tail)| tail.parse().ok())
+                        .unwrap_or(u64::MAX);
+                    let _ = req.into_body().collect().await;
+                    seen.lock().push(seq);
+                    if seq == 0 {
+                        release.notified().await;
+                    }
+                    return Ok::<_, Infallible>(
+                        Response::builder().status(StatusCode::OK).body(empty_body()).unwrap(),
+                    );
+                }
+                // GET: hold the downlink open with no data.
+                let body = BodyExt::boxed(StreamBody::new(futures_util::stream::pending::<
+                    Result<Frame<Bytes>, Infallible>,
+                >()));
+                Ok(Response::builder().status(StatusCode::OK).body(body).unwrap())
+            }
+        });
+        let _ = ServerBuilder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), svc)
+            .await;
+    });
+    let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
+    let cache = DnsCache::new(Duration::from_secs(30));
+    let (mut stream, ..) = super::connect_xhttp(
+        &cache,
+        &base_url,
+        TransportMode::XhttpH2,
+        DialNetworkOptions::default(),
+        None,
+        false,
+        false,
+        0,
+        None,
+        false,
+        false,
+    )
+    .await?;
+    let sender = tokio::spawn(async move {
+        for i in 0..WRITES {
+            stream
+                .send(Message::Binary(Bytes::from(i.to_be_bytes().to_vec())))
+                .await?;
+        }
+        Ok::<_, anyhow::Error>(stream)
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let max_seen = seen.lock().iter().copied().max().unwrap_or(0);
+    assert_eq!(
+        max_seen,
+        super::window::UPLINK_WINDOW_POSTS - 1,
+        "with seq 0 stalled the client must stop at the window's edge"
+    );
+
+    release.notify_one();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while (seen.lock().len() as u64) < WRITES {
+        assert!(tokio::time::Instant::now() < deadline, "the uplink did not resume");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let _stream = sender.await??;
+    Ok(())
+}
+
+/// A 503 is the server's "buffers full, send this seq again" (the seq is not
+/// consumed). The client must re-send the same POST instead of tearing the
+/// session down, which is what broke every upload that outran the server's
+/// upstream.
+#[tokio::test(flavor = "multi_thread")]
+async fn packet_up_h2_resends_a_post_the_server_refused_as_busy() -> Result<()> {
+    let accepted: Arc<Mutex<Vec<(u64, Bytes)>>> = Arc::new(Mutex::new(Vec::new()));
+    let refusals = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let (accepted_srv, refusals_srv) = (Arc::clone(&accepted), Arc::clone(&refusals));
+    let _server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let svc = service_fn(move |req: Request<Incoming>| {
+            let (accepted, refusals) = (Arc::clone(&accepted_srv), Arc::clone(&refusals_srv));
+            async move {
+                if req.method() == Method::POST {
+                    let seq: u64 = req
+                        .uri()
+                        .path()
+                        .rsplit_once('/')
+                        .and_then(|(_, tail)| tail.parse().ok())
+                        .unwrap_or(u64::MAX);
+                    let body = req.into_body().collect().await.unwrap().to_bytes();
+                    if seq == 1 && refusals.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                        return Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(StatusCode::SERVICE_UNAVAILABLE)
+                                .body(empty_body())
+                                .unwrap(),
+                        );
+                    }
+                    accepted.lock().push((seq, body));
+                    return Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .body(empty_body())
+                        .unwrap());
+                }
+                let body = BodyExt::boxed(StreamBody::new(futures_util::stream::pending::<
+                    Result<Frame<Bytes>, Infallible>,
+                >()));
+                Ok(Response::builder().status(StatusCode::OK).body(body).unwrap())
+            }
+        });
+        let _ = ServerBuilder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), svc)
+            .await;
+    });
+    let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
+    let cache = DnsCache::new(Duration::from_secs(30));
+    let (mut stream, ..) = super::connect_xhttp(
+        &cache,
+        &base_url,
+        TransportMode::XhttpH2,
+        DialNetworkOptions::default(),
+        None,
+        false,
+        false,
+        0,
+        None,
+        false,
+        false,
+    )
+    .await?;
+    for body in [&b"zero"[..], b"one", b"two"] {
+        stream.send(Message::Binary(Bytes::copy_from_slice(body))).await?;
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while accepted.lock().len() < 3 {
+        assert!(tokio::time::Instant::now() < deadline, "seq 1 was not re-sent");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mut got = accepted.lock().clone();
+    got.sort_by_key(|(seq, _)| *seq);
+    assert_eq!(
+        got,
+        [
+            (0, Bytes::from_static(b"zero")),
+            (1, Bytes::from_static(b"one")),
+            (2, Bytes::from_static(b"two"))
+        ]
+    );
+    assert_eq!(refusals.load(std::sync::atomic::Ordering::SeqCst), 3, "two 503s, then accepted");
+    // The session survived the 503s: the uplink still carries.
+    stream.send(Message::Binary(Bytes::from_static(b"three"))).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while accepted.lock().len() < 4 {
+        assert!(tokio::time::Instant::now() < deadline, "the session died after the 503s");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    Ok(())
+}

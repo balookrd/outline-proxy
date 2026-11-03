@@ -53,7 +53,9 @@ mod h2;
 mod h3;
 #[cfg(feature = "h3")]
 pub(crate) mod h3_pool;
+mod post_status;
 mod stream;
+mod window;
 
 #[cfg(test)]
 #[path = "tests/packet_up.rs"]
