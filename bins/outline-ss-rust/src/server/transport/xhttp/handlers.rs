@@ -40,9 +40,9 @@ use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::padding::post_response_headers;
 use super::{
     AttachOutcome, FIN_HEADER, RelayPermit, SEQ_HEADER, SessionSlot, UDP_RECORDS_ENABLED,
-    UDP_RECORDS_HEADER, UplinkIngestError, XhttpDuplex, XhttpRegistry, XhttpSession, XhttpSubmode,
-    generate_anonymous_session_id, generate_padding_header, is_valid_session_id,
-    masquerade_response_headers,
+    UDP_RECORDS_HEADER, UPLINK_ROOM_PATIENCE, UplinkIngestError, XhttpDuplex, XhttpRegistry,
+    XhttpSession, XhttpSubmode, generate_anonymous_session_id, generate_padding_header,
+    is_valid_session_id, masquerade_response_headers,
 };
 
 /// Cap on the bytes a single POST may carry, to bound memory per
@@ -533,7 +533,7 @@ async fn xhttp_post(
         "xhttp uplink chunk"
     );
 
-    if let Err(error) = session.ingest_uplink(seq, bytes) {
+    if let Err(error) = session.ingest_uplink_waiting(seq, bytes, UPLINK_ROOM_PATIENCE).await {
         match error {
             UplinkIngestError::Closed => return short_status(StatusCode::GONE),
             UplinkIngestError::GapTooLarge { expected, got } => {

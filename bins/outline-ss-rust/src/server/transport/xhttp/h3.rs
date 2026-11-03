@@ -31,8 +31,8 @@ use super::handlers::{
 };
 use super::padding::post_response_headers;
 use super::{
-    AttachOutcome, FIN_HEADER, SEQ_HEADER, SessionSlot, UplinkIngestError, XhttpRegistry,
-    XhttpSession, XhttpSubmode, generate_padding_header, is_valid_session_id,
+    AttachOutcome, FIN_HEADER, SEQ_HEADER, SessionSlot, UPLINK_ROOM_PATIENCE, UplinkIngestError,
+    XhttpRegistry, XhttpSession, XhttpSubmode, generate_padding_header, is_valid_session_id,
     masquerade_response_headers,
 };
 
@@ -431,7 +431,7 @@ async fn xhttp_h3_post(
         session = %session_id, seq, len = bytes.len(), fin,
         "xhttp/h3 uplink chunk"
     );
-    if let Err(error) = session.ingest_uplink(seq, bytes) {
+    if let Err(error) = session.ingest_uplink_waiting(seq, bytes, UPLINK_ROOM_PATIENCE).await {
         match error {
             UplinkIngestError::Closed => return finish_with_status(stream, StatusCode::GONE).await,
             UplinkIngestError::GapTooLarge { expected, got } => {
