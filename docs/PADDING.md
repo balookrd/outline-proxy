@@ -102,9 +102,13 @@ pieces, in both directions:
 - **Client to server.** A message larger than 900 B is split into pieces of
   300..=850 B. On a padded path, with probability 1/2 per session, 1-2 lead-in
   **covers** (pad-only frames of 40..=100 B of pad each) precede the first
-  split message; an unpadded path has no covers. Not on an XHTTP carrier in
-  packet-up mode: there every client write is already its own POST, so the
-  client leaves the start of the session as is.
+  split message; an unpadded path has no covers. On an XHTTP carrier in
+  packet-up mode every client write is its own POST, so the messages are not
+  cut into more POSTs: on `xhttp_h2` the body of each POST in the window is cut
+  into DATA frames of the same sizes instead (same bytes and `Content-Length`;
+  no covers). This covers UDP riding packet-up POSTs too; each POST still
+  carries one datagram whole. `xhttp_h1` packet-up leaves the start of the
+  session as is.
 - **Server to client.** A message larger than 1500 B is split into pieces of
   600..=2800 B.
 

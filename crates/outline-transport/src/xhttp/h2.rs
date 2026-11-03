@@ -17,6 +17,7 @@ use http::{HeaderMap, Method, Request, Version};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::client::conn::http2;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -562,6 +563,17 @@ async fn driver_loop_h2(
     let next_seq = Arc::new(AtomicU64::new(0));
     // Ends the session's uplink on every exit from this loop — the client's own
     // close *and* the abort that tearing the transport down produces.
+    // Shapes the start of the uplink inside each POST rather than across POSTs:
+    // the client writer leaves packet-up unshaped (one write, one POST), so a
+    // large first write (the inner ClientHello) would otherwise leave as one
+    // DATA frame and one TLS record. Cutting the body into several DATA frames
+    // keeps the bytes and the Content-Length, so the server (ours or Xray,
+    // both read a packet-up body whole) sees the same body.
+    let mut shaper = Some(EarlyShaper::new(
+        ShapeDirection::ClientToServer,
+        false,
+        &mut crate::carrier_padding::draw_in(&mut rand::rng()),
+    ));
     let mut fin = {
         let send_request = send_request.clone();
         let uri_prefix = Arc::clone(&uri_prefix);
@@ -586,6 +598,7 @@ async fn driver_loop_h2(
             Message::Close(_) => break,
             _ => continue,
         };
+        let pieces = shaped_post_pieces(&mut shaper, bytes, &mut rand::rng());
         let seq = next_seq.fetch_add(1, Ordering::Relaxed);
         let mut send = send_request.clone();
         let base_headers = Arc::clone(&base_headers);
@@ -606,7 +619,8 @@ async fn driver_loop_h2(
             // The permit rides the POST: these bytes are still resident until
             // hyper has written them, so the budget must keep covering them.
             let _permit = permit;
-            if let Err(error) = post_one_bounded(send, &uri_prefix, &base_headers, seq, bytes).await
+            if let Err(error) =
+                post_one_bounded(send, &uri_prefix, &base_headers, seq, pieces).await
             {
                 warn!(?error, seq, "xhttp POST failed");
                 let _ = in_tx_for_err
@@ -647,11 +661,83 @@ async fn send_fin(
         return;
     }
     let headers = super::fin_post_headers(&base_headers);
-    let post = post_one(send, &uri_prefix, &headers, seq, Bytes::new());
+    let post = post_one(send, &uri_prefix, &headers, seq, Vec::new());
     match timeout(super::FIN_TIMEOUT, post).await {
         Ok(Ok(())) => {},
         Ok(Err(error)) => debug!(?error, seq, "xhttp FIN POST failed"),
         Err(_) => debug!(seq, "xhttp FIN POST timed out"),
+    }
+}
+
+/// Cuts one packet-up POST body into the DATA-frame sizes the early-shape plan
+/// asks for while the session start is being shaped; a single piece once the
+/// window is past (`shaper` is then cleared). Pieces are zero-copy slices of
+/// `payload`, so their concatenation is the body byte for byte.
+pub(super) fn shaped_post_pieces<R: rand::Rng>(
+    shaper: &mut Option<EarlyShaper>,
+    payload: Bytes,
+    rng: &mut R,
+) -> Vec<Bytes> {
+    let Some(s) = shaper.as_mut() else {
+        return vec![payload];
+    };
+    let plan = s.plan(payload.len(), &mut crate::carrier_padding::draw_in(rng));
+    if !s.is_active() {
+        *shaper = None;
+    }
+    let mut offset = 0;
+    let mut pieces = Vec::with_capacity(plan.pieces.len().max(1));
+    for len in plan.pieces {
+        pieces.push(payload.slice(offset..offset + len));
+        offset += len;
+    }
+    if pieces.is_empty() {
+        pieces.push(payload);
+    }
+    pieces
+}
+
+/// A POST body that hands hyper one frame per piece, so h2 sends each piece as
+/// its own DATA frame. Zero or one piece is a plain `Full` body, as before.
+fn post_body(mut pieces: Vec<Bytes>) -> RequestBody {
+    if pieces.len() <= 1 {
+        return full_request_body(pieces.pop().unwrap_or_default());
+    }
+    let remaining = pieces.iter().map(|p| p.len() as u64).sum();
+    PiecesBody { pieces: pieces.into(), remaining }.boxed()
+}
+
+/// Body over pre-cut pieces. Unlike a `StreamBody` it knows when it is done
+/// and how long it is: `is_end_stream` lets hyper set END_STREAM on the last
+/// piece's DATA frame (no trailing empty DATA frame, which would be one more
+/// small TLS record), and the exact `size_hint` keeps the `Content-Length`
+/// hyper derives for an unprofiled POST, as a `Full` body would.
+struct PiecesBody {
+    pieces: std::collections::VecDeque<Bytes>,
+    remaining: u64,
+}
+
+impl hyper::body::Body for PiecesBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Infallible>>> {
+        let piece = self.pieces.pop_front();
+        if let Some(p) = piece.as_ref() {
+            self.remaining -= p.len() as u64;
+        }
+        std::task::Poll::Ready(piece.map(|p| Ok(hyper::body::Frame::data(p))))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.pieces.is_empty()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        hyper::body::SizeHint::with_exact(self.remaining)
     }
 }
 
@@ -674,9 +760,9 @@ async fn post_one_bounded(
     uri_prefix: &str,
     base_headers: &HeaderMap,
     seq: u64,
-    payload: Bytes,
+    pieces: Vec<Bytes>,
 ) -> Result<()> {
-    match timeout(POST_TIMEOUT, post_one(send, uri_prefix, base_headers, seq, payload)).await {
+    match timeout(POST_TIMEOUT, post_one(send, uri_prefix, base_headers, seq, pieces)).await {
         Ok(result) => result,
         Err(_) => bail!("xhttp POST seq={seq} timed out after {}s", POST_TIMEOUT.as_secs()),
     }
@@ -687,19 +773,19 @@ async fn post_one(
     uri_prefix: &str,
     base_headers: &HeaderMap,
     seq: u64,
-    payload: Bytes,
+    pieces: Vec<Bytes>,
 ) -> Result<()> {
     // Path-based seq (`<base>/<session>/<seq>`) is xray / sing-box's
     // default placement; the server matches both shapes but emitting
     // path-based here keeps the wire byte-identical to what xray
     // produces, so an on-path observer cannot tell our client apart
     // from a vanilla xray one.
-    let content_length = payload.len();
+    let content_length = pieces.iter().map(Bytes::len).sum();
     let mut req = Request::builder()
         .method(Method::POST)
         .uri(format!("{uri_prefix}{seq}"))
         .version(Version::HTTP_2)
-        .body(full_request_body(payload))
+        .body(post_body(pieces))
         .context("failed to build xhttp POST request")?;
     *req.headers_mut() = base_headers.clone();
     super::set_post_content_length(req.headers_mut(), content_length);

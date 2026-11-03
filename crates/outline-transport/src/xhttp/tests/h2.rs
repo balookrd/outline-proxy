@@ -206,3 +206,36 @@ async fn dropping_the_session_kills_in_flight_posts() {
         "an in-flight POST must not outlive the session that spawned it"
     );
 }
+
+/// While the early-shape window is open a large packet-up body is cut into
+/// 300..=850-byte DATA-frame pieces that concatenate back to the body; small
+/// bodies and everything past the window stay one piece.
+#[test]
+fn shaped_post_pieces_cut_the_session_start_and_keep_the_bytes() {
+    use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
+
+    let mut rng = rand::rng();
+    for _ in 0..200 {
+        let mut shaper = Some(EarlyShaper::new(
+            ShapeDirection::ClientToServer,
+            false,
+            &mut crate::carrier_padding::draw_in(&mut rng),
+        ));
+        let body: Bytes = (0..1964u32).map(|i| i as u8).collect::<Vec<u8>>().into();
+        let pieces = super::shaped_post_pieces(&mut shaper, body.clone(), &mut rng);
+        assert!(pieces.len() >= 3, "{} pieces", pieces.len());
+        assert!(pieces.iter().all(|p| (300..=850).contains(&p.len())), "{pieces:?}");
+        assert_eq!(pieces.concat(), body.as_ref());
+
+        let small = super::shaped_post_pieces(&mut shaper, Bytes::from_static(b"tiny"), &mut rng);
+        assert_eq!(small.len(), 1);
+
+        // Exhaust the window: past it every body is a single piece.
+        for _ in 0..40 {
+            super::shaped_post_pieces(&mut shaper, Bytes::from(vec![0u8; 2000]), &mut rng);
+        }
+        assert!(shaper.is_none(), "the window must close");
+        let late = super::shaped_post_pieces(&mut shaper, Bytes::from(vec![1u8; 4000]), &mut rng);
+        assert_eq!(late.len(), 1);
+    }
+}
