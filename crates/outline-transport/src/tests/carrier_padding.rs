@@ -210,7 +210,7 @@ fn datagram_frame_without_room_is_the_stream_frame() {
 }
 
 fn shaper_with(rng: &mut StdRng) -> EarlyShaper {
-    EarlyShaper::new(ShapeDirection::ClientToServer, &mut draw_in(rng))
+    EarlyShaper::new(ShapeDirection::ClientToServer, true, &mut draw_in(rng))
 }
 
 /// A ClientHello-sized frame is cut into >= 2 messages (after any lead-in
@@ -256,4 +256,55 @@ fn shaped_messages_pass_through_after_window() {
     let mut decoded = Vec::new();
     PaddingDecoder::new().push(&msgs[0], &mut decoded);
     assert_eq!(decoded, big);
+}
+
+/// With a disabled scheme the pieces are plain slices of the frame: no
+/// framing, no covers.
+#[test]
+fn shaped_messages_disabled_scheme_returns_plain_pieces() {
+    for seed in 0..32u64 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut shaper =
+            EarlyShaper::new(ShapeDirection::ClientToServer, false, &mut draw_in(&mut rng));
+        let frame: Vec<u8> = (0..1964u32).map(|i| (i % 251) as u8).collect();
+        let msgs = shaped_messages(PaddingScheme::disabled(), &mut shaper, &frame, &mut rng);
+        assert!(msgs.len() >= 2, "seed {seed}");
+        assert_eq!(msgs.concat(), frame, "seed {seed}");
+    }
+}
+
+/// `WsFrameSink::send_frame` hands the first write straight to
+/// `shaped_messages` (a `TransportStream` cannot be built in a unit test), so
+/// this exercises the VLESS path. With no held header in front, every lead-in
+/// cover is a standalone pad-only message that precedes the first data piece,
+/// and the 1/2 draw must show on about half of the sessions. A capture that
+/// shows far fewer is an analyzer artifact, not a missing cover.
+#[test]
+fn vless_first_write_has_lead_in_covers_on_about_half_of_sessions() {
+    let scheme = PaddingScheme::new(0, 64);
+    let frame = vec![5u8; 1964];
+    let mut rng = StdRng::seed_from_u64(0xFEED);
+    let mut with_cover = 0;
+    for _ in 0..200 {
+        let mut shaper = shaper_with(&mut rng);
+        let msgs = shaped_messages(scheme, &mut shaper, &frame, &mut rng);
+        let mut dec = PaddingDecoder::new();
+        let mut decoded = Vec::new();
+        let mut covers_before_data = false;
+        for m in &msgs {
+            let before = decoded.len();
+            dec.push(m, &mut decoded);
+            if decoded.len() > before {
+                break;
+            }
+            covers_before_data = true;
+        }
+        if covers_before_data {
+            with_cover += 1;
+        }
+    }
+    assert!(
+        (70..=130).contains(&with_cover),
+        "sessions with a lead-in cover: {with_cover}/200"
+    );
 }

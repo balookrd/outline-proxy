@@ -251,3 +251,77 @@ async fn held_header_survives_immediate_close_under_multithread_races() {
         assert_eq!(collect_until_close(&mut rx).await, b"HEADER");
     }
 }
+
+// ── Lead-in cover frequency on the shaped first write ───────────────────────
+
+/// Splits one WS message into the `real_len` of each padding frame it holds.
+fn frame_real_lens(msg: &[u8]) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 4 <= msg.len() {
+        let real = u16::from_be_bytes([msg[i], msg[i + 1]]) as usize;
+        let pad = u16::from_be_bytes([msg[i + 2], msg[i + 3]]) as usize;
+        out.push(real);
+        i += 4 + real + pad;
+    }
+    assert_eq!(i, msg.len(), "message must be a whole number of padding frames");
+    out
+}
+
+/// Capture analysis found lead-in covers in far fewer sessions than the 1/2
+/// draw predicts. On SS the held SS2022 header merges with the first queued
+/// message, which is the first cover, so that cover shares a record with the
+/// header and never shows up as a standalone pad-only message. The cover is
+/// still emitted: it must be present in about half of the sessions.
+#[tokio::test(start_paused = true)]
+async fn lead_in_cover_rides_with_the_held_header_on_about_half_of_sessions() {
+    crate::carrier_padding::init_carrier_padding(
+        crate::carrier_padding::CarrierPadding {
+            scheme: outline_wire::padding::PaddingScheme::new(0, 64),
+            cover: false,
+            cover_jitter_min_ms: 0,
+            cover_jitter_max_ms: 0,
+        },
+        false,
+    );
+    let (mut with_cover, mut standalone_cover) = (0, 0);
+    for _ in 0..200 {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut t = crate::carrier_padding::with_uplink_padding_override(true, async {
+            let (t, _ctrl) = WsWriteTransport::spawn(RecordingSink(tx), true);
+            t
+        })
+        .await;
+        t.write_frame_held(vec![7u8; 120]).await.unwrap();
+        t.write_frame(vec![9u8; 1964]).await.unwrap();
+        tokio::time::advance(SS2022_HEADER_HOLD * 2).await;
+        tokio::task::yield_now().await;
+        t.close().await.unwrap();
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        let mut covers = 0;
+        let mut data_bytes = 0;
+        while let Ok(m) = rx.try_recv() {
+            if let Message::Binary(b) = m {
+                let lens = frame_real_lens(&b);
+                if lens.iter().all(|&l| l == 0) {
+                    standalone_cover += 1;
+                }
+                covers += lens.iter().filter(|&&l| l == 0).count();
+                data_bytes += lens.iter().sum::<usize>();
+            }
+        }
+        assert_eq!(data_bytes, 120 + 1964, "payload must survive shaping intact");
+        if covers > 0 {
+            with_cover += 1;
+        }
+    }
+    assert!(
+        (70..=130).contains(&with_cover),
+        "sessions with a lead-in cover: {with_cover}/200"
+    );
+    eprintln!(
+        "ss lead-in cover: {with_cover}/200 sessions, {standalone_cover} standalone cover messages"
+    );
+}

@@ -138,6 +138,12 @@ impl PaddingScheme {
         self.max_pad > 0
     }
 
+    /// Largest pad one frame can carry under this scheme; `0` when disabled.
+    /// Lets a caller budget the worst-case framed size of a message.
+    pub const fn max_pad(self) -> u16 {
+        self.max_pad
+    }
+
     /// Maps one caller-supplied random `u16` uniformly onto `[min, max]`.
     /// Deterministic in `rand` (the crate carries no rng), matching the
     /// `encode_kind_first_byte(rand_byte, …)` shape in [`crate::xhttp`].

@@ -568,10 +568,20 @@ impl UpstreamRead for MeshUpstream {
     }
 
     fn try_read_buf<B: bytes::BufMut>(&mut self, buf: &mut B) -> io::Result<usize> {
-        match self.pending.get_mut().take() {
-            Some(bytes) => {
+        let pending = self.pending.get_mut();
+        match pending.take() {
+            Some(mut bytes) => {
+                // Hand over only what `buf` has room for — a relay bounding its
+                // read (one h2 DATA frame per message) passes a `Limit` — and keep
+                // the rest for the next call. An unbounded `Vec`/`BytesMut` takes
+                // the whole chunk, as before.
+                let n = bytes.len().min(buf.remaining_mut());
+                let rest = bytes.split_off(n);
                 buf.put_slice(&bytes);
-                Ok(bytes.len())
+                if !rest.is_empty() {
+                    *pending = Some(rest);
+                }
+                Ok(n)
             },
             None if self.eof.load(Ordering::Relaxed) => Ok(0),
             None => Err(io::ErrorKind::WouldBlock.into()),

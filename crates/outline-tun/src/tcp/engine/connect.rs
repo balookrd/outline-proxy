@@ -444,8 +444,8 @@ async fn do_tcp_ss_setup(
         return Ok((TcpWriter::Vless(writer), reader, issued_session_id));
     }
 
-    // Early-session shaping is an h1/h2 trick; h3 carriers are never cut.
-    let shape = !ws_stream.is_h3();
+    // Early-session shaping: h1/h2 only (not h3, not XHTTP packet-up).
+    let shape = ws_stream.shapes_client_start();
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = wire.cipher.derive_master_key(wire.password)?;
     let (mut writer, ctrl_tx) = TcpShadowsocksWriter::connect(

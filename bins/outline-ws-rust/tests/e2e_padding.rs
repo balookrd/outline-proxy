@@ -870,6 +870,111 @@ fn padding_vless_ws_h1_large_first_write_roundtrip() -> Result<(), BoxError> {
     Ok(())
 }
 
+/// Unpadded twins: shaping covers every h1/h2 TCP session, so a large first
+/// write is cut into plain `Binary` pieces even with padding off on both sides.
+#[test]
+fn unpadded_ss_ws_h1_large_first_write_roundtrip() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("unpadded_ss_ws_h1_large_first_write_roundtrip");
+        return Ok(());
+    }
+
+    let dir = TestDir::new()?;
+    let echo = EchoUpstream::start()?;
+
+    let server_addr = reserve_addr()?;
+    let server_cfg = ServerConfig::new(server_addr).all_paths().render();
+    let server_cfg_path = write_file(dir.path(), "server.toml", &server_cfg)?;
+    let server_log = dir.path().join("server.log");
+    let mut server = ServerProcess::start(&server_cfg_path, &server_log, server_addr)?;
+    server.wait_ready(Duration::from_secs(15))?;
+
+    let socks = reserve_addr()?;
+    let state_path = dir.path().join("client.state.toml");
+    let uplink = UplinkSpec::new(
+        "up-a",
+        Wire::SsWs {
+            tcp_url: format!("ws://{server_addr}{PATH_SS_TCP}"),
+            udp_url: None,
+            mode: "ws_h1".into(),
+        },
+        Creds::ss(),
+    );
+    let client_cfg = ClientConfig::new(socks, &state_path, ProbeSpec::disabled())
+        .group(GroupSpec::new("active_active", "per_flow").uplink(uplink))
+        .render();
+    let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
+    let client_log = dir.path().join("client.log");
+    let mut client = ProxyProcess::start(&client_cfg_path, &client_log)?;
+    client
+        .wait_ready(socks.port(), Duration::from_secs(15))
+        .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
+
+    socks5_echo_roundtrip(socks.port(), echo.tcp_addr(), &ramp(6000)).map_err(|e| {
+        format!(
+            "large first write round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+            client.logs().unwrap_or_default(),
+            server.logs().unwrap_or_default()
+        )
+    })?;
+    assert!(echo.tcp_connections() >= 1, "server never reached the echo upstream");
+
+    client.stop()?;
+    server.kill()?;
+    Ok(())
+}
+
+#[test]
+fn unpadded_vless_ws_h1_large_first_write_roundtrip() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("unpadded_vless_ws_h1_large_first_write_roundtrip");
+        return Ok(());
+    }
+
+    let dir = TestDir::new()?;
+    let echo = EchoUpstream::start()?;
+
+    let server_addr = reserve_addr()?;
+    let server_cfg = ServerConfig::new(server_addr).all_paths().render();
+    let server_cfg_path = write_file(dir.path(), "server.toml", &server_cfg)?;
+    let server_log = dir.path().join("server.log");
+    let mut server = ServerProcess::start(&server_cfg_path, &server_log, server_addr)?;
+    server.wait_ready(Duration::from_secs(15))?;
+
+    let socks = reserve_addr()?;
+    let state_path = dir.path().join("client.state.toml");
+    let uplink = UplinkSpec::new(
+        "up-v",
+        Wire::VlessWs {
+            url: format!("ws://{server_addr}{PATH_VLESS_WS}"),
+            mode: "ws_h1".into(),
+        },
+        Creds::vless(),
+    );
+    let client_cfg = ClientConfig::new(socks, &state_path, ProbeSpec::disabled())
+        .group(GroupSpec::new("active_active", "per_flow").uplink(uplink))
+        .render();
+    let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
+    let client_log = dir.path().join("client.log");
+    let mut client = ProxyProcess::start(&client_cfg_path, &client_log)?;
+    client
+        .wait_ready(socks.port(), Duration::from_secs(15))
+        .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
+
+    socks5_echo_roundtrip(socks.port(), echo.tcp_addr(), &ramp(6000)).map_err(|e| {
+        format!(
+            "VLESS large first write round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+            client.logs().unwrap_or_default(),
+            server.logs().unwrap_or_default()
+        )
+    })?;
+    assert!(echo.tcp_connections() >= 1, "server never reached the echo upstream");
+
+    client.stop()?;
+    server.kill()?;
+    Ok(())
+}
+
 /// Same over the TLS h2 carrier (one h2 frame = one TLS record, plus
 /// early-session shaping). Requires `test-tls`.
 #[cfg(feature = "test-tls")]

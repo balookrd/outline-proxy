@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use anyhow::{Context, Result};
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use tokio::{
     io::{AsyncRead, ReadBuf},
     net::tcp::OwnedReadHalf,
@@ -104,6 +104,14 @@ pub(in crate::server) trait UpstreamSink: Send {
 
     /// Hook fired after each successful chunk encryption.
     fn on_chunk_encrypted(&mut self, _plaintext: usize, _ciphertext: usize) {}
+
+    /// Most plaintext bytes one ciphertext message may carry, or `None` for
+    /// no limit (one message per read). `Some` on h2 carriers, where a larger
+    /// message would be cut by h2 into frames that leave as a full TLS record
+    /// plus a 9-byte one (see `carrier_padding::h2_plaintext_cap`).
+    fn plaintext_cap(&self) -> Option<usize> {
+        None
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -144,6 +152,7 @@ where
     // periodically anyway, so an upfront reserve buys nothing in steady state.
     let mut out_buf = BytesMut::new();
     let mut saw_payload = false;
+    let cap = sink.plaintext_cap();
     loop {
         // Cancel arm: when no cancel is registered we substitute a future
         // that never resolves, so the select degenerates to the legacy
@@ -171,7 +180,17 @@ where
                 // buffer; it returns to the pool before the next park.
                 let mut buffer = ScratchBuf::take();
                 buffer.reserve(MAX_CHUNK_SIZE);
-                let read = match upstream_reader.try_read_buf(&mut *buffer) {
+                // A capped sink (h2 carrier) bounds the read itself, so one
+                // read is one message of at most `cap` plaintext bytes (the
+                // first one also leaves room for the salt / response header
+                // the encryptor puts in front of it). Cutting an oversize read
+                // afterwards would leave small remainder messages, which h2
+                // coalesces with the next DATA frame into one write that again
+                // spills a full TLS record plus a small one.
+                let limit = cap.map(|cap| {
+                    cap.saturating_sub(encryptor.pending_prefix_len()).max(1)
+                });
+                let read = match try_read_bounded(&mut upstream_reader, &mut *buffer, limit) {
                     Ok(read) => read,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => return Err(error).context("failed to read from upstream"),
@@ -192,8 +211,10 @@ where
                 // its own TLS-record header, AEAD pair, and `await
                 // send`. The drain is non-blocking: it never yields,
                 // so it cannot delay ack-only or low-rate streams.
-                while buffer.len() < GREEDY_DRAIN_TARGET {
-                    match upstream_reader.try_read_buf(&mut *buffer) {
+                let drain_target = limit.unwrap_or(GREEDY_DRAIN_TARGET);
+                while buffer.len() < drain_target {
+                    let room = limit.map(|limit| limit - buffer.len());
+                    match try_read_bounded(&mut upstream_reader, &mut *buffer, room) {
                         Ok(0) => break, // EOF: stop draining; encrypt what we have
                         Ok(_) => {},    // got more, keep pulling
                         Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -221,6 +242,9 @@ where
                 if let Some(ring) = downlink_ring.as_ref() {
                     ring.lock().push(&buffer);
                 }
+                // The bounded read guarantees this; `Limit` makes an
+                // over-long put panic rather than slip past.
+                debug_assert!(limit.is_none_or(|limit| read <= limit));
                 encryptor.encrypt_chunk(&buffer, &mut out_buf)?;
                 let ciphertext = out_buf.split().freeze();
                 aead_overhead_out
@@ -233,6 +257,23 @@ where
 
     sink.close().await;
     Ok(UpstreamRelayOutcome::Closed)
+}
+
+/// Non-blocking read from `reader` into `buf`, taking at most `room` more bytes
+/// when `Some` (the h2 per-message cap) and whatever is pending when `None`.
+/// Callers never pass `Some(0)`: an empty window reads as EOF.
+pub(in crate::server) fn try_read_bounded<U: UpstreamRead, B: BufMut>(
+    reader: &mut U,
+    buf: &mut B,
+    room: Option<usize>,
+) -> std::io::Result<usize> {
+    match room {
+        None => reader.try_read_buf(buf),
+        Some(room) => {
+            debug_assert!(room > 0, "an empty read window reads as EOF");
+            reader.try_read_buf(&mut (&mut *buf).limit(room))
+        },
+    }
 }
 
 /// Slice-flavoured non-blocking poll of `reader`. Used by the VLESS

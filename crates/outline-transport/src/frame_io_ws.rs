@@ -278,7 +278,7 @@ pub struct WsFrameSink {
     /// in which case `send_frame` leaves the bytes untouched and the wire stays
     /// byte-for-byte identical to the unpadded carrier.
     padding: CarrierPadding,
-    /// Early-session shaper (h1/h2 carriers with padding only). `None`
+    /// Early-session shaper (h1/h2 carriers, padded or not). `None`
     /// otherwise, including every h3 carrier.
     shaper: Option<EarlyShaper>,
 }
@@ -484,10 +484,11 @@ pub fn from_ws_frames(
     // datagram pipe (`from_ws_datagrams`, used by SS-UDP / VLESS-UDP) does not.
     let padding = carrier_padding::effective_carrier_padding();
     let cover = padding.cover_enabled().then_some(padding);
-    // Early-session shaping applies to h1/h2 carriers only, never h3.
-    let shaper = (padding.scheme.is_enabled() && !ws_stream.is_h3()).then(|| {
+    // Early-session shaping: h1/h2 carriers only (not h3, not XHTTP packet-up).
+    let shaper = ws_stream.shapes_client_start().then(|| {
         EarlyShaper::new(
             ShapeDirection::ClientToServer,
+            padding.scheme.is_enabled(),
             &mut carrier_padding::draw_in(&mut rand::rng()),
         )
     });

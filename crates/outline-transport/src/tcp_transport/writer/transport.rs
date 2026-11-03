@@ -51,7 +51,7 @@ pub struct WsWriteTransport {
     /// which case `write_frame` leaves the buffer untouched and the wire stays
     /// byte-for-byte identical to the unpadded carrier.
     padding: CarrierPadding,
-    /// Early-session shaper (h1/h2 carriers with padding only): cuts the first
+    /// Early-session shaper (h1/h2 carriers, padded or not): cuts the first
     /// large frames into browser-sized messages. `None` otherwise.
     shaper: Option<EarlyShaper>,
 }
@@ -72,9 +72,10 @@ impl WsWriteTransport {
         let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(WS_CTRL_CHANNEL_CAPACITY);
         let (held_tx, mut held_rx) = mpsc::channel::<Vec<u8>>(1);
         let padding = carrier_padding::effective_carrier_padding();
-        let shaper = (shape && padding.scheme.is_enabled()).then(|| {
+        let shaper = shape.then(|| {
             EarlyShaper::new(
                 ShapeDirection::ClientToServer,
+                padding.scheme.is_enabled(),
                 &mut carrier_padding::draw_in(&mut rand::rng()),
             )
         });

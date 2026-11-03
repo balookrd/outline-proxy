@@ -310,3 +310,11 @@ fn datagram_pad_budget_is_the_room_left_after_header_and_payload() {
     assert_eq!(datagram_pad_budget(1355, 1352), None);
     assert_eq!(datagram_pad_budget(0, 0), None);
 }
+
+#[test]
+fn max_pad_reports_the_upper_bound_and_zero_when_disabled() {
+    assert_eq!(PaddingScheme::disabled().max_pad(), 0);
+    assert_eq!(PaddingScheme::new(0, 256).max_pad(), 256);
+    // A max below min is clamped up, and `max_pad` reports the clamped bound.
+    assert_eq!(PaddingScheme::new(40, 10).max_pad(), 40);
+}

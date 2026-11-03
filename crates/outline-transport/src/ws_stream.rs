@@ -444,6 +444,14 @@ impl TransportStream {
         }
     }
 
+    /// Whether the client may shape (split) the start of a TCP session on
+    /// this carrier. Excluded: h3 (never shaped), and XHTTP packet-up, where
+    /// every uplink message is its own POST, so splitting would turn the
+    /// session start into a run of tiny POSTs, an unnatural pattern.
+    pub fn shapes_client_start(&self) -> bool {
+        shapes_client_start_for(self.is_h3(), self.xhttp_active_submode())
+    }
+
     /// XHTTP submode the dialer actually landed on (after any inline
     /// `stream-one → packet-up` retry). `None` for non-XHTTP variants —
     /// the concept does not apply to WS or QUIC carriers. Used by the
@@ -629,3 +637,12 @@ impl Sink<Message> for TransportStream {
         }
     }
 }
+
+/// Pure decision behind [`TransportStream::shapes_client_start`].
+fn shapes_client_start_for(is_h3: bool, submode: Option<crate::xhttp::XhttpSubmode>) -> bool {
+    !is_h3 && submode != Some(crate::xhttp::XhttpSubmode::PacketUp)
+}
+
+#[cfg(test)]
+#[path = "tests/ws_stream.rs"]
+mod tests;
