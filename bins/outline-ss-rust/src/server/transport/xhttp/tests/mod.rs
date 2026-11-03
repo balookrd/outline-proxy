@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 
 use super::{
-    RelayPermit, SessionSlot, UPLINK_READY_BYTES_CAP, UplinkIngestError, XhttpRegistry,
-    XhttpRegistryLimits, XhttpSession,
+    RelayPermit, SessionSlot, UPLINK_READY_BYTES_CAP, UPLINK_ROOM_PATIENCE,
+    UPLINK_WAITING_BYTES_CAP, UplinkIngestError, XhttpRegistry, XhttpRegistryLimits, XhttpSession,
 };
 
 const IP_A: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
@@ -225,6 +225,148 @@ fn packet_up_ready_rejects_when_full_and_stays_bounded() {
         session.ingest_uplink(accepted, chunk.clone()).is_ok(),
         "the refused seq is retryable once the relay frees room"
     );
+}
+
+/// A frame parked ahead of a full `ready` must reach the relay once `ready`
+/// drains. Promotion used to run only when the expected seq was ingested; a
+/// parked expected seq had already been answered, so it never came again and
+/// the session stalled for good (the client then saw 503 for every later seq).
+#[test]
+fn packet_up_parked_frames_follow_a_drained_ready() {
+    let session = XhttpSession::new(Arc::from("test-session"), None, None, None);
+    let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
+    let fill = (UPLINK_READY_BYTES_CAP / CHUNK_BYTES) as u64;
+
+    // Seqs 1..=fill arrive before seq 0 and are parked.
+    for seq in 1..=fill {
+        session.ingest_uplink(seq, chunk.clone()).expect("parked");
+    }
+    // Seq 0 fills `ready` with the parked run up to the cap; the last parked
+    // frame (the new expected seq) no longer fits and stays parked.
+    session.ingest_uplink(0, chunk.clone()).expect("in order");
+    assert_eq!(ready_bytes(&session), UPLINK_READY_BYTES_CAP);
+
+    // The relay drains everything; every accepted byte must come out.
+    let mut drained = 0u64;
+    while session.pop_uplink_ready().is_some() {
+        drained += 1;
+        assert!(drained <= fill + 1, "drained more frames than were sent");
+    }
+    assert_eq!(drained, fill + 1, "the frame parked behind the full queue was lost");
+    // And the stream continues at the next seq.
+    session.ingest_uplink(fill + 1, chunk).expect("next in-order seq");
+    assert!(session.pop_uplink_ready().is_some());
+}
+
+/// A packet-up POST that does not fit a full `ready` is held, not refused:
+/// answering 503 made the client back off and re-send, and that backoff set the
+/// upload rate. The held POST lands as soon as the relay drains a frame.
+#[tokio::test]
+async fn packet_up_holds_a_post_until_the_relay_frees_room() {
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None, None));
+    let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
+    let fill = (UPLINK_READY_BYTES_CAP / CHUNK_BYTES) as u64;
+    for seq in 0..fill {
+        session.ingest_uplink(seq, chunk.clone()).expect("fits under the cap");
+    }
+
+    let held = tokio::spawn({
+        let session = Arc::clone(&session);
+        let chunk = chunk.clone();
+        async move { session.ingest_uplink_waiting(fill, chunk, UPLINK_ROOM_PATIENCE).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!held.is_finished(), "the POST is held while ready is full");
+
+    assert!(session.pop_uplink_ready().is_some());
+    tokio::time::timeout(Duration::from_secs(1), held)
+        .await
+        .expect("a drain must release the held POST")
+        .expect("join the POST task")
+        .expect("the held POST lands");
+}
+
+/// A POST ahead of the expected seq that finds `reorder` full is held too, and
+/// lands once a drain promotes parked frames and so frees reorder room.
+#[tokio::test]
+async fn packet_up_holds_a_post_ahead_until_reorder_frees_room() {
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None, None));
+    let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
+    let fill = (UPLINK_READY_BYTES_CAP / CHUNK_BYTES) as u64;
+    // `ready` holds seqs 0..fill; seqs fill+1..=2*fill fill `reorder`, with
+    // the expected seq `fill` still missing.
+    for seq in (0..fill).chain(fill + 1..=fill * 2) {
+        session
+            .ingest_uplink(seq, chunk.clone())
+            .expect("fits ready or reorder");
+    }
+    let ahead = fill * 2 + 1;
+    assert!(matches!(
+        session.ingest_uplink(ahead, chunk.clone()),
+        Err(UplinkIngestError::BufferFull)
+    ));
+
+    let hold = |seq: u64| {
+        let session = Arc::clone(&session);
+        let chunk = chunk.clone();
+        tokio::spawn(async move {
+            session.ingest_uplink_waiting(seq, chunk, UPLINK_ROOM_PATIENCE).await
+        })
+    };
+    let head = hold(fill);
+    let ahead = hold(ahead);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!head.is_finished() && !ahead.is_finished(), "both POSTs are held");
+
+    // One drained frame makes room for the head only.
+    assert!(session.pop_uplink_ready().is_some());
+    tokio::time::timeout(Duration::from_secs(1), head)
+        .await
+        .expect("a drain must release the held head")
+        .expect("join the POST task")
+        .expect("the head lands");
+    assert!(!ahead.is_finished(), "reorder is still full");
+
+    // The next drain promotes a parked frame, which frees reorder room.
+    assert!(session.pop_uplink_ready().is_some());
+    tokio::time::timeout(Duration::from_secs(1), ahead)
+        .await
+        .expect("promotion must release the held POST")
+        .expect("join the POST task")
+        .expect("the held POST is parked");
+}
+
+/// A relay that stays stuck still surfaces as a retryable 503 once the
+/// patience runs out, and the seq is not consumed.
+#[tokio::test(start_paused = true)]
+async fn packet_up_gives_up_a_held_post_on_a_stuck_relay() {
+    let session = XhttpSession::new(Arc::from("test-session"), None, None, None);
+    let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
+    let fill = (UPLINK_READY_BYTES_CAP / CHUNK_BYTES) as u64;
+    for seq in 0..fill {
+        session.ingest_uplink(seq, chunk.clone()).expect("fits under the cap");
+    }
+
+    let start = tokio::time::Instant::now();
+    let result = session.ingest_uplink_waiting(fill, chunk, UPLINK_ROOM_PATIENCE).await;
+    assert!(matches!(result, Err(UplinkIngestError::ReadyFull)), "{result:?}");
+    assert_eq!(start.elapsed(), UPLINK_ROOM_PATIENCE);
+}
+
+/// Held bodies are capped per session: a POST that would pass the cap is
+/// refused at once instead of pinning more memory in a waiting handler.
+#[tokio::test(start_paused = true)]
+async fn packet_up_refuses_at_once_past_the_held_bytes_cap() {
+    let session = XhttpSession::new(Arc::from("test-session"), None, None, None);
+    session
+        .ingest_uplink(0, Bytes::from(vec![0u8; CHUNK_BYTES]))
+        .expect("first frame");
+    let huge = Bytes::from(vec![0u8; UPLINK_WAITING_BYTES_CAP + 1]);
+
+    let start = tokio::time::Instant::now();
+    let result = session.ingest_uplink_waiting(1, huge, UPLINK_ROOM_PATIENCE).await;
+    assert!(matches!(result, Err(UplinkIngestError::ReadyFull)), "{result:?}");
+    assert_eq!(start.elapsed(), Duration::ZERO, "refused without waiting");
 }
 
 /// Stream-up path: the pump feeds `ingest_uplink_inorder`, which must *park*
