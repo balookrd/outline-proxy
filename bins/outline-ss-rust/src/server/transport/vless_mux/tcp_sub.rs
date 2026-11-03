@@ -109,6 +109,19 @@ where
     Ok(())
 }
 
+/// Framing a mux `Keep` data frame without a target adds around its data:
+/// metadata length (2) + session id, status and option (4) + data length (2).
+const MUX_DATA_FRAME_OVERHEAD: usize = 2 + 4 + 2;
+
+/// Most upstream bytes one downlink mux data frame carries: the whole relay
+/// buffer, cut on an h2 carrier so the frame (padded at the scheme's largest
+/// pad, behind its WS header) fits one h2 DATA frame of one TLS record — see
+/// `carrier_padding::h2_plaintext_cap`.
+fn read_limit(buf_len: usize, protocol: Protocol, padding: PaddingScheme) -> usize {
+    carrier_padding::h2_plaintext_cap(protocol, padding, MUX_DATA_FRAME_OVERHEAD)
+        .map_or(buf_len, |cap| buf_len.min(cap))
+}
+
 /// `client` is `None` on a relayed mux: the edge that terminates the client
 /// session has already counted these bytes and frames once (see
 /// [`MuxClientMetrics`]).
@@ -148,7 +161,8 @@ where
                 // sub-conn holds no per-direction relay buffer; the buffer
                 // returns to the pool before the next park.
                 let mut buf = TcpRelayBuf::take();
-                let read = match reader.try_read(&mut buf) {
+                let limit = read_limit(buf.len(), protocol, padding);
+                let read = match reader.try_read(&mut buf[..limit]) {
                     Ok(0) => break,
                     Ok(n) => n,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
@@ -162,7 +176,7 @@ where
                 // mux header (`encode_frame`), metric record and mpsc push
                 // amortise across the same payload size as the SS path.
                 let mut total = read;
-                let cap = buf.len().min(GREEDY_DRAIN_TARGET);
+                let cap = limit.min(GREEDY_DRAIN_TARGET);
                 while total < cap {
                     match try_read_now_into_slice(&mut reader, &mut buf[total..cap]).await {
                         Ok(Some(0)) => break,
@@ -225,3 +239,7 @@ where
         .await;
     MuxReaderHarvest::Closed
 }
+
+#[cfg(test)]
+#[path = "tests/tcp_sub.rs"]
+mod tests;

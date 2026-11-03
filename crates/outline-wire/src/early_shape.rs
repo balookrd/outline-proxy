@@ -1,4 +1,4 @@
-//! Early-session shaping: plans how the first messages of a padded TCP session
+//! Early-session shaping: plans how the first messages of an h1/h2 TCP session
 //! are cut into browser-sized pieces, so an observer does not see one record the
 //! size of the tunnelled TLS ClientHello followed, one RTT later, by one record
 //! the size of the server's certificate flight (the TLS-in-TLS signature).
@@ -50,10 +50,17 @@ pub struct EarlyShaper {
 
 impl EarlyShaper {
     /// Opens a shaping window with per-session random limits drawn via `draw`.
-    pub fn new(direction: ShapeDirection, draw: &mut dyn FnMut(usize, usize) -> usize) -> Self {
+    /// With `covers_allowed == false` (no padding on the path, so a pad-only
+    /// frame cannot be sent) the plan never contains covers.
+    pub fn new(
+        direction: ShapeDirection,
+        covers_allowed: bool,
+        draw: &mut dyn FnMut(usize, usize) -> usize,
+    ) -> Self {
         let msgs_left = draw(WINDOW_MSGS.0, WINDOW_MSGS.1);
         let bytes_left = draw(WINDOW_BYTES.0, WINDOW_BYTES.1);
-        let covers_pending = direction == ShapeDirection::ClientToServer && draw(0, 1) == 1;
+        let covers_pending =
+            covers_allowed && direction == ShapeDirection::ClientToServer && draw(0, 1) == 1;
         Self {
             direction,
             msgs_left,

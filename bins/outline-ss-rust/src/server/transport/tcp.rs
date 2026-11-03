@@ -276,14 +276,53 @@ struct ChannelSink<Msg: Send + 'static> {
     /// Per-carrier downstream-throttle monitor; `Some` only on a padded path
     /// with detection on. Fed the send backlog (data channel past half-full).
     monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
-    /// Early-shape state; `Some` only on a padded h1/h2 carrier (see
+    /// Early-shape state; `Some` only on an h1/h2 carrier, padded or not (see
     /// [`carrier_padding::shape_eligible`]). While active, the first downlink
     /// buffers are cut into several messages. On a mesh edge this sink sits on
     /// the client-facing carrier, so shaping happens once, at the edge.
     shaper: Option<EarlyShaper>,
+    /// Plaintext bytes per SS chunk on an h2 carrier, so each downlink message
+    /// fits one h2 DATA frame of one TLS record (see
+    /// [`carrier_padding::h2_plaintext_cap`]); `None` elsewhere. On a mesh edge
+    /// this is the client-facing carrier, so the cap applies at the edge.
+    plaintext_cap: Option<usize>,
+}
+
+/// Per-chunk SS AEAD framing on the downlink, both SS-2022 and legacy: sealed
+/// length (2 + 16-byte tag) plus the payload tag (16). The first chunk's salt /
+/// response header is budgeted by the relay itself.
+const SS_CHUNK_OVERHEAD: usize = 2 + 16 + 16;
+
+/// Encrypts one downlink plaintext that bypasses the relay (the v2 replay
+/// frame) into the messages it goes out as, each framed for `padding`. With no
+/// `cap` it is one AEAD chunk in one message, as before; with `Some(cap)` (an h2
+/// carrier) it is cut into even pieces of at most `cap` bytes — less the
+/// encryptor's pending salt / response header — one AEAD chunk and one message
+/// each, so every message fits one h2 DATA frame of one TLS record.
+fn encrypt_downlink_messages(
+    encryptor: &mut AeadStreamEncryptor,
+    plaintext: &[u8],
+    cap: Option<usize>,
+    padding: PaddingScheme,
+) -> Result<Vec<Bytes>, crate::crypto::CryptoError> {
+    let piece_cap =
+        cap.map_or(usize::MAX, |cap| cap.saturating_sub(encryptor.pending_prefix_len()).max(1));
+    let mut out = bytes::BytesMut::new();
+    let mut messages = Vec::new();
+    let mut offset = 0;
+    for len in carrier_padding::even_piece_lens(plaintext.len(), piece_cap) {
+        encryptor.encrypt_chunk(&plaintext[offset..offset + len], &mut out)?;
+        offset += len;
+        messages.push(carrier_padding::frame_downlink_message(padding, out.split().freeze()));
+    }
+    Ok(messages)
 }
 
 impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg> {
+    fn plaintext_cap(&self) -> Option<usize> {
+        self.plaintext_cap
+    }
+
     async fn send_ciphertext(&mut self, ciphertext: Bytes) -> Result<()> {
         // Sample mpsc fill before push: `capacity()` returns the number
         // of free slots, so `max - capacity` is the live depth. Done
@@ -845,7 +884,12 @@ where
                 metrics: sink_metrics,
                 padding: sink_padding,
                 monitor: monitor_for_sink,
-                shaper: carrier_padding::new_server_shaper(protocol, sink_padding),
+                shaper: carrier_padding::new_server_shaper(protocol),
+                plaintext_cap: carrier_padding::h2_plaintext_cap(
+                    protocol,
+                    sink_padding,
+                    SS_CHUNK_OVERHEAD,
+                ),
             },
             &mut encryptor,
             relay_metrics,
@@ -1181,21 +1225,30 @@ where
                     Vec::with_capacity(downlink_replay::FRAME_HEADER_LEN_V1 + payload.len());
                 frame.extend_from_slice(&downlink_replay::build_v1_header(flags, payload_len));
                 frame.extend_from_slice(&payload);
-                let mut out = bytes::BytesMut::new();
-                encryptor
-                    .encrypt_chunk(&frame, &mut out)
-                    .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
                 // Padded for the same reason as the v1 frame above: this send
                 // bypasses `ChannelSink`, and an unpadded message on a padded
-                // path corrupts the stream rather than arriving unwrapped.
-                let ciphertext =
-                    carrier_padding::frame_downlink_message(route.padding, out.split().freeze());
+                // path corrupts the stream rather than arriving unwrapped. On
+                // h2 the frame is cut like the relay's reads (the client
+                // accumulates AEAD chunks until the whole frame is in).
+                let messages = encrypt_downlink_messages(
+                    &mut encryptor,
+                    &frame,
+                    carrier_padding::h2_plaintext_cap(
+                        route.protocol,
+                        route.padding,
+                        SS_CHUNK_OVERHEAD,
+                    ),
+                    route.padding,
+                )
+                .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
                 let make_binary = outbound.make_binary;
-                outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
-                    FrameError::Fatal(anyhow!(
-                        "v2 downlink replay frame send failed: WS data channel closed"
-                    ))
-                })?;
+                for ciphertext in messages {
+                    outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
+                        FrameError::Fatal(anyhow!(
+                            "v2 downlink replay frame send failed: WS data channel closed"
+                        ))
+                    })?;
+                }
                 let (ring_oldest, ring_total) = ring_diag.unwrap_or((0, 0));
                 debug!(
                     user = user.id(),
@@ -1260,7 +1313,12 @@ where
                             metrics: sink_metrics,
                             padding: sink_padding,
                             monitor: monitor_for_sink,
-                            shaper: carrier_padding::new_server_shaper(protocol, sink_padding),
+                            shaper: carrier_padding::new_server_shaper(protocol),
+                            plaintext_cap: carrier_padding::h2_plaintext_cap(
+                                protocol,
+                                sink_padding,
+                                SS_CHUNK_OVERHEAD,
+                            ),
                         },
                         &mut encryptor,
                         relay_metrics,
@@ -1392,7 +1450,12 @@ where
                         metrics: sink_metrics,
                         padding: sink_padding,
                         monitor: monitor_for_sink,
-                        shaper: carrier_padding::new_server_shaper(protocol, sink_padding),
+                        shaper: carrier_padding::new_server_shaper(protocol),
+                        plaintext_cap: carrier_padding::h2_plaintext_cap(
+                            protocol,
+                            sink_padding,
+                            SS_CHUNK_OVERHEAD,
+                        ),
                     },
                     &mut encryptor,
                     relay_metrics,

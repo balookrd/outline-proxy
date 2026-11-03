@@ -107,13 +107,14 @@ async fn connect_probe_tcp_inner(
             // Capture the authoritative H3 flag before `split()` consumes the
             // stream; the read-idle watchdog gates on `diag.is_h3`.
             let is_h3 = ws_stream.is_h3();
+            let shape = ws_stream.shapes_client_start();
             let (ws_sink, ws_stream) = ws_stream.split();
             let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
                 ws_sink,
                 uplink.cipher,
                 &master_key,
                 Arc::clone(&lifetime),
-                !is_h3,
+                shape,
             )
             .await?;
             let request_salt = writer.request_salt();

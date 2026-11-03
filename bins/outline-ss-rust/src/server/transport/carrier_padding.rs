@@ -194,25 +194,98 @@ pub(in crate::server) fn frame_datagram_message(
     Some(out.into())
 }
 
-/// Whether the first downlink messages of a TCP session on `protocol` are cut
-/// into the early-shape pieces: only padded h1/h2 carriers (the inner TLS
-/// flight there is what a record-size classifier sees). H3 / socket carriers
-/// and unpadded paths keep their wire.
-pub(in crate::server) fn shape_eligible(protocol: Protocol, scheme: PaddingScheme) -> bool {
-    scheme.is_enabled()
-        && matches!(
-            protocol,
-            Protocol::Http1 | Protocol::Http2 | Protocol::XhttpH1 | Protocol::XhttpH2
-        )
-}
+/// Largest h2 DATA payload that leaves the server in one TLS record together
+/// with its 9-byte frame header: a 16384-byte record minus that header. The
+/// peer's `SETTINGS_MAX_FRAME_SIZE` (16384 for browsers and our client) lets h2
+/// cut a bigger chunk into 16384-byte frames, and each such frame (16393 B with
+/// its header) leaves as a full 16384 record plus a 9-byte one — the 16401 + 26
+/// wire pair real servers almost never produce.
+pub(in crate::server) const H2_DATA_PAYLOAD_MAX: usize = 16384 - 9;
 
-/// A fresh server-side shaper when `protocol` / `scheme` qualify, else `None`.
-pub(in crate::server) fn new_server_shaper(
+/// WebSocket header in front of a server→client binary message of 126..=65535
+/// bytes (no mask on this direction). Budgeted for XHTTP bodies too, which carry
+/// no such header: 4 B of slack there is cheaper than a second constant.
+pub(in crate::server) const H2_WS_HEADER_LEN: usize = 4;
+
+/// Below this many data bytes per message the cap is not worth applying (a huge
+/// configured pad range would otherwise shrink every message to a few bytes).
+/// `h2_plaintext_cap` returns `None` then and the old sizing stays.
+const MIN_H2_PLAINTEXT_CAP: usize = 1024;
+
+/// How many data bytes one downlink message may carry on `protocol` so the
+/// whole message — WS header, padding framing at the scheme's largest pad, the
+/// caller's `inner_overhead` (34 per SS AEAD chunk, 8 per VLESS-mux data frame,
+/// 0 for plain VLESS) and the data — fits one h2 DATA frame of
+/// [`H2_DATA_PAYLOAD_MAX`] bytes. `None` on every non-h2 carrier (h1 has no
+/// DATA framing, h3 / socket keep their wire) and when the budget leaves less
+/// than [`MIN_H2_PLAINTEXT_CAP`]. The cap is applied before early shaping,
+/// whose pieces are never larger than their input.
+pub(in crate::server) fn h2_plaintext_cap(
     protocol: Protocol,
     scheme: PaddingScheme,
-) -> Option<EarlyShaper> {
-    shape_eligible(protocol, scheme)
-        .then(|| EarlyShaper::new(ShapeDirection::ServerToClient, &mut draw_in(&mut rand::rng())))
+    inner_overhead: usize,
+) -> Option<usize> {
+    if !matches!(protocol, Protocol::Http2 | Protocol::XhttpH2) {
+        return None;
+    }
+    let padding = if scheme.is_enabled() {
+        PADDING_FRAME_HEADER_LEN + usize::from(scheme.max_pad())
+    } else {
+        0
+    };
+    H2_DATA_PAYLOAD_MAX
+        .checked_sub(H2_WS_HEADER_LEN + padding + inner_overhead)
+        .filter(|cap| *cap >= MIN_H2_PLAINTEXT_CAP)
+}
+
+/// Piece lengths that cut `len` bytes into the fewest pieces of at most `cap`
+/// bytes, as even as possible (they differ by at most one byte). Unlike a greedy
+/// `cap, cap, …, rest` cut there is no small remainder piece: every piece is
+/// over `cap / 2` once `len > cap`. A small message ahead of a full DATA frame
+/// is what h2 coalesces into one write that spills a full TLS record plus a
+/// small one. `len == 0` yields one empty piece.
+pub(in crate::server) fn even_piece_lens(len: usize, cap: usize) -> impl Iterator<Item = usize> {
+    let cap = cap.max(1);
+    let n = len.div_ceil(cap).max(1);
+    let (base, extra) = (len / n, len % n);
+    (0..n).map(move |i| base + usize::from(i < extra))
+}
+
+/// One discrete downlink message (a resume control / replay frame) as the
+/// messages it goes out as: a single framed message off h2, and on an h2
+/// carrier evenly cut pieces that each fit one h2 DATA frame of one TLS record
+/// (see [`h2_plaintext_cap`]), each framed for `scheme`. Only for byte-stream
+/// payloads (VLESS TCP), where message boundaries carry no meaning.
+pub(in crate::server) fn capped_downlink_messages(
+    protocol: Protocol,
+    scheme: PaddingScheme,
+    mut bytes: Bytes,
+) -> Vec<Bytes> {
+    match h2_plaintext_cap(protocol, scheme, 0) {
+        Some(cap) if bytes.len() > cap => even_piece_lens(bytes.len(), cap)
+            .map(|n| frame_downlink_message(scheme, bytes.split_to(n)))
+            .collect(),
+        _ => vec![frame_downlink_message(scheme, bytes)],
+    }
+}
+
+/// Whether the first downlink messages of a TCP session on `protocol` are cut
+/// into the early-shape pieces: h1/h2 carriers only (the inner TLS flight
+/// there is what a record-size classifier sees), padded or not. H3 / socket
+/// carriers keep their wire.
+pub(in crate::server) fn shape_eligible(protocol: Protocol) -> bool {
+    matches!(
+        protocol,
+        Protocol::Http1 | Protocol::Http2 | Protocol::XhttpH1 | Protocol::XhttpH2
+    )
+}
+
+/// A fresh server-side shaper when `protocol` qualifies, else `None`. The
+/// server never sends cover frames.
+pub(in crate::server) fn new_server_shaper(protocol: Protocol) -> Option<EarlyShaper> {
+    shape_eligible(protocol).then(|| {
+        EarlyShaper::new(ShapeDirection::ServerToClient, false, &mut draw_in(&mut rand::rng()))
+    })
 }
 
 /// Adapts `rng` to the `draw(lo, hi)` callback the early-shape planner takes
@@ -226,7 +299,7 @@ pub(in crate::server) fn draw_in(rng: &mut impl Rng) -> impl FnMut(usize, usize)
 /// padded message per piece. Mirrors the client's
 /// `outline_transport::carrier_padding::shaped_messages`. Past the shaping
 /// window (or for a small buffer) this is a single ordinary padded message.
-/// Caller must have checked [`PaddingScheme::is_enabled`].
+/// With a disabled scheme the pieces are plain slices (no framing).
 pub(in crate::server) fn shaped_messages<R: RngCore>(
     scheme: PaddingScheme,
     shaper: &mut EarlyShaper,
@@ -244,10 +317,16 @@ pub(in crate::server) fn shaped_messages<R: RngCore>(
     }
     let mut offset = 0;
     for len in plan.pieces {
-        let mut out = Vec::with_capacity(len + 8);
-        frame_payload_into(scheme, &data[offset..offset + len], rng, &mut out);
+        let piece = &data[offset..offset + len];
         offset += len;
-        msgs.push(out);
+        if scheme.is_enabled() {
+            let mut out = Vec::with_capacity(len + 8);
+            frame_payload_into(scheme, piece, rng, &mut out);
+            msgs.push(out);
+        } else {
+            // Unpadded path: plain slices of the stream, no framing.
+            msgs.push(piece.to_vec());
+        }
     }
     msgs
 }

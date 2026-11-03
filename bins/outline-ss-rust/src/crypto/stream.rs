@@ -396,6 +396,29 @@ impl AeadStreamEncryptor {
         Ok(Self { mode })
     }
 
+    /// Bytes the next [`Self::encrypt_chunk`] writes in front of its first
+    /// chunk on top of the per-chunk framing: the salt (legacy), or the salt
+    /// plus the response header's type, timestamp and request salt (SS-2022).
+    /// `0` once that prefix has gone out.
+    pub fn pending_prefix_len(&self) -> usize {
+        match &self.mode {
+            StreamEncryptorMode::Legacy { salt, sent_salt, .. } => {
+                if *sent_salt {
+                    0
+                } else {
+                    salt.len()
+                }
+            },
+            StreamEncryptorMode::Ss2022 { salt, sent_header, request_salt, .. } => {
+                if *sent_header {
+                    0
+                } else {
+                    salt.len() + 1 + 8 + request_salt.len()
+                }
+            },
+        }
+    }
+
     pub fn encrypt_chunk(
         &mut self,
         plaintext: &[u8],

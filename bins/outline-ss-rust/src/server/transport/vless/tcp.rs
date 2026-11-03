@@ -15,7 +15,7 @@ use crate::{
 use super::super::super::{
     abort::AbortOnDrop,
     connect::connect_tcp_target,
-    relay::{GREEDY_DRAIN_TARGET, UpstreamRead},
+    relay::{GREEDY_DRAIN_TARGET, UpstreamRead, try_read_bounded},
     resumption::{Parked, ParkedProtocol, ParkedTcp, ResumeOutcome, SessionId},
 };
 use super::super::carrier_padding;
@@ -366,16 +366,17 @@ where
             frame.extend_from_slice(&downlink_replay::build_v1_header(flags, payload_len));
             frame.extend_from_slice(&payload);
             let make_binary = outbound.make_binary;
-            outbound
-                .data_tx
-                .send(make_binary(carrier_padding::frame_downlink_message(
-                    route.padding,
-                    Bytes::copy_from_slice(&frame),
-                )))
-                .await
-                .map_err(|error| {
+            // On h2 the frame goes out in even pieces that each fit one h2
+            // DATA frame of one TLS record; the client reads it as a stream.
+            for message in carrier_padding::capped_downlink_messages(
+                route.protocol,
+                route.padding,
+                Bytes::from(frame),
+            ) {
+                outbound.data_tx.send(make_binary(message)).await.map_err(|error| {
                     anyhow!("failed to queue vless v2 downlink replay frame on resume: {error}")
                 })?;
+            }
             let (ring_oldest, ring_total) = ring_diag.unwrap_or((0, 0));
             debug!(
                 user = user.label(),
@@ -888,7 +889,11 @@ where
     // nothing; it drops when this relay call returns on park or close.
     let mut downlink_buf = BytesMut::new();
     let mut header = response_header;
-    let mut shaper = carrier_padding::new_server_shaper(protocol, padding);
+    let mut shaper = carrier_padding::new_server_shaper(protocol);
+    // Data bytes per downlink message on an h2 carrier (plain VLESS adds no
+    // inner framing), so each message fits one h2 DATA frame of one TLS
+    // record; `None` keeps one message per read elsewhere.
+    let message_cap = carrier_padding::h2_plaintext_cap(protocol, padding, 0);
     loop {
         // Cancel arm: when no notify is registered, substitute a never-
         // resolving future so the select degenerates to a single-arm
@@ -912,7 +917,16 @@ where
                 ready.context("failed to await vless upstream")?;
                 // Reserve into the reused buffer only once data is ready.
                 downlink_buf.reserve(GREEDY_DRAIN_TARGET);
-                let read = match upstream_reader.try_read_buf(&mut downlink_buf) {
+                // On h2 the read itself is bounded, so one read is one message
+                // of at most `cap` bytes (the first one with the held-back
+                // header in it). Cutting an oversize read afterwards would
+                // leave small remainder messages, which h2 coalesces with the
+                // next DATA frame into one write that again spills a full TLS
+                // record plus a small one.
+                let limit = message_cap.map(|cap| {
+                    cap.saturating_sub(header.as_ref().map_or(0, Bytes::len)).max(1)
+                });
+                let read = match try_read_bounded(&mut upstream_reader, &mut downlink_buf, limit) {
                     Ok(read) => read,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => return Err(error).context("failed to read from vless upstream"),
@@ -927,8 +941,10 @@ where
                 // already-buffered upstream bytes into a single binary
                 // frame collapses ~14k frames/sec at 200 Mbit into
                 // ~1.5k while never yielding the runtime.
-                while downlink_buf.len() < GREEDY_DRAIN_TARGET {
-                    match upstream_reader.try_read_buf(&mut downlink_buf) {
+                let drain_target = limit.unwrap_or(GREEDY_DRAIN_TARGET);
+                while downlink_buf.len() < drain_target {
+                    let room = limit.map(|limit| limit - downlink_buf.len());
+                    match try_read_bounded(&mut upstream_reader, &mut downlink_buf, room) {
                         Ok(0) => break, // EOF: send what we have
                         Ok(_) => {},    // got more, keep pulling
                         Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -978,6 +994,9 @@ where
                     },
                     None => payload,
                 };
+                // The bounded read guarantees this (header included); the
+                // shaper's pieces are never larger than their input.
+                debug_assert!(message_cap.is_none_or(|cap| payload.len() <= cap));
                 if let Some(s) = shaper.as_mut() {
                     // Early shaping: the combined first message (header + data)
                     // goes out as several padded pieces.

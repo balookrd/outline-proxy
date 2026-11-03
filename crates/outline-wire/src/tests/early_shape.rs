@@ -17,7 +17,7 @@ fn sum(plan: &ShapePlan) -> usize {
 fn client_pieces_stay_in_browser_range_and_sum_to_message() {
     for seed in 0..200 {
         let mut d = lcg(seed);
-        let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, &mut d);
+        let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, true, &mut d);
         let plan = s.plan(1964, &mut d);
         assert_eq!(sum(&plan), 1964, "seed {seed}");
         let (last, head) = plan.pieces.split_last().unwrap();
@@ -33,7 +33,7 @@ fn client_pieces_stay_in_browser_range_and_sum_to_message() {
 fn server_pieces_stay_in_range_and_sum_to_message() {
     for seed in 0..200 {
         let mut d = lcg(seed);
-        let mut s = EarlyShaper::new(ShapeDirection::ServerToClient, &mut d);
+        let mut s = EarlyShaper::new(ShapeDirection::ServerToClient, true, &mut d);
         let plan = s.plan(4499, &mut d);
         assert_eq!(sum(&plan), 4499);
         assert!(plan.pieces.len() >= 2, "seed {seed}: {plan:?}");
@@ -49,16 +49,16 @@ fn server_pieces_stay_in_range_and_sum_to_message() {
 #[test]
 fn small_messages_are_not_split() {
     let mut d = lcg(7);
-    let mut c = EarlyShaper::new(ShapeDirection::ClientToServer, &mut d);
+    let mut c = EarlyShaper::new(ShapeDirection::ClientToServer, true, &mut d);
     assert_eq!(c.plan(900, &mut d).pieces, vec![900]);
-    let mut s = EarlyShaper::new(ShapeDirection::ServerToClient, &mut d);
+    let mut s = EarlyShaper::new(ShapeDirection::ServerToClient, true, &mut d);
     assert_eq!(s.plan(1500, &mut d).pieces, vec![1500]);
 }
 
 #[test]
 fn window_closes_after_message_count() {
     let mut d = lcg(3);
-    let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, &mut d);
+    let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, true, &mut d);
     let mut split = 0;
     for _ in 0..20 {
         if s.plan(1200, &mut d).pieces.len() > 1 {
@@ -73,7 +73,7 @@ fn window_closes_after_message_count() {
 #[test]
 fn window_closes_after_byte_budget_and_only_the_head_is_split() {
     let mut d = lcg(11);
-    let mut s = EarlyShaper::new(ShapeDirection::ServerToClient, &mut d);
+    let mut s = EarlyShaper::new(ShapeDirection::ServerToClient, true, &mut d);
     let plan = s.plan(100_000, &mut d);
     assert_eq!(sum(&plan), 100_000);
     let shaped: usize = plan.pieces[..plan.pieces.len() - 1].iter().sum();
@@ -87,7 +87,7 @@ fn client_covers_come_once_before_the_first_big_message() {
     let mut with_covers = 0;
     for seed in 0..400 {
         let mut d = lcg(seed);
-        let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, &mut d);
+        let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, true, &mut d);
         assert!(s.plan(200, &mut d).covers.is_empty(), "small message gets no cover");
         let first = s.plan(1964, &mut d);
         assert!(first.covers.len() <= 2);
@@ -110,7 +110,7 @@ fn threshold_plus_one_is_split_in_both_directions() {
             (ShapeDirection::ServerToClient, 1501, 600, 2800),
         ] {
             let mut d = lcg(seed);
-            let mut s = EarlyShaper::new(dir, &mut d);
+            let mut s = EarlyShaper::new(dir, true, &mut d);
             let plan = s.plan(len, &mut d);
             assert_eq!(sum(&plan), len, "seed {seed}");
             assert!(plan.pieces.len() >= 2, "seed {seed}: {plan:?}");
@@ -127,7 +127,7 @@ fn threshold_plus_one_is_split_in_both_directions() {
 fn covers_only_accompany_a_split_message() {
     for seed in 0..200 {
         let mut d = lcg(seed);
-        let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, &mut d);
+        let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, true, &mut d);
         let plan = s.plan(950, &mut d);
         if !plan.covers.is_empty() {
             assert!(plan.pieces.len() >= 2, "seed {seed}: {plan:?}");
@@ -138,7 +138,7 @@ fn covers_only_accompany_a_split_message() {
 #[test]
 fn empty_message_does_not_consume_the_window() {
     let mut d = lcg(5);
-    let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, &mut d);
+    let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, true, &mut d);
     for _ in 0..20 {
         assert_eq!(s.plan(0, &mut d).pieces, vec![0]);
     }
@@ -149,7 +149,7 @@ fn empty_message_does_not_consume_the_window() {
 fn tiny_budget_left_does_not_split() {
     for seed in 0..200 {
         let mut d = lcg(seed);
-        let mut s = EarlyShaper::new(ShapeDirection::ServerToClient, &mut d);
+        let mut s = EarlyShaper::new(ShapeDirection::ServerToClient, true, &mut d);
         let first = s.plan(23_000, &mut d);
         assert_eq!(sum(&first), 23_000, "seed {seed}");
         let second = s.plan(4000, &mut d);
@@ -160,6 +160,19 @@ fn tiny_budget_left_does_not_split() {
             for p in head {
                 assert!((600..=2800).contains(p), "seed {seed}: {second:?}");
             }
+        }
+    }
+}
+
+#[test]
+fn covers_disallowed_never_emits_covers() {
+    for seed in 0..400 {
+        let mut d = lcg(seed);
+        let mut s = EarlyShaper::new(ShapeDirection::ClientToServer, false, &mut d);
+        for _ in 0..4 {
+            let plan = s.plan(1964, &mut d);
+            assert!(plan.covers.is_empty(), "seed {seed}");
+            assert_eq!(sum(&plan), 1964);
         }
     }
 }

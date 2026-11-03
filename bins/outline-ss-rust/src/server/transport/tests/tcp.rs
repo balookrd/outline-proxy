@@ -1100,3 +1100,75 @@ async fn distinct_tcp_handshakes_are_both_accepted() -> Result<()> {
     }
     Ok(())
 }
+
+mod replay_frame_on_h2 {
+    //! The SS v2 replay frame bypasses the relay; on h2 it must be cut like
+    //! the relay's reads so every message fits one h2 DATA frame.
+
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+    use outline_wire::padding::{PaddingDecoder, PaddingScheme};
+
+    use super::super::{SS_CHUNK_OVERHEAD, encrypt_downlink_messages};
+    use crate::config::CipherKind;
+    use crate::crypto::{AeadStreamDecryptor, AeadStreamEncryptor, UserKey};
+    use crate::metrics::Protocol;
+    use crate::server::transport::carrier_padding::{
+        H2_DATA_PAYLOAD_MAX, H2_WS_HEADER_LEN, h2_plaintext_cap,
+    };
+
+    fn key() -> UserKey {
+        UserKey::new("replay", "replay-password", None, CipherKind::Chacha20IetfPoly1305, None)
+            .expect("valid test user key")
+    }
+
+    fn decrypt(messages: &[Bytes], padding: PaddingScheme) -> Vec<u8> {
+        let mut decoder = PaddingDecoder::new();
+        let mut decryptor = AeadStreamDecryptor::new(Arc::from(vec![key()]));
+        for m in messages {
+            if padding.is_enabled() {
+                let mut raw = Vec::new();
+                decoder.push(m, &mut raw);
+                decryptor.feed_ciphertext(&raw);
+            } else {
+                decryptor.feed_ciphertext(m);
+            }
+        }
+        let mut plaintext = Vec::new();
+        decryptor
+            .drain_plaintext(&mut plaintext)
+            .expect("valid ciphertext stream");
+        plaintext
+    }
+
+    #[test]
+    fn replay_frame_is_capped_on_h2_and_round_trips() {
+        let frame: Vec<u8> = (0..(14 + 65_536u32)).map(|i| (i % 251) as u8).collect();
+        for padding in [PaddingScheme::disabled(), PaddingScheme::new(0, 256)] {
+            let cap = h2_plaintext_cap(Protocol::Http2, padding, SS_CHUNK_OVERHEAD);
+            let mut encryptor = AeadStreamEncryptor::new(&key(), None).expect("encryptor");
+            let messages =
+                encrypt_downlink_messages(&mut encryptor, &frame, cap, padding).expect("encrypts");
+            assert!(messages.len() >= 5, "{padding:?}");
+            for m in &messages {
+                assert!(m.len() + H2_WS_HEADER_LEN <= H2_DATA_PAYLOAD_MAX, "{} B", m.len());
+                assert!(m.len() >= 256, "no small piece: {} B", m.len());
+            }
+            assert_eq!(decrypt(&messages, padding), frame, "{padding:?}");
+        }
+    }
+
+    #[test]
+    fn replay_frame_stays_one_message_off_h2() {
+        let frame = vec![0x42u8; 14 + 40_000];
+        let cap = h2_plaintext_cap(Protocol::Http1, PaddingScheme::disabled(), SS_CHUNK_OVERHEAD);
+        assert_eq!(cap, None);
+        let mut encryptor = AeadStreamEncryptor::new(&key(), None).expect("encryptor");
+        let messages =
+            encrypt_downlink_messages(&mut encryptor, &frame, cap, PaddingScheme::disabled())
+                .expect("encrypts");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(decrypt(&messages, PaddingScheme::disabled()), frame);
+    }
+}

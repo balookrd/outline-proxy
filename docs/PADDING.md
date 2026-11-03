@@ -53,8 +53,9 @@ There is **no on-wire capability bit**. A peer that has not enabled padding
 simply never frames its writes and never decodes; a peer that has will feed a
 plain (unframed) stream into the decoder and fail. So **both ends must opt in
 together** — exactly like cross-transport session resumption. The default is
-disabled, which keeps the wire byte-for-byte identical to the unpadded carrier,
-so third-party clients (Happ, Outline, xray, sing-box) are unaffected until an
+disabled, which keeps the byte stream free of padding frames (early-session
+shaping still splits the first messages on h1/h2, but a stream reader sees the
+same bytes), so third-party clients (Happ, Outline, xray, sing-box) are unaffected until an
 operator turns padding on.
 
 - **Server — per-endpoint.** Padding is an attribute of the endpoint itself:
@@ -93,27 +94,42 @@ originated Ping risks. The receiver's decoder drops cover frames transparently.
 
 The first bytes of a TCP session are what a length-based classifier sees best:
 a TLS-in-tunnel handshake leaves as a few records of characteristic sizes.
-On **padded h1 / h2 TCP sessions** the first messages are therefore cut into
+On **h1 / h2 TCP sessions** (padded or not) the first messages are therefore cut into
 pieces, in both directions:
 
 - **Window.** Per session, the first 6..=10 messages or the first 16..=24 KiB
   (whichever comes first); after that the session is unshaped.
 - **Client to server.** A message larger than 900 B is split into pieces of
-  300..=850 B. With probability 1/2 per session, 1-2 lead-in **covers**
-  (pad-only frames of 40..=100 B of pad each) precede the first split message.
+  300..=850 B. On a padded path, with probability 1/2 per session, 1-2 lead-in
+  **covers** (pad-only frames of 40..=100 B of pad each) precede the first
+  split message; an unpadded path has no covers. Not on an XHTTP carrier in
+  packet-up mode: there every client write is already its own POST, so the
+  client leaves the start of the session as is.
 - **Server to client.** A message larger than 1500 B is split into pieces of
   600..=2800 B.
 
-Each piece is an ordinary padded frame (it still gets its random pad tail), so
-the receiver's decoder needs no change. There are no new config keys: shaping
-is on exactly where padding is on.
+On a padded path each piece is an ordinary padded frame (it still gets its
+random pad tail), so the receiver's decoder needs no change. On an unpadded
+path each piece is a plain `Binary` message with no framing: receivers read TCP
+as a stream, so the bytes are the same and only the message boundaries differ.
+There are no new config keys: shaping is on for every h1 / h2 TCP session;
+covers need padding.
 
 ### What applies regardless of padding
 
-Three fixes remove "markers" of the carrier itself and are always on:
+Early-session shaping above (the cutting, not the covers) needs no padding.
+Four more fixes remove "markers" of the carrier itself and are always on:
 
 - **h2: one TLS record per frame.** The client's h2 IO forwards vectored writes,
   so a frame header and its payload leave in one record instead of two.
+- **h2: server downlink messages fit one record.** On h2 carriers the server
+  keeps each TCP downlink message (SS, VLESS, VLESS mux, resume replay) within
+  one DATA frame of at most 16375 B, so the frame and its 9-byte header leave as
+  one TLS record (no 16401 + 26 record pairs on bulk downloads). The upstream
+  read itself is bounded, so no small remainder message is left to be written
+  together with the next full frame. UDP datagrams and cover frames are not cut
+  (they are small); a pad range that leaves under 1 KiB of data per message
+  (`max_bytes` above ~15 KiB) turns this limit off.
 - **VLESS response header with the first data.** The server holds the response
   header and sends it together with the first upstream bytes.
 - **SS2022 request header with the first data.** The client holds the request
@@ -126,7 +142,7 @@ only, not the delays between messages (cover frames aside).
 
 ### Compatibility
 
-The wire format is unchanged: pieces are normal padding frames and the bundled
+The wire format is unchanged: pieces are normal padding frames (plain `Binary` messages on an unpadded path) and the bundled
 writes are ordinary byte streams. Old peers interoperate in both directions;
 they simply do not shape their own side.
 

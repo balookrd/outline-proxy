@@ -256,7 +256,7 @@ pub(crate) fn draw_in(rng: &mut impl rand::Rng) -> impl FnMut(usize, usize) -> u
 /// lead-in pad-only cover frames first, then one padded message per piece.
 /// Each returned buffer is a ready `Message::Binary` payload. Past the shaping
 /// window (or for a small frame) this is a single ordinary padded message.
-/// Caller must have checked [`PaddingScheme::is_enabled`].
+/// With a disabled scheme the pieces are plain slices (no framing, no covers).
 pub(crate) fn shaped_messages<R: RngCore>(
     scheme: PaddingScheme,
     shaper: &mut EarlyShaper,
@@ -274,10 +274,16 @@ pub(crate) fn shaped_messages<R: RngCore>(
     }
     let mut offset = 0;
     for len in plan.pieces {
-        let mut out = Vec::with_capacity(len + 8);
-        frame_payload_into(scheme, &frame[offset..offset + len], rng, &mut out);
+        let piece = &frame[offset..offset + len];
         offset += len;
-        msgs.push(out);
+        if scheme.is_enabled() {
+            let mut out = Vec::with_capacity(len + 8);
+            frame_payload_into(scheme, piece, rng, &mut out);
+            msgs.push(out);
+        } else {
+            // Unpadded path: plain slices of the stream, no framing.
+            msgs.push(piece.to_vec());
+        }
     }
     msgs
 }

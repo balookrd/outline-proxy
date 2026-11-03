@@ -95,10 +95,17 @@ impl UpstreamRead for ScriptedUpstream {
     }
 
     fn try_read_buf<B: bytes::BufMut>(&mut self, buf: &mut B) -> std::io::Result<usize> {
+        // Like a socket (and the mesh upstream), hand over only what `buf`
+        // has room for and keep the rest of the chunk for the next read.
         match self.chunks.pop_front() {
-            Some(chunk) => {
+            Some(mut chunk) => {
+                let n = chunk.len().min(buf.remaining_mut());
+                let rest = chunk.split_off(n);
                 buf.put_slice(&chunk);
-                Ok(chunk.len())
+                if !rest.is_empty() {
+                    self.chunks.push_front(rest);
+                }
+                Ok(n)
             },
             None => Ok(0), // EOF
         }
@@ -223,4 +230,118 @@ async fn a_mesh_sized_chunk_survives_an_ss2022_relay() {
         1,
         "the chunk goes out whole; a split would mean the ceiling was hit",
     );
+}
+
+/// A recording sink that asks the relay for a plaintext cap, standing in for a
+/// `ChannelSink` on an h2 carrier.
+#[derive(Clone)]
+struct CappedSink {
+    inner: RecordingSink,
+    cap: Option<usize>,
+}
+
+impl UpstreamSink for CappedSink {
+    async fn send_ciphertext(&mut self, ciphertext: Bytes) -> anyhow::Result<()> {
+        self.inner.send_ciphertext(ciphertext).await
+    }
+
+    async fn close(&mut self) {}
+
+    fn plaintext_cap(&self) -> Option<usize> {
+        self.cap
+    }
+}
+
+/// Per-chunk AEAD framing of both SS flavours: sealed length (2 + tag 16) plus
+/// the payload tag (16).
+const SS_CHUNK_OVERHEAD: usize = 34;
+
+async fn run_capped(
+    chunks: Vec<Vec<u8>>,
+    cap: Option<usize>,
+    mut encryptor: AeadStreamEncryptor,
+) -> Vec<Bytes> {
+    let sink = CappedSink { inner: RecordingSink::default(), cap };
+    let recorded = sink.inner.recorded();
+    relay_upstream_to_client(
+        ScriptedUpstream { chunks: chunks.into() },
+        sink,
+        &mut encryptor,
+        test_metrics(),
+        Protocol::Http2,
+        AppProtocol::Shadowsocks,
+        Arc::from("beerloga"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("the relay completes");
+    recorded.lock().unwrap().clone()
+}
+
+#[tokio::test]
+async fn a_capped_sink_gets_every_ciphertext_within_cap_plus_chunk_overhead() {
+    // 65536 B in one read (the most a direct TCP read or a mesh chunk hands
+    // over), then a small tail: every message, the salted first one included,
+    // must stay within `cap + 34`, and the stream must still decrypt whole.
+    let cap = 16_337;
+    let data: Vec<u8> = (0..65_536u32).map(|i| (i % 251) as u8).collect();
+    let chunks =
+        run_capped(vec![data.clone(), b"tail".to_vec()], Some(cap), test_encryptor()).await;
+    assert!(chunks.len() >= 5, "65536 B at a 16337 B cap is at least five messages");
+    for (i, c) in chunks.iter().enumerate() {
+        assert!(c.len() <= cap + SS_CHUNK_OVERHEAD, "message {i} is {} B", c.len());
+    }
+    let mut expected = data;
+    expected.extend_from_slice(b"tail");
+    assert_eq!(decrypt_all(&chunks), expected);
+}
+
+#[tokio::test]
+async fn a_capped_ss2022_sink_fits_the_response_header_into_the_first_message() {
+    // SS-2022 puts salt + the sealed response header in front of the first
+    // chunk; the relay shortens that chunk so the first message stays in budget.
+    let cap = 16_337;
+    let encryptor = AeadStreamEncryptor::new(
+        &ss2022_user_key(),
+        Some(StreamResponseContext::for_test(&[7_u8; 16])),
+    )
+    .expect("valid ss2022 test encryptor");
+    let chunks = run_capped(vec![vec![0x5a; MESH_UPSTREAM_CHUNK]], Some(cap), encryptor).await;
+    assert!(chunks.len() >= 5);
+    for (i, c) in chunks.iter().enumerate() {
+        assert!(c.len() <= cap + SS_CHUNK_OVERHEAD, "message {i} is {} B", c.len());
+    }
+    let wire: usize = chunks.iter().map(Bytes::len).sum();
+    let header = 16 + 1 + 8 + 16; // salt + type + timestamp + request salt
+    assert_eq!(wire, MESH_UPSTREAM_CHUNK + header + chunks.len() * SS_CHUNK_OVERHEAD);
+}
+
+#[tokio::test]
+async fn an_uncapped_sink_still_gets_one_message_per_read() {
+    let data = vec![0x11; 40_000];
+    let chunks = run_capped(vec![data.clone()], None, test_encryptor()).await;
+    assert_eq!(chunks.len(), 1, "no cap: the whole read is one message");
+    assert_eq!(decrypt_all(&chunks), data);
+}
+
+#[tokio::test]
+async fn a_capped_sink_on_a_bulk_upstream_gets_no_small_middle_messages() {
+    // Far more than one message is available at once. The bounded read makes
+    // every message a full one: a small remainder piece ahead of the next full
+    // message is what h2 coalesces into a write that spills a full TLS record
+    // plus a small one. Only the very last message may be short.
+    let cap = 16_337;
+    let data: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    let chunks = run_capped(vec![data.clone()], Some(cap), test_encryptor()).await;
+    // First message: 16305 B of data behind the 32-byte legacy salt; then
+    // 16337 B each: 1 + ceil((200000 - 16305) / 16337) = 13 messages.
+    assert_eq!(chunks.len(), 13);
+    let (last, middle) = chunks.split_last().expect("messages were sent");
+    for (i, c) in middle.iter().enumerate() {
+        assert_eq!(c.len(), cap + SS_CHUNK_OVERHEAD, "message {i} is not a full one");
+    }
+    assert!(last.len() <= cap + SS_CHUNK_OVERHEAD);
+    assert_eq!(decrypt_all(&chunks), data);
 }
