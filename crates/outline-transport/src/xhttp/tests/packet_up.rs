@@ -36,6 +36,13 @@ use crate::dial_plan::DialNetworkOptions;
 struct CapturedPosts {
     seqs: Vec<u64>,
     bodies: Vec<Bytes>,
+    /// DATA frames each packet-up POST body arrived in (stream-one: 1 per chunk).
+    frames: Vec<usize>,
+    /// Empty DATA frames seen in each packet-up POST body (a trailing
+    /// END_STREAM-only frame shows up here).
+    empty_frames: Vec<usize>,
+    /// `content-length` request header of each packet-up POST, if any.
+    content_lengths: Vec<Option<u64>>,
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -130,6 +137,76 @@ async fn xhttp_client_round_trip_through_mock_server() -> Result<()> {
     assert_eq!(bodies[0].as_ref(), b"hello");
     assert_eq!(bodies[1].as_ref(), b"world");
 
+    Ok(())
+}
+
+/// The packet-up client leaves the session start in one POST per write, but
+/// cuts that POST's body into several DATA frames while the early-shape window
+/// is open, so a large first write (the inner ClientHello) does not leave as
+/// one TLS record. The body is the same bytes either way.
+#[tokio::test(flavor = "multi_thread")]
+async fn packet_up_h2_cuts_a_large_first_post_into_data_frames() -> Result<()> {
+    let captured: Arc<Mutex<CapturedPosts>> = Arc::new(Mutex::new(CapturedPosts::default()));
+    let (_down_tx, down_rx) = mpsc::channel::<Bytes>(8);
+    let down_rx = Arc::new(tokio::sync::Mutex::new(Some(down_rx)));
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let captured_for_server = Arc::clone(&captured);
+    let _server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let svc = service_fn(move |req: Request<Incoming>| {
+            let captured = Arc::clone(&captured_for_server);
+            let down_rx_slot = Arc::clone(&down_rx);
+            async move { handle(req, captured, down_rx_slot).await }
+        });
+        let _ = ServerBuilder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), svc)
+            .await;
+    });
+    let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
+    let cache = DnsCache::new(Duration::from_secs(30));
+    let (mut stream, ..) = super::connect_xhttp(
+        &cache,
+        &base_url,
+        TransportMode::XhttpH2,
+        DialNetworkOptions::default(),
+        None,
+        false,
+        false,
+        0,
+        None,
+        false,
+        false,
+    )
+    .await?;
+
+    let first: Bytes = (0..1964u32).map(|i| i as u8).collect::<Vec<u8>>().into();
+    stream.send(Message::Binary(first.clone())).await?;
+    stream.send(Message::Binary(Bytes::from_static(b"small"))).await?;
+
+    let posts = wait_for_posts(&captured, 2).await;
+    let mut rows: Vec<(u64, Bytes, usize, usize, Option<u64>)> = (0..posts.seqs.len())
+        .map(|i| {
+            (
+                posts.seqs[i],
+                posts.bodies[i].clone(),
+                posts.frames[i],
+                posts.empty_frames[i],
+                posts.content_lengths[i],
+            )
+        })
+        .collect();
+    rows.sort_by_key(|(seq, ..)| *seq);
+    assert_eq!(rows.len(), 2, "one POST per write");
+    assert_eq!(rows[0].1, first, "the body is unchanged");
+    assert!(rows[0].2 >= 3, "1964 B must arrive in >= 3 DATA frames, got {}", rows[0].2);
+    assert_eq!(rows[1].1.as_ref(), b"small");
+    assert_eq!(rows[1].2, 1, "a small write stays one frame");
+    // END_STREAM rides the last piece: no trailing empty DATA frame (one more
+    // small TLS record), and the cut body keeps its Content-Length.
+    assert_eq!(rows[0].3, 0, "no trailing empty DATA frame");
+    assert_eq!(rows[0].4, Some(1964), "the cut body keeps its Content-Length");
+    assert_eq!(rows[1].4, Some(5));
     Ok(())
 }
 
@@ -238,6 +315,9 @@ async fn wait_for_posts(captured: &Arc<Mutex<CapturedPosts>>, expected: usize) -
                 return CapturedPosts {
                     seqs: guard.seqs.clone(),
                     bodies: guard.bodies.clone(),
+                    frames: guard.frames.clone(),
+                    empty_frames: guard.empty_frames.clone(),
+                    content_lengths: guard.content_lengths.clone(),
                 };
             }
         }
@@ -246,6 +326,9 @@ async fn wait_for_posts(captured: &Arc<Mutex<CapturedPosts>>, expected: usize) -
             return CapturedPosts {
                 seqs: guard.seqs.clone(),
                 bodies: guard.bodies.clone(),
+                frames: guard.frames.clone(),
+                empty_frames: guard.empty_frames.clone(),
+                content_lengths: guard.content_lengths.clone(),
             };
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -318,6 +401,9 @@ async fn handle(
                         let mut guard = captured_for_drain.lock();
                         guard.seqs.push(u64::MAX);
                         guard.bodies.push(data);
+                        guard.frames.push(1);
+                        guard.empty_frames.push(0);
+                        guard.content_lengths.push(None);
                     }
                 }
             });
@@ -344,10 +430,27 @@ async fn handle(
                 .rsplit_once('/')
                 .and_then(|(_, tail)| tail.parse().ok())
                 .unwrap_or(u64::MAX);
-            let body_bytes = match req.into_body().collect().await {
-                Ok(collected) => collected.to_bytes(),
-                Err(_) => Bytes::new(),
-            };
+            // Read frame by frame (not `collect`) so the test can see how
+            // many DATA frames the client cut the body into.
+            let content_length = req
+                .headers()
+                .get(hyper::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok());
+            let mut req_body = req.into_body();
+            let mut body_bytes = Vec::new();
+            let (mut frames, mut empty_frames) = (0, 0);
+            while let Some(Ok(frame)) = req_body.frame().await {
+                if let Ok(data) = frame.into_data() {
+                    if data.is_empty() {
+                        empty_frames += 1;
+                    } else {
+                        frames += 1;
+                        body_bytes.extend_from_slice(&data);
+                    }
+                }
+            }
+            let body_bytes = Bytes::from(body_bytes);
             // Push the (seq, body) pair under ONE lock acquisition:
             // pipelined h2 POSTs run these handlers concurrently, and
             // split pushes can interleave (seq A, seq B, body B, body A),
@@ -356,6 +459,9 @@ async fn handle(
                 let mut guard = captured.lock();
                 guard.seqs.push(seq);
                 guard.bodies.push(body_bytes);
+                guard.frames.push(frames);
+                guard.empty_frames.push(empty_frames);
+                guard.content_lengths.push(content_length);
             }
             Ok(Response::builder().status(StatusCode::OK).body(empty_body()).unwrap())
         },
