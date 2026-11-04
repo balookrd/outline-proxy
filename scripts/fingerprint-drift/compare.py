@@ -6,14 +6,15 @@ Usage: compare.py <baseline-dir> <snapshot-dir> <report.md>
 Every `<baseline-dir>/<browser>.json` is compared with the snapshot of the
 same name. The report is Markdown. Exit code: 0 — every snapshot matches,
 1 — drift, 2 — a snapshot is missing or lacks a layer the baseline has (a
-capture failure, not drift; it wins over 1).
+capture failure, not drift), 3 — both: one browser drifted while another
+failed to capture, so the drift is still reported.
 """
 import difflib
 import json
 import os
 import sys
 
-MATCH, DRIFT, INCOMPLETE = 0, 1, 2
+MATCH, DRIFT, INCOMPLETE, DRIFT_AND_INCOMPLETE = 0, 1, 2, 3
 
 LAYERS = ("tcp_h2", "tcp_h1", "quic", "h2", "h1")
 
@@ -25,6 +26,21 @@ def _fmt(value):
 def _is_header_list(value):
     return isinstance(value, list) and value and all(
         isinstance(x, list) and len(x) == 2 and isinstance(x[0], str) for x in value)
+
+
+def _is_scalar_list(value):
+    return isinstance(value, list) and all(
+        isinstance(x, (str, int)) and not isinstance(x, bool) for x in value)
+
+
+def _list_change(old, new):
+    """`+[added] -[removed]` for two lists of scalars, or None if only the order moved."""
+    added = [x for x in new if x not in old]
+    removed = [x for x in old if x not in new]
+    if not added and not removed:
+        return None
+    parts = ([f"+{_fmt(added)}"] if added else []) + ([f"-{_fmt(removed)}"] if removed else [])
+    return " ".join(parts)
 
 
 def diff(old, new, path=""):
@@ -84,6 +100,9 @@ def report_browser(name, baseline, snapshot):
                 [f"{n}: {v}" for n, v in old], [f"{n}: {v}" for n, v in new],
                 "baseline", "snapshot", lineterm="", n=1)]
             lines += ["```"]
+        elif (_is_scalar_list(old) and _is_scalar_list(new)
+              and (change := _list_change(old, new)) is not None):
+            lines += [f"- `{path}`: `{change}`"]
         else:
             lines += [f"- `{path}`: `{_fmt(old)}` → `{_fmt(new)}`"]
     return DRIFT, lines + [""]
@@ -98,18 +117,20 @@ def _load(path):
 
 def main(argv):
     baseline_dir, snapshot_dir, report_path = argv[1], argv[2], argv[3]
-    code, lines = MATCH, ["# Browser fingerprint drift", ""]
+    codes, lines = set(), ["# Browser fingerprint drift", ""]
     for file in sorted(os.listdir(baseline_dir)):
         if not file.endswith(".json"):
             continue
         name = file[:-len(".json")]
         c, ls = report_browser(name, _load(os.path.join(baseline_dir, file)),
                                _load(os.path.join(snapshot_dir, file)))
-        code = max(code, c)
+        codes.add(c)
         lines += ls
     with open(report_path, "w") as f:
         f.write("\n".join(lines) + "\n")
-    return code
+    if INCOMPLETE in codes:
+        return DRIFT_AND_INCOMPLETE if DRIFT in codes else INCOMPLETE
+    return DRIFT if DRIFT in codes else MATCH
 
 
 if __name__ == "__main__":

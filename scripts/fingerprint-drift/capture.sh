@@ -10,7 +10,8 @@
 # firefox), e.g. CHROME=chromium for a local arm64 run without --install.
 # CHROME_FLAGS adds whitespace-separated flags to every Chrome run (a
 # diagnosis aid; the baseline is Chrome's defaults). Each Chrome run also
-# writes a net-log next to its log (<scenario>.netlog.json).
+# writes a gzipped net-log next to its log (<scenario>.netlog.json.gz; Chrome
+# is killed by the timeout, so its JSON ends unclosed).
 #
 # Writes <out-dir>/versions.json and, per browser, <out-dir>/<browser>/
 # {h2,h1}-{hello,plain}.pcap and quic.pcap — the layout normalize.py reads.
@@ -96,6 +97,7 @@ chrome() { # <log> <args...>
     --user-data-dir="$(mktemp -d)" --no-first-run --no-default-browser-check \
     --ignore-certificate-errors-spki-list="$spki" --log-net-log="${log%.log}.netlog.json" \
     "${extra[@]}" "$@" >"$log" 2>&1 || true
+  [ ! -f "${log%.log}.netlog.json" ] || gzip -f "${log%.log}.netlog.json"
 }
 
 firefox_profile() {

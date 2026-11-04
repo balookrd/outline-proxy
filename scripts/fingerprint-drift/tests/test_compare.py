@@ -5,7 +5,8 @@ import tempfile
 import unittest
 
 from common import BASELINE
-from compare import DRIFT, INCOMPLETE, MATCH, diff, main, report_browser
+from compare import (DRIFT, DRIFT_AND_INCOMPLETE, INCOMPLETE, MATCH, diff, main,
+                     report_browser)
 
 
 def load(browser):
@@ -39,6 +40,19 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(code, DRIFT)
         self.assertTrue(any("firefox 159 → 160" in ln for ln in lines), lines)
 
+    def test_list_change_names_added_and_removed(self):
+        snap = load("chrome")
+        snap["tcp_h2"]["trust_anchors"] = snap["tcp_h2"]["trust_anchors"][1:] + ["d6790910"]
+        _, lines = report_browser("chrome", load("chrome"), snap)
+        self.assertIn('- `tcp_h2.trust_anchors`: `+["d6790910"] -["82df130201"]`', lines)
+
+    def test_reordered_list_shows_both_orders(self):
+        snap = load("firefox")
+        snap["tcp_h2"]["extensions"] = snap["tcp_h2"]["extensions"][::-1]
+        _, lines = report_browser("firefox", load("firefox"), snap)
+        self.assertTrue(any(ln.startswith("- `tcp_h2.extensions`: `[") and "→" in ln
+                            for ln in lines), lines)
+
     def test_header_change_is_a_line_diff(self):
         snap = load("chrome")
         snap["h1"]["ws"] = snap["h1"]["ws"] + [["Priority", "u=0"]]
@@ -69,17 +83,32 @@ class ReportTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    def test_worst_code_wins_and_report_is_written(self):
+    def run_main(self, snapshots):
         with tempfile.TemporaryDirectory() as snaps:
-            snap = load("chrome")
-            snap["major"] += 1
-            with open(os.path.join(snaps, "chrome.json"), "w") as f:
-                json.dump(snap, f)
+            for browser, snap in snapshots.items():
+                with open(os.path.join(snaps, f"{browser}.json"), "w") as f:
+                    json.dump(snap, f)
             report = os.path.join(snaps, "report.md")
-            # firefox.json is missing: INCOMPLETE beats chrome's DRIFT.
-            self.assertEqual(main(["compare.py", BASELINE, snaps, report]), INCOMPLETE)
+            code = main(["compare.py", BASELINE, snaps, report])
             with open(report) as f:
-                self.assertIn("## chrome: drift", f.read())
+                return code, f.read()
+
+    def test_codes(self):
+        drifted = load("chrome")
+        drifted["major"] += 1
+        self.assertEqual(self.run_main({"chrome": load("chrome"), "firefox": load("firefox")})[0],
+                         MATCH)
+        self.assertEqual(self.run_main({"chrome": drifted, "firefox": load("firefox")})[0], DRIFT)
+        self.assertEqual(self.run_main({"chrome": load("chrome")})[0], INCOMPLETE)
+
+    def test_drift_is_reported_beside_a_failed_capture(self):
+        snap = load("chrome")
+        snap["major"] += 1
+        # firefox.json is missing: the code says both, the report keeps chrome's drift.
+        code, report = self.run_main({"chrome": snap})
+        self.assertEqual(code, DRIFT_AND_INCOMPLETE)
+        self.assertIn("## chrome: drift", report)
+        self.assertIn("Snapshot missing", report)
 
 
 if __name__ == "__main__":

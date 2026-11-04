@@ -43,7 +43,12 @@ class ChromeHelloTest(unittest.TestCase):
         self.assertEqual(self.hello["alpn"], ["h2", "http/1.1"])
         self.assertEqual(self.hello["alps"], {"codepoint": 17613, "protocols": ["h2"]})
         self.assertTrue(self.hello["ech"])
-        self.assertIsNotNone(self.hello["trust_anchors"])
+
+    def test_trust_anchors_are_a_list_of_ids(self):
+        ids = self.hello["trust_anchors"]
+        self.assertEqual(len(ids), 28)
+        self.assertEqual(ids[0], "82df130201")
+        self.assertEqual(ids[-1], "d679090f")
 
     def test_groups_and_key_share(self):
         self.assertEqual(self.hello["groups"], [GREASE, 0x11EC, 0x1D, 0x17, 0x18])
