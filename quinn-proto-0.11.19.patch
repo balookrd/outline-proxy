@@ -264,7 +264,7 @@ index 0a299d0..808fcf8 100644
  /// Global configuration for the endpoint, affecting all connections
  ///
 diff --git a/src/config/transport.rs b/src/config/transport.rs
-index ba00695..28b9cb2 100644
+index ba00695..edae67d 100644
 --- a/src/config/transport.rs
 +++ b/src/config/transport.rs
 @@ -8,8 +8,11 @@ use qlog::streamer::QlogStreamer;
@@ -646,7 +646,7 @@ index ba00695..28b9cb2 100644
      pub(crate) black_hole_cooldown: Duration,
  }
  
-@@ -741,6 +1061,39 @@ impl MtuDiscoveryConfig {
+@@ -741,6 +1061,41 @@ impl MtuDiscoveryConfig {
          self.minimum_change = value;
          self
      }
@@ -662,8 +662,10 @@ index ba00695..28b9cb2 100644
 +    /// upstream, with the upper bound limited to the ceiling. A black hole before the first probe
 +    /// resolves leaves no ceiling. On a path reset or migration the first probe is re-armed and
 +    /// the ceiling is cleared, as the ceiling is per path. Values at or below the current MTU
-+    /// are ignored; values above the upper bound are clamped to it. `None` (the default) keeps
-+    /// upstream behaviour.
++    /// are ignored. This setter only caps the value at 65527 (the largest UDP payload); a value
++    /// above the search's upper bound ([`upper_bound`](Self::upper_bound), also limited by the
++    /// peer's `max_udp_payload_size`) is lowered to that bound when the search starts.
++    /// `None` (the default) keeps upstream behaviour.
 +    pub fn first_probe(&mut self, value: Option<u16>) -> &mut Self {
 +        self.first_probe = value.map(|v| v.min(MAX_UDP_PAYLOAD));
 +        self
@@ -686,7 +688,7 @@ index ba00695..28b9cb2 100644
  }
  
  impl Default for MtuDiscoveryConfig {
-@@ -750,6 +1103,8 @@ impl Default for MtuDiscoveryConfig {
+@@ -750,6 +1105,8 @@ impl Default for MtuDiscoveryConfig {
              upper_bound: 1452,
              black_hole_cooldown: Duration::from_secs(60),
              minimum_change: 20,
@@ -697,10 +699,10 @@ index ba00695..28b9cb2 100644
  }
 diff --git a/src/connection/initial_crypto.rs b/src/connection/initial_crypto.rs
 new file mode 100644
-index 0000000..5321913
+index 0000000..54394c1
 --- /dev/null
 +++ b/src/connection/initial_crypto.rs
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,346 @@
 +//! Browser-like layout of the client's ClientHello in CRYPTO frames across its Initial
 +//! packets (outline-proxy patch, see [`InitialCryptoLayout`]).
 +//!
@@ -947,6 +949,24 @@ index 0000000..5321913
 +            },
 +            _ => frames.iter().map(|f| Piece::Crypto(ranges(f))).collect(),
 +        };
++        let laid_out: usize = pieces
++            .iter()
++            .map(|piece| match piece {
++                Piece::Crypto(range) => crypto_frame_len(range),
++                Piece::Ping => 1,
++                Piece::Padding(n) => *n,
++            })
++            .sum();
++        // Never write past the target: the padding below would cut written frames off.
++        let fits = buf.len() + laid_out <= limit;
++        debug_assert!(fits, "laid-out hello overflows the packet");
++        if !fits {
++            for frame in frames.into_iter().rev() {
++                pending.push_front(frame);
++            }
++            self.hello_plan.clear();
++            return false;
++        }
 +        let slice = |range: &Range<usize>| -> frame::Crypto {
 +            let f = frames
 +                .iter()
@@ -975,7 +995,6 @@ index 0000000..5321913
 +                Piece::Padding(n) => buf.put_bytes(0, n),
 +            }
 +        }
-+        debug_assert!(buf.len() <= limit);
 +        // Pad the packet out to its target, as the browsers do, so no further packet is
 +        // coalesced into the rest of the datagram.
 +        buf.resize(limit, 0);
@@ -1031,7 +1050,7 @@ index 0000000..5321913
 +#[path = "tests/initial_crypto.rs"]
 +mod tests;
 diff --git a/src/connection/mod.rs b/src/connection/mod.rs
-index 5155740..0333fe4 100644
+index 5155740..75ee58c 100644
 --- a/src/connection/mod.rs
 +++ b/src/connection/mod.rs
 @@ -48,6 +48,8 @@ use cid_state::CidState;
@@ -1122,7 +1141,17 @@ index 5155740..0333fe4 100644
  
          stats
      }
-@@ -3157,6 +3180,7 @@ impl Connection {
+@@ -2215,6 +2238,9 @@ impl Connection {
+             if let ConnectionSide::Client { token, .. } = &mut self.side {
+                 *token = Bytes::new();
+             }
++            // The hello layout plan (outline-proxy patch) describes frames of this space;
++            // after a Retry the hello is re-queued from offset 0 and planned afresh.
++            self.hello_plan.clear();
+         }
+         let space = &mut self.spaces[space_id];
+         space.crypto = None;
+@@ -3157,6 +3183,7 @@ impl Connection {
          buf: &mut Vec<u8>,
          max_size: usize,
          pn: u64,
@@ -1130,7 +1159,7 @@ index 5155740..0333fe4 100644
      ) -> SentFrames {
          let mut sent = SentFrames::default();
          let space = &mut self.spaces[space_id];
-@@ -3260,8 +3284,12 @@ impl Connection {
+@@ -3260,8 +3287,12 @@ impl Connection {
              }
          }
  
@@ -2036,10 +2065,10 @@ index 5982b69..fc50925 100644
  pub mod crypto;
 diff --git a/src/tests/initial_crypto.rs b/src/tests/initial_crypto.rs
 new file mode 100644
-index 0000000..619a551
+index 0000000..4efbd93
 --- /dev/null
 +++ b/src/tests/initial_crypto.rs
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,109 @@
 +//! Browser-like ClientHello layouts (outline-proxy patch): the handshake completes,
 +//! with and without a Retry, client Initials stay at 1200 bytes, and the Chaos layout
 +//! scatters the hello over extra CRYPTO frames and PINGs.
@@ -2093,6 +2122,29 @@ index 0000000..619a551
 +        let mut pair = Pair::default();
 +        pair.server.handle_incoming = Box::new(validate_incoming);
 +        pair.connect_with(config(layout));
++    }
++}
++
++/// After a Retry the hello is laid out afresh: the re-sent first Initial carries the
++/// profile's CRYPTO frames again, not the upstream single frame.
++#[test]
++fn retry_lays_the_hello_out_again() {
++    let _guard = subscribe();
++    let crypto_frames = |layout, retry: bool| {
++        let mut pair = Pair::default();
++        if retry {
++            pair.server.handle_incoming = Box::new(validate_incoming);
++        }
++        let ch = pair.begin_connect(config(layout));
++        pair.drive();
++        pair.client_conn_mut(ch).stats().frame_tx.crypto
++    };
++    for (layout, resent) in [
++        (InitialCryptoLayout::Contiguous, 1),
++        (InitialCryptoLayout::SniSlice, 2),
++    ] {
++        let extra = crypto_frames(layout, true) - crypto_frames(layout, false);
++        assert_eq!(extra, resent, "{layout:?}");
 +    }
 +}
 +
