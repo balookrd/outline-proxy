@@ -1996,10 +1996,22 @@ async fn a_client_done_close_still_drains_the_request_body() {
     // genuine stall — both surfaced as `Elapsed`. Reporting how far the
     // transfer got does: a stall stops at a fixed count, a slow runner is
     // simply still climbing when the (generous) deadline hits.
+    //
+    // Once, close to the end, the target stops reading for a while. That lets
+    // the home's uplink finish into the socket buffers and close the upstream
+    // while the last bytes of the body are still in its send queue — the
+    // window in which a Linux `close()` with unread downlink bytes turns into
+    // an RST that discards them (`ECONNRESET` here). Without the pause the
+    // window opens only when a loaded runner happens to starve this reader.
     let mut got = vec![0u8; body.len()];
     let mut filled = 0usize;
+    let mut paused = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
     while filled < got.len() {
+        if !paused && got.len() - filled <= 64 * 1024 {
+            paused = true;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         let read = tokio::time::timeout(left, peer_reader.read(&mut got[filled..]))
             .await
