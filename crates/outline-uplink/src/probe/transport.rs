@@ -16,7 +16,7 @@ use tokio::sync::Semaphore;
 use tracing::debug;
 
 use outline_transport::{
-    DialNetworkOptions, DnsCache, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
+    DnsCache, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
     TransportDialOptions, TransportOperation, UpstreamTransportGuard, connect_transport,
 };
 
@@ -90,11 +90,7 @@ async fn connect_probe_tcp_inner(
                         effective_tcp_mode,
                         source,
                     )
-                    .with_network(DialNetworkOptions {
-                        fwmark: uplink.fwmark,
-                        ipv6_first: uplink.ipv6_first,
-                        ipv4_only: uplink.ipv4_only,
-                    })
+                    .with_network(uplink.dial_network())
                     .with_combined_ss_kind(uplink.combined_ss_kind(SsPathKind::Tcp)),
                 ),
             )
@@ -143,11 +139,7 @@ async fn connect_probe_tcp_inner(
                         effective_tcp_mode,
                         source,
                     )
-                    .with_network(DialNetworkOptions {
-                        fwmark: uplink.fwmark,
-                        ipv6_first: uplink.ipv6_first,
-                        ipv4_only: uplink.ipv4_only,
-                    }),
+                    .with_network(uplink.dial_network()),
                 ),
             )
             .await

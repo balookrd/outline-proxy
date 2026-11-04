@@ -118,6 +118,10 @@ pub struct FallbackTransport {
     pub cipher: CipherKind,
     pub password: String,
     pub fwmark: Option<u32>,
+    /// Keep this wire's QUIC (`ws_h3` / `xhttp_h3`) sockets off UDP GSO. For
+    /// egress devices that reject segmented sends (no TX checksum offload,
+    /// e.g. a VLAN on some NICs), typically paired with an `fwmark` route.
+    pub disable_udp_gso: bool,
     pub ipv6_first: bool,
     pub ipv4_only: bool,
     pub fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
@@ -247,6 +251,10 @@ pub struct UplinkConfig {
     pub password: String,
     pub weight: f64,
     pub fwmark: Option<u32>,
+    /// Keep this wire's QUIC (`ws_h3` / `xhttp_h3`) sockets off UDP GSO. For
+    /// egress devices that reject segmented sends (no TX checksum offload,
+    /// e.g. a VLAN on some NICs), typically paired with an `fwmark` route.
+    pub disable_udp_gso: bool,
     pub ipv6_first: bool,
     pub ipv4_only: bool,
     /// Present when `transport = "vless"`. Raw 16-byte user id; parsed from
@@ -307,6 +315,17 @@ pub struct UplinkConfig {
 }
 
 impl UplinkConfig {
+    /// The socket-level knobs every dial of this uplink carries: egress mark,
+    /// UDP GSO opt-out and address-family preference.
+    pub fn dial_network(&self) -> outline_transport::DialNetworkOptions {
+        outline_transport::DialNetworkOptions {
+            fwmark: self.fwmark,
+            ipv6_first: self.ipv6_first,
+            ipv4_only: self.ipv4_only,
+            disable_udp_gso: self.disable_udp_gso,
+        }
+    }
+
     /// True when the parent's primary transport supports UDP. To check
     /// whether *any* (primary or fallback) wire on this uplink supports UDP,
     /// use [`UplinkConfig::supports_udp_any`].
@@ -441,6 +460,7 @@ impl UplinkConfig {
             password: fb.password.clone(),
             weight: self.weight,
             fwmark: fb.fwmark,
+            disable_udp_gso: fb.disable_udp_gso,
             ipv6_first: fb.ipv6_first,
             ipv4_only: fb.ipv4_only,
             vless_id: fb.vless_id,

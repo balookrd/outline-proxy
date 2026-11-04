@@ -149,6 +149,8 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
         password: outline.password.clone(),
         weight: Some(1.0),
         fwmark: outline.fwmark,
+        // Per-uplink knob: the inline shorthand has no such key.
+        disable_udp_gso: None,
         ipv6_first: outline.ipv6_first,
         ipv4_only: outline.ipv4_only,
         vless_id: None,

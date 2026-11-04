@@ -37,6 +37,7 @@ fn from_fallback_projects_the_fallback_wire_but_keeps_the_parent_name() {
         cipher: uplink.cipher,
         password: "fallback-secret".to_string(),
         fwmark: Some(42),
+        disable_udp_gso: true,
         ipv6_first: true,
         ipv4_only: false,
         fingerprint_profile: None,
@@ -52,6 +53,13 @@ fn from_fallback_projects_the_fallback_wire_but_keeps_the_parent_name() {
     assert_eq!(spec.fwmark, Some(42));
     assert!(spec.ipv6_first);
     assert!(spec.supports_udp());
+    // The dial options come from the wire too: the parent keeps UDP GSO, the
+    // fallback pinned to another egress opts out.
+    assert!(!uplink.disable_udp_gso);
+    let network = spec.dial_network();
+    assert!(network.disable_udp_gso);
+    assert_eq!(network.fwmark, Some(42));
+    assert!(!WireSpec::from_uplink(&uplink).dial_network().disable_udp_gso);
 }
 
 #[test]
@@ -78,6 +86,7 @@ fn combined_ss_discriminator_comes_from_the_wire_not_the_parent() {
         cipher: uplink.cipher,
         password: "split".to_string(),
         fwmark: None,
+        disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
         fingerprint_profile: None,

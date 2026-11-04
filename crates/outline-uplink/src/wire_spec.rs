@@ -44,6 +44,7 @@ pub struct WireSpec<'a> {
     pub password: &'a str,
     pub vless_id: Option<[u8; 16]>,
     pub fwmark: Option<u32>,
+    pub disable_udp_gso: bool,
     pub ipv6_first: bool,
     pub ipv4_only: bool,
     pub fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
@@ -55,6 +56,17 @@ pub struct WireSpec<'a> {
 }
 
 impl<'a> WireSpec<'a> {
+    /// The socket-level knobs a dial on this wire carries — per wire, since a
+    /// fallback may sit on a different egress than its parent.
+    pub fn dial_network(&self) -> outline_transport::DialNetworkOptions {
+        outline_transport::DialNetworkOptions {
+            fwmark: self.fwmark,
+            ipv6_first: self.ipv6_first,
+            ipv4_only: self.ipv4_only,
+            disable_udp_gso: self.disable_udp_gso,
+        }
+    }
+
     /// Project the primary carrier — wire `0`.
     pub fn from_uplink(uplink: &'a UplinkConfig) -> Self {
         Self {
@@ -65,6 +77,7 @@ impl<'a> WireSpec<'a> {
             password: &uplink.password,
             vless_id: uplink.vless_id,
             fwmark: uplink.fwmark,
+            disable_udp_gso: uplink.disable_udp_gso,
             ipv6_first: uplink.ipv6_first,
             ipv4_only: uplink.ipv4_only,
             fingerprint_profile: uplink.fingerprint_profile,
@@ -87,6 +100,7 @@ impl<'a> WireSpec<'a> {
             password: &fallback.password,
             vless_id: fallback.vless_id,
             fwmark: fallback.fwmark,
+            disable_udp_gso: fallback.disable_udp_gso,
             ipv6_first: fallback.ipv6_first,
             ipv4_only: fallback.ipv4_only,
             fingerprint_profile: fallback.fingerprint_profile,

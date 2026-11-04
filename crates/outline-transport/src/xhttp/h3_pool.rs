@@ -106,11 +106,12 @@ impl XhttpH3Key {
         server_name: &str,
         server_port: u16,
         fwmark: Option<u32>,
+        disable_udp_gso: bool,
         slot: u8,
         tls: TlsFingerprint,
     ) -> Self {
         Self {
-            base: ConnectionKey::new(server_name, server_port, fwmark),
+            base: ConnectionKey::new(server_name, server_port, fwmark, disable_udp_gso),
             slot,
             tls,
         }
@@ -231,11 +232,12 @@ async fn pick_slot(
     server_name: &str,
     server_port: u16,
     fwmark: Option<u32>,
+    disable_udp_gso: bool,
     tls: TlsFingerprint,
 ) -> u8 {
     let mut loads: Vec<Option<u64>> = Vec::with_capacity(XHTTP_H3_CARRIER_MAX as usize);
     for slot in 0..XHTTP_H3_CARRIER_MAX {
-        let key = XhttpH3Key::new(server_name, server_port, fwmark, slot, tls);
+        let key = XhttpH3Key::new(server_name, server_port, fwmark, disable_udp_gso, slot, tls);
         let load = match registry().peek(&key).await {
             Some(conn) if conn.is_open() => Some(conn.active()),
             _ => None,
@@ -284,10 +286,11 @@ pub(super) async fn acquire(
     host: &str,
     port: u16,
     fwmark: Option<u32>,
+    disable_udp_gso: bool,
 ) -> Result<PooledCarrier> {
     let tls = crate::fingerprint_profile::dial_tls_family();
-    let slot = pick_slot(host, port, fwmark, tls).await;
-    let key = XhttpH3Key::new(host, port, fwmark, slot, tls);
+    let slot = pick_slot(host, port, fwmark, disable_udp_gso, tls).await;
+    let key = XhttpH3Key::new(host, port, fwmark, disable_udp_gso, slot, tls);
 
     if let Some(carrier) = registry().cached(&key).await {
         return Ok(session_on(carrier));
@@ -301,7 +304,7 @@ pub(super) async fn acquire(
         return Ok(session_on(carrier));
     }
 
-    let carrier = Arc::new(dial(server_addr, host, fwmark, key.clone()).await?);
+    let carrier = Arc::new(dial(server_addr, host, fwmark, disable_udp_gso, key.clone()).await?);
     metrics::record_h3_carrier_dialed(metrics::H3_ENDPOINT_KIND_XHTTP);
     registry().insert(key, Arc::clone(&carrier)).await;
     Ok(session_on(carrier))
@@ -311,11 +314,16 @@ async fn dial(
     server_addr: SocketAddr,
     host: &str,
     fwmark: Option<u32>,
+    disable_udp_gso: bool,
     cache_key: XhttpH3Key,
 ) -> Result<SharedXhttpH3Connection> {
-    let endpoint =
-        client_endpoint(crate::bind_addr_for(server_addr), fwmark, metrics::H3_ENDPOINT_KIND_XHTTP)
-            .with_context(|| format!("failed to bind xhttp/h3 QUIC endpoint for {server_addr}"))?;
+    let endpoint = client_endpoint(
+        crate::bind_addr_for(server_addr),
+        fwmark,
+        disable_udp_gso,
+        metrics::H3_ENDPOINT_KIND_XHTTP,
+    )
+    .with_context(|| format!("failed to bind xhttp/h3 QUIC endpoint for {server_addr}"))?;
 
     let server_name = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         ServerName::IpAddress(ip.into())

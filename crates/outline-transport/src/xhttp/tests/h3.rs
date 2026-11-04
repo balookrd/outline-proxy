@@ -446,7 +446,7 @@ async fn a_timed_out_post_releases_the_h3_connection() {
 
 /// The endpoint an xhttp/h3 dial binds, as `h3_pool::dial` does it.
 fn dial_endpoint(bind: std::net::SocketAddr) -> anyhow::Result<crate::h3::TrackedEndpoint> {
-    crate::h3::client_endpoint(bind, None, outline_metrics::H3_ENDPOINT_KIND_XHTTP)
+    crate::h3::client_endpoint(bind, None, false, outline_metrics::H3_ENDPOINT_KIND_XHTTP)
 }
 
 #[tokio::test]
@@ -468,8 +468,13 @@ async fn xhttp_h3_binds_a_fresh_socket_per_dial() {
 #[tokio::test]
 async fn xhttp_h3_does_not_share_a_socket_with_the_native_ws_h3_carrier() {
     let xhttp = dial_endpoint(wildcard_v4()).expect("xhttp/h3 endpoint binds");
-    let ws = crate::h3::client_endpoint(wildcard_v4(), None, outline_metrics::H3_ENDPOINT_KIND_WS)
-        .expect("ws_h3 endpoint binds");
+    let ws = crate::h3::client_endpoint(
+        wildcard_v4(),
+        None,
+        false,
+        outline_metrics::H3_ENDPOINT_KIND_WS,
+    )
+    .expect("ws_h3 endpoint binds");
 
     assert_ne!(
         xhttp.local_addr().expect("xhttp endpoint has a local addr"),

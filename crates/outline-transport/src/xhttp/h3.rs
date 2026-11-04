@@ -147,7 +147,14 @@ pub(super) async fn connect_xhttp_h3(
             carrier: quic_carrier,
             connection,
             datagrams,
-        } = super::h3_pool::acquire(server_addr, &host, port, network.fwmark).await?;
+        } = super::h3_pool::acquire(
+            server_addr,
+            &host,
+            port,
+            network.fwmark,
+            network.disable_udp_gso,
+        )
+        .await?;
         // The offer goes out only where datagrams can flow: the dial asked for
         // it (an SS-UDP session) AND this connection has a demultiplexer.
         let datagram_offer: Option<DatagramOffer<'_>> = datagrams

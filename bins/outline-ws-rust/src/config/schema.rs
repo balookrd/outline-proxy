@@ -440,6 +440,12 @@ pub(crate) struct UplinkSection {
     pub(crate) password: Option<String>,
     pub(crate) weight: Option<f64>,
     pub(crate) fwmark: Option<u32>,
+    /// Keep this uplink's QUIC (`ws_h3` / `xhttp_h3`) sockets off UDP GSO.
+    /// For an egress device that rejects segmented sends with `EIO` (no TX
+    /// checksum offload — e.g. a VLAN on a NIC whose driver exposes no
+    /// `vlan_features`), typically the one an `fwmark` routes to. Default
+    /// `false`. Inherited by fallbacks that omit it.
+    pub(crate) disable_udp_gso: Option<bool>,
     pub(crate) ipv6_first: Option<bool>,
     pub(crate) ipv4_only: Option<bool>,
     /// VLESS user id (hex/dashed), required when `transport = "vless"`.
@@ -532,9 +538,9 @@ pub(crate) struct UplinkSection {
 /// subset of [`UplinkSection`] — no `name` / `weight` / `group` (those are
 /// parent-level) and `transport` is required unless a `link` supplies it
 /// (no implicit default; the whole point of a fallback is to switch the
-/// wire family). `cipher` / `password` / `fwmark` / `ipv6_first` /
-/// `fingerprint_profile` are optional and inherited from the parent uplink
-/// at validation time.
+/// wire family). `cipher` / `password` / `fwmark` / `disable_udp_gso` /
+/// `ipv6_first` / `fingerprint_profile` are optional and inherited from the
+/// parent uplink at validation time.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FallbackSection {
@@ -570,6 +576,7 @@ pub(crate) struct FallbackSection {
     pub(crate) method: Option<CipherKind>,
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,
+    pub(crate) disable_udp_gso: Option<bool>,
     pub(crate) ipv6_first: Option<bool>,
     pub(crate) ipv4_only: Option<bool>,
     pub(crate) vless_id: Option<String>,

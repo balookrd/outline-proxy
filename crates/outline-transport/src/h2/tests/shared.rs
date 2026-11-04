@@ -1,5 +1,5 @@
 use super::{H2ConnectionKey, H2Dialer};
-use crate::dial_plan::DialResumeOptions;
+use crate::dial_plan::{DialNetworkOptions, DialResumeOptions};
 use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
 use crate::shared_cache::should_reuse_connection;
 use crate::shared_dial::WsDialer;
@@ -31,7 +31,7 @@ async fn h2_dialer_keys_connections_by_dial_scoped_family() {
             H2Dialer::new(true, DialResumeOptions::default(), None).make_key(
                 "one.example",
                 443,
-                None,
+                DialNetworkOptions::default(),
             )
         })
         .await
@@ -39,8 +39,11 @@ async fn h2_dialer_keys_connections_by_dial_scoped_family() {
     let chromium = key_under(Some(TlsFingerprint::Chromium)).await;
     let firefox = key_under(Some(TlsFingerprint::Firefox)).await;
     let safari = key_under(Some(TlsFingerprint::Safari)).await;
-    let unscoped =
-        H2Dialer::new(true, DialResumeOptions::default(), None).make_key("one.example", 443, None);
+    let unscoped = H2Dialer::new(true, DialResumeOptions::default(), None).make_key(
+        "one.example",
+        443,
+        DialNetworkOptions::default(),
+    );
     assert_ne!(chromium, firefox);
     assert_ne!(chromium, safari);
     assert_ne!(firefox, safari);
@@ -83,4 +86,21 @@ async fn h2_io_forwards_vectored_writes() {
     server.read_to_end(&mut got).await.unwrap();
     assert_eq!(got.len(), 9 + 1572);
     assert_eq!(&got[..9], &header);
+}
+
+/// `disable_udp_gso` only changes how QUIC sockets send; an h2 carrier rides
+/// TCP, so dials that differ only in it must keep sharing one connection.
+#[test]
+fn h2_dialer_key_ignores_disable_udp_gso() {
+    let dialer = H2Dialer::new(true, DialResumeOptions::default(), None);
+    let plain = dialer.make_key("one.example", 443, DialNetworkOptions::default());
+    let no_gso = dialer.make_key(
+        "one.example",
+        443,
+        DialNetworkOptions {
+            disable_udp_gso: true,
+            ..DialNetworkOptions::default()
+        },
+    );
+    assert_eq!(plain, no_gso);
 }

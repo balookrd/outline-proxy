@@ -26,6 +26,7 @@ pub(super) async fn run_ws_probe(
     url: &url::Url,
     mode: TransportMode,
     fwmark: Option<u32>,
+    disable_udp_gso: bool,
     combined_ss_kind: Option<SsPathKind>,
     dial_limit: Arc<Semaphore>,
     _pong_timeout: Duration,
@@ -41,6 +42,7 @@ pub(super) async fn run_ws_probe(
                 fwmark,
                 ipv6_first: false,
                 ipv4_only: false,
+                disable_udp_gso,
             })
             .with_combined_ss_kind(combined_ss_kind),
     )

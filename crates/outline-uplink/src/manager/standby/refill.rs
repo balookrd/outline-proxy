@@ -74,6 +74,7 @@ impl<'a> StandbyCtx<'a> {
     pub(super) fn dial_network_options(&self) -> DialNetworkOptions {
         DialNetworkOptions {
             fwmark: self.fwmark,
+            disable_udp_gso: self.disable_udp_gso,
             ipv6_first: self.ipv6_first,
             ipv4_only: self.ipv4_only,
         }

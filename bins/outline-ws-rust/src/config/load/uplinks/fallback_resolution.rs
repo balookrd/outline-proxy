@@ -90,7 +90,8 @@ fn apply_link<'a>(
 }
 
 /// Validate a single `[[outline.uplinks.fallbacks]]` entry against the parent's
-/// resolved shape. Inheritance: `cipher` / `password` / `fwmark` / `ipv6_first`
+/// resolved shape. Inheritance: `cipher` / `password` / `fwmark` /
+/// `disable_udp_gso` / `ipv6_first`
 /// / `fingerprint_profile` default to the parent's value when omitted; URLs /
 /// addrs / `vless_id` are not inherited (they are inherently per-wire).
 fn resolve_fallback(
@@ -114,6 +115,7 @@ fn resolve_fallback(
     // Inherited fields (parent → fallback default).
     let cipher = section.method.unwrap_or(parent.cipher);
     let fwmark = section.fwmark.or(parent.fwmark);
+    let disable_udp_gso = section.disable_udp_gso.unwrap_or(parent.disable_udp_gso);
     let ipv6_first = section.ipv6_first.unwrap_or(parent.ipv6_first);
     let ipv4_only = section.ipv4_only.unwrap_or(parent.ipv4_only);
     let fingerprint_profile = section.fingerprint_profile.or(parent.fingerprint_profile);
@@ -388,6 +390,7 @@ fn resolve_fallback(
         cipher,
         password: final_password,
         fwmark,
+        disable_udp_gso,
         ipv6_first,
         ipv4_only,
         fingerprint_profile,

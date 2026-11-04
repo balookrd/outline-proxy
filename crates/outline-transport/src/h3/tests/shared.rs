@@ -8,12 +8,30 @@ const TLS: TlsFingerprint = TlsFingerprint::Chromium;
 
 #[test]
 fn h3_shared_connection_key_distinguishes_server_name_port_and_fwmark() {
-    let base = H3ConnectionKey::with_slot("example.com", 443, None, 0, TLS);
+    let base = H3ConnectionKey::with_slot("example.com", 443, None, false, 0, TLS);
 
-    assert_eq!(base, H3ConnectionKey::with_slot("example.com", 443, None, 0, TLS));
-    assert_ne!(base, H3ConnectionKey::with_slot("example.net", 443, None, 0, TLS));
-    assert_ne!(base, H3ConnectionKey::with_slot("example.com", 443, Some(100), 0, TLS));
-    assert_ne!(base, H3ConnectionKey::with_slot("example.com", 8443, None, 0, TLS));
+    assert_eq!(base, H3ConnectionKey::with_slot("example.com", 443, None, false, 0, TLS));
+    assert_ne!(base, H3ConnectionKey::with_slot("example.net", 443, None, false, 0, TLS));
+    assert_ne!(base, H3ConnectionKey::with_slot("example.com", 443, Some(100), false, 0, TLS));
+    assert_ne!(base, H3ConnectionKey::with_slot("example.com", 8443, None, false, 0, TLS));
+}
+
+/// A carrier dialed with UDP GSO must not serve a dial that asked to stay off
+/// it (and vice versa): the two sockets send differently.
+#[test]
+fn h3_shared_connection_key_distinguishes_disable_udp_gso() {
+    let base = H3ConnectionKey::with_slot("example.com", 443, Some(18), false, 0, TLS);
+    let no_gso = H3ConnectionKey::with_slot("example.com", 443, Some(18), true, 0, TLS);
+    assert_ne!(base, no_gso);
+    assert_ne!(base.pool(), no_gso.pool(), "GSO and no-GSO carriers are separate pools");
+}
+
+#[tokio::test]
+async fn client_endpoint_without_udp_gso_binds() {
+    let bind: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let endpoint = super::client_endpoint(bind, None, true, outline_metrics::H3_ENDPOINT_KIND_WS)
+        .expect("endpoint without GSO");
+    assert_eq!(endpoint.local_addr().expect("local addr").ip(), bind.ip());
 }
 
 #[test]
@@ -21,10 +39,10 @@ fn h3_connection_key_distinguishes_carrier_slots() {
     // Distinct carrier slots must hash/compare unequal so each occupies its own
     // registry entry — that independence is what bounds the reconnect blast
     // radius when one carrier collapses.
-    let slot0 = H3ConnectionKey::with_slot("example.com", 443, None, 0, TLS);
-    let slot1 = H3ConnectionKey::with_slot("example.com", 443, None, 1, TLS);
+    let slot0 = H3ConnectionKey::with_slot("example.com", 443, None, false, 0, TLS);
+    let slot1 = H3ConnectionKey::with_slot("example.com", 443, None, false, 1, TLS);
     assert_ne!(slot0, slot1);
-    assert_eq!(slot0, H3ConnectionKey::with_slot("example.com", 443, None, 0, TLS));
+    assert_eq!(slot0, H3ConnectionKey::with_slot("example.com", 443, None, false, 0, TLS));
 }
 
 #[test]
@@ -76,9 +94,9 @@ async fn fresh_dials_bind_distinct_local_ports() {
     // to a dead path (a router that re-created its port-forward keeps the
     // old UDP mapping alive as long as packets keep flowing through it).
     let bind: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
-    let a = super::client_endpoint(bind, None, outline_metrics::H3_ENDPOINT_KIND_WS)
+    let a = super::client_endpoint(bind, None, false, outline_metrics::H3_ENDPOINT_KIND_WS)
         .expect("first endpoint");
-    let b = super::client_endpoint(bind, None, outline_metrics::H3_ENDPOINT_KIND_WS)
+    let b = super::client_endpoint(bind, None, false, outline_metrics::H3_ENDPOINT_KIND_WS)
         .expect("second endpoint");
     let port_a = a.local_addr().expect("local addr a").port();
     let port_b = b.local_addr().expect("local addr b").port();
@@ -87,7 +105,7 @@ async fn fresh_dials_bind_distinct_local_ports() {
 
 #[test]
 fn h3_connection_key_distinguishes_browser_families() {
-    let key = |tls| H3ConnectionKey::with_slot("example.com", 443, None, 0, tls);
+    let key = |tls| H3ConnectionKey::with_slot("example.com", 443, None, false, 0, tls);
     assert_ne!(key(TlsFingerprint::Chromium), key(TlsFingerprint::Firefox));
     assert_ne!(key(TlsFingerprint::Firefox), key(TlsFingerprint::Safari));
     assert_eq!(key(TlsFingerprint::Firefox), key(TlsFingerprint::Firefox));
@@ -95,7 +113,7 @@ fn h3_connection_key_distinguishes_browser_families() {
 
 #[test]
 fn h3_pool_groups_slots_of_one_family_and_separates_families() {
-    let key = |slot, tls| H3ConnectionKey::with_slot("example.com", 443, None, slot, tls);
+    let key = |slot, tls| H3ConnectionKey::with_slot("example.com", 443, None, false, slot, tls);
     // Slots of one family are one pool (reaper census, slot loads).
     assert_eq!(key(0, TlsFingerprint::Firefox).pool(), key(3, TlsFingerprint::Firefox).pool());
     // Another family is another pool: it cannot count towards or evict the
