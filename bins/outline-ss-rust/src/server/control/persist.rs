@@ -266,6 +266,7 @@ pub(super) struct ServerListenerPatch {
     pub h3_cert_path: Option<String>,
     pub h3_key_path: Option<String>,
     pub h3_initial_mtu: Option<u16>,
+    pub h3_mtu_first_probe: Option<u16>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -407,6 +408,7 @@ fn patch_toml_config(original: &str, patch: &ServerConfigPatch) -> Result<String
             || server.h3_cert_path.is_some()
             || server.h3_key_path.is_some()
             || server.h3_initial_mtu.is_some()
+            || server.h3_mtu_first_probe.is_some()
         {
             if !table.contains_key("h3") || !table["h3"].is_table() {
                 let mut h3_tbl = Table::new();
@@ -425,6 +427,9 @@ fn patch_toml_config(original: &str, patch: &ServerConfigPatch) -> Result<String
             }
             if let Some(mtu) = server.h3_initial_mtu {
                 h3_table.insert("initial_mtu", Item::Value((mtu as i64).into()));
+            }
+            if let Some(probe) = server.h3_mtu_first_probe {
+                h3_table.insert("mtu_first_probe", Item::Value((probe as i64).into()));
             }
         }
     }

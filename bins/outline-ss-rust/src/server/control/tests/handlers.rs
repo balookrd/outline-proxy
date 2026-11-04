@@ -108,7 +108,8 @@ fn server_config_patch_deserializes_extended_fields() {
             "backend_proto": "h1"
         },
         "server": {
-            "h3_initial_mtu": 1350
+            "h3_initial_mtu": 1350,
+            "h3_mtu_first_probe": 1452
         },
         "outbound": {
             "ipv6_prefix_interface": "eth0",
@@ -148,6 +149,7 @@ fn server_config_patch_deserializes_extended_fields() {
     assert_eq!(hf.backend_proto.as_deref(), Some("h1"));
     let srv = patch.server.expect("server patch");
     assert_eq!(srv.h3_initial_mtu, Some(1350));
+    assert_eq!(srv.h3_mtu_first_probe, Some(1452));
     let out = patch.outbound.expect("outbound patch");
     assert_eq!(out.ipv6_prefix_interface.as_deref(), Some("eth0"));
     assert_eq!(out.ipv6_refresh_secs, Some(60));

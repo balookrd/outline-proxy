@@ -1,5 +1,5 @@
 // Gate module for the locally patched vendored crates (`vendor/h3`,
-// `vendor/sockudo-ws`) — server side.  Every API whose shape or behaviour
+// `vendor/sockudo-ws`, `vendor/quinn-proto`) — server side.  Every API whose shape or behaviour
 // exists only in the patched copies is reached through here, so a rebase of
 // the vendored crates onto a new upstream starts at this file plus its
 // client-side twin (`crates/outline-transport/src/h3/vendored.rs`).  The
@@ -15,6 +15,8 @@
 //     path of the resulting stream relies on the fix-h3-poll-write patch
 //     pair (h3 `queue_send`/`poll_drain`/`queue_grease`/`poll_quic_finish`
 //     driven by sockudo's `write_queued`/`shutdown_started` state machines).
+//   - `MtuDiscoveryConfig::first_probe` — added by the mtud-first-probe part
+//     of `quinn-proto-0.11.15.patch` for `[server.h3].mtu_first_probe`.
 //
 // The type re-exports below are plain upstream API, funneled anyway so the
 // rest of the server never names the vendored crates directly (CI-enforced
@@ -37,6 +39,12 @@ pub(super) fn h3_server_builder() -> h3::server::Builder {
     let mut builder = h3::server::builder();
     builder.enable_datagram(true).enable_extended_connect(true);
     builder
+}
+
+/// First DPLPMTUD probe size after the handshake (patched quinn-proto);
+/// `None` keeps upstream's binary search from the start.
+pub(super) fn set_mtu_first_probe(mtu: &mut quinn::MtuDiscoveryConfig, first_probe: Option<u16>) {
+    mtu.first_probe(first_probe);
 }
 
 /// Server-role h3 CONNECT request stream (the h3 side of one WebSocket).

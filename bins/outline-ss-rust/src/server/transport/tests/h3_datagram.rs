@@ -33,7 +33,7 @@ pub(in crate::server::transport) struct QuicDatagramPair {
 pub(in crate::server::transport) async fn quic_datagram_pair() -> Result<QuicDatagramPair> {
     let (tls, cert) = test_h3_server_tls()?;
     let config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
-    let server_config = build_h3_quinn_server_config(tls, &config.tuning, None)?;
+    let server_config = build_h3_quinn_server_config(tls, &config.tuning, None, None)?;
     let server_endpoint =
         quinn::Endpoint::server(server_config, SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
     let addr = server_endpoint.local_addr()?;

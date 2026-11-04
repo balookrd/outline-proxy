@@ -36,7 +36,12 @@ pub(in crate::server) async fn build_h3_server(
     let profile = &config.tuning;
     let tls_config = load_h3_tls_config(config)?;
     let ws_config = build_h3_ws_config(profile);
-    let server_config = build_h3_quinn_server_config(tls_config, profile, config.h3_initial_mtu)?;
+    let server_config = build_h3_quinn_server_config(
+        tls_config,
+        profile,
+        config.h3_initial_mtu,
+        config.h3_mtu_first_probe,
+    )?;
     let socket = bind_h3_udp_socket(listen, profile)?;
     let mut endpoint_config = quinn::EndpointConfig::default();
     endpoint_config
@@ -73,8 +78,12 @@ pub(in crate::server) fn spawn_h3_cert_reloader(
         shutdown,
         move || {
             let tls_config = load_h3_tls_config(config.as_ref())?;
-            let server_config =
-                build_h3_quinn_server_config(tls_config, &config.tuning, config.h3_initial_mtu)?;
+            let server_config = build_h3_quinn_server_config(
+                tls_config,
+                &config.tuning,
+                config.h3_initial_mtu,
+                config.h3_mtu_first_probe,
+            )?;
             endpoint.set_server_config(Some(server_config));
             Ok(())
         },
@@ -105,18 +114,23 @@ pub(in crate::server) fn build_h3_quinn_server_config(
     tls_config: rustls::ServerConfig,
     profile: &TuningProfile,
     pinned_initial_mtu: Option<u16>,
+    mtu_first_probe: Option<u16>,
 ) -> Result<quinn::ServerConfig> {
     let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
         .map_err(|_| anyhow!("invalid HTTP/3 TLS config"))?;
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
-    server_config
-        .transport_config(Arc::new(build_h3_transport_config(profile, pinned_initial_mtu)?));
+    server_config.transport_config(Arc::new(build_h3_transport_config(
+        profile,
+        pinned_initial_mtu,
+        mtu_first_probe,
+    )?));
     Ok(server_config)
 }
 
 fn build_h3_transport_config(
     profile: &TuningProfile,
     pinned_initial_mtu: Option<u16>,
+    mtu_first_probe: Option<u16>,
 ) -> Result<quinn::TransportConfig> {
     let mut transport = quinn::TransportConfig::default();
     transport
@@ -168,6 +182,13 @@ fn build_h3_transport_config(
     let mut mtu = quinn::MtuDiscoveryConfig::default();
     mtu.upper_bound(discovery_upper_bound)
         .minimum_change(H3_MTU_DISCOVERY_MINIMUM_CHANGE);
+    // quinn ignores a first probe that is not above the current MTU: without a
+    // pinned `initial_mtu` the start is H3_DEFAULT_INITIAL_MTU (1400), so a
+    // value <= 1400 has no effect, and a pinned host has upper_bound ==
+    // initial_mtu, so it never probes at all. A confirmed first probe becomes
+    // the connection's ceiling: a value below the real path MTU caps every
+    // connection at it.
+    vendored::set_mtu_first_probe(&mut mtu, mtu_first_probe);
     transport.mtu_discovery_config(Some(mtu));
     // BBR instead of quinn's default (Cubic) for the server→client (downlink)
     // sender. On a lossy / DPI-throttled international path Cubic treats loss as

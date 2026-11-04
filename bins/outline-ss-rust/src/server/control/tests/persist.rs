@@ -373,6 +373,7 @@ fn patch_toml_config_updates_padding_http_fallback_and_extended_fields() {
     let patch = ServerConfigPatch {
         server: Some(ServerListenerPatch {
             h3_initial_mtu: Some(1350),
+            h3_mtu_first_probe: Some(1452),
             ..Default::default()
         }),
         outbound: Some(OutboundPatch {
@@ -404,6 +405,7 @@ fn patch_toml_config_updates_padding_http_fallback_and_extended_fields() {
     let out = patch_toml_config(original, &patch).expect("patch config");
     assert!(out.contains("[server.h3]"), "h3 subtable created:\n{out}");
     assert!(out.contains("initial_mtu = 1350"), "initial_mtu set:\n{out}");
+    assert!(out.contains("mtu_first_probe = 1452"), "mtu_first_probe set:\n{out}");
     assert!(
         out.contains(r#"ipv6_prefix_interface = "eth0""#),
         "ipv6_prefix_interface set:\n{out}"
