@@ -519,3 +519,18 @@ re-vendor `quinn-proto`.
 Do not raise the upstream versions or drop `[patch.crates-io]` without a
 deliberate reason: the HTTP/3 WebSocket path depends on these patches, and
 `xhttp_h1`'s browser header case on the hyper one.
+
+## Security advisories
+
+A plain `cargo audit` skips packages without a `source` in the lockfile, so it
+never checks the vendored crates: they are path dependencies. That is how
+quinn-proto 0.11.15 and rustls 0.23.40 stayed six and five RustSec advisories
+behind unnoticed. [`scripts/audit-vendored.sh`](scripts/audit-vendored.sh) audits a
+copy of each lockfile (root and `android/rust`) in which the `[patch.crates-io]`
+crates are marked as crates.io packages of the same version, so their advisories
+are reported like any other. The
+[`RustSec audit`](.github/workflows/rustsec.yml) workflow runs it on every push to
+`main`, on pull requests and weekly; it fails only on vulnerabilities, not on
+warnings such as unmaintained crates. A failing run is the signal to rebase the
+vendored crate onto the fixed upstream release (see Regenerating). Locally:
+`scripts/audit-vendored.sh` (needs `cargo install cargo-audit`).
