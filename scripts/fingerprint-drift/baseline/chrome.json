@@ -16,11 +16,11 @@
       ],
       [
         "User-Agent",
-        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
       ],
       [
         "sec-ch-ua",
-        "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
       ],
       [
         "sec-ch-ua-mobile",
@@ -74,11 +74,11 @@
       ],
       [
         "User-Agent",
-        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
       ],
       [
         "sec-ch-ua",
-        "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
       ],
       [
         "Content-Type",
@@ -132,7 +132,7 @@
       ],
       [
         "sec-ch-ua",
-        "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+        "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
       ],
       [
         "sec-ch-ua-mobile",
@@ -148,7 +148,7 @@
       ],
       [
         "User-Agent",
-        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
       ],
       [
         "Accept",
@@ -198,7 +198,7 @@
       ],
       [
         "User-Agent",
-        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
       ],
       [
         "Upgrade",
@@ -255,11 +255,11 @@
         ],
         [
           "user-agent",
-          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
         ],
         [
           "sec-ch-ua",
-          "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+          "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
         ],
         [
           "sec-ch-ua-mobile",
@@ -325,11 +325,11 @@
         ],
         [
           "user-agent",
-          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
         ],
         [
           "sec-ch-ua",
-          "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+          "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
         ],
         [
           "content-type",
@@ -395,7 +395,7 @@
         ],
         [
           "sec-ch-ua",
-          "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\""
+          "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\""
         ],
         [
           "sec-ch-ua-mobile",
@@ -411,7 +411,7 @@
         ],
         [
           "user-agent",
-          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
         ],
         [
           "accept",
@@ -477,7 +477,7 @@
         ],
         [
           "user-agent",
-          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+          "Mozilla/5.0 (<platform>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
         ],
         [
           "origin",
@@ -540,7 +540,7 @@
     "stream_window_update": null,
     "window_update": 15663105
   },
-  "major": 156,
+  "major": 157,
   "quic": {
     "alpn": [
       "h3"

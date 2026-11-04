@@ -1861,7 +1861,7 @@ WS / XHTTP-дозвоны могут подмешивать браузерные
 идентификации (`User-Agent`, `Accept-*`, семейство Sec-CH-UA,
 Sec-Fetch-*), чтобы простое DPI-правило вида «WS-upgrade без
 User-Agent» больше не отделяло клиент от реального браузерного
-трафика. В каталоге шесть профилей: Chrome 156 (macOS, Linux, Android),
+трафика. В каталоге шесть профилей: Chrome 157 (macOS, Linux, Android),
 Firefox 159 (macOS, Linux), Safari 27 (macOS). Клиента под Windows нет,
 поэтому нет и пула Windows.
 
@@ -1874,7 +1874,9 @@ Chrome, Firefox, Safari; Linux — Chrome, Firefox; Android — Chrome;
 ОС: Chrome на Android шлёт десктопный ClientHello Chromium, и это
 подтверждено замером 2026-10-30 (Chrome Android 156.0.8078.73 на
 Android 17 совпадает с десктопным Chrome 156 байт в байт, включая trust
-anchors). 0-RTT с браузерами не выровнен.
+anchors). У Chrome 157 (прогон монитора дрейфа 2026-11-04) по сравнению
+с 156 поменялись только `User-Agent` и `sec-ch-ua`. 0-RTT с браузерами
+не выровнен.
 
 Заголовки повторяют тот запрос, который носитель делает на самом деле, —
 так, как его шлют Chrome 156, Firefox 159 (замер 2026-10-30) и Safari 27.0.1
@@ -2011,7 +2013,7 @@ Strategy»** в верхней строке статуса рядом с `Select
 пустые ячейки серые, так что активное распределение видно сразу.
 
 Встроенный HTML-дашборд control-plane'а рисует per-uplink чип
-с **именем активного профиля** (например, `Chrome 156 macOS`)
+с **именем активного профиля** (например, `Chrome 157 macOS`)
 рядом с протокол-pill в каждой строке аплинка, где эффективная
 стратегия не равна `none`. Цвет — по семейству: синий для
 стабильных профилей (Chrome / Firefox / Safari / Edge под
@@ -2019,7 +2021,7 @@ Strategy»** в верхней строке статуса рядом с `Select
 оператор сразу видит, идентичность приколота или ротируется.
 Аплинки на `none` чипа не получают — типичный opt-out-deployment
 визуально не меняется. Tooltip несёт и сырой id профиля, и стратегию
-(`fingerprint_profile_name = chrome-156-macos · strategy = process_stable`),
+(`fingerprint_profile_name = chrome-157-macos · strategy = process_stable`),
 чтобы отрисованный лейбл сразу сопоставлялся с Prometheus-лейблом
 `strategy` и snapshot-полем без перевода между формами.
 
