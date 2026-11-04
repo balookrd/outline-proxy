@@ -1,5 +1,5 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 6262e3d..ff768b7 100644
+index dd67ad5..cdcae9c 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -101,16 +101,6 @@ zlib = ["dep:zlib-rs"]
@@ -17,7 +17,7 @@ index 6262e3d..ff768b7 100644
 -required-features = ["ring"]
 -
  [dependencies.aws-lc-rs]
- version = "1.14"
+ version = "1.18"
  optional = true
 @@ -173,52 +163,6 @@ version = "1.8"
  version = "0.6"
@@ -73,25 +73,25 @@ index 6262e3d..ff768b7 100644
  version = "1.0.6"
  optional = true
 diff --git a/src/client/builder.rs b/src/client/builder.rs
-index 4b110d1..1ba0a1f 100644
+index ccecde2..347be75 100644
 --- a/src/client/builder.rs
 +++ b/src/client/builder.rs
-@@ -185,6 +185,7 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
-             cert_compression_cache: Arc::new(compress::CompressionCache::default()),
+@@ -186,6 +186,7 @@ impl ConfigBuilder<ClientConfig, WantsClientCert> {
              cert_decompressors: compress::default_cert_decompressors().to_vec(),
              ech_mode: self.state.client_ech_mode,
+             send_ticket_request: None,
 +            client_hello_shape: None,
          }
      }
  }
 diff --git a/src/client/client_conn.rs b/src/client/client_conn.rs
-index 374a70d..c21d105 100644
+index 77b2dc5..9067c8c 100644
 --- a/src/client/client_conn.rs
 +++ b/src/client/client_conn.rs
-@@ -287,6 +287,173 @@ pub struct ClientConfig {
- 
-     /// How to offer Encrypted Client Hello (ECH). The default is to not offer ECH.
-     pub(super) ech_mode: Option<EchMode>,
+@@ -294,6 +294,173 @@ pub struct ClientConfig {
+     ///
+     /// [RFC 9149]: https://datatracker.ietf.org/doc/html/rfc9149
+     pub send_ticket_request: Option<TicketRequest>,
 +
 +    /// Reshape the ClientHello (outline-proxy patch "client-hello-shape").
 +    ///
@@ -261,8 +261,8 @@ index 374a70d..c21d105 100644
 +    Fixed(Vec<u16>),
  }
  
- impl ClientConfig {
-@@ -1054,6 +1221,9 @@ impl std::error::Error for EarlyDataError {}
+ /// Desired session ticket counts for the RFC 9149 `ticket_request` extension.
+@@ -1075,6 +1242,9 @@ impl std::error::Error for EarlyDataError {}
  pub struct ClientConnectionData {
      pub(super) early_data: EarlyData,
      pub(super) ech_status: EchStatus,
@@ -272,7 +272,7 @@ index 374a70d..c21d105 100644
  }
  
  impl ClientConnectionData {
-@@ -1061,6 +1231,7 @@ impl ClientConnectionData {
+@@ -1082,6 +1252,7 @@ impl ClientConnectionData {
          Self {
              early_data: EarlyData::new(),
              ech_status: EchStatus::NotOffered,
@@ -281,7 +281,7 @@ index 374a70d..c21d105 100644
      }
  }
 diff --git a/src/client/common.rs b/src/client/common.rs
-index 9afa0c3..b999939 100644
+index 1bf0d8c..24c4e60 100644
 --- a/src/client/common.rs
 +++ b/src/client/common.rs
 @@ -2,9 +2,11 @@ use alloc::boxed::Box;
@@ -294,9 +294,9 @@ index 9afa0c3..b999939 100644
  use crate::msgs::handshake::{CertificateChain, DistinguishedName, ProtocolName, ServerExtensions};
 +use crate::rand::GetRandomFailed;
  use crate::sync::Arc;
- use crate::{SignatureScheme, compress, sign};
+ use crate::{CipherSuite, SignatureScheme, compress, sign};
  
-@@ -34,11 +36,20 @@ impl<'a> ServerCertDetails<'a> {
+@@ -34,12 +36,21 @@ impl<'a> ServerCertDetails<'a> {
      }
  }
  
@@ -308,6 +308,7 @@ index 9afa0c3..b999939 100644
      pub(super) sent_extensions: Vec<ExtensionType>,
      pub(super) extension_order_seed: u16,
      pub(super) offered_cert_compression: bool,
+     pub(super) offered_cipher_suites: Vec<CipherSuite>,
 +    /// GREASE values of a shaped ClientHello, kept for a HelloRetryRequest
 +    /// (client-hello-shape patch).
 +    pub(super) grease: Option<GreaseValues>,
@@ -317,16 +318,16 @@ index 9afa0c3..b999939 100644
  }
  
  impl ClientHelloDetails {
-@@ -48,6 +59,8 @@ impl ClientHelloDetails {
-             sent_extensions: Vec::new(),
+@@ -50,6 +61,8 @@ impl ClientHelloDetails {
              extension_order_seed,
              offered_cert_compression: false,
+             offered_cipher_suites: Vec::new(),
 +            grease: None,
 +            alps_protocols: Vec::new(),
          }
      }
  
-@@ -117,3 +130,40 @@ impl ClientAuthDetails {
+@@ -119,3 +132,40 @@ impl ClientAuthDetails {
          Self::Empty { auth_context_tls13 }
      }
  }
@@ -368,7 +369,7 @@ index 9afa0c3..b999939 100644
 +    }
 +}
 diff --git a/src/client/ech.rs b/src/client/ech.rs
-index 5675e71..52bd7f2 100644
+index c002891..12a944a 100644
 --- a/src/client/ech.rs
 +++ b/src/client/ech.rs
 @@ -219,6 +219,7 @@ impl EchGreaseConfig {
@@ -440,7 +441,7 @@ index 5675e71..52bd7f2 100644
  /// An enum representing ECH offer status.
  #[derive(Debug, Clone, Copy, Eq, PartialEq)]
  pub enum EchStatus {
-@@ -647,10 +669,19 @@ impl EchState {
+@@ -679,10 +701,19 @@ impl EchState {
          // block of to-be-compressed extensions.
          inner_hello.contiguous_extensions = compressed_exts.clone();
  
@@ -461,10 +462,10 @@ index 5675e71..52bd7f2 100644
          // If we're resuming, we need to update the PSK binder in the inner hello.
          if let Some(resuming) = resuming.as_ref() {
 diff --git a/src/client/hs.rs b/src/client/hs.rs
-index 12e885e..842e373 100644
+index 5e90b6a..7cb6ada 100644
 --- a/src/client/hs.rs
 +++ b/src/client/hs.rs
-@@ -14,25 +14,28 @@ use crate::SupportedCipherSuite;
+@@ -14,25 +14,27 @@ use crate::SupportedCipherSuite;
  use crate::bs_debug;
  use crate::check::inappropriate_handshake_message;
  use crate::client::client_conn::ClientConnectionData;
@@ -489,15 +490,14 @@ index 12e885e..842e373 100644
 +use crate::msgs::enums::{Compression, ExtensionType, NamedGroup};
  use crate::msgs::handshake::{
      CertificateStatusRequest, ClientExtensions, ClientExtensionsInput, ClientHelloPayload,
-     ClientSessionTicket, EncryptedClientHello, HandshakeMessagePayload, HandshakePayload,
-     HelloRetryRequest, KeyShareEntry, ProtocolName, PskKeyExchangeModes, Random, ServerNamePayload,
--    SessionId, SupportedEcPointFormats, SupportedProtocolVersions, TransportParameters,
-+    SessionId, ShapeOrder, SupportedEcPointFormats, SupportedProtocolVersions,
-+    TransportParameters,
+     ClientSessionTicket, ClientTicketRequest, EncryptedClientHello, HandshakeMessagePayload,
+     HandshakePayload, HelloRetryRequest, KeyShareEntry, ProtocolName, PskKeyExchangeModes, Random,
+-    ServerNamePayload, SessionId, SupportedEcPointFormats, SupportedProtocolVersions,
++    ServerNamePayload, SessionId, ShapeOrder, SupportedEcPointFormats, SupportedProtocolVersions,
+     TransportParameters,
  };
  use crate::msgs::message::{Message, MessagePayload};
- use crate::msgs::persist;
-@@ -74,6 +77,8 @@ pub(super) struct ClientHelloInput {
+@@ -75,6 +77,8 @@ pub(super) struct ClientHelloInput {
      pub(super) session_id: SessionId,
      pub(super) server_name: ServerName<'static>,
      pub(super) prev_ech_ext: Option<EncryptedClientHello>,
@@ -506,7 +506,7 @@ index 12e885e..842e373 100644
  }
  
  impl ClientHelloInput {
-@@ -124,7 +129,7 @@ impl ClientHelloInput {
+@@ -127,7 +131,7 @@ impl ClientHelloInput {
              crate::rand::random_u16(config.provider.secure_random)?,
          );
  
@@ -515,7 +515,7 @@ index 12e885e..842e373 100644
              resuming,
              random: Random::new(config.provider.secure_random)?,
              sent_tls13_fake_ccs: false,
-@@ -132,8 +137,22 @@ impl ClientHelloInput {
+@@ -135,8 +139,22 @@ impl ClientHelloInput {
              session_id,
              server_name,
              prev_ech_ext: None,
@@ -539,7 +539,7 @@ index 12e885e..842e373 100644
      }
  
      pub(super) fn start_handshake(
-@@ -208,6 +227,8 @@ fn emit_client_hello_for_retry(
+@@ -212,6 +230,8 @@ fn emit_client_hello_for_retry(
      // should be unreachable thanks to config builder
      assert!(supported_versions.any(|_| true));
  
@@ -548,9 +548,9 @@ index 12e885e..842e373 100644
      let mut exts = Box::new(ClientExtensions {
          // offer groups which are usable for any offered version
          named_groups: Some(
-@@ -231,6 +252,22 @@ fn emit_client_hello_for_retry(
-         ..Default::default()
-     });
+@@ -246,6 +266,22 @@ fn emit_client_hello_for_retry(
+         }
+     }
  
 +    if let Some(shape) = shape {
 +        if shape.omit_extended_master_secret {
@@ -571,7 +571,7 @@ index 12e885e..842e373 100644
      match extra_exts.transport_parameters.clone() {
          Some(TransportParameters::Quic(v)) => exts.transport_parameters = Some(v),
          Some(TransportParameters::QuicDraft(v)) => exts.transport_parameters_draft = Some(v),
-@@ -249,6 +286,7 @@ fn emit_client_hello_for_retry(
+@@ -264,6 +300,7 @@ fn emit_client_hello_for_retry(
          .kx_groups
          .iter()
          .any(|skxg| skxg.name().key_exchange_algorithm() == KeyExchangeAlgorithm::ECDHE)
@@ -579,7 +579,7 @@ index 12e885e..842e373 100644
      {
          exts.ec_point_formats = Some(SupportedEcPointFormats::default());
      }
-@@ -294,11 +332,69 @@ fn emit_client_hello_for_retry(
+@@ -309,11 +346,69 @@ fn emit_client_hello_for_retry(
              {
                  shares.push(KeyShareEntry::new(component_group, component_share));
              }
@@ -649,7 +649,7 @@ index 12e885e..842e373 100644
      if let Some(cookie) = retryreq.and_then(|hrr| hrr.cookie.as_ref()) {
          exts.cookie = Some(cookie.clone());
      }
-@@ -352,6 +448,57 @@ fn emit_client_hello_for_retry(
+@@ -374,6 +469,57 @@ fn emit_client_hello_for_retry(
      // Do we have a SessionID or ticket cached for this host?
      let tls13_session = prepare_resumption(&input.resuming, &mut exts, suite, cx, config);
  
@@ -707,7 +707,7 @@ index 12e885e..842e373 100644
      // Extensions MAY be randomized
      // but they also need to keep the same order as the previous ClientHello
      exts.order_seed = input.hello.extension_order_seed;
-@@ -371,6 +518,16 @@ fn emit_client_hello_for_retry(
+@@ -393,6 +539,16 @@ fn emit_client_hello_for_retry(
          cipher_suites.push(CipherSuite::TLS_EMPTY_RENEGOTIATION_INFO_SCSV);
      }
  
@@ -724,7 +724,7 @@ index 12e885e..842e373 100644
      let mut chp_payload = ClientHelloPayload {
          client_version: ProtocolVersion::TLSv1_2,
          random: input.random,
-@@ -388,6 +545,8 @@ fn emit_client_hello_for_retry(
+@@ -410,6 +566,8 @@ fn emit_client_hello_for_retry(
                  config.provider.secure_random,
                  input.server_name.clone(),
                  &chp_payload,
@@ -733,7 +733,7 @@ index 12e885e..842e373 100644
              )),
              _ => None,
          });
-@@ -422,6 +581,16 @@ fn emit_client_hello_for_retry(
+@@ -444,6 +602,16 @@ fn emit_client_hello_for_retry(
  
      // Note what extensions we sent.
      input.hello.sent_extensions = chp_payload.collect_used();
@@ -747,10 +747,10 @@ index 12e885e..842e373 100644
 +            .map(|(typ, _)| *typ)
 +            .filter(|typ| !(alps_offered && *typ == ExtensionType::from(ALPS_EXTENSION))),
 +    );
+     input.hello.offered_cipher_suites = chp_payload.cipher_suites.clone();
  
      let mut chp = HandshakeMessagePayload(HandshakePayload::ClientHello(chp_payload));
- 
-@@ -867,7 +1036,18 @@ impl ExpectServerHelloOrHelloRetryRequest {
+@@ -894,7 +1062,18 @@ impl ExpectServerHelloOrHelloRetryRequest {
                  })
                  .map(|skxg| skxg.name());
  
@@ -771,7 +771,7 @@ index 12e885e..842e373 100644
                      cx.common.send_fatal_alert(
                          AlertDescription::IllegalParameter,
 diff --git a/src/client/tls13.rs b/src/client/tls13.rs
-index 5f15f36..991f16f 100644
+index 8678c1d..35a9aa6 100644
 --- a/src/client/tls13.rs
 +++ b/src/client/tls13.rs
 @@ -8,7 +8,9 @@ use subtle::ConstantTimeEq;
@@ -788,7 +788,7 @@ index 5f15f36..991f16f 100644
 @@ -97,6 +99,7 @@ pub(super) fn handle_server_hello(
          mut sent_tls13_fake_ccs,
          mut hello,
-         server_name,
+         mut server_name,
 +        extra_key_shares,
          ..
      } = input;
@@ -810,7 +810,7 @@ index 5f15f36..991f16f 100644
              cx.common.send_fatal_alert(
                  AlertDescription::IllegalParameter,
                  PeerMisbehaved::WrongGroupForKeyShare,
-@@ -256,23 +265,37 @@ enum KeyExchangeChoice {
+@@ -253,23 +262,37 @@ enum KeyExchangeChoice {
  impl KeyExchangeChoice {
      /// Decide between `our_key_share` or `our_key_share.hybrid_component()`
      /// based on the selection of the server expressed in `their_key_share`.
@@ -853,7 +853,7 @@ index 5f15f36..991f16f 100644
  
          // correct the record for the benefit of accuracy of
          // `negotiated_key_exchange_group()`
-@@ -454,7 +477,12 @@ fn validate_encrypted_extensions(
+@@ -451,7 +474,12 @@ fn validate_encrypted_extensions(
      hello: &ClientHelloDetails,
      exts: &ServerExtensions<'_>,
  ) -> Result<(), Error> {
@@ -867,7 +867,7 @@ index 5f15f36..991f16f 100644
          return Err(common.send_fatal_alert(
              AlertDescription::UnsupportedExtension,
              PeerMisbehaved::UnsolicitedEncryptedExtension,
-@@ -471,6 +499,58 @@ fn validate_encrypted_extensions(
+@@ -468,6 +496,58 @@ fn validate_encrypted_extensions(
      Ok(())
  }
  
@@ -926,7 +926,7 @@ index 5f15f36..991f16f 100644
  struct ExpectEncryptedExtensions {
      config: Arc<ClientConfig>,
      resuming_session: Option<persist::Tls13ClientSessionValue>,
-@@ -518,6 +598,7 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
+@@ -516,6 +596,7 @@ impl State<ClientConnectionData> for ExpectEncryptedExtensions {
              &self.config,
              exts.server_certificate_type.as_ref(),
          )?;
@@ -934,7 +934,7 @@ index 5f15f36..991f16f 100644
  
          let ech_retry_configs = match (cx.data.ech_status, &exts.encrypted_client_hello_ack) {
              // If we didn't offer ECH, or ECH was accepted, but the server sent an ECH encrypted
-@@ -1283,6 +1364,21 @@ fn emit_certverify_tls13(
+@@ -1304,6 +1385,21 @@ fn emit_certverify_tls13(
      Ok(())
  }
  
@@ -956,7 +956,7 @@ index 5f15f36..991f16f 100644
  fn emit_finished_tls13(flight: &mut HandshakeFlightTls13<'_>, verify_data: &crypto::hmac::Tag) {
      let verify_data_payload = Payload::new(verify_data.as_ref());
  
-@@ -1363,6 +1459,12 @@ impl State<ClientConnectionData> for ExpectFinished {
+@@ -1385,6 +1481,12 @@ impl State<ClientConnectionData> for ExpectFinished {
  
          let mut flight = HandshakeFlightTls13::new(&mut st.transcript);
  
@@ -970,10 +970,10 @@ index 5f15f36..991f16f 100644
           * with our handshake keys. */
          if let Some(client_auth) = st.client_auth {
 diff --git a/src/crypto/aws_lc_rs/mod.rs b/src/crypto/aws_lc_rs/mod.rs
-index 1ab57da..528e724 100644
+index 9262b9a..3d5ebf2 100644
 --- a/src/crypto/aws_lc_rs/mod.rs
 +++ b/src/crypto/aws_lc_rs/mod.rs
-@@ -237,9 +237,29 @@ static SUPPORTED_SIG_ALGS: WebPkiSupportedAlgorithms = WebPkiSupportedAlgorithms
+@@ -244,9 +244,29 @@ static SUPPORTED_SIG_ALGS: WebPkiSupportedAlgorithms = WebPkiSupportedAlgorithms
  /// [`DEFAULT_KX_GROUPS`] is provided as an array of this provider's defaults.
  pub mod kx_group {
      pub use super::kx::{SECP256R1, SECP384R1, X25519};
@@ -1052,25 +1052,26 @@ index 6e0da22..fb88114 100644
      // SEC1 section 2.3.3 "Elliptic-Curve-Point-to-Octet-String Conversion"
      // <https://datatracker.ietf.org/doc/html/rfc8446#section-4.2.8.2>
 diff --git a/src/lib.rs b/src/lib.rs
-index 33c0d9c..d0fbd45 100644
+index 8652415..af309c2 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -594,8 +594,8 @@ pub mod client {
+@@ -594,8 +594,9 @@ pub mod client {
  
      pub use builder::WantsClientCert;
      pub use client_conn::{
 -        ClientConfig, ClientConnectionData, ClientSessionStore, EarlyDataError, ResolvesClientCert,
--        Resumption, Tls12Resumption, UnbufferedClientConnection,
+-        Resumption, TicketRequest, Tls12Resumption, UnbufferedClientConnection,
 +        ClientConfig, ClientConnectionData, ClientHelloShape, ClientSessionStore, EarlyDataError,
-+        ExtensionOrder, ResolvesClientCert, Resumption, Tls12Resumption, UnbufferedClientConnection,
++        ExtensionOrder, ResolvesClientCert, Resumption, TicketRequest, Tls12Resumption,
++        UnbufferedClientConnection,
      };
      #[cfg(feature = "std")]
      pub use client_conn::{ClientConnection, WriteEarlyData};
 diff --git a/src/msgs/handshake.rs b/src/msgs/handshake.rs
-index 093f2d1..0fc281d 100644
+index 63b836a..4f2992c 100644
 --- a/src/msgs/handshake.rs
 +++ b/src/msgs/handshake.rs
-@@ -933,9 +933,35 @@ extension_struct! {
+@@ -978,9 +978,35 @@ extension_struct! {
  
          /// Extensions that must appear contiguously.
          pub(crate) contiguous_extensions: Vec<ExtensionType>,
@@ -1106,7 +1107,7 @@ index 093f2d1..0fc281d 100644
  impl ClientExtensions<'_> {
      pub(crate) fn into_owned(self) -> ClientExtensions<'static> {
          let Self {
-@@ -964,6 +990,10 @@ impl ClientExtensions<'_> {
+@@ -1010,6 +1036,10 @@ impl ClientExtensions<'_> {
              encrypted_client_hello_outer,
              order_seed,
              contiguous_extensions,
@@ -1117,7 +1118,7 @@ index 093f2d1..0fc281d 100644
          } = self;
          ClientExtensions {
              server_name: server_name.map(|x| x.into_owned()),
-@@ -991,11 +1021,16 @@ impl ClientExtensions<'_> {
+@@ -1038,11 +1068,16 @@ impl ClientExtensions<'_> {
              encrypted_client_hello_outer,
              order_seed,
              contiguous_extensions,
@@ -1135,7 +1136,7 @@ index 093f2d1..0fc281d 100644
          exts.extend(&self.contiguous_extensions);
  
          if self
-@@ -1004,15 +1039,79 @@ impl ClientExtensions<'_> {
+@@ -1051,15 +1086,79 @@ impl ClientExtensions<'_> {
          {
              exts.push(ExtensionType::EncryptedClientHelloOuterExtensions);
          }
@@ -1216,7 +1217,7 @@ index 093f2d1..0fc281d 100644
      /// Returns extensions which don't need a specific order, in randomized order.
      ///
      /// Extensions are encoded in three portions:
-@@ -1026,17 +1125,24 @@ impl ClientExtensions<'_> {
+@@ -1073,17 +1172,24 @@ impl ClientExtensions<'_> {
      ///
      /// - Lastly, any ECH and PSK extensions (in that order).  These
      ///   are required to be last by the standard.
@@ -1246,7 +1247,7 @@ index 093f2d1..0fc281d 100644
          });
  
          order.sort_by_cached_key(|new_ext| {
-@@ -1058,7 +1164,7 @@ impl<'a> Codec<'a> for ClientExtensions<'a> {
+@@ -1105,7 +1211,7 @@ impl<'a> Codec<'a> for ClientExtensions<'a> {
  
          let body = LengthPrefixedBuffer::new(ListLength::U16, bytes);
          for item in order {

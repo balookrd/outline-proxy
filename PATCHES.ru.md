@@ -16,7 +16,7 @@ vendored-копии.
 - **sockudo-ws** — GitHub-тег `v1.7.5` (коммит `7819745`), в raw
   upstream-форматировании git (см. примечание ниже).
 - **quinn-proto** — crates.io `quinn-proto 0.11.19`.
-- **rustls** — crates.io `rustls 0.23.40`.
+- **rustls** — crates.io `rustls 0.23.46`.
 - **hyper** — crates.io `hyper 1.10.1`.
 
 ## Артефакты-патчи
@@ -26,7 +26,7 @@ vendored-копии.
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | все отличия `vendor/h3` от upstream `h3 0.0.8` |
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws` от GitHub-тега `v1.7.5` (`src/` и `Cargo.toml`) |
 | [`quinn-proto-0.11.19.patch`](quinn-proto-0.11.19.patch) | все отличия `vendor/quinn-proto` от upstream `quinn-proto 0.11.19` (`src/` и `Cargo.toml`) |
-| [`rustls-0.23.40.patch`](rustls-0.23.40.patch) | все отличия `vendor/rustls` от upstream `rustls 0.23.40` (`src/` и `Cargo.toml`) |
+| [`rustls-0.23.46.patch`](rustls-0.23.46.patch) | все отличия `vendor/rustls` от upstream `rustls 0.23.46` (`src/` и `Cargo.toml`) |
 | [`hyper-1.10.1.patch`](hyper-1.10.1.patch) | все отличия `vendor/hyper` от upstream `hyper 1.10.1` (только `src/`) |
 
 ## Модули-гейты
@@ -326,9 +326,9 @@ vendored-копия трактуется как **де-факто наш соб�
 - в неиспользуемом нами модуле всплывает неустранимая проблема безопасности,
   где вырезать дешевле, чем тащить.
 
-## rustls (0.23.40)
+## rustls (0.23.46)
 
-Baseline — crates.io `rustls 0.23.40`. Изменения в `rustls-0.23.40.patch`:
+Baseline — crates.io `rustls 0.23.46`. Изменения в `rustls-0.23.46.patch`:
 
 1. **client-hello-shape** (`src/client/client_conn.rs`, `src/client/builder.rs`,
    `src/client/hs.rs`, `src/client/common.rs`, `src/client/tls13.rs`,
@@ -442,8 +442,28 @@ vendored-крейт с клиентом, получил бы компрессо�
 (`brotli-decompressor`, `flate2`, `ruzstd`), теперь они собираются всегда: их
 используют и TCP-дозвоны.
 
-Проверка соответствия: применить патч к чистой копии crates.io 0.23.40 (в объёме
+Проверка соответствия: применить патч к чистой копии crates.io 0.23.46 (в объёме
 vendored-файлов) и сравнить `diff -r` — пусто.
+
+Перенесён с 0.23.40 на 0.23.46 ради исправлений RustSec из 0.23.45–0.23.46
+(даунгрейд до классического обмена ключами через неаутентифицированный ServerHello,
+сообщения рукопожатия, принятые через границу уровней шифрования, секреты в `Debug`,
+проблемы ECH и brotli). Изменения upstream, которые пересекаются с патчем:
+
+- `ClientHelloDetails::offered_cipher_suites`: клиент теперь отвергает ServerHello с
+  набором, которого он не предлагал. Записывается `chp_payload.cipher_suites`, то есть
+  уже после подмены формой (`wire_cipher_suites`, GREASE), поэтому сервер, выбравший
+  объявленный набор, которого нет у провайдера, по-прежнему проваливает рукопожатие,
+  теперь с `SelectedUnofferedCipherSuite`.
+- Опция RFC 9149 `ticket_request` (`ClientConfig::send_ticket_request`) по умолчанию
+  выключена, клиент её не выставляет, hello не меняется.
+- `supports_version` учитывает протокол, поэтому QUIC-hello никогда не объявляет
+  TLS 1.2; QUIC-конфиги и так только TLS 1.3.
+- Провайдер aws-lc-rs теперь проверяет ML-DSA-44/65/87. Каждый клиентский dial
+  объявляет `signature_algorithms` своего профиля дословно, так что клиентские dial'ы
+  не меняются; клиент mesh-кластера сервера (`server/cluster/mesh/tls.rs`) без формы
+  и теперь тоже предлагает ML-DSA. Схемы ML-DSA у Chrome теперь проверяются, а не
+  только объявляются.
 
 ## hyper (1.10.1)
 

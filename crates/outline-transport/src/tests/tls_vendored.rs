@@ -227,12 +227,16 @@ fn defaults_keep_the_offered_lists() {
     assert!(is_grease_u16(groups[0]), "{groups:04x?}");
     assert_eq!(groups[1..], [0x001d]);
 
-    // Exactly the verifier's schemes, no GREASE: the aws-lc-rs webpki defaults.
+    // Exactly the verifier's schemes, no GREASE: the aws-lc-rs webpki defaults
+    // (ML-DSA-44/65/87 last, since rustls 0.23.46).
     let sigs = u16_list_ext(&ch, 13);
     assert_eq!(sigs, verifier_schemes(&cert));
     assert_eq!(
         sigs,
-        [0x0503, 0x0403, 0x0603, 0x0807, 0x0806, 0x0805, 0x0804, 0x0601, 0x0501, 0x0401]
+        [
+            0x0503, 0x0403, 0x0603, 0x0807, 0x0806, 0x0805, 0x0804, 0x0601, 0x0501, 0x0401, 0x0904,
+            0x0905, 0x0906
+        ]
     );
 
     let types = extension_types(&ch);

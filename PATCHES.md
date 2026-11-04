@@ -16,7 +16,7 @@ Regenerated against:
 - **sockudo-ws** — GitHub tag `v1.7.5` (commit `7819745`), in raw upstream
   git formatting (see the note below).
 - **quinn-proto** — crates.io `quinn-proto 0.11.19`.
-- **rustls** — crates.io `rustls 0.23.40`.
+- **rustls** — crates.io `rustls 0.23.46`.
 - **hyper** — crates.io `hyper 1.10.1`.
 
 ## Patch artifacts
@@ -26,7 +26,7 @@ Regenerated against:
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | all `vendor/h3` deviations from upstream `h3 0.0.8` |
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | all `vendor/sockudo-ws` deviations from GitHub tag `v1.7.5` (`src/` and `Cargo.toml`) |
 | [`quinn-proto-0.11.19.patch`](quinn-proto-0.11.19.patch) | all `vendor/quinn-proto` deviations from upstream `quinn-proto 0.11.19` (`src/` and `Cargo.toml`) |
-| [`rustls-0.23.40.patch`](rustls-0.23.40.patch) | all `vendor/rustls` deviations from upstream `rustls 0.23.40` (`src/` and `Cargo.toml`) |
+| [`rustls-0.23.46.patch`](rustls-0.23.46.patch) | all `vendor/rustls` deviations from upstream `rustls 0.23.46` (`src/` and `Cargo.toml`) |
 | [`hyper-1.10.1.patch`](hyper-1.10.1.patch) | all `vendor/hyper` deviations from upstream `hyper 1.10.1` (`src/` only) |
 
 ## Gate modules
@@ -328,10 +328,10 @@ holds, not on a schedule:
 - an unfixable security issue surfaces in a module we do not use, where
   excising it is cheaper than carrying it.
 
-## rustls (0.23.40)
+## rustls (0.23.46)
 
-Baseline — crates.io `rustls 0.23.40`. Changes carried by
-`rustls-0.23.40.patch`:
+Baseline — crates.io `rustls 0.23.46`. Changes carried by
+`rustls-0.23.46.patch`:
 
 1. **client-hello-shape** (`src/client/client_conn.rs`, `src/client/builder.rs`,
    `src/client/hs.rs`, `src/client/common.rs`, `src/client/tls13.rs`,
@@ -446,8 +446,27 @@ certificate. The client's certificate decompressors live in `outline-transport`
 (`brotli-decompressor`, `flate2`, `ruzstd`), always built in now that the TCP dials
 use them too.
 
-Conformance check: apply the patch to a clean copy of crates.io 0.23.40 (the
+Conformance check: apply the patch to a clean copy of crates.io 0.23.46 (the
 retained file set) and compare with `diff -r` — empty.
+
+Rebased from 0.23.40 to 0.23.46 for the RustSec fixes of 0.23.45–0.23.46
+(classical-key-exchange downgrade through an unauthenticated ServerHello,
+handshake messages accepted across encryption levels, secrets in `Debug`, ECH and
+brotli issues). Upstream changes that meet the patch:
+
+- `ClientHelloDetails::offered_cipher_suites`: the client now rejects a ServerHello
+  whose suite it did not offer. It records `chp_payload.cipher_suites`, i.e. after the
+  shape replaced them (`wire_cipher_suites`, GREASE), so a server picking an advertised
+  suite the provider lacks still fails, now with `SelectedUnofferedCipherSuite`.
+- The RFC 9149 `ticket_request` option (`ClientConfig::send_ticket_request`) is off by
+  default and not set by the client, so no hello changes.
+- `supports_version` takes the protocol into account, so a QUIC hello never advertises
+  TLS 1.2; the QUIC configs are TLS 1.3 only anyway.
+- The aws-lc-rs provider verifies ML-DSA-44/65/87 now. Every client dial advertises
+  its profile's `signature_algorithms` verbatim, so client dials do not change; the
+  server's cluster-mesh client (`server/cluster/mesh/tls.rs`) is unshaped and now
+  offers ML-DSA too. Chrome's ML-DSA schemes are now verifiable rather than
+  advertised only.
 
 ## hyper (1.10.1)
 
