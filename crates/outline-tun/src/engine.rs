@@ -82,8 +82,12 @@ pub async fn spawn_tun_loop(
     // (TUN_F_USO accepted) lets the UDP engine coalesce downlink datagrams.
     let gso_enabled = gso.vnet_hdr;
     set_nonblocking(&device).context("failed to set O_NONBLOCK on TUN device")?;
+    // SAFETY: `device` is a `File` that solely owns its fd (a preopened fd is
+    // dup'ed first), and the `AsyncFd` takes the `File` by value, so the fd
+    // stays open and refers to the same file description until the `AsyncFd`
+    // drops it; `File::as_raw_fd` always returns that same fd.
     let async_fd = Arc::new(
-        AsyncFd::with_interest(device, Interest::READABLE | Interest::WRITABLE)
+        unsafe { AsyncFd::register_with_interest(device, Interest::READABLE | Interest::WRITABLE) }
             .context("failed to register TUN fd with tokio reactor")?,
     );
     let writer = SharedTunWriter::from_async_fd(async_fd.clone(), gso_enabled, gso.af_hdr);
