@@ -191,8 +191,9 @@ jobs:
           echo "ok: sockudo-ws stays behind the gate modules"
 
       # Monorepo invariant: the vendored quinn-proto patch adds
-      # `TransportConfig::initial_stream_receive_window` and the browser-shaped
-      # transport-parameter options, `MtuDiscoveryConfig::first_probe` and
+      # `TransportConfig::initial_stream_receive_window`, the browser-shaped
+      # transport-parameter options, `initial_crypto_layout`,
+      # `MtuDiscoveryConfig::first_probe` and
       # `PathStats::plpmtud_settled`; production code reaches it only via
       # crates/outline-transport/src/quic/vendored.rs (and, for `first_probe`
       # on the server, bins/outline-ss-rust/src/server/h3/vendored.rs), so a
@@ -200,7 +201,7 @@ jobs:
       # modules are exempt.
       - name: invariant — patched quinn-proto API only behind the gate module
         run: |
-          leaked=$(grep -rn 'initial_stream_receive_window\|\.advertise_min_ack_delay(\|\.send_grease_transport_parameter(\|\.advertise_max_idle_timeout(\|\.advertise_max_udp_payload_size(\|\.advertised_max_datagram_frame_size(\|\.version_information(\|\.extra_transport_parameters(\|\.transport_parameter_order(\|\.advertised_active_connection_id_limit(\|\.max_ack_delay_ms(\|\.first_probe(\|plpmtud_settled' bins/*/src crates/*/src --include='*.rs' \
+          leaked=$(grep -rn 'initial_stream_receive_window\|\.advertise_min_ack_delay(\|\.send_grease_transport_parameter(\|\.advertise_max_idle_timeout(\|\.advertise_max_udp_payload_size(\|\.advertised_max_datagram_frame_size(\|\.version_information(\|\.extra_transport_parameters(\|\.transport_parameter_order(\|\.advertised_active_connection_id_limit(\|\.max_ack_delay_ms(\|\.initial_crypto_layout(\|\.first_probe(\|plpmtud_settled' bins/*/src crates/*/src --include='*.rs' \
             | grep -v '/tests/' \
             | grep -v '^crates/outline-transport/src/quic/vendored\.rs:' \
             | grep -v '^bins/outline-ss-rust/src/server/h3/vendored\.rs:' || true)

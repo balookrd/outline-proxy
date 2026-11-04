@@ -44,6 +44,19 @@ pub(crate) enum TpOrder {
     Rotated(&'static [u64]),
 }
 
+/// How the ClientHello is laid out in CRYPTO frames across the Initials (see
+/// `TransportConfig::initial_crypto_layout`). Initials stay at 1200 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HelloLayout {
+    /// One CRYPTO frame per Initial, filled in order (upstream quinn).
+    Contiguous,
+    /// Chrome's chaos protection: an even split with head and tail first, extra CRYPTO
+    /// frames, PINGs and PADDING scattered in a shuffled order.
+    Chaos,
+    /// Firefox's SNI slicing: an even split cut in the middle of the SNI, tail first.
+    SniSlice,
+}
+
 /// `version_information` shape; the chosen version is always QUIC v1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VersionInfo {
@@ -70,6 +83,7 @@ pub(crate) struct BrowserTpOptions {
     /// Advertised `max_ack_delay` and the local delayed-ACK timer; 25 is the protocol
     /// default and is not written.
     pub(crate) max_ack_delay_ms: u32,
+    pub(crate) hello_layout: HelloLayout,
 }
 
 pub(crate) fn apply_browser_tp_options(
@@ -106,7 +120,12 @@ pub(crate) fn apply_browser_tp_options(
         .advertised_active_connection_id_limit(
             opts.active_connection_id_limit.map(quinn::VarInt::from_u32),
         )
-        .max_ack_delay_ms(opts.max_ack_delay_ms);
+        .max_ack_delay_ms(opts.max_ack_delay_ms)
+        .initial_crypto_layout(match opts.hello_layout {
+            HelloLayout::Contiguous => quinn_proto::InitialCryptoLayout::Contiguous,
+            HelloLayout::Chaos => quinn_proto::InitialCryptoLayout::Chaos,
+            HelloLayout::SniSlice => quinn_proto::InitialCryptoLayout::SniSlice,
+        });
     match opts.datagram_frame_size {
         Some(size) => {
             transport

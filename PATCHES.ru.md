@@ -45,8 +45,8 @@ vendored-копии.
   `MtuDiscoveryConfig::first_probe` из `quinn-proto` для `[server.h3].mtu_first_probe`).
 - [`crates/outline-transport/src/quic/vendored.rs`](crates/outline-transport/src/quic/vendored.rs) — клиент, пропатченный
   `quinn-proto` (`TransportConfig::initial_stream_receive_window`, браузерные опции
-  transport parameters, `MtuDiscoveryConfig::first_probe` и
-  `PathStats::plpmtud_settled`).
+  transport parameters, `TransportConfig::initial_crypto_layout`,
+  `MtuDiscoveryConfig::first_probe` и `PathStats::plpmtud_settled`).
 - [`crates/outline-transport/src/tls_vendored.rs`](crates/outline-transport/src/tls_vendored.rs) — клиент, пропатченный
   `rustls` (`ClientConfig::client_hello_shape` с `ClientHelloShape` /
   `ExtensionOrder`, `kx_group::SECP521R1` и `apply_tls_hello_profile`, который
@@ -59,7 +59,7 @@ vendored-копии.
 Ребейз vendored-крейтов на новый upstream начинай (и в идеале заканчивай) в
 этих файлах-гейтах. CI следит, чтобы `sockudo_ws` упоминался только в
 модулях-гейтах, а пропатченный API quinn-proto
-(`initial_stream_receive_window`, `.first_probe(`, `plpmtud_settled` и т. д.) — только в
+(`initial_stream_receive_window`, `.initial_crypto_layout(`, `.first_probe(`, `plpmtud_settled` и т. д.) — только в
 `crates/outline-transport/src/quic/vendored.rs` (а `.first_probe(` — ещё и в серверном
 гейте `bins/outline-ss-rust/src/server/h3/vendored.rs`), а пропатченный API rustls
 (`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
@@ -249,7 +249,25 @@ Baseline — crates.io `quinn-proto 0.11.15`. Логические измене�
    есть не означает, что поиск удался. `None` (по умолчанию)
    сохраняет поведение upstream. H3-клиент берёт размер из своего кэша MTU пути; сервер —
    только при `[server.h3].mtu_first_probe`.
-5. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
+5. **initial-crypto-layout** (`src/config/{transport,mod}.rs`, `src/lib.rs`,
+   `src/connection/initial_crypto.rs`, `src/connection/mod.rs`) — новый
+   `TransportConfig::initial_crypto_layout(InitialCryptoLayout)`: как клиент раскладывает
+   ClientHello по CRYPTO-кадрам своих Initial. `Contiguous` (по умолчанию) — upstream.
+   `Chaos` (Chrome) и `SniSlice` (Firefox) делят hello поровну между нужными Initial:
+   первый несёт оба конца hello, следующие — один непрерывный диапазон. `SniSlice` режет
+   посередине имени хоста в SNI и кладёт первой часть после разреза (neqo; если SNI дальше
+   середины — всю часть после разреза и конец головы). `Chaos` отрезает голову случайной
+   длины 40–100 байт, затем в каждом пакете добавляет до 10 разрезов CRYPTO и до 10 PING,
+   перемешивает кадры и рассыпает между ними PADDING (QUICHE). Запланированный пакет несёт
+   только свои кадры и добивается до 1200-байтного Initial, так что за ним ничего не
+   склеивается. План строится только для целого ClientHello с offset 0 (и после Retry);
+   его кадры лежат в `pending.crypto`, поэтому потери переотправляются как обычно, а пакет,
+   не нашедший своих кадров в начале очереди или места под них, сбрасывает план, и дальше
+   работает цикл upstream. Сервер опцию игнорирует. Тесты:
+   `src/connection/tests/initial_crypto.rs` (планировщик, совпадает с захватом Firefox),
+   `src/tests/initial_crypto.rs` (рукопожатие с Retry и без, размер Initial); им нужны
+   dev-dependencies upstream (см. п. 6).
+6. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
    дефолтным `ring` нарушил бы инвариант aws-lc-rs).
 
 Проверка соответствия: применить патч к чистой копии crates.io 0.11.15 и сравнить

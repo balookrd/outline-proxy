@@ -36,6 +36,8 @@ mod util;
 use util::*;
 
 mod token;
+// outline-proxy patch: browser-like ClientHello layouts
+mod initial_crypto;
 
 #[cfg(all(target_family = "wasm", target_os = "unknown"))]
 use wasm_bindgen_test::wasm_bindgen_test as test;

@@ -48,6 +48,8 @@ use cid_state::CidState;
 
 mod datagrams;
 use datagrams::DatagramState;
+
+mod initial_crypto;
 pub use datagrams::{Datagrams, SendDatagramError};
 
 mod mtud;
@@ -134,6 +136,9 @@ pub struct Connection {
     endpoint_config: Arc<EndpointConfig>,
     config: Arc<TransportConfig>,
     rng: StdRng,
+    /// Offsets of the CRYPTO frames each planned client Initial starts with, in packet
+    /// order (see `initial_crypto`). Empty when the hello is sent upstream-style.
+    hello_plan: VecDeque<Vec<u64>>,
     crypto: Box<dyn crypto::Session>,
     /// The CID we initially chose, for use during the handshake
     handshake_cid: ConnectionId,
@@ -359,6 +364,7 @@ impl Connection {
             config,
             rem_cids: CidQueue::new(rem_cid, rem_cid_limit),
             rng,
+            hello_plan: VecDeque::new(),
             stats: ConnectionStats::default(),
             version,
         };
@@ -883,8 +889,18 @@ impl Connection {
                 }
             }
 
-            let sent =
-                self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
+            // Where a client Initial's frames must end once the datagram is padded to
+            // MIN_INITIAL_SIZE (the browser-like hello layout fills up to it).
+            let initial_pad_target =
+                builder.datagram_start + MIN_INITIAL_SIZE as usize - builder.tag_len;
+            let sent = self.populate_packet(
+                now,
+                space_id,
+                buf,
+                builder.max_size,
+                builder.exact_number,
+                initial_pad_target,
+            );
 
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
@@ -3147,6 +3163,7 @@ impl Connection {
         buf: &mut Vec<u8>,
         max_size: usize,
         pn: u64,
+        initial_pad_target: usize,
     ) -> SentFrames {
         let mut sent = SentFrames::default();
         let space = &mut self.spaces[space_id];
@@ -3247,8 +3264,12 @@ impl Connection {
             }
         }
 
+        // CRYPTO laid out like a browser's hello (client Initial only), then the rest
+        let hello_laid_out = space_id == SpaceId::Initial
+            && self.populate_initial_hello(buf, max_size, initial_pad_target, &mut sent);
+        let space = &mut self.spaces[space_id];
         // CRYPTO
-        while buf.len() + frame::Crypto::SIZE_BOUND < max_size && !is_0rtt {
+        while buf.len() + frame::Crypto::SIZE_BOUND < max_size && !is_0rtt && !hello_laid_out {
             let mut frame = match space.pending.crypto.pop_front() {
                 Some(x) => x,
                 None => break,

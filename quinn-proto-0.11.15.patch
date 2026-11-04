@@ -251,7 +251,7 @@ index 3e3eec9..f9ddbb0 100644
          assert_eq!(q.active(), initial_cid());
          assert_eq!(q.active_seq(), 0);
 diff --git a/src/config/mod.rs b/src/config/mod.rs
-index aa755b5..dfc8897 100644
+index aa755b5..69ee5b7 100644
 --- a/src/config/mod.rs
 +++ b/src/config/mod.rs
 @@ -28,7 +28,10 @@ use crate::{
@@ -261,13 +261,13 @@ index aa755b5..dfc8897 100644
 -pub use transport::{AckFrequencyConfig, IdleTimeout, MtuDiscoveryConfig, TransportConfig};
 +pub use transport::{
 +    AckFrequencyConfig, IdleTimeout, MtuDiscoveryConfig, StreamReceiveWindows, TransportConfig,
-+    TransportParameterOrder, VersionInformation, VersionSlot,
++    InitialCryptoLayout, TransportParameterOrder, VersionInformation, VersionSlot,
 +};
  
  /// Global configuration for the endpoint, affecting all connections
  ///
 diff --git a/src/config/transport.rs b/src/config/transport.rs
-index 0198e45..540014c 100644
+index 0198e45..fd3d7e6 100644
 --- a/src/config/transport.rs
 +++ b/src/config/transport.rs
 @@ -8,8 +8,11 @@ use qlog::streamer::QlogStreamer;
@@ -283,7 +283,7 @@ index 0198e45..540014c 100644
  };
  
  /// Parameters governing the core QUIC state machine
-@@ -29,6 +32,18 @@ pub struct TransportConfig {
+@@ -29,6 +32,19 @@ pub struct TransportConfig {
      pub(crate) max_concurrent_uni_streams: VarInt,
      pub(crate) max_idle_timeout: Option<VarInt>,
      pub(crate) stream_receive_window: VarInt,
@@ -297,12 +297,13 @@ index 0198e45..540014c 100644
 +    pub(crate) version_information: Option<VersionInformation>,
 +    pub(crate) extra_transport_parameters: Vec<(VarInt, Vec<u8>)>,
 +    pub(crate) transport_parameter_order: TransportParameterOrder,
++    pub(crate) initial_crypto_layout: InitialCryptoLayout,
 +    pub(crate) advertised_active_connection_id_limit: Option<VarInt>,
 +    pub(crate) max_ack_delay: VarInt,
      pub(crate) receive_window: VarInt,
      pub(crate) send_window: u64,
      pub(crate) send_fairness: bool,
-@@ -116,6 +131,189 @@ impl TransportConfig {
+@@ -116,6 +132,196 @@ impl TransportConfig {
          self
      }
  
@@ -441,6 +442,13 @@ index 0198e45..540014c 100644
 +        self
 +    }
 +
++    /// How a client lays its ClientHello out in CRYPTO frames across its Initial packets.
++    /// Defaults to [`InitialCryptoLayout::Contiguous`]; ignored by servers.
++    pub fn initial_crypto_layout(&mut self, value: InitialCryptoLayout) -> &mut Self {
++        self.initial_crypto_layout = value;
++        self
++    }
++
 +    pub(crate) fn remote_cid_queue_limit(&self) -> usize {
 +        self.advertised_active_connection_id_limit.map_or(CidQueue::LEN, |limit| {
 +            usize::try_from(limit.into_inner()).unwrap_or(usize::MAX).min(CidQueue::CAPACITY)
@@ -492,7 +500,7 @@ index 0198e45..540014c 100644
      /// Maximum number of bytes the peer may transmit across all streams of a connection before
      /// becoming blocked.
      ///
-@@ -350,6 +548,53 @@ impl TransportConfig {
+@@ -350,6 +556,76 @@ impl TransportConfig {
      }
  }
  
@@ -512,6 +520,29 @@ index 0198e45..540014c 100644
 +    /// not written (e.g. `max_ack_delay` at its default, `active_connection_id_limit` when
 +    /// unsent), so list only parameters that are actually sent to keep the start uniform.
 +    Rotated(Vec<VarInt>),
++}
++
++/// How a client lays its ClientHello out in CRYPTO frames across its Initial packets.
++///
++/// Every layout other than `Contiguous` splits the hello evenly over the Initials it
++/// needs, with the first one carrying the hello's head and tail and the rest its middle,
++/// as both Chrome and Firefox do. A layout applies only to a complete hello sent from
++/// offset 0 that fits the planned packets; anything else (a lost frame resent alone, a
++/// packet with less room than planned) falls back to `Contiguous`. Initials keep their
++/// 1200-byte size.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
++pub enum InitialCryptoLayout {
++    /// Upstream: one CRYPTO frame per packet, each packet filled before the next.
++    #[default]
++    Contiguous,
++    /// Chrome's "chaos protection" (QUICHE): the head cut is random, and inside each
++    /// packet the frames are split further, PINGs are added, PADDING is spread between
++    /// them and their order is shuffled.
++    Chaos,
++    /// Firefox's SNI slicing (neqo): the head ends in the middle of the SNI host name and
++    /// the first packet carries the tail frame before the head frame. Without an SNI
++    /// the hello is sent `Contiguous`.
++    SniSlice,
 +}
 +
 +/// One entry of `version_information`'s `other_versions`.
@@ -546,7 +577,7 @@ index 0198e45..540014c 100644
  impl Default for TransportConfig {
      fn default() -> Self {
          const EXPECTED_RTT: u32 = 100; // ms
-@@ -364,6 +609,18 @@ impl Default for TransportConfig {
+@@ -364,6 +640,19 @@ impl Default for TransportConfig {
              // 30 second default recommended by RFC 9308 § 3.2
              max_idle_timeout: Some(VarInt(30_000)),
              stream_receive_window: STREAM_RWND.into(),
@@ -560,12 +591,13 @@ index 0198e45..540014c 100644
 +            version_information: None,
 +            extra_transport_parameters: Vec::new(),
 +            transport_parameter_order: TransportParameterOrder::Shuffled,
++            initial_crypto_layout: InitialCryptoLayout::Contiguous,
 +            advertised_active_connection_id_limit: None,
 +            max_ack_delay: VarInt(25),
              receive_window: VarInt::MAX,
              send_window: (8 * STREAM_RWND).into(),
              send_fairness: true,
-@@ -402,6 +659,18 @@ impl fmt::Debug for TransportConfig {
+@@ -402,6 +691,19 @@ impl fmt::Debug for TransportConfig {
              max_concurrent_uni_streams,
              max_idle_timeout,
              stream_receive_window,
@@ -579,12 +611,13 @@ index 0198e45..540014c 100644
 +            version_information,
 +            extra_transport_parameters,
 +            transport_parameter_order,
++            initial_crypto_layout,
 +            advertised_active_connection_id_limit,
 +            max_ack_delay,
              receive_window,
              send_window,
              send_fairness,
-@@ -431,6 +700,21 @@ impl fmt::Debug for TransportConfig {
+@@ -431,6 +733,22 @@ impl fmt::Debug for TransportConfig {
              .field("max_concurrent_uni_streams", max_concurrent_uni_streams)
              .field("max_idle_timeout", max_idle_timeout)
              .field("stream_receive_window", stream_receive_window)
@@ -598,6 +631,7 @@ index 0198e45..540014c 100644
 +            .field("version_information", version_information)
 +            .field("extra_transport_parameters", extra_transport_parameters)
 +            .field("transport_parameter_order", transport_parameter_order)
++            .field("initial_crypto_layout", initial_crypto_layout)
 +            .field(
 +                "advertised_active_connection_id_limit",
 +                advertised_active_connection_id_limit,
@@ -606,7 +640,7 @@ index 0198e45..540014c 100644
              .field("receive_window", receive_window)
              .field("send_window", send_window)
              .field("send_fairness", send_fairness)
-@@ -688,6 +972,7 @@ pub struct MtuDiscoveryConfig {
+@@ -688,6 +1006,7 @@ pub struct MtuDiscoveryConfig {
      pub(crate) interval: Duration,
      pub(crate) upper_bound: u16,
      pub(crate) minimum_change: u16,
@@ -614,7 +648,7 @@ index 0198e45..540014c 100644
      pub(crate) black_hole_cooldown: Duration,
  }
  
-@@ -730,6 +1015,23 @@ impl MtuDiscoveryConfig {
+@@ -730,6 +1049,23 @@ impl MtuDiscoveryConfig {
          self.minimum_change = value;
          self
      }
@@ -638,7 +672,7 @@ index 0198e45..540014c 100644
  }
  
  impl Default for MtuDiscoveryConfig {
-@@ -739,6 +1041,7 @@ impl Default for MtuDiscoveryConfig {
+@@ -739,6 +1075,7 @@ impl Default for MtuDiscoveryConfig {
              upper_bound: 1452,
              black_hole_cooldown: Duration::from_secs(60),
              minimum_change: 20,
@@ -646,11 +680,365 @@ index 0198e45..540014c 100644
          }
      }
  }
+diff --git a/src/connection/initial_crypto.rs b/src/connection/initial_crypto.rs
+new file mode 100644
+index 0000000..39f3c94
+--- /dev/null
++++ b/src/connection/initial_crypto.rs
+@@ -0,0 +1,329 @@
++//! Browser-like layout of the client's ClientHello in CRYPTO frames across its Initial
++//! packets (outline-proxy patch, see [`InitialCryptoLayout`]).
++//!
++//! Upstream quinn fills the first Initial with one CRYPTO frame and puts the rest of the
++//! hello in the next one. Chrome and Firefox both split the hello evenly over their
++//! Initials, the first one carrying the head and the tail of the hello and the next ones
++//! the middle; Chrome then also scatters each packet's frames ("chaos protection").
++//!
++//! The planned frames are queued in `pending.crypto` in packet order, one frame per
++//! range, so quinn still sees pending data and resends lost frames as usual. `hello_plan`
++//! records the offsets each planned packet starts with; a packet that does not find
++//! exactly those frames at the front of the queue, or has no room for them, drops the
++//! plan and the remaining frames go out through the upstream loop.
++
++use std::ops::Range;
++
++use bytes::{BufMut, Bytes, BytesMut};
++use rand::Rng;
++use tracing::trace;
++
++use super::{Connection, SentFrames, SpaceId};
++use crate::{
++    VarInt,
++    coding::BufMutExt,
++    config::InitialCryptoLayout,
++    frame::{self, FrameType},
++};
++
++/// Room kept per packet for the frames chaos protection adds: up to this many extra
++/// CRYPTO frames and PINGs per packet, as QUICHE does.
++const CHAOS_MAX_ADDED_CRYPTO: usize = 10;
++const CHAOS_MAX_PINGS: usize = 10;
++/// Largest CRYPTO frame header: type, a 4-byte offset, a 2-byte length.
++const CRYPTO_HEADER_MAX: usize = 1 + 4 + 2;
++const CHAOS_RESERVE: usize = CHAOS_MAX_ADDED_CRYPTO * CRYPTO_HEADER_MAX + CHAOS_MAX_PINGS;
++/// Chrome's head cut, in bytes of the hello; measured 55 and 79.
++const CHAOS_HEAD: Range<usize> = 40..101;
++/// Below this much hello data per packet the layout is not worth it.
++const MIN_SHARE: usize = 256;
++
++/// One item of a packet laid out by [`scatter`].
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(super) enum Piece {
++    Crypto(Range<usize>),
++    Ping,
++    Padding(usize),
++}
++
++/// Whether `data` is exactly one complete TLS ClientHello message.
++pub(super) fn is_client_hello(data: &[u8]) -> bool {
++    data.len() >= 4
++        && data[0] == 1
++        && u32::from_be_bytes([0, data[1], data[2], data[3]]) as usize + 4 == data.len()
++}
++
++/// Byte range of the SNI host name inside a ClientHello message.
++pub(super) fn sni_range(hello: &[u8]) -> Option<Range<usize>> {
++    let u16_at = |p: usize| -> Option<usize> {
++        Some(u16::from_be_bytes([*hello.get(p)?, *hello.get(p + 1)?]) as usize)
++    };
++    // type(1) length(3) legacy_version(2) random(32)
++    let mut p = 4 + 2 + 32;
++    p += 1 + *hello.get(p)? as usize; // session id
++    p += 2 + u16_at(p)?; // cipher suites
++    p += 1 + *hello.get(p)? as usize; // compression methods
++    let end = p + 2 + u16_at(p)?;
++    p += 2;
++    if end > hello.len() {
++        return None;
++    }
++    while p + 4 <= end {
++        let (ty, len) = (u16_at(p)?, u16_at(p + 2)?);
++        let body = p + 4..p + 4 + len;
++        if body.end > end {
++            return None;
++        }
++        if ty == 0 {
++            // server_name_list length(2), name_type(1), host_name length(2), host_name
++            let start = body.start + 5;
++            let name = start..start + u16_at(body.start + 3)?;
++            return (name.end <= body.end && !name.is_empty()).then_some(name);
++        }
++        p = body.end;
++    }
++    None
++}
++
++/// Size of a CRYPTO frame carrying `range` of the hello.
++pub(super) fn crypto_frame_len(range: &Range<usize>) -> usize {
++    let size = |v: usize| VarInt::from_u64(v as u64).map_or(8, VarInt::size);
++    1 + size(range.start) + size(range.len()) + range.len()
++}
++
++/// The CRYPTO ranges of each Initial for a hello of `len` bytes when a packet has `room`
++/// bytes for frames. `None` when the layout does not apply.
++pub(super) fn plan(
++    layout: InitialCryptoLayout,
++    len: usize,
++    sni: Option<Range<usize>>,
++    room: usize,
++    rng: &mut impl Rng,
++) -> Option<Vec<Vec<Range<usize>>>> {
++    let reserve = 2 * CRYPTO_HEADER_MAX
++        + match layout {
++            InitialCryptoLayout::Contiguous => return None,
++            InitialCryptoLayout::Chaos => CHAOS_RESERVE,
++            InitialCryptoLayout::SniSlice => 0,
++        };
++    let usable = room.checked_sub(reserve).filter(|&u| u >= MIN_SHARE)?;
++    let head = match layout {
++        InitialCryptoLayout::SniSlice => sni.map(|name| name.start + name.len() / 2)?,
++        _ => rng.random_range(CHAOS_HEAD),
++    };
++    let packets = len.div_ceil(usable);
++    if packets == 1 {
++        return (0 < head && head < len).then(|| vec![vec![head..len, 0..head]]);
++    }
++    let share = len.div_ceil(packets);
++    if head == 0 || head >= len {
++        return None;
++    }
++    // The first packet carries `share` bytes from both sides of the cut, the part
++    // after it first, and leaves one contiguous range for the next packets (neqo).
++    let (first, rest) = if head < share {
++        // The head fits: all of it, plus the end of the part after the cut.
++        let tail = len - (share - head);
++        (vec![tail..len, 0..head], head..tail)
++    } else if len - head < share {
++        // A late SNI: all of the part after the cut, plus the end of the head.
++        let start = len - share;
++        (vec![head..len, start..head], 0..start)
++    } else {
++        return None;
++    };
++    let mut out = vec![first];
++    let piece = rest.len().div_ceil(packets - 1);
++    let mut start = rest.start;
++    while start < rest.end {
++        let end = (start + piece).min(rest.end);
++        out.push(vec![start..end]);
++        start = end;
++    }
++    Some(out)
++}
++
++/// Chrome's chaos protection for one packet's `ranges`, with `spare` bytes to fill
++/// before the packet's padding target: extra CRYPTO splits, PINGs, a shuffled order and
++/// PADDING spread before the frames. Padding left over goes at the end of the packet.
++pub(super) fn scatter(
++    ranges: Vec<Range<usize>>,
++    mut spare: usize,
++    rng: &mut impl Rng,
++) -> Vec<Piece> {
++    let mut crypto = ranges;
++    for _ in 0..rng.random_range(0..=CHAOS_MAX_ADDED_CRYPTO) {
++        if spare < CRYPTO_HEADER_MAX {
++            break;
++        }
++        let i = rng.random_range(0..crypto.len());
++        let r = crypto[i].clone();
++        if r.len() < 2 {
++            continue;
++        }
++        let cut = rng.random_range(r.start + 1..r.end);
++        let (a, b) = (r.start..cut, cut..r.end);
++        let grown = crypto_frame_len(&a) + crypto_frame_len(&b) - crypto_frame_len(&r);
++        spare -= grown;
++        crypto[i] = a;
++        crypto.insert(i + 1, b);
++    }
++    let pings = rng.random_range(0..=CHAOS_MAX_PINGS).min(spare);
++    spare -= pings;
++    let mut items: Vec<Piece> = crypto.into_iter().map(Piece::Crypto).collect();
++    items.extend((0..pings).map(|_| Piece::Ping));
++    // Fisher-Yates
++    for i in (1..items.len()).rev() {
++        items.swap(i, rng.random_range(0..=i));
++    }
++    let mut out = Vec::with_capacity(items.len() * 2);
++    for item in items {
++        let pad = rng.random_range(0..=spare);
++        if pad > 0 {
++            out.push(Piece::Padding(pad));
++            spare -= pad;
++        }
++        out.push(item);
++    }
++    out
++}
++
++impl Connection {
++    /// Writes this Initial packet's CRYPTO frames when the hello is laid out like a
++    /// browser's. `pad_target` is the buffer position the packet is padded to. Returns
++    /// whether it wrote the packet's frames; the upstream loop must then add no more
++    /// CRYPTO, which belongs to the next planned packets. Writes nothing when no plan
++    /// applies.
++    pub(super) fn populate_initial_hello(
++        &mut self,
++        buf: &mut Vec<u8>,
++        max_size: usize,
++        pad_target: usize,
++        sent: &mut SentFrames,
++    ) -> bool {
++        let layout = self.config.initial_crypto_layout;
++        if layout == InitialCryptoLayout::Contiguous || !self.side.is_client() {
++            return false;
++        }
++        let limit = pad_target.min(max_size);
++        if self.hello_plan.is_empty() {
++            self.plan_initial_hello(layout, limit.saturating_sub(buf.len()));
++        }
++        let Some(offsets) = self.hello_plan.pop_front() else {
++            return false;
++        };
++        let pending = &mut self.spaces[SpaceId::Initial].pending.crypto;
++        let matches = pending.len() >= offsets.len()
++            && pending.iter().zip(&offsets).all(|(f, &o)| f.offset == o);
++        let frames: Vec<frame::Crypto> = if matches {
++            pending.drain(..offsets.len()).collect()
++        } else {
++            Vec::new()
++        };
++        let size: usize = frames
++            .iter()
++            .map(|f| crypto_frame_len(&(f.offset as usize..f.offset as usize + f.data.len())))
++            .sum();
++        if !matches || buf.len() + size > limit {
++            for frame in frames.into_iter().rev() {
++                pending.push_front(frame);
++            }
++            self.hello_plan.clear();
++            return false;
++        }
++
++        let ranges = |f: &frame::Crypto| f.offset as usize..f.offset as usize + f.data.len();
++        let pieces = match layout {
++            InitialCryptoLayout::Chaos => {
++                // Ranges stay absolute; `slice` below maps them back into their frame.
++                scatter(
++                    frames.iter().map(ranges).collect(),
++                    limit - buf.len() - size,
++                    &mut self.rng,
++                )
++            },
++            _ => frames.iter().map(|f| Piece::Crypto(ranges(f))).collect(),
++        };
++        let slice = |range: &Range<usize>| -> frame::Crypto {
++            let f = frames
++                .iter()
++                .find(|f| ranges(f).start <= range.start && range.end <= ranges(f).end)
++                .expect("a scattered range stays inside its frame");
++            let at = range.start - f.offset as usize;
++            frame::Crypto {
++                offset: range.start as u64,
++                data: f.data.slice(at..at + range.len()),
++            }
++        };
++        for piece in pieces {
++            match piece {
++                Piece::Crypto(range) => {
++                    let frame = slice(&range);
++                    trace!("CRYPTO: off {} len {} (laid out)", frame.offset, frame.data.len());
++                    frame.encode(buf);
++                    self.stats.frame_tx.crypto += 1;
++                    sent.retransmits.get_or_create().crypto.push_back(frame);
++                },
++                Piece::Ping => {
++                    buf.write(FrameType::PING);
++                    sent.non_retransmits = true;
++                    self.stats.frame_tx.ping += 1;
++                },
++                Piece::Padding(n) => buf.put_bytes(0, n),
++            }
++        }
++        debug_assert!(buf.len() <= limit);
++        // Pad the packet out to its target, as the browsers do, so no further packet is
++        // coalesced into the rest of the datagram.
++        buf.resize(limit, 0);
++        true
++    }
++
++    /// Replaces a complete pending hello with the frames of a fresh plan.
++    fn plan_initial_hello(&mut self, layout: InitialCryptoLayout, room: usize) {
++        let pending = &mut self.spaces[SpaceId::Initial].pending.crypto;
++        if pending.is_empty() {
++            return;
++        }
++        let mut sorted: Vec<&frame::Crypto> = pending.iter().collect();
++        sorted.sort_by_key(|f| f.offset);
++        let mut next = 0;
++        for f in &sorted {
++            if f.offset != next {
++                return;
++            }
++            next += f.data.len() as u64;
++        }
++        let hello: Bytes = if sorted.len() == 1 {
++            sorted[0].data.clone()
++        } else {
++            let mut all = BytesMut::with_capacity(next as usize);
++            for f in &sorted {
++                all.extend_from_slice(&f.data);
++            }
++            all.freeze()
++        };
++        if !is_client_hello(&hello) {
++            return;
++        }
++        let Some(packets) = plan(layout, hello.len(), sni_range(&hello), room, &mut self.rng)
++        else {
++            return;
++        };
++        pending.clear();
++        for packet in packets {
++            self.hello_plan
++                .push_back(packet.iter().map(|r| r.start as u64).collect());
++            for r in packet {
++                pending.push_back(frame::Crypto {
++                    offset: r.start as u64,
++                    data: hello.slice(r),
++                });
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++#[path = "tests/initial_crypto.rs"]
++mod tests;
 diff --git a/src/connection/mod.rs b/src/connection/mod.rs
-index 3cd1a2e..3878a4a 100644
+index 3cd1a2e..31bdccf 100644
 --- a/src/connection/mod.rs
 +++ b/src/connection/mod.rs
-@@ -271,6 +271,7 @@ impl Connection {
+@@ -48,6 +48,8 @@ use cid_state::CidState;
+ 
+ mod datagrams;
+ use datagrams::DatagramState;
++
++mod initial_crypto;
+ pub use datagrams::{Datagrams, SendDatagramError};
+ 
+ mod mtud;
+@@ -134,6 +136,9 @@ pub struct Connection {
+     endpoint_config: Arc<EndpointConfig>,
+     config: Arc<TransportConfig>,
+     rng: StdRng,
++    /// Offsets of the CRYPTO frames each planned client Initial starts with, in packet
++    /// order (see `initial_crypto`). Empty when the hello is sent upstream-style.
++    hello_plan: VecDeque<Vec<u64>>,
+     crypto: Box<dyn crypto::Session>,
+     /// The CID we initially chose, for use during the handshake
+     handshake_cid: ConnectionId,
+@@ -271,6 +276,7 @@ impl Connection {
              client_hello: None,
          });
          let mut rng = StdRng::from_seed(rng_seed);
@@ -658,7 +1046,7 @@ index 3cd1a2e..3878a4a 100644
          let mut this = Self {
              endpoint_config,
              crypto,
-@@ -331,9 +332,13 @@ impl Connection {
+@@ -331,9 +337,13 @@ impl Connection {
              path_responses: PathResponses::default(),
              close: false,
  
@@ -675,7 +1063,7 @@ index 3cd1a2e..3878a4a 100644
  
              pto_count: 0,
  
-@@ -348,10 +353,11 @@ impl Connection {
+@@ -348,11 +358,13 @@ impl Connection {
                  config.send_window,
                  config.receive_window,
                  config.stream_receive_window,
@@ -686,9 +1074,32 @@ index 3cd1a2e..3878a4a 100644
 -            rem_cids: CidQueue::new(rem_cid),
 +            rem_cids: CidQueue::new(rem_cid, rem_cid_limit),
              rng,
++            hello_plan: VecDeque::new(),
              stats: ConnectionStats::default(),
              version,
-@@ -1265,6 +1271,7 @@ impl Connection {
+         };
+@@ -877,8 +889,18 @@ impl Connection {
+                 }
+             }
+ 
+-            let sent =
+-                self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
++            // Where a client Initial's frames must end once the datagram is padded to
++            // MIN_INITIAL_SIZE (the browser-like hello layout fills up to it).
++            let initial_pad_target =
++                builder.datagram_start + MIN_INITIAL_SIZE as usize - builder.tag_len;
++            let sent = self.populate_packet(
++                now,
++                space_id,
++                buf,
++                builder.max_size,
++                builder.exact_number,
++                initial_pad_target,
++            );
+ 
+             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
+             // any other reason, there is a bug which leads to one component announcing write
+@@ -1265,6 +1287,7 @@ impl Connection {
          stats.path.rtt = self.path.rtt.get();
          stats.path.cwnd = self.path.congestion.window();
          stats.path.current_mtu = self.path.mtud.current_mtu();
@@ -696,6 +1107,28 @@ index 3cd1a2e..3878a4a 100644
  
          stats
      }
+@@ -3140,6 +3163,7 @@ impl Connection {
+         buf: &mut Vec<u8>,
+         max_size: usize,
+         pn: u64,
++        initial_pad_target: usize,
+     ) -> SentFrames {
+         let mut sent = SentFrames::default();
+         let space = &mut self.spaces[space_id];
+@@ -3240,8 +3264,12 @@ impl Connection {
+             }
+         }
+ 
++        // CRYPTO laid out like a browser's hello (client Initial only), then the rest
++        let hello_laid_out = space_id == SpaceId::Initial
++            && self.populate_initial_hello(buf, max_size, initial_pad_target, &mut sent);
++        let space = &mut self.spaces[space_id];
+         // CRYPTO
+-        while buf.len() + frame::Crypto::SIZE_BOUND < max_size && !is_0rtt {
++        while buf.len() + frame::Crypto::SIZE_BOUND < max_size && !is_0rtt && !hello_laid_out {
+             let mut frame = match space.pending.crypto.pop_front() {
+                 Some(x) => x,
+                 None => break,
 diff --git a/src/connection/mtud.rs b/src/connection/mtud.rs
 index b690731..73d04c5 100644
 --- a/src/connection/mtud.rs
@@ -1275,8 +1708,211 @@ index 619ff34..14ab3eb 100644
          );
          let id = StreamId::new(Side::Server, Dir::Uni, 0);
          let initial_max = client.local_max_data;
+diff --git a/src/connection/tests/initial_crypto.rs b/src/connection/tests/initial_crypto.rs
+new file mode 100644
+index 0000000..c6ffe76
+--- /dev/null
++++ b/src/connection/tests/initial_crypto.rs
+@@ -0,0 +1,197 @@
++use std::ops::Range;
++
++use rand::{SeedableRng, rngs::StdRng};
++
++use super::*;
++
++/// A ClientHello with an empty session id, three cipher suites, one compression method
++/// and `extensions` (type, body), in this order.
++fn hello(extensions: &[(u16, Vec<u8>)]) -> Vec<u8> {
++    let mut body = vec![3, 3];
++    body.extend([7u8; 32]);
++    body.push(0);
++    body.extend([0, 6, 0x13, 1, 0x13, 2, 0x13, 3]);
++    body.extend([1, 0]);
++    let mut ext = Vec::new();
++    for (ty, data) in extensions {
++        ext.extend(ty.to_be_bytes());
++        ext.extend((data.len() as u16).to_be_bytes());
++        ext.extend(data);
++    }
++    body.extend((ext.len() as u16).to_be_bytes());
++    body.extend(ext);
++    let mut out = vec![1];
++    out.extend(&(body.len() as u32).to_be_bytes()[1..]);
++    out.extend(body);
++    out
++}
++
++fn sni(host: &[u8]) -> (u16, Vec<u8>) {
++    let mut body = ((host.len() + 3) as u16).to_be_bytes().to_vec();
++    body.push(0);
++    body.extend((host.len() as u16).to_be_bytes());
++    body.extend(host);
++    (0, body)
++}
++
++/// Every byte of `0..len` is covered exactly once.
++fn assert_partition(packets: &[Vec<Range<usize>>], len: usize) {
++    let mut all: Vec<Range<usize>> = packets.iter().flatten().cloned().collect();
++    all.sort_by_key(|r| r.start);
++    let mut next = 0;
++    for r in all {
++        assert_eq!(r.start, next, "gap or overlap at {next}");
++        assert!(!r.is_empty());
++        next = r.end;
++    }
++    assert_eq!(next, len);
++}
++
++fn rng(seed: u64) -> StdRng {
++    StdRng::seed_from_u64(seed)
++}
++
++#[test]
++fn finds_the_sni_host_name() {
++    let h = hello(&[(45, vec![1, 1]), sni(b"localtest.me"), (43, vec![2, 3, 4])]);
++    let r = sni_range(&h).unwrap();
++    assert_eq!(&h[r], b"localtest.me");
++    assert!(is_client_hello(&h));
++}
++
++#[test]
++fn no_sni_and_truncated_hellos_are_not_parsed() {
++    let h = hello(&[(45, vec![1, 1])]);
++    assert_eq!(sni_range(&h), None);
++    let full = hello(&[sni(b"example.com")]);
++    assert_eq!(sni_range(&full[..full.len() - 3]), None);
++    assert!(!is_client_hello(&full[..full.len() - 3]));
++    assert!(!is_client_hello(&[2, 0, 0, 0]));
++}
++
++// Firefox, measured: 1894-byte hello, SNI host at 124..136, first Initial carries
++// [1077, 1894) then [0, 130), the second [130, 1077).
++#[test]
++fn sni_slice_matches_the_firefox_capture() {
++    let packets =
++        plan(InitialCryptoLayout::SniSlice, 1894, Some(124..136), 1150, &mut rng(1)).unwrap();
++    assert_eq!(packets, vec![vec![1077..1894, 0..130], vec![130..1077]]);
++}
++
++// SNI past the middle (Firefox shuffles its extensions): all of the part after the
++// cut, then the end of the head; the next packet starts at offset 0.
++#[test]
++fn sni_slice_with_a_late_sni_sends_the_end_of_the_head() {
++    let packets =
++        plan(InitialCryptoLayout::SniSlice, 1894, Some(1300..1312), 1150, &mut rng(1)).unwrap();
++    assert_eq!(packets, vec![vec![1306..1894, 947..1306], vec![0..947]]);
++}
++
++#[test]
++fn sni_slice_without_an_sni_does_not_apply() {
++    assert_eq!(plan(InitialCryptoLayout::SniSlice, 1894, None, 1150, &mut rng(1)), None);
++}
++
++#[test]
++fn contiguous_never_plans() {
++    assert_eq!(
++        plan(InitialCryptoLayout::Contiguous, 1894, Some(124..136), 1150, &mut rng(1)),
++        None
++    );
++}
++
++#[test]
++fn chaos_splits_evenly_with_a_head_and_tail_in_the_first_packet() {
++    for seed in 0..200 {
++        let len = 1500 + (seed as usize * 7) % 600;
++        let packets = plan(InitialCryptoLayout::Chaos, len, None, 1150, &mut rng(seed)).unwrap();
++        assert_partition(&packets, len);
++        assert_eq!(packets.len(), 2, "len {len}");
++        let first: usize = packets[0].iter().map(|r| r.len()).sum();
++        let second: usize = packets[1].iter().map(|r| r.len()).sum();
++        assert!(first.abs_diff(second) <= 1, "{first} vs {second}");
++        let head = &packets[0][1];
++        assert_eq!(head.start, 0);
++        assert!(CHAOS_HEAD.contains(&head.end));
++        assert_eq!(packets[0][0].end, len);
++    }
++}
++
++#[test]
++fn a_hello_that_fits_one_packet_is_still_sliced() {
++    let packets =
++        plan(InitialCryptoLayout::SniSlice, 600, Some(60..72), 1150, &mut rng(1)).unwrap();
++    assert_eq!(packets, vec![vec![66..600, 0..66]]);
++}
++
++#[test]
++fn a_long_hello_spreads_its_middle_over_more_packets() {
++    let packets =
++        plan(InitialCryptoLayout::SniSlice, 3000, Some(124..136), 1150, &mut rng(1)).unwrap();
++    assert_eq!(packets.len(), 3);
++    assert_partition(&packets, 3000);
++    for p in &packets {
++        assert!(p.iter().map(|r| crypto_frame_len(r)).sum::<usize>() <= 1150);
++    }
++}
++
++#[test]
++fn no_room_means_no_plan() {
++    assert_eq!(plan(InitialCryptoLayout::Chaos, 1900, None, 200, &mut rng(1)), None);
++}
++
++#[test]
++fn scatter_keeps_every_byte_and_stays_within_the_spare_room() {
++    for seed in 0..500 {
++        let ranges = vec![1000..1950, 0..60];
++        let base: usize = ranges.iter().map(crypto_frame_len).sum();
++        let spare = (seed as usize * 13) % 300;
++        let pieces = scatter(ranges, spare, &mut rng(seed));
++        let mut crypto = Vec::new();
++        let mut size = 0;
++        for p in &pieces {
++            match p {
++                Piece::Crypto(r) => {
++                    size += crypto_frame_len(r);
++                    crypto.push(r.clone());
++                },
++                Piece::Ping => size += 1,
++                Piece::Padding(n) => {
++                    assert!(*n > 0);
++                    size += n;
++                },
++            }
++        }
++        assert!(size <= base + spare, "seed {seed}: {size} > {base} + {spare}");
++        crypto.sort_by_key(|r| r.start);
++        let joined: Vec<usize> = crypto.iter().flat_map(|r| r.clone()).collect();
++        let expected: Vec<usize> = (0..60).chain(1000..1950).collect();
++        assert_eq!(joined, expected, "seed {seed}");
++        let frames = crypto.len();
++        assert!((2..=2 + CHAOS_MAX_ADDED_CRYPTO).contains(&frames));
++    }
++}
++
++#[test]
++fn scatter_varies_frames_pings_and_order_like_chrome() {
++    let (mut max_frames, mut max_pings, mut reordered, mut padded_inside) = (0, 0, false, false);
++    for seed in 0..200 {
++        let pieces = scatter(vec![1000..1950, 0..60], 200, &mut rng(seed));
++        let frames: Vec<&Range<usize>> = pieces
++            .iter()
++            .filter_map(|p| match p {
++                Piece::Crypto(r) => Some(r),
++                _ => None,
++            })
++            .collect();
++        max_frames = max_frames.max(frames.len());
++        max_pings = max_pings.max(pieces.iter().filter(|p| **p == Piece::Ping).count());
++        reordered |= frames
++            .windows(2)
++            .any(|w| w[0].start > w[1].start && w[0].start != 1000);
++        padded_inside |= pieces[1..].iter().any(|p| matches!(p, Piece::Padding(_)));
++    }
++    assert!(max_frames >= 8, "max CRYPTO frames {max_frames}");
++    assert!(max_pings >= 8, "max PINGs {max_pings}");
++    assert!(reordered && padded_inside);
++}
 diff --git a/src/lib.rs b/src/lib.rs
-index 5982b69..2fbaccd 100644
+index 5982b69..fc50925 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
 @@ -60,7 +60,8 @@ mod config;
@@ -1284,11 +1920,116 @@ index 5982b69..2fbaccd 100644
  pub use config::{
      AckFrequencyConfig, ClientConfig, ConfigError, EndpointConfig, IdleTimeout, MtuDiscoveryConfig,
 -    ServerConfig, StdSystemTime, TimeSource, TransportConfig, ValidationTokenConfig,
-+    ServerConfig, StdSystemTime, StreamReceiveWindows, TimeSource, TransportConfig,
-+    TransportParameterOrder, ValidationTokenConfig, VersionInformation, VersionSlot,
++    InitialCryptoLayout, ServerConfig, StdSystemTime, StreamReceiveWindows, TimeSource,
++    TransportConfig, TransportParameterOrder, ValidationTokenConfig, VersionInformation, VersionSlot,
  };
  
  pub mod crypto;
+diff --git a/src/tests/initial_crypto.rs b/src/tests/initial_crypto.rs
+new file mode 100644
+index 0000000..619a551
+--- /dev/null
++++ b/src/tests/initial_crypto.rs
+@@ -0,0 +1,86 @@
++//! Browser-like ClientHello layouts (outline-proxy patch): the handshake completes,
++//! with and without a Retry, client Initials stay at 1200 bytes, and the Chaos layout
++//! scatters the hello over extra CRYPTO frames and PINGs.
++
++use std::sync::Arc;
++
++use super::util::*;
++use crate::{ClientConfig, ConnectionStats, InitialCryptoLayout, TransportConfig};
++
++const LAYOUTS: [InitialCryptoLayout; 3] =
++    [InitialCryptoLayout::Contiguous, InitialCryptoLayout::Chaos, InitialCryptoLayout::SniSlice];
++
++fn config(layout: InitialCryptoLayout) -> ClientConfig {
++    let mut cfg = client_config();
++    let mut transport = TransportConfig::default();
++    transport.initial_crypto_layout(layout);
++    cfg.transport = Arc::new(transport);
++    cfg
++}
++
++/// Datagram sizes of the client's first flight and the client's stats after it.
++fn first_flight(layout: InitialCryptoLayout) -> (Vec<usize>, ConnectionStats) {
++    let mut pair = Pair::default();
++    let ch = pair.begin_connect(config(layout));
++    pair.client.drive(pair.time, pair.server.addr);
++    let sizes = pair
++        .client
++        .outbound
++        .iter()
++        .flat_map(|(t, b)| match t.segment_size {
++            Some(s) => b.chunks(s).map(<[u8]>::len).collect::<Vec<_>>(),
++            None => vec![t.size],
++        })
++        .collect();
++    (sizes, pair.client_conn_mut(ch).stats())
++}
++
++#[test]
++fn every_layout_completes_the_handshake() {
++    let _guard = subscribe();
++    for layout in LAYOUTS {
++        let mut pair = Pair::default();
++        pair.connect_with(config(layout));
++    }
++}
++
++#[test]
++fn every_layout_completes_the_handshake_after_a_retry() {
++    let _guard = subscribe();
++    for layout in LAYOUTS {
++        let mut pair = Pair::default();
++        pair.server.handle_incoming = Box::new(validate_incoming);
++        pair.connect_with(config(layout));
++    }
++}
++
++#[test]
++fn client_initials_keep_their_size() {
++    let _guard = subscribe();
++    for layout in LAYOUTS {
++        let (sizes, stats) = first_flight(layout);
++        // The test hello fits one Initial (no ML-KEM share); two-packet plans are
++        // covered by the planner's own tests.
++        assert_eq!(sizes, vec![1200], "{layout:?}");
++        let frames = stats.frame_tx.crypto;
++        match layout {
++            InitialCryptoLayout::Contiguous => assert_eq!(frames, 1),
++            // The part after the SNI middle, then the head.
++            InitialCryptoLayout::SniSlice => assert_eq!(frames, 2),
++            InitialCryptoLayout::Chaos => assert!(frames >= 2, "{frames}"),
++        }
++    }
++}
++
++#[test]
++fn chaos_adds_crypto_frames_and_pings() {
++    let _guard = subscribe();
++    let (mut most_frames, mut most_pings) = (0, 0);
++    for _ in 0..50 {
++        let (_, stats) = first_flight(InitialCryptoLayout::Chaos);
++        most_frames = most_frames.max(stats.frame_tx.crypto);
++        most_pings = most_pings.max(stats.frame_tx.ping);
++    }
++    assert!(most_frames >= 8, "{most_frames}");
++    assert!(most_pings >= 8, "{most_pings}");
++}
+diff --git a/src/tests/mod.rs b/src/tests/mod.rs
+index b8712c4..05eb3b0 100644
+--- a/src/tests/mod.rs
++++ b/src/tests/mod.rs
+@@ -36,6 +36,8 @@ mod util;
+ use util::*;
+ 
+ mod token;
++// outline-proxy patch: browser-like ClientHello layouts
++mod initial_crypto;
+ 
+ #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+ use wasm_bindgen_test::wasm_bindgen_test as test;
 diff --git a/src/transport_parameters.rs b/src/transport_parameters.rs
 index 67e48bd..677b1f7 100644
 --- a/src/transport_parameters.rs

@@ -42,6 +42,7 @@ pub struct TransportConfig {
     pub(crate) version_information: Option<VersionInformation>,
     pub(crate) extra_transport_parameters: Vec<(VarInt, Vec<u8>)>,
     pub(crate) transport_parameter_order: TransportParameterOrder,
+    pub(crate) initial_crypto_layout: InitialCryptoLayout,
     pub(crate) advertised_active_connection_id_limit: Option<VarInt>,
     pub(crate) max_ack_delay: VarInt,
     pub(crate) receive_window: VarInt,
@@ -263,6 +264,13 @@ impl TransportConfig {
     pub fn max_ack_delay_ms(&mut self, value: u32) -> &mut Self {
         assert!(value < 1 << 14, "max_ack_delay must be below 2^14 ms");
         self.max_ack_delay = VarInt::from_u32(value);
+        self
+    }
+
+    /// How a client lays its ClientHello out in CRYPTO frames across its Initial packets.
+    /// Defaults to [`InitialCryptoLayout::Contiguous`]; ignored by servers.
+    pub fn initial_crypto_layout(&mut self, value: InitialCryptoLayout) -> &mut Self {
+        self.initial_crypto_layout = value;
         self
     }
 
@@ -566,6 +574,29 @@ pub enum TransportParameterOrder {
     Rotated(Vec<VarInt>),
 }
 
+/// How a client lays its ClientHello out in CRYPTO frames across its Initial packets.
+///
+/// Every layout other than `Contiguous` splits the hello evenly over the Initials it
+/// needs, with the first one carrying the hello's head and tail and the rest its middle,
+/// as both Chrome and Firefox do. A layout applies only to a complete hello sent from
+/// offset 0 that fits the planned packets; anything else (a lost frame resent alone, a
+/// packet with less room than planned) falls back to `Contiguous`. Initials keep their
+/// 1200-byte size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InitialCryptoLayout {
+    /// Upstream: one CRYPTO frame per packet, each packet filled before the next.
+    #[default]
+    Contiguous,
+    /// Chrome's "chaos protection" (QUICHE): the head cut is random, and inside each
+    /// packet the frames are split further, PINGs are added, PADDING is spread between
+    /// them and their order is shuffled.
+    Chaos,
+    /// Firefox's SNI slicing (neqo): the head ends in the middle of the SNI host name and
+    /// the first packet carries the tail frame before the head frame. Without an SNI
+    /// the hello is sent `Contiguous`.
+    SniSlice,
+}
+
 /// One entry of `version_information`'s `other_versions`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VersionSlot {
@@ -619,6 +650,7 @@ impl Default for TransportConfig {
             version_information: None,
             extra_transport_parameters: Vec::new(),
             transport_parameter_order: TransportParameterOrder::Shuffled,
+            initial_crypto_layout: InitialCryptoLayout::Contiguous,
             advertised_active_connection_id_limit: None,
             max_ack_delay: VarInt(25),
             receive_window: VarInt::MAX,
@@ -669,6 +701,7 @@ impl fmt::Debug for TransportConfig {
             version_information,
             extra_transport_parameters,
             transport_parameter_order,
+            initial_crypto_layout,
             advertised_active_connection_id_limit,
             max_ack_delay,
             receive_window,
@@ -710,6 +743,7 @@ impl fmt::Debug for TransportConfig {
             .field("version_information", version_information)
             .field("extra_transport_parameters", extra_transport_parameters)
             .field("transport_parameter_order", transport_parameter_order)
+            .field("initial_crypto_layout", initial_crypto_layout)
             .field(
                 "advertised_active_connection_id_limit",
                 advertised_active_connection_id_limit,

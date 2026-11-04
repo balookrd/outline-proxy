@@ -30,7 +30,7 @@ mod transport;
 pub use transport::QlogConfig;
 pub use transport::{
     AckFrequencyConfig, IdleTimeout, MtuDiscoveryConfig, StreamReceiveWindows, TransportConfig,
-    TransportParameterOrder, VersionInformation, VersionSlot,
+    InitialCryptoLayout, TransportParameterOrder, VersionInformation, VersionSlot,
 };
 
 /// Global configuration for the endpoint, affecting all connections
