@@ -40,9 +40,12 @@ modules (client h3, server h3, client QUIC, client rustls, client hyper):
 - [`bins/outline-ss-rust/src/server/h3/vendored.rs`](bins/outline-ss-rust/src/server/h3/vendored.rs) — server
   (the `h3::ext::Protocol` request extension, `Stream::from_h3_server` +
   `WebSocketStream::from_raw`, the restored `WebSocketServer::into_parts`,
-  plus re-exports of the sockudo-ws types the server uses).
+  plus re-exports of the sockudo-ws types the server uses, and the patched
+  `quinn-proto` `MtuDiscoveryConfig::first_probe` for `[server.h3].mtu_first_probe`).
 - [`crates/outline-transport/src/quic/vendored.rs`](crates/outline-transport/src/quic/vendored.rs) — client, patched
-  `quinn-proto` (`TransportConfig::initial_stream_receive_window`).
+  `quinn-proto` (`TransportConfig::initial_stream_receive_window`, the browser-shaped
+  transport-parameter options, `MtuDiscoveryConfig::first_probe` and
+  `PathStats::plpmtud_settled`).
 - [`crates/outline-transport/src/tls_vendored.rs`](crates/outline-transport/src/tls_vendored.rs) — client, patched
   `rustls` (`ClientConfig::client_hello_shape` with `ClientHelloShape` /
   `ExtensionOrder`, `kx_group::SECP521R1`, and `apply_tls_hello_profile`, which
@@ -56,8 +59,9 @@ modules (client h3, server h3, client QUIC, client rustls, client hyper):
 When rebasing the vendored crates onto a new upstream, start (and ideally
 end) at these gate files. CI enforces that `sockudo_ws` is referenced only
 from the gate modules, and that the patched quinn-proto API
-(`initial_stream_receive_window`) appears only in
-`crates/outline-transport/src/quic/vendored.rs`, and that the patched rustls API
+(`initial_stream_receive_window`, `.first_probe(`, `plpmtud_settled`, ...) appears only in
+`crates/outline-transport/src/quic/vendored.rs` (and `.first_probe(` also in the
+server gate `bins/outline-ss-rust/src/server/h3/vendored.rs`), and that the patched rustls API
 (`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
 `kx_group::SECP521R1`) appears only in
 `crates/outline-transport/src/tls_vendored.rs` (the step "invariant — patched rustls
@@ -233,7 +237,19 @@ Baseline — crates.io `quinn-proto 0.11.15`. Logical changes carried by
    `CONNECTION_ID_LIMIT_ERROR`) and `max_ack_delay_ms` (advertised and also the
    local ACK timer). All defaults are upstream's, the rng is consumed in the
    default mode exactly as upstream, and the server does not use the options.
-4. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
+4. **mtud-first-probe** (`src/config/transport.rs`, `src/connection/mtud.rs`,
+   `src/connection/stats.rs`, `src/connection/mod.rs`) — new
+   `MtuDiscoveryConfig::first_probe(Option<u16>)`: the first search probes that size first;
+   if it is acknowledged the search ends and the size caps later searches; if it is rejected
+   (all retransmits lost) the regular binary search runs below it and `first_probe - 1` caps
+   later searches. Only the first probe's outcome sets the ceiling, losses of other probes
+   never do, and a black hole before it resolves leaves no ceiling. On a path reset or
+   migration the first probe is re-armed and the ceiling cleared (it is per path).
+   `PathStats::plpmtud_settled` reports that no search is running, including after a black
+   hole, so it does not mean the search succeeded. `None` (the default)
+   keeps upstream behaviour. The H3 client takes the size from its path MTU cache; the
+   server only with `[server.h3].mtu_first_probe`.
+5. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
    `rcgen` with default `ring` would violate the aws-lc-rs invariant).
 
 Conformance check: apply the patch to a clean copy of crates.io 0.11.15 and

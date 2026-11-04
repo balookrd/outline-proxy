@@ -972,6 +972,7 @@ pub struct MtuDiscoveryConfig {
     pub(crate) interval: Duration,
     pub(crate) upper_bound: u16,
     pub(crate) minimum_change: u16,
+    pub(crate) first_probe: Option<u16>,
     pub(crate) black_hole_cooldown: Duration,
 }
 
@@ -1014,6 +1015,23 @@ impl MtuDiscoveryConfig {
         self.minimum_change = value;
         self
     }
+
+    /// Size of the first probe of the first search (outline-proxy patch).
+    ///
+    /// When set, the first search probes this size before anything else. The outcome of that
+    /// probe alone sets a ceiling for the connection: if it is acknowledged the search ends
+    /// there and the ceiling is that size; if it is lost (all retransmits) the regular binary
+    /// search runs below it and the ceiling is one less than it. Losses of any other probe never
+    /// change the ceiling. Later searches (interval re-search, after a black hole) run as in
+    /// upstream, with the upper bound limited to the ceiling. A black hole before the first probe
+    /// resolves leaves no ceiling. On a path reset or migration the first probe is re-armed and
+    /// the ceiling is cleared, as the ceiling is per path. Values at or below the current MTU
+    /// are ignored; values above the upper bound are clamped to it. `None` (the default) keeps
+    /// upstream behaviour.
+    pub fn first_probe(&mut self, value: Option<u16>) -> &mut Self {
+        self.first_probe = value.map(|v| v.min(MAX_UDP_PAYLOAD));
+        self
+    }
 }
 
 impl Default for MtuDiscoveryConfig {
@@ -1023,6 +1041,7 @@ impl Default for MtuDiscoveryConfig {
             upper_bound: 1452,
             black_hole_cooldown: Duration::from_secs(60),
             minimum_change: 20,
+            first_probe: None,
         }
     }
 }
