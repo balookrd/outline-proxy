@@ -1041,6 +1041,75 @@ async fn write_uplink_chunk<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
+/// How often [`linger_until_delivered`] re-reads the upstream's send queue.
+#[cfg(target_os = "linux")]
+const LINGER_POLL: Duration = Duration::from_millis(10);
+
+/// Keeps a half-closed upstream open until the kernel has delivered the request
+/// body the uplink already wrote into it.
+///
+/// Dropping the socket right after `shutdown()` is not enough on Linux: a
+/// `close()` with unread bytes in the receive queue (a `ClientDone` relay stops
+/// reading the downlink while the target is still sending) makes the kernel
+/// answer with an RST and throw away whatever of its send queue is still unsent.
+/// The target then sees `ECONNRESET` with the tail of the request body missing.
+/// So the upstream is drained into the void until its send queue is empty, the
+/// target closes, or the queue stops shrinking for a whole `budget` (the same
+/// renewable bound the uplink writes use: a target that keeps taking bytes
+/// keeps renewing it). After that, an RST on drop only discards downlink bytes
+/// nobody wants.
+///
+/// Elsewhere this is a no-op: BSD-derived stacks (macOS) close such a socket
+/// gracefully, and the send queue depth is read with a Linux-only ioctl.
+async fn linger_until_delivered(
+    writer: &tokio::net::tcp::OwnedWriteHalf,
+    reader: &mut tokio::net::tcp::OwnedReadHalf,
+    budget: Duration,
+) {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(mut pending) = unsent_bytes(writer) else { return };
+        let mut sink = vec![0u8; MESH_HOME_SPLICE_CHUNK];
+        let mut progress_at = tokio::time::Instant::now();
+        while pending > 0 {
+            tokio::select! {
+                read = reader.read(&mut sink) => match read {
+                    // The target closed or reset: nothing will draw RST from
+                    // it now, or there is nobody left to deliver to.
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {},
+                },
+                () = tokio::time::sleep(LINGER_POLL) => {},
+            }
+            let Some(now) = unsent_bytes(writer) else { return };
+            if now < pending {
+                progress_at = tokio::time::Instant::now();
+            } else if progress_at.elapsed() >= budget {
+                debug!(unsent = now, "giving up on delivering a relayed request-body tail");
+                return;
+            }
+            pending = now;
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (writer, reader, budget);
+}
+
+/// Bytes in the socket's send queue the peer has not acknowledged yet, or
+/// `None` when the kernel will not say.
+#[cfg(target_os = "linux")]
+fn unsent_bytes(writer: &tokio::net::tcp::OwnedWriteHalf) -> Option<usize> {
+    use std::os::fd::AsRawFd;
+
+    let fd = writer.as_ref().as_raw_fd();
+    let mut queued: libc::c_int = 0;
+    // SAFETY: `fd` is borrowed from `writer`, which keeps the socket open for
+    // the whole call. `TIOCOUTQ` (`SIOCOUTQ` on a TCP socket) writes exactly
+    // one `c_int` through the pointer, and `queued` is a live, aligned `c_int`.
+    let rc = unsafe { libc::ioctl(fd, libc::TIOCOUTQ, &mut queued) };
+    (rc == 0).then(|| usize::try_from(queued).unwrap_or(0))
+}
+
 /// Everything the end-of-splice decisions need once both pumps are back in the
 /// caller's hands.
 struct SpliceOutcome {
@@ -1549,6 +1618,7 @@ async fn splice_plaintext_tcp(
             "closing a relayed tcp upstream instead of re-parking it",
         );
         let _ = upstream_writer.shutdown().await;
+        linger_until_delivered(&upstream_writer, &mut upstream_reader, budget).await;
     }
 
     match error {
