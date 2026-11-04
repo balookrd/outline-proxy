@@ -155,6 +155,10 @@ pub struct PathStats {
     pub black_holes_detected: u64,
     /// Largest UDP payload size the path currently supports
     pub current_mtu: u16,
+    /// Whether path MTU discovery is idle: disabled, or the last search completed, including
+    /// `Complete` reached via a black hole; not a success signal
+    /// (outline-proxy patch)
+    pub plpmtud_settled: bool,
 }
 
 /// Connection statistics

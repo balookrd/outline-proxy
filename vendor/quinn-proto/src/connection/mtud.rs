@@ -70,6 +70,15 @@ impl MtuDiscovery {
         self.current_mtu
     }
 
+    /// Whether no search is running: discovery is disabled or the last search completed.
+    /// This includes `Complete` reached via a black hole, so it does not mean the search succeeded.
+    pub(crate) fn settled(&self) -> bool {
+        match &self.state {
+            None => true,
+            Some(state) => matches!(state.phase, Phase::Complete(_)),
+        }
+    }
+
     /// Returns the amount of bytes that should be sent as an MTU probe, if any
     pub(crate) fn poll_transmit(&mut self, now: Instant, next_pn: u64) -> Option<u16> {
         self.state
@@ -168,6 +177,11 @@ struct EnabledMtuDiscovery {
     phase: Phase,
     peer_max_udp_payload_size: u16,
     config: MtuDiscoveryConfig,
+    /// First probe for the first search; taken when that search starts.
+    pending_first_probe: Option<u16>,
+    /// Cap on later searches, set only by the outcome of the first probe: its size if it was
+    /// acknowledged, one below it if it was rejected. `None` until then (and after a reset).
+    ceiling: Option<u16>,
 }
 
 impl EnabledMtuDiscovery {
@@ -175,6 +189,8 @@ impl EnabledMtuDiscovery {
         Self {
             phase: Phase::Initial,
             peer_max_udp_payload_size: MAX_UDP_PAYLOAD,
+            pending_first_probe: config.first_probe,
+            ceiling: None,
             config,
         }
     }
@@ -187,6 +203,8 @@ impl EnabledMtuDiscovery {
                 current_mtu,
                 self.peer_max_udp_payload_size,
                 &self.config,
+                self.ceiling,
+                self.pending_first_probe.take(),
             ));
         } else if let Phase::Complete(next_mtud_activation) = &self.phase {
             if now < *next_mtud_activation {
@@ -198,6 +216,8 @@ impl EnabledMtuDiscovery {
                 current_mtu,
                 self.peer_max_udp_payload_size,
                 &self.config,
+                self.ceiling,
+                self.pending_first_probe.take(),
             ));
         }
 
@@ -243,6 +263,10 @@ impl EnabledMtuDiscovery {
             Phase::Searching(state) if state.in_flight_probe == Some(pn) => {
                 state.in_flight_probe = None;
                 state.lost_probe_count = 0;
+                // Only the outcome of the first probe sets the ceiling; later losses never do
+                if state.probing_first {
+                    self.ceiling = Some(state.last_probed_mtu);
+                }
                 Some(state.last_probed_mtu)
             }
             _ => None,
@@ -255,6 +279,10 @@ impl EnabledMtuDiscovery {
         if let Phase::Searching(state) = &mut self.phase {
             state.in_flight_probe = None;
             state.lost_probe_count += 1;
+            if state.probing_first && state.lost_probe_count >= MAX_PROBE_RETRANSMITS {
+                // The first probe was rejected after all retransmits
+                self.ceiling = Some(state.last_probed_mtu - 1);
+            }
         }
     }
 
@@ -290,6 +318,10 @@ struct SearchState {
     in_flight_probe: Option<u64>,
     /// Lost probes at the current probe size
     lost_probe_count: usize,
+    /// First probe still to send in this search, if any
+    first_probe: Option<u16>,
+    /// Whether the probe in flight (or just resolved) is the first probe
+    probing_first: bool,
 }
 
 impl SearchState {
@@ -299,11 +331,17 @@ impl SearchState {
         mut lower_bound: u16,
         peer_max_udp_payload_size: u16,
         config: &MtuDiscoveryConfig,
+        ceiling: Option<u16>,
+        first_probe: Option<u16>,
     ) -> Self {
         lower_bound = lower_bound.min(peer_max_udp_payload_size);
         let upper_bound = config
             .upper_bound
+            .min(ceiling.unwrap_or(u16::MAX))
             .clamp(lower_bound, peer_max_udp_payload_size);
+        let first_probe = first_probe
+            .map(|size| size.min(upper_bound))
+            .filter(|&size| size > lower_bound);
 
         Self {
             in_flight_probe: None,
@@ -314,6 +352,8 @@ impl SearchState {
             // During initialization, we consider the lower bound to have already been
             // successfully probed
             last_probed_mtu: lower_bound,
+            first_probe,
+            probing_first: false,
         }
     }
 
@@ -323,8 +363,18 @@ impl SearchState {
 
         if last_probe_succeeded {
             self.lower_bound = self.last_probed_mtu;
+            if self.probing_first {
+                // A confirmed first probe ends the search and caps the connection
+                self.upper_bound = self.last_probed_mtu;
+            }
         } else {
             self.upper_bound = self.last_probed_mtu - 1;
+        }
+        self.probing_first = false;
+
+        if let Some(size) = self.first_probe.take() {
+            self.probing_first = true;
+            return Some(size);
         }
 
         let next_mtu = (self.lower_bound as i32 + self.upper_bound as i32) / 2;
@@ -833,7 +883,7 @@ mod tests {
         let mut config = MtuDiscoveryConfig::default();
         config.upper_bound(1400);
 
-        let state = SearchState::new(1500, u16::MAX, &config);
+        let state = SearchState::new(1500, u16::MAX, &config, None, None);
         assert_eq!(state.lower_bound, 1500);
         assert_eq!(state.upper_bound, 1500);
     }
@@ -843,7 +893,7 @@ mod tests {
         let mut config = MtuDiscoveryConfig::default();
         config.upper_bound(9000);
 
-        let state = SearchState::new(1500, 1300, &config);
+        let state = SearchState::new(1500, 1300, &config, None, None);
         assert_eq!(state.lower_bound, 1300);
         assert_eq!(state.upper_bound, 1300);
     }
@@ -853,7 +903,7 @@ mod tests {
         let mut config = MtuDiscoveryConfig::default();
         config.upper_bound(9000);
 
-        let state = SearchState::new(1200, 1450, &config);
+        let state = SearchState::new(1200, 1450, &config, None, None);
         assert_eq!(state.lower_bound, 1200);
         assert_eq!(state.upper_bound, 1450);
     }
@@ -966,5 +1016,195 @@ mod tests {
         bhd.on_non_probe_acked(BLACK_HOLE_THRESHOLD as u64 * 2, 1400);
         bhd.on_non_probe_lost(BLACK_HOLE_THRESHOLD as u64 * 2 + 1, 1400);
         assert!(!bhd.black_hole_detected());
+    }
+
+    fn mtud_with_first_probe(first_probe: u16) -> MtuDiscovery {
+        let mut config = MtuDiscoveryConfig::default();
+        config.minimum_change(4).first_probe(Some(first_probe));
+        MtuDiscovery::new(1_200, 1_200, None, config)
+    }
+
+    #[test]
+    fn confirmed_first_probe_is_the_only_probe() {
+        let mut mtud = mtud_with_first_probe(1_448);
+        let probed = drive_to_completion(&mut mtud, Instant::now(), 1_448);
+        assert_eq!(probed, [1_448]);
+        assert_eq!(mtud.current_mtu(), 1_448);
+        assert!(mtud.settled());
+    }
+
+    #[test]
+    fn stale_first_probe_falls_back_to_binary_search_below_it() {
+        let mut mtud = mtud_with_first_probe(1_448);
+        let probed = drive_to_completion(&mut mtud, Instant::now(), 1_440);
+        assert_eq!(&probed[..3], [1_448, 1_448, 1_448]);
+        assert!(probed[3..].iter().all(|&size| size < 1_448), "{probed:?}");
+        assert!((1_436..=1_440).contains(&mtud.current_mtu()), "{probed:?}");
+    }
+
+    #[test]
+    fn later_searches_stay_under_the_ceiling() {
+        let mut mtud = mtud_with_first_probe(1_448);
+        let now = Instant::now();
+        drive_to_completion(&mut mtud, now, 1_452);
+        let later = now + Duration::from_secs(601);
+        assert_eq!(mtud.poll_transmit(later, 100), None);
+        assert_eq!(mtud.current_mtu(), 1_448);
+    }
+
+    #[test]
+    fn first_probe_at_or_below_the_floor_is_ignored() {
+        let mut mtud = mtud_with_first_probe(1_200);
+        let probed = drive_to_completion(&mut mtud, Instant::now(), 1_452);
+        assert_eq!(probed.first(), Some(&1_326), "{probed:?}");
+    }
+
+    #[test]
+    fn first_probe_above_the_upper_bound_is_clamped() {
+        let mut config = MtuDiscoveryConfig::default();
+        config.upper_bound(1_400).first_probe(Some(1_452));
+        let mut mtud = MtuDiscovery::new(1_200, 1_200, None, config);
+        let probed = drive_to_completion(&mut mtud, Instant::now(), 1_452);
+        assert_eq!(probed, [1_400]);
+    }
+
+    #[test]
+    fn settled_tracks_the_search_phase() {
+        let mut mtud = mtud_with_first_probe(1_448);
+        assert!(!mtud.settled(), "phase Initial counts as not settled");
+        assert_eq!(mtud.poll_transmit(Instant::now(), 1), Some(1_448));
+        assert!(!mtud.settled());
+        assert!(MtuDiscovery::disabled(1_200, 1_200).settled());
+    }
+
+    #[test]
+    fn rejected_first_probe_caps_later_searches() {
+        let mut mtud = mtud_with_first_probe(1_448);
+        let now = Instant::now();
+        drive_to_completion(&mut mtud, now, 1_440);
+        assert_eq!(mtud.state.as_ref().unwrap().ceiling, Some(1_447));
+        // The path grew: every probe is acknowledged, yet none may exceed the ceiling
+        let later = now + Duration::from_secs(601);
+        let mut max = 0;
+        for pn in 1..100 {
+            match mtud.poll_transmit(later, 1_000 + pn) {
+                Some(size) => {
+                    max = max.max(size);
+                    mtud.on_acked(SpaceId::Data, 1_000 + pn, size);
+                }
+                None => break,
+            }
+        }
+        assert_eq!(max, 1_447);
+    }
+
+    #[test]
+    fn ceiling_survives_a_black_hole_before_the_next_poll() {
+        let mut mtud = mtud_with_first_probe(1_448);
+        let now = Instant::now();
+        assert_eq!(mtud.poll_transmit(now, 1), Some(1_448));
+        mtud.on_acked(SpaceId::Data, 1, 1_448);
+        for i in 0..4 {
+            mtud.on_non_probe_lost(10 + i * 2, 1_300);
+        }
+        assert!(mtud.black_hole_detected(now));
+        assert_eq!(mtud.state.as_ref().unwrap().ceiling, Some(1_448));
+    }
+
+    #[test]
+    fn rejected_ceiling_survives_a_black_hole_before_the_next_poll() {
+        let mut mtud = mtud_with_first_probe(1_448);
+        let now = Instant::now();
+        // Lose the first probe and its retransmits; no poll follows the last loss
+        for pn in 1..=MAX_PROBE_RETRANSMITS as u64 {
+            assert_eq!(mtud.poll_transmit(now, pn), Some(1_448));
+            mtud.on_probe_lost();
+        }
+        for i in 0..4 {
+            mtud.on_non_probe_lost(10 + i * 2, 1_300);
+        }
+        assert!(mtud.black_hole_detected(now));
+        assert_eq!(mtud.state.as_ref().unwrap().ceiling, Some(1_447));
+    }
+
+    #[test]
+    fn spurious_loss_does_not_lower_the_ceiling() {
+        let mut mtud = mtud_with_first_probe(1_448);
+        let now = Instant::now();
+        let mut pn = 0;
+        // First probe rejected 3 times, then the fallback search starts
+        let mut lost_spuriously = false;
+        let mut sizes = Vec::new();
+        loop {
+            pn += 1;
+            let Some(size) = mtud.poll_transmit(now, pn) else {
+                break;
+            };
+            sizes.push(size);
+            if size >= 1_448 {
+                mtud.on_probe_lost();
+            } else if !lost_spuriously && size < 1_440 {
+                // Spurious loss of a probe that the link would have carried
+                mtud.on_probe_lost();
+                if sizes.iter().filter(|&&s| s == size).count() == 3 {
+                    lost_spuriously = true;
+                }
+            } else {
+                mtud.on_acked(SpaceId::Data, pn, size);
+            }
+        }
+        assert!(lost_spuriously, "{sizes:?}");
+        let lowered = mtud.current_mtu();
+        assert!(lowered < 1_440, "{sizes:?}");
+        // The re-search is bounded by the first probe only, not by the lowered bound
+        let later = now + Duration::from_secs(601);
+        let mut max = 0;
+        for i in 1..100 {
+            match mtud.poll_transmit(later, 2_000 + i) {
+                Some(size) => {
+                    max = max.max(size);
+                    mtud.on_acked(SpaceId::Data, 2_000 + i, size);
+                }
+                None => break,
+            }
+        }
+        assert!(max > lowered && max <= 1_447, "{lowered} {max}");
+    }
+
+    #[test]
+    fn black_hole_before_first_probe_leaves_no_ceiling() {
+        let mut mtud = mtud_with_first_probe(1_448);
+        let now = Instant::now();
+        // The first probe is in flight, unresolved
+        assert_eq!(mtud.poll_transmit(now, 1), Some(1_448));
+        for i in 0..4 {
+            // Never contiguous, so each packet is its own suspicious burst
+            mtud.on_non_probe_lost(10 + i * 2, 1_300);
+        }
+        assert!(mtud.black_hole_detected(now));
+        assert_eq!(mtud.state.as_ref().unwrap().ceiling, None);
+        // The next search is upstream-style: it may probe up to the config upper bound
+        let later = now + Duration::from_secs(61);
+        let mut max = 0;
+        for pn in 100..200 {
+            match mtud.poll_transmit(later, pn) {
+                Some(size) => {
+                    max = max.max(size);
+                    mtud.on_acked(SpaceId::Data, pn, size);
+                }
+                None => break,
+            }
+        }
+        assert!(max > 1_447, "{max}");
+    }
+
+    #[test]
+    fn reset_rearms_the_first_probe_and_clears_the_ceiling() {
+        let mut mtud = mtud_with_first_probe(1_448);
+        drive_to_completion(&mut mtud, Instant::now(), 1_448);
+        assert_eq!(mtud.state.as_ref().unwrap().ceiling, Some(1_448));
+        mtud.reset(1_200, 1_200);
+        assert_eq!(mtud.state.as_ref().unwrap().ceiling, None);
+        assert_eq!(mtud.poll_transmit(Instant::now(), 1), Some(1_448));
     }
 }

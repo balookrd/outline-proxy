@@ -41,9 +41,12 @@ vendored-копии.
 - [`bins/outline-ss-rust/src/server/h3/vendored.rs`](bins/outline-ss-rust/src/server/h3/vendored.rs) — сервер
   (request-extension `h3::ext::Protocol`, `Stream::from_h3_server` +
   `WebSocketStream::from_raw`, восстановленный `WebSocketServer::into_parts`,
-  плюс реэкспорты sockudo-ws-типов, используемых сервером).
+  плюс реэкспорты sockudo-ws-типов, используемых сервером, и пропатченный
+  `MtuDiscoveryConfig::first_probe` из `quinn-proto` для `[server.h3].mtu_first_probe`).
 - [`crates/outline-transport/src/quic/vendored.rs`](crates/outline-transport/src/quic/vendored.rs) — клиент, пропатченный
-  `quinn-proto` (`TransportConfig::initial_stream_receive_window`).
+  `quinn-proto` (`TransportConfig::initial_stream_receive_window`, браузерные опции
+  transport parameters, `MtuDiscoveryConfig::first_probe` и
+  `PathStats::plpmtud_settled`).
 - [`crates/outline-transport/src/tls_vendored.rs`](crates/outline-transport/src/tls_vendored.rs) — клиент, пропатченный
   `rustls` (`ClientConfig::client_hello_shape` с `ClientHelloShape` /
   `ExtensionOrder`, `kx_group::SECP521R1` и `apply_tls_hello_profile`, который
@@ -56,8 +59,9 @@ vendored-копии.
 Ребейз vendored-крейтов на новый upstream начинай (и в идеале заканчивай) в
 этих файлах-гейтах. CI следит, чтобы `sockudo_ws` упоминался только в
 модулях-гейтах, а пропатченный API quinn-proto
-(`initial_stream_receive_window`) — только в
-`crates/outline-transport/src/quic/vendored.rs`, а пропатченный API rustls
+(`initial_stream_receive_window`, `.first_probe(`, `plpmtud_settled` и т. д.) — только в
+`crates/outline-transport/src/quic/vendored.rs` (а `.first_probe(` — ещё и в серверном
+гейте `bins/outline-ss-rust/src/server/h3/vendored.rs`), а пропатченный API rustls
 (`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
 `kx_group::SECP521R1`) — только в `crates/outline-transport/src/tls_vendored.rs`
 (шаг «invariant — patched rustls API only behind the gate module» в
@@ -233,7 +237,19 @@ Baseline — crates.io `quinn-proto 0.11.15`. Логические измене�
    `CONNECTION_ID_LIMIT_ERROR`) и `max_ack_delay_ms` (объявляется и задаёт
    локальный ACK-таймер). Все дефолты — upstream, rng в дефолтном режиме
    расходуется как в upstream, сервер опции не использует.
-4. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
+4. **mtud-first-probe** (`src/config/transport.rs`, `src/connection/mtud.rs`,
+   `src/connection/stats.rs`, `src/connection/mod.rs`) — новый
+   `MtuDiscoveryConfig::first_probe(Option<u16>)`: первый поиск сначала пробует этот размер;
+   если проба подтверждена, поиск заканчивается и размер становится потолком следующих поисков;
+   если отвергнута (потеряны все повторы), ниже него идёт обычный двоичный поиск, а потолком
+   становится `first_probe - 1`. Потолок задаёт только исход первой пробы, потери других проб
+   его не меняют, а чёрная дыра до её исхода оставляет потолок пустым. При сбросе или миграции
+   пути первая проба взводится заново, потолок очищается (он привязан к пути).
+   `PathStats::plpmtud_settled` сообщает, что поиск не идёт, в том числе после чёрной дыры, то
+   есть не означает, что поиск удался. `None` (по умолчанию)
+   сохраняет поведение upstream. H3-клиент берёт размер из своего кэша MTU пути; сервер —
+   только при `[server.h3].mtu_first_probe`.
+5. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
    дефолтным `ring` нарушил бы инвариант aws-lc-rs).
 
 Проверка соответствия: применить патч к чистой копии crates.io 0.11.15 и сравнить

@@ -153,9 +153,9 @@ vendored-крейты, которые держим в upstream-стиле.
   (провайдер aws-lc-rs, `socket2` 0.6, vendoring-trim). Остальные файлы
   `vendor/sockudo-ws` обязаны быть побайтово равны upstream — сверка описана в
   [`PATCHES.ru.md`](PATCHES.ru.md). Не плоди вторые копии vendored и не поднимай
-  версии без явной причины. `vendor/quinn-proto` = upstream 0.11.15 + три
+  версии без явной причины. `vendor/quinn-proto` = upstream 0.11.15 + четыре
   логических патча (advertised-stream-window, browser-shaped-transport-parameters,
-  browser-order-and-firefox) и vendoring-trim, описано в `PATCHES*.md`.
+  browser-order-and-firefox, mtud-first-probe) и vendoring-trim, описано в `PATCHES*.md`.
   `vendor/rustls` = upstream 0.23.40 + два логических патча (client-hello-shape:
   `ClientConfig::client_hello_shape` для браузерного ClientHello H3- и
   TCP-носителей, `cert_check` и HTTPS-пробы;
@@ -291,8 +291,11 @@ Production-код не обращается к `h3`-патч-API и `sockudo_ws`
 `advertise_max_udp_payload_size`, `advertised_max_datagram_frame_size`,
 `version_information`, `extra_transport_parameters`, `transport_parameter_order`,
 `advertised_active_connection_id_limit`, `max_ack_delay_ms`,
-`initial_stream_receive_windows`) — только через
-`crates/outline-transport/src/quic/vendored.rs` (клиент); патч `rustls`
+`initial_stream_receive_windows`, `MtuDiscoveryConfig::first_probe`,
+`PathStats::plpmtud_settled`) — только через
+`crates/outline-transport/src/quic/vendored.rs` (клиент; `first_probe` для
+`[server.h3].mtu_first_probe` — ещё и через серверный гейт
+`bins/outline-ss-rust/src/server/h3/vendored.rs`); патч `rustls`
 (`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
 `kx_group::SECP521R1`) — только через `crates/outline-transport/src/tls_vendored.rs`
 (клиент: QUIC и TCP); патч `hyper` (`ext::HeaderCaseMap`) — только через
