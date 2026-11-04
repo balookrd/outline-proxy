@@ -1848,3 +1848,175 @@ async fn h3_without_first_probe_keeps_the_binary_search() {
     assert!((1444..=1448).contains(&stats.current_mtu), "{stats:?}");
     assert!(stats.sent_plpmtud_probes > 3, "{stats:?}");
 }
+
+// ── ClientHello layout across the Initials ──────────────────────────────────
+
+/// One client Initial of the first flight: datagram size, CRYPTO frames as
+/// `(offset, len)` in wire order, and PINGs.
+struct InitialLayout {
+    size: usize,
+    crypto: Vec<(usize, usize)>,
+    pings: usize,
+}
+
+/// The first flight of a real dial under `fp`, Initial by Initial, and the hello.
+async fn first_flight(
+    fp: crate::fingerprint_profile::TlsFingerprint,
+    seed: u8,
+) -> (Vec<InitialLayout>, Vec<u8>) {
+    use crate::fingerprint_profile::with_dial_fingerprint;
+
+    with_dial_fingerprint(Some(fp), async {
+        let mut endpoint = quinn_proto::Endpoint::new(
+            Arc::new(super::h3_endpoint_config()),
+            None,
+            false,
+            Some([seed; 32]),
+        );
+        let now = Instant::now();
+        let (_handle, mut conn) = endpoint
+            .connect(
+                now,
+                super::h3_quic_client_config(),
+                "203.0.113.1:443".parse().unwrap(),
+                "www.example.com",
+            )
+            .expect("sans-IO connect");
+        let mut out = Vec::new();
+        let mut segments = Vec::new();
+        for _ in 0..8 {
+            let mut buf = Vec::new();
+            let Some(transmit) = conn.poll_transmit(now, 1, &mut buf) else { break };
+            let dgram = &buf[..transmit.size];
+            if dgram[0] & 0xf0 != 0xc0 {
+                break;
+            }
+            let payload = decrypt_client_initial(dgram);
+            let mut r = Reader::new(&payload);
+            let mut layout = InitialLayout {
+                size: dgram.len(),
+                crypto: Vec::new(),
+                pings: 0,
+            };
+            while r.remaining() > 0 {
+                match r.u8() {
+                    0x00 => {},
+                    0x01 => layout.pings += 1,
+                    0x06 => {
+                        let offset = r.varint() as usize;
+                        let len = r.varint() as usize;
+                        segments.push((offset as u64, r.take(len).to_vec()));
+                        layout.crypto.push((offset, len));
+                    },
+                    other => panic!("unexpected frame type 0x{other:02x} in client Initial"),
+                }
+            }
+            out.push(layout);
+            if crypto_complete(&reassemble_crypto(&segments)) {
+                break;
+            }
+        }
+        let hello = reassemble_crypto(&segments);
+        assert!(crypto_complete(&hello), "first flight must carry the whole hello");
+        (out, hello)
+    })
+    .await
+}
+
+fn carried(layout: &InitialLayout) -> usize {
+    layout.crypto.iter().map(|(_, len)| len).sum()
+}
+
+/// Chromium profile: the hello is split evenly over the Initials, the first one
+/// holding its head and tail, and chaos protection scatters it over extra CRYPTO
+/// frames and PINGs (Chrome: 3-11 CRYPTO frames per Initial). Initials stay 1200.
+#[tokio::test]
+async fn h3_chromium_hello_is_scattered_like_chrome() {
+    use crate::fingerprint_profile::TlsFingerprint;
+
+    let (mut most_frames, mut most_pings) = (0, 0);
+    for seed in 0..32u8 {
+        let (flight, hello) = first_flight(TlsFingerprint::Chromium, seed).await;
+        assert_eq!(flight.len(), 2, "seed {seed}");
+        assert!(flight.iter().all(|i| i.size == 1200), "seed {seed}");
+        assert!(
+            carried(&flight[0]).abs_diff(carried(&flight[1])) <= 1,
+            "seed {seed}: even split"
+        );
+        let first: Vec<_> = flight[0].crypto.iter().map(|(o, l)| (*o, o + l)).collect();
+        assert!(
+            first.iter().any(|(start, _)| *start == 0),
+            "seed {seed}: head in the first Initial"
+        );
+        assert!(
+            first.iter().any(|(_, end)| *end == hello.len()),
+            "seed {seed}: tail in the first Initial"
+        );
+        for i in &flight {
+            most_frames = most_frames.max(i.crypto.len());
+            most_pings = most_pings.max(i.pings);
+        }
+    }
+    assert!(most_frames >= 8, "most CRYPTO frames in one Initial: {most_frames}");
+    assert!(most_pings >= 5, "most PINGs in one Initial: {most_pings}");
+}
+
+/// Firefox profile: neqo's SNI slicing — the hello is cut in the middle of the SNI
+/// host name and the first Initial carries the part after the cut first, then the
+/// part before it, each trimmed so the rest stays one contiguous range.
+#[tokio::test]
+async fn h3_firefox_hello_is_sliced_at_the_sni_like_firefox() {
+    use crate::fingerprint_profile::TlsFingerprint;
+
+    let (mut early, mut late) = (false, false);
+    for seed in 0..32u8 {
+        let (flight, hello) = first_flight(TlsFingerprint::Firefox, seed).await;
+        let host = b"www.example.com";
+        let at = hello
+            .windows(host.len())
+            .position(|w| w == host)
+            .expect("SNI in the hello");
+        let mid = at + host.len() / 2;
+        let len = hello.len();
+        assert_eq!(flight.len(), 2, "seed {seed}");
+        assert!(flight.iter().all(|i| i.size == 1200 && i.pings == 0), "seed {seed}");
+        let share = len.div_ceil(2);
+        if mid < share {
+            // All of the head; the end of the hello first.
+            let tail = len - (share - mid);
+            assert_eq!(flight[0].crypto, vec![(tail, len - tail), (0, mid)], "seed {seed}");
+            assert_eq!(flight[1].crypto, vec![(mid, tail - mid)], "seed {seed}");
+        } else {
+            // A late SNI: all of the part after the cut, then the end of the head.
+            let start = len - share;
+            assert_eq!(
+                flight[0].crypto,
+                vec![(mid, len - mid), (start, mid - start)],
+                "seed {seed}"
+            );
+            assert_eq!(flight[1].crypto, vec![(0, start)], "seed {seed}");
+        }
+        early |= mid < share;
+        late |= mid >= share;
+    }
+    assert!(early && late, "seeds must cover an early and a late SNI");
+}
+
+/// Safari profile: Apple sends one CRYPTO frame per Initial, in order (upstream quinn).
+#[tokio::test]
+async fn h3_safari_hello_stays_contiguous() {
+    use crate::fingerprint_profile::TlsFingerprint;
+
+    let (flight, hello) = first_flight(TlsFingerprint::Safari, 1).await;
+    assert_eq!(flight.len(), 2);
+    assert!(
+        flight
+            .iter()
+            .all(|i| i.size == 1200 && i.crypto.len() == 1 && i.pings == 0)
+    );
+    assert_eq!(flight[0].crypto[0].0, 0);
+    assert_eq!(
+        flight[1].crypto[0],
+        (flight[0].crypto[0].1, hello.len() - flight[0].crypto[0].1)
+    );
+}

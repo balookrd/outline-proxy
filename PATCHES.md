@@ -44,8 +44,8 @@ modules (client h3, server h3, client QUIC, client rustls, client hyper):
   `quinn-proto` `MtuDiscoveryConfig::first_probe` for `[server.h3].mtu_first_probe`).
 - [`crates/outline-transport/src/quic/vendored.rs`](crates/outline-transport/src/quic/vendored.rs) — client, patched
   `quinn-proto` (`TransportConfig::initial_stream_receive_window`, the browser-shaped
-  transport-parameter options, `MtuDiscoveryConfig::first_probe` and
-  `PathStats::plpmtud_settled`).
+  transport-parameter options, `TransportConfig::initial_crypto_layout`,
+  `MtuDiscoveryConfig::first_probe` and `PathStats::plpmtud_settled`).
 - [`crates/outline-transport/src/tls_vendored.rs`](crates/outline-transport/src/tls_vendored.rs) — client, patched
   `rustls` (`ClientConfig::client_hello_shape` with `ClientHelloShape` /
   `ExtensionOrder`, `kx_group::SECP521R1`, and `apply_tls_hello_profile`, which
@@ -59,7 +59,7 @@ modules (client h3, server h3, client QUIC, client rustls, client hyper):
 When rebasing the vendored crates onto a new upstream, start (and ideally
 end) at these gate files. CI enforces that `sockudo_ws` is referenced only
 from the gate modules, and that the patched quinn-proto API
-(`initial_stream_receive_window`, `.first_probe(`, `plpmtud_settled`, ...) appears only in
+(`initial_stream_receive_window`, `.initial_crypto_layout(`, `.first_probe(`, `plpmtud_settled`, ...) appears only in
 `crates/outline-transport/src/quic/vendored.rs` (and `.first_probe(` also in the
 server gate `bins/outline-ss-rust/src/server/h3/vendored.rs`), and that the patched rustls API
 (`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
@@ -249,7 +249,25 @@ Baseline — crates.io `quinn-proto 0.11.15`. Logical changes carried by
    hole, so it does not mean the search succeeded. `None` (the default)
    keeps upstream behaviour. The H3 client takes the size from its path MTU cache; the
    server only with `[server.h3].mtu_first_probe`.
-5. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
+5. **initial-crypto-layout** (`src/config/{transport,mod}.rs`, `src/lib.rs`,
+   `src/connection/initial_crypto.rs`, `src/connection/mod.rs`) — new
+   `TransportConfig::initial_crypto_layout(InitialCryptoLayout)`: how a client lays its
+   ClientHello out in CRYPTO frames across its Initials. `Contiguous` (the default) is
+   upstream. `Chaos` (Chrome) and `SniSlice` (Firefox) split the hello evenly over the
+   Initials it needs, the first Initial carrying both ends of the hello and the next ones
+   one contiguous range: `SniSlice` cuts in the middle of the SNI host name and puts the
+   part after the cut first (neqo; with an SNI past the middle, all of the part after the
+   cut and the end of the head), `Chaos` cuts the head at a random 40-100 bytes and then,
+   per packet, adds up to 10 CRYPTO splits and 10 PINGs, shuffles the frames and spreads
+   PADDING between them (QUICHE). A planned packet carries only its own frames and is
+   padded to the 1200-byte Initial, so nothing is coalesced behind it. The plan is made
+   only for a complete ClientHello sent from offset 0 (also after a Retry); its frames
+   sit in `pending.crypto`, so losses are resent as usual, and a packet that does not
+   find its frames at the queue front or lacks room drops the plan for the upstream
+   loop. Servers ignore the option. Tests: `src/connection/tests/initial_crypto.rs`
+   (planner, matches the Firefox capture), `src/tests/initial_crypto.rs` (handshake with
+   and without Retry, Initial size); they need the upstream dev-dependencies (see 6).
+6. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
    `rcgen` with default `ring` would violate the aws-lc-rs invariant).
 
 Conformance check: apply the patch to a clean copy of crates.io 0.11.15 and

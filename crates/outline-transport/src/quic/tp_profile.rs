@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use super::vendored::{BrowserTpOptions, TpOrder, VersionInfo, VersionSlot};
+use super::vendored::{BrowserTpOptions, HelloLayout, TpOrder, VersionInfo, VersionSlot};
 use crate::fingerprint_profile::TlsFingerprint;
 
 /// `initial_max_stream_data_{bidi_local,bidi_remote,uni}` (0x05-0x07).
@@ -92,6 +92,9 @@ pub(crate) const CHROMIUM: QuicTpProfile = QuicTpProfile {
         order: TpOrder::Shuffled,
         active_connection_id_limit: None,
         max_ack_delay_ms: 25,
+        // Measured: hello split evenly over two Initials, 3-11 CRYPTO frames each,
+        // PINGs and PADDING between them, shuffled.
+        hello_layout: HelloLayout::Chaos,
     },
 };
 
@@ -122,6 +125,8 @@ pub(crate) const SAFARI: QuicTpProfile = QuicTpProfile {
         order: TpOrder::Rotated(&[0x04, 0x05, 0x06, 0x07, 0x09, 0x0e, 0x0f, 0xff08_0808]),
         active_connection_id_limit: Some(64),
         max_ack_delay_ms: 25,
+        // Apple sends the hello in one CRYPTO frame per Initial, like upstream quinn.
+        hello_layout: HelloLayout::Contiguous,
     },
 };
 
@@ -177,6 +182,8 @@ pub(crate) const FIREFOX: QuicTpProfile = QuicTpProfile {
         ]),
         active_connection_id_limit: Some(8),
         max_ack_delay_ms: 20,
+        // Measured: [1077, 1894) + [0, 130) then [130, 1077), cut mid-SNI.
+        hello_layout: HelloLayout::SniSlice,
     },
 };
 
