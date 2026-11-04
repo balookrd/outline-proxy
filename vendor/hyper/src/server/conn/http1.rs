@@ -12,6 +12,7 @@ use crate::rt::{Read, Write};
 use crate::upgrade::Upgraded;
 use bytes::Bytes;
 use futures_core::ready;
+use httparse::ParserConfig;
 
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::proto;
@@ -69,13 +70,14 @@ pin_project_lite::pin_project! {
 /// to bind the built connection to a service.
 #[derive(Clone, Debug)]
 pub struct Builder {
-    h1_parser_config: httparse::ParserConfig,
+    h1_parser_config: ParserConfig,
     timer: Time,
     h1_half_close: bool,
     h1_keep_alive: bool,
     h1_title_case_headers: bool,
     h1_preserve_header_case: bool,
     h1_max_headers: Option<usize>,
+    h1_max_header_size: Option<usize>,
     h1_header_read_timeout: Dur,
     h1_writev: Option<bool>,
     max_buf_size: Option<usize>,
@@ -177,6 +179,7 @@ where
     /// # Error
     ///
     /// This errors if the underlying connection protocol is not HTTP/1.
+    #[allow(clippy::missing_panics_doc)]
     pub fn without_shutdown(self) -> impl Future<Output = crate::Result<Parts<I, S>>> {
         let mut zelf = Some(self);
         crate::common::future::poll_fn(move |cx| {
@@ -225,7 +228,7 @@ where
                         // error letting them know about that.
                         pending.manual();
                     }
-                };
+                }
                 Poll::Ready(Ok(()))
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -239,13 +242,14 @@ impl Builder {
     /// Create a new connection builder.
     pub fn new() -> Self {
         Self {
-            h1_parser_config: Default::default(),
+            h1_parser_config: ParserConfig::default(),
             timer: Time::Empty,
             h1_half_close: false,
             h1_keep_alive: true,
             h1_title_case_headers: false,
             h1_preserve_header_case: false,
             h1_max_headers: None,
+            h1_max_header_size: None,
             h1_header_read_timeout: Dur::Default(Some(Duration::from_secs(30))),
             h1_writev: None,
             max_buf_size: None,
@@ -336,6 +340,21 @@ impl Builder {
     /// Default is 100.
     pub fn max_headers(&mut self, val: usize) -> &mut Self {
         self.h1_max_headers = Some(val);
+        self
+    }
+
+    /// Set the maximum size of request headers (including the start line) in bytes.
+    ///
+    /// If the client sends headers exceeding this limit, the server responds to the
+    /// client with "431 Request Header Fields Too Large" and closes the connection.
+    ///
+    /// If not configured, then the [`max_buf_size`](Builder::max_buf_size) will naturally be reached and applied.
+    ///
+    /// This value is also used as the maximum size limit for chunked trailers.
+    ///
+    /// Default is `None`.
+    pub fn max_header_size(&mut self, val: usize) -> &mut Self {
+        self.h1_max_header_size = Some(val);
         self
     }
 
@@ -474,12 +493,15 @@ impl Builder {
         if let Some(max_headers) = self.h1_max_headers {
             conn.set_http1_max_headers(max_headers);
         }
+        if let Some(max_header_size) = self.h1_max_header_size {
+            conn.set_http1_max_header_size(max_header_size);
+        }
         if let Some(dur) = self
             .timer
             .check(self.h1_header_read_timeout, "header_read_timeout")
         {
             conn.set_http1_header_read_timeout(dur);
-        };
+        }
         if let Some(writev) = self.h1_writev {
             if writev {
                 conn.set_write_strategy_queue();
@@ -526,7 +548,7 @@ where
         // Connection (`inner`) is `None` if it was upgraded (and `poll` is `Ready`).
         // In that case, we don't need to call `graceful_shutdown`.
         if let Some(conn) = self.inner.as_mut() {
-            Pin::new(conn).graceful_shutdown()
+            Pin::new(conn).graceful_shutdown();
         }
     }
 

@@ -128,7 +128,7 @@ struct TaskFuture {
 /// its only purpose is to provide access to the waker. See `hyper_waker`.
 ///
 /// Corresponding Rust type: <https://doc.rust-lang.org/std/task/struct.Context.html>
-pub struct hyper_context<'a>(Context<'a>);
+pub struct hyper_context<'ctx>(Context<'ctx>);
 
 /// A waker that is saved and used to waken a pending task.
 ///
@@ -355,9 +355,9 @@ impl hyper_task {
     }
 
     fn output_type(&self) -> hyper_task_return_type {
-        match self.output {
+        match &self.output {
             None => hyper_task_return_type::HYPER_TASK_EMPTY,
-            Some(ref val) => val.as_task_type(),
+            Some(val) => val.as_task_type(),
         }
     }
 }
@@ -415,7 +415,7 @@ ffi_fn! {
         let task = non_null!(&mut *task ?= ptr::null_mut());
 
         if let Some(val) = task.output.take() {
-            let p = Box::into_raw(val) as *mut c_void;
+            let p = Box::into_raw(val).cast();
             // protect from returning fake pointers to empty types
             if p == std::ptr::NonNull::<c_void>::dangling().as_ptr() {
                 ptr::null_mut()
@@ -511,7 +511,9 @@ where
 // ===== impl hyper_context =====
 
 impl hyper_context<'_> {
-    pub(crate) fn wrap<'a, 'b>(cx: &'a mut Context<'b>) -> &'a mut hyper_context<'b> {
+    pub(crate) fn wrap<'borrow, 'ctx>(
+        cx: &'borrow mut Context<'ctx>,
+    ) -> &'borrow mut hyper_context<'ctx> {
         // A struct with only one field has the same layout as that field.
         unsafe { std::mem::transmute::<&mut Context<'_>, &mut hyper_context<'_>>(cx) }
     }
