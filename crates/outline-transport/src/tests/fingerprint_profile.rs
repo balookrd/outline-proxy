@@ -520,10 +520,10 @@ fn by_name(name: &str) -> &'static Profile {
 fn per_os_pools_have_the_decided_members() {
     assert_eq!(
         names(ProfileOs::MacOs),
-        ["chrome-156-macos", "firefox-159-macos", "safari-27-macos"]
+        ["chrome-157-macos", "firefox-159-macos", "safari-27-macos"]
     );
-    assert_eq!(names(ProfileOs::Linux), ["chrome-156-linux", "firefox-159-linux"]);
-    assert_eq!(names(ProfileOs::Android), ["chrome-156-android"]);
+    assert_eq!(names(ProfileOs::Linux), ["chrome-157-linux", "firefox-159-linux"]);
+    assert_eq!(names(ProfileOs::Android), ["chrome-157-android"]);
 }
 
 #[test]
@@ -604,17 +604,17 @@ fn user_agent_and_client_hints_agree_with_profile_os() {
     }
 }
 
-const CHROME_UA_TAIL: &str = "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0";
+const CHROME_UA_TAIL: &str = "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0";
 const CHROME_HINTS: &str =
-    "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"";
+    "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\"";
 
 #[test]
-fn chrome_156_values_match_the_measurement() {
+fn chrome_157_values_match_the_measurement() {
     let ua = |os: &str, tail: &str| format!("Mozilla/5.0 ({os}) {CHROME_UA_TAIL} {tail}");
     for (name, os_part, tail) in [
-        ("chrome-156-macos", "Macintosh; Intel Mac OS X 10_15_7", "Safari/537.36"),
-        ("chrome-156-linux", "X11; Linux x86_64", "Safari/537.36"),
-        ("chrome-156-android", "Linux; Android 10; K", "Mobile Safari/537.36"),
+        ("chrome-157-macos", "Macintosh; Intel Mac OS X 10_15_7", "Safari/537.36"),
+        ("chrome-157-linux", "X11; Linux x86_64", "Safari/537.36"),
+        ("chrome-157-android", "Linux; Android 10; K", "Mobile Safari/537.36"),
     ] {
         let p = by_name(name);
         assert_eq!(p.user_agent, ua(os_part, tail), "{name}");

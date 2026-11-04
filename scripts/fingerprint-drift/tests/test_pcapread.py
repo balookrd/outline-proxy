@@ -44,7 +44,8 @@ class ClientHellosTest(unittest.TestCase):
 class PlaintextTest(unittest.TestCase):
     def test_h2_frames_per_connection(self):
         conns = h2_connections(pcap("chrome", "h2-plain.pcap"))
-        frames = next(iter(conns.values()))
+        # Chrome may preconnect: the first connection carrying a request.
+        frames = next(fr for fr in conns.values() if any(f["type"] == 1 for f in fr))
         self.assertEqual(frames[0]["type"], 4)
         self.assertEqual(frames[0]["settings"][0], [1, 65536])
         headers = [fr for fr in frames if fr["type"] == 1]

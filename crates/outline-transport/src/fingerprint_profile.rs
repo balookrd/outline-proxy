@@ -218,7 +218,7 @@ pub struct Profile {
 /// `scripts/fingerprint-drift/baseline/*.json` from the new captures
 /// (`scripts/fingerprint-drift/README.md`; a test ties the baseline
 /// majors to this table), then re-run the suite.
-pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_793_381_218; // 2026-10-30 UTC
+pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_793_771_140; // 2026-11-04 UTC
 
 /// Maximum tolerated age of [`PROFILES`] before the staleness test
 /// fails. Six months is short enough to keep up with browser-major
@@ -232,7 +232,7 @@ pub const REFRESH_PERIOD_SECS: u64 = 180 * 24 * 60 * 60;
 /// [`pool_for`]); the other entries stay for tests and snapshots.
 pub const PROFILES: &[Profile] = &[
     Profile {
-        name: "chrome-156-macos",
+        name: "chrome-157-macos",
         os: ProfileOs::MacOs,
         tls: TlsFingerprint::Chromium,
         // Chrome on macOS still pins `10_15_7` (Catalina) in the UA
@@ -242,43 +242,45 @@ pub const PROFILES: &[Profile] = &[
         // it), so we mirror it. The actual OS version travels via
         // `Sec-CH-UA-Platform-Version` when negotiated; we don't
         // advertise that header in this pool.
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
-            "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
+            "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\"",
         ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"macOS\""),
     },
     Profile {
-        name: "chrome-156-linux",
+        name: "chrome-157-linux",
         os: ProfileOs::Linux,
         tls: TlsFingerprint::Chromium,
         // Chrome on Linux reports `x86_64` even on aarch64 hosts (UA
         // Reduction), so one string covers every Linux client.
-        user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+        user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
-            "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
+            "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\"",
         ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"Linux\""),
     },
     Profile {
-        name: "chrome-156-android",
+        name: "chrome-157-android",
         os: ProfileOs::Android,
         tls: TlsFingerprint::Chromium,
         // UA Reduction freezes Android Chrome at `Android 10; K` and a
         // `Mobile Safari` tail. The TLS family stays Chromium: measured
         // 2026-10-30, Chrome Android 156.0.8078.73 (Android 17) sends the
         // desktop Chrome 156 ClientHello byte for byte, trust anchors included.
-        user_agent: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36",
+        // Chrome 157 (drift run 2026-11-04, Linux desktop) changed only the UA
+        // and `sec-ch-ua`; its hellos, h2 preface and headers stayed 156's.
+        user_agent: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Mobile Safari/537.36",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
-            "\"Not:A-Brand\";v=\"8\", \"Chromium\";v=\"156\", \"Google Chrome\";v=\"156\"",
+            "\"Not-A.Brand\";v=\"99\", \"Google Chrome\";v=\"157\", \"Chromium\";v=\"157\"",
         ),
         sec_ch_ua_mobile: Some("?1"),
         sec_ch_ua_platform: Some("\"Android\""),

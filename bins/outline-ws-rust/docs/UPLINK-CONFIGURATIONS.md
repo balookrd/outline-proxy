@@ -1835,7 +1835,7 @@ WS / XHTTP dials can mix in browser-style identification headers
 (`User-Agent`, `Accept-*`, Sec-CH-UA family, Sec-Fetch-*) so a passive
 DPI rule keying on "WS upgrade missing User-Agent" stops separating
 this client from real browser traffic. The catalog ships six profiles:
-Chrome 156 (macOS, Linux, Android), Firefox 159 (macOS, Linux),
+Chrome 157 (macOS, Linux, Android), Firefox 159 (macOS, Linux),
 Safari 27 (macOS). There is no Windows client, so there is no Windows
 pool.
 
@@ -1847,7 +1847,9 @@ Firefox; Android — Chrome; any other OS uses the Linux pool. The strategies be
 family does not vary by OS: Chrome on Android sends the desktop Chromium
 ClientHello, confirmed by measurement on 2026-10-30 (Chrome Android
 156.0.8078.73 on Android 17 matches desktop Chrome 156 byte for byte,
-trust anchors included). 0-RTT is not aligned with the browsers.
+trust anchors included). Chrome 157 (the drift monitor's run of
+2026-11-04) changed only the `User-Agent` and `sec-ch-ua` against 156.
+0-RTT is not aligned with the browsers.
 
 The headers follow the request the carrier really makes, as Chrome 156,
 Firefox 159 (measured 2026-10-30) and Safari 27.0.1 (2026-10-31) send it
@@ -1981,7 +1983,7 @@ zero buckets stay greyed-out so the active distribution reads at a
 glance.
 
 The bundled HTML control-plane dashboard renders a per-uplink chip
-showing the **active profile** (e.g. `Chrome 156 macOS`) next to the
+showing the **active profile** (e.g. `Chrome 157 macOS`) next to the
 protocol pill on every row where the effective strategy resolves to
 something other than `none`. The chip is colour-coded by family:
 blue for the stable profiles (Chrome / Firefox / Safari / Edge under
@@ -1990,7 +1992,7 @@ at-a-glance the operator can tell whether the identity is pinned or
 rolling. Uplinks on `none` get no chip — the common opt-out
 deployment stays visually unchanged. The tooltip carries both the
 raw profile id and the strategy
-(`fingerprint_profile_name = chrome-156-macos · strategy = process_stable`)
+(`fingerprint_profile_name = chrome-157-macos · strategy = process_stable`)
 so the rendered label can be correlated immediately with the
 Prometheus `strategy` label and the snapshot JSON without translating
 between forms.
