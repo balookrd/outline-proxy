@@ -165,7 +165,7 @@ vendored-крейты, которые держим в upstream-стиле.
   (смена серверного поведения). Декомпрессоры сертификата клиента живут в
   `outline-transport` (`tls_hello.rs`) и собираются всегда: ими пользуются и
   QUIC, и TCP-дозвоны.
-  `vendor/hyper` = upstream 1.10.1 + один патч видимости (public-header-case-map:
+  `vendor/hyper` = upstream 1.12.0 + один патч видимости (public-header-case-map:
   `ext::HeaderCaseMap` с `default()`/`append()` — `pub`, поведение hyper не
   меняется; им `xhttp_h1` пишет имена заголовков в регистре браузера), описано в
   `PATCHES*.md`.
@@ -277,7 +277,7 @@ vendored-крейты, которые держим в upstream-стиле.
 ## Vendored patches
 
 Корневые [`PATCHES.md`](PATCHES.md) / [`PATCHES.ru.md`](PATCHES.ru.md) и
-patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.19.patch`, `rustls-0.23.46.patch`, `hyper-1.10.1.patch`) — единый источник
+patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.19.patch`, `rustls-0.23.46.patch`, `hyper-1.12.0.patch`) — единый источник
 истины по отличиям vendored копий от upstream (per-bin `PATCHES.md` —
 указатели на корневой). Меняешь поведение vendored — обнови vendored source и
 корневую patch-документацию в том же изменении. HTTP/3 WebSocket path зависит

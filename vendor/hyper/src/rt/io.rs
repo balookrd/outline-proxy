@@ -164,8 +164,8 @@ pub trait Write {
 /// It is undefined behavior to de-initialize any bytes from the uninitialized
 /// region, since it is merely unknown whether this region is uninitialized or
 /// not, and if part of it turns out to be initialized, it must stay initialized.
-pub struct ReadBuf<'a> {
-    raw: &'a mut [MaybeUninit<u8>],
+pub struct ReadBuf<'data> {
+    raw: &'data mut [MaybeUninit<u8>],
     filled: usize,
     init: usize,
 }
@@ -227,8 +227,8 @@ pub struct ReadBuf<'a> {
 /// assert_eq!(read_buf.filled(), b"hello");
 /// ```
 #[derive(Debug)]
-pub struct ReadBufCursor<'a> {
-    buf: &'a mut ReadBuf<'a>,
+pub struct ReadBufCursor<'buf> {
+    buf: &'buf mut ReadBuf<'buf>,
 }
 
 impl<'data> ReadBuf<'data> {
@@ -258,7 +258,7 @@ impl<'data> ReadBuf<'data> {
     #[inline]
     pub fn filled(&self) -> &[u8] {
         // SAFETY: We only slice the filled part of the buffer, which is always valid
-        unsafe { &*(&self.raw[0..self.filled] as *const [MaybeUninit<u8>] as *const [u8]) }
+        unsafe { &*(std::ptr::addr_of!(self.raw[0..self.filled]) as *const [u8]) }
     }
 
     /// Get a cursor to the unfilled portion of the buffer.
@@ -337,6 +337,11 @@ impl ReadBufCursor<'_> {
     /// # Safety
     ///
     /// The caller must take care that `n` more bytes have been initialized.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if advancing would cause the filled cursor to
+    /// overflow `usize`.
     #[inline]
     pub unsafe fn advance(&mut self, n: usize) {
         self.buf.filled = self.buf.filled.checked_add(n).expect("overflow");
@@ -381,6 +386,46 @@ impl ReadBufCursor<'_> {
             self.buf.init = end;
         }
         self.buf.filled = end;
+    }
+
+    /// Returns a mutable reference to the unfilled part of the buffer, ensuring it is fully initialized.
+    #[inline]
+    pub fn initialize_unfilled(&mut self) -> &mut [u8] {
+        self.initialize_unfilled_to(self.remaining())
+    }
+
+    /// Returns a mutable reference to the first `n` bytes of the unfilled part of the buffer, ensuring it is
+    /// fully initialized.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self.remaining()` is less than `n`.
+    #[inline]
+    pub fn initialize_unfilled_to(&mut self, n: usize) -> &mut [u8] {
+        assert!(self.remaining() >= n, "n overflows remaining");
+
+        // This can't overflow as the assert above would have panicked otherwise.
+        let end = self.buf.filled + n;
+
+        if self.buf.init < end {
+            // SAFETY:
+            // 1. The raw pointer is not null and not dangling either as the slice outlives the
+            // pointer's usage. The pointer is also properly aligned.
+            // 2. Further, `end - self.buf.init` is inbounds and hence safe to write
+            // to.
+            unsafe {
+                self.buf.raw[self.buf.init..end]
+                    .as_mut_ptr()
+                    .write_bytes(0, end - self.buf.init);
+            }
+            self.buf.init = end;
+        }
+
+        let slice = &mut self.buf.raw[self.buf.filled..end];
+
+        // SAFETY: `MaybeUninit<u8>` has the same memory layout as u8 and we properly initialized
+        // the slice above.
+        unsafe { &mut *(slice as *mut [MaybeUninit<u8>] as *mut [u8]) }
     }
 }
 

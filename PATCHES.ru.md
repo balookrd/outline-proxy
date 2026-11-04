@@ -17,7 +17,7 @@ vendored-копии.
   upstream-форматировании git (см. примечание ниже).
 - **quinn-proto** — crates.io `quinn-proto 0.11.19`.
 - **rustls** — crates.io `rustls 0.23.46`.
-- **hyper** — crates.io `hyper 1.10.1`.
+- **hyper** — crates.io `hyper 1.12.0`.
 
 ## Артефакты-патчи
 
@@ -27,7 +27,7 @@ vendored-копии.
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws` от GitHub-тега `v1.7.5` (`src/` и `Cargo.toml`) |
 | [`quinn-proto-0.11.19.patch`](quinn-proto-0.11.19.patch) | все отличия `vendor/quinn-proto` от upstream `quinn-proto 0.11.19` (`src/` и `Cargo.toml`) |
 | [`rustls-0.23.46.patch`](rustls-0.23.46.patch) | все отличия `vendor/rustls` от upstream `rustls 0.23.46` (`src/` и `Cargo.toml`) |
-| [`hyper-1.10.1.patch`](hyper-1.10.1.patch) | все отличия `vendor/hyper` от upstream `hyper 1.10.1` (только `src/`) |
+| [`hyper-1.12.0.patch`](hyper-1.12.0.patch) | все отличия `vendor/hyper` от upstream `hyper 1.12.0` (только `src/`) |
 
 ## Модули-гейты
 
@@ -465,12 +465,12 @@ vendored-файлов) и сравнить `diff -r` — пусто.
   и теперь тоже предлагает ML-DSA. Схемы ML-DSA у Chrome теперь проверяются, а не
   только объявляются.
 
-## hyper (1.10.1)
+## hyper (1.12.0)
 
-Базовая версия — crates.io `hyper 1.10.1`. Vendored-копия — upstream без изменений
+Базовая версия — crates.io `hyper 1.12.0`. Vendored-копия — upstream без изменений
 (`Cargo.toml`, `Cargo.toml.orig`, `LICENSE`, `src/`; без vendoring-обрезки:
 dev-зависимости hyper для path-крейта вне workspace не резолвятся). Изменения,
-которые несёт `hyper-1.10.1.patch`:
+которые несёт `hyper-1.12.0.patch`:
 
 1. **public-header-case-map** (`src/ext/mod.rs`) — только видимость:
    `hyper::ext::HeaderCaseMap` становится `pub` (поле остаётся приватным), как и
@@ -485,7 +485,7 @@ dev-зависимости hyper для path-крейта вне workspace не 
    `title_case_headers` (Title-Case для всех имён). Серверные крейты карту не
    строят, их провод не меняется.
 
-Проверка соответствия: применить патч к чистой копии crates.io 1.10.1 (в объёме
+Проверка соответствия: применить патч к чистой копии crates.io 1.12.0 (в объёме
 vendored-файлов) и сравнить `diff -r` — пусто.
 
 ## Регенерация
@@ -505,7 +505,7 @@ vendored-файлов) и сравнить `diff -r` — пусто.
   проверка — применить его `patch -p1` к другой чистой копии и сравнить `diff -r`
   (пусто).
 
-`cargo update`, сдвинувший `hyper` выше 1.10.1 в любом из lock-файлов (корневом
+`cargo update`, сдвинувший `hyper` выше 1.12.0 в любом из lock-файлов (корневом
 или `android/rust`), оставляет патч как `[[patch.unused]]`, и сборка падает с
 E0603 (приватный `HeaderCaseMap`); вместо этого перевендорь новую версию вместе
 с патчем. То же происходит с `quinn-proto`, когда `cargo update` поднимает `quinn` до

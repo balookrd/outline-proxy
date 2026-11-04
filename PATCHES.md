@@ -17,7 +17,7 @@ Regenerated against:
   git formatting (see the note below).
 - **quinn-proto** — crates.io `quinn-proto 0.11.19`.
 - **rustls** — crates.io `rustls 0.23.46`.
-- **hyper** — crates.io `hyper 1.10.1`.
+- **hyper** — crates.io `hyper 1.12.0`.
 
 ## Patch artifacts
 
@@ -27,7 +27,7 @@ Regenerated against:
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | all `vendor/sockudo-ws` deviations from GitHub tag `v1.7.5` (`src/` and `Cargo.toml`) |
 | [`quinn-proto-0.11.19.patch`](quinn-proto-0.11.19.patch) | all `vendor/quinn-proto` deviations from upstream `quinn-proto 0.11.19` (`src/` and `Cargo.toml`) |
 | [`rustls-0.23.46.patch`](rustls-0.23.46.patch) | all `vendor/rustls` deviations from upstream `rustls 0.23.46` (`src/` and `Cargo.toml`) |
-| [`hyper-1.10.1.patch`](hyper-1.10.1.patch) | all `vendor/hyper` deviations from upstream `hyper 1.10.1` (`src/` only) |
+| [`hyper-1.12.0.patch`](hyper-1.12.0.patch) | all `vendor/hyper` deviations from upstream `hyper 1.12.0` (`src/` only) |
 
 ## Gate modules
 
@@ -468,12 +468,12 @@ brotli issues). Upstream changes that meet the patch:
   offers ML-DSA too. Chrome's ML-DSA schemes are now verifiable rather than
   advertised only.
 
-## hyper (1.10.1)
+## hyper (1.12.0)
 
-Baseline — crates.io `hyper 1.10.1`. The vendored copy is verbatim upstream
+Baseline — crates.io `hyper 1.12.0`. The vendored copy is verbatim upstream
 (`Cargo.toml`, `Cargo.toml.orig`, `LICENSE`, `src/`; no vendoring trim — hyper's
 dev-dependencies are not resolved for a non-member path crate). Changes carried by
-`hyper-1.10.1.patch`:
+`hyper-1.12.0.patch`:
 
 1. **public-header-case-map** (`src/ext/mod.rs`) — visibility only:
    `hyper::ext::HeaderCaseMap` becomes `pub` (its field stays private), and so do
@@ -487,7 +487,7 @@ dev-dependencies are not resolved for a non-member path crate). Changes carried 
    hyper's only public option, `title_case_headers` (every name Title-Case), cannot
    do. The server crates never build the map, so their wire is unchanged.
 
-Conformance check: apply the patch to a clean copy of crates.io 1.10.1 (the
+Conformance check: apply the patch to a clean copy of crates.io 1.12.0 (the
 retained file set) and compare with `diff -r` — empty.
 
 ## Regenerating
@@ -508,7 +508,7 @@ To rebuild the patch artifacts after changing vendored source:
   vendored files over it and take `git diff` as the patch; check by applying it with
   `patch -p1` to another clean copy and comparing with `diff -r` (empty).
 
-A `cargo update` that moves `hyper` past 1.10.1 in either lockfile (root or
+A `cargo update` that moves `hyper` past 1.12.0 in either lockfile (root or
 `android/rust`) leaves the patch as `[[patch.unused]]` and the build then fails with
 E0603 (private `HeaderCaseMap`); re-vendor the new version with the patch instead.
 The same happens to `quinn-proto` when `cargo update` moves `quinn` to a release that
