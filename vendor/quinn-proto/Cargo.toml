@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.85"
 name = "quinn-proto"
-version = "0.11.15"
+version = "0.11.19"
 build = false
 autolib = false
 autobins = false
@@ -95,8 +95,9 @@ default-features = false
 version = "1"
 
 [dependencies.fastbloom]
-version = "0.14"
+version = "0.17"
 optional = true
+default-features = false
 
 [dependencies.lru-slab]
 version = "0.1.2"
@@ -106,7 +107,10 @@ version = "0.15.2"
 optional = true
 
 [dependencies.rand]
-version = "0.9"
+version = "0.10.1"
+
+[dependencies.rand_pcg]
+version = "0.10"
 
 [dependencies.ring]
 version = "0.17"
@@ -122,7 +126,7 @@ optional = true
 default-features = false
 
 [dependencies.rustls-platform-verifier]
-version = "0.6"
+version = "0.7"
 optional = true
 
 [dependencies.slab]
@@ -144,7 +148,7 @@ features = ["std"]
 default-features = false
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.getrandom]
-version = "0.3"
+version = "0.4"
 features = ["wasm_js"]
 default-features = false
 

@@ -16,7 +16,7 @@
 //     pair (h3 `queue_send`/`poll_drain`/`queue_grease`/`poll_quic_finish`
 //     driven by sockudo's `write_queued`/`shutdown_started` state machines).
 //   - `MtuDiscoveryConfig::first_probe` — added by the mtud-first-probe part
-//     of `quinn-proto-0.11.15.patch` for `[server.h3].mtu_first_probe`.
+//     of `quinn-proto-0.11.19.patch` for `[server.h3].mtu_first_probe`.
 //
 // The type re-exports below are plain upstream API, funneled anyway so the
 // rest of the server never names the vendored crates directly (CI-enforced

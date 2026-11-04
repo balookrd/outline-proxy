@@ -1,8 +1,8 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index a59d7e3..c781d03 100644
+index 818b08e..00ddc18 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -143,35 +143,6 @@ version = "0.1.10"
+@@ -147,32 +147,6 @@ version = "0.1.10"
  features = ["std"]
  default-features = false
  
@@ -14,9 +14,6 @@ index a59d7e3..c781d03 100644
 -
 -[dev-dependencies.lazy_static]
 -version = "1"
--
--[dev-dependencies.rand_pcg]
--version = "0.9"
 -
 -[dev-dependencies.rcgen]
 -version = "0.14"
@@ -36,7 +33,7 @@ index a59d7e3..c781d03 100644
 -version = "0.3.45"
 -
  [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.getrandom]
- version = "0.3"
+ version = "0.4"
  features = ["wasm_js"]
 diff --git a/src/cid_queue.rs b/src/cid_queue.rs
 index 3e3eec9..f9ddbb0 100644
@@ -251,7 +248,7 @@ index 3e3eec9..f9ddbb0 100644
          assert_eq!(q.active(), initial_cid());
          assert_eq!(q.active_seq(), 0);
 diff --git a/src/config/mod.rs b/src/config/mod.rs
-index aa755b5..69ee5b7 100644
+index 0a299d0..808fcf8 100644
 --- a/src/config/mod.rs
 +++ b/src/config/mod.rs
 @@ -28,7 +28,10 @@ use crate::{
@@ -267,7 +264,7 @@ index aa755b5..69ee5b7 100644
  /// Global configuration for the endpoint, affecting all connections
  ///
 diff --git a/src/config/transport.rs b/src/config/transport.rs
-index 0198e45..d2d9401 100644
+index ba00695..28b9cb2 100644
 --- a/src/config/transport.rs
 +++ b/src/config/transport.rs
 @@ -8,8 +8,11 @@ use qlog::streamer::QlogStreamer;
@@ -500,7 +497,7 @@ index 0198e45..d2d9401 100644
      /// Maximum number of bytes the peer may transmit across all streams of a connection before
      /// becoming blocked.
      ///
-@@ -350,6 +556,76 @@ impl TransportConfig {
+@@ -361,6 +567,76 @@ impl TransportConfig {
      }
  }
  
@@ -577,7 +574,7 @@ index 0198e45..d2d9401 100644
  impl Default for TransportConfig {
      fn default() -> Self {
          const EXPECTED_RTT: u32 = 100; // ms
-@@ -364,6 +640,19 @@ impl Default for TransportConfig {
+@@ -375,6 +651,19 @@ impl Default for TransportConfig {
              // 30 second default recommended by RFC 9308 § 3.2
              max_idle_timeout: Some(VarInt(30_000)),
              stream_receive_window: STREAM_RWND.into(),
@@ -597,7 +594,7 @@ index 0198e45..d2d9401 100644
              receive_window: VarInt::MAX,
              send_window: (8 * STREAM_RWND).into(),
              send_fairness: true,
-@@ -402,6 +691,19 @@ impl fmt::Debug for TransportConfig {
+@@ -413,6 +702,19 @@ impl fmt::Debug for TransportConfig {
              max_concurrent_uni_streams,
              max_idle_timeout,
              stream_receive_window,
@@ -617,7 +614,7 @@ index 0198e45..d2d9401 100644
              receive_window,
              send_window,
              send_fairness,
-@@ -431,6 +733,22 @@ impl fmt::Debug for TransportConfig {
+@@ -442,6 +744,22 @@ impl fmt::Debug for TransportConfig {
              .field("max_concurrent_uni_streams", max_concurrent_uni_streams)
              .field("max_idle_timeout", max_idle_timeout)
              .field("stream_receive_window", stream_receive_window)
@@ -640,7 +637,7 @@ index 0198e45..d2d9401 100644
              .field("receive_window", receive_window)
              .field("send_window", send_window)
              .field("send_fairness", send_fairness)
-@@ -688,6 +1006,8 @@ pub struct MtuDiscoveryConfig {
+@@ -699,6 +1017,8 @@ pub struct MtuDiscoveryConfig {
      pub(crate) interval: Duration,
      pub(crate) upper_bound: u16,
      pub(crate) minimum_change: u16,
@@ -649,7 +646,7 @@ index 0198e45..d2d9401 100644
      pub(crate) black_hole_cooldown: Duration,
  }
  
-@@ -730,6 +1050,39 @@ impl MtuDiscoveryConfig {
+@@ -741,6 +1061,39 @@ impl MtuDiscoveryConfig {
          self.minimum_change = value;
          self
      }
@@ -689,7 +686,7 @@ index 0198e45..d2d9401 100644
  }
  
  impl Default for MtuDiscoveryConfig {
-@@ -739,6 +1092,8 @@ impl Default for MtuDiscoveryConfig {
+@@ -750,6 +1103,8 @@ impl Default for MtuDiscoveryConfig {
              upper_bound: 1452,
              black_hole_cooldown: Duration::from_secs(60),
              minimum_change: 20,
@@ -700,7 +697,7 @@ index 0198e45..d2d9401 100644
  }
 diff --git a/src/connection/initial_crypto.rs b/src/connection/initial_crypto.rs
 new file mode 100644
-index 0000000..39f3c94
+index 0000000..5321913
 --- /dev/null
 +++ b/src/connection/initial_crypto.rs
 @@ -0,0 +1,329 @@
@@ -721,7 +718,7 @@ index 0000000..39f3c94
 +use std::ops::Range;
 +
 +use bytes::{BufMut, Bytes, BytesMut};
-+use rand::Rng;
++use rand::{Rng, RngExt};
 +use tracing::trace;
 +
 +use super::{Connection, SentFrames, SpaceId};
@@ -1034,7 +1031,7 @@ index 0000000..39f3c94
 +#[path = "tests/initial_crypto.rs"]
 +mod tests;
 diff --git a/src/connection/mod.rs b/src/connection/mod.rs
-index 3cd1a2e..31bdccf 100644
+index 5155740..0333fe4 100644
 --- a/src/connection/mod.rs
 +++ b/src/connection/mod.rs
 @@ -48,6 +48,8 @@ use cid_state::CidState;
@@ -1056,7 +1053,7 @@ index 3cd1a2e..31bdccf 100644
      crypto: Box<dyn crypto::Session>,
      /// The CID we initially chose, for use during the handshake
      handshake_cid: ConnectionId,
-@@ -271,6 +276,7 @@ impl Connection {
+@@ -278,6 +283,7 @@ impl Connection {
              client_hello: None,
          });
          let mut rng = StdRng::from_seed(rng_seed);
@@ -1064,7 +1061,7 @@ index 3cd1a2e..31bdccf 100644
          let mut this = Self {
              endpoint_config,
              crypto,
-@@ -331,9 +337,13 @@ impl Connection {
+@@ -338,9 +344,13 @@ impl Connection {
              path_responses: PathResponses::default(),
              close: false,
  
@@ -1078,10 +1075,10 @@ index 3cd1a2e..31bdccf 100644
 +                state.max_ack_delay = Duration::from_millis(config.max_ack_delay.into_inner());
 +                state
 +            },
+             next_bundled_ack_time: None,
  
              pto_count: 0,
- 
-@@ -348,11 +358,13 @@ impl Connection {
+@@ -356,11 +366,13 @@ impl Connection {
                  config.send_window,
                  config.receive_window,
                  config.stream_receive_window,
@@ -1096,7 +1093,7 @@ index 3cd1a2e..31bdccf 100644
              stats: ConnectionStats::default(),
              version,
          };
-@@ -877,8 +889,18 @@ impl Connection {
+@@ -883,8 +895,18 @@ impl Connection {
                  }
              }
  
@@ -1117,15 +1114,15 @@ index 3cd1a2e..31bdccf 100644
  
              // ACK-only packets should only be sent when explicitly allowed. If we write them due to
              // any other reason, there is a bug which leads to one component announcing write
-@@ -1265,6 +1287,7 @@ impl Connection {
-         stats.path.rtt = self.path.rtt.get();
+@@ -1292,6 +1314,7 @@ impl Connection {
+         stats.path.min_rtt = self.path.rtt.min();
          stats.path.cwnd = self.path.congestion.window();
          stats.path.current_mtu = self.path.mtud.current_mtu();
 +        stats.path.plpmtud_settled = self.path.mtud.settled();
  
          stats
      }
-@@ -3140,6 +3163,7 @@ impl Connection {
+@@ -3157,6 +3180,7 @@ impl Connection {
          buf: &mut Vec<u8>,
          max_size: usize,
          pn: u64,
@@ -1133,7 +1130,7 @@ index 3cd1a2e..31bdccf 100644
      ) -> SentFrames {
          let mut sent = SentFrames::default();
          let space = &mut self.spaces[space_id];
-@@ -3240,8 +3264,12 @@ impl Connection {
+@@ -3260,8 +3284,12 @@ impl Connection {
              }
          }
  
@@ -1148,7 +1145,7 @@ index 3cd1a2e..31bdccf 100644
                  Some(x) => x,
                  None => break,
 diff --git a/src/connection/mtud.rs b/src/connection/mtud.rs
-index b690731..53c5859 100644
+index 0893b29..9f41080 100644
 --- a/src/connection/mtud.rs
 +++ b/src/connection/mtud.rs
 @@ -70,6 +70,15 @@ impl MtuDiscovery {
@@ -1167,7 +1164,7 @@ index b690731..53c5859 100644
      /// Returns the amount of bytes that should be sent as an MTU probe, if any
      pub(crate) fn poll_transmit(&mut self, now: Instant, next_pn: u64) -> Option<u16> {
          self.state
-@@ -168,6 +177,12 @@ struct EnabledMtuDiscovery {
+@@ -173,6 +182,12 @@ struct EnabledMtuDiscovery {
      phase: Phase,
      peer_max_udp_payload_size: u16,
      config: MtuDiscoveryConfig,
@@ -1180,7 +1177,7 @@ index b690731..53c5859 100644
  }
  
  impl EnabledMtuDiscovery {
-@@ -175,6 +190,8 @@ impl EnabledMtuDiscovery {
+@@ -180,6 +195,8 @@ impl EnabledMtuDiscovery {
          Self {
              phase: Phase::Initial,
              peer_max_udp_payload_size: MAX_UDP_PAYLOAD,
@@ -1189,7 +1186,7 @@ index b690731..53c5859 100644
              config,
          }
      }
-@@ -187,6 +204,8 @@ impl EnabledMtuDiscovery {
+@@ -192,6 +209,8 @@ impl EnabledMtuDiscovery {
                  current_mtu,
                  self.peer_max_udp_payload_size,
                  &self.config,
@@ -1198,7 +1195,7 @@ index b690731..53c5859 100644
              ));
          } else if let Phase::Complete(next_mtud_activation) = &self.phase {
              if now < *next_mtud_activation {
-@@ -198,6 +217,8 @@ impl EnabledMtuDiscovery {
+@@ -203,6 +222,8 @@ impl EnabledMtuDiscovery {
                  current_mtu,
                  self.peer_max_udp_payload_size,
                  &self.config,
@@ -1207,7 +1204,7 @@ index b690731..53c5859 100644
              ));
          }
  
-@@ -243,6 +264,11 @@ impl EnabledMtuDiscovery {
+@@ -248,6 +269,11 @@ impl EnabledMtuDiscovery {
              Phase::Searching(state) if state.in_flight_probe == Some(pn) => {
                  state.in_flight_probe = None;
                  state.lost_probe_count = 0;
@@ -1219,7 +1216,7 @@ index b690731..53c5859 100644
                  Some(state.last_probed_mtu)
              }
              _ => None,
-@@ -255,6 +281,13 @@ impl EnabledMtuDiscovery {
+@@ -260,6 +286,13 @@ impl EnabledMtuDiscovery {
          if let Phase::Searching(state) = &mut self.phase {
              state.in_flight_probe = None;
              state.lost_probe_count += 1;
@@ -1233,7 +1230,7 @@ index b690731..53c5859 100644
          }
      }
  
-@@ -290,6 +323,12 @@ struct SearchState {
+@@ -295,6 +328,12 @@ struct SearchState {
      in_flight_probe: Option<u64>,
      /// Lost probes at the current probe size
      lost_probe_count: usize,
@@ -1246,7 +1243,7 @@ index b690731..53c5859 100644
  }
  
  impl SearchState {
-@@ -299,11 +338,17 @@ impl SearchState {
+@@ -304,11 +343,17 @@ impl SearchState {
          mut lower_bound: u16,
          peer_max_udp_payload_size: u16,
          config: &MtuDiscoveryConfig,
@@ -1264,7 +1261,7 @@ index b690731..53c5859 100644
  
          Self {
              in_flight_probe: None,
-@@ -314,6 +359,9 @@ impl SearchState {
+@@ -319,6 +364,9 @@ impl SearchState {
              // During initialization, we consider the lower bound to have already been
              // successfully probed
              last_probed_mtu: lower_bound,
@@ -1274,7 +1271,7 @@ index b690731..53c5859 100644
          }
      }
  
-@@ -321,11 +369,23 @@ impl SearchState {
+@@ -326,11 +374,23 @@ impl SearchState {
      fn next_mtu_to_probe(&mut self, last_probe_succeeded: bool) -> Option<u16> {
          debug_assert_eq!(self.in_flight_probe, None);
  
@@ -1298,7 +1295,7 @@ index b690731..53c5859 100644
  
          let next_mtu = (self.lower_bound as i32 + self.upper_bound as i32) / 2;
  
-@@ -336,6 +396,11 @@ impl SearchState {
+@@ -341,6 +401,11 @@ impl SearchState {
              if self.upper_bound.saturating_sub(self.last_probed_mtu) >= self.minimum_change {
                  return Some(self.upper_bound);
              }
@@ -1310,7 +1307,7 @@ index b690731..53c5859 100644
  
              return None;
          }
-@@ -833,7 +898,7 @@ mod tests {
+@@ -849,7 +914,7 @@ mod tests {
          let mut config = MtuDiscoveryConfig::default();
          config.upper_bound(1400);
  
@@ -1319,7 +1316,7 @@ index b690731..53c5859 100644
          assert_eq!(state.lower_bound, 1500);
          assert_eq!(state.upper_bound, 1500);
      }
-@@ -843,7 +908,7 @@ mod tests {
+@@ -859,7 +924,7 @@ mod tests {
          let mut config = MtuDiscoveryConfig::default();
          config.upper_bound(9000);
  
@@ -1328,7 +1325,7 @@ index b690731..53c5859 100644
          assert_eq!(state.lower_bound, 1300);
          assert_eq!(state.upper_bound, 1300);
      }
-@@ -853,7 +918,7 @@ mod tests {
+@@ -869,7 +934,7 @@ mod tests {
          let mut config = MtuDiscoveryConfig::default();
          config.upper_bound(9000);
  
@@ -1337,7 +1334,7 @@ index b690731..53c5859 100644
          assert_eq!(state.lower_bound, 1200);
          assert_eq!(state.upper_bound, 1450);
      }
-@@ -967,4 +1032,264 @@ mod tests {
+@@ -1013,4 +1078,264 @@ mod tests {
          bhd.on_non_probe_lost(BLACK_HOLE_THRESHOLD as u64 * 2 + 1, 1400);
          assert!(!bhd.black_hole_detected());
      }
@@ -1603,10 +1600,10 @@ index b690731..53c5859 100644
 +    }
  }
 diff --git a/src/connection/stats.rs b/src/connection/stats.rs
-index f62e62e..976748d 100644
+index 8df96ef..842e8e9 100644
 --- a/src/connection/stats.rs
 +++ b/src/connection/stats.rs
-@@ -155,6 +155,10 @@ pub struct PathStats {
+@@ -157,6 +157,10 @@ pub struct PathStats {
      pub black_holes_detected: u64,
      /// Largest UDP payload size the path currently supports
      pub current_mtu: u16,
@@ -1618,7 +1615,7 @@ index f62e62e..976748d 100644
  
  /// Connection statistics
 diff --git a/src/connection/streams/mod.rs b/src/connection/streams/mod.rs
-index 3e769c7..8ac0530 100644
+index fe41e73..a7083b1 100644
 --- a/src/connection/streams/mod.rs
 +++ b/src/connection/streams/mod.rs
 @@ -134,11 +134,12 @@ impl RecvStream<'_> {
@@ -1671,7 +1668,7 @@ index 5361a22..b8393f3 100644
          recv.assembler.ensure_ordering(ordered)?;
          Ok(Self {
 diff --git a/src/connection/streams/state.rs b/src/connection/streams/state.rs
-index 619ff34..14ab3eb 100644
+index 7a5908d..fcb0c7f 100644
 --- a/src/connection/streams/state.rs
 +++ b/src/connection/streams/state.rs
 @@ -13,7 +13,7 @@ use super::{
@@ -1705,7 +1702,7 @@ index 619ff34..14ab3eb 100644
  
      // Pertinent state from the TransportParameters supplied by the peer
      initial_max_stream_data_uni: VarInt,
-@@ -148,12 +154,13 @@ impl StreamsState {
+@@ -152,12 +158,13 @@ impl StreamsState {
          send_window: u64,
          receive_window: VarInt,
          stream_receive_window: VarInt,
@@ -1720,8 +1717,8 @@ index 619ff34..14ab3eb 100644
              next: [0, 0],
              max: [0, 0],
              max_remote: [max_remote_bi.into(), max_remote_uni.into()],
-@@ -177,6 +184,11 @@ impl StreamsState {
-             unacked_data: 0,
+@@ -181,6 +188,11 @@ impl StreamsState {
+             buffered_data: 0,
              send_window,
              stream_receive_window: stream_receive_window.into(),
 +            initial_stream_receive_windows: [
@@ -1732,7 +1729,7 @@ index 619ff34..14ab3eb 100644
              initial_max_stream_data_uni: 0u32.into(),
              initial_max_stream_data_bidi_local: 0u32.into(),
              initial_max_stream_data_bidi_remote: 0u32.into(),
-@@ -260,11 +272,8 @@ impl StreamsState {
+@@ -267,11 +279,8 @@ impl StreamsState {
              debug!("received illegal STREAM frame");
          })?;
  
@@ -1746,7 +1743,7 @@ index 619ff34..14ab3eb 100644
              Some(rs) => rs,
              None => {
                  trace!("dropping frame for closed stream");
-@@ -313,11 +322,8 @@ impl StreamsState {
+@@ -320,11 +329,8 @@ impl StreamsState {
              debug!("received illegal RESET_STREAM frame");
          })?;
  
@@ -1760,7 +1757,7 @@ index 619ff34..14ab3eb 100644
              Some(stream) => stream,
              None => {
                  trace!("received RESET_STREAM on closed stream");
-@@ -889,7 +895,7 @@ impl StreamsState {
+@@ -960,7 +966,7 @@ impl StreamsState {
          }
          // bidirectional OR (unidirectional AND remote)
          if bi || remote {
@@ -1769,7 +1766,7 @@ index 619ff34..14ab3eb 100644
              assert!(self.recv.insert(id, recv).is_none());
          }
      }
-@@ -943,10 +949,25 @@ impl StreamsState {
+@@ -1014,10 +1020,25 @@ impl StreamsState {
      }
  
      pub(super) fn stream_recv_freed(&mut self, id: StreamId, recv: StreamRecv) {
@@ -1796,7 +1793,7 @@ index 619ff34..14ab3eb 100644
      pub(super) fn max_send_data(&self, id: StreamId) -> VarInt {
          let remote = self.side != id.initiator();
          match id.dir() {
-@@ -998,6 +1019,11 @@ mod tests {
+@@ -1069,6 +1090,11 @@ mod tests {
              1024 * 1024,
              (1024 * 1024u32).into(),
              (1024 * 1024u32).into(),
@@ -1808,7 +1805,7 @@ index 619ff34..14ab3eb 100644
          )
      }
  
-@@ -1010,6 +1036,11 @@ mod tests {
+@@ -1215,6 +1241,11 @@ mod tests {
              1024 * 1024,
              (1024 * 1024u32).into(),
              (1024 * 1024u32).into(),
@@ -2130,7 +2127,7 @@ index 0000000..619a551
 +    assert!(most_pings >= 8, "{most_pings}");
 +}
 diff --git a/src/tests/mod.rs b/src/tests/mod.rs
-index b8712c4..05eb3b0 100644
+index 0d39a96..134ad50 100644
 --- a/src/tests/mod.rs
 +++ b/src/tests/mod.rs
 @@ -36,6 +36,8 @@ mod util;
@@ -2143,7 +2140,7 @@ index b8712c4..05eb3b0 100644
  #[cfg(all(target_family = "wasm", target_os = "unknown"))]
  use wasm_bindgen_test::wasm_bindgen_test as test;
 diff --git a/src/transport_parameters.rs b/src/transport_parameters.rs
-index 67e48bd..677b1f7 100644
+index 75462ae..c5fcfc1 100644
 --- a/src/transport_parameters.rs
 +++ b/src/transport_parameters.rs
 @@ -21,7 +21,10 @@ use crate::{
@@ -2178,7 +2175,7 @@ index 67e48bd..677b1f7 100644
          }
 @@ -150,38 +157,165 @@ impl TransportParameters {
          server_config: Option<&ServerConfig>,
-         rng: &mut impl RngCore,
+         rng: &mut impl Rng,
      ) -> Self {
 -        Self {
 +        let windows = config.advertised_stream_receive_windows();
@@ -2275,7 +2272,7 @@ index 67e48bd..677b1f7 100644
 +        next: &mut usize,
 +        id: VarInt,
 +        value: &[u8],
-+        rng: &mut impl RngCore,
++        rng: &mut impl Rng,
 +    ) {
 +        let mut buf = [0u8; ExtraTransportParameter::MAX_LEN];
 +        buf[..value.len()].copy_from_slice(value);
@@ -2386,7 +2383,7 @@ index 67e48bd..677b1f7 100644
 +/// `version_information` (RFC 9368 §3): QUIC v1 as the chosen version, then
 +/// `other_versions` as configured, GREASE slots drawn per connection
 +/// (RFC 9368 §7: `0x?a?a?a?a`).
-+fn version_information(form: &VersionInformation, rng: &mut impl RngCore) -> Vec<u8> {
++fn version_information(form: &VersionInformation, rng: &mut impl Rng) -> Vec<u8> {
 +    const V1: u32 = 0x0000_0001;
 +    let mut others: Vec<u32> = form
 +        .other_versions
@@ -2451,7 +2448,7 @@ index 67e48bd..677b1f7 100644
      }
  
      /// Decode `TransportParameters` from buffer
-@@ -642,7 +838,7 @@ pub(crate) enum TransportParameterId {
+@@ -648,7 +844,7 @@ pub(crate) enum TransportParameterId {
  
  impl TransportParameterId {
      /// Array with all supported transport parameter IDs
