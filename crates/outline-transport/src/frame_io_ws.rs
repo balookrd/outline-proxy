@@ -275,8 +275,8 @@ pub struct WsFrameSink {
     writer_exit: watch::Receiver<bool>,
     _keepalive_task: Option<AbortOnDrop>,
     /// Process-wide carrier padding read at construction. Disabled by default,
-    /// in which case `send_frame` leaves the bytes untouched and the wire stays
-    /// byte-for-byte identical to the unpadded carrier.
+    /// in which case `send_frame` leaves the bytes untouched and the wire
+    /// carries no padding frames (the early-session shaper may still cut them).
     padding: CarrierPadding,
     /// Early-session shaper (h1/h2 carriers, padded or not). `None`
     /// otherwise, including every h3 carrier.
@@ -292,8 +292,8 @@ impl FrameSink for WsFrameSink {
             .ok_or_else(|| anyhow!("ws frame sink already closed"))?;
         // When padding is on, wrap the VLESS frame bytes in length-delimited
         // padding frames so the WS/TLS record size no longer tracks the VLESS
-        // payload size; otherwise hand the bytes through unchanged (wire stays
-        // byte-for-byte identical). The server decodes symmetrically only when
+        // payload size; otherwise hand the bytes through unframed (no padding
+        // frames on the wire). The server decodes symmetrically only when
         // its matching path also opted in (config-synchronised gate).
         if let Some(shaper) = self.shaper.as_mut().filter(|s| s.is_active()) {
             let msgs = carrier_padding::shaped_messages(
@@ -477,8 +477,8 @@ pub fn from_ws_frames(
     idle_timeout: Option<Duration>,
     keepalive: Option<Duration>,
 ) -> (WsFrameSink, WsFrameSource) {
-    // Process-wide carrier padding. Disabled by default (the wire stays
-    // byte-for-byte identical); when on, the sink frames every VLESS write,
+    // Process-wide carrier padding. Disabled by default (no padding frames on
+    // the wire); when on, the sink frames every VLESS write,
     // the source decodes inbound frames, and the writer emits idle cover
     // frames. VLESS-TCP-over-WS / -XHTTP ride this byte-chunk pipe; the
     // datagram pipe (`from_ws_datagrams`, used by SS-UDP / VLESS-UDP) does not.

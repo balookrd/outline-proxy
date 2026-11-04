@@ -48,8 +48,8 @@ pub struct WsWriteTransport {
     /// Kept alive for its `AbortOnDrop` — aborts the writer task on drop.
     _writer_task: Option<AbortOnDrop>,
     /// Process-wide carrier padding read at spawn. Disabled by default, in
-    /// which case `write_frame` leaves the buffer untouched and the wire stays
-    /// byte-for-byte identical to the unpadded carrier.
+    /// which case `write_frame` leaves the buffer untouched and the wire
+    /// carries no padding frames (the early-session shaper may still cut it).
     padding: CarrierPadding,
     /// Early-session shaper (h1/h2 carriers, padded or not): cuts the first
     /// large frames into browser-sized messages. `None` otherwise.
@@ -263,8 +263,8 @@ where
 impl WsWriteTransport {
     /// When padding is on, wraps the encrypted SS bytes in length-delimited
     /// padding frames so the WS/TLS record size no longer tracks the SS payload
-    /// size; otherwise hands the buffer through unchanged (wire stays
-    /// byte-for-byte identical). The server decodes symmetrically only when its
+    /// size; otherwise hands the buffer through unframed (no padding frames on
+    /// the wire). The server decodes symmetrically only when its
     /// matching path also opted in (config-synchronised gate).
     fn pad(&self, frame: Vec<u8>) -> Vec<u8> {
         if self.padding.scheme.is_enabled() {

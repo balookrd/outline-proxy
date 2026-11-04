@@ -336,8 +336,8 @@ pub use fingerprint_profile::{
 };
 
 // Carrier padding: application-layer record-size obfuscation on the WS / XHTTP
-// carriers (anti TLS-in-TLS). Wired once at startup; default disabled keeps the
-// wire byte-for-byte identical to pre-padding builds. Config-synchronised with
+// carriers (anti TLS-in-TLS). Wired once at startup; default disabled keeps
+// padding frames off the wire. Config-synchronised with
 // the server, which enables it per-path.
 pub use carrier_padding::{
     CarrierPadding, carrier_padding_default_on, init_carrier_padding, init_react_to_throttle,

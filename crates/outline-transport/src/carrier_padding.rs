@@ -11,8 +11,8 @@
 //! the per-uplink override is a dial-scoped task-local set by
 //! [`with_uplink_padding_override`] (the uplink manager wraps each dial). The
 //! transports read the resolved value via [`effective_carrier_padding`].
-//! Default is off, so a build that never opts in leaves the wire byte-for-byte
-//! identical to the unpadded carrier.
+//! Default is off, so a build that never opts in puts no padding frames on
+//! the wire (early-session shaping on h1/h2 is separate and needs no padding).
 //!
 //! Gating is config-synchronised, like session resumption: there is no on-wire
 //! capability bit. The server must enable padding on the matching path or it
@@ -175,7 +175,7 @@ where
 /// The padding config the current dial should use: the per-uplink override
 /// when one is in scope, else the global default ([`DEFAULT_ON`]). Returns the
 /// stored parameters when on, [`CarrierPadding::disabled`] when off — so a
-/// disabled dial leaves the wire byte-for-byte identical. Read by the WS /
+/// disabled dial puts no padding frames on the wire. Read by the WS /
 /// XHTTP transports (and the VLESS-UDP transport) when they construct a
 /// connection.
 pub(crate) fn effective_carrier_padding() -> CarrierPadding {

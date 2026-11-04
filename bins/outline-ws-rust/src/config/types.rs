@@ -99,8 +99,8 @@ impl Default for PaddingConfig {
 }
 
 impl PaddingConfig {
-    /// The wire-codec scheme this resolves to. Disabled → no framing, the
-    /// carrier stays byte-for-byte unchanged.
+    /// The wire-codec scheme this resolves to. Disabled → no padding framing
+    /// on the carrier.
     pub fn scheme(&self) -> outline_wire::padding::PaddingScheme {
         if self.enabled {
             outline_wire::padding::PaddingScheme::new(self.min_bytes, self.max_bytes)

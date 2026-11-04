@@ -325,3 +325,32 @@ async fn lead_in_cover_rides_with_the_held_header_on_about_half_of_sessions() {
         "ss lead-in cover: {with_cover}/200 sessions, {standalone_cover} standalone cover messages"
     );
 }
+
+/// `shape = true` without padding (no per-uplink override in scope, global
+/// default off): the first large write is cut into several plain `Binary`
+/// messages, each within the client piece ceiling, that concatenate back to the
+/// original bytes — no padding framing on the wire.
+#[tokio::test(start_paused = true)]
+async fn shaped_write_without_padding_splits_into_plain_messages() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (mut t, _ctrl) = WsWriteTransport::spawn(RecordingSink(tx), true);
+    let frame: Vec<u8> = (0..1964u32).map(|i| i as u8).collect();
+    t.write_frame(frame.clone()).await.unwrap();
+    t.close().await.unwrap();
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    let mut pieces = Vec::new();
+    while let Ok(m) = rx.try_recv() {
+        if let Message::Binary(b) = m {
+            pieces.push(b.to_vec());
+        }
+    }
+    assert!(pieces.len() >= 2, "a 1964 B first write must be split: {}", pieces.len());
+    assert!(
+        pieces.iter().all(|p| (1..=850).contains(&p.len())),
+        "piece sizes: {:?}",
+        pieces.iter().map(Vec::len).collect::<Vec<_>>()
+    );
+    assert_eq!(pieces.concat(), frame, "plain pieces must concatenate to the write");
+}
