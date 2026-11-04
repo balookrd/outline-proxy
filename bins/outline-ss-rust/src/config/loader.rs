@@ -131,6 +131,7 @@ fn resolve(args: ConfigArgs, file: FileConfig, config_path: Option<PathBuf>) -> 
         h3_certs,
         h3_alpn: resolve_h3_alpn(server_h3.alpn.as_deref())?,
         h3_initial_mtu: resolve_h3_initial_mtu(server_h3.initial_mtu)?,
+        h3_mtu_first_probe: resolve_h3_mtu_first_probe(server_h3.mtu_first_probe)?,
         h3_udp_datagrams: server_h3.udp_datagrams.unwrap_or(true),
         metrics_listen: args.metrics_listen.or(metrics.listen),
         metrics_path: args
@@ -309,6 +310,20 @@ fn resolve_h3_initial_mtu(input: Option<u16>) -> Result<Option<u16>> {
             "server.h3.initial_mtu must be between {H3_MIN_INITIAL_MTU} and \
              {H3_MAX_INITIAL_MTU} bytes (got {value}); it is a UDP payload size, \
              i.e. the path MTU minus 28 (IPv4) or 48 (IPv6)"
+        );
+    }
+    Ok(Some(value))
+}
+
+/// Validate `[server.h3].mtu_first_probe` (same bounds and units as `initial_mtu`).
+fn resolve_h3_mtu_first_probe(input: Option<u16>) -> Result<Option<u16>> {
+    let Some(value) = input else {
+        return Ok(None);
+    };
+    if !(H3_MIN_INITIAL_MTU..=H3_MAX_INITIAL_MTU).contains(&value) {
+        anyhow::bail!(
+            "server.h3.mtu_first_probe must be between {H3_MIN_INITIAL_MTU} and \
+             {H3_MAX_INITIAL_MTU} bytes (got {value}); it is a UDP payload size"
         );
     }
     Ok(Some(value))

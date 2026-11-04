@@ -251,6 +251,7 @@ pub(super) struct ServerListenerConfigView {
     pub h3_cert_path: Option<String>,
     pub h3_key_path: Option<String>,
     pub h3_initial_mtu: Option<u16>,
+    pub h3_mtu_first_probe: Option<u16>,
 }
 
 #[derive(Debug, Serialize)]
@@ -397,6 +398,7 @@ pub(super) async fn get_config(State(state): State<ControlState>) -> axum::respo
                 .and_then(|h| h.key_path.as_ref())
                 .map(|p| p.display().to_string()),
             h3_initial_mtu: df.h3.as_ref().and_then(|h| h.initial_mtu),
+            h3_mtu_first_probe: df.h3.as_ref().and_then(|h| h.mtu_first_probe),
         })
     } else {
         Some(ServerListenerConfigView {
@@ -407,6 +409,7 @@ pub(super) async fn get_config(State(state): State<ControlState>) -> axum::respo
             h3_cert_path: state.config.h3_cert_path.as_ref().map(|p| p.display().to_string()),
             h3_key_path: state.config.h3_key_path.as_ref().map(|p| p.display().to_string()),
             h3_initial_mtu: state.config.h3_initial_mtu,
+            h3_mtu_first_probe: state.config.h3_mtu_first_probe,
         })
     };
 

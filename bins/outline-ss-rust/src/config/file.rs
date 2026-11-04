@@ -137,6 +137,17 @@ pub(crate) struct ServerH3Section {
     /// 1500-Ethernet defaults. See [`super::loader::resolve_h3_initial_mtu`].
     #[serde(default)]
     pub initial_mtu: Option<u16>,
+    /// First DPLPMTUD probe size, a UDP payload size (1200–1452). Set it on a
+    /// node whose clients' paths are known to carry that size: discovery then
+    /// confirms it with one probe instead of a ladder. A path that does not
+    /// carry it costs one rejected size before the regular search. A confirmed
+    /// first probe caps every connection at that value, so do not set it below
+    /// the real path MTU (1448 on a 1452 path caps all connections at 1448).
+    /// Without a pinned `initial_mtu` the starting MTU is 1400, so a value
+    /// <= 1400 has no effect; use a value above 1400. Unset keeps the regular
+    /// search. Ignored when `initial_mtu` is pinned.
+    #[serde(default)]
+    pub mtu_first_probe: Option<u16>,
     /// Allow client UDP over HTTP/3 DATAGRAM (RFC 9297) on this listener.
     /// Defaults to `true`.
     #[serde(default)]

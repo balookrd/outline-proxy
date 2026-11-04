@@ -122,7 +122,7 @@ async fn http3_datagram_client_sees_max_datagram_size_and_connect_works() -> Res
     // Build the endpoint with the production QUIC server config, so the
     // datagram buffers under test are the ones the real listener uses.
     let probe_config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
-    let server_config = build_h3_quinn_server_config(tls_config, &probe_config.tuning, None)?;
+    let server_config = build_h3_quinn_server_config(tls_config, &probe_config.tuning, None, None)?;
     let socket = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
     let endpoint = quinn::Endpoint::new(
         quinn::EndpointConfig::default(),
@@ -1502,7 +1502,7 @@ async fn mtu_discovery_gets_within_a_few_bytes_of_a_narrow_path() -> Result<()> 
     const PATH_LIMIT: u16 = 1448;
     let (tls_config, cert_der) = test_h3_server_tls()?;
     let probe_config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
-    let server_config = build_h3_quinn_server_config(tls_config, &probe_config.tuning, None)?;
+    let server_config = build_h3_quinn_server_config(tls_config, &probe_config.tuning, None, None)?;
     let mut endpoint_config = quinn::EndpointConfig::default();
     endpoint_config.max_udp_payload_size(super::super::constants::H3_MAX_UDP_PAYLOAD_SIZE)?;
     let socket = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -1541,5 +1541,54 @@ async fn mtu_discovery_gets_within_a_few_bytes_of_a_narrow_path() -> Result<()> 
         (1444..=PATH_LIMIT).contains(&mtu),
         "server path MTU settled at {mtu}, expected 1444..={PATH_LIMIT}"
     );
+    Ok(())
+}
+
+/// `[server.h3].mtu_first_probe` on a path that carries it: the server sends a
+/// single MTU probe instead of the 1426 → 1439 → 1445 → 1452 ladder.
+#[tokio::test]
+async fn mtu_first_probe_on_a_wide_path_is_the_only_probe() -> Result<()> {
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let probe_config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
+    let server_config =
+        build_h3_quinn_server_config(tls_config, &probe_config.tuning, None, Some(1452))?;
+    let mut endpoint_config = quinn::EndpointConfig::default();
+    endpoint_config.max_udp_payload_size(super::super::constants::H3_MAX_UDP_PAYLOAD_SIZE)?;
+    let socket = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let server = quinn::Endpoint::new(
+        endpoint_config,
+        Some(server_config),
+        socket,
+        Arc::new(quinn::TokioRuntime),
+    )?;
+    let (path, relay) = spawn_narrow_downlink(server.local_addr()?, 65_535).await?;
+
+    let accept = tokio::spawn({
+        let server = server.clone();
+        async move {
+            server
+                .accept()
+                .await
+                .context("server endpoint closed")?
+                .await
+                .map_err(anyhow::Error::from)
+        }
+    });
+    let mut client = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    client.set_default_client_config(test_h3_client_config(cert_der)?);
+    let _client_conn = client.connect(path, "localhost")?.await?;
+    let conn = accept.await??;
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut stats = conn.stats().path;
+    while !(stats.plpmtud_settled && stats.sent_plpmtud_probes > 0)
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        stats = conn.stats().path;
+    }
+    relay.abort();
+    assert_eq!(stats.current_mtu, 1452, "{stats:?}");
+    assert_eq!(stats.sent_plpmtud_probes, 1, "{stats:?}");
     Ok(())
 }

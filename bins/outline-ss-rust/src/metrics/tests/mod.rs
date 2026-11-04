@@ -16,6 +16,7 @@ pub(super) fn test_config() -> Config {
         h3_certs: Vec::new(),
         h3_alpn: vec![crate::config::H3Alpn::H3],
         h3_initial_mtu: None,
+        h3_mtu_first_probe: None,
         h3_udp_datagrams: true,
         metrics_listen: Some("127.0.0.1:9090".parse().unwrap()),
         metrics_path: "/metrics".to_owned(),

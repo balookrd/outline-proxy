@@ -26,6 +26,7 @@ fn test_config() -> Config {
         h3_certs: Vec::new(),
         h3_alpn: vec![H3Alpn::H3],
         h3_initial_mtu: None,
+        h3_mtu_first_probe: None,
         h3_udp_datagrams: true,
         metrics_listen: None,
         metrics_path: "/metrics".into(),

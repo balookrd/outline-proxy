@@ -150,6 +150,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         h3_certs: Vec::new(),
         h3_alpn: vec![crate::config::H3Alpn::H3],
         h3_initial_mtu: None,
+        h3_mtu_first_probe: None,
         h3_udp_datagrams: true,
         metrics_listen: None,
         metrics_path: "/metrics".into(),

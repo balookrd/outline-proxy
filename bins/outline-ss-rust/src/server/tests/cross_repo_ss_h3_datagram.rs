@@ -148,7 +148,7 @@ async fn setup_ss_udp_h3_server(udp_datagrams: bool) -> Result<DatagramTestServe
 pub(super) async fn serve_h3_datagram_config(config: Config) -> Result<DatagramTestServer> {
     super::cross_repo_install_test_tls_root_on_client();
     let tls_config = super::cross_repo_test_server_tls_config(&[b"h3"]);
-    let server_config = build_h3_quinn_server_config(tls_config, &config.tuning, None)?;
+    let server_config = build_h3_quinn_server_config(tls_config, &config.tuning, None, None)?;
     let socket = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
     let mut endpoint_config = quinn::EndpointConfig::default();
     endpoint_config.max_udp_payload_size(super::super::constants::H3_MAX_UDP_PAYLOAD_SIZE)?;

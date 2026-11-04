@@ -113,6 +113,19 @@ fn rejects_duplicate_peer_shard() {
 }
 
 #[test]
+fn h3_mtu_first_probe_is_validated_like_initial_mtu() {
+    assert_eq!(resolve_h3_mtu_first_probe(None).unwrap(), None);
+    assert_eq!(resolve_h3_mtu_first_probe(Some(1452)).unwrap(), Some(1452));
+    for value in [1199, 1453] {
+        let error = resolve_h3_mtu_first_probe(Some(value)).unwrap_err().to_string();
+        assert!(
+            error.contains("server.h3.mtu_first_probe must be between"),
+            "unexpected error for {value}: {error}"
+        );
+    }
+}
+
+#[test]
 fn h3_initial_mtu_defaults_to_unpinned() {
     // Unset means "standard 1500 path": the transport builder then uses its own
     // 1400 default and lets MTU discovery probe upward. Pinning is opt-in, so a
