@@ -239,16 +239,24 @@ Baseline — crates.io `quinn-proto 0.11.15`. Logical changes carried by
    default mode exactly as upstream, and the server does not use the options.
 4. **mtud-first-probe** (`src/config/transport.rs`, `src/connection/mtud.rs`,
    `src/connection/stats.rs`, `src/connection/mod.rs`) — new
-   `MtuDiscoveryConfig::first_probe(Option<u16>)`: the first search probes that size first;
-   if it is acknowledged the search ends and the size caps later searches; if it is rejected
-   (all retransmits lost) the regular binary search runs below it and `first_probe - 1` caps
+   `MtuDiscoveryConfig::first_probe(Option<u16>)`: the first search probes that size first.
+   Unless `first_probe_caps(false)` is set, its outcome caps the connection: if it is
+   acknowledged the search ends and the size caps later searches; if it is rejected (all
+   retransmits lost) the regular binary search runs below it and `first_probe - 1` caps
    later searches. Only the first probe's outcome sets the ceiling, losses of other probes
    never do, and a black hole before it resolves leaves no ceiling. On a path reset or
    migration the first probe is re-armed and the ceiling cleared (it is per path).
    `PathStats::plpmtud_settled` reports that no search is running, including after a black
-   hole, so it does not mean the search succeeded. `None` (the default)
-   keeps upstream behaviour. The H3 client takes the size from its path MTU cache; the
-   server only with `[server.h3].mtu_first_probe`.
+   hole, so it does not mean the search succeeded. `None` (the default) keeps upstream
+   behaviour.
+   `MtuDiscoveryConfig::first_probe_caps(false)` turns the first probe into a seed: an
+   acknowledged seed does not end the search (it continues upward from it and always tries
+   the upper bound if it is above it, even closer than `minimum_change`), a rejected one
+   searches below it as usual, and neither sets a ceiling.
+   Users: the H3 client takes the size from its path MTU cache, a live entry as a capping
+   first probe and an expired one (up to 30 days old) as a seed, so the re-check finds an
+   unchanged or grown path without the ladder; the server uses only
+   `[server.h3].mtu_first_probe`, always capping.
 5. **initial-crypto-layout** (`src/config/{transport,mod}.rs`, `src/lib.rs`,
    `src/connection/initial_crypto.rs`, `src/connection/mod.rs`) — new
    `TransportConfig::initial_crypto_layout(InitialCryptoLayout)`: how a client lays its
