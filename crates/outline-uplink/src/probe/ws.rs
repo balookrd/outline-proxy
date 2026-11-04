@@ -25,8 +25,7 @@ pub(super) async fn run_ws_probe(
     transport: &'static str,
     url: &url::Url,
     mode: TransportMode,
-    fwmark: Option<u32>,
-    disable_udp_gso: bool,
+    network: DialNetworkOptions,
     combined_ss_kind: Option<SsPathKind>,
     dial_limit: Arc<Semaphore>,
     _pong_timeout: Duration,
@@ -38,12 +37,7 @@ pub(super) async fn run_ws_probe(
     // data-path is checked by the http / dns sub-probes that follow.
     let mut ws_stream = connect_transport(
         TransportDialOptions::new(cache, url, mode, "probe_ws")
-            .with_network(DialNetworkOptions {
-                fwmark,
-                ipv6_first: false,
-                ipv4_only: false,
-                disable_udp_gso,
-            })
+            .with_network(network)
             .with_combined_ss_kind(combined_ss_kind),
     )
     .await

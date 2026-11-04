@@ -38,17 +38,21 @@ impl TcpShadowsocksWriter<WsWriteTransport> {
     /// Connects the TCP shadowsocks writer.  Returns `(writer, ctrl_tx)` where
     /// `ctrl_tx` must be passed to the paired `TcpShadowsocksReader` so that
     /// Pong responses are sent through the priority channel in the writer task.
+    /// `shape` cuts the session start into browser-sized messages,
+    /// `hold_header` lets the SS2022 request header wait briefly for the first
+    /// data so both leave in one message (see `TransportStream::holds_client_header`).
     pub async fn connect(
         sink: WsSink,
         cipher: CipherKind,
         master_key: &[u8],
         lifetime: Arc<UpstreamTransportGuard>,
         shape: bool,
+        hold_header: bool,
     ) -> Result<(Self, mpsc::Sender<Message>)> {
         let mut salt = [0u8; 32];
         rand::rng().fill_bytes(&mut salt[..cipher.salt_len()]);
 
-        let (transport, ctrl_tx) = WsWriteTransport::spawn(sink, shape);
+        let (transport, ctrl_tx) = WsWriteTransport::spawn(sink, shape, hold_header);
 
         let key = derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?;
         let cipher_state = AeadCipher::new(cipher, &key[..cipher.key_len()])?;

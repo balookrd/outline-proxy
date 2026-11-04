@@ -902,3 +902,55 @@ fn invalid_shuffle_timer_fails_validation() {
     let err = validate_uplink_section(&section, 0).unwrap_err();
     assert!(err.to_string().contains("shuffle_timer"), "error was: {err:#}");
 }
+
+/// `disable_udp_gso` travels through a PATCH on the uplink and on each
+/// fallback, and comes back in the JSON view, so a UI edit of the fallbacks
+/// list neither drops the opt-out nor hides it.
+#[test]
+fn patch_carries_disable_udp_gso_on_the_uplink_and_its_fallbacks() {
+    let mut doc = r#"
+[[uplink_group]]
+name = "core"
+
+[[outline.uplinks]]
+name = "edge"
+group = "core"
+transport = "vless"
+vless_ws_url = "wss://primary.example.com/v"
+vless_mode = "ws_h3"
+vless_id = "00000000-0000-0000-0000-000000000000"
+method = "chacha20-ietf-poly1305"
+password = "some-long-password"
+"#
+    .parse::<DocumentMut>()
+    .unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let idx = find_outline_uplink_index(arr, "core", "edge").unwrap();
+    let tbl = arr.get_mut(idx).unwrap();
+    let patch = UplinkPayload {
+        disable_udp_gso: Some(true),
+        fallbacks: Some(vec![FallbackPayload {
+            transport: Some("ws".into()),
+            tcp_ws_url: Some("wss://fallback.example.com/tcp".into()),
+            tcp_mode: Some("ws_h3".into()),
+            disable_udp_gso: Some(false),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    merge_patch_into_table(tbl, &patch);
+    let json = table_to_json(tbl).expect("the patched uplink renders as JSON");
+    assert_eq!(json["disable_udp_gso"], serde_json::Value::Bool(true), "{json}");
+    assert_eq!(
+        json["fallbacks"][0]["disable_udp_gso"],
+        serde_json::Value::Bool(false),
+        "{json}"
+    );
+
+    let rendered = doc.to_string();
+    let (uplink, fallback) = rendered
+        .split_once("[[outline.uplinks.fallbacks]]")
+        .expect("the fallback is rendered as an array-of-tables entry");
+    assert!(uplink.contains("disable_udp_gso = true"), "{rendered}");
+    assert!(fallback.contains("disable_udp_gso = false"), "{rendered}");
+}

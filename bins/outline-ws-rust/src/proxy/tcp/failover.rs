@@ -717,8 +717,10 @@ async fn do_tcp_ss_setup(
         return Ok((TcpWriter::Vless(writer), reader));
     }
 
-    // Early-session shaping: h1/h2 only (not h3, not XHTTP packet-up).
+    // Early-session shaping: h1/h2 only (not h3, not XHTTP packet-up); the
+    // SS2022 header hold: everything but h3.
     let shape = ws_stream.shapes_client_start();
+    let hold_header = ws_stream.holds_client_header();
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = setup.cipher.derive_master_key(setup.password)?;
     let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
@@ -727,6 +729,7 @@ async fn do_tcp_ss_setup(
         &master_key,
         Arc::clone(&lifetime),
         shape,
+        hold_header,
     )
     .await?;
     let reader = TcpShadowsocksReader::new(ws_stream, setup.cipher, &master_key, lifetime, ctrl_tx);

@@ -54,6 +54,10 @@ pub struct WsWriteTransport {
     /// Early-session shaper (h1/h2 carriers, padded or not): cuts the first
     /// large frames into browser-sized messages. `None` otherwise.
     shaper: Option<EarlyShaper>,
+    /// Whether `write_frame_held` holds the SS2022 request header for the
+    /// first data (h1/h2 carriers). Off on h3, where no record shape is at
+    /// stake, and in uplink probes, whose measured latency the hold would skew.
+    hold_header: bool,
 }
 
 impl WsWriteTransport {
@@ -61,7 +65,7 @@ impl WsWriteTransport {
     /// returning the control-channel sender alongside it.  The control sender
     /// must be passed to the paired reader so that Pong responses go through
     /// the priority channel.
-    pub(super) fn spawn<S>(sink: S, shape: bool) -> (Self, mpsc::Sender<Message>)
+    pub(super) fn spawn<S>(sink: S, shape: bool, hold_header: bool) -> (Self, mpsc::Sender<Message>)
     where
         S: futures_util::Sink<Message, Error = WsError> + Unpin + Send + 'static,
     {
@@ -214,6 +218,7 @@ impl WsWriteTransport {
                 _writer_task: Some(AbortOnDrop::new(writer_task)),
                 padding,
                 shaper,
+                hold_header,
             },
             ctrl_tx,
         )
@@ -311,6 +316,9 @@ impl WriteTransport for WsWriteTransport {
     }
 
     async fn write_frame_held(&mut self, frame: Vec<u8>) -> Result<()> {
+        if !self.hold_header {
+            return self.write_frame(frame).await;
+        }
         let payload = self.pad(frame);
         let tx = self
             .held_tx

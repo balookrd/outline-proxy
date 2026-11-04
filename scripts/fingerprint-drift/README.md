@@ -63,9 +63,10 @@ emulation of Docker on Apple silicon). Unit tests:
 
 ## When a run fails
 
-An incomplete snapshot ("Snapshot lacks layers") is a capture failure, not
+An incomplete snapshot ("Snapshot lacks layers") is a partial capture, not
 drift: the job fails, and the issue is touched only if the other browser
-drifted. Look at the Chrome net-logs in the run artifact before suspecting the
+drifted. A capture that fails outright (no ClientHello at all) stops the job
+in `capture.sh` / `normalize.py`, before anything is compared. Look at the Chrome net-logs in the run artifact before suspecting the
 browser (`*.netlog.json.gz`; the JSON ends unclosed because Chrome is killed
 by the timeout). A fresh Google Chrome rebuilds its cert verifier in its first
 moments and drops every connection, which is why `page.html` waits 2 s.

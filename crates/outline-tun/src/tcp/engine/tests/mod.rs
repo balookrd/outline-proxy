@@ -2370,9 +2370,15 @@ async fn handle_test_tcp_upstream(
     let cipher = CipherKind::Chacha20IetfPoly1305;
     let master_key = cipher.derive_master_key("Secret0").unwrap();
     let lifetime = UpstreamTransportGuard::new("test", "tcp");
-    let (mut writer, ctrl_tx) =
-        TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime), false)
-            .await?;
+    let (mut writer, ctrl_tx) = TcpShadowsocksWriter::connect(
+        sink,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime),
+        false,
+        true,
+    )
+    .await?;
     let request_salt = writer.request_salt();
     let mut reader = TcpShadowsocksReader::new(stream, cipher, &master_key, lifetime, ctrl_tx)
         .with_request_salt(request_salt);

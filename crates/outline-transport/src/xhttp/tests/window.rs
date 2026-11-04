@@ -50,3 +50,22 @@ async fn a_waiting_post_wakes_when_the_head_finishes() {
     drop(head);
     timeout(Duration::from_secs(1), waiter).await.expect("woken").unwrap();
 }
+
+/// A POST task aborted mid-flight hands its slot back: the window is anchored
+/// on live POSTs only, so an abort cannot wedge it shut.
+#[tokio::test]
+async fn an_aborted_post_frees_its_slot() {
+    let window = UplinkWindow::with_limit(1);
+    let holder = tokio::spawn({
+        let window = Arc::clone(&window);
+        async move {
+            let _slot = window.admit(0).await;
+            std::future::pending::<()>().await;
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(fits(&window, 1).await.is_none(), "seq 1 waits behind the live seq 0");
+    holder.abort();
+    let _ = holder.await;
+    assert!(fits(&window, 1).await.is_some(), "aborting the task drops the slot");
+}

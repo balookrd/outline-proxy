@@ -148,7 +148,7 @@ impl futures_util::Sink<Message> for RecordingSink {
 
 fn ws_transport() -> (WsWriteTransport, mpsc::Sender<Message>, mpsc::UnboundedReceiver<Message>) {
     let (tx, rx) = mpsc::unbounded_channel();
-    let (transport, ctrl_tx) = WsWriteTransport::spawn(RecordingSink(tx), false);
+    let (transport, ctrl_tx) = WsWriteTransport::spawn(RecordingSink(tx), false, true);
     (transport, ctrl_tx, rx)
 }
 
@@ -288,7 +288,7 @@ async fn lead_in_cover_rides_with_the_held_header_on_about_half_of_sessions() {
     for _ in 0..200 {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut t = crate::carrier_padding::with_uplink_padding_override(true, async {
-            let (t, _ctrl) = WsWriteTransport::spawn(RecordingSink(tx), true);
+            let (t, _ctrl) = WsWriteTransport::spawn(RecordingSink(tx), true, true);
             t
         })
         .await;
@@ -333,7 +333,7 @@ async fn lead_in_cover_rides_with_the_held_header_on_about_half_of_sessions() {
 #[tokio::test(start_paused = true)]
 async fn shaped_write_without_padding_splits_into_plain_messages() {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let (mut t, _ctrl) = WsWriteTransport::spawn(RecordingSink(tx), true);
+    let (mut t, _ctrl) = WsWriteTransport::spawn(RecordingSink(tx), true, true);
     let frame: Vec<u8> = (0..1964u32).map(|i| i as u8).collect();
     t.write_frame(frame.clone()).await.unwrap();
     t.close().await.unwrap();
@@ -353,4 +353,16 @@ async fn shaped_write_without_padding_splits_into_plain_messages() {
         pieces.iter().map(Vec::len).collect::<Vec<_>>()
     );
     assert_eq!(pieces.concat(), frame, "plain pieces must concatenate to the write");
+}
+
+/// With holding off (h3 carriers, probes) the SS2022 header leaves at once.
+#[tokio::test(start_paused = true)]
+async fn header_is_not_held_when_holding_is_off() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (mut t, _ctrl) = WsWriteTransport::spawn(RecordingSink(tx), false, false);
+    t.write_frame_held(b"HEADER".to_vec()).await.unwrap();
+    tokio::task::yield_now().await;
+
+    assert_eq!(rx.try_recv().unwrap(), binary(b"HEADER"));
+    assert!(rx.try_recv().is_err());
 }

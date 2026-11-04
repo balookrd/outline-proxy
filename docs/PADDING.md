@@ -136,8 +136,11 @@ Four more fixes remove "markers" of the carrier itself and are always on:
   (`max_bytes` above ~15 KiB) turns this limit off.
 - **VLESS response header with the first data.** The server holds the response
   header and sends it together with the first upstream bytes.
-- **SS2022 request header with the first data.** The client holds the request
-  header for up to 50 ms so that it leaves together with the first data.
+- **SS2022 request header with the first data.** On h1 / h2 carriers the
+  client holds the request header for up to 50 ms so that it leaves together
+  with the first data. Not on h3 (no TLS record shape to protect, and the hold
+  would only delay server-speaks-first protocols) and not in uplink probes,
+  whose measured latency it would skew.
 
 ### Out of scope
 

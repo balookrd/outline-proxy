@@ -18,9 +18,12 @@ use http::StatusCode;
 const RETRY_FIRST_DELAY: Duration = Duration::from_millis(5);
 /// Ceiling of the doubling pause.
 const RETRY_MAX_DELAY: Duration = Duration::from_millis(200);
-/// Total pause after which a still-busy server is given up on: the session
-/// ends as it did before retries existed. Matches the h2/h3 `POST_TIMEOUT`,
-/// which also wraps their retry loop; h1 has only this bound.
+/// Wall-clock time since the first attempt after which a still-busy server is
+/// given up on: the session ends as it did before retries existed. Counting
+/// from the first attempt, not summing the pauses, keeps the bound real when
+/// the server holds each POST (up to its uplink-room patience) before it
+/// answers 503. Matches the h2/h3 `POST_TIMEOUT`, which also wraps their retry
+/// loop; h1 has only this bound.
 const RETRY_BUDGET: Duration = Duration::from_secs(30);
 
 /// A POST the server answered with a non-success status.
@@ -58,14 +61,15 @@ pub(super) fn is_busy(error: &anyhow::Error) -> bool {
 /// Doubling pause between re-sends of a POST the server refused as busy.
 pub(super) struct BusyRetry {
     delay: Duration,
-    waited: Duration,
+    /// When the first attempt started.
+    since: tokio::time::Instant,
 }
 
 impl BusyRetry {
     pub(super) fn new() -> Self {
         Self {
             delay: RETRY_FIRST_DELAY,
-            waited: Duration::ZERO,
+            since: tokio::time::Instant::now(),
         }
     }
 
@@ -74,9 +78,8 @@ impl BusyRetry {
     /// budget is spent.
     pub(super) async fn again(&mut self, result: &Result<()>) -> bool {
         match result {
-            Err(error) if is_busy(error) && self.waited < RETRY_BUDGET => {
+            Err(error) if is_busy(error) && self.since.elapsed() < RETRY_BUDGET => {
                 tokio::time::sleep(self.delay).await;
-                self.waited += self.delay;
                 self.delay = (self.delay * 2).min(RETRY_MAX_DELAY);
                 true
             },

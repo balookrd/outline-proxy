@@ -1043,13 +1043,16 @@ async fn client_eof_without_close_does_not_hang_teardown() -> Result<()> {
 /// the body missing. Here the target keeps streaming a response (so downlink
 /// bytes keep arriving across the close), reads through a tiny receive buffer,
 /// and pauses once near the end of the body so the session closes while that
-/// tail is still queued on the relay's side of the socket.
+/// tail is still queued on the relay's side of the socket. The relay itself
+/// must not wait for that delivery: the client's side of the close is done
+/// the moment the carrier is torn down, the kernel finishes the tail behind it.
 #[tokio::test]
 async fn a_client_close_still_delivers_the_request_body_tail() -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const BODY_LEN: usize = 1024 * 1024;
     const FRAME_PAYLOAD: usize = 64 * 1024;
+    const TARGET_PAUSE: Duration = Duration::from_secs(1);
 
     let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     // Inherited by the accepted socket: a small window keeps most of the body
@@ -1074,7 +1077,7 @@ async fn a_client_close_still_delivers_the_request_body_tail() -> Result<()> {
         while filled < BODY_LEN {
             if !paused && BODY_LEN - filled <= 64 * 1024 {
                 paused = true;
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                tokio::time::sleep(TARGET_PAUSE).await;
             }
             let read = reader.read(&mut got[filled..]).await.map_err(|error| {
                 anyhow!("target read failed after {filled} of {BODY_LEN} body bytes: {error}")
@@ -1104,12 +1107,19 @@ async fn a_client_close_still_delivers_the_request_body_tail() -> Result<()> {
     let socket = MockWs::new(steps, writer_alive);
     let resume = ResumeContext::from_request_headers(&HeaderMap::new(), &server.orphan_registry);
 
+    let relay_started = tokio::time::Instant::now();
     tokio::time::timeout(
         Duration::from_secs(30),
         run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, UpstreamSource::Direct),
     )
     .await
     .map_err(|_| anyhow!("teardown hung after the client closed"))??;
+    let returned_after = relay_started.elapsed();
+    assert!(
+        returned_after < TARGET_PAUSE,
+        "the relay waited {returned_after:?} for the tail to be delivered instead of leaving \
+         that to the kernel in the background"
+    );
 
     let got = tokio::time::timeout(Duration::from_secs(30), target)
         .await

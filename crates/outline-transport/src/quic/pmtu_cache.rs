@@ -156,8 +156,12 @@ impl PmtuCache {
         }
     }
 
+    /// Live means confirmed within its TTL; an entry confirmed "in the
+    /// future" (the clock went back since) is not trusted until the clock
+    /// catches up, so a stale cap cannot outlive its TTL that way.
     fn is_live(&self, entry: &Entry, now_secs: u64) -> bool {
-        now_secs < entry.confirmed_at.saturating_add(self.ttl_for(entry.mtu).as_secs())
+        entry.confirmed_at <= now_secs
+            && now_secs < entry.confirmed_at.saturating_add(self.ttl_for(entry.mtu).as_secs())
     }
 
     /// First probe for `key`: a live entry caps the connection at its value, an
@@ -167,7 +171,9 @@ impl PmtuCache {
         let now_secs = unix_secs(now);
         if self.is_live(&entry, now_secs) {
             Some(FirstProbe::capped(entry.mtu))
-        } else if now_secs < entry.confirmed_at.saturating_add(PMTU_SEED_MAX_AGE.as_secs()) {
+        } else if entry.confirmed_at <= now_secs
+            && now_secs < entry.confirmed_at.saturating_add(PMTU_SEED_MAX_AGE.as_secs())
+        {
             Some(FirstProbe::seed(entry.mtu))
         } else {
             None

@@ -574,13 +574,19 @@ async fn packet_up_h2_stays_within_the_reorder_window_behind_a_stalled_post() ->
         Ok::<_, anyhow::Error>(stream)
     });
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let edge = super::window::UPLINK_WINDOW_POSTS - 1;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while seen.lock().iter().copied().max().unwrap_or(0) < edge {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the client never reached the window's edge"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Give an overrun time to show up before pinning the edge.
+    tokio::time::sleep(Duration::from_millis(100)).await;
     let max_seen = seen.lock().iter().copied().max().unwrap_or(0);
-    assert_eq!(
-        max_seen,
-        super::window::UPLINK_WINDOW_POSTS - 1,
-        "with seq 0 stalled the client must stop at the window's edge"
-    );
+    assert_eq!(max_seen, edge, "with seq 0 stalled the client must stop at the window's edge");
 
     release.notify_one();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
