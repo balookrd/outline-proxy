@@ -19,12 +19,12 @@ release, сравнивает их с `baseline/*.json` и держит откр
 
 | Файл | Назначение |
 |---|---|
-| `capture.sh` | Ставит браузеры (`--install`), гоняет сценарии, пишет `versions.json` |
+| `capture.sh` | Ставит браузеры (`--install`), гоняет сценарии, пишет `versions.json` и сжатый net-log Chrome на каждый сценарий |
 | `tls_sink.py` | Записывает каждый ClientHello, терминирует TLS, отвечает по h2/h1, записывает запросы |
 | `../quic-initial-sink.py` | Записывает QUIC Initial-датаграммы |
 | `ca.sh`, `page.html` | Эфемерный CA для `localtest.me`; страница с fetch GET/POST и WebSocket |
-| `normalize.py` | pcap → JSON-снимок; единственное место, где решается, что считать шумом |
-| `compare.py` | Снимок против эталона → markdown-отчёт; код 0 — совпадает, 1 — дрейф, 2 — снимок неполный |
+| `normalize.py` | pcap → JSON-снимок; единственное место, где решается, что считать шумом. Падает, если мажор из UA не совпадает с `versions.json` |
+| `compare.py` | Снимок против эталона → markdown-отчёт; код 0 — совпадает, 1 — дрейф, 2 — снимок неполный, 3 — дрейф рядом с неполным снимком. У списков показывает, что добавилось и что пропало |
 | `issue.sh` | Открывает, обновляет или закрывает issue `fingerprint-drift` |
 | `baseline/` | Эталонные снимки (генерируются из `tests/data/`, руками не правятся) |
 
@@ -60,6 +60,15 @@ python3 scripts/fingerprint-drift/compare.py scripts/fingerprint-drift/baseline 
 У Google Chrome нет сборки под linux/arm64, а под QEMU-эмуляцией Docker на
 Apple silicon Chrome падает. Юнит-тесты:
 `python3 -m unittest discover -s scripts/fingerprint-drift/tests -t scripts/fingerprint-drift/tests`.
+
+## Когда прогон упал
+
+Неполный снимок («Snapshot lacks layers») — это сбой захвата, а не дрейф:
+джоб падает, а issue обновляется, только если дрейфанул второй браузер. Прежде
+чем винить браузер, посмотрите net-log Chrome в артефакте прогона
+(`*.netlog.json.gz`; JSON в нём не закрыт, потому что Chrome убивается по
+таймауту). Свежий Google Chrome в первые мгновения пересоздаёт верификатор
+сертификатов и рвёт все соединения, поэтому `page.html` ждёт 2 с.
 
 ## Когда открылась issue
 

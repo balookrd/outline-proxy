@@ -4,8 +4,8 @@ import unittest
 
 from common import BASELINE, DATA, needs_tshark
 from hello import GREASE
-from normalize import (_as_set, _transport_parameters, _version_information, major,
-                       normalize_headers, normalize_hello, snapshot)
+from normalize import (_as_set, _transport_parameters, _version_information, check_ua_major,
+                       major, normalize_headers, normalize_hello, snapshot)
 
 
 class RulesTest(unittest.TestCase):
@@ -14,6 +14,15 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(major("Mozilla Firefox 160.0.1"), 160)
         with self.assertRaises(ValueError):
             major("Firefox")
+
+    def test_ua_major_must_match_versions(self):
+        for browser in ("chrome", "firefox"):
+            with open(os.path.join(BASELINE, f"{browser}.json")) as f:
+                snap = json.load(f)
+            check_ua_major(snap)
+            snap["major"] += 1
+            with self.assertRaisesRegex(ValueError, "disagrees with versions.json"):
+                check_ua_major(snap)
 
     def test_set_keeps_grease_count(self):
         self.assertEqual(_as_set([GREASE, 16, 0, GREASE, 5]), [0, 5, 16, GREASE, GREASE])

@@ -3,8 +3,9 @@
 #
 # Usage: issue.sh <compare-exit-code> <report.md> <run-url>
 #
-# Exit code 1 (drift) opens the issue or replaces its body with the new report;
-# 0 (match) closes an open one. 2 never reaches here: the workflow fails first.
+# Exit code 1 (drift) or 3 (drift, and another browser failed to capture) opens
+# the issue or replaces its body with the new report; 0 (match) closes an open
+# one; 2 (capture failure alone) leaves it as it is.
 # Needs GH_TOKEN with issues: write; gh takes the repository from the checkout.
 set -euo pipefail
 code=$1
@@ -26,12 +27,12 @@ body="$text
 
 Run: $run_url"
 
-if [ "$code" = 1 ]; then
+if [ "$code" = 1 ] || [ "$code" = 3 ]; then
   if [ -n "$number" ]; then
     gh issue edit "$number" --body "$body"
   else
     gh issue create --title "Browser fingerprint drift" --label "$label" --body "$body"
   fi
-elif [ -n "$number" ]; then
+elif [ "$code" = 0 ] && [ -n "$number" ]; then
   gh issue close "$number" --comment "Fresh browsers match the baseline again: $run_url"
 fi

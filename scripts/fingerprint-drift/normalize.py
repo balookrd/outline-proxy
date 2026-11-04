@@ -159,7 +159,33 @@ def normalize_h1(requests):
     return out
 
 
+def _header_lists(snap):
+    """Every captured request's header list in a snapshot."""
+    for kinds in (snap["h2"]["headers"], snap["h1"]):
+        yield from (headers for headers in kinds.values() if headers)
+
+
+def check_ua_major(snap):
+    """The browser's `--version` (versions.json) and the UA it sent must agree.
+
+    A mismatch means the capture ran another binary than the one versioned,
+    so the snapshot would describe the wrong release: fail, never report it.
+    """
+    for headers in _header_lists(snap):
+        for name, value in headers:
+            m = name.lower() == "user-agent" and re.search(r"(?:Chrome|Firefox)/(\d+)\.", value)
+            if m and int(m.group(1)) != snap["major"]:
+                raise ValueError(f"{snap['browser']}: user-agent {value!r} disagrees "
+                                 f"with versions.json major {snap['major']}")
+
+
 def snapshot(capture_dir, browser, version_line):
+    snap = _snapshot(capture_dir, browser, version_line)
+    check_ua_major(snap)
+    return snap
+
+
+def _snapshot(capture_dir, browser, version_line):
     d = os.path.join(capture_dir, browser)
     return {
         "browser": browser,

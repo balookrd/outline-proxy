@@ -99,6 +99,15 @@ def _compress_cert(data):
     return out
 
 
+def _trust_anchor_ids(data):
+    """draft-ietf-tls-trust-anchor-ids: a 2-byte-length list of 1-byte-length IDs."""
+    ids = Reader(Reader(data).vec(2))
+    out = []
+    while not ids.done():
+        out.append(ids.vec(1).hex())
+    return out
+
+
 def _transport_parameters(data):
     r = Reader(data)
     out = []
@@ -160,7 +169,7 @@ def parse_client_hello(msg):
         elif ext == EXT_ECH:
             out["ech"] = True
         elif ext == EXT_TRUST_ANCHORS:
-            out["trust_anchors"] = data.hex()
+            out["trust_anchors"] = _trust_anchor_ids(data)
         elif ext == EXT_QUIC_TP:
             out["transport_parameters"] = _transport_parameters(data)
     return out

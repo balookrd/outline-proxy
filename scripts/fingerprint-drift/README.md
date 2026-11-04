@@ -19,12 +19,12 @@ browser sent when the profiles were tuned.
 
 | File | Role |
 |---|---|
-| `capture.sh` | Installs the browsers (`--install`), runs the scenarios, writes `versions.json` |
+| `capture.sh` | Installs the browsers (`--install`), runs the scenarios, writes `versions.json` and a gzipped Chrome net-log per scenario |
 | `tls_sink.py` | Records each ClientHello, terminates TLS, answers h2/h1, records the requests |
 | `../quic-initial-sink.py` | Records QUIC Initial datagrams |
 | `ca.sh`, `page.html` | Throwaway CA for `localtest.me`; a page doing fetch GET/POST and a WebSocket |
-| `normalize.py` | pcap → snapshot JSON; the only place that decides what is noise |
-| `compare.py` | Snapshot vs baseline → Markdown report; exit 0 match, 1 drift, 2 incomplete |
+| `normalize.py` | pcap → snapshot JSON; the only place that decides what is noise. Fails when the UA major disagrees with `versions.json` |
+| `compare.py` | Snapshot vs baseline → Markdown report; exit 0 match, 1 drift, 2 incomplete, 3 drift beside an incomplete one. Lists show what was added and removed |
 | `issue.sh` | Opens, refreshes or closes the `fingerprint-drift` issue |
 | `baseline/` | The reference snapshots (generated from `tests/data/`, never edited by hand) |
 
@@ -60,6 +60,15 @@ python3 scripts/fingerprint-drift/compare.py scripts/fingerprint-drift/baseline 
 (Google Chrome has no linux/arm64 build, and Chrome crashes under the QEMU
 emulation of Docker on Apple silicon). Unit tests:
 `python3 -m unittest discover -s scripts/fingerprint-drift/tests -t scripts/fingerprint-drift/tests`.
+
+## When a run fails
+
+An incomplete snapshot ("Snapshot lacks layers") is a capture failure, not
+drift: the job fails, and the issue is touched only if the other browser
+drifted. Look at the Chrome net-logs in the run artifact before suspecting the
+browser (`*.netlog.json.gz`; the JSON ends unclosed because Chrome is killed
+by the timeout). A fresh Google Chrome rebuilds its cert verifier in its first
+moments and drops every connection, which is why `page.html` waits 2 s.
 
 ## When the issue opens
 
