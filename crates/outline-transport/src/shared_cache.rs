@@ -213,14 +213,24 @@ pub(crate) struct ConnectionKey {
     pub(crate) server_name: Arc<str>,
     pub(crate) server_port: u16,
     pub(crate) fwmark: Option<u32>,
+    /// QUIC sockets bound without UDP GSO send differently from the default
+    /// ones, so a carrier dialed one way must not serve a dial asking for the
+    /// other. TCP-based keys always pass `false`.
+    pub(crate) disable_udp_gso: bool,
 }
 
 impl ConnectionKey {
-    pub(crate) fn new(server_name: &str, server_port: u16, fwmark: Option<u32>) -> Self {
+    pub(crate) fn new(
+        server_name: &str,
+        server_port: u16,
+        fwmark: Option<u32>,
+        disable_udp_gso: bool,
+    ) -> Self {
         Self {
             server_name: Arc::from(server_name),
             server_port,
             fwmark,
+            disable_udp_gso,
         }
     }
 }

@@ -206,15 +206,13 @@ impl VlessUdpTransport {
         mode: TransportMode,
         uuid: &[u8; 16],
         target: &TargetAddr,
-        fwmark: Option<u32>,
-        ipv6_first: bool,
-        ipv4_only: bool,
+        network: DialNetworkOptions,
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
-                .with_network(DialNetworkOptions { fwmark, ipv6_first, ipv4_only })
+                .with_network(network)
                 .with_resume(DialResumeOptions {
                     udp_datagram_requested: udp_datagram_requested(mode),
                     ..DialResumeOptions::default()
@@ -247,9 +245,7 @@ impl VlessUdpTransport {
         mode: TransportMode,
         uuid: &[u8; 16],
         target: &TargetAddr,
-        fwmark: Option<u32>,
-        ipv6_first: bool,
-        ipv4_only: bool,
+        network: DialNetworkOptions,
         source: &'static str,
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
@@ -257,7 +253,7 @@ impl VlessUdpTransport {
     {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
-                .with_network(DialNetworkOptions { fwmark, ipv6_first, ipv4_only })
+                .with_network(network)
                 .with_resume(DialResumeOptions {
                     resume_request,
                     // VLESS-UDP carriers do not advertise Ack-Prefix; the server

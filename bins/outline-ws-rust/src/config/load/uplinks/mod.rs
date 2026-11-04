@@ -46,6 +46,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             password,
             weight,
             fwmark,
+            disable_udp_gso,
             ipv6_first,
             ipv4_only,
             vless_id,
@@ -123,6 +124,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             password: credentials.password,
             weight,
             fwmark,
+            disable_udp_gso: disable_udp_gso.unwrap_or(false),
             ipv6_first: ipv6_first.unwrap_or(false),
             ipv4_only: ipv4_only.unwrap_or(false),
             vless_id: credentials.vless_id,
@@ -162,7 +164,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
 /// position 0, so log lines, metrics, and per-uplink overrides remain
 /// stable across restarts even as the dial ordering changes.
 ///
-/// `fwmark` and `ipv6_first` are also wire-level fields on
+/// `fwmark`, `disable_udp_gso` and `ipv6_first` are also wire-level fields on
 /// `FallbackTransport` (they may differ per fallback after inheritance
 /// at fallback-resolution time); we preserve each wire's own value so
 /// a fallback that opted into a different fwmark / address family keeps
@@ -219,6 +221,7 @@ fn primary_to_fallback_shape(uplink: &UplinkConfig) -> FallbackTransport {
         cipher: uplink.cipher,
         password: uplink.password.clone(),
         fwmark: uplink.fwmark,
+        disable_udp_gso: uplink.disable_udp_gso,
         ipv6_first: uplink.ipv6_first,
         ipv4_only: uplink.ipv4_only,
         fingerprint_profile: uplink.fingerprint_profile,
@@ -251,6 +254,7 @@ fn apply_fallback_shape_to_primary(uplink: &mut UplinkConfig, wire: FallbackTran
     uplink.cipher = wire.cipher;
     uplink.password = wire.password;
     uplink.fwmark = wire.fwmark;
+    uplink.disable_udp_gso = wire.disable_udp_gso;
     uplink.ipv6_first = wire.ipv6_first;
     uplink.ipv4_only = wire.ipv4_only;
     uplink.fingerprint_profile = wire.fingerprint_profile;

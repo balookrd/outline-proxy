@@ -9,10 +9,13 @@
 //              per-key connect locks, shared-connection cache, connect / gc fns.
 //   datagram — client UDP over HTTP/3 datagrams (RFC 9297) on one request
 //              stream, with the stream channel as per-packet fallback.
+//   no_gso   — QUIC socket wrapper that keeps quinn off UDP GSO, for egress
+//              devices without TX checksum offload (`disable_udp_gso`).
 //   vendored — gate over the patched `h3` / `sockudo-ws` API surface; every
 //              direct sockudo-ws reference lives there (CI-enforced).
 
 mod datagram;
+mod no_gso;
 mod shared;
 pub(crate) mod vendored;
 

@@ -225,7 +225,9 @@ impl H2ConnectionKey {
         tls: TlsFingerprint,
     ) -> Self {
         Self {
-            base: crate::shared_cache::ConnectionKey::new(server_name, server_port, fwmark),
+            // TCP carrier: UDP GSO is irrelevant, so h2 dials that differ only
+            // in it keep sharing one connection.
+            base: crate::shared_cache::ConnectionKey::new(server_name, server_port, fwmark, false),
             use_tls,
             tls,
         }
@@ -510,20 +512,21 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         &self,
         server_name: &str,
         server_port: u16,
-        fwmark: Option<u32>,
+        network: crate::dial_plan::DialNetworkOptions,
     ) -> H2ConnectionKey {
-        H2ConnectionKey::new(server_name, server_port, self.use_tls, fwmark, self.tls)
+        H2ConnectionKey::new(server_name, server_port, self.use_tls, network.fwmark, self.tls)
     }
 
     async fn establish(
         &self,
         addr: SocketAddr,
         server_name: &str,
-        fwmark: Option<u32>,
+        network: crate::dial_plan::DialNetworkOptions,
         cache_key: Option<H2ConnectionKey>,
     ) -> Result<Arc<SharedH2Connection>> {
         Ok(Arc::new(
-            connect_h2_connection(addr, server_name, self.use_tls, fwmark, cache_key).await?,
+            connect_h2_connection(addr, server_name, self.use_tls, network.fwmark, cache_key)
+                .await?,
         ))
     }
 

@@ -64,7 +64,7 @@ fn at_max_the_pool_overflows_instead_of_growing() {
 /// picking and idle reaping.
 #[test]
 fn keys_and_pools_are_separate_per_browser_family() {
-    let key = |slot, tls| XhttpH3Key::new("example.com", 443, None, slot, tls);
+    let key = |slot, tls| XhttpH3Key::new("example.com", 443, None, false, slot, tls);
     assert_ne!(key(0, TlsFingerprint::Chromium), key(0, TlsFingerprint::Firefox));
     assert_eq!(key(0, TlsFingerprint::Safari), key(0, TlsFingerprint::Safari));
     assert_eq!(key(0, TlsFingerprint::Safari).pool(), key(5, TlsFingerprint::Safari).pool());

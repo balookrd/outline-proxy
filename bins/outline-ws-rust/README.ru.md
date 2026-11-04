@@ -551,6 +551,7 @@ tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 tcp_mode = "h3"
 # fwmark = 100
+# disable_udp_gso = true
 # ipv6_first = true
 # ipv4_only = true
 udp_ws_url = "wss://example.com/SECRET/udp"
@@ -617,6 +618,7 @@ via = "main"
 - `tcp_mode` / `udp_mode` (для `transport = "ss"`) и `vless_mode` (для `transport = "vless"`) задают per-direction carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade) или `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (только VLESS, XHTTP packet-up). Конфиг-блоки на каждую форму, цепочки fallback на этапе дозвона и поведение resume — см. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
 - `ipv6_first` (по умолчанию `false`) меняет предпочтение адресов после DNS для этого uplink с IPv4-first на IPv6-first для TCP, UDP, H1, H2 и H3 соединений.
 - `ipv4_only` (по умолчанию `false`) фильтрует IPv6 (AAAA-записи) при DNS-резолве серверов аплинка и эндпоинтов, принудительно оставляя только IPv4-адреса. Полезно на хостах без связности по IPv6 во избежание сетевых сбоев `NetworkUnreachable (OS 101)` и сопутствующего флаппинга линков. При `ipv4_only = true` параметр `ipv6_first` игнорируется. Наследуется от `[outline]` к `[[outline.uplinks]]` и далее к `[[outline.uplinks.fallbacks]]`, если не переопределен явно.
+- `disable_udp_gso` (по умолчанию `false`, в `[[outline.uplinks]]` и `[[outline.uplinks.fallbacks]]`) отключает UDP GSO на QUIC-сокетах аплинка (`ws_h3` / `xhttp_h3`): quinn отправляет по одной датаграмме на `sendmsg`. Нужен аплинку, чей выход не принимает сегментированные отправки, — обычно это аплинк, который `fwmark` уводит в VLAN сетевухи без аппаратной контрольной суммы на TX. Там каждая GSO-отправка падает с `EIO`, и каждое новое QUIC-соединение теряет первую пачку рукопожатия (лишняя секунда на дозвон). TCP-носители это не затрагивает. Наследуется fallback'ами, если не переопределён. Подробнее — раздел «Выход без UDP GSO» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
 - `method` также поддерживает `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` должен быть base64-кодированным PSK точной длины ключа выбранного шифра.
 - `[[socks5.users]]` включает локальную SOCKS5-аутентификацию по логину/паролю для нескольких пользователей. В каждой записи должны быть и `username`, и `password`.
 - `[socks5] username` + `password` по-прежнему поддерживаются как shorthand для одного пользователя.

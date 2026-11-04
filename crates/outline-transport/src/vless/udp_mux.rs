@@ -45,6 +45,7 @@ use super::udp_mux_core::VlessUdpMuxSessionEntry;
 use super::udp_mux_core::{
     VlessUdpMuxCore, VlessUdpMuxDial, VlessUdpMuxLimits, VlessUdpMuxSession,
 };
+use crate::DialNetworkOptions;
 
 /// Durable-cache key for one VLESS-UDP `(resume-scope, target)` session id.
 /// The scope isolates cluster groups (and standalone uplinks) from each other;
@@ -98,9 +99,7 @@ struct WsVlessUdpDialer {
     url: Url,
     mode: TransportMode,
     uuid: [u8; 16],
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    ipv4_only: bool,
+    network: DialNetworkOptions,
     source: &'static str,
     keepalive_interval: Option<Duration>,
     /// Resume scope this mux keys its durable per-target Session IDs by
@@ -171,9 +170,7 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
             self.mode,
             &self.uuid,
             target,
-            self.fwmark,
-            self.ipv6_first,
-            self.ipv4_only,
+            self.network,
             self.source,
             self.keepalive_interval,
             resume_request,
@@ -247,9 +244,7 @@ impl VlessUdpSessionMux {
         url: Url,
         mode: TransportMode,
         uuid: [u8; 16],
-        fwmark: Option<u32>,
-        ipv6_first: bool,
-        ipv4_only: bool,
+        network: DialNetworkOptions,
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Self {
@@ -258,9 +253,7 @@ impl VlessUdpSessionMux {
             url,
             mode,
             uuid,
-            fwmark,
-            ipv6_first,
-            ipv4_only,
+            network,
             source,
             keepalive_interval,
             VlessUdpMuxLimits::default(),
@@ -273,9 +266,7 @@ impl VlessUdpSessionMux {
         url: Url,
         mode: TransportMode,
         uuid: [u8; 16],
-        fwmark: Option<u32>,
-        ipv6_first: bool,
-        ipv4_only: bool,
+        network: DialNetworkOptions,
         source: &'static str,
         keepalive_interval: Option<Duration>,
         limits: VlessUdpMuxLimits,
@@ -285,9 +276,7 @@ impl VlessUdpSessionMux {
             url,
             mode,
             uuid,
-            fwmark,
-            ipv6_first,
-            ipv4_only,
+            network,
             source,
             keepalive_interval,
             resume_scope: None,

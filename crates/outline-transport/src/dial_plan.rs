@@ -28,6 +28,13 @@ pub struct DialNetworkOptions {
     pub fwmark: Option<u32>,
     pub ipv6_first: bool,
     pub ipv4_only: bool,
+    /// Keep QUIC (`ws_h3` / `xhttp_h3`) sockets of this dial off UDP GSO:
+    /// quinn then hands the kernel one datagram per `sendmsg`. Needed on
+    /// egress devices without TX checksum offload (e.g. a VLAN on a NIC whose
+    /// driver exposes no `vlan_features`), where the kernel rejects every
+    /// `UDP_SEGMENT` send with `EIO` and the first flight of each handshake
+    /// is lost. TCP-based carriers ignore it.
+    pub disable_udp_gso: bool,
 }
 
 /// Cross-transport resumption and retry-negotiation headers for a dial.

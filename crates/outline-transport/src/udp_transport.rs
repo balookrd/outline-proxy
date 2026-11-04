@@ -305,16 +305,14 @@ impl UdpWsTransport {
         mode: TransportMode,
         cipher: CipherKind,
         password: &str,
-        fwmark: Option<u32>,
-        ipv6_first: bool,
-        ipv4_only: bool,
+        network: DialNetworkOptions,
         source: &'static str,
         keepalive_interval: Option<Duration>,
         combined_ss_kind: Option<SsPathKind>,
     ) -> Result<Self> {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
-                .with_network(DialNetworkOptions { fwmark, ipv6_first, ipv4_only })
+                .with_network(network)
                 .with_combined_ss_kind(combined_ss_kind)
                 // Datagram session: ask an XHTTP carrier to frame packets as
                 // length-prefixed records so the byte stream underneath cannot
@@ -352,9 +350,7 @@ impl UdpWsTransport {
         mode: TransportMode,
         cipher: CipherKind,
         password: &str,
-        fwmark: Option<u32>,
-        ipv6_first: bool,
-        ipv4_only: bool,
+        network: DialNetworkOptions,
         source: &'static str,
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
@@ -362,7 +358,7 @@ impl UdpWsTransport {
     ) -> Result<(Self, Option<SessionId>, Option<TransportMode>)> {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
-                .with_network(DialNetworkOptions { fwmark, ipv6_first, ipv4_only })
+                .with_network(network)
                 .with_combined_ss_kind(combined_ss_kind)
                 // See `connect`: SS-UDP over XHTTP needs explicit record
                 // framing to keep datagram boundaries.

@@ -2047,6 +2047,48 @@ What this does **not** cover (separate, costlier work):
   the `h2` crate and largely closed to client-side tweaks.
 - QUIC transport-parameter ordering — owned by `quinn`.
 
+## Egress without UDP GSO (`disable_udp_gso`)
+
+QUIC carriers (`ws_h3`, `xhttp_h3`) let quinn batch outgoing datagrams into
+one `sendmsg` with `UDP_SEGMENT` (GSO) whenever the host supports it. The
+kernel accepts such a send only if the egress device does the UDP checksum
+in hardware; otherwise it fails the whole batch with `EIO`. quinn then turns
+GSO off for that socket, but the batch is already lost, and every dial binds
+a fresh socket — so each new QUIC connection drops its first handshake flight
+and comes up only after a PTO (about a second).
+
+The usual trigger is a second ISP reached through `fwmark` policy routing
+onto a VLAN sub-interface whose NIC driver gives VLANs no TX checksum offload
+(`ethtool -k <vlan>` shows `tx-checksumming: off` with the sub-features
+`[fixed]`, while the parent NIC has it on). Symptoms: `quinn_udp: sendmsg
+error ... Input/output error ... segment_size: Some(..)` in the log, only for
+the marked uplinks, and an RTT about a second higher on them.
+
+Opt such an uplink out:
+
+```toml
+[[outline.uplinks]]
+name            = "nuxt-bee"
+group           = "main"
+fwmark          = 18      # policy route onto the second ISP
+disable_udp_gso = true    # its VLAN rejects segmented sends
+link            = "vless://…"
+
+  [[outline.uplinks.fallbacks]]
+  link = "vless://…"      # inherits fwmark and disable_udp_gso
+```
+
+- Default `false`: GSO stays on wherever the egress handles it.
+- Allowed on `[[outline.uplinks]]` and `[[outline.uplinks.fallbacks]]`;
+  fallbacks inherit the parent's value unless they set their own, like
+  `fwmark`.
+- Only QUIC sockets change. TCP carriers (`*_h1` / `*_h2`) ignore it, and h2
+  connections are still shared between uplinks that differ only in this key.
+  Receive-side GRO is untouched.
+- QUIC carriers opened with and without GSO never share a pooled connection.
+- Like the rest of `[[outline.uplinks]]`, it takes effect on
+  `POST /control/apply` or a restart; `/control/uplinks` accepts it too.
+
 ## Per-uplink fallback transports
 
 A single `[[outline.uplinks]]` entry can carry an ordered list of
@@ -2076,7 +2118,7 @@ password        = "BASE64=="
   udp_ws_url  = "wss://ws.example.com/udp"
   tcp_mode    = "ws_h2"
   udp_mode    = "ws_h1"
-  # method / password / fwmark / ipv6_first / ipv4_only / fingerprint_profile
+  # method / password / fwmark / disable_udp_gso / ipv6_first / ipv4_only / fingerprint_profile
   # are inherited from the parent uplink unless overridden here.
 
   [[outline.uplinks.fallbacks]]
@@ -2099,7 +2141,7 @@ that belong to the parent (`name`, `weight`, `group`):
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws\_\* → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
 | `method`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. A wire configured by an `ss://` `link` takes them from the URI instead, and never falls back to the parent's. |
-| `fwmark`, `ipv6_first`, `ipv4_only`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. When `ipv4_only = true`, IPv6 addresses are filtered out and `ipv6_first` is ignored. Inheritance is unaffected by `link` — these are dial properties, not wire shape. |
+| `fwmark`, `disable_udp_gso`, `ipv6_first`, `ipv4_only`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. When `ipv4_only = true`, IPv6 addresses are filtered out and `ipv6_first` is ignored. Inheritance is unaffected by `link` — these are dial properties, not wire shape. |
 
 An uplink whose wires are all share links — the shape a subscription-driven
 config takes:
@@ -2121,7 +2163,7 @@ link   = "vless://00000000-0000-0000-0000-000000000000@cdn.example.com:443?type=
 Credentials ride inside each URI, so the parent's `method` / `password` are not
 consulted for these wires — an `ss://` fallback under a VLESS parent needs no
 explicit secret. Everything that is *not* wire shape still comes from the
-parent: `fwmark`, `ipv6_first`, `ipv4_only` and `fingerprint_profile` are inherited exactly
+parent: `fwmark`, `disable_udp_gso`, `ipv6_first`, `ipv4_only` and `fingerprint_profile` are inherited exactly
 as they are for a hand-written fallback.
 
 ### Behaviour

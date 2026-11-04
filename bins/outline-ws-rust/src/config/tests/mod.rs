@@ -1498,6 +1498,60 @@ async fn load_config_expands_vless_share_link_field() {
     assert_eq!(url.path(), "/secret/vless");
 }
 
+/// The fleet's shape: a share-link uplink pinned to a second ISP with
+/// `fwmark` plus `disable_udp_gso`. Fallbacks inherit the opt-out like they
+/// inherit the mark, one can override it, and an uplink without the key
+/// keeps UDP GSO.
+#[tokio::test]
+async fn load_config_parses_and_inherits_disable_udp_gso() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[outline.uplinks]]
+        name = "edge-bee"
+        group = "main"
+        fwmark = 18
+        disable_udp_gso = true
+        link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=xhttp&security=tls&alpn=h3&mode=stream-one&path=%2Fsecret%2Fx#edge"
+
+        [[outline.uplinks.fallbacks]]
+        link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&alpn=h3&path=%2Fsecret%2Fvless"
+
+        [[outline.uplinks.fallbacks]]
+        disable_udp_gso = false
+        link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&alpn=h3&path=%2Fsecret%2Fvless2"
+
+        [[outline.uplinks]]
+        name = "edge-msk"
+        group = "main"
+        link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&alpn=h3&path=%2Fsecret%2Fvless"
+
+        [[uplink_group]]
+        name = "main"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    let uplinks = &config.groups[0].uplinks;
+    let bee = &uplinks[0];
+    assert!(bee.disable_udp_gso);
+    assert_eq!(bee.fwmark, Some(18));
+    assert!(bee.dial_network().disable_udp_gso, "the opt-out reaches the dial options");
+    assert!(bee.fallbacks[0].disable_udp_gso, "inherited from the parent like fwmark");
+    assert_eq!(bee.fallbacks[0].fwmark, Some(18));
+    assert!(!bee.fallbacks[1].disable_udp_gso, "an explicit fallback value wins");
+    let msk = &uplinks[1];
+    assert!(!msk.disable_udp_gso, "absent key keeps UDP GSO");
+    assert!(!msk.dial_network().disable_udp_gso);
+}
+
 #[tokio::test]
 async fn load_config_rejects_link_alongside_explicit_vless_url() {
     let tmp = TempDir::new().unwrap();

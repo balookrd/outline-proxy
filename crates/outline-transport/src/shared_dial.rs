@@ -34,7 +34,12 @@ pub(crate) trait WsDialer: 'static {
     /// the first.  H3 sets this; H2 currently uses the first address only.
     fn multi_address_failover_enabled(&self) -> bool;
 
-    fn make_key(&self, server_name: &str, server_port: u16, fwmark: Option<u32>) -> Self::Key;
+    fn make_key(
+        &self,
+        server_name: &str,
+        server_port: u16,
+        network: DialNetworkOptions,
+    ) -> Self::Key;
 
     /// Establish a fresh underlying connection to `addr`.  `cache_key` is
     /// `Some` when the driver task should auto-invalidate the cache on close
@@ -43,7 +48,7 @@ pub(crate) trait WsDialer: 'static {
         &self,
         addr: SocketAddr,
         server_name: &str,
-        fwmark: Option<u32>,
+        network: DialNetworkOptions,
         cache_key: Option<Self::Key>,
     ) -> Result<Arc<Self::Conn>>;
 
@@ -72,7 +77,7 @@ pub(crate) async fn connect_ws_reused<D: WsDialer>(
     network: DialNetworkOptions,
     source: &'static str,
 ) -> Result<TransportStream> {
-    let key = dialer.make_key(server_name, server_port, network.fwmark);
+    let key = dialer.make_key(server_name, server_port, network);
     let label = dialer.metric_label();
 
     with_reuse(
@@ -160,10 +165,7 @@ async fn resolve_and_dial<D: WsDialer>(
     let mut last_error = None;
     for &addr in addrs {
         let mut guard = TransportConnectGuard::new(source, label);
-        match dialer
-            .establish(addr, server_name, network.fwmark, cache_key.clone())
-            .await
-        {
+        match dialer.establish(addr, server_name, network, cache_key.clone()).await {
             Ok(conn) => match dialer.open_on(&conn, server_name, server_port, path).await {
                 Ok(ws) => {
                     guard.finish("success");

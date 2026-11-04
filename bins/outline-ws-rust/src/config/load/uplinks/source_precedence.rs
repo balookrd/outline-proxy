@@ -27,6 +27,7 @@ pub(in crate::config::load) struct ResolvedUplinkInput {
     pub(super) password: Option<String>,
     pub(super) weight: Option<f64>,
     pub(super) fwmark: Option<u32>,
+    pub(super) disable_udp_gso: Option<bool>,
     pub(super) ipv6_first: Option<bool>,
     pub(super) ipv4_only: Option<bool>,
     pub(super) vless_id: Option<String>,
@@ -111,6 +112,8 @@ impl ResolvedUplinkInput {
                 .or_else(|| outline.and_then(|section| section.password.clone())),
             weight: Some(1.0),
             fwmark: args.fwmark.or_else(|| outline.and_then(|section| section.fwmark)),
+            // Per-uplink knob only: the legacy single-uplink form has no key.
+            disable_udp_gso: None,
             ipv6_first: args
                 .ipv6_first
                 .or_else(|| outline.and_then(|section| section.ipv6_first)),
@@ -166,6 +169,7 @@ impl ResolvedUplinkInput {
             password: uplink.password.clone(),
             weight: uplink.weight,
             fwmark: uplink.fwmark.or_else(|| outline.and_then(|section| section.fwmark)),
+            disable_udp_gso: uplink.disable_udp_gso,
             ipv6_first: uplink
                 .ipv6_first
                 .or_else(|| outline.and_then(|section| section.ipv6_first)),

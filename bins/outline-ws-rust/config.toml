@@ -588,6 +588,10 @@ tcp_mode = "h3"
 # Linux only, requires CAP_NET_ADMIN if set (and PrivateUsers=no under systemd —
 # SO_MARK fails EPERM in a private user namespace)
 # fwmark = 100
+# Keep this uplink's QUIC (ws_h3 / xhttp_h3) sockets off UDP GSO. For an egress
+# that rejects segmented sends with EIO (e.g. an fwmark route onto a VLAN of a
+# NIC without TX checksum offload). Inherited by fallbacks unless overridden.
+# disable_udp_gso = true
 # Prefer IPv6 addresses first for this uplink
 # ipv6_first = true
 # Filter out IPv6 addresses during DNS resolution (IPv4 only; suppresses AAAA records).
@@ -653,8 +657,8 @@ password = "Secret0"
 # handover between WS-family wires is seamless on a feature-enabled
 # server. See docs/UPLINK-CONFIGURATIONS.md "Per-uplink fallback transports".
 #
-# Inheritance: `cipher` / `password` / `fwmark` / `ipv6_first` /
-# `ipv4_only` / `fingerprint_profile` default to the parent uplink's value
+# Inheritance: `cipher` / `password` / `fwmark` / `disable_udp_gso` /
+# `ipv6_first` / `ipv4_only` / `fingerprint_profile` default to the parent uplink's value
 # when omitted; `vless_id` is per-wire and NOT inherited.
 #
 # [[outline.uplinks]]

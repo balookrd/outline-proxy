@@ -114,6 +114,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         password: "secret".to_string(),
         weight: 1.0,
         fwmark: None,
+        disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
         vless_id: None,

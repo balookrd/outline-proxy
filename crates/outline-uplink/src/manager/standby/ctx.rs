@@ -76,6 +76,10 @@ pub(super) struct StandbyCtx<'a> {
     /// a different egress from its parent — dialing the pool with the
     /// parent's mark would send the carrier out of the wrong interface.
     pub(super) fwmark: Option<u32>,
+    /// This wire's UDP GSO opt-out, per-wire for the same reason as
+    /// [`Self::fwmark`]: a pooled H3 carrier dialed with GSO would serve a
+    /// wire whose egress rejects segmented sends.
+    pub(super) disable_udp_gso: bool,
     /// This wire's address-family preference, per-wire for the same reason as
     /// [`Self::fwmark`].
     pub(super) ipv6_first: bool,
@@ -131,6 +135,7 @@ impl UplinkManager {
                 wire_transport: spec.transport,
                 combined_ss: spec.combined_ss_kind(SsPathKind::Tcp),
                 fwmark: spec.fwmark,
+                disable_udp_gso: spec.disable_udp_gso,
                 ipv6_first: spec.ipv6_first,
                 ipv4_only: spec.ipv4_only,
                 fingerprint_profile: spec.fingerprint_profile,
@@ -151,6 +156,7 @@ impl UplinkManager {
                 wire_transport: spec.transport,
                 combined_ss: spec.combined_ss_kind(SsPathKind::Udp),
                 fwmark: spec.fwmark,
+                disable_udp_gso: spec.disable_udp_gso,
                 ipv6_first: spec.ipv6_first,
                 ipv4_only: spec.ipv4_only,
                 fingerprint_profile: spec.fingerprint_profile,

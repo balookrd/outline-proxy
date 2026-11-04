@@ -47,6 +47,7 @@ pub(crate) struct UplinkPayload {
     pub(crate) password: Option<String>,
     pub(crate) weight: Option<f64>,
     pub(crate) fwmark: Option<u32>,
+    pub(crate) disable_udp_gso: Option<bool>,
     pub(crate) ipv6_first: Option<bool>,
     pub(crate) ipv4_only: Option<bool>,
     pub(crate) vless_id: Option<String>,
@@ -96,6 +97,7 @@ pub(crate) struct FallbackPayload {
     pub(crate) method: Option<String>,
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,
+    pub(crate) disable_udp_gso: Option<bool>,
     pub(crate) ipv6_first: Option<bool>,
     pub(crate) ipv4_only: Option<bool>,
     pub(crate) vless_id: Option<String>,
@@ -204,6 +206,9 @@ pub(super) fn payload_to_table(payload: &UplinkPayload) -> Table {
     if let Some(fw) = payload.fwmark {
         tbl.insert("fwmark", Item::Value(Value::from(fw as i64)));
     }
+    if let Some(v) = payload.disable_udp_gso {
+        tbl.insert("disable_udp_gso", Item::Value(Value::from(v)));
+    }
     if let Some(v) = payload.ipv6_first {
         tbl.insert("ipv6_first", Item::Value(Value::from(v)));
     }
@@ -259,6 +264,9 @@ fn fallbacks_to_array(fallbacks: &[FallbackPayload]) -> ArrayOfTables {
         set_str(&mut sub, "password", fb.password.as_deref());
         if let Some(fw) = fb.fwmark {
             sub.insert("fwmark", Item::Value(Value::from(fw as i64)));
+        }
+        if let Some(v) = fb.disable_udp_gso {
+            sub.insert("disable_udp_gso", Item::Value(Value::from(v)));
         }
         if let Some(v) = fb.ipv6_first {
             sub.insert("ipv6_first", Item::Value(Value::from(v)));
@@ -334,6 +342,9 @@ pub(super) fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
     }
     if let Some(fw) = patch.fwmark {
         tbl.insert("fwmark", Item::Value(Value::from(fw as i64)));
+    }
+    if let Some(v) = patch.disable_udp_gso {
+        tbl.insert("disable_udp_gso", Item::Value(Value::from(v)));
     }
     if let Some(v) = patch.ipv6_first {
         tbl.insert("ipv6_first", Item::Value(Value::from(v)));

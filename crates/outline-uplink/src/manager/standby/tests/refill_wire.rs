@@ -145,6 +145,7 @@ async fn a_refill_dials_with_the_wires_own_network_options() {
         ctx.dial_network_options(),
         DialNetworkOptions {
             fwmark: Some(0x12),
+            disable_udp_gso: false,
             ipv6_first: true,
             ipv4_only: false
         },

@@ -550,6 +550,7 @@ tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 tcp_mode = "h3"
 # fwmark = 100
+# disable_udp_gso = true
 # ipv6_first = true
 # ipv4_only = true
 udp_ws_url = "wss://example.com/SECRET/udp"
@@ -617,6 +618,7 @@ via = "main"
 - `tcp_mode` / `udp_mode` (`transport = "ss"`) and `vless_mode` (`transport = "vless"`) pick the per-direction transport carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade), or `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (VLESS-only XHTTP packet-up). See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) for per-shape config blocks, dial-time fallback chains, and resume behaviour.
 - `ipv6_first` (default `false`) changes resolved-address preference for that uplink from IPv4-first to IPv6-first for TCP, UDP, H1, H2, and H3 connections.
 - `ipv4_only` (default `false`) filters out IPv6 (AAAA records) during DNS resolution for uplink servers and endpoints, keeping only IPv4 addresses. Useful on hosts without IPv6 connectivity to prevent `NetworkUnreachable (OS 101)` failures and link-flapping storms. When `ipv4_only = true`, `ipv6_first` is ignored. Inherited from `[outline]` down to `[[outline.uplinks]]` and `[[outline.uplinks.fallbacks]]` unless explicitly overridden.
+- `disable_udp_gso` (default `false`, `[[outline.uplinks]]` and `[[outline.uplinks.fallbacks]]`) keeps the uplink's QUIC sockets (`ws_h3` / `xhttp_h3`) off UDP GSO, so quinn sends one datagram per `sendmsg`. Set it on an uplink whose egress rejects segmented sends — typically one an `fwmark` routes onto a VLAN of a NIC without TX checksum offload, where every GSO send fails with `EIO` and each new QUIC connection loses its first handshake flight (~1 s extra per dial). TCP carriers are unaffected. Inherited by fallbacks unless overridden. See "Egress without UDP GSO" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
 - `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
 - `[[socks5.users]]` enables local SOCKS5 username/password auth for multiple users. Each entry must include both `username` and `password`.
 - `[socks5] username` + `password` is still accepted as a shorthand for a single user.

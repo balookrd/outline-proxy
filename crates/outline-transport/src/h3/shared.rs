@@ -91,11 +91,17 @@ impl H3ConnectionKey {
         server_name: &str,
         server_port: u16,
         fwmark: Option<u32>,
+        disable_udp_gso: bool,
         slot: u8,
         tls: TlsFingerprint,
     ) -> Self {
         Self {
-            base: crate::shared_cache::ConnectionKey::new(server_name, server_port, fwmark),
+            base: crate::shared_cache::ConnectionKey::new(
+                server_name,
+                server_port,
+                fwmark,
+                disable_udp_gso,
+            ),
             slot,
             tls,
         }
@@ -201,18 +207,27 @@ pub(crate) fn choose_slot(loads: &[Option<u64>], min: u8, cap: u64) -> u8 {
     least_overall.map_or(0, |(slot, _)| slot)
 }
 
-/// Inspect every carrier slot for `(server_name, server_port, fwmark, tls)` and pick
+/// Inspect every carrier slot for `(server_name, server_port, fwmark,
+/// disable_udp_gso, tls)` and pick
 /// the one a fresh dial should target, per [`choose_slot`]. Read-only: uses
 /// `peek` so probing the pool never evicts a stale entry.
 async fn pick_h3_carrier_slot(
     server_name: &str,
     server_port: u16,
     fwmark: Option<u32>,
+    disable_udp_gso: bool,
     tls: TlsFingerprint,
 ) -> u8 {
     let mut loads: Vec<Option<u64>> = Vec::with_capacity(H3_CARRIER_MAX as usize);
     for slot in 0..H3_CARRIER_MAX {
-        let key = H3ConnectionKey::with_slot(server_name, server_port, fwmark, slot, tls);
+        let key = H3ConnectionKey::with_slot(
+            server_name,
+            server_port,
+            fwmark,
+            disable_udp_gso,
+            slot,
+            tls,
+        );
         let load = match h3_registry().peek(&key).await {
             Some(conn) if conn.is_open() => Some(conn.active()),
             _ => None,
@@ -543,17 +558,29 @@ impl crate::shared_cache::CachedEntry for SharedH3Connection {
 /// [`SharedH3Connection`] holds it, and the XHTTP driver task moves it in.
 /// Socket count therefore tracks the number of live H3 connections, which
 /// the carrier pool already bounds.
+///
+/// `disable_udp_gso` wraps the socket in [`super::no_gso::NoGsoUdpSocket`] so
+/// quinn never issues a segmented (`UDP_SEGMENT`) send on it — see that module
+/// for the egress devices that need it.
 pub(crate) fn client_endpoint(
     bind_addr: std::net::SocketAddr,
     fwmark: Option<u32>,
+    disable_udp_gso: bool,
     kind: &'static str,
 ) -> Result<TrackedEndpoint> {
     let socket = bind_udp_socket(bind_addr, fwmark)?;
-    let endpoint = quinn::Endpoint::new(
+    let runtime: Arc<dyn quinn::Runtime> = Arc::new(quinn::TokioRuntime);
+    let mut udp: Arc<dyn quinn::AsyncUdpSocket> = runtime
+        .wrap_udp_socket(socket)
+        .with_context(|| format!("failed to wrap QUIC client socket on {bind_addr}"))?;
+    if disable_udp_gso {
+        udp = Arc::new(super::no_gso::NoGsoUdpSocket::new(udp));
+    }
+    let endpoint = quinn::Endpoint::new_with_abstract_socket(
         crate::quic::h3_endpoint_config(),
         None,
-        socket,
-        Arc::new(quinn::TokioRuntime),
+        udp,
+        runtime,
     )
     .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"))?;
     Ok(TrackedEndpoint::new(endpoint, kind))
@@ -652,19 +679,35 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         &self,
         server_name: &str,
         server_port: u16,
-        fwmark: Option<u32>,
+        network: crate::dial_plan::DialNetworkOptions,
     ) -> H3ConnectionKey {
-        H3ConnectionKey::with_slot(server_name, server_port, fwmark, self.slot, self.tls)
+        H3ConnectionKey::with_slot(
+            server_name,
+            server_port,
+            network.fwmark,
+            network.disable_udp_gso,
+            self.slot,
+            self.tls,
+        )
     }
 
     async fn establish(
         &self,
         addr: SocketAddr,
         server_name: &str,
-        fwmark: Option<u32>,
+        network: crate::dial_plan::DialNetworkOptions,
         cache_key: Option<H3ConnectionKey>,
     ) -> Result<Arc<SharedH3Connection>> {
-        Ok(Arc::new(connect_h3_connection(addr, server_name, fwmark, cache_key).await?))
+        Ok(Arc::new(
+            connect_h3_connection(
+                addr,
+                server_name,
+                network.fwmark,
+                network.disable_udp_gso,
+                cache_key,
+            )
+            .await?,
+        ))
     }
 
     async fn open_on(
@@ -708,7 +751,7 @@ pub(crate) async fn connect_websocket_h3(
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
     let tls = crate::fingerprint_profile::dial_tls_family();
-    let slot = pick_h3_carrier_slot(host, port, network.fwmark, tls).await;
+    let slot = pick_h3_carrier_slot(host, port, network.fwmark, network.disable_udp_gso, tls).await;
     let dialer = H3Dialer { resume, profile, slot, tls };
 
     if crate::shared_cache::should_reuse_connection(source) {
@@ -727,6 +770,7 @@ async fn connect_h3_connection(
     server_addr: SocketAddr,
     server_name: &str,
     fwmark: Option<u32>,
+    disable_udp_gso: bool,
     cache_key: Option<H3ConnectionKey>,
 ) -> Result<SharedH3Connection> {
     let bind_addr = bind_addr_for(server_addr);
@@ -734,7 +778,8 @@ async fn connect_h3_connection(
 
     // Freshly-bound per-dial endpoint — see [`client_endpoint`] for why the
     // source port must change between dials.
-    let endpoint = client_endpoint(bind_addr, fwmark, metrics::H3_ENDPOINT_KIND_WS)?;
+    let endpoint =
+        client_endpoint(bind_addr, fwmark, disable_udp_gso, metrics::H3_ENDPOINT_KIND_WS)?;
 
     let connecting = endpoint
         .connect_with(client_config, server_addr, server_name)

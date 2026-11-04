@@ -37,6 +37,7 @@ pub(super) fn make_uplink(name: &str) -> UplinkConfig {
         password: "s3cr3t_password".to_string(),
         weight: 1.0,
         fwmark: None,
+        disable_udp_gso: false,
         ipv6_first: false,
         ipv4_only: false,
         vless_id: None,
