@@ -292,7 +292,7 @@ Production-код не обращается к `h3`-патч-API и `sockudo_ws`
 `version_information`, `extra_transport_parameters`, `transport_parameter_order`,
 `advertised_active_connection_id_limit`, `max_ack_delay_ms`,
 `initial_stream_receive_windows`, `initial_crypto_layout`, `MtuDiscoveryConfig::first_probe`,
-`PathStats::plpmtud_settled`) — только через
+`MtuDiscoveryConfig::first_probe_caps`, `PathStats::plpmtud_settled`) — только через
 `crates/outline-transport/src/quic/vendored.rs` (клиент; `first_probe` для
 `[server.h3].mtu_first_probe` — ещё и через серверный гейт
 `bins/outline-ss-rust/src/server/h3/vendored.rs`); патч `rustls`

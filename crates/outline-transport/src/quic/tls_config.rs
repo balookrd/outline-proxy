@@ -178,7 +178,7 @@ pub(crate) fn build_h3_transport(
 pub(crate) fn build_h3_transport_with_first_probe(
     tp: &super::tp_profile::QuicTpProfile,
     runtime: RuntimeWindows,
-    first_probe: Option<u16>,
+    first_probe: Option<super::vendored::FirstProbe>,
 ) -> quinn::TransportConfig {
     let mut transport = quinn::TransportConfig::default();
     apply_quic_keepalive(&mut transport);
@@ -230,7 +230,10 @@ const QUIC_MTU_DISCOVERY_MINIMUM_CHANGE: u16 = 4;
 /// Apply carrier congestion control and path MTU discovery to a QUIC transport
 /// config (windows come from [`build_h3_transport`]) so the H3 carrier survives
 /// a lossy / throttled WAN path.
-fn apply_quic_carrier_tuning(transport: &mut quinn::TransportConfig, first_probe: Option<u16>) {
+fn apply_quic_carrier_tuning(
+    transport: &mut quinn::TransportConfig,
+    first_probe: Option<super::vendored::FirstProbe>,
+) {
     // BBR instead of quinn's default (Cubic): on a lossy / DPI-throttled
     // international path Cubic reads loss as congestion and collapses the
     // congestion window, capping a single flow far below the link — the bound
@@ -285,11 +288,11 @@ pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
 }
 
 /// [`h3_quic_client_config`] with path MTU discovery probing `first_probe`
-/// first. `None` returns the cached config as is; `Some` clones it (TLS,
+/// first (capped or as a seed). `None` returns the cached config as is; `Some` clones it (TLS,
 /// session tickets) and swaps in a transport built for this one dial, since
 /// `quinn::TransportConfig` is not `Clone`.
 pub(crate) fn h3_quic_client_config_with_first_probe(
-    first_probe: Option<u16>,
+    first_probe: Option<super::vendored::FirstProbe>,
 ) -> quinn::ClientConfig {
     let mut config = h3_quic_client_config();
     if first_probe.is_some() {
