@@ -1933,11 +1933,11 @@ async fn generated_android_config_fixture_loads() {
     assert_eq!(group.load_balancing.routing_scope, RoutingScope::Global);
     assert!(!group.load_balancing.shared_resume);
     assert!(group.load_balancing.tun_wire_dial);
-    assert_eq!(group.load_balancing.warm_standby_tcp, 0);
-    assert_eq!(group.load_balancing.warm_standby_udp, 0);
-    assert_eq!(config.h2.keepalive_interval_secs, Some(60));
-    assert_eq!(config.h2.keepalive_timeout_secs, Some(20));
-    assert_eq!(config.quic.keepalive_secs, Some(25));
+    // The mobile power profile (warm standby, H2/QUIC keepalives) is not in the
+    // generated config: the app applies it itself (`MobilePowerConfig.kt`).
+    assert_eq!(config.h2.keepalive_interval_secs, None);
+    assert_eq!(config.h2.keepalive_timeout_secs, None);
+    assert_eq!(config.quic.keepalive_secs, None);
     assert_eq!(config.quic.idle_timeout_secs, None);
     // The generated config sets no QUIC windows, so the dial's browser
     // profile supplies them.
