@@ -47,3 +47,27 @@ async fn gives_up_on_a_server_that_stays_busy() {
     assert!(waited >= RETRY_BUDGET, "gave up after {waited:?}");
     assert!(waited < RETRY_BUDGET + RETRY_MAX_DELAY * 2, "overshot: {waited:?}");
 }
+
+/// The budget is wall-clock time since the first attempt, not the sum of the
+/// pauses: a server that holds each POST for 10 s before answering 503 (its
+/// uplink-room patience) must not stretch the retries to minutes.
+#[tokio::test(start_paused = true)]
+async fn slow_attempts_spend_the_budget_too() {
+    let mut retry = BusyRetry::new();
+    let busy = refused(StatusCode::SERVICE_UNAVAILABLE);
+    let start = tokio::time::Instant::now();
+    let mut attempts = 0u32;
+    loop {
+        tokio::time::advance(Duration::from_secs(10)).await;
+        attempts += 1;
+        if !retry.again(&busy).await {
+            break;
+        }
+    }
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < RETRY_BUDGET + Duration::from_secs(10) + RETRY_MAX_DELAY,
+        "kept retrying for {elapsed:?} over {attempts} attempts"
+    );
+    assert!(attempts <= 4, "{attempts} attempts of 10 s each exceed the 30 s budget");
+}

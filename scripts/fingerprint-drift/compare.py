@@ -5,9 +5,11 @@ Usage: compare.py <baseline-dir> <snapshot-dir> <report.md>
 
 Every `<baseline-dir>/<browser>.json` is compared with the snapshot of the
 same name. The report is Markdown. Exit code: 0 — every snapshot matches,
-1 — drift, 2 — a snapshot is missing or lacks a layer the baseline has (a
-capture failure, not drift), 3 — both: one browser drifted while another
-failed to capture, so the drift is still reported.
+1 — drift, 2 — a snapshot is missing or lacks a layer or request kind the
+baseline has (a partial capture, not drift; a capture that fails outright
+stops the job before this step, so no browser is compared then), 3 — both:
+one browser drifted while another's capture was partial, so the drift is
+still reported.
 """
 import difflib
 import json
@@ -54,7 +56,8 @@ def diff(old, new, path=""):
 
 
 # Layers holding one entry per request kind: a kind the baseline has but the
-# snapshot lacks was not captured, which is a capture failure, not drift.
+# snapshot lacks was not captured (a WebSocket that fell back to h1, say),
+# which is a partial capture, not drift.
 KIND_LAYERS = (("h2", "headers"), ("h2", "priority"), ("h1",))
 
 
@@ -79,7 +82,7 @@ def incomplete_layers(baseline, snapshot):
 def report_browser(name, baseline, snapshot):
     """(code, markdown lines) for one browser."""
     if snapshot is None:
-        return INCOMPLETE, [f"## {name}", "", "Snapshot missing: the capture failed.", ""]
+        return INCOMPLETE, [f"## {name}", "", "Snapshot missing: nothing was captured.", ""]
     missing = incomplete_layers(baseline, snapshot)
     if missing:
         return INCOMPLETE, [f"## {name}", "", f"Snapshot lacks layers: {', '.join(missing)}.", ""]

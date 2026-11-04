@@ -105,12 +105,16 @@ async fn connect_probe_tcp_inner(
             let is_h3 = ws_stream.is_h3();
             let shape = ws_stream.shapes_client_start();
             let (ws_sink, ws_stream) = ws_stream.split();
+            // No SS2022 header hold here: the probe sends only the target and
+            // times the reply, so a 50 ms hold would skew SS uplinks' measured
+            // latency against VLESS ones.
             let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
                 ws_sink,
                 uplink.cipher,
                 &master_key,
                 Arc::clone(&lifetime),
                 shape,
+                false,
             )
             .await?;
             let request_salt = writer.request_salt();

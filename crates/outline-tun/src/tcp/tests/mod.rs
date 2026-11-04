@@ -3102,6 +3102,7 @@ pub(in crate::tcp) async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
                         &master_key,
                         super::UpstreamTransportGuard::new("test", "tcp"),
                         false,
+                        true,
                     )
                     .await
                     .unwrap();

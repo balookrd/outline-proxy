@@ -4,8 +4,10 @@ name: fingerprint drift
 # profiles were tuned to: fresh Chrome stable and Firefox release are captured
 # against local sinks (scripts/fingerprint-drift/capture.sh), normalized and
 # diffed against scripts/fingerprint-drift/baseline/*.json. Drift keeps one
-# open `fingerprint-drift` issue up to date; a failed capture fails the job,
-# and leaves the issue alone unless the other browser drifted. Pull requests
+# open `fingerprint-drift` issue up to date; a partial capture (a snapshot
+# lacking a layer or request kind) fails the job and leaves the issue alone
+# unless the other browser drifted; a capture that fails outright stops the
+# job before the comparison. Pull requests
 # touching the tool run everything except the issue step.
 on:
   schedule:
@@ -66,8 +68,9 @@ jobs:
           set -e
           cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          # 2 and 3 = a snapshot lacks a layer (a capture failure); the job
-          # fails after the issue step, so the other browser's drift still lands.
+          # 2 and 3 = a snapshot lacks a layer or request kind (a partial
+          # capture); the job fails after the issue step, so the other
+          # browser's drift still lands.
           [ "$code" -le 3 ]
 
       - name: upload capture
@@ -95,5 +98,5 @@ jobs:
       - name: fail on an incomplete capture
         if: steps.compare.outputs.code == '2' || steps.compare.outputs.code == '3'
         run: |
-          echo "::error::a browser snapshot lacks a layer: the capture failed (see the report)"
+          echo "::error::a browser snapshot lacks a layer or request kind: the capture was partial (see the report)"
           exit 1

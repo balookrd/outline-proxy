@@ -217,3 +217,14 @@ fn key_string_hides_the_local_address() {
     };
     assert_eq!(key.as_str(), "example.com:443|fw=18|net=00000000deadbeef");
 }
+
+/// A clock that went back leaves entries confirmed "in the future"; such an
+/// entry must not pin a cap (or seed) until the clock catches up with it.
+#[test]
+fn an_entry_from_the_future_is_ignored_until_the_clock_catches_up() {
+    let cache = PmtuCache::new(None, TTL);
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+    assert!(cache.record("k", 1_400, t0 + HOUR));
+    assert_eq!(cache.hint("k", t0), None, "confirmed an hour ahead of the clock");
+    assert_eq!(cache.hint("k", t0 + HOUR), Some(FirstProbe::capped(1_400)));
+}

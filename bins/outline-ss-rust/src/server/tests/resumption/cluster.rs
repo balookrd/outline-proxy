@@ -1915,6 +1915,7 @@ async fn cluster_xhttp_edge_relays_to_home() -> Result<()> {
         &master_key,
         Arc::clone(&lifetime),
         false,
+        true,
     )
     .await?;
     let request_salt = writer.request_salt();

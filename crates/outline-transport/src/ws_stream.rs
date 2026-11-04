@@ -452,6 +452,15 @@ impl TransportStream {
         shapes_client_start_for(self.is_h3(), self.xhttp_active_submode())
     }
 
+    /// Whether the SS2022 request header may wait (up to 50 ms) for the first
+    /// data so both leave in one message: h1 / h2 carriers, XHTTP packet-up
+    /// included (one POST instead of a lone 130-141 B one). Not h3, where no
+    /// TLS record shape is at stake and the hold would only delay
+    /// server-speaks-first protocols. Uplink probes pass `false` themselves.
+    pub fn holds_client_header(&self) -> bool {
+        holds_client_header_for(self.is_h3())
+    }
+
     /// XHTTP submode the dialer actually landed on (after any inline
     /// `stream-one → packet-up` retry). `None` for non-XHTTP variants —
     /// the concept does not apply to WS or QUIC carriers. Used by the
@@ -641,6 +650,11 @@ impl Sink<Message> for TransportStream {
 /// Pure decision behind [`TransportStream::shapes_client_start`].
 fn shapes_client_start_for(is_h3: bool, submode: Option<crate::xhttp::XhttpSubmode>) -> bool {
     !is_h3 && submode != Some(crate::xhttp::XhttpSubmode::PacketUp)
+}
+
+/// Pure decision behind [`TransportStream::holds_client_header`].
+fn holds_client_header_for(is_h3: bool) -> bool {
+    !is_h3
 }
 
 #[cfg(test)]

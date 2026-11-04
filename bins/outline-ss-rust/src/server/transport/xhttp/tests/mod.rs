@@ -353,6 +353,33 @@ async fn packet_up_gives_up_a_held_post_on_a_stuck_relay() {
     assert_eq!(start.elapsed(), UPLINK_ROOM_PATIENCE);
 }
 
+/// A POST held for room is released by `close()` at once, not when the
+/// patience runs out, and reports `Closed` (paused time: were the wake-up
+/// missing, the patience timer would fire first and `ReadyFull` come back).
+#[tokio::test(start_paused = true)]
+async fn close_releases_a_held_post_at_once() {
+    let session = Arc::new(XhttpSession::new(Arc::from("test-session"), None, None, None));
+    let chunk = Bytes::from(vec![0u8; CHUNK_BYTES]);
+    let fill = (UPLINK_READY_BYTES_CAP / CHUNK_BYTES) as u64;
+    for seq in 0..fill {
+        session.ingest_uplink(seq, chunk.clone()).expect("fits under the cap");
+    }
+
+    let start = tokio::time::Instant::now();
+    let held = tokio::spawn({
+        let session = Arc::clone(&session);
+        let chunk = chunk.clone();
+        async move { session.ingest_uplink_waiting(fill, chunk, UPLINK_ROOM_PATIENCE).await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!held.is_finished(), "the POST is held while ready is full");
+
+    session.close();
+    let result = held.await.expect("join the held POST");
+    assert!(matches!(result, Err(UplinkIngestError::Closed)), "{result:?}");
+    assert!(start.elapsed() < UPLINK_ROOM_PATIENCE, "close must not wait out the patience");
+}
+
 /// Held bodies are capped per session: a POST that would pass the cap is
 /// refused at once instead of pinning more memory in a waiting handler.
 #[tokio::test(start_paused = true)]

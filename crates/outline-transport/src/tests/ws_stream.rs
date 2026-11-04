@@ -1,7 +1,16 @@
 //! Tests for the pure client-start shaping decision in [`crate::ws_stream`].
 
-use super::shapes_client_start_for;
+use super::{holds_client_header_for, shapes_client_start_for};
 use crate::xhttp::XhttpSubmode;
+
+#[test]
+fn the_header_is_held_on_tcp_carriers_only() {
+    assert!(
+        holds_client_header_for(false),
+        "h1 / h2 hold the SS2022 header for the first data"
+    );
+    assert!(!holds_client_header_for(true), "h3 writes it at once");
+}
 
 #[test]
 fn plain_ws_carriers_shape_the_client_start() {

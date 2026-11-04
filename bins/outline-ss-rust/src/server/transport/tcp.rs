@@ -646,13 +646,26 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
             .context("websocket writer task join failed")
             .and_then(|r| r)
     };
-    // After the carrier is fully torn down, so a slow target never delays the
-    // client's side of the close.
-    if let Some(upstream) = lingering {
-        linger_until_delivered(upstream.as_ref(), DIRECT_LINGER_BUDGET).await;
-    }
-    if let Some(guard) = state.upstream_guard.take() {
-        guard.finish();
+    // The carrier is fully torn down by now, and the client's side of the
+    // close must not wait for a slow target either: delivering the request-body
+    // tail is left to a detached task (bounded by `linger_until_delivered`),
+    // which keeps the upstream accounting guard until the socket really closes.
+    let upstream_guard = state.upstream_guard.take();
+    match lingering {
+        Some(upstream) => {
+            tokio::spawn(async move {
+                linger_until_delivered(upstream.as_ref(), DIRECT_LINGER_BUDGET).await;
+                drop(upstream);
+                if let Some(guard) = upstream_guard {
+                    guard.finish();
+                }
+            });
+        },
+        None => {
+            if let Some(guard) = upstream_guard {
+                guard.finish();
+            }
+        },
     }
     writer_result?;
     match carrier_error {
