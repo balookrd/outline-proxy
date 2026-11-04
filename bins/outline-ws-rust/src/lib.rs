@@ -97,6 +97,12 @@ pub async fn run_with_options(args: Args, opts: RunOptions) -> Result<()> {
             outline_transport::init_quic_idle_timeout(Duration::from_secs(idle));
         }
         outline_transport::init_quic_udp_datagrams(config.quic.udp_datagrams);
+        // Path MTU cache next to the uplink state file (`client.state.toml` →
+        // `client.state.pmtu`), so the first H3 dial after a restart probes the
+        // MTU the path settled at instead of the full ladder.
+        outline_transport::init_pmtu_cache(
+            config.state_path.as_ref().map(|path| path.with_extension("pmtu")),
+        );
     }
     outline_transport::init_dial_timeout(config.dial_timeout);
     outline_net::init_udp_socket_bufs(config.udp_recv_buf_bytes, config.udp_send_buf_bytes);

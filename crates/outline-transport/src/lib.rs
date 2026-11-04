@@ -280,6 +280,8 @@ pub use h2::init_h2_keepalive;
 pub use h2_profile::init_h2_window_sizes;
 
 // QUIC tuning: called once during startup from the main binary.
+#[cfg(feature = "h3")]
+pub use quic::init_pmtu_cache;
 #[cfg(feature = "quic")]
 pub use quic::{
     init_quic_idle_timeout, init_quic_keepalive_interval, init_quic_udp_datagrams,
