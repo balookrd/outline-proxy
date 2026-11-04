@@ -60,6 +60,7 @@ use super::super::scratch::ScratchBuf;
 use super::carrier_padding;
 use super::resume_headers::ResumeContext;
 use super::sink;
+use super::tcp_linger::linger_until_delivered;
 use super::upstream_source::{
     HarvestedUpstream, MeshUpstreamHalves, MeshUpstreamSetup, UpstreamSource, UpstreamWriter,
 };
@@ -383,6 +384,12 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
     }
 }
 
+/// How long a closing direct upstream may sit without its send queue shrinking
+/// before the request-body tail is given up on. Renewed by every acknowledged
+/// byte, so it bounds a stalled target, not a slow one; same default as
+/// `mesh_relay_budget`, which bounds the home's own linger.
+const DIRECT_LINGER_BUDGET: Duration = Duration::from_secs(4);
+
 /// Serves one SS-over-WS/XHTTP TCP session: authenticate the client, take an
 /// upstream, and pump both directions until either end goes away.
 ///
@@ -586,9 +593,15 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     // below.
     let parked = try_park_on_drop(&mut state, server, route).await;
 
+    // A direct upstream that was shut down but not parked, kept open until the
+    // request body it already took has reached the target (see
+    // `linger_until_delivered`). The relay task below drops the read half;
+    // this write half keeps the socket itself alive meanwhile.
+    let mut lingering = None;
     if !parked {
         if let Some(mut upstream) = state.upstream_writer.take() {
             upstream.shutdown().await.ok();
+            lingering = upstream.into_tcp();
         }
         if client_closed {
             // Nothing left to harvest; taking the handle here (rather than
@@ -617,9 +630,6 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
                 Err(error) => return Err(error),
             }
         }
-        if let Some(guard) = state.upstream_guard.take() {
-            guard.finish();
-        }
     }
 
     drop(outbound_ctrl_tx);
@@ -627,11 +637,24 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     // A dead carrier takes the writer down with it, so its failure is a
     // consequence of `carrier_error`, not news — reporting it would bury the
     // cause under its own symptom.
-    if client_closed || parked || carrier_error.is_some() {
+    let writer_result = if client_closed || parked || carrier_error.is_some() {
         let _ = writer_task.await;
+        Ok(())
     } else {
-        writer_task.await.context("websocket writer task join failed")??;
+        writer_task
+            .await
+            .context("websocket writer task join failed")
+            .and_then(|r| r)
+    };
+    // After the carrier is fully torn down, so a slow target never delays the
+    // client's side of the close.
+    if let Some(upstream) = lingering {
+        linger_until_delivered(upstream.as_ref(), DIRECT_LINGER_BUDGET).await;
     }
+    if let Some(guard) = state.upstream_guard.take() {
+        guard.finish();
+    }
+    writer_result?;
     match carrier_error {
         Some(error) => Err(error),
         None => Ok(()),

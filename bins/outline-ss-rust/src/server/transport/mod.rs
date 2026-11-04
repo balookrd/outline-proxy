@@ -35,6 +35,7 @@ mod resume_headers;
 pub(in crate::server) mod sink;
 pub(in crate::server) mod sni_fallback;
 mod tcp;
+mod tcp_linger;
 pub(in crate::server) mod throughput_monitor;
 mod udp;
 pub(in crate::server) mod upstream_source;

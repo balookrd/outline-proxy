@@ -51,10 +51,13 @@ enum Step {
     /// Without this a script's last frame would immediately EOF the carrier,
     /// tearing the session down before any downlink could arrive.
     Idle(oneshot::Receiver<()>),
+    /// A WS Close frame: the client finished the session cleanly.
+    Close,
 }
 
 enum MockMsg {
     Binary(Bytes),
+    Close,
     Ctrl,
 }
 
@@ -116,6 +119,7 @@ impl WsSocket for MockWs {
                 Some(Step::Idle(release)) => {
                     let _ = release.await;
                 },
+                Some(Step::Close) => return Ok(Some(MockMsg::Close)),
                 // Script exhausted: the client stream ended without a Close
                 // frame, which the relay reads as end-of-stream.
                 None => return Ok(None),
@@ -143,7 +147,8 @@ impl WsSocket for MockWs {
     fn classify(msg: Self::Msg) -> WsFrame {
         match msg {
             MockMsg::Binary(data) => WsFrame::Binary(data),
-            // The script never feeds control frames inbound.
+            MockMsg::Close => WsFrame::Close,
+            // The script never feeds other control frames inbound.
             MockMsg::Ctrl => WsFrame::Pong,
         }
     }
@@ -166,13 +171,13 @@ impl WsSocket for MockWs {
     fn binary_len(msg: &Self::Msg) -> Option<usize> {
         match msg {
             MockMsg::Binary(data) => Some(data.len()),
-            MockMsg::Ctrl => None,
+            MockMsg::Close | MockMsg::Ctrl => None,
         }
     }
     fn msg_len(msg: &Self::Msg) -> usize {
         match msg {
             MockMsg::Binary(data) => data.len(),
-            MockMsg::Ctrl => 0,
+            MockMsg::Close | MockMsg::Ctrl => 0,
         }
     }
     fn make_udp_response_sender(
@@ -1025,6 +1030,91 @@ async fn client_eof_without_close_does_not_hang_teardown() -> Result<()> {
     )
     .await
     .map_err(|_| anyhow!("teardown hung joining the upstream→client relay task"))??;
+    Ok(())
+}
+
+/// A client that sends its whole request body and then closes the carrier must
+/// still have every byte of that body reach the target.
+///
+/// The teardown half-closes the upstream and drops it. On Linux a `close()` of a
+/// socket whose receive queue still holds unread bytes, or that takes more data
+/// from the target after the close, answers with an RST and throws away the
+/// unsent part of its send queue — the target sees `ECONNRESET` with the tail of
+/// the body missing. Here the target keeps streaming a response (so downlink
+/// bytes keep arriving across the close), reads through a tiny receive buffer,
+/// and pauses once near the end of the body so the session closes while that
+/// tail is still queued on the relay's side of the socket.
+#[tokio::test]
+async fn a_client_close_still_delivers_the_request_body_tail() -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const BODY_LEN: usize = 1024 * 1024;
+    const FRAME_PAYLOAD: usize = 64 * 1024;
+
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    // Inherited by the accepted socket: a small window keeps most of the body
+    // in the relay's send queue instead of the target's receive buffer.
+    socket2::SockRef::from(&listener).set_recv_buffer_size(4 * 1024)?;
+    listener.set_nonblocking(true)?;
+    let listener = TcpListener::from_std(listener)?;
+    let upstream_addr = listener.local_addr()?;
+    let body: Vec<u8> = (0..BODY_LEN).map(|i| (i % 251) as u8).collect();
+
+    let target = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let (mut reader, mut writer) = stream.into_split();
+        // A response streamed for as long as the relay keeps the socket open.
+        let _response = AbortOnDrop::new(tokio::spawn(async move {
+            let chunk = vec![0x5au8; 16 * 1024];
+            while writer.write_all(&chunk).await.is_ok() {}
+        }));
+        let mut got = vec![0u8; BODY_LEN];
+        let mut filled = 0usize;
+        let mut paused = false;
+        while filled < BODY_LEN {
+            if !paused && BODY_LEN - filled <= 64 * 1024 {
+                paused = true;
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            let read = reader.read(&mut got[filled..]).await.map_err(|error| {
+                anyhow!("target read failed after {filled} of {BODY_LEN} body bytes: {error}")
+            })?;
+            if read == 0 {
+                return Err(anyhow!("target saw EOF after {filled} of {BODY_LEN} body bytes"));
+            }
+            filled += read;
+        }
+        Ok::<_, anyhow::Error>(got)
+    });
+
+    let user = test_user()?;
+    let (server, route) = test_contexts(&user);
+    let mut encryptor = AeadStreamEncryptor::new(&user, None)?;
+    let mut steps = VecDeque::new();
+    let mut first = BytesMut::new();
+    encryptor.encrypt_chunk(&TargetAddr::from(upstream_addr).to_wire_bytes()?, &mut first)?;
+    steps.push_back(Step::Binary(first.freeze()));
+    for piece in body.chunks(FRAME_PAYLOAD) {
+        let mut frame = BytesMut::new();
+        encryptor.encrypt_chunk(piece, &mut frame)?;
+        steps.push_back(Step::Binary(frame.freeze()));
+    }
+    steps.push_back(Step::Close);
+    let (writer_alive, _writer_gone) = oneshot::channel();
+    let socket = MockWs::new(steps, writer_alive);
+    let resume = ResumeContext::from_request_headers(&HeaderMap::new(), &server.orphan_registry);
+
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, UpstreamSource::Direct),
+    )
+    .await
+    .map_err(|_| anyhow!("teardown hung after the client closed"))??;
+
+    let got = tokio::time::timeout(Duration::from_secs(30), target)
+        .await
+        .map_err(|_| anyhow!("target never finished reading the body"))???;
+    assert!(got == body, "the target received a corrupted request body");
     Ok(())
 }
 
