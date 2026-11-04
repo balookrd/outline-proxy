@@ -15,7 +15,7 @@ Regenerated against:
 - **h3** — crates.io `h3 0.0.8`.
 - **sockudo-ws** — GitHub tag `v1.7.5` (commit `7819745`), in raw upstream
   git formatting (see the note below).
-- **quinn-proto** — crates.io `quinn-proto 0.11.15`.
+- **quinn-proto** — crates.io `quinn-proto 0.11.19`.
 - **rustls** — crates.io `rustls 0.23.40`.
 - **hyper** — crates.io `hyper 1.10.1`.
 
@@ -25,7 +25,7 @@ Regenerated against:
 |------|--------|
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | all `vendor/h3` deviations from upstream `h3 0.0.8` |
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | all `vendor/sockudo-ws` deviations from GitHub tag `v1.7.5` (`src/` and `Cargo.toml`) |
-| [`quinn-proto-0.11.15.patch`](quinn-proto-0.11.15.patch) | all `vendor/quinn-proto` deviations from upstream `quinn-proto 0.11.15` (`src/` and `Cargo.toml`) |
+| [`quinn-proto-0.11.19.patch`](quinn-proto-0.11.19.patch) | all `vendor/quinn-proto` deviations from upstream `quinn-proto 0.11.19` (`src/` and `Cargo.toml`) |
 | [`rustls-0.23.40.patch`](rustls-0.23.40.patch) | all `vendor/rustls` deviations from upstream `rustls 0.23.40` (`src/` and `Cargo.toml`) |
 | [`hyper-1.10.1.patch`](hyper-1.10.1.patch) | all `vendor/hyper` deviations from upstream `hyper 1.10.1` (`src/` only) |
 
@@ -185,10 +185,10 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
   `[dev-dependencies]` and the `[profile.*]` sections (ignored in a non-root
   package anyway) are removed.
 
-## quinn-proto (0.11.15)
+## quinn-proto (0.11.19)
 
-Baseline — crates.io `quinn-proto 0.11.15`. Logical changes carried by
-`quinn-proto-0.11.15.patch`:
+Baseline — crates.io `quinn-proto 0.11.19`. Logical changes carried by
+`quinn-proto-0.11.19.patch`:
 
 1. **advertised-stream-window** (`src/config/transport.rs`,
    `src/transport_parameters.rs`, `src/connection/mod.rs`,
@@ -278,8 +278,17 @@ Baseline — crates.io `quinn-proto 0.11.15`. Logical changes carried by
 6. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
    `rcgen` with default `ring` would violate the aws-lc-rs invariant).
 
-Conformance check: apply the patch to a clean copy of crates.io 0.11.15 and
+Conformance check: apply the patch to a clean copy of crates.io 0.11.19 and
 compare `diff -r src/` — byte-identical.
+
+Rebased from 0.11.15 to 0.11.19 for the RustSec fixes of 0.11.17–0.11.18 (remote
+panics on zero-length STREAM frames, peer `min_ack_delay` and datagram accounting;
+unbounded CID-retirement, reassembly and DATAGRAM growth). Upstream moved to
+`rand` 0.10 in between, so the patched code names the traits `rand::Rng` (formerly
+`RngCore`) and `rand::RngExt` (formerly `Rng`); behaviour is unchanged. Upstream
+0.11.19 also rejects a transport parameter whose parsed length differs from its
+declared one; the patch's GREASE, `version_information` and extra parameters
+already write consistent lengths.
 
 ## Maintenance strategy (sockudo-ws)
 
@@ -483,6 +492,10 @@ To rebuild the patch artifacts after changing vendored source:
 A `cargo update` that moves `hyper` past 1.10.1 in either lockfile (root or
 `android/rust`) leaves the patch as `[[patch.unused]]` and the build then fails with
 E0603 (private `HeaderCaseMap`); re-vendor the new version with the patch instead.
+The same happens to `quinn-proto` when `cargo update` moves `quinn` to a release that
+requires a newer `quinn-proto` than the vendored one (quinn 0.11.12 already needs
+`^0.11.18`): either hold `quinn` back with `cargo update -p quinn --precise` or
+re-vendor `quinn-proto`.
 
 Do not raise the upstream versions or drop `[patch.crates-io]` without a
 deliberate reason: the HTTP/3 WebSocket path depends on these patches, and

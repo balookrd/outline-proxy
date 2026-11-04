@@ -15,7 +15,7 @@ vendored-копии.
 - **h3** — crates.io `h3 0.0.8`.
 - **sockudo-ws** — GitHub-тег `v1.7.5` (коммит `7819745`), в raw
   upstream-форматировании git (см. примечание ниже).
-- **quinn-proto** — crates.io `quinn-proto 0.11.15`.
+- **quinn-proto** — crates.io `quinn-proto 0.11.19`.
 - **rustls** — crates.io `rustls 0.23.40`.
 - **hyper** — crates.io `hyper 1.10.1`.
 
@@ -25,7 +25,7 @@ vendored-копии.
 |------|---------------|
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | все отличия `vendor/h3` от upstream `h3 0.0.8` |
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws` от GitHub-тега `v1.7.5` (`src/` и `Cargo.toml`) |
-| [`quinn-proto-0.11.15.patch`](quinn-proto-0.11.15.patch) | все отличия `vendor/quinn-proto` от upstream `quinn-proto 0.11.15` (`src/` и `Cargo.toml`) |
+| [`quinn-proto-0.11.19.patch`](quinn-proto-0.11.19.patch) | все отличия `vendor/quinn-proto` от upstream `quinn-proto 0.11.19` (`src/` и `Cargo.toml`) |
 | [`rustls-0.23.40.patch`](rustls-0.23.40.patch) | все отличия `vendor/rustls` от upstream `rustls 0.23.40` (`src/` и `Cargo.toml`) |
 | [`hyper-1.10.1.patch`](hyper-1.10.1.patch) | все отличия `vendor/hyper` от upstream `hyper 1.10.1` (только `src/`) |
 
@@ -186,10 +186,10 @@ API only behind the gate module»); тестовые модули — исклю
   `criterion`, `[dev-dependencies]` и секции `[profile.*]` (в некорневом пакете
   они всё равно игнорируются).
 
-## quinn-proto (0.11.15)
+## quinn-proto (0.11.19)
 
-Baseline — crates.io `quinn-proto 0.11.15`. Логические изменения в
-`quinn-proto-0.11.15.patch`:
+Baseline — crates.io `quinn-proto 0.11.19`. Логические изменения в
+`quinn-proto-0.11.19.patch`:
 
 1. **advertised-stream-window** (`src/config/transport.rs`,
    `src/transport_parameters.rs`, `src/connection/mod.rs`,
@@ -277,8 +277,17 @@ Baseline — crates.io `quinn-proto 0.11.15`. Логические измене�
 6. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
    дефолтным `ring` нарушил бы инвариант aws-lc-rs).
 
-Проверка соответствия: применить патч к чистой копии crates.io 0.11.15 и сравнить
+Проверка соответствия: применить патч к чистой копии crates.io 0.11.19 и сравнить
 `diff -r src/` — совпадение побайтово.
+
+Перенесён с 0.11.15 на 0.11.19 ради исправлений RustSec из 0.11.17–0.11.18
+(удалённые паники на STREAM-кадрах нулевой длины, на `min_ack_delay` пира и в учёте
+датаграмм; неограниченный рост очереди отзыва CID, сборки потока и DATAGRAM).
+Upstream за это время перешёл на `rand` 0.10, поэтому пропатченный код называет
+трейты `rand::Rng` (бывший `RngCore`) и `rand::RngExt` (бывший `Rng`); поведение не
+изменилось. Ещё upstream 0.11.19 отвергает transport parameter, у которого разобранная
+длина не совпадает с объявленной; GREASE, `version_information` и дополнительные
+параметры патча и так пишут согласованные длины.
 
 ## Стратегия сопровождения (sockudo-ws)
 
@@ -479,7 +488,10 @@ vendored-файлов) и сравнить `diff -r` — пусто.
 `cargo update`, сдвинувший `hyper` выше 1.10.1 в любом из lock-файлов (корневом
 или `android/rust`), оставляет патч как `[[patch.unused]]`, и сборка падает с
 E0603 (приватный `HeaderCaseMap`); вместо этого перевендорь новую версию вместе
-с патчем.
+с патчем. То же происходит с `quinn-proto`, когда `cargo update` поднимает `quinn` до
+релиза, которому нужен `quinn-proto` новее vendored (quinn 0.11.12 уже требует
+`^0.11.18`): либо придержи `quinn` через `cargo update -p quinn --precise`, либо
+перевендорь `quinn-proto`.
 
 Не поднимай upstream-версии и не убирай `[patch.crates-io]` без явной
 причины: HTTP/3 WebSocket-путь зависит от этих патчей, а браузерный регистр

@@ -15,7 +15,7 @@
 use std::ops::Range;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use rand::Rng;
+use rand::{Rng, RngExt};
 use tracing::trace;
 
 use super::{Connection, SentFrames, SpaceId};
