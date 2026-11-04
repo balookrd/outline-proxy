@@ -809,6 +809,8 @@ On `ws_h3` and `xhttp_h3`, client UDP (Shadowsocks / SS2022 and VLESS) can ride 
 - **Sizes.** The choice is per packet by the current `max_datagram_size()`; a packet that does not fit goes over the stream. The client starts at an MTU of 1200 before PMTUD, so right after connect most full-size packets still use the stream. The server's maximum UDP payload is 1452. Datagram buffers are 1 MiB on both sides.
 - **Rollout.** Servers first, then clients (either order is safe). Rollback: set `udp_datagrams = false` on the side that misbehaves and restart that service (no rebuild needed).
 
+**Path MTU cache.** The client remembers the path MTU each H3 path settled at (keyed by server, port, fwmark and a hash of the local source address, i.e. the network it is on) in a file next to the state file, same name with the extension `.pmtu` (default `<config>.state.pmtu`). The next dial on the same path probes that size first: one MTU probe instead of the 1326 → 1389 → 1420 → … ladder a passive observer would see on every connection. A stale value (the path shrank) costs one rejected probe size, after which the regular search runs below it. The cached value is the first probe and, once confirmed, the connection's ceiling: a path that grew is found only after the entry expires. A value of 1452 (the H3 upper bound) is re-checked by a full search 3 days after the path first settled at it; a value below 1452 after 1 hour, so a search that settled low after a spurious probe loss does not cap connections for days. The Initial stays 1200 bytes.
+
 Metrics (all on the `/metrics` endpoint):
 
 | Metric | Labels | Meaning |

@@ -122,3 +122,16 @@ pub(crate) fn apply_browser_tp_options(
         },
     }
 }
+
+/// First DPLPMTUD probe size after the handshake (`MtuDiscoveryConfig::first_probe`);
+/// `None` keeps upstream's binary search from the start.
+pub(crate) fn set_mtu_first_probe(mtu: &mut quinn::MtuDiscoveryConfig, first_probe: Option<u16>) {
+    mtu.first_probe(first_probe);
+}
+
+/// Whether the path MTU search has finished (`PathStats::plpmtud_settled`): a
+/// `current_mtu` read before that is a mid-search value.
+#[cfg(feature = "h3")]
+pub(crate) fn path_mtu_settled(path: &quinn::PathStats) -> bool {
+    path.plpmtud_settled
+}

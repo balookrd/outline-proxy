@@ -1790,3 +1790,61 @@ async fn h3_mtu_discovery_gets_within_a_few_bytes_of_a_narrow_path() {
         "client path MTU settled at {mtu}, expected 1444..={PATH_LIMIT}"
     );
 }
+
+/// Dial a narrow-uplink loopback path with `first_probe` and wait until the
+/// client's path MTU discovery settles. Returns the client's path stats.
+async fn settle_with_first_probe(path_limit: u16, first_probe: Option<u16>) -> quinn::PathStats {
+    let lb = loopback::Loopback::new();
+    let (via, relay) = loopback::narrow_uplink(lb.addr, path_limit.into()).await;
+    let server = lb.server.clone();
+    let accept = tokio::spawn(async move { server.accept().await.unwrap().await.unwrap() });
+    let tp = &super::super::tp_profile::CHROMIUM;
+    let transport = super::build_h3_transport_with_first_probe(
+        tp,
+        super::RuntimeWindows::current(tp),
+        first_probe,
+    );
+    let (_ep, conn) = lb.connect_via(via, quinn::EndpointConfig::default(), transport).await;
+    let _server_conn = accept.await.unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut stats = conn.stats().path;
+    while !(stats.plpmtud_settled && stats.sent_plpmtud_probes > 0)
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        stats = conn.stats().path;
+    }
+    relay.abort();
+    stats
+}
+
+/// A cached path MTU that still holds costs one probe instead of the ladder.
+#[tokio::test]
+async fn h3_confirmed_first_probe_is_the_only_mtu_probe() {
+    let stats = settle_with_first_probe(1448, Some(1448)).await;
+    assert!(stats.plpmtud_settled, "{stats:?}");
+    assert_eq!(stats.current_mtu, 1448, "{stats:?}");
+    assert_eq!(stats.sent_plpmtud_probes, 1, "{stats:?}");
+    assert_eq!(stats.lost_plpmtud_probes, 0, "{stats:?}");
+}
+
+/// A stale cached MTU (the path shrank) falls back to the binary search and
+/// still lands within a few bytes of the path.
+#[tokio::test]
+async fn h3_stale_first_probe_still_finds_the_path_mtu() {
+    let stats = settle_with_first_probe(1440, Some(1448)).await;
+    assert!(stats.plpmtud_settled, "{stats:?}");
+    assert!((1436..=1440).contains(&stats.current_mtu), "{stats:?}");
+    assert!(stats.lost_plpmtud_probes >= 3, "{stats:?}");
+}
+
+/// With no cached value the client probes as before (regression guard for the
+/// default path).
+#[tokio::test]
+async fn h3_without_first_probe_keeps_the_binary_search() {
+    let stats = settle_with_first_probe(1448, None).await;
+    assert!(stats.plpmtud_settled, "{stats:?}");
+    assert!((1444..=1448).contains(&stats.current_mtu), "{stats:?}");
+    assert!(stats.sent_plpmtud_probes > 3, "{stats:?}");
+}

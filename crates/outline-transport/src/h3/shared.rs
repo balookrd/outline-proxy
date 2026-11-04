@@ -278,6 +278,9 @@ pub(super) struct SharedH3Connection {
     active_streams: Arc<AtomicU64>,
     _connection_guard: H3ConnectionGuard,
     _driver_task: AbortOnDrop,
+    /// Path MTU cache recorder; it holds a strong connection handle, so the
+    /// carrier owns it and aborts it on drop (see `pmtu_cache::spawn_recorder`).
+    _pmtu_recorder: AbortOnDrop,
     // Declared last so it drops *after* `_driver_task`: the driver is aborted
     // first, then this guard writes the `conn_life` close line the aborted task
     // can no longer produce. Keeps every `connection opened` paired.
@@ -774,7 +777,9 @@ async fn connect_h3_connection(
     cache_key: Option<H3ConnectionKey>,
 ) -> Result<SharedH3Connection> {
     let bind_addr = bind_addr_for(server_addr);
-    let client_config = crate::quic::h3_quic_client_config();
+    let pmtu_key = crate::quic::pmtu_cache::PmtuKey::for_dial(server_name, server_addr, fwmark);
+    let first_probe = crate::quic::pmtu_cache::first_probe_for(&pmtu_key);
+    let client_config = crate::quic::h3_quic_client_config_with_first_probe(first_probe);
 
     // Freshly-bound per-dial endpoint — see [`client_endpoint`] for why the
     // source port must change between dials.
@@ -825,6 +830,8 @@ async fn connect_h3_connection(
                 }),
             )
         });
+    let pmtu_recorder =
+        crate::quic::pmtu_cache::spawn_recorder(connection_handle.clone(), pmtu_key, first_probe);
 
     let id = h3_registry().next_id();
     // Counted only for pooled dials: a probe has no cache key, never enters the
@@ -866,6 +873,7 @@ async fn connect_h3_connection(
         active_streams: Arc::new(AtomicU64::new(0)),
         _connection_guard: H3ConnectionGuard(connection_handle),
         _driver_task: driver_task,
+        _pmtu_recorder: pmtu_recorder,
         _conn_life: ConnLifeGuard::new(conn_life),
     })
 }

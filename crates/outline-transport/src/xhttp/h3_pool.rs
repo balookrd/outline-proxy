@@ -156,6 +156,9 @@ pub(super) struct SharedXhttpH3Connection {
     closed: AtomicBool,
     _connection_guard: H3ConnectionGuard,
     _driver_task: AbortOnDrop,
+    /// Path MTU cache recorder; it holds a strong connection handle, so the
+    /// carrier owns it and aborts it on drop (see `pmtu_cache::spawn_recorder`).
+    _pmtu_recorder: AbortOnDrop,
     // Declared last so it drops after the driver task: the driver is aborted
     // first, then this guard writes the close line the aborted task no longer
     // can.
@@ -336,8 +339,14 @@ async fn dial(
         _ => host.to_string(),
     };
 
+    let pmtu_key = crate::quic::pmtu_cache::PmtuKey::for_dial(host, server_addr, fwmark);
+    let first_probe = crate::quic::pmtu_cache::first_probe_for(&pmtu_key);
     let connecting = endpoint
-        .connect_with(crate::quic::h3_quic_client_config(), server_addr, &server_name_str)
+        .connect_with(
+            crate::quic::h3_quic_client_config_with_first_probe(first_probe),
+            server_addr,
+            &server_name_str,
+        )
         .with_context(|| format!("failed to initiate xhttp/h3 QUIC connection to {server_addr}"))?;
     // Read inside the dial scope, like the client config above: the dial's
     // browser profile decides whether this connection can receive datagrams.
@@ -378,6 +387,8 @@ async fn dial(
             }),
         )
     });
+    let pmtu_recorder =
+        crate::quic::pmtu_cache::spawn_recorder(connection.clone(), pmtu_key, first_probe);
 
     let id = registry().next_id();
     // Sessions, not streams: the counter feeds the same `conn_life` diagnostics
@@ -417,6 +428,7 @@ async fn dial(
         closed: AtomicBool::new(false),
         _connection_guard: H3ConnectionGuard(connection),
         _driver_task: driver_task,
+        _pmtu_recorder: pmtu_recorder,
         _conn_life: ConnLifeGuard::new(conn_life),
     })
 }

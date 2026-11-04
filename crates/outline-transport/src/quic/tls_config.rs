@@ -170,6 +170,16 @@ pub(crate) fn build_h3_transport(
     tp: &super::tp_profile::QuicTpProfile,
     runtime: RuntimeWindows,
 ) -> quinn::TransportConfig {
+    build_h3_transport_with_first_probe(tp, runtime, None)
+}
+
+/// [`build_h3_transport`] whose path MTU discovery probes `first_probe` before
+/// anything else (a path MTU cached for this path), see `pmtu_cache`.
+pub(crate) fn build_h3_transport_with_first_probe(
+    tp: &super::tp_profile::QuicTpProfile,
+    runtime: RuntimeWindows,
+    first_probe: Option<u16>,
+) -> quinn::TransportConfig {
     let mut transport = quinn::TransportConfig::default();
     apply_quic_keepalive(&mut transport);
     let idle = QUIC_CUSTOM_IDLE_TIMEOUT.get().copied().unwrap_or(tp.idle_timeout);
@@ -188,7 +198,7 @@ pub(crate) fn build_h3_transport(
     );
     transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(tp.max_bidi_streams));
     transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(tp.max_uni_streams));
-    apply_quic_carrier_tuning(&mut transport);
+    apply_quic_carrier_tuning(&mut transport, first_probe);
     super::vendored::apply_browser_tp_options(&mut transport, &tp.options);
     transport
 }
@@ -220,7 +230,7 @@ const QUIC_MTU_DISCOVERY_MINIMUM_CHANGE: u16 = 4;
 /// Apply carrier congestion control and path MTU discovery to a QUIC transport
 /// config (windows come from [`build_h3_transport`]) so the H3 carrier survives
 /// a lossy / throttled WAN path.
-fn apply_quic_carrier_tuning(transport: &mut quinn::TransportConfig) {
+fn apply_quic_carrier_tuning(transport: &mut quinn::TransportConfig, first_probe: Option<u16>) {
     // BBR instead of quinn's default (Cubic): on a lossy / DPI-throttled
     // international path Cubic reads loss as congestion and collapses the
     // congestion window, capping a single flow far below the link — the bound
@@ -229,6 +239,7 @@ fn apply_quic_carrier_tuning(transport: &mut quinn::TransportConfig) {
     transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     let mut mtu = quinn::MtuDiscoveryConfig::default();
     mtu.minimum_change(QUIC_MTU_DISCOVERY_MINIMUM_CHANGE);
+    super::vendored::set_mtu_first_probe(&mut mtu, first_probe);
     transport.mtu_discovery_config(Some(mtu));
 }
 
@@ -270,6 +281,26 @@ pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
     }
     config.transport_config(Arc::new(transport));
     guard.insert(fp, (config.clone(), Instant::now()));
+    config
+}
+
+/// [`h3_quic_client_config`] with path MTU discovery probing `first_probe`
+/// first. `None` returns the cached config as is; `Some` clones it (TLS,
+/// session tickets) and swaps in a transport built for this one dial, since
+/// `quinn::TransportConfig` is not `Clone`.
+pub(crate) fn h3_quic_client_config_with_first_probe(
+    first_probe: Option<u16>,
+) -> quinn::ClientConfig {
+    let mut config = h3_quic_client_config();
+    if first_probe.is_some() {
+        let fp = crate::fingerprint_profile::current_dial_fingerprint();
+        let tp = super::tp_profile::for_fingerprint(fp);
+        config.transport_config(Arc::new(build_h3_transport_with_first_probe(
+            tp,
+            RuntimeWindows::current(tp),
+            first_probe,
+        )));
+    }
     config
 }
 
