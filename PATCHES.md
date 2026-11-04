@@ -247,8 +247,10 @@ Baseline — crates.io `quinn-proto 0.11.19`. Logical changes carried by
    never do, and a black hole before it resolves leaves no ceiling. On a path reset or
    migration the first probe is re-armed and the ceiling cleared (it is per path).
    `PathStats::plpmtud_settled` reports that no search is running, including after a black
-   hole, so it does not mean the search succeeded. `None` (the default) keeps upstream
-   behaviour.
+   hole, so it does not mean the search succeeded. A first probe above the search's upper
+   bound (`upper_bound`, also limited by the peer's `max_udp_payload_size`) is lowered to it
+   when the search starts; the setter itself only caps the value at 65527. `None` (the
+   default) keeps upstream behaviour.
    `MtuDiscoveryConfig::first_probe_caps(false)` turns the first probe into a seed: an
    acknowledged seed does not end the search (it continues upward from it and always tries
    the upper bound if it is above it, even closer than `minimum_change`), a rejected one
@@ -269,12 +271,16 @@ Baseline — crates.io `quinn-proto 0.11.19`. Logical changes carried by
    per packet, adds up to 10 CRYPTO splits and 10 PINGs, shuffles the frames and spreads
    PADDING between them (QUICHE). A planned packet carries only its own frames and is
    padded to the 1200-byte Initial, so nothing is coalesced behind it. The plan is made
-   only for a complete ClientHello sent from offset 0 (also after a Retry); its frames
-   sit in `pending.crypto`, so losses are resent as usual, and a packet that does not
-   find its frames at the queue front or lacks room drops the plan for the upstream
-   loop. Servers ignore the option. Tests: `src/connection/tests/initial_crypto.rs`
-   (planner, matches the Firefox capture), `src/tests/initial_crypto.rs` (handshake with
-   and without Retry, Initial size); they need the upstream dev-dependencies (see 6).
+   only for a complete ClientHello sent from offset 0; its frames sit in
+   `pending.crypto`, so losses are resent as usual, and a packet that does not find its
+   frames at the queue front or lacks room drops the plan for the upstream loop. The
+   room is checked for the whole laid-out packet (frames, splits, PINGs, PADDING) before
+   anything is written, so the padding never cuts a written frame off. Discarding the
+   Initial space (also on a Retry) drops the plan, and the hello re-queued after a Retry
+   is planned afresh. Servers ignore the option. Tests:
+   `src/connection/tests/initial_crypto.rs` (planner, matches the Firefox capture),
+   `src/tests/initial_crypto.rs` (handshake with and without Retry, the hello laid out
+   again after a Retry, Initial size); they need the upstream dev-dependencies (see 6).
 6. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
    `rcgen` with default `ring` would violate the aws-lc-rs invariant).
 

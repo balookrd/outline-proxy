@@ -244,6 +244,24 @@ impl Connection {
             },
             _ => frames.iter().map(|f| Piece::Crypto(ranges(f))).collect(),
         };
+        let laid_out: usize = pieces
+            .iter()
+            .map(|piece| match piece {
+                Piece::Crypto(range) => crypto_frame_len(range),
+                Piece::Ping => 1,
+                Piece::Padding(n) => *n,
+            })
+            .sum();
+        // Never write past the target: the padding below would cut written frames off.
+        let fits = buf.len() + laid_out <= limit;
+        debug_assert!(fits, "laid-out hello overflows the packet");
+        if !fits {
+            for frame in frames.into_iter().rev() {
+                pending.push_front(frame);
+            }
+            self.hello_plan.clear();
+            return false;
+        }
         let slice = |range: &Range<usize>| -> frame::Crypto {
             let f = frames
                 .iter()
@@ -272,7 +290,6 @@ impl Connection {
                 Piece::Padding(n) => buf.put_bytes(0, n),
             }
         }
-        debug_assert!(buf.len() <= limit);
         // Pad the packet out to its target, as the browsers do, so no further packet is
         // coalesced into the rest of the datagram.
         buf.resize(limit, 0);

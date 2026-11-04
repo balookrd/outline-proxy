@@ -54,6 +54,29 @@ fn every_layout_completes_the_handshake_after_a_retry() {
     }
 }
 
+/// After a Retry the hello is laid out afresh: the re-sent first Initial carries the
+/// profile's CRYPTO frames again, not the upstream single frame.
+#[test]
+fn retry_lays_the_hello_out_again() {
+    let _guard = subscribe();
+    let crypto_frames = |layout, retry: bool| {
+        let mut pair = Pair::default();
+        if retry {
+            pair.server.handle_incoming = Box::new(validate_incoming);
+        }
+        let ch = pair.begin_connect(config(layout));
+        pair.drive();
+        pair.client_conn_mut(ch).stats().frame_tx.crypto
+    };
+    for (layout, resent) in [
+        (InitialCryptoLayout::Contiguous, 1),
+        (InitialCryptoLayout::SniSlice, 2),
+    ] {
+        let extra = crypto_frames(layout, true) - crypto_frames(layout, false);
+        assert_eq!(extra, resent, "{layout:?}");
+    }
+}
+
 #[test]
 fn client_initials_keep_their_size() {
     let _guard = subscribe();

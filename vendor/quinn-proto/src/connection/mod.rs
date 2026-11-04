@@ -2238,6 +2238,9 @@ impl Connection {
             if let ConnectionSide::Client { token, .. } = &mut self.side {
                 *token = Bytes::new();
             }
+            // The hello layout plan (outline-proxy patch) describes frames of this space;
+            // after a Retry the hello is re-queued from offset 0 and planned afresh.
+            self.hello_plan.clear();
         }
         let space = &mut self.spaces[space_id];
         space.crypto = None;

@@ -159,9 +159,10 @@ lock-файлов вместе с vendored-крейтами, которые об
   (провайдер aws-lc-rs, `socket2` 0.6, vendoring-trim). Остальные файлы
   `vendor/sockudo-ws` обязаны быть побайтово равны upstream — сверка описана в
   [`PATCHES.ru.md`](PATCHES.ru.md). Не плоди вторые копии vendored и не поднимай
-  версии без явной причины. `vendor/quinn-proto` = upstream 0.11.19 + четыре
-  логических патча (advertised-stream-window, browser-shaped-transport-parameters,
-  browser-order-and-firefox, mtud-first-probe) и vendoring-trim, описано в `PATCHES*.md`.
+  версии без явной причины. `vendor/quinn-proto` = upstream 0.11.19 + пять
+  логических патчей (advertised-stream-window, browser-shaped-transport-parameters,
+  browser-order-and-firefox, mtud-first-probe, initial-crypto-layout) и vendoring-trim,
+  описано в `PATCHES*.md`.
   `vendor/rustls` = upstream 0.23.46 + два логических патча (client-hello-shape:
   `ClientConfig::client_hello_shape` для браузерного ClientHello H3- и
   TCP-носителей, `cert_check` и HTTPS-пробы;

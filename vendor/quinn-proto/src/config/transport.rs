@@ -1073,8 +1073,10 @@ impl MtuDiscoveryConfig {
     /// upstream, with the upper bound limited to the ceiling. A black hole before the first probe
     /// resolves leaves no ceiling. On a path reset or migration the first probe is re-armed and
     /// the ceiling is cleared, as the ceiling is per path. Values at or below the current MTU
-    /// are ignored; values above the upper bound are clamped to it. `None` (the default) keeps
-    /// upstream behaviour.
+    /// are ignored. This setter only caps the value at 65527 (the largest UDP payload); a value
+    /// above the search's upper bound ([`upper_bound`](Self::upper_bound), also limited by the
+    /// peer's `max_udp_payload_size`) is lowered to that bound when the search starts.
+    /// `None` (the default) keeps upstream behaviour.
     pub fn first_probe(&mut self, value: Option<u16>) -> &mut Self {
         self.first_probe = value.map(|v| v.min(MAX_UDP_PAYLOAD));
         self
