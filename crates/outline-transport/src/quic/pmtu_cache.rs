@@ -7,6 +7,11 @@
 //! for "which network we are on"), and the next dial probes that size first
 //! (`MtuDiscoveryConfig::first_probe`): one probe when the path is unchanged.
 //!
+//! A live entry is a capping first probe; an expired one (younger than
+//! `PMTU_SEED_MAX_AGE`) is a seed that searches on above itself, so the periodic
+//! re-check of an entry finds an unchanged or grown path without the ladder (a
+//! path that shrank costs one rejected size and a search below it).
+//!
 //! The cached value is never used as the starting MTU: a stale entry costs one
 //! rejected probe size, never lost data.
 
@@ -19,14 +24,21 @@ use std::time::{Duration, SystemTime};
 use parking_lot::Mutex;
 use tracing::{debug, warn};
 
+use super::vendored::FirstProbe;
+
 /// An entry at the H3 upper bound expires this long after the path first
-/// settled at it, so a changed path is found again by a full search.
+/// settled at it, so a changed path is re-checked by a seeded search.
 const PMTU_CACHE_TTL: Duration = Duration::from_secs(3 * 24 * 3600);
 /// TTL for a value below the H3 upper bound. A spurious probe loss can make a
 /// search settle low (1417 on a 1452 path); the next dial confirms that value
 /// as its first probe and it becomes the connection's ceiling, so a low value
-/// is re-checked by a full search after this long instead of after days.
+/// is re-checked by a seeded search after this long instead of after days.
 const PMTU_CACHE_SHORT_TTL: Duration = Duration::from_secs(3600);
+/// An expired entry younger than this still seeds the next dial's search
+/// (`FirstProbe::seed`): on an unchanged or grown path that replaces the ladder,
+/// with no ceiling, so a path that grew or shrank is still found. Older entries (a network
+/// not seen for a month) give no hint at all.
+const PMTU_SEED_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 /// QUIC floor and the H3 upper bound: anything else is not a value we probe.
 const MIN_PMTU: u16 = 1200;
 const MAX_PMTU: u16 = 1452;
@@ -148,9 +160,18 @@ impl PmtuCache {
         now_secs < entry.confirmed_at.saturating_add(self.ttl_for(entry.mtu).as_secs())
     }
 
-    pub(crate) fn hint(&self, key: &str, now: SystemTime) -> Option<u16> {
+    /// First probe for `key`: a live entry caps the connection at its value, an
+    /// expired one younger than `PMTU_SEED_MAX_AGE` only seeds the search.
+    pub(crate) fn hint(&self, key: &str, now: SystemTime) -> Option<FirstProbe> {
         let entry = *self.entries.lock().get(key)?;
-        self.is_live(&entry, unix_secs(now)).then_some(entry.mtu)
+        let now_secs = unix_secs(now);
+        if self.is_live(&entry, now_secs) {
+            Some(FirstProbe::capped(entry.mtu))
+        } else if now_secs < entry.confirmed_at.saturating_add(PMTU_SEED_MAX_AGE.as_secs()) {
+            Some(FirstProbe::seed(entry.mtu))
+        } else {
+            None
+        }
     }
 
     /// Store `mtu` for `key`; returns whether the stored value changed (and the
@@ -219,30 +240,30 @@ fn load(path: &std::path::Path) -> HashMap<String, Entry> {
         .collect()
 }
 
-/// First probe for a dial on `key`, if the path has a live cached MTU.
-pub(crate) fn first_probe_for(key: &PmtuKey) -> Option<u16> {
+/// First probe for a dial on `key`: capping if the path has a live cached MTU,
+/// a seed if the entry has expired but is younger than `PMTU_SEED_MAX_AGE`,
+/// `None` otherwise.
+pub(crate) fn first_probe_for(key: &PmtuKey) -> Option<FirstProbe> {
     cache().hint(&key.as_str(), SystemTime::now())
 }
 
 /// Whether a settled `settled_mtu` is worth storing for a dial that used
-/// `first_probe`. A connection that settled exactly at its confirmed first
-/// probe only proves that size works: that probe is its ceiling, so it says
-/// nothing about larger sizes and must not refresh the entry (otherwise the
-/// hourly re-search of a low value never happens while such a carrier lives).
-/// No hint means a full search, and a different result means the path shrank
-/// or the hint was clamped; both are real observations.
-pub(crate) fn should_record(first_probe: Option<u16>, settled_mtu: u16) -> bool {
-    first_probe != Some(settled_mtu)
+/// `first_probe`. A connection that settled exactly at its confirmed capping
+/// first probe only proves that size works: that probe is its ceiling, so it
+/// says nothing about larger sizes and must not refresh the entry (otherwise a
+/// low value would never be re-checked while such a carrier lives). A seed
+/// searched above itself, so wherever it settled is a real observation, as is a
+/// full search (no hint) or a result different from the hint.
+pub(crate) fn should_record(first_probe: Option<FirstProbe>, settled_mtu: u16) -> bool {
+    !first_probe.is_some_and(|p| p.caps && p.size == settled_mtu)
 }
 
 /// Watch `connection` and store the MTU its path settles at under `key`.
 /// Skips samples taken mid-search, connections that saw a black hole and
-/// connections that settled at their own `first_probe` (see `should_record`).
+/// connections that settled at their own capping `first_probe` (see `should_record`).
 ///
 /// Probe dials (no cache key, carrier dropped right after the probe) usually
-/// abort the recorder before it samples, so they rarely contribute. A
-/// connection that settled at its confirmed first probe does not refresh the
-/// entry.
+/// abort the recorder before it samples, so they rarely contribute.
 ///
 /// The task holds a strong `quinn::Connection`, so the caller keeps the
 /// returned handle in the carrier and dropping the carrier aborts it. A
@@ -254,7 +275,7 @@ pub(crate) fn should_record(first_probe: Option<u16>, settled_mtu: u16) -> bool 
 pub(crate) fn spawn_recorder(
     connection: quinn::Connection,
     key: PmtuKey,
-    first_probe: Option<u16>,
+    first_probe: Option<FirstProbe>,
 ) -> crate::AbortOnDrop {
     crate::AbortOnDrop::new(tokio::spawn(async move {
         let key = key.as_str();

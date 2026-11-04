@@ -24,6 +24,8 @@ use crate::tests::client_hello::{
     supported_versions, u16_list_ext,
 };
 
+use super::super::vendored::FirstProbe;
+
 /// QUIC v1 Initial salt (RFC 9001 §5.2) — public and fixed, which is exactly
 /// why a censor can decrypt any Initial it sees.
 const INITIAL_SALT_V1: [u8; 20] = [
@@ -1793,7 +1795,10 @@ async fn h3_mtu_discovery_gets_within_a_few_bytes_of_a_narrow_path() {
 
 /// Dial a narrow-uplink loopback path with `first_probe` and wait until the
 /// client's path MTU discovery settles. Returns the client's path stats.
-async fn settle_with_first_probe(path_limit: u16, first_probe: Option<u16>) -> quinn::PathStats {
+async fn settle_with_first_probe(
+    path_limit: u16,
+    first_probe: Option<FirstProbe>,
+) -> quinn::PathStats {
     let lb = loopback::Loopback::new();
     let (via, relay) = loopback::narrow_uplink(lb.addr, path_limit.into()).await;
     let server = lb.server.clone();
@@ -1822,7 +1827,7 @@ async fn settle_with_first_probe(path_limit: u16, first_probe: Option<u16>) -> q
 /// A cached path MTU that still holds costs one probe instead of the ladder.
 #[tokio::test]
 async fn h3_confirmed_first_probe_is_the_only_mtu_probe() {
-    let stats = settle_with_first_probe(1448, Some(1448)).await;
+    let stats = settle_with_first_probe(1448, Some(FirstProbe::capped(1448))).await;
     assert!(stats.plpmtud_settled, "{stats:?}");
     assert_eq!(stats.current_mtu, 1448, "{stats:?}");
     assert_eq!(stats.sent_plpmtud_probes, 1, "{stats:?}");
@@ -1833,10 +1838,31 @@ async fn h3_confirmed_first_probe_is_the_only_mtu_probe() {
 /// still lands within a few bytes of the path.
 #[tokio::test]
 async fn h3_stale_first_probe_still_finds_the_path_mtu() {
-    let stats = settle_with_first_probe(1440, Some(1448)).await;
+    let stats = settle_with_first_probe(1440, Some(FirstProbe::capped(1448))).await;
     assert!(stats.plpmtud_settled, "{stats:?}");
     assert!((1436..=1440).contains(&stats.current_mtu), "{stats:?}");
     assert!(stats.lost_plpmtud_probes >= 3, "{stats:?}");
+}
+
+/// An expired cached MTU seeds the search: one probe at the cached size, then
+/// the search goes on upward and finds a path that grew. No ladder.
+#[tokio::test]
+async fn h3_seed_finds_a_path_that_grew() {
+    let stats = settle_with_first_probe(1452, Some(FirstProbe::seed(1448))).await;
+    assert!(stats.plpmtud_settled, "{stats:?}");
+    assert_eq!(stats.current_mtu, 1452, "{stats:?}");
+    assert_eq!(stats.sent_plpmtud_probes, 2, "{stats:?}");
+    assert_eq!(stats.lost_plpmtud_probes, 0, "{stats:?}");
+}
+
+/// A seed on an unchanged path costs one rejected size above it, not the ladder.
+#[tokio::test]
+async fn h3_seed_on_an_unchanged_path_costs_one_rejected_size() {
+    let stats = settle_with_first_probe(1448, Some(FirstProbe::seed(1448))).await;
+    assert!(stats.plpmtud_settled, "{stats:?}");
+    assert_eq!(stats.current_mtu, 1448, "{stats:?}");
+    assert_eq!(stats.sent_plpmtud_probes, 4, "{stats:?}");
+    assert_eq!(stats.lost_plpmtud_probes, 3, "{stats:?}");
 }
 
 /// With no cached value the client probes as before (regression guard for the

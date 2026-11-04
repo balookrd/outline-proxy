@@ -142,10 +142,32 @@ pub(crate) fn apply_browser_tp_options(
     }
 }
 
-/// First DPLPMTUD probe size after the handshake (`MtuDiscoveryConfig::first_probe`);
+/// First DPLPMTUD probe of a dial (`MtuDiscoveryConfig::first_probe`). `caps` keeps the
+/// probe's outcome as the connection's ceiling (`first_probe_caps`); a seed only replaces
+/// the ladder and leaves the search free to go above it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FirstProbe {
+    pub(crate) size: u16,
+    pub(crate) caps: bool,
+}
+
+impl FirstProbe {
+    pub(crate) const fn capped(size: u16) -> Self {
+        Self { size, caps: true }
+    }
+
+    pub(crate) const fn seed(size: u16) -> Self {
+        Self { size, caps: false }
+    }
+}
+
 /// `None` keeps upstream's binary search from the start.
-pub(crate) fn set_mtu_first_probe(mtu: &mut quinn::MtuDiscoveryConfig, first_probe: Option<u16>) {
-    mtu.first_probe(first_probe);
+pub(crate) fn set_mtu_first_probe(
+    mtu: &mut quinn::MtuDiscoveryConfig,
+    first_probe: Option<FirstProbe>,
+) {
+    mtu.first_probe(first_probe.map(|p| p.size))
+        .first_probe_caps(first_probe.is_none_or(|p| p.caps));
 }
 
 /// Whether the path MTU search has finished (`PathStats::plpmtud_settled`): a
