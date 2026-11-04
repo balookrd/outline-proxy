@@ -56,8 +56,10 @@ class SubscriptionProfileTest {
     }
 
     @Test
-    fun `standard profile emits battery saving load balancing settings`() {
-        val toml = ServerProfile(transport = "vless", vlessLink = "vless://x").toToml()
+    fun `standard profile gets the battery saving settings from MobilePowerConfig`() {
+        val raw = ServerProfile(transport = "vless", vlessLink = "vless://x").toToml()
+        assertTrue(!raw.contains("[outline.load_balancing]"))
+        val toml = MobilePowerConfig.sanitize(raw)
         assertTrue(toml.contains("loss_sample_interval_secs = 0"))
         assertTrue(toml.contains("warm_standby_tcp = 0"))
         assertTrue(toml.contains("tcp_active_keepalive_secs = 120"))
