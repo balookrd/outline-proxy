@@ -357,23 +357,9 @@ def build_config(user: User, nodes: Sequence[str], server: ServerConfig) -> str 
         # below is decoration. Android is TUN, so it is mandatory here.
         "tun_wire_dial = true",
         "health_weighted_selection = true",
-        "warm_standby_tcp = 0",
-        "warm_standby_udp = 0",
-        "",
-        "[outline.load_balancing]",
-        "warm_standby_tcp = 0",
-        "warm_standby_udp = 0",
-        "loss_sample_interval_secs = 0",
-        "tcp_ws_standby_keepalive_secs = 0",
-        "warm_probe_keepalive_secs = 0",
-        "tcp_active_keepalive_secs = 120",
-        "",
-        "[h2]",
-        "keepalive_interval_secs = 60",
-        "keepalive_timeout_secs = 20",
-        "",
-        "[quic]",
-        "keepalive_secs = 25",
+        # The mobile power profile (no warm standby or loss sampling, stretched
+        # H2/QUIC keepalives) is not written here: the app applies it to every
+        # profile itself (`MobilePowerConfig.kt`).
         "",
         "[outline.probe]",
         f"interval_secs = {PROBE_INTERVAL_SECS}",

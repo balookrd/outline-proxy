@@ -200,26 +200,18 @@ class BuildConfigTest(unittest.TestCase):
         self.assertEqual(group["reselect_interval"], "6h")
         self.assertTrue(group["tun_wire_dial"])
         self.assertTrue(group["health_weighted_selection"])
-        self.assertEqual(group["warm_standby_tcp"], 0)
-        self.assertEqual(group["warm_standby_udp"], 0)
         self.assertNotIn("auto_failback", group)
+        self.assertEqual(self.parsed()["outline"]["probe"]["interval_secs"], 300)
 
+    def test_leaves_the_mobile_power_profile_to_the_app(self):
+        # MobilePowerConfig.kt sets these on every profile; written here they
+        # only made the config unreadable for an app that predates the keys.
         doc = self.parsed()
-        lb = doc["outline"]["load_balancing"]
-        self.assertEqual(lb["warm_standby_tcp"], 0)
-        self.assertEqual(lb["warm_standby_udp"], 0)
-        self.assertEqual(lb["loss_sample_interval_secs"], 0)
-        self.assertEqual(lb["tcp_ws_standby_keepalive_secs"], 0)
-        self.assertEqual(lb["warm_probe_keepalive_secs"], 0)
-        self.assertEqual(lb["tcp_active_keepalive_secs"], 120)
-
-        self.assertEqual(doc["h2"]["keepalive_interval_secs"], 60)
-        self.assertEqual(doc["h2"]["keepalive_timeout_secs"], 20)
-
-        self.assertEqual(doc["quic"]["keepalive_secs"], 25)
-        self.assertNotIn("idle_timeout_secs", doc["quic"])
-
-        self.assertEqual(doc["outline"]["probe"]["interval_secs"], 300)
+        self.assertNotIn("warm_standby_tcp", doc["uplink_group"][0])
+        self.assertNotIn("warm_standby_udp", doc["uplink_group"][0])
+        self.assertNotIn("load_balancing", doc["outline"])
+        self.assertNotIn("h2", doc)
+        self.assertNotIn("quic", doc)
 
     def test_shared_resume_follows_the_server_cluster(self):
         self.assertFalse(self.parsed()["uplink_group"][0]["shared_resume"])
