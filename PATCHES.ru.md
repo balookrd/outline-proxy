@@ -516,3 +516,17 @@ E0603 (приватный `HeaderCaseMap`); вместо этого переве
 Не поднимай upstream-версии и не убирай `[patch.crates-io]` без явной
 причины: HTTP/3 WebSocket-путь зависит от этих патчей, а браузерный регистр
 заголовков `xhttp_h1` — от патча hyper.
+
+## Уязвимости (RustSec)
+
+Обычный `cargo audit` пропускает пакеты без `source` в lock-файле, поэтому
+vendored-крейты он не проверяет никогда: это path-зависимости. Так quinn-proto
+0.11.15 и rustls 0.23.40 незаметно отстали на шесть и пять уязвимостей RustSec.
+[`scripts/audit-vendored.sh`](scripts/audit-vendored.sh) проверяет копию каждого
+lock-файла (корневого и `android/rust`), в которой крейты из `[patch.crates-io]`
+помечены как пакеты crates.io той же версии, так что их уязвимости видны наравне с
+остальными. Workflow [`RustSec audit`](.github/workflows/rustsec.yml) запускает его
+на каждый push в `main`, на pull request'ы и раз в неделю; падает он только на
+уязвимостях, а не на предупреждениях вроде неподдерживаемых крейтов. Красный запуск —
+сигнал перенести vendored-крейт на исправленный upstream-релиз (см. «Регенерация»).
+Локально: `scripts/audit-vendored.sh` (нужен `cargo install cargo-audit`).

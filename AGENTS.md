@@ -127,6 +127,12 @@ vendored-крейты, которые держим в upstream-стиле.
 (`scripts/fingerprint-drift/README.ru.md`): тест
 `drift_baselines_describe_the_profiled_browser_majors` сверяет мажоры.
 
+Отдельный workflow `.github/workflows/rustsec.yml` (push в `main`, PR, по
+понедельникам и вручную) гоняет `scripts/audit-vendored.sh`: `cargo audit` обоих
+lock-файлов вместе с vendored-крейтами, которые обычный `cargo audit` не видит
+(path-зависимости). Падает только на уязвимостях; подробности — в
+[`PATCHES.ru.md`](PATCHES.ru.md), раздел «Уязвимости (RustSec)».
+
 ## Монорепо-инварианты (специфичны для слияния)
 
 - **rustls — только `aws-lc-rs`.** Ровно один CryptoProvider в графе: два
