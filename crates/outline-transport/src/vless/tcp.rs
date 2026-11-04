@@ -544,3 +544,7 @@ pub fn vless_tcp_pair_from_ws(
     let reader = VlessTcpReader::with_source(Box::new(source), lifetime);
     Ok((writer, reader))
 }
+
+#[cfg(test)]
+#[path = "tests/tcp.rs"]
+mod tests;

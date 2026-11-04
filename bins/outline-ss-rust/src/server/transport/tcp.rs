@@ -103,8 +103,8 @@ pub(in crate::server) struct WsTcpRouteCtx {
     pub(in crate::server) peer_user_cache: Arc<crate::server::peer_user_cache::PeerUserCache>,
     /// Carrier-padding scheme resolved for this path at handshake time
     /// ([`carrier_padding::scheme_for_path`]). Disabled (the default for
-    /// unlisted paths / disabled config) keeps the wire byte-for-byte
-    /// identical; enabled makes the relay frame the downlink and decode the
+    /// unlisted paths / disabled config) keeps padding frames off the
+    /// wire; enabled makes the relay frame the downlink and decode the
     /// uplink. Config-synchronised — the client on this path must match.
     pub(in crate::server) padding: PaddingScheme,
 }

@@ -247,6 +247,20 @@ class BuildConfigTest(unittest.TestCase):
         self.assertEqual(len(uplink["fallbacks"]), 1)
         self.assertTrue(uplink["fallbacks"][0]["link"].startswith("ss://"))
 
+    def test_mixed_plain_ws_and_padded_xhttp_keeps_only_the_xhttp_wires(self):
+        # Only the xhttp endpoints pad: padding turns on, the chain keeps just
+        # the padded xhttp carriers and drops every plain ws wire.
+        mixed = tuple(replace(e, padded=e.kind.startswith("xhttp_")) for e in FULL_EPS)
+        doc = self.parsed(endpoints=mixed)
+        self.assertTrue(doc["padding"]["enabled"])
+        uplink = doc["outline"]["uplinks"][0]
+        links = [uplink["link"]] + [f["link"] for f in uplink.get("fallbacks", [])]
+        self.assertTrue(links)
+        paths = sorted({link.split("path=")[1].split("&")[0].split("#")[0] for link in links})
+        self.assertEqual(paths, ["%2FSECRET%2Fssx", "%2FSECRET%2Fxhttp"])
+        for link in links:
+            self.assertIn("type=xhttp", link)
+
     def test_padding_enabled_predicate(self):
         user = make_user()
         self.assertTrue(gen.padding_enabled(user, make_server(endpoints=ALL_PADDED_EPS)))

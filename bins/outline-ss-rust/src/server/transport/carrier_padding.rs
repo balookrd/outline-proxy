@@ -42,7 +42,7 @@ pub(crate) fn init(cfg: PaddingConfig) {
 /// The padding scheme a connection on `path` should use. Returns
 /// [`PaddingScheme::disabled`] (no framing — plain wire) when padding is off
 /// globally or this path is not in the configured set, so the unpadded carrier
-/// stays byte-for-byte identical. Read by every transport upgrade handler.
+/// carries no padding frames. Read by every transport upgrade handler.
 pub(in crate::server) fn scheme_for_path(path: &str) -> PaddingScheme {
     PADDING
         .get()

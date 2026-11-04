@@ -364,8 +364,8 @@ pub(crate) struct SessionResumptionSection {
 /// size, blunting record-size ("proxy-inside-TLS") fingerprinting. This block
 /// holds only the framing/cover/throttle parameters; which carrier paths
 /// actually pad is an endpoint attribute (`[[endpoint]] padded = true`), not a
-/// key here. An endpoint with `padded` unset keeps the wire byte-for-byte
-/// identical to the unpadded carrier. Config-synchronised, like
+/// key here. An endpoint with `padded` unset keeps padding frames off the
+/// wire. Config-synchronised, like
 /// `[session_resumption]`: there is no on-wire capability bit, so both ends
 /// must enable it together.
 #[derive(Debug, Clone, Default, Deserialize)]

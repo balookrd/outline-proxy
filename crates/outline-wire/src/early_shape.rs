@@ -113,11 +113,10 @@ impl EarlyShaper {
                 break;
             }
         }
-        if left < piece.0 {
-            *pieces.last_mut().expect("at least one piece") += left;
-        } else {
-            pieces.push(left);
-        }
+        // Each draw is capped at `left - piece.0`, so the tail is never shorter
+        // than a piece floor and always stands as its own piece.
+        debug_assert!(left >= piece.0);
+        pieces.push(left);
         if len > shaped {
             pieces.push(len - shaped);
         }

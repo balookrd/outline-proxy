@@ -91,8 +91,8 @@ pub(in crate::server) struct VlessWsRouteCtx {
     pub(in crate::server) candidate_users: Arc<[Arc<str>]>,
     /// Carrier-padding scheme resolved for this path at handshake time
     /// ([`crate::server::transport::carrier_padding::scheme_for_path`]).
-    /// Disabled (the default for unlisted paths / disabled config) keeps the
-    /// wire byte-for-byte identical; enabled makes the relay decode the uplink
+    /// Disabled (the default for unlisted paths / disabled config) keeps
+    /// padding frames off the wire; enabled makes the relay decode the uplink
     /// and frame the downlink — for both VLESS-TCP and VLESS-UDP, since VLESS
     /// multiplexes them on one path. Config-synchronised: the client on this
     /// path must match.

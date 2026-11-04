@@ -110,8 +110,8 @@ pub enum PaddingError {
 /// How much pad to draw per frame. A closed range `[min, max]` in bytes; the
 /// transport picks an actual count by feeding one random `u16` to
 /// [`PaddingScheme::pad_len`]. `max == 0` means disabled — the scheme adds no
-/// bytes and the transport should skip framing entirely (so the wire stays
-/// byte-for-byte identical to the unpadded carrier).
+/// bytes and the transport should skip framing entirely (so the wire carries
+/// no padding frames).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaddingScheme {
     min_pad: u16,

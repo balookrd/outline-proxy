@@ -525,8 +525,25 @@ async fn vless_websocket_mux_tcp_relay_padded() -> Result<()> {
     assert_eq!(meta.status, SessionStatus::Keep);
     assert_eq!(data, Some(b"pong".as_ref()));
 
-    socket.close(None).await?;
+    // The upstream closes after "pong": the End frame for the sub-connection
+    // must arrive padded as well and decode as the next mux frame.
     assert_eq!(upstream_task.await??, *b"ping");
+    let mut offset = 2 + consumed;
+    let end = loop {
+        if let Some(frame) = parse_frame(&plain[offset..])? {
+            offset += frame.consumed;
+            break frame;
+        }
+        let Some(Ok(WsMessage::Binary(message))) = socket.next().await else {
+            anyhow::bail!("downlink ended before the padded End frame");
+        };
+        decoder.push(&message, &mut plain);
+    };
+    assert_eq!(end.meta.session_id, 1);
+    assert_eq!(end.meta.status, SessionStatus::End);
+    assert_eq!(offset, plain.len());
+
+    socket.close(None).await?;
     server.abort();
     Ok(())
 }
