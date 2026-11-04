@@ -1007,6 +1007,7 @@ pub struct MtuDiscoveryConfig {
     pub(crate) upper_bound: u16,
     pub(crate) minimum_change: u16,
     pub(crate) first_probe: Option<u16>,
+    pub(crate) first_probe_caps: bool,
     pub(crate) black_hole_cooldown: Duration,
 }
 
@@ -1052,8 +1053,9 @@ impl MtuDiscoveryConfig {
 
     /// Size of the first probe of the first search (outline-proxy patch).
     ///
-    /// When set, the first search probes this size before anything else. The outcome of that
-    /// probe alone sets a ceiling for the connection: if it is acknowledged the search ends
+    /// When set, the first search probes this size before anything else. Unless
+    /// [`first_probe_caps(false)`](Self::first_probe_caps), the outcome of that probe alone sets
+    /// a ceiling for the connection: if it is acknowledged the search ends
     /// there and the ceiling is that size; if it is lost (all retransmits) the regular binary
     /// search runs below it and the ceiling is one less than it. Losses of any other probe never
     /// change the ceiling. Later searches (interval re-search, after a black hole) run as in
@@ -1066,6 +1068,21 @@ impl MtuDiscoveryConfig {
         self.first_probe = value.map(|v| v.min(MAX_UDP_PAYLOAD));
         self
     }
+
+    /// Whether the outcome of [`first_probe`](Self::first_probe) caps the connection
+    /// (outline-proxy patch). Defaults to `true`.
+    ///
+    /// With `false` the first probe is only a seed: if it is acknowledged the search keeps
+    /// going upward from it instead of ending there, if it is lost (all retransmits) the
+    /// search runs below it as usual, and no ceiling is set in either case, so later searches
+    /// run as in upstream. An acknowledged seed always tries the upper bound if it is above it,
+    /// even when it is closer than [`minimum_change`](Self::minimum_change). Meant for a cached
+    /// size that is old enough to be re-checked: on an unchanged or grown path it replaces the
+    /// ladder of probes, and a path that grew is still found.
+    pub fn first_probe_caps(&mut self, value: bool) -> &mut Self {
+        self.first_probe_caps = value;
+        self
+    }
 }
 
 impl Default for MtuDiscoveryConfig {
@@ -1076,6 +1093,7 @@ impl Default for MtuDiscoveryConfig {
             black_hole_cooldown: Duration::from_secs(60),
             minimum_change: 20,
             first_probe: None,
+            first_probe_caps: true,
         }
     }
 }
