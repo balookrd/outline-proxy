@@ -8,7 +8,7 @@ use crate::msgs::enums::ExtensionType;
 use crate::msgs::handshake::{CertificateChain, DistinguishedName, ProtocolName, ServerExtensions};
 use crate::rand::GetRandomFailed;
 use crate::sync::Arc;
-use crate::{SignatureScheme, compress, sign};
+use crate::{CipherSuite, SignatureScheme, compress, sign};
 
 #[derive(Debug)]
 pub(super) struct ServerCertDetails<'a> {
@@ -44,6 +44,7 @@ pub(super) struct ClientHelloDetails {
     pub(super) sent_extensions: Vec<ExtensionType>,
     pub(super) extension_order_seed: u16,
     pub(super) offered_cert_compression: bool,
+    pub(super) offered_cipher_suites: Vec<CipherSuite>,
     /// GREASE values of a shaped ClientHello, kept for a HelloRetryRequest
     /// (client-hello-shape patch).
     pub(super) grease: Option<GreaseValues>,
@@ -59,6 +60,7 @@ impl ClientHelloDetails {
             sent_extensions: Vec::new(),
             extension_order_seed,
             offered_cert_compression: false,
+            offered_cipher_suites: Vec::new(),
             grease: None,
             alps_protocols: Vec::new(),
         }

@@ -156,7 +156,7 @@ vendored-крейты, которые держим в upstream-стиле.
   версии без явной причины. `vendor/quinn-proto` = upstream 0.11.19 + четыре
   логических патча (advertised-stream-window, browser-shaped-transport-parameters,
   browser-order-and-firefox, mtud-first-probe) и vendoring-trim, описано в `PATCHES*.md`.
-  `vendor/rustls` = upstream 0.23.40 + два логических патча (client-hello-shape:
+  `vendor/rustls` = upstream 0.23.46 + два логических патча (client-hello-shape:
   `ClientConfig::client_hello_shape` для браузерного ClientHello H3- и
   TCP-носителей, `cert_check` и HTTPS-пробы;
   secp521r1: `kx_group::SECP521R1`) и vendoring-trim, описано в `PATCHES*.md`.
@@ -277,7 +277,7 @@ vendored-крейты, которые держим в upstream-стиле.
 ## Vendored patches
 
 Корневые [`PATCHES.md`](PATCHES.md) / [`PATCHES.ru.md`](PATCHES.ru.md) и
-patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.19.patch`, `rustls-0.23.40.patch`, `hyper-1.10.1.patch`) — единый источник
+patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.19.patch`, `rustls-0.23.46.patch`, `hyper-1.10.1.patch`) — единый источник
 истины по отличиям vendored копий от upstream (per-bin `PATCHES.md` —
 указатели на корневой). Меняешь поведение vendored — обнови vendored source и
 корневую patch-документацию в том же изменении. HTTP/3 WebSocket path зависит

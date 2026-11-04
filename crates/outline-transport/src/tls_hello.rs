@@ -298,10 +298,10 @@ pub(crate) static ZSTD: ZstdDecompressor = ZstdDecompressor;
 // ── Signature algorithms ────────────────────────────────────────────────────
 
 /// Wraps any verifier (WebPKI, or accept-any for the cert-expiry check) and advertises
-/// the browser's `signature_algorithms` list verbatim. Schemes webpki cannot verify (SHA-1, ML-DSA, duplicates) are only
+/// the browser's `signature_algorithms` list verbatim. Schemes webpki cannot verify (SHA-1, duplicates) are only
 /// advertised: a TLS 1.3 server never picks a SHA-1 scheme for CertificateVerify,
-/// webpki rejects SHA-1 certificate signatures anyway, and a server choosing ML-DSA
-/// fails the handshake with a verifier error.
+/// and webpki rejects SHA-1 certificate signatures anyway. ML-DSA is verified
+/// (the aws-lc-rs provider supports it since rustls 0.23.46).
 #[derive(Debug)]
 pub(crate) struct BrowserVerifier {
     inner: Arc<dyn ServerCertVerifier>,
