@@ -23,7 +23,7 @@
 //! For uplinks **without** any fallbacks, every method here is a no-op or
 //! returns the trivial answer (`active_wire = 0`, dial order = `[0]`).
 
-use rand::Rng;
+use rand::RngExt;
 use tokio::time::{Instant, sleep};
 use tracing::{debug, info, warn};
 
@@ -842,7 +842,7 @@ impl UplinkManager {
 /// "every non-active wire is a candidate" instead, so the anti-DPI rotation
 /// keeps working — merely without the liveness bias `health_weight_floor`
 /// would otherwise have provided.
-fn draw_reroll_wire<R: Rng + ?Sized>(
+fn draw_reroll_wire<R: RngExt + ?Sized>(
     weights: &[f64],
     active: u8,
     floor: f64,

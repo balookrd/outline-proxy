@@ -22,7 +22,7 @@ test-helpers = []
 [dependencies]
 anyhow = "1.0"
 arc-swap = "1.7"
-base64 = "0.22"
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 blake3 = "1.8"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 libc = "0.2"
@@ -31,7 +31,7 @@ outline-wire = { path = "../outline-wire" }
 outline-transport = { path = "../outline-transport" }
 parking_lot = "0.12"
 percent-encoding = "2.3"
-rand = "0.9"
+rand = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }
 socks5-proto = { path = "../socks5-proto" }

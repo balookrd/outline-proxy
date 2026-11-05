@@ -6,7 +6,7 @@ use crate::carrier_queue::FRAME_SOFT_CAP;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use outline_wire::ss2022::Ss2022Error;
-use rand::RngCore;
+use rand::Rng;
 use shadowsocks_crypto::{
     AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce,
 };

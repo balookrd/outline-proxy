@@ -16,14 +16,14 @@ metrics = ["outline-metrics/prometheus", "outline-metrics/tun"]
 quic = ["outline-transport/quic", "outline-uplink/quic"]
 
 [dependencies]
-aes = "0.8"
-aes-gcm = "0.10"
+aes = "0.9"
+aes-gcm = "0.11"
 anyhow = "1.0"
 arc-swap = "1.7"
 bytes = "1.10"
 dashmap = "6.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-hkdf = "0.12"
+hkdf = "0.13"
 libc = "0.2"
 lru = { version = "0.18", default-features = false }
 outline-metrics = { path = "../outline-metrics", default-features = false }
@@ -32,8 +32,8 @@ outline-routing = { path = "../outline-routing" }
 outline-transport = { path = "../outline-transport" }
 outline-uplink = { path = "../outline-uplink", default-features = false }
 parking_lot = "0.12"
-rand = "0.9"
-sha2 = "0.10"
+rand = "0.10"
+sha2 = "0.11"
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }
 socks5-proto = { path = "../socks5-proto" }
 tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }

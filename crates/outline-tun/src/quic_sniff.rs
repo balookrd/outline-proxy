@@ -19,7 +19,7 @@
 //! is reported `Incomplete` and the flow falls back to dialling by IP.
 
 use aes::Aes128;
-use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+use aes::cipher::{BlockCipherEncrypt, KeyInit};
 use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, Payload};
 use hkdf::Hkdf;
@@ -158,7 +158,7 @@ fn decrypt_initial_crypto(datagram: &[u8]) -> Option<Vec<u8>> {
 
     // Header protection: sample 16 bytes starting 4 bytes into the protected
     // region (RFC 9001 §5.4.2 — sample offset assumes a 4-byte PN field).
-    let sample = datagram.get(pn_offset + 4..pn_offset + 4 + 16)?;
+    let sample: &[u8; 16] = datagram.get(pn_offset + 4..pn_offset + 4 + 16)?.try_into().ok()?;
     let mask = header_protection_mask(&hp, sample);
     let unprotected_first = first ^ (mask[0] & 0x0f);
     let pn_len = usize::from(unprotected_first & 0x03) + 1;
@@ -192,17 +192,15 @@ fn decrypt_initial_crypto(datagram: &[u8]) -> Option<Vec<u8>> {
 
     let cipher = Aes128Gcm::new_from_slice(&key).ok()?;
     cipher
-        .decrypt(aes_gcm::Nonce::from_slice(&nonce), Payload { msg: ciphertext, aad: &aad })
+        .decrypt((&nonce).into(), Payload { msg: ciphertext, aad: &aad })
         .ok()
 }
 
 /// AES-128-ECB single-block encryption of the sample → header-protection mask.
-fn header_protection_mask(hp_key: &[u8; 16], sample: &[u8]) -> [u8; 16] {
-    let cipher = Aes128::new(GenericArray::from_slice(hp_key));
-    let mut block = GenericArray::clone_from_slice(sample);
-    cipher.encrypt_block(&mut block);
-    let mut mask = [0u8; 16];
-    mask.copy_from_slice(&block);
+fn header_protection_mask(hp_key: &[u8; 16], sample: &[u8; 16]) -> [u8; 16] {
+    let cipher = Aes128::new(hp_key.into());
+    let mut mask = *sample;
+    cipher.encrypt_block((&mut mask).into());
     mask
 }
 
@@ -310,7 +308,7 @@ fn read_varint(buf: &[u8]) -> Option<(u64, usize)> {
 #[cfg(test)]
 pub(crate) mod test_vectors {
     use aes::Aes128;
-    use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+    use aes::cipher::{BlockCipherEncrypt, KeyInit};
     use aes_gcm::Aes128Gcm;
     use aes_gcm::aead::{Aead, Payload};
 
@@ -399,16 +397,16 @@ pub(crate) mod test_vectors {
         let nonce = keys.iv; // pn = 0 → nonce = iv
         let cipher = Aes128Gcm::new_from_slice(&keys.key).unwrap();
         let ciphertext = cipher
-            .encrypt(aes_gcm::Nonce::from_slice(&nonce), Payload { msg: &plaintext, aad: &aad })
+            .encrypt((&nonce).into(), Payload { msg: &plaintext, aad: &aad })
             .unwrap();
 
         let mut packet = header;
         packet.extend_from_slice(&ciphertext);
 
         let sample: [u8; 16] = packet[pn_offset + 4..pn_offset + 4 + 16].try_into().unwrap();
-        let aes = Aes128::new(GenericArray::from_slice(&keys.hp));
-        let mut block = GenericArray::clone_from_slice(&sample);
-        aes.encrypt_block(&mut block);
+        let aes = Aes128::new((&keys.hp).into());
+        let mut block = sample;
+        aes.encrypt_block((&mut block).into());
         packet[0] ^= block[0] & 0x0f;
         packet[pn_offset] ^= block[1];
         packet

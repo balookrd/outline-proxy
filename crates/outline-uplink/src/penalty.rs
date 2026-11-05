@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use rand::Rng;
+use rand::RngExt;
 use tokio::time::Instant;
 
 use crate::config::LoadBalancingConfig;
@@ -75,7 +75,7 @@ pub(crate) fn penalty_weight(
 /// Returns `None` only when `weights` is empty or no entry has positive,
 /// finite weight. Generic over the RNG so callers pass `rand::rng()` in
 /// production and a seeded `StdRng` in tests for reproducibility.
-pub(crate) fn weighted_pick_with_rng<R: Rng + ?Sized>(
+pub(crate) fn weighted_pick_with_rng<R: RngExt + ?Sized>(
     weights: &[f64],
     rng: &mut R,
 ) -> Option<usize> {
@@ -108,7 +108,7 @@ pub(crate) fn weighted_pick_with_rng<R: Rng + ?Sized>(
 /// caller using the result as a dial order still reaches every candidate (the
 /// fallback cascade never drops a wire). Indices with non-positive / non-finite
 /// weight rank last (key `0`), preserving their original relative order.
-pub(crate) fn weighted_permutation_with_rng<R: Rng + ?Sized>(
+pub(crate) fn weighted_permutation_with_rng<R: RngExt + ?Sized>(
     weights: &[f64],
     rng: &mut R,
 ) -> Vec<usize> {

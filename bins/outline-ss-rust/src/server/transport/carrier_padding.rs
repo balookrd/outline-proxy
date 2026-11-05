@@ -24,7 +24,7 @@ use outline_wire::padding::{
     MAX_PADDING_SEGMENT, PADDING_FRAME_HEADER_LEN, PaddingScheme, datagram_pad_budget,
     encode_frame_into,
 };
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 
 use super::throughput_monitor::ThrottleDetectParams;
 use crate::config::PaddingConfig;
@@ -125,7 +125,7 @@ fn draw_jitter(min_ms: u64, max_ms: u64) -> Duration {
 /// Mirrors the client's `outline_transport::carrier_padding::frame_payload_into`
 /// — the two sides must agree on the framing or the round-trip breaks. Caller
 /// must have checked [`PaddingScheme::is_enabled`].
-pub(in crate::server) fn frame_payload_into<R: RngCore>(
+pub(in crate::server) fn frame_payload_into<R: Rng>(
     scheme: PaddingScheme,
     data: &[u8],
     rng: &mut R,
@@ -290,7 +290,7 @@ pub(in crate::server) fn new_server_shaper(protocol: Protocol) -> Option<EarlySh
 
 /// Adapts `rng` to the `draw(lo, hi)` callback the early-shape planner takes
 /// (uniform in `lo..=hi`).
-pub(in crate::server) fn draw_in(rng: &mut impl Rng) -> impl FnMut(usize, usize) -> usize + '_ {
+pub(in crate::server) fn draw_in(rng: &mut impl RngExt) -> impl FnMut(usize, usize) -> usize + '_ {
     move |lo, hi| rng.random_range(lo..=hi)
 }
 
@@ -300,7 +300,7 @@ pub(in crate::server) fn draw_in(rng: &mut impl Rng) -> impl FnMut(usize, usize)
 /// `outline_transport::carrier_padding::shaped_messages`. Past the shaping
 /// window (or for a small buffer) this is a single ordinary padded message.
 /// With a disabled scheme the pieces are plain slices (no framing).
-pub(in crate::server) fn shaped_messages<R: RngCore>(
+pub(in crate::server) fn shaped_messages<R: Rng>(
     scheme: PaddingScheme,
     shaper: &mut EarlyShaper,
     data: &[u8],
@@ -333,7 +333,7 @@ pub(in crate::server) fn shaped_messages<R: RngCore>(
 
 /// Draws a fresh pad buffer of random length in the scheme's range. Contents
 /// are random bytes (never inspected on decode); only the length matters.
-fn draw_pad<R: RngCore>(scheme: PaddingScheme, rng: &mut R) -> Vec<u8> {
+fn draw_pad<R: Rng>(scheme: PaddingScheme, rng: &mut R) -> Vec<u8> {
     let n = scheme.pad_len(rng.random::<u16>()) as usize;
     let mut pad = vec![0u8; n];
     rng.fill_bytes(&mut pad);

@@ -67,7 +67,7 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 # RandomConnectionIdGenerator, which quinn does not re-export. Same
 # aws-lc-rs-only features as quinn.
 quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"], optional = true }
-rand = "0.9"
+rand = "0.10"
 # zstd certificate decompressor (`tls_hello.rs`), see `brotli-decompressor`.
 ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 # SHA-256 / HKDF primitives for the QUIC-Initial decrypt diagnostic test

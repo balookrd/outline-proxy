@@ -163,7 +163,7 @@ fn current_interface_prefix64(iface: &str) -> Option<Ipv6Addr> {
 /// `net` (a /64 network) with 64 cryptographically-random host bits.
 #[cfg(target_os = "linux")]
 fn random_addr_in_prefix64(net: Ipv6Addr) -> Ipv6Addr {
-    use rand::RngCore;
+    use rand::Rng;
     let mut bytes = net.octets();
     let mut host = [0_u8; 8];
     rand::rng().fill_bytes(&mut host);

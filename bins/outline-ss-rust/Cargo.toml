@@ -7,14 +7,14 @@ edition = "2024"
 workspace = true
 
 [dependencies]
-aes = "0.8"
+aes = "0.9"
 anyhow = "1.0"
 arc-swap = "1.7"
 axum = { version = "0.8", features = ["ws", "http2"] }
-base64 = "0.22"
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 blake3 = "1.8"
 bytes = "1.10"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 clap = { version = "4.5", features = ["derive", "env"] }
 dashmap = "6"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
@@ -36,7 +36,7 @@ outline-net = { path = "../../crates/outline-net" }
 outline-wire = { path = "../../crates/outline-wire", features = ["clap", "h3-datagram"] }
 parking_lot = "0.12"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
-rand = "0.9"
+rand = "0.10"
 # rcgen on the aws_lc_rs backend, matching the workspace-wide single rustls
 # CryptoProvider (aws-lc-rs). Used both in tests and, in production, by the
 # cluster mesh to build its PSK-derived self-signed interconnect certificate.

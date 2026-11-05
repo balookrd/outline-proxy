@@ -683,7 +683,7 @@ async fn send_fin(
 /// asks for while the session start is being shaped; a single piece once the
 /// window is past (`shaper` is then cleared). Pieces are zero-copy slices of
 /// `payload`, so their concatenation is the body byte for byte.
-pub(super) fn shaped_post_pieces<R: rand::Rng>(
+pub(super) fn shaped_post_pieces<R: rand::RngExt>(
     shaper: &mut Option<EarlyShaper>,
     payload: Bytes,
     rng: &mut R,

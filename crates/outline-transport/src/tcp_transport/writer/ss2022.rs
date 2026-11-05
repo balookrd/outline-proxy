@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rand::RngCore;
+use rand::Rng;
 use socks5_proto::TargetAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 

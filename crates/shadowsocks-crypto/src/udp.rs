@@ -1,4 +1,4 @@
-use rand::rand_core::RngCore;
+use rand::Rng;
 
 use crate::cipher_kind::CipherKind;
 use crate::error::{CryptoError, Result};
