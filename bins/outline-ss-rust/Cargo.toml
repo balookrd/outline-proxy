@@ -72,6 +72,10 @@ control = []
 # and arenas are 32 MiB at minimum. `mimalloc` stays buildable for rollback.
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
+# Integration-test hooks, never enabled in release builds: lets the e2e harness
+# shorten the relay keepalive (and with it the pong deadline and the xhttp idle
+# eviction) through `OUTLINE_SS_TEST_WS_KEEPALIVE_SECS`.
+test-hooks = []
 
 [dev-dependencies]
 proptest = "1.5"

@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use axum::extract::ws::WebSocket;
@@ -15,9 +15,7 @@ use crate::{
 };
 
 use super::super::{
-    constants::{
-        WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
-    },
+    constants::{WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, ws_keepalive_interval},
     resumption::{Parked, ResumeOutcome, SessionId},
 };
 use super::carrier_padding;
@@ -133,7 +131,7 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
         .clone()
         .map(|m| AbortOnDrop::new(tokio::spawn(throughput_monitor::run_throttle_tick(m))));
 
-    let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
+    let ping_interval = ws_keepalive_interval();
     let pong_deadline = ping_interval * WS_PONG_DEADLINE_MULTIPLIER;
     let mut keepalive = tokio::time::interval(ping_interval);
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

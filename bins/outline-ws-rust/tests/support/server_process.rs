@@ -32,13 +32,18 @@ fn server_binary_path() -> Result<PathBuf, BoxError> {
 
             let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
             let mut cmd = Command::new(cargo);
-            cmd.args(["build", "-p", "outline-ss-rust"]);
+            // `test-hooks` lets a test shorten server timers through the
+            // environment (see `ServerProcess::start_with_env`); it changes
+            // nothing when those variables are unset.
+            cmd.args(["build", "-p", "outline-ss-rust", "--features", "test-hooks"]);
             if dir.components().any(|c| c.as_os_str() == "release") {
                 cmd.arg("--release");
             }
             let status = cmd.status().map_err(|e| format!("spawn cargo build: {e}"))?;
             if !status.success() {
-                return Err("`cargo build -p outline-ss-rust` failed".to_string());
+                return Err(
+                    "`cargo build -p outline-ss-rust --features test-hooks` failed".to_string()
+                );
             }
             Ok(bin)
         })
@@ -60,6 +65,18 @@ impl ServerProcess {
         log_path: &Path,
         listen: SocketAddr,
     ) -> Result<Self, BoxError> {
+        Self::start_with_env(config_path, log_path, listen, &[])
+    }
+
+    /// Like [`Self::start`] but sets extra environment variables on the
+    /// server — e.g. `OUTLINE_SS_TEST_WS_KEEPALIVE_SECS`, honoured because the
+    /// harness builds the server with its `test-hooks` feature.
+    pub fn start_with_env(
+        config_path: &Path,
+        log_path: &Path,
+        listen: SocketAddr,
+        env: &[(&str, &str)],
+    ) -> Result<Self, BoxError> {
         let binary = server_binary_path()?;
         let stdout = fs::OpenOptions::new().create(true).append(true).open(log_path)?;
         let stderr = fs::OpenOptions::new().create(true).append(true).open(log_path)?;
@@ -69,6 +86,7 @@ impl ServerProcess {
             // Surface session-resumption / orphan-park debug lines so failover
             // diagnostics are visible in the captured server log.
             .env("RUST_LOG", "info,outline_ss_rust=debug")
+            .envs(env.iter().copied())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()?;
