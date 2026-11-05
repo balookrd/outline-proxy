@@ -1,6 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use outline_wire::padding::PaddingScheme;
 use tokio::{
     net::{
@@ -16,6 +16,7 @@ use super::super::super::{
     dns_cache::DnsCache,
     resumption::{ParkedMuxSubConn, ParkedMuxSubKind, ParkedVlessMux},
 };
+use super::super::held_header::HeldResponseHeader;
 
 use crate::{
     metrics::{Metrics, PerUserCounters, Protocol},
@@ -109,6 +110,10 @@ pub(in crate::server::transport) struct MuxState {
     /// padded client's decoder never sees an unwrapped message. Disabled on an
     /// unpadded path and on a relayed mux (the edge pads the whole stream).
     pub(super) padding: PaddingScheme,
+    /// VLESS response header owed to the client, carried by whichever downlink
+    /// message goes first (see [`HeldResponseHeader`]). `None` once there is
+    /// none to send — a relayed mux on the home, whose edge sends its own.
+    pub(super) header: Option<Arc<HeldResponseHeader>>,
 }
 
 /// Output of a sub-connection reader task. Distinguishes the natural
@@ -213,7 +218,16 @@ impl MuxState {
             user_counters,
             accounting,
             padding,
+            header: None,
         }
+    }
+
+    /// Holds the VLESS response header back for the first downlink message of
+    /// this mux, whichever writer sends it. Call before any sub-connection
+    /// exists: their readers capture the header when they are spawned.
+    pub fn with_response_header(mut self, header: Bytes) -> Self {
+        self.header = Some(Arc::new(HeldResponseHeader::new(header)));
+        self
     }
 
     pub async fn shutdown(&mut self) {

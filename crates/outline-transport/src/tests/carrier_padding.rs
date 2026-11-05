@@ -222,7 +222,7 @@ fn shaped_messages_split_a_large_frame_and_round_trip() {
         let mut rng = StdRng::seed_from_u64(seed);
         let mut shaper = shaper_with(&mut rng);
         let frame: Vec<u8> = (0..1964u32).map(|i| (i % 251) as u8).collect();
-        let msgs = shaped_messages(scheme, &mut shaper, &frame, &mut rng);
+        let msgs = shaped_messages(scheme, &mut shaper, &frame, None, &mut rng);
 
         let mut decoded = Vec::new();
         let mut dec = PaddingDecoder::new();
@@ -248,10 +248,10 @@ fn shaped_messages_pass_through_after_window() {
     let mut shaper = shaper_with(&mut rng);
     let big = vec![0xAB; 1964];
     for _ in 0..64 {
-        let _ = shaped_messages(scheme, &mut shaper, &big, &mut rng);
+        let _ = shaped_messages(scheme, &mut shaper, &big, None, &mut rng);
     }
     assert!(!shaper.is_active());
-    let msgs = shaped_messages(scheme, &mut shaper, &big, &mut rng);
+    let msgs = shaped_messages(scheme, &mut shaper, &big, None, &mut rng);
     assert_eq!(msgs.len(), 1);
     let mut decoded = Vec::new();
     PaddingDecoder::new().push(&msgs[0], &mut decoded);
@@ -267,7 +267,7 @@ fn shaped_messages_disabled_scheme_returns_plain_pieces() {
         let mut shaper =
             EarlyShaper::new(ShapeDirection::ClientToServer, false, &mut draw_in(&mut rng));
         let frame: Vec<u8> = (0..1964u32).map(|i| (i % 251) as u8).collect();
-        let msgs = shaped_messages(PaddingScheme::disabled(), &mut shaper, &frame, &mut rng);
+        let msgs = shaped_messages(PaddingScheme::disabled(), &mut shaper, &frame, None, &mut rng);
         assert!(msgs.len() >= 2, "seed {seed}");
         assert_eq!(msgs.concat(), frame, "seed {seed}");
     }
@@ -287,7 +287,7 @@ fn vless_first_write_has_lead_in_covers_on_about_half_of_sessions() {
     let mut with_cover = 0;
     for _ in 0..200 {
         let mut shaper = shaper_with(&mut rng);
-        let msgs = shaped_messages(scheme, &mut shaper, &frame, &mut rng);
+        let msgs = shaped_messages(scheme, &mut shaper, &frame, None, &mut rng);
         let mut dec = PaddingDecoder::new();
         let mut decoded = Vec::new();
         let mut covers_before_data = false;
@@ -307,4 +307,55 @@ fn vless_first_write_has_lead_in_covers_on_about_half_of_sessions() {
         (70..=130).contains(&with_cover),
         "sessions with a lead-in cover: {with_cover}/200"
     );
+}
+
+/// The h2 cap leaves room for the client WS header and the padding framing at
+/// the scheme's largest pad, and gives up below its floor.
+#[test]
+fn h2_uplink_cap_budgets_ws_header_and_padding() {
+    assert_eq!(h2_uplink_cap(PaddingScheme::disabled()), Some(16375 - 8));
+    assert_eq!(h2_uplink_cap(PaddingScheme::new(0, 256)), Some(16375 - 8 - 4 - 256));
+    assert_eq!(h2_uplink_cap(PaddingScheme::new(0, 16_000)), None);
+}
+
+/// Capped messages decode back to the frame, each within the DATA budget, the
+/// pieces even; unpadded pieces are plain slices.
+#[test]
+fn h2_capped_messages_round_trip_within_the_budget() {
+    let frame: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
+    for scheme in [PaddingScheme::disabled(), PaddingScheme::new(0, 256)] {
+        let cap = h2_uplink_cap(scheme).unwrap();
+        let msgs = h2_capped_messages(scheme, cap, Bytes::from(frame.clone()), &mut seeded());
+        assert_eq!(msgs.len(), 70_000usize.div_ceil(cap), "{scheme:?}");
+        let mut decoded = Vec::new();
+        let mut dec = PaddingDecoder::new();
+        for m in &msgs {
+            assert!(m.len() + H2_WS_CLIENT_HEADER_LEN <= H2_DATA_PAYLOAD_MAX, "{scheme:?}");
+            if scheme.is_enabled() {
+                dec.push(m, &mut decoded);
+            } else {
+                decoded.extend_from_slice(m);
+            }
+        }
+        assert_eq!(decoded, frame, "{scheme:?}");
+    }
+}
+
+/// With a cap, the planned piece past the window's byte budget is cut further;
+/// the window's own pieces stay as planned.
+#[test]
+fn shaped_messages_cap_the_tail_past_the_window_budget() {
+    let scheme = PaddingScheme::new(0, 64);
+    let cap = h2_uplink_cap(scheme).unwrap();
+    let frame: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let mut rng = seeded();
+    let mut shaper = shaper_with(&mut rng);
+    let msgs = shaped_messages(scheme, &mut shaper, &frame, Some(cap), &mut rng);
+    let mut decoded = Vec::new();
+    let mut dec = PaddingDecoder::new();
+    for m in &msgs {
+        assert!(m.len() + H2_WS_CLIENT_HEADER_LEN <= H2_DATA_PAYLOAD_MAX, "{}", m.len());
+        dec.push(m, &mut decoded);
+    }
+    assert_eq!(decoded, frame);
 }

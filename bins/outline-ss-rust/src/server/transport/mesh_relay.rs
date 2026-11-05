@@ -2438,6 +2438,8 @@ async fn splice_plaintext_vless_mux(
         MuxAccounting::OnTheEdge,
         // Plaintext mux frames over the mesh: the edge pads the client stream.
         PaddingScheme::disabled(),
+        // The edge terminates VLESS and owes the client its response header.
+        None,
     );
 
     let up_bytes = cluster.metrics.mesh_bytes_counter("home", "up", "tcp");

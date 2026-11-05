@@ -169,3 +169,47 @@ async fn downlink_record_is_cut_to_the_datagram_or_framed_for_the_stream() -> Re
     );
     Ok(())
 }
+
+/// The response header is held for the first response record: both leave in
+/// one stream message, even with a datagram route at hand, and the records
+/// after it are sent as usual (here: as datagrams) without the header.
+#[tokio::test]
+async fn response_header_rides_the_first_record_on_the_stream() -> Result<()> {
+    let pair = quic_datagram_pair().await?;
+    let downlink = Arc::new(datagram_downlink(&pair));
+    let target = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    socket.connect(target.local_addr()?).await?;
+    target.connect(socket.local_addr()?).await?;
+    let (tx, mut rx) = mpsc::channel::<Bytes>(8);
+    let metrics = Metrics::new(&sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))));
+    let relay = AbortOnDrop::new(tokio::spawn(super::relay_vless_udp_upstream_to_client(
+        Arc::new(socket),
+        tx,
+        |bytes| bytes,
+        Bytes::new,
+        metrics,
+        Protocol::Http3,
+        Arc::from("beerloga"),
+        None,
+        PaddingScheme::disabled(),
+        None,
+        Some(downlink),
+        Some(super::response_header()),
+    )));
+
+    target.send(b"one").await?;
+    let first = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await?
+        .context("first record on the stream")?;
+    assert_eq!(&first[..], &[0x00, 0x00, 0x00, 0x03, b'o', b'n', b'e']);
+
+    target.send(b"two").await?;
+    let datagram =
+        tokio::time::timeout(Duration::from_secs(5), pair.client.read_datagram()).await??;
+    let (_, body) = decode_datagram(datagram).context("datagram prefix")?;
+    assert_eq!(&body[..], &[0x00, 0x03, b't', b'w', b'o'], "no header after the first record");
+    assert!(rx.try_recv().is_err(), "the header must not travel as its own message");
+    drop(relay);
+    Ok(())
+}

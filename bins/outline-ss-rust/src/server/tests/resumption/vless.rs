@@ -13,8 +13,8 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::{
-    ResumptionTestServer, connect_ws_h1, expect_binary_reply, spawn_echo_target,
-    spawn_echo_udp_target, spawn_test_server,
+    ResumptionTestServer, connect_ws_h1, expect_binary_reply, expect_vless_header_with_reply,
+    spawn_echo_target, spawn_echo_udp_target, spawn_test_server,
 };
 use outline_wire::vless::ATYP_IPV4;
 use outline_wire::vless_mux::{GLOBAL_ID_LEN, NETWORK_UDP, SESSION_STATUS_NEW};
@@ -211,6 +211,10 @@ pub(super) fn vless_mux_keep_frame(session_id: u16, payload: &[u8]) -> Bytes {
 /// The caller must specify exactly which session IDs to wait for —
 /// the test treats arrival order as undefined because two upstream
 /// echoes race on independent TCP sockets.
+///
+/// Reads a mux session from its start: the first message must begin with the
+/// `[VERSION, 0x00]` response header, which the server sends in front of the
+/// first downlink mux frame rather than as a message of its own.
 pub(super) async fn collect_mux_keep_payloads<S>(
     socket: &mut S,
     expected: &[u16],
@@ -220,8 +224,12 @@ where
         + Unpin,
 {
     let mut payloads: std::collections::HashMap<u16, Vec<u8>> = std::collections::HashMap::new();
+    let mut first = true;
     while !expected.iter().all(|id| payloads.contains_key(id)) {
-        let bytes = expect_binary_reply(socket).await?;
+        let mut bytes = expect_binary_reply(socket).await?;
+        if std::mem::take(&mut first) {
+            bytes = strip_vless_header(bytes)?;
+        }
         let ParsedFrame { meta, data, consumed } = parse_frame(&bytes)?
             .ok_or_else(|| anyhow::anyhow!("incomplete mux frame in WS message"))?;
         if consumed != bytes.len() {
@@ -251,7 +259,8 @@ where
 /// forwards whatever chunk it read as one binary message — so several mux frames
 /// can share a message and one can be split across two. The direct path emits
 /// exactly one frame per message, which is why the helper above can assert that
-/// and this one cannot; buffering across messages is the only difference.
+/// and this one cannot; buffering across messages is the only difference. The
+/// stream starts with the VLESS response header here too.
 pub(super) async fn collect_streamed_mux_keep_payloads<S>(
     socket: &mut S,
     expected: &[u16],
@@ -261,7 +270,7 @@ where
         + Unpin,
 {
     let mut payloads: std::collections::HashMap<u16, Vec<u8>> = std::collections::HashMap::new();
-    let mut buffer = BytesMut::new();
+    let mut buffer = BytesMut::from(strip_vless_header(expect_binary_reply(socket).await?)?);
     while !expected.iter().all(|id| payloads.contains_key(id)) {
         let Some(ParsedFrame { meta, data, consumed }) = parse_frame(&buffer)? else {
             buffer.extend_from_slice(&expect_binary_reply(socket).await?);
@@ -277,6 +286,19 @@ where
         let _ = buffer.split_to(consumed);
     }
     Ok(payloads)
+}
+
+/// Strips the `[VERSION, 0x00]` response header off the first message of a
+/// VLESS session, failing if it is missing or travelled as a message of its own.
+fn strip_vless_header(mut first: Bytes) -> Result<Bytes> {
+    if !first.starts_with(&[VLESS_VERSION, 0x00]) {
+        bail!("first VLESS message does not start with the response header: {first:?}");
+    }
+    let rest = first.split_off(2);
+    if rest.is_empty() {
+        bail!("the VLESS response header went out as a message of its own");
+    }
+    Ok(rest)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -296,9 +318,8 @@ async fn vless_udp_single_resume_hit_reuses_parked_socket() -> Result<()> {
     socket
         .send(WsMessage::Binary(vless_udp_request(uuid, target_addr, b"udp1")?))
         .await?;
-    let header = expect_binary_reply(&mut socket).await?;
-    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00]);
-    let echoed = expect_binary_reply(&mut socket).await?;
+    // The response header leads the first echoed datagram.
+    let echoed = expect_vless_header_with_reply(&mut socket).await?;
     // Server frames upstream packets the same way: `len:u16 + bytes`.
     assert_eq!(echoed.len(), 2 + 4);
     assert_eq!(&echoed[2..], b"udp1");
@@ -308,8 +329,8 @@ async fn vless_udp_single_resume_hit_reuses_parked_socket() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Session #2: resume. Server re-attaches the parked `UdpSocket`
-    // and sends another `[VERSION, 0x00]` so the client parser still
-    // sees a clean handshake response. Then we push another datagram
+    // and leads the first response with another `[VERSION, 0x00]` so the
+    // client parser still sees a clean handshake response. Then we push another datagram
     // through the resumed socket — the echo should arrive from the
     // *same* source port the parked socket was bound to.
     let (mut socket2, _) =
@@ -317,9 +338,7 @@ async fn vless_udp_single_resume_hit_reuses_parked_socket() -> Result<()> {
     socket2
         .send(WsMessage::Binary(vless_udp_request(uuid, target_addr, b"udp2")?))
         .await?;
-    let header2 = expect_binary_reply(&mut socket2).await?;
-    assert_eq!(header2.as_ref(), &[VLESS_VERSION, 0x00]);
-    let echoed2 = expect_binary_reply(&mut socket2).await?;
+    let echoed2 = expect_vless_header_with_reply(&mut socket2).await?;
     assert_eq!(&echoed2[2..], b"udp2");
 
     // Final assertion: the echo target saw datagrams from exactly one
@@ -366,10 +385,7 @@ async fn vless_mux_resume_hit_preserves_all_sub_conns() -> Result<()> {
     handshake.extend_from_slice(&vless_mux_new_tcp_frame(2, target_b, b"b-ping1"));
     socket.send(WsMessage::Binary(handshake.freeze())).await?;
 
-    // First binary reply is the VLESS handshake response.
-    let response_header = expect_binary_reply(&mut socket).await?;
-    assert_eq!(response_header.as_ref(), &[VLESS_VERSION, 0x00]);
-
+    // The VLESS handshake response leads the first echoed mux frame.
     // Each upstream echoes its payload back — collect by session ID
     // (order is undefined since sub-conns race independently).
     let echoes = collect_mux_keep_payloads(&mut socket, &[1, 2]).await?;
@@ -387,8 +403,7 @@ async fn vless_mux_resume_hit_preserves_all_sub_conns() -> Result<()> {
     let (mut socket2, _) =
         connect_ws_h1(server.listen_addr, "/vless", Some(session_id), true).await?;
     socket2.send(WsMessage::Binary(vless_mux_request(uuid)?)).await?;
-    let response_header = expect_binary_reply(&mut socket2).await?;
-    assert_eq!(response_header.as_ref(), &[VLESS_VERSION, 0x00]);
+    // No response header yet: it leads the first echo below.
 
     // Probe the resumed sub-conns with fresh Keep payloads. The
     // server should forward each into the parked upstream, and the
@@ -458,9 +473,7 @@ async fn vless_resume_hit_after_dirty_carrier_death() -> Result<()> {
     socket2
         .send(WsMessage::Binary(vless_tcp_request(uuid, target_addr, b"pong")?))
         .await?;
-    let response_header2 = expect_binary_reply(&mut socket2).await?;
-    assert_eq!(response_header2.as_ref(), &[VLESS_VERSION, 0x00]);
-    let echoed2 = expect_binary_reply(&mut socket2).await?;
+    let echoed2 = expect_vless_header_with_reply(&mut socket2).await?;
     assert_eq!(echoed2.as_ref(), b"pong");
     assert_eq!(
         target_accepts.load(Ordering::SeqCst),
@@ -505,9 +518,7 @@ async fn vless_resume_hit_skips_fresh_upstream() -> Result<()> {
     socket2
         .send(WsMessage::Binary(vless_tcp_request(uuid, target_addr, b"pong")?))
         .await?;
-    let response_header2 = expect_binary_reply(&mut socket2).await?;
-    assert_eq!(response_header2.as_ref(), &[VLESS_VERSION, 0x00]);
-    let echoed2 = expect_binary_reply(&mut socket2).await?;
+    let echoed2 = expect_vless_header_with_reply(&mut socket2).await?;
     assert_eq!(echoed2.as_ref(), b"pong");
     assert_eq!(
         target_accepts.load(Ordering::SeqCst),

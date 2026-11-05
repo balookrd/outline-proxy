@@ -366,3 +366,76 @@ async fn header_is_not_held_when_holding_is_off() {
     assert_eq!(rx.try_recv().unwrap(), binary(b"HEADER"));
     assert!(rx.try_recv().is_err());
 }
+
+// ── h2 uplink cap ────────────────────────────────────────────────────────────
+
+/// Collects the `Binary` payloads the writer task handed to the sink.
+async fn drain_binaries(rx: &mut mpsc::UnboundedReceiver<Message>) -> Vec<Vec<u8>> {
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    let mut out = Vec::new();
+    while let Ok(m) = rx.try_recv() {
+        if let Message::Binary(b) = m {
+            out.push(b.to_vec());
+        }
+    }
+    out
+}
+
+/// On an h2 carrier a frame larger than one TLS record's worth leaves as even
+/// messages that each fit one h2 DATA frame together with the WS header — the
+/// mirror of the server's downlink cap — and concatenate back to the frame.
+#[tokio::test(start_paused = true)]
+async fn h2_cap_cuts_a_large_frame_into_even_messages_that_fit_one_record() {
+    use crate::carrier_padding::{H2_DATA_PAYLOAD_MAX, H2_WS_CLIENT_HEADER_LEN};
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (mut t, _ctrl) = WsWriteTransport::spawn(RecordingSink(tx), false, false);
+    t.set_h2_uplink_cap(true);
+    let frame: Vec<u8> = (0..65_536u32).map(|i| (i % 251) as u8).collect();
+    t.write_frame(frame.clone()).await.unwrap();
+    let msgs = drain_binaries(&mut rx).await;
+
+    assert_eq!(msgs.len(), 5, "64 KiB at a ~16 KiB cap: {:?}", lens(&msgs));
+    for m in &msgs {
+        assert!(m.len() + H2_WS_CLIENT_HEADER_LEN <= H2_DATA_PAYLOAD_MAX, "{:?}", lens(&msgs));
+    }
+    let (min, max) = (msgs.iter().map(Vec::len).min(), msgs.iter().map(Vec::len).max());
+    assert!(max.unwrap() - min.unwrap() <= 1, "pieces must be even: {:?}", lens(&msgs));
+    assert_eq!(msgs.concat(), frame);
+}
+
+/// Within the cap, and off h2, a frame stays one message as before.
+#[tokio::test(start_paused = true)]
+async fn h2_cap_leaves_small_frames_and_other_carriers_alone() {
+    for (h2, len) in [(true, 16_000), (false, 65_536)] {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (mut t, _ctrl) = WsWriteTransport::spawn(RecordingSink(tx), false, false);
+        t.set_h2_uplink_cap(h2);
+        let frame = vec![0x5A; len];
+        t.write_frame(frame.clone()).await.unwrap();
+        assert_eq!(drain_binaries(&mut rx).await, vec![frame], "h2={h2} len={len}");
+    }
+}
+
+/// During the shaping window the tail past its byte budget is capped too, not
+/// only the frames written after the window.
+#[tokio::test(start_paused = true)]
+async fn h2_cap_also_cuts_the_tail_of_a_shaped_first_write() {
+    use crate::carrier_padding::{H2_DATA_PAYLOAD_MAX, H2_WS_CLIENT_HEADER_LEN};
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (mut t, _ctrl) = WsWriteTransport::spawn(RecordingSink(tx), true, false);
+    t.set_h2_uplink_cap(true);
+    let frame: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    t.write_frame(frame.clone()).await.unwrap();
+    let msgs = drain_binaries(&mut rx).await;
+    for m in &msgs {
+        assert!(m.len() + H2_WS_CLIENT_HEADER_LEN <= H2_DATA_PAYLOAD_MAX, "{:?}", lens(&msgs));
+    }
+    assert_eq!(msgs.concat(), frame);
+}
+
+fn lens(msgs: &[Vec<u8>]) -> Vec<usize> {
+    msgs.iter().map(Vec::len).collect()
+}

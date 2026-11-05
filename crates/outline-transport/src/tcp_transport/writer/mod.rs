@@ -73,6 +73,16 @@ impl TcpShadowsocksWriter<WsWriteTransport> {
     }
 }
 
+impl TcpShadowsocksWriter<WsWriteTransport> {
+    /// Cuts every uplink message to one h2 DATA frame of one TLS record when
+    /// `on` — pass `TransportStream::caps_h2_uplink` of the carrier this writer
+    /// was split from. Off by default, which keeps one message per frame.
+    pub fn with_h2_uplink_cap(mut self, on: bool) -> Self {
+        self.transport.set_h2_uplink_cap(on);
+        self
+    }
+}
+
 impl TcpShadowsocksWriter<SocketWriteTransport> {
     pub fn connect_socket(
         writer: tokio::net::tcp::OwnedWriteHalf,

@@ -421,6 +421,28 @@ where
     }
 }
 
+/// Reads the first binary message of a VLESS session and strips the
+/// `[VERSION, 0x00]` response header it must start with: the server sends the
+/// header in front of its first data, never as a message of its own (a fixed
+/// 2-byte message is a record-size marker). Returns the rest of that message —
+/// the first data.
+async fn expect_vless_header_with_reply<S>(socket: &mut S) -> Result<Bytes>
+where
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let mut first = expect_binary_reply(socket).await?;
+    let header = [crate::protocol::vless::VERSION, 0x00];
+    if !first.starts_with(&header) {
+        bail!("first VLESS message does not start with the response header: {first:?}");
+    }
+    let reply = first.split_off(header.len());
+    if reply.is_empty() {
+        bail!("the VLESS response header went out as a message of its own");
+    }
+    Ok(reply)
+}
+
 /// Reads `want` bytes of SS plaintext off a WS carrier, decrypting the AEAD
 /// stream as it arrives.
 ///

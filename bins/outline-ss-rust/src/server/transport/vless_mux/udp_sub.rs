@@ -12,7 +12,7 @@ use tracing::{debug, warn};
 use super::super::super::{
     connect::resolve_udp_target, dns_cache::DnsCache, nat::bind_nat_udp_socket, scratch::UdpRecvBuf,
 };
-use super::super::carrier_padding;
+use super::super::held_header::{HeldResponseHeader, send_downlink};
 use super::frames::send_end;
 use super::state::{
     MuxClientMetrics, MuxReaderHarvest, MuxRouteCtx, MuxServerCtx, MuxState, MuxSubConn,
@@ -54,7 +54,8 @@ where
                     error = %error,
                     "mux udp dns resolution failed"
                 );
-                send_end(tx, make_binary, state.padding, session_id, true).await?;
+                send_end(tx, make_binary, state.padding, state.header.as_deref(), session_id, true)
+                    .await?;
                 return Ok(());
             },
         };
@@ -72,7 +73,8 @@ where
                 error = %error,
                 "mux udp bind failed"
             );
-            send_end(tx, make_binary, state.padding, session_id, true).await?;
+            send_end(tx, make_binary, state.padding, state.header.as_deref(), session_id, true)
+                .await?;
             return Ok(());
         },
     };
@@ -91,6 +93,7 @@ where
         client,
         protocol,
         state.padding,
+        state.header.clone(),
         cancel_for_task,
     ));
 
@@ -133,6 +136,8 @@ pub(super) async fn run_udp_reader<Msg>(
     client: Option<MuxClientMetrics>,
     protocol: Protocol,
     padding: PaddingScheme,
+    // The session's held response header, if it has not gone out yet.
+    header: Option<Arc<HeldResponseHeader>>,
     cancel: Arc<Notify>,
 ) -> MuxReaderHarvest
 where
@@ -204,7 +209,7 @@ where
                         frame.len(),
                     );
                 }
-                if tx.send(make_binary(carrier_padding::frame_downlink_message(padding, frame)))
+                if send_downlink(header.as_deref(), &tx, make_binary, padding, frame)
                     .await
                     .is_err() {
                     return MuxReaderHarvest::Closed;
@@ -215,11 +220,7 @@ where
     let mut frame_buf = BytesMut::with_capacity(6);
     encode_frame(&mut frame_buf, session_id, SessionStatus::End, 0, None, None, None)
         .expect("End frame carries neither target nor data");
-    let _ = tx
-        .send(make_binary(carrier_padding::frame_downlink_message(
-            padding,
-            frame_buf.split().freeze(),
-        )))
+    let _ = send_downlink(header.as_deref(), &tx, make_binary, padding, frame_buf.split().freeze())
         .await;
     MuxReaderHarvest::Closed
 }

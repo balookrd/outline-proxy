@@ -256,16 +256,10 @@ where
             parked_protocol = parked.protocol.label(),
             "vless tcp upstream resumed from orphan registry"
         );
-        // Send the standard VLESS response header so the client moves
-        // its parser past the handshake before receiving payload.
-        outbound
-            .data_tx
-            .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
-                route.padding,
-                Bytes::from_static(&[vless::VERSION, 0x00]),
-            )))
-            .await
-            .map_err(|error| anyhow!("failed to queue vless response header on resume: {error}"))?;
+        // The VLESS response header is never queued on its own: it leads the
+        // control frames below when the client asked for any, or rides the first
+        // relayed bytes otherwise (see `response_lead`).
+        let mut controls = Vec::new();
 
         // Restore the per-session Ack-Prefix counter from the parked
         // entry BEFORE we look at it for the v1 control-frame emit —
@@ -275,9 +269,8 @@ where
         state.upstream_bytes_acked = Arc::clone(&parked.upstream_bytes_acked);
 
         // Ack-Prefix Protocol v1 emit on resume hit (VLESS-WS path):
-        // queue the 14-byte plaintext control frame as the very next
-        // WS Binary message after the VLESS response header. The
-        // client's `VlessTcpReader::consume_ack_prefix*` path will
+        // the 14-byte plaintext control frame follows the VLESS response
+        // header directly, in the same downlink run. The client's `VlessTcpReader::consume_ack_prefix*` path will
         // intercept these 14 bytes after the header parse completes.
         // Gated on `state.ack_prefix_requested` so old clients (or
         // clients that did not opt in on this dial) never see the
@@ -287,34 +280,22 @@ where
             let payload = outline_wire::resume::build_v1_payload(
                 state.upstream_bytes_acked.load(std::sync::atomic::Ordering::Relaxed),
             );
-            let make_binary = outbound.make_binary;
-            outbound
-                .data_tx
-                .send(make_binary(carrier_padding::frame_downlink_message(
-                    route.padding,
-                    Bytes::copy_from_slice(&payload),
-                )))
-                .await
-                .map_err(|error| {
-                    anyhow!("failed to queue vless ack-prefix control frame on resume: {error}")
-                })?;
+            controls.extend_from_slice(&payload);
             debug!(
                 user = user.label(),
                 path = %route.path,
                 up_acked = state
                     .upstream_bytes_acked
                     .load(std::sync::atomic::Ordering::Relaxed),
-                "emitted ack-prefix control frame on vless resume hit",
+                "queued ack-prefix control frame on vless resume hit",
             );
         }
 
-        // v2 Symmetric Downlink Replay: emit the "ORDR" frame as the
-        // next WS Binary message after the v1 "ORSM" frame. Replay
+        // v2 Symmetric Downlink Replay: the "ORDR" frame follows the v1
+        // "ORSM" frame directly, in the same downlink run. Replay
         // payload is `[client_acked_offset, total_sent)` from the
         // parked ring; absent ring or eviction-rolled-past surfaces
-        // as REPLAY_TRUNCATED + replay_len = 0. The frame is sent
-        // through the same `outbound.data_tx` mpsc so its FIFO
-        // ordering with the v1 frame is preserved on the wire.
+        // as REPLAY_TRUNCATED + replay_len = 0.
         if state.symmetric_replay_requested {
             use crate::server::resumption::downlink_ring::ReplayOutcome;
             use outline_wire::resume::downlink_replay;
@@ -361,22 +342,8 @@ where
                     .metrics
                     .record_orphan_downlink_replay_truncated("tcp", truncate_reason);
             }
-            let mut frame =
-                Vec::with_capacity(downlink_replay::FRAME_HEADER_LEN_V1 + payload.len());
-            frame.extend_from_slice(&downlink_replay::build_v1_header(flags, payload_len));
-            frame.extend_from_slice(&payload);
-            let make_binary = outbound.make_binary;
-            // On h2 the frame goes out in even pieces that each fit one h2
-            // DATA frame of one TLS record; the client reads it as a stream.
-            for message in carrier_padding::capped_downlink_messages(
-                route.protocol,
-                route.padding,
-                Bytes::from(frame),
-            ) {
-                outbound.data_tx.send(make_binary(message)).await.map_err(|error| {
-                    anyhow!("failed to queue vless v2 downlink replay frame on resume: {error}")
-                })?;
-            }
+            controls.extend_from_slice(&downlink_replay::build_v1_header(flags, payload_len));
+            controls.extend_from_slice(&payload);
             let (ring_oldest, ring_total) = ring_diag.unwrap_or((0, 0));
             debug!(
                 user = user.label(),
@@ -386,8 +353,22 @@ where
                 truncated,
                 ring_oldest_offset = ring_oldest,
                 ring_total_sent = ring_total,
-                "emitted v2 downlink replay frame on vless resume hit",
+                "queued v2 downlink replay frame on vless resume hit",
             );
+        }
+
+        // One send for header + control frames: on h2 the run goes out in
+        // even pieces that each fit one h2 DATA frame of one TLS record; the
+        // client reads it as a stream.
+        let (held_header, lead) = response_lead(route.protocol, route.padding, controls);
+        for message in lead {
+            outbound
+                .data_tx
+                .send((outbound.make_binary)(message))
+                .await
+                .map_err(|error| {
+                    anyhow!("failed to queue vless response header on resume: {error}")
+                })?;
         }
 
         // Restore the parked downlink ring onto the new state so
@@ -434,7 +415,7 @@ where
                 ring_for_task,
                 padding,
                 monitor_for_task,
-                None,
+                held_header,
             )
             .await
         }));
@@ -717,45 +698,35 @@ where
             VlessFrameError::UpstreamConnectFailed(error.context("mesh relay hand-off failed"))
         })?;
 
-    outbound
-        .data_tx
-        .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
-            route.padding,
-            Bytes::from_static(&[vless::VERSION, 0x00]),
-        )))
-        .await
-        .map_err(|error| {
-            anyhow!("failed to queue vless response header for a relayed session: {error}")
-        })?;
-
     // Ack-Prefix Protocol v1. Ordering is the same as the direct path's: ahead
-    // of any relayed byte, on the same FIFO channel, so it lands right after the
-    // response header and before whatever the spawned relay task produces.
+    // of any relayed byte, on the same FIFO channel, right behind the response
+    // header and before whatever the spawned relay task produces.
     //
     // No v2 "ORDR" frame ever follows it: `edge_upstream` leaves
     // `symmetric_replay_requested` unset on a relayed session, because the
     // home's replay suffix arrives as undelimited plaintext the edge cannot
     // frame. The client consumes those bytes as ordinary stream continuation.
+    let mut controls = Vec::new();
     if state.ack_prefix_requested && kind.emits_ack_prefix() {
-        let payload = outline_wire::resume::build_v1_payload(upstream_acked);
-        outbound
-            .data_tx
-            .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
-                route.padding,
-                Bytes::copy_from_slice(&payload),
-            )))
-            .await
-            .map_err(|error| {
-                anyhow!(
-                    "failed to queue vless ack-prefix control frame for a relayed session: {error}"
-                )
-            })?;
+        controls.extend_from_slice(&outline_wire::resume::build_v1_payload(upstream_acked));
         debug!(
             user = user.label(),
             path = %route.path,
             up_acked = upstream_acked,
-            "emitted ack-prefix control frame for a relayed vless session",
+            "queued ack-prefix control frame for a relayed vless session",
         );
+    }
+    // The response header leads the control frame when there is one, and rides
+    // the first relayed bytes otherwise — never a message of its own.
+    let (held_header, lead) = response_lead(route.protocol, route.padding, controls);
+    for message in lead {
+        outbound
+            .data_tx
+            .send((outbound.make_binary)(message))
+            .await
+            .map_err(|error| {
+                anyhow!("failed to queue vless response header for a relayed session: {error}")
+            })?;
     }
 
     let tx = outbound.data_tx.clone();
@@ -787,7 +758,7 @@ where
             None,
             padding,
             monitor_for_task,
-            None,
+            held_header,
         )
         .await
     }));
@@ -839,6 +810,32 @@ where
     Ok(())
 }
 
+/// Splits what a VLESS-TCP session owes its client ahead of the relayed data
+/// into the part held for the relay and the messages to queue now.
+///
+/// The `[VERSION, 0x00]` response header never goes out as a message of its
+/// own — a fixed 2-byte message (21 bytes once padded) is a marker a record-size
+/// classifier keys on. With no resume `controls` (Ack-Prefix v1 / v2 replay
+/// frames) it is returned as held, for the relay to prepend to the first
+/// upstream bytes as on a fresh session. With controls it leads them in one run
+/// queued now: the client waits for those frames before it resumes its uplink,
+/// so they cannot wait for upstream data. On h2 that run is cut into even
+/// pieces that each fit one h2 DATA frame of one TLS record.
+pub(super) fn response_lead(
+    protocol: Protocol,
+    padding: PaddingScheme,
+    controls: Vec<u8>,
+) -> (Option<Bytes>, Vec<Bytes>) {
+    let header = Bytes::from_static(&[vless::VERSION, 0x00]);
+    if controls.is_empty() {
+        return (Some(header), Vec::new());
+    }
+    let mut run = BytesMut::with_capacity(header.len() + controls.len());
+    run.extend_from_slice(&header);
+    run.extend_from_slice(&controls);
+    (None, carrier_padding::capped_downlink_messages(protocol, padding, run.freeze()))
+}
+
 /// Harvest mapping for a relayed upstream: there is nothing to hand on, because
 /// the socket lives on the home. Mirrors `tcp::harvest_tcp` on the SS side.
 fn harvest_mesh(_reader: MeshUpstream) -> HarvestedUpstream {
@@ -874,7 +871,8 @@ async fn relay_vless_upstream_to_client<R, Msg>(
     // VLESS response header to hold back and ship in the same message as the
     // first upstream bytes (or alone just before close if there are none), so
     // no tiny standalone server→client record precedes the real flight.
-    // `None` on resume / mesh paths that send their own header.
+    // `None` when the caller already sent it ahead of resume control frames
+    // (see `response_lead`).
     response_header: Option<Bytes>,
 ) -> VlessRelayTaskOutput
 where

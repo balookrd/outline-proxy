@@ -122,7 +122,7 @@ covers need padding.
 ### What applies regardless of padding
 
 Early-session shaping above (the cutting, not the covers) needs no padding.
-Four more fixes remove "markers" of the carrier itself and are always on:
+Five more fixes remove "markers" of the carrier itself and are always on:
 
 - **h2: one TLS record per frame.** The client's h2 IO forwards vectored writes,
   so a frame header and its payload leave in one record instead of two.
@@ -134,8 +134,24 @@ Four more fixes remove "markers" of the carrier itself and are always on:
   together with the next full frame. UDP datagrams and cover frames are not cut
   (they are small); a pad range that leaves under 1 KiB of data per message
   (`max_bytes` above ~15 KiB) turns this limit off.
-- **VLESS response header with the first data.** The server holds the response
-  header and sends it together with the first upstream bytes.
+- **h2: client uplink messages fit one record.** The mirror of the server's
+  limit: on `ws_h2` and XHTTP stream-one over h2 the client cuts an uplink
+  message (SS or VLESS, up to 256 KiB coalesced) that would not fit one DATA
+  frame of at most 16375 B — WS header and padding at the scheme's largest pad
+  included — into even pieces that do, so bulk uploads leave no 16401 + 26
+  record pairs either. The tail of a large first write past the shaping
+  window's byte budget is cut the same way. Not on h1, h3 or XHTTP packet-up
+  (each write there is its own POST, cut by its own DATA-frame shaping).
+- **VLESS response header with the first data.** The server never sends the
+  2-byte `[VERSION, 0x00]` response header (21 B once padded) as a message of
+  its own, on any path. A fresh TCP session, a resume without control frames,
+  a relayed (cluster edge) session and VLESS-UDP (fresh, resumed or relayed)
+  send it together with the first upstream bytes or the first response packet;
+  a VLESS-mux session in front of its first downlink mux frame, whichever
+  sub-connection sends it. A resume that asked for the Ack-Prefix v1 / v2
+  replay frames sends the header in the same message as those frames (the
+  client waits for them before it resumes its uplink, so they cannot wait for
+  upstream data). The header is never captured into the v2 replay ring.
 - **SS2022 request header with the first data.** On h1 / h2 carriers the
   client holds the request header for up to 50 ms so that it leaves together
   with the first data. Not on h3 (no TLS record shape to protect, and the hold

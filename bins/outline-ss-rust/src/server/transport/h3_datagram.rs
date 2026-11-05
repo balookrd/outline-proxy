@@ -297,6 +297,24 @@ impl DatagramDownlink {
         self.target.load().is_some()
     }
 
+    /// Accounts for a record that rides the stream without being offered as a
+    /// datagram — the VLESS-UDP record carrying the response header, which the
+    /// client parses off the stream. Counted exactly as [`Self::send_record`]
+    /// would count it before the first uplink datagram (an `unarmed` fallback),
+    /// which is the only state that record is ever sent in: the route arms on
+    /// the client's first uplink datagram, and the client sends one only after
+    /// it has read that header.
+    pub(in crate::server) fn note_stream_only(&self) {
+        if self.target.load().is_none() && self.target.is_unarmed() {
+            self.metrics.record_udp_h3_datagram_fallback(
+                "down",
+                self.carrier,
+                self.proto,
+                "unarmed",
+            );
+        }
+    }
+
     /// Sends `record` (the unpadded frame the stream would write) as one
     /// datagram when it fits the route, padding it within the room left.
     /// `upstream_len` is the packet's size as read from upstream, for a caller

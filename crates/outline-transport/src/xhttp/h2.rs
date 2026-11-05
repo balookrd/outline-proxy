@@ -255,7 +255,8 @@ pub(super) async fn connect_xhttp_h2(
                 // instead (see `CarrierLossProbe::Tcp`), which needs no
                 // strong handle here.
                 None,
-            ),
+            )
+            .with_h2_carrier(),
             issued_session_id,
             ack_prefix_echo,
             symmetric_replay_echo,

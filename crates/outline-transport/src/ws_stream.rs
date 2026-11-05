@@ -452,6 +452,20 @@ impl TransportStream {
         shapes_client_start_for(self.is_h3(), self.xhttp_active_submode())
     }
 
+    /// Whether uplink messages are cut so each fits one h2 DATA frame of one
+    /// TLS record (`carrier_padding::h2_uplink_cap`): `ws_h2`, and XHTTP
+    /// stream-one over h2, where every message is one DATA frame of the POST
+    /// body. Not h1 (no DATA framing), h3 (QUIC keeps its own packetization)
+    /// or XHTTP packet-up, where each message is its own POST.
+    pub fn caps_h2_uplink(&self) -> bool {
+        let carrier_is_h2 = match self {
+            TransportStream::H2 { .. } => true,
+            TransportStream::Xhttp { inner, .. } => inner.carrier_is_h2(),
+            TransportStream::Http1 { .. } | TransportStream::H3 { .. } => false,
+        };
+        caps_h2_uplink_for(carrier_is_h2, self.xhttp_active_submode())
+    }
+
     /// Whether the SS2022 request header may wait (up to 50 ms) for the first
     /// data so both leave in one message: h1 / h2 carriers, XHTTP packet-up
     /// included (one POST instead of a lone 130-141 B one). Not h3, where no
@@ -650,6 +664,11 @@ impl Sink<Message> for TransportStream {
 /// Pure decision behind [`TransportStream::shapes_client_start`].
 fn shapes_client_start_for(is_h3: bool, submode: Option<crate::xhttp::XhttpSubmode>) -> bool {
     !is_h3 && submode != Some(crate::xhttp::XhttpSubmode::PacketUp)
+}
+
+/// Pure decision behind [`TransportStream::caps_h2_uplink`].
+fn caps_h2_uplink_for(carrier_is_h2: bool, submode: Option<crate::xhttp::XhttpSubmode>) -> bool {
+    carrier_is_h2 && submode != Some(crate::xhttp::XhttpSubmode::PacketUp)
 }
 
 /// Pure decision behind [`TransportStream::holds_client_header`].

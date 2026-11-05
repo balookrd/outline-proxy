@@ -58,6 +58,10 @@ pub struct WsWriteTransport {
     /// first data (h1/h2 carriers). Off on h3, where no record shape is at
     /// stake, and in uplink probes, whose measured latency the hold would skew.
     hold_header: bool,
+    /// Data bytes per message on an h2 carrier, so each message fits one h2
+    /// DATA frame of one TLS record (see `carrier_padding::h2_uplink_cap`).
+    /// `None` off h2: the frame goes out as one message, as before.
+    h2_cap: Option<usize>,
 }
 
 impl WsWriteTransport {
@@ -219,9 +223,20 @@ impl WsWriteTransport {
                 padding,
                 shaper,
                 hold_header,
+                h2_cap: None,
             },
             ctrl_tx,
         )
+    }
+
+    /// Cuts every uplink message to one h2 DATA frame of one TLS record when
+    /// `on` (the carrier is h2, see `TransportStream::caps_h2_uplink`).
+    pub(super) fn set_h2_uplink_cap(&mut self, on: bool) {
+        self.h2_cap = if on {
+            carrier_padding::h2_uplink_cap(self.padding.scheme)
+        } else {
+            None
+        };
     }
 }
 
@@ -298,11 +313,29 @@ impl WriteTransport for WsWriteTransport {
                 self.padding.scheme,
                 shaper,
                 &frame,
+                self.h2_cap,
                 &mut rand::rng(),
             );
             for payload in msgs {
                 let bytes = payload.len();
                 tx.send(Message::Binary(payload.into()), bytes)
+                    .await
+                    .context("failed to send encrypted frame")?;
+            }
+            return Ok(());
+        }
+        // On h2 a frame over the cap leaves as even pieces, each one h2 DATA
+        // frame of one TLS record; the server reads the SS stream across them.
+        if let Some(cap) = self.h2_cap.filter(|cap| frame.len() > *cap) {
+            let msgs = carrier_padding::h2_capped_messages(
+                self.padding.scheme,
+                cap,
+                frame.into(),
+                &mut rand::rng(),
+            );
+            for payload in msgs {
+                let bytes = payload.len();
+                tx.send(Message::Binary(payload), bytes)
                     .await
                     .context("failed to send encrypted frame")?;
             }
