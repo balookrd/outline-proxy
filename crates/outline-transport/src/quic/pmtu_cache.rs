@@ -10,7 +10,10 @@
 //! A live entry is a capping first probe; an expired one (younger than
 //! `PMTU_SEED_MAX_AGE`) is a seed that searches on above itself, so the periodic
 //! re-check of an entry finds an unchanged or grown path without the ladder (a
-//! path that shrank costs one rejected size and a search below it).
+//! path that shrank costs one rejected size and a search below it). A seeded
+//! search that rejected a size caps the connection one below the smallest of
+//! them, so an unchanged path pays that rejected size once per connection, not
+//! on every interval re-search.
 //!
 //! The cached value is never used as the starting MTU: a stale entry costs one
 //! rejected probe size, never lost data.
@@ -36,7 +39,8 @@ const PMTU_CACHE_TTL: Duration = Duration::from_secs(3 * 24 * 3600);
 const PMTU_CACHE_SHORT_TTL: Duration = Duration::from_secs(3600);
 /// An expired entry younger than this still seeds the next dial's search
 /// (`FirstProbe::seed`): on an unchanged or grown path that replaces the ladder,
-/// with no ceiling, so a path that grew or shrank is still found. Older entries (a network
+/// and since the seed itself is no ceiling, a path that grew or shrank is still
+/// found (the search's first rejection caps the connection below it). Older entries (a network
 /// not seen for a month) give no hint at all.
 const PMTU_SEED_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 /// QUIC floor and the H3 upper bound: anything else is not a value we probe.

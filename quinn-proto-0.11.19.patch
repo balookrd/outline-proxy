@@ -264,7 +264,7 @@ index 0a299d0..808fcf8 100644
  /// Global configuration for the endpoint, affecting all connections
  ///
 diff --git a/src/config/transport.rs b/src/config/transport.rs
-index ba00695..edae67d 100644
+index ba00695..a4f1d90 100644
 --- a/src/config/transport.rs
 +++ b/src/config/transport.rs
 @@ -8,8 +8,11 @@ use qlog::streamer::QlogStreamer;
@@ -646,7 +646,7 @@ index ba00695..edae67d 100644
      pub(crate) black_hole_cooldown: Duration,
  }
  
-@@ -741,6 +1061,41 @@ impl MtuDiscoveryConfig {
+@@ -741,6 +1061,44 @@ impl MtuDiscoveryConfig {
          self.minimum_change = value;
          self
      }
@@ -675,12 +675,15 @@ index ba00695..edae67d 100644
 +    /// (outline-proxy patch). Defaults to `true`.
 +    ///
 +    /// With `false` the first probe is only a seed: if it is acknowledged the search keeps
-+    /// going upward from it instead of ending there, if it is lost (all retransmits) the
-+    /// search runs below it as usual, and no ceiling is set in either case, so later searches
-+    /// run as in upstream. An acknowledged seed always tries the upper bound if it is above it,
-+    /// even when it is closer than [`minimum_change`](Self::minimum_change). Meant for a cached
-+    /// size that is old enough to be re-checked: on an unchanged or grown path it replaces the
-+    /// ladder of probes, and a path that grew is still found.
++    /// going upward from it instead of ending there, and if it is lost (all retransmits) the
++    /// search runs below it as usual. An acknowledged seed always tries the upper bound if it is
++    /// above it, even when it is closer than [`minimum_change`](Self::minimum_change). When that
++    /// first search ends having rejected any probe (the seed included), its final upper bound,
++    /// one below the smallest rejected size, caps later searches; a search that rejected nothing
++    /// sets no ceiling. So a seed confirmed on an unchanged path costs one rejected size once
++    /// per connection instead of on every interval re-search. Meant for a cached size that is
++    /// old enough to be re-checked: on an unchanged or grown path it replaces the ladder of
++    /// probes, and a path that grew is still found.
 +    pub fn first_probe_caps(&mut self, value: bool) -> &mut Self {
 +        self.first_probe_caps = value;
 +        self
@@ -688,7 +691,7 @@ index ba00695..edae67d 100644
  }
  
  impl Default for MtuDiscoveryConfig {
-@@ -750,6 +1105,8 @@ impl Default for MtuDiscoveryConfig {
+@@ -750,6 +1108,8 @@ impl Default for MtuDiscoveryConfig {
              upper_bound: 1452,
              black_hole_cooldown: Duration::from_secs(60),
              minimum_change: 20,
@@ -1174,7 +1177,7 @@ index 5155740..75ee58c 100644
                  Some(x) => x,
                  None => break,
 diff --git a/src/connection/mtud.rs b/src/connection/mtud.rs
-index 0893b29..9f41080 100644
+index 0893b29..ab43c2a 100644
 --- a/src/connection/mtud.rs
 +++ b/src/connection/mtud.rs
 @@ -70,6 +70,15 @@ impl MtuDiscovery {
@@ -1193,20 +1196,22 @@ index 0893b29..9f41080 100644
      /// Returns the amount of bytes that should be sent as an MTU probe, if any
      pub(crate) fn poll_transmit(&mut self, now: Instant, next_pn: u64) -> Option<u16> {
          self.state
-@@ -173,6 +182,12 @@ struct EnabledMtuDiscovery {
+@@ -173,6 +182,14 @@ struct EnabledMtuDiscovery {
      phase: Phase,
      peer_max_udp_payload_size: u16,
      config: MtuDiscoveryConfig,
 +    /// First probe for the first search; taken when that search starts.
 +    pending_first_probe: Option<u16>,
-+    /// Cap on later searches, set only by the outcome of the first probe (unless
-+    /// `first_probe_caps(false)`, which sets none): its size if it was acknowledged, one below it
-+    /// if it was rejected. `None` until then (and after a reset).
++    /// Cap on later searches. A capping first probe sets it by its outcome: its size if it was
++    /// acknowledged, one below it if it was rejected. A seed (`first_probe_caps(false)`) sets it
++    /// when its search ends, if that search rejected any probe (the seed itself included): one
++    /// below the smallest rejected size; a seeded search that rejects nothing sets none. Losses in
++    /// later searches never set it. `None` until then (and after a reset).
 +    ceiling: Option<u16>,
  }
  
  impl EnabledMtuDiscovery {
-@@ -180,6 +195,8 @@ impl EnabledMtuDiscovery {
+@@ -180,6 +197,8 @@ impl EnabledMtuDiscovery {
          Self {
              phase: Phase::Initial,
              peer_max_udp_payload_size: MAX_UDP_PAYLOAD,
@@ -1215,7 +1220,7 @@ index 0893b29..9f41080 100644
              config,
          }
      }
-@@ -192,6 +209,8 @@ impl EnabledMtuDiscovery {
+@@ -192,6 +211,8 @@ impl EnabledMtuDiscovery {
                  current_mtu,
                  self.peer_max_udp_payload_size,
                  &self.config,
@@ -1224,7 +1229,7 @@ index 0893b29..9f41080 100644
              ));
          } else if let Phase::Complete(next_mtud_activation) = &self.phase {
              if now < *next_mtud_activation {
-@@ -203,6 +222,8 @@ impl EnabledMtuDiscovery {
+@@ -203,6 +224,8 @@ impl EnabledMtuDiscovery {
                  current_mtu,
                  self.peer_max_udp_payload_size,
                  &self.config,
@@ -1233,7 +1238,20 @@ index 0893b29..9f41080 100644
              ));
          }
  
-@@ -248,6 +269,11 @@ impl EnabledMtuDiscovery {
+@@ -231,6 +254,12 @@ impl EnabledMtuDiscovery {
+                 state.last_probed_mtu = probe_udp_payload_size;
+                 return Some(probe_udp_payload_size);
+             } else {
++                if state.seeded && state.rejected_any {
++                    // A seeded search caps at its final upper bound (one below the smallest
++                    // size it rejected). Without this, a connection seeded just below its upper
++                    // bound re-probes the bound and loses it every `interval` for life.
++                    self.ceiling = Some(state.upper_bound);
++                }
+                 let next_mtud_activation = now + self.config.interval;
+                 self.phase = Phase::Complete(next_mtud_activation);
+                 return None;
+@@ -248,6 +277,11 @@ impl EnabledMtuDiscovery {
              Phase::Searching(state) if state.in_flight_probe == Some(pn) => {
                  state.in_flight_probe = None;
                  state.lost_probe_count = 0;
@@ -1245,21 +1263,21 @@ index 0893b29..9f41080 100644
                  Some(state.last_probed_mtu)
              }
              _ => None,
-@@ -260,6 +286,13 @@ impl EnabledMtuDiscovery {
+@@ -260,6 +294,13 @@ impl EnabledMtuDiscovery {
          if let Phase::Searching(state) = &mut self.phase {
              state.in_flight_probe = None;
              state.lost_probe_count += 1;
-+            if state.probing_first
-+                && state.first_probe_caps
-+                && state.lost_probe_count >= MAX_PROBE_RETRANSMITS
-+            {
-+                // The first probe was rejected after all retransmits
-+                self.ceiling = Some(state.last_probed_mtu - 1);
++            if state.lost_probe_count >= MAX_PROBE_RETRANSMITS {
++                state.rejected_any = true;
++                if state.probing_first && state.first_probe_caps {
++                    // The first probe was rejected after all retransmits
++                    self.ceiling = Some(state.last_probed_mtu - 1);
++                }
 +            }
          }
      }
  
-@@ -295,6 +328,12 @@ struct SearchState {
+@@ -295,6 +336,17 @@ struct SearchState {
      in_flight_probe: Option<u64>,
      /// Lost probes at the current probe size
      lost_probe_count: usize,
@@ -1269,10 +1287,15 @@ index 0893b29..9f41080 100644
 +    probing_first: bool,
 +    /// Whether a confirmed first probe ends the search (`MtuDiscoveryConfig::first_probe_caps`)
 +    first_probe_caps: bool,
++    /// Whether this search starts from a seed (a non-capping first probe); if it rejects any
++    /// probe, its final upper bound caps the connection
++    seeded: bool,
++    /// Whether this search rejected a probe (lost it after all retransmits)
++    rejected_any: bool,
  }
  
  impl SearchState {
-@@ -304,11 +343,17 @@ impl SearchState {
+@@ -304,11 +356,17 @@ impl SearchState {
          mut lower_bound: u16,
          peer_max_udp_payload_size: u16,
          config: &MtuDiscoveryConfig,
@@ -1290,17 +1313,19 @@ index 0893b29..9f41080 100644
  
          Self {
              in_flight_probe: None,
-@@ -319,6 +364,9 @@ impl SearchState {
+@@ -319,6 +377,11 @@ impl SearchState {
              // During initialization, we consider the lower bound to have already been
              // successfully probed
              last_probed_mtu: lower_bound,
++            seeded: first_probe.is_some() && !config.first_probe_caps,
++            rejected_any: false,
 +            first_probe,
 +            probing_first: false,
 +            first_probe_caps: config.first_probe_caps,
          }
      }
  
-@@ -326,11 +374,23 @@ impl SearchState {
+@@ -326,11 +389,23 @@ impl SearchState {
      fn next_mtu_to_probe(&mut self, last_probe_succeeded: bool) -> Option<u16> {
          debug_assert_eq!(self.in_flight_probe, None);
  
@@ -1324,7 +1349,7 @@ index 0893b29..9f41080 100644
  
          let next_mtu = (self.lower_bound as i32 + self.upper_bound as i32) / 2;
  
-@@ -341,6 +401,11 @@ impl SearchState {
+@@ -341,6 +416,11 @@ impl SearchState {
              if self.upper_bound.saturating_sub(self.last_probed_mtu) >= self.minimum_change {
                  return Some(self.upper_bound);
              }
@@ -1336,7 +1361,7 @@ index 0893b29..9f41080 100644
  
              return None;
          }
-@@ -849,7 +914,7 @@ mod tests {
+@@ -849,7 +929,7 @@ mod tests {
          let mut config = MtuDiscoveryConfig::default();
          config.upper_bound(1400);
  
@@ -1345,7 +1370,7 @@ index 0893b29..9f41080 100644
          assert_eq!(state.lower_bound, 1500);
          assert_eq!(state.upper_bound, 1500);
      }
-@@ -859,7 +924,7 @@ mod tests {
+@@ -859,7 +939,7 @@ mod tests {
          let mut config = MtuDiscoveryConfig::default();
          config.upper_bound(9000);
  
@@ -1354,7 +1379,7 @@ index 0893b29..9f41080 100644
          assert_eq!(state.lower_bound, 1300);
          assert_eq!(state.upper_bound, 1300);
      }
-@@ -869,7 +934,7 @@ mod tests {
+@@ -869,7 +949,7 @@ mod tests {
          let mut config = MtuDiscoveryConfig::default();
          config.upper_bound(9000);
  
@@ -1363,7 +1388,7 @@ index 0893b29..9f41080 100644
          assert_eq!(state.lower_bound, 1200);
          assert_eq!(state.upper_bound, 1450);
      }
-@@ -1013,4 +1078,264 @@ mod tests {
+@@ -1013,4 +1093,301 @@ mod tests {
          bhd.on_non_probe_lost(BLACK_HOLE_THRESHOLD as u64 * 2 + 1, 1400);
          assert!(!bhd.black_hole_detected());
      }
@@ -1393,12 +1418,12 @@ index 0893b29..9f41080 100644
 +    }
 +
 +    #[test]
-+    fn confirmed_seed_on_its_own_path_costs_one_rejected_size() {
++    fn confirmed_seed_on_its_own_path_costs_one_rejected_size_and_caps_below_it() {
 +        let mut mtud = mtud_with_seed(1_448);
 +        let probed = drive_to_completion(&mut mtud, Instant::now(), 1_448);
 +        assert_eq!(probed, [1_448, 1_452, 1_452, 1_452]);
 +        assert_eq!(mtud.current_mtu(), 1_448);
-+        assert_eq!(mtud.state.as_ref().unwrap().ceiling, None);
++        assert_eq!(mtud.state.as_ref().unwrap().ceiling, Some(1_451));
 +    }
 +
 +    #[test]
@@ -1416,27 +1441,64 @@ index 0893b29..9f41080 100644
 +        let probed = drive_to_completion(&mut mtud, Instant::now(), 1_450);
 +        assert_eq!(probed, [1_450, 1_452, 1_452, 1_452]);
 +        assert_eq!(mtud.current_mtu(), 1_450);
-+        assert_eq!(mtud.state.as_ref().unwrap().ceiling, None);
++        assert_eq!(mtud.state.as_ref().unwrap().ceiling, Some(1_451));
 +    }
 +
 +    #[test]
-+    fn rejected_seed_searches_below_it_and_leaves_no_ceiling() {
++    fn rejected_seed_searches_below_it_and_caps_below_it() {
 +        let mut mtud = mtud_with_seed(1_448);
 +        let probed = drive_to_completion(&mut mtud, Instant::now(), 1_440);
 +        assert_eq!(&probed[..3], [1_448, 1_448, 1_448]);
 +        assert!(probed[3..].iter().all(|&size| size < 1_448), "{probed:?}");
 +        assert!((1_436..=1_440).contains(&mtud.current_mtu()), "{probed:?}");
-+        assert_eq!(mtud.state.as_ref().unwrap().ceiling, None);
++        // The cap is one below the smallest rejected size, so below the seed
++        let ceiling = mtud.state.as_ref().unwrap().ceiling.expect("a rejected seed caps");
++        let smallest_rejected = probed.iter().copied().filter(|&size| size > 1_440).min().unwrap();
++        assert_eq!(ceiling, smallest_rejected - 1, "{probed:?}");
 +    }
 +
 +    #[test]
-+    fn later_searches_after_a_seed_are_not_capped() {
++    fn later_search_after_a_seed_on_its_own_path_probes_nothing() {
 +        let mut mtud = mtud_with_seed(1_448);
 +        let now = Instant::now();
 +        drive_to_completion(&mut mtud, now, 1_448);
 +        let later = now + Duration::from_secs(601);
-+        // The re-search probes above the seed again (no ceiling)
-+        assert_eq!(mtud.poll_transmit(later, 100), Some(1_452));
++        // The ceiling (1451) is within `minimum_change` of the current MTU: no re-probe of 1452
++        assert_eq!(mtud.poll_transmit(later, 100), None);
++        assert_eq!(mtud.current_mtu(), 1_448);
++    }
++
++    #[test]
++    fn seed_that_finds_a_grown_path_sets_no_ceiling() {
++        let mut mtud = mtud_with_seed(1_448);
++        let now = Instant::now();
++        assert_eq!(drive_to_completion(&mut mtud, now, 1_452), [1_448, 1_452]);
++        assert_eq!(mtud.state.as_ref().unwrap().ceiling, None);
++        let later = now + Duration::from_secs(601);
++        // Already at the upper bound: nothing left to probe
++        assert_eq!(mtud.poll_transmit(later, 100), None);
++    }
++
++    #[test]
++    fn seed_far_below_the_path_caps_below_its_smallest_rejection() {
++        let mut mtud = mtud_with_seed(1_300);
++        let now = Instant::now();
++        let probed = drive_to_completion(&mut mtud, now, 1_440);
++        assert_eq!(probed[0], 1_300);
++        let smallest_rejected = probed
++            .iter()
++            .copied()
++            .filter(|&size| size > 1_440)
++            .min()
++            .expect("the search rejects a size above the path");
++        assert_eq!(
++            mtud.state.as_ref().unwrap().ceiling,
++            Some(smallest_rejected - 1),
++            "{probed:?}"
++        );
++        assert!((1_436..=1_440).contains(&mtud.current_mtu()), "{probed:?}");
++        let later = now + Duration::from_secs(601);
++        assert_eq!(mtud.poll_transmit(later, 100), None, "{probed:?}");
 +    }
 +
 +    #[test]

@@ -144,7 +144,8 @@ pub(crate) fn apply_browser_tp_options(
 
 /// First DPLPMTUD probe of a dial (`MtuDiscoveryConfig::first_probe`). `caps` keeps the
 /// probe's outcome as the connection's ceiling (`first_probe_caps`); a seed only replaces
-/// the ladder and leaves the search free to go above it.
+/// the ladder and leaves the search free to go above it, and the connection is capped
+/// below the smallest size that search rejects, if any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FirstProbe {
     pub(crate) size: u16,
