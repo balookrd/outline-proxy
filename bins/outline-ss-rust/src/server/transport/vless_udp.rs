@@ -83,17 +83,8 @@ where
                     target = %parked.target_display,
                     "vless udp single upstream resumed from orphan registry"
                 );
-                outbound
-                    .data_tx
-                    .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
-                        route.padding,
-                        Bytes::from_static(&[vless::VERSION, 0x00]),
-                    )))
-                    .await
-                    .map_err(|error| {
-                        anyhow!("failed to queue vless udp response header on resume: {error}")
-                    })?;
-
+                // The response header rides the first response record (see
+                // `relay_vless_udp_upstream_to_client`).
                 let reader_socket = Arc::clone(&parked.socket);
                 let tx = outbound.data_tx.clone();
                 let metrics = Arc::clone(&server.metrics);
@@ -117,6 +108,7 @@ where
                         padding,
                         monitor_for_task,
                         datagram,
+                        Some(response_header()),
                     )
                     .await
                 }));
@@ -211,15 +203,8 @@ where
 
     let socket = Arc::new(socket);
 
-    outbound
-        .data_tx
-        .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
-            route.padding,
-            Bytes::from_static(&[vless::VERSION, 0x00]),
-        )))
-        .await
-        .map_err(|error| anyhow!("failed to queue vless response header: {error}"))?;
-
+    // The response header rides the first response record (see
+    // `relay_vless_udp_upstream_to_client`).
     let tx = outbound.data_tx.clone();
     let metrics = Arc::clone(&server.metrics);
     let user_id = user.label_arc();
@@ -246,6 +231,7 @@ where
             padding,
             monitor_for_task,
             datagram,
+            Some(response_header()),
         )
         .await
     }));
@@ -429,17 +415,6 @@ where
         VlessFrameError::UpstreamConnectFailed(error.context("mesh relay hand-off failed"))
     })?;
 
-    outbound
-        .data_tx
-        .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
-            route.padding,
-            Bytes::from_static(&[vless::VERSION, 0x00]),
-        )))
-        .await
-        .map_err(|error| {
-            anyhow!("failed to queue vless udp response header for a relayed session: {error}")
-        })?;
-
     debug!(
         user = user.label(),
         path = %route.path,
@@ -482,6 +457,7 @@ where
                 down_datagrams,
                 datagram,
                 cancel: cancel_for_task,
+                header: Some(response_header()),
                 _permit: permit_for_task,
             },
         )
@@ -553,6 +529,9 @@ struct MeshUdpDownlink<Msg> {
     /// built), but a send waiting on a full carrier still selects on it, as on
     /// a direct session, so a future stop cannot be held up by backpressure.
     cancel: Arc<Notify>,
+    /// VLESS response header still owed to the client: it rides the first
+    /// relayed record, or goes alone just before Close if none ever comes.
+    header: Option<Bytes>,
     /// Keeps the relay's pool slot counted for as long as this half lives.
     _permit: Arc<tokio::sync::OwnedSemaphorePermit>,
 }
@@ -571,7 +550,7 @@ struct MeshUdpDownlink<Msg> {
 /// `user`-labelled series for a relayed one.
 async fn relay_mesh_udp_to_client<Msg>(
     mut recv: quinn::RecvStream,
-    ctx: MeshUdpDownlink<Msg>,
+    mut ctx: MeshUdpDownlink<Msg>,
 ) -> Result<VlessRelayOutcome>
 where
     Msg: Send + 'static,
@@ -610,13 +589,18 @@ where
         }
         // The client's own framing, rebuilt on this side of the mesh: the edge
         // terminates VLESS, so the home never sees these two bytes.
-        let mut framed = BytesMut::with_capacity(2 + len);
+        let header = ctx.header.take();
+        let mut framed = BytesMut::with_capacity(header.as_ref().map_or(0, Bytes::len) + 2 + len);
+        if let Some(h) = header.as_ref() {
+            framed.extend_from_slice(h);
+        }
         framed.put_u16(len as u16);
         framed.extend_from_slice(&buf[..len]);
         match send_downlink_or_stop(
             &ctx.tx,
             ctx.make_binary,
-            ctx.datagram.as_deref(),
+            // The header-carrying record rides the stream (see `first_record_route`).
+            first_record_route(ctx.datagram.as_deref(), header.is_some()),
             ctx.padding,
             framed.freeze(),
             Some(&ctx.cancel),
@@ -630,6 +614,12 @@ where
                 return Ok(VlessRelayOutcome::Closed);
             },
         }
+    }
+    if let Some(h) = ctx.header.take() {
+        let _ = ctx
+            .tx
+            .send((ctx.make_binary)(carrier_padding::frame_downlink_message(ctx.padding, h)))
+            .await;
     }
     let _ = ctx.tx.send((ctx.make_close)()).await;
     Ok(VlessRelayOutcome::Closed)
@@ -653,6 +643,9 @@ async fn relay_vless_udp_upstream_to_client<Msg>(
     monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
     // HTTP/3 datagram output of an agreed stream (see `send_downlink`).
     datagram: Option<Arc<DatagramDownlink>>,
+    // VLESS response header still owed to the client: it rides the first
+    // response record instead of going out as a message of its own.
+    mut header: Option<Bytes>,
 ) -> Result<VlessRelayOutcome>
 where
     Msg: Send + 'static,
@@ -709,13 +702,19 @@ where
                         m.note_backlog();
                     }
                 }
-                let mut record = BytesMut::with_capacity(2 + read);
+                let held = header.take();
+                let mut record =
+                    BytesMut::with_capacity(held.as_ref().map_or(0, Bytes::len) + 2 + read);
+                if let Some(h) = held.as_ref() {
+                    record.extend_from_slice(h);
+                }
                 record.put_u16(read as u16);
                 record.extend_from_slice(&buffer[..read]);
                 match send_downlink_or_stop(
                     &tx,
                     make_binary,
-                    datagram.as_deref(),
+                    // The header-carrying record rides the stream.
+                    first_record_route(datagram.as_deref(), held.is_some()),
                     padding,
                     record.freeze(),
                     cancel.as_deref(),
@@ -746,6 +745,32 @@ where
             }
         }
     }
+}
+
+/// The `[VERSION, 0x00]` VLESS response header. Held by the downlink pump and
+/// sent in front of the first response record, so it never travels as a
+/// message (and TLS record) of its own — spec § 1.2 of the early-session shape.
+fn response_header() -> Bytes {
+    Bytes::from_static(&[vless::VERSION, 0x00])
+}
+
+/// The datagram output a record may use: none while it carries the response
+/// header, which belongs to the stream (the client parses it there). In
+/// practice the route is not armed yet at that point anyway — the client sends
+/// its first datagram only after reading the header, and the route arms on that
+/// first uplink datagram — so this is a guard, not a behaviour change, and the
+/// record is counted as the `unarmed` fallback it always was.
+fn first_record_route(
+    datagram: Option<&DatagramDownlink>,
+    carries_header: bool,
+) -> Option<&DatagramDownlink> {
+    if !carries_header {
+        return datagram;
+    }
+    if let Some(datagram) = datagram {
+        datagram.note_stream_only();
+    }
+    None
 }
 
 /// Queues one downlink record — the unpadded frame one Binary message would

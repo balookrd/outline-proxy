@@ -24,9 +24,11 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use bytes::Bytes;
 use outline_wire::early_shape::EarlyShaper;
 use outline_wire::padding::{
-    MAX_PADDING_SEGMENT, PaddingScheme, datagram_pad_budget, encode_frame_into,
+    MAX_PADDING_SEGMENT, PADDING_FRAME_HEADER_LEN, PaddingScheme, datagram_pad_budget,
+    encode_frame_into,
 };
 use rand::{Rng, RngCore};
 
@@ -252,19 +254,108 @@ pub(crate) fn draw_in(rng: &mut impl rand::Rng) -> impl FnMut(usize, usize) -> u
     move |lo, hi| rng.random_range(lo..=hi)
 }
 
+/// Largest h2 DATA payload that leaves in one TLS record together with its
+/// 9-byte frame header: a 16384-byte record minus that header. h2 cuts a bigger
+/// write into 16384-byte frames (the server's `SETTINGS_MAX_FRAME_SIZE`), and
+/// each such frame (16393 B with its header) leaves as a full 16384 record plus
+/// a 9-byte one — the 16401 + 26 wire pair real browsers almost never produce.
+/// Mirrors the server's downlink cap (`outline-ss-rust` `carrier_padding`).
+pub(crate) const H2_DATA_PAYLOAD_MAX: usize = 16384 - 9;
+
+/// WebSocket header in front of a client→server binary message of
+/// 126..=65535 bytes: 2 + 2 extended length + 4 mask. Budgeted for XHTTP
+/// stream-one bodies too, which carry no such header: 8 B of slack there is
+/// cheaper than a second constant.
+pub(crate) const H2_WS_CLIENT_HEADER_LEN: usize = 8;
+
+/// Below this many data bytes per message the cap is not worth applying (a huge
+/// configured pad range would otherwise shrink every message to a few bytes);
+/// [`h2_uplink_cap`] returns `None` then and the uncapped sizing stays.
+const MIN_H2_PLAINTEXT_CAP: usize = 1024;
+
+/// How many stream bytes one uplink message may carry on an h2 carrier so the
+/// whole message — WS header, padding framing at the scheme's largest pad and
+/// the data — fits one h2 DATA frame of [`H2_DATA_PAYLOAD_MAX`] bytes, i.e. one
+/// TLS record. The data is the already encrypted / encoded stream (SS AEAD
+/// chunks, VLESS bytes), which the server reads as a stream, so a cut needs no
+/// inner overhead. `None` when the budget leaves less than
+/// [`MIN_H2_PLAINTEXT_CAP`]. Callers apply it only on h2 carriers (see
+/// `TransportStream::caps_h2_uplink`).
+pub(crate) fn h2_uplink_cap(scheme: PaddingScheme) -> Option<usize> {
+    let padding = if scheme.is_enabled() {
+        PADDING_FRAME_HEADER_LEN + usize::from(scheme.max_pad())
+    } else {
+        0
+    };
+    H2_DATA_PAYLOAD_MAX
+        .checked_sub(H2_WS_CLIENT_HEADER_LEN + padding)
+        .filter(|cap| *cap >= MIN_H2_PLAINTEXT_CAP)
+}
+
+/// Piece lengths that cut `len` bytes into the fewest pieces of at most `cap`
+/// bytes, as even as possible (they differ by at most one byte). Unlike a greedy
+/// `cap, cap, …, rest` cut there is no small remainder piece: a small message
+/// next to a full DATA frame is what h2 coalesces into one write that spills a
+/// full TLS record plus a small one. `len == 0` yields one empty piece.
+pub(crate) fn even_piece_lens(len: usize, cap: usize) -> impl Iterator<Item = usize> {
+    let cap = cap.max(1);
+    let n = len.div_ceil(cap).max(1);
+    let (base, extra) = (len / n, len % n);
+    (0..n).map(move |i| base + usize::from(i < extra))
+}
+
+/// One uplink frame past the shaping window as the messages it goes out as on
+/// an h2 carrier: evenly cut pieces of at most `cap` bytes (see
+/// [`h2_uplink_cap`]), each padded for `scheme`, or zero-copy slices of `frame`
+/// when padding is off. A frame within `cap` is one message, as before.
+pub(crate) fn h2_capped_messages<R: RngCore>(
+    scheme: PaddingScheme,
+    cap: usize,
+    frame: Bytes,
+    rng: &mut R,
+) -> Vec<Bytes> {
+    let mut offset = 0;
+    even_piece_lens(frame.len(), cap)
+        .map(|len| {
+            let piece = frame.slice(offset..offset + len);
+            offset += len;
+            if scheme.is_enabled() {
+                let mut out = Vec::with_capacity(len + 8);
+                frame_payload_into(scheme, &piece, rng, &mut out);
+                Bytes::from(out)
+            } else {
+                piece
+            }
+        })
+        .collect()
+}
+
 /// Cuts one encrypted frame into the messages the early-shape plan asks for:
 /// lead-in pad-only cover frames first, then one padded message per piece.
 /// Each returned buffer is a ready `Message::Binary` payload. Past the shaping
 /// window (or for a small frame) this is a single ordinary padded message.
 /// With a disabled scheme the pieces are plain slices (no framing, no covers).
+/// With `h2_cap` set (h2 carriers) a planned piece longer than the cap — the
+/// part of a large write past the window's byte budget — is cut further into
+/// even pieces of at most `h2_cap` bytes; pieces inside the window are far
+/// below it and stay as planned.
 pub(crate) fn shaped_messages<R: RngCore>(
     scheme: PaddingScheme,
     shaper: &mut EarlyShaper,
     frame: &[u8],
+    h2_cap: Option<usize>,
     rng: &mut R,
 ) -> Vec<Vec<u8>> {
     let plan = shaper.plan(frame.len(), &mut draw_in(rng));
-    let mut msgs = Vec::with_capacity(plan.covers.len() + plan.pieces.len());
+    let pieces: Vec<usize> = match h2_cap {
+        Some(cap) => plan
+            .pieces
+            .iter()
+            .flat_map(|&len| even_piece_lens(len, cap))
+            .collect(),
+        None => plan.pieces,
+    };
+    let mut msgs = Vec::with_capacity(plan.covers.len() + pieces.len());
     for pad_len in plan.covers {
         let mut pad = vec![0u8; pad_len.min(usize::from(u16::MAX))];
         rng.fill_bytes(&mut pad);
@@ -273,7 +364,7 @@ pub(crate) fn shaped_messages<R: RngCore>(
         msgs.push(out);
     }
     let mut offset = 0;
-    for len in plan.pieces {
+    for len in pieces {
         let piece = &frame[offset..offset + len];
         offset += len;
         if scheme.is_enabled() {

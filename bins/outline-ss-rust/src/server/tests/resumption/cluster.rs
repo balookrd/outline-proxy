@@ -4321,10 +4321,8 @@ async fn cluster_vless_mux_releases_the_relay_and_preserves_the_park() -> Result
     socket
         .send(WsMessage::Binary(vless_mux_new_tcp_frame(1, echo_addr, b"mux-sub")))
         .await?;
-    // The mux session answers with the standard VLESS response header as its own
-    // message, ahead of any mux frame.
-    let response_header = expect_binary_reply(&mut socket).await?;
-    assert_eq!(response_header.as_ref(), &[VLESS_VERSION, 0x00]);
+    // The mux session answers with the standard VLESS response header in front
+    // of its first mux frame (checked by the helper below).
     let payloads = collect_mux_keep_payloads(&mut socket, &[1]).await?;
     assert_eq!(
         payloads.get(&1).map(Vec::as_slice),
@@ -4399,8 +4397,6 @@ async fn cluster_vless_mux_survives_edge_switch() -> Result<()> {
     handshake.extend_from_slice(&vless_mux_new_tcp_frame(1, tcp_addr, b"tcp-home"));
     handshake.extend_from_slice(&vless_mux_new_udp_frame(2, udp_addr, b"udp-home"));
     sock_home.send(WsMessage::Binary(handshake.freeze())).await?;
-    let header = expect_binary_reply(&mut sock_home).await?;
-    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00]);
     let echoes = collect_mux_keep_payloads(&mut sock_home, &[1, 2]).await?;
     assert_eq!(echoes[&1], b"tcp-home");
     assert_eq!(echoes[&2], b"udp-home");
@@ -4421,8 +4417,6 @@ async fn cluster_vless_mux_survives_edge_switch() -> Result<()> {
     sock_edge
         .send(WsMessage::Binary(vless_mux_request(EDGE_VLESS_UUID)?))
         .await?;
-    let header = expect_binary_reply(&mut sock_edge).await?;
-    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00]);
     sock_edge
         .send(WsMessage::Binary(vless_mux_keep_frame(1, b"tcp-edge")))
         .await?;
@@ -4452,8 +4446,6 @@ async fn cluster_vless_mux_survives_edge_switch() -> Result<()> {
     sock_back
         .send(WsMessage::Binary(vless_mux_request(CLUSTER_VLESS_UUID)?))
         .await?;
-    let header = expect_binary_reply(&mut sock_back).await?;
-    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00]);
     sock_back
         .send(WsMessage::Binary(vless_mux_keep_frame(1, b"tcp-back")))
         .await?;

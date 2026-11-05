@@ -1019,16 +1019,13 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
     frame.extend_from_slice(payload);
     socket.send(H3Message::Binary(frame.into())).await?;
 
-    let response_header = match socket.next().await {
-        Some(Ok(H3Message::Binary(bytes))) => bytes,
-        other => anyhow::bail!("missing vless response header: {other:?}"),
-    };
-    assert_eq!(response_header.as_ref(), &[VERSION, 0x00]);
-
+    // The response header leads the first reply, never a message of its own.
     let reply = match socket.next().await {
         Some(Ok(H3Message::Binary(bytes))) => bytes,
         other => anyhow::bail!("missing vless upstream udp reply: {other:?}"),
     };
+    assert_eq!(&reply[..2], &[VERSION, 0x00]);
+    let reply = reply.slice(2..);
     assert_eq!(reply.len(), 2 + 4);
     let reply_len = u16::from_be_bytes([reply[0], reply[1]]) as usize;
     assert_eq!(reply_len, 4);
@@ -1301,16 +1298,13 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
     payload.extend_from_slice(&new_frame);
     socket.send(H3Message::Binary(payload.into())).await?;
 
-    let response_header = match socket.next().await {
-        Some(Ok(H3Message::Binary(bytes))) => bytes,
-        other => anyhow::bail!("missing vless mux response header: {other:?}"),
-    };
-    assert_eq!(response_header.as_ref(), &[VERSION, 0x00]);
-
+    // The response header leads the first reply, never a message of its own.
     let reply = match socket.next().await {
         Some(Ok(H3Message::Binary(bytes))) => bytes,
         other => anyhow::bail!("missing mux upstream reply frame: {other:?}"),
     };
+    assert_eq!(&reply[..2], &[VERSION, 0x00]);
+    let reply = reply.slice(2..);
     let ParsedFrame { meta, data, consumed } =
         parse_frame(&reply)?.expect("complete mux frame in single binary message");
     assert_eq!(consumed, reply.len());

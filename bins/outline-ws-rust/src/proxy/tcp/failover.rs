@@ -721,6 +721,7 @@ async fn do_tcp_ss_setup(
     // SS2022 header hold: everything but h3.
     let shape = ws_stream.shapes_client_start();
     let hold_header = ws_stream.holds_client_header();
+    let h2_uplink = ws_stream.caps_h2_uplink();
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = setup.cipher.derive_master_key(setup.password)?;
     let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
@@ -732,6 +733,7 @@ async fn do_tcp_ss_setup(
         hold_header,
     )
     .await?;
+    let writer = writer.with_h2_uplink_cap(h2_uplink);
     let reader = TcpShadowsocksReader::new(ws_stream, setup.cipher, &master_key, lifetime, ctrl_tx);
     let mut writer = TcpWriter::Ws(writer);
     let reader = TcpReader::Ws(Box::new(reader))

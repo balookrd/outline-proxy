@@ -104,6 +104,7 @@ async fn connect_probe_tcp_inner(
             // stream; the read-idle watchdog gates on `diag.is_h3`.
             let is_h3 = ws_stream.is_h3();
             let shape = ws_stream.shapes_client_start();
+            let h2_uplink = ws_stream.caps_h2_uplink();
             let (ws_sink, ws_stream) = ws_stream.split();
             // No SS2022 header hold here: the probe sends only the target and
             // times the reply, so a 50 ms hold would skew SS uplinks' measured
@@ -117,6 +118,7 @@ async fn connect_probe_tcp_inner(
                 false,
             )
             .await?;
+            let writer = writer.with_h2_uplink_cap(h2_uplink);
             let request_salt = writer.request_salt();
             let diag = outline_transport::WsReadDiag {
                 conn_id: shared_conn_info.map(|(id, _)| id),

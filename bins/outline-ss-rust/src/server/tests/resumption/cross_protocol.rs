@@ -24,8 +24,8 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::{
-    ResumptionTestServer, connect_ws_h1, expect_binary_reply, spawn_echo_target, spawn_test_server,
-    ss::ss_handshake_frame, vless::vless_tcp_request,
+    ResumptionTestServer, connect_ws_h1, expect_binary_reply, expect_vless_header_with_reply,
+    spawn_echo_target, spawn_test_server, ss::ss_handshake_frame, vless::vless_tcp_request,
 };
 use crate::config::UserEntry;
 use crate::crypto::UserKey;
@@ -120,14 +120,9 @@ async fn an_ss_park_resumes_on_a_vless_carrier() -> Result<()> {
     socket2
         .send(WsMessage::Binary(vless_tcp_request(BOB_UUID, target_addr, b"pong")?))
         .await?;
-    let response_header = expect_binary_reply(&mut socket2).await?;
-    assert_eq!(
-        response_header.as_ref(),
-        &[VLESS_VERSION, 0x00],
-        "the resuming carrier owes its client a VLESS response header, whichever protocol parked \
-         the session"
-    );
-    let echoed = expect_binary_reply(&mut socket2).await?;
+    // The resuming carrier owes its client a VLESS response header, whichever
+    // protocol parked the session; it leads the first relayed bytes.
+    let echoed = expect_vless_header_with_reply(&mut socket2).await?;
     assert_eq!(echoed.as_ref(), b"pong");
     assert_eq!(
         target_accepts.load(Ordering::SeqCst),

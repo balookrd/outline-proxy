@@ -1,6 +1,6 @@
 //! Tests for the pure client-start shaping decision in [`crate::ws_stream`].
 
-use super::{holds_client_header_for, shapes_client_start_for};
+use super::{caps_h2_uplink_for, holds_client_header_for, shapes_client_start_for};
 use crate::xhttp::XhttpSubmode;
 
 #[test]
@@ -10,6 +10,18 @@ fn the_header_is_held_on_tcp_carriers_only() {
         "h1 / h2 hold the SS2022 header for the first data"
     );
     assert!(!holds_client_header_for(true), "h3 writes it at once");
+}
+
+#[test]
+fn only_h2_stream_carriers_cap_the_uplink() {
+    // ws_h2 (no submode) and XHTTP stream-one over h2.
+    assert!(caps_h2_uplink_for(true, None));
+    assert!(caps_h2_uplink_for(true, Some(XhttpSubmode::StreamOne)));
+    // XHTTP packet-up keeps its own per-POST shaping.
+    assert!(!caps_h2_uplink_for(true, Some(XhttpSubmode::PacketUp)));
+    // h1 and h3 carriers, plain or XHTTP.
+    assert!(!caps_h2_uplink_for(false, None));
+    assert!(!caps_h2_uplink_for(false, Some(XhttpSubmode::StreamOne)));
 }
 
 #[test]

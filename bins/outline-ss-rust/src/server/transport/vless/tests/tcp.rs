@@ -236,3 +236,57 @@ async fn h2_bulk_download_has_no_small_middle_messages() {
         }
     }
 }
+
+// ── `response_lead`: the header on resume / mesh paths ───────────────────────
+
+/// Without resume control frames the header is held for the relay, exactly as
+/// on a fresh session, and nothing is queued on its own.
+#[test]
+fn response_lead_holds_the_header_without_controls() {
+    let (held, lead) = response_lead(Protocol::Http2, PaddingScheme::disabled(), Vec::new());
+    assert_eq!(held, Some(Bytes::from_static(&HEADER)));
+    assert!(lead.is_empty());
+}
+
+/// With control frames the header leads them in the same message.
+#[test]
+fn response_lead_puts_the_header_in_front_of_the_controls() {
+    let orsm = outline_wire::resume::build_v1_payload(42);
+    for protocol in [Protocol::Http1, Protocol::Http2, Protocol::Http3] {
+        let (held, lead) = response_lead(protocol, PaddingScheme::disabled(), orsm.to_vec());
+        assert_eq!(held, None, "{protocol:?}");
+        let mut expected = HEADER.to_vec();
+        expected.extend_from_slice(&orsm);
+        assert_eq!(lead, vec![Bytes::from(expected)], "{protocol:?}");
+    }
+}
+
+/// A large replay run on h2 goes out in pieces that each fit one h2 DATA frame
+/// and decode back to header + controls; off h2 it stays one message.
+#[test]
+fn response_lead_cuts_a_large_run_on_h2() {
+    use crate::server::transport::carrier_padding::{H2_DATA_PAYLOAD_MAX, H2_WS_HEADER_LEN};
+    use outline_wire::padding::PaddingDecoder;
+
+    let controls: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
+    let mut expected = HEADER.to_vec();
+    expected.extend_from_slice(&controls);
+    for padding in [PaddingScheme::disabled(), PaddingScheme::new(0, 256)] {
+        let (held, lead) = response_lead(Protocol::Http2, padding, controls.clone());
+        assert_eq!(held, None);
+        assert!(lead.len() > 1, "{padding:?}");
+        let mut decoder = PaddingDecoder::new();
+        let mut stream = Vec::new();
+        for m in &lead {
+            assert!(m.len() + H2_WS_HEADER_LEN <= H2_DATA_PAYLOAD_MAX, "{padding:?}: {}", m.len());
+            if padding.is_enabled() {
+                decoder.push(m, &mut stream);
+            } else {
+                stream.extend_from_slice(m);
+            }
+        }
+        assert_eq!(stream, expected, "{padding:?}");
+    }
+    let (_, lead) = response_lead(Protocol::Http1, PaddingScheme::disabled(), controls);
+    assert_eq!(lead, vec![Bytes::from(expected)]);
+}

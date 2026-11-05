@@ -124,3 +124,34 @@ mod quic_ownership {
         );
     }
 }
+
+fn dummy_xhttp_stream_with(submode: XhttpSubmode, carrier_is_h3: bool) -> XhttpStream {
+    let (_in_tx, in_rx) = inbound_channel();
+    let (out_tx, _out_rx) = outbound_channel();
+    let driver = AbortOnDrop::new(tokio::spawn(async {
+        std::future::pending::<()>().await;
+    }));
+    XhttpStream::from_channels(in_rx, out_tx, driver, submode, carrier_is_h3, false, None, None)
+}
+
+/// `caps_h2_uplink` follows the XHTTP carrier too: stream-one over h2 is one
+/// DATA frame per message and is capped; packet-up over h2 (its own POSTs) and
+/// any h1 / h3 carrier are not.
+#[tokio::test]
+async fn only_xhttp_h2_stream_one_caps_the_uplink() {
+    let cases = [
+        (XhttpSubmode::StreamOne, false, true, true),
+        (XhttpSubmode::PacketUp, false, true, false),
+        (XhttpSubmode::StreamOne, false, false, false),
+        (XhttpSubmode::StreamOne, true, false, false),
+    ];
+    for (submode, h3, h2, expected) in cases {
+        let mut stream = dummy_xhttp_stream_with(submode, h3);
+        if h2 {
+            stream = stream.with_h2_carrier();
+        }
+        assert_eq!(stream.carrier_is_h2(), h2);
+        let transport = TransportStream::new_xhttp(stream, None);
+        assert_eq!(transport.caps_h2_uplink(), expected, "{submode:?} h3={h3} h2={h2}");
+    }
+}

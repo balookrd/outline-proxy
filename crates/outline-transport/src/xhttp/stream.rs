@@ -45,6 +45,12 @@ pub(crate) struct XhttpStream {
     /// QUIC carriers (which run their own keep-alive / `max_idle_timeout`),
     /// exactly as it does for the native `ws_h3` carrier.
     pub(super) carrier_is_h3: bool,
+    /// Whether the carrier underneath is HTTP/2: `true` only for `xhttp_h2`
+    /// (set by [`XhttpStream::with_h2_carrier`]). On stream-one each outbound
+    /// `Binary` message is one h2 DATA frame of the POST body, so the uplink
+    /// writers cap it like a `ws_h2` message (see
+    /// `TransportStream::caps_h2_uplink`).
+    pub(super) carrier_is_h2: bool,
     /// Datagram record framing, negotiated at dial time (see
     /// [`outline_wire::udp_records`]). `true` only on an SS-UDP session whose
     /// server echoed `X-Outline-Udp-Records: 1`: every outbound `Binary`
@@ -155,6 +161,7 @@ impl XhttpStream {
             closed: false,
             active_submode,
             carrier_is_h3,
+            carrier_is_h2: false,
             udp_records,
             recv_records: udp_records.then(UdpRecordDecoder::new),
             pending_in: VecDeque::new(),
@@ -164,6 +171,18 @@ impl XhttpStream {
             h3_datagram: None,
             _driver: driver,
         }
+    }
+
+    /// Marks the stream as riding HTTP/2 (`xhttp_h2`), see
+    /// [`Self::carrier_is_h2`].
+    pub(super) fn with_h2_carrier(mut self) -> Self {
+        self.carrier_is_h2 = true;
+        self
+    }
+
+    /// Whether the carrier underneath is HTTP/2 (`xhttp_h2`).
+    pub fn carrier_is_h2(&self) -> bool {
+        self.carrier_is_h2
     }
 
     /// Attaches the datagram slot the h3 carrier negotiated (see
@@ -199,6 +218,7 @@ impl XhttpStream {
             closed: false,
             active_submode: super::XhttpSubmode::PacketUp,
             carrier_is_h3: false,
+            carrier_is_h2: false,
             udp_records: false,
             recv_records: None,
             pending_in: Default::default(),

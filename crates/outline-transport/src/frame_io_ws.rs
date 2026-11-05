@@ -281,6 +281,10 @@ pub struct WsFrameSink {
     /// Early-session shaper (h1/h2 carriers, padded or not). `None`
     /// otherwise, including every h3 carrier.
     shaper: Option<EarlyShaper>,
+    /// Data bytes per message on an h2 carrier, so each message fits one h2
+    /// DATA frame of one TLS record (see `carrier_padding::h2_uplink_cap`).
+    /// `None` off h2.
+    h2_cap: Option<usize>,
 }
 
 #[async_trait]
@@ -300,11 +304,29 @@ impl FrameSink for WsFrameSink {
                 self.padding.scheme,
                 shaper,
                 &data,
+                self.h2_cap,
                 &mut rand::rng(),
             );
             for payload in msgs {
                 let bytes = payload.len();
                 tx.send(Message::Binary(payload.into()), bytes)
+                    .await
+                    .context(TransportOperation::WebSocketSend)?;
+            }
+            return Ok(());
+        }
+        // On h2 a frame over the cap leaves as even pieces, each one h2 DATA
+        // frame of one TLS record; the server reads the VLESS stream across them.
+        if let Some(cap) = self.h2_cap.filter(|cap| data.len() > *cap) {
+            let msgs = carrier_padding::h2_capped_messages(
+                self.padding.scheme,
+                cap,
+                data,
+                &mut rand::rng(),
+            );
+            for payload in msgs {
+                let bytes = payload.len();
+                tx.send(Message::Binary(payload), bytes)
                     .await
                     .context(TransportOperation::WebSocketSend)?;
             }
@@ -485,6 +507,11 @@ pub fn from_ws_frames(
     let padding = carrier_padding::effective_carrier_padding();
     let cover = padding.cover_enabled().then_some(padding);
     // Early-session shaping: h1/h2 carriers only (not h3, not XHTTP packet-up).
+    // h2 carriers: each uplink message fits one h2 DATA frame of one TLS record.
+    let h2_cap = ws_stream
+        .caps_h2_uplink()
+        .then(|| carrier_padding::h2_uplink_cap(padding.scheme))
+        .flatten();
     let shaper = ws_stream.shapes_client_start().then(|| {
         EarlyShaper::new(
             ShapeDirection::ClientToServer,
@@ -501,6 +528,7 @@ pub fn from_ws_frames(
         _keepalive_task: keepalive_task,
         padding,
         shaper,
+        h2_cap,
     };
     let source = WsFrameSource {
         stream,

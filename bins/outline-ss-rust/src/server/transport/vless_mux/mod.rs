@@ -36,6 +36,7 @@ use state::{MuxSubConn, SubConnKind, client_metrics};
 /// `accounting` says whether this node counts the session's client-facing
 /// traffic; a relayed mux passes [`MuxAccounting::OnTheEdge`], because the edge
 /// that terminates the client carrier already counts the whole frame stream.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server::transport) fn attach_parked<Msg>(
     parked: ParkedVlessMux,
     tx: mpsc::Sender<Msg>,
@@ -44,6 +45,9 @@ pub(in crate::server::transport) fn attach_parked<Msg>(
     protocol: Protocol,
     accounting: MuxAccounting,
     padding: PaddingScheme,
+    // The VLESS response header this carrier owes its client, held for the
+    // first downlink message; `None` on the home of a relayed mux.
+    header: Option<Bytes>,
 ) -> MuxState
 where
     Msg: Send + 'static,
@@ -51,6 +55,9 @@ where
     let client = client_metrics(accounting, metrics, &parked.user_counters);
     let mut mux =
         MuxState::new(parked.user, Arc::clone(&parked.user_counters), accounting, padding);
+    if let Some(header) = header {
+        mux = mux.with_response_header(header);
+    }
     mux.buffer = parked.buffer;
     for (id, parked_sub) in parked.sub_conns {
         let cancel = Arc::new(Notify::new());
@@ -65,6 +72,7 @@ where
                     client.clone(),
                     protocol,
                     padding,
+                    mux.header.clone(),
                     cancel_for_task,
                 ));
                 mux.sub_conns.insert(
@@ -86,6 +94,7 @@ where
                     client.clone(),
                     protocol,
                     padding,
+                    mux.header.clone(),
                     cancel_for_task,
                 ));
                 mux.sub_conns.insert(

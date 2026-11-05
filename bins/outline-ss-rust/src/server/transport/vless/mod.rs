@@ -749,17 +749,8 @@ where
                     sub_conns = sub_count,
                     "vless mux session resumed from orphan registry",
                 );
-                outbound
-                    .data_tx
-                    .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
-                        route.padding,
-                        Bytes::from_static(&[vless::VERSION, 0x00]),
-                    )))
-                    .await
-                    .map_err(|error| {
-                        anyhow!("failed to queue vless mux response header on resume: {error}")
-                    })?;
-
+                // The response header rides the first downlink mux frame,
+                // whichever sub-connection sends it (see `HeldResponseHeader`).
                 let mux = vless_mux::attach_parked(
                     parked,
                     outbound.data_tx.clone(),
@@ -769,6 +760,7 @@ where
                     // This node terminates the client session, so it counts.
                     MuxAccounting::Local,
                     route.padding,
+                    Some(Bytes::from_static(&[vless::VERSION, 0x00])),
                 );
                 state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
                 state.authenticated_user = Some(user);
@@ -810,22 +802,16 @@ where
 
     info!(user = user.label(), path = %route.path, "vless mux session (xudp)");
 
-    outbound
-        .data_tx
-        .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
-            route.padding,
-            Bytes::from_static(&[vless::VERSION, 0x00]),
-        )))
-        .await
-        .map_err(|error| anyhow!("failed to queue vless mux response header: {error}"))?;
-
     let user_counters = server.metrics.user_counters(&user.label_arc());
+    // The response header rides the first downlink mux frame, whichever
+    // sub-connection (or `End` reply) sends it — never a message of its own.
     let mux = MuxState::new(
         user.clone(),
         Arc::clone(&user_counters),
         MuxAccounting::Local,
         route.padding,
-    );
+    )
+    .with_response_header(Bytes::from_static(&[vless::VERSION, 0x00]));
     state.user_counters = Some(user_counters);
     state.authenticated_user = Some(user);
 
