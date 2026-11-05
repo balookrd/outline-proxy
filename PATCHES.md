@@ -253,8 +253,12 @@ Baseline — crates.io `quinn-proto 0.11.19`. Logical changes carried by
    default) keeps upstream behaviour.
    `MtuDiscoveryConfig::first_probe_caps(false)` turns the first probe into a seed: an
    acknowledged seed does not end the search (it continues upward from it and always tries
-   the upper bound if it is above it, even closer than `minimum_change`), a rejected one
-   searches below it as usual, and neither sets a ceiling.
+   the upper bound if it is above it, even closer than `minimum_change`), and a rejected one
+   searches below it as usual. When that seeded search ends having rejected any probe (the
+   seed included), its final upper bound, one below the smallest rejected size, caps later
+   searches; one that rejected nothing sets no ceiling. Without that cap, a seed confirmed
+   just below the upper bound re-probed the bound and lost it on every `interval` re-search
+   for the connection's whole life.
    Users: the H3 client takes the size from its path MTU cache, a live entry as a capping
    first probe and an expired one (up to 30 days old) as a seed, so the re-check finds an
    unchanged or grown path without the ladder; the server uses only

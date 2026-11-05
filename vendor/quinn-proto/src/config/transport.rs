@@ -1086,12 +1086,15 @@ impl MtuDiscoveryConfig {
     /// (outline-proxy patch). Defaults to `true`.
     ///
     /// With `false` the first probe is only a seed: if it is acknowledged the search keeps
-    /// going upward from it instead of ending there, if it is lost (all retransmits) the
-    /// search runs below it as usual, and no ceiling is set in either case, so later searches
-    /// run as in upstream. An acknowledged seed always tries the upper bound if it is above it,
-    /// even when it is closer than [`minimum_change`](Self::minimum_change). Meant for a cached
-    /// size that is old enough to be re-checked: on an unchanged or grown path it replaces the
-    /// ladder of probes, and a path that grew is still found.
+    /// going upward from it instead of ending there, and if it is lost (all retransmits) the
+    /// search runs below it as usual. An acknowledged seed always tries the upper bound if it is
+    /// above it, even when it is closer than [`minimum_change`](Self::minimum_change). When that
+    /// first search ends having rejected any probe (the seed included), its final upper bound,
+    /// one below the smallest rejected size, caps later searches; a search that rejected nothing
+    /// sets no ceiling. So a seed confirmed on an unchanged path costs one rejected size once
+    /// per connection instead of on every interval re-search. Meant for a cached size that is
+    /// old enough to be re-checked: on an unchanged or grown path it replaces the ladder of
+    /// probes, and a path that grew is still found.
     pub fn first_probe_caps(&mut self, value: bool) -> &mut Self {
         self.first_probe_caps = value;
         self
