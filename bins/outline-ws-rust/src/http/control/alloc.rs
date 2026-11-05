@@ -99,6 +99,9 @@ fn report() -> AllocReport {
             "resident": read("resident", stats::resident::read())?,
             "mapped": read("mapped", stats::mapped::read())?,
             "retained": read("retained", stats::retained::read())?,
+            // `page` must equal `kernel_page`; see `memory::allocator_page_sizes`.
+            "page": crate::memory::allocator_page_sizes().map(|(jemalloc, _)| jemalloc),
+            "kernel_page": crate::memory::allocator_page_sizes().map(|(_, kernel)| kernel),
         }))
     })();
 

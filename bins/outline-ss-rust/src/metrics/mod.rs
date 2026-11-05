@@ -10,6 +10,8 @@ mod user_counters;
 pub use guards::{MeshRelayGuard, TcpUpstreamGuard, WebSocketSessionGuard};
 pub use labels::{AppProtocol, DisconnectReason, Protocol, Transport};
 pub use process_memory::ProcessMemorySnapshot;
+#[cfg(all(unix, feature = "jemalloc"))]
+pub(crate) use process_memory::log_allocator_page_size;
 pub use user_counters::PerUserCounters;
 
 use std::{

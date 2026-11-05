@@ -182,7 +182,12 @@ lock-файлов вместе с vendored-крейтами, которые об
 - **Аллокатор — только `jemalloc`.** Весь боевой парк работает на `jemalloc`
   (`heap_mode = "exact"`, инспекция кучи через `GET /control/alloc`). Не включать
   `mimalloc` и другие альтернативные аллокаторы: mimalloc не возвращал арены в ОС
-  при всплесках flow.
+  при всплесках flow. Страница jemalloc для aarch64 Linux закреплена на 4 КиБ
+  (`*_JEMALLOC_SYS_WITH_LG_PAGE = "12"` в `[env]` `.cargo/config.toml`): с
+  jemalloc 5.3.1 configure по умолчанию берёт там 64 КиБ, а ядро `.104` — с
+  4-КиБ страницами. Не убирать закрепление; бинарь пишет `arenas.page` против
+  страницы ядра при старте (WARN при расхождении), ws — ещё и в
+  `GET /control/alloc`, тест `jemalloc_page_matches_the_kernel_page`.
 - **Серверная модель `[[endpoint]]`.** Сервер `outline-ss-rust` использует модель
   множественных эндпоинтов `[[endpoint]]` (пользователи path-independent, padding
   — атрибут эндпоинта). Секция `[dashboard]` в конфигурации серверов запрещена
