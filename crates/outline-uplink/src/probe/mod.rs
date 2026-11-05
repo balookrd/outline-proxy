@@ -415,6 +415,9 @@ async fn run_udp_probe(
                 Arc::clone(&dial_limit),
                 effective_udp_mode,
                 warm_udp_slot.as_ref(),
+                // Half the probe timeout for a warm transport that may be
+                // dead, the rest for the fresh redial (see `run_dns_probe`).
+                probe.timeout / 2,
             ),
         );
         match timeout(probe.timeout, attempt).await {

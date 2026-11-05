@@ -4,6 +4,7 @@
 //! well-formed DNS packets.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::sync::Semaphore;
@@ -18,6 +19,18 @@ use crate::manager::probe::warm_udp::{self, WarmUdpProbe, WarmUdpProbeSlot};
 
 use super::metrics::BytesRecorder;
 
+/// Run the DNS probe, first through the warm transport cached by an earlier
+/// cycle (if any), and once more through a fresh dial if that fails.
+///
+/// A warm transport can be dead without the client knowing: the server reaps
+/// a VLESS session that has carried nothing for its pong deadline, and on an
+/// active uplink the probe runs only every `liveness_interval` while the slot
+/// keepalive stays off. Reporting that as a failed probe would cap the UDP
+/// carrier (H3 → H2) for a path that works, so only the fresh dial's outcome
+/// counts. The warm attempt gets `warm_attempt_timeout`, leaving the rest of
+/// the probe timeout to the redial: datagrams into a reaped session are
+/// dropped silently, so the warm read may never return on its own.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_dns_probe(
     cache: &DnsCache,
     group: &str,
@@ -26,6 +39,68 @@ pub(super) async fn run_dns_probe(
     dial_limit: Arc<Semaphore>,
     effective_udp_mode: TransportMode,
     warm_slot: Option<&WarmUdpProbeSlot>,
+    warm_attempt_timeout: Duration,
+) -> Result<(bool, Option<TransportMode>)> {
+    let warm_ready = warm_slot.is_some_and(|slot| warm_udp::peek_matches(slot, effective_udp_mode));
+    if warm_ready {
+        let mut used_warm = false;
+        let attempt = run_dns_probe_once(
+            cache,
+            group,
+            uplink,
+            probe,
+            Arc::clone(&dial_limit),
+            effective_udp_mode,
+            warm_slot,
+            true,
+            &mut used_warm,
+        );
+        let error = match tokio::time::timeout(warm_attempt_timeout, attempt).await {
+            Ok(Ok(outcome)) => return Ok(outcome),
+            // The slot emptied between the peek and the take, so this was
+            // already a fresh dial: its failure is the probe's answer.
+            Ok(Err(error)) if !used_warm => return Err(error),
+            Ok(Err(error)) => format!("{error:#}"),
+            Err(_) => format!("no answer within {} ms", warm_attempt_timeout.as_millis()),
+        };
+        debug!(
+            uplink = %uplink.name,
+            transport = "udp",
+            probe = "dns",
+            error,
+            "warm DNS probe transport failed, retrying with a fresh dial"
+        );
+    }
+    let mut used_warm = false;
+    run_dns_probe_once(
+        cache,
+        group,
+        uplink,
+        probe,
+        dial_limit,
+        effective_udp_mode,
+        warm_slot,
+        false,
+        &mut used_warm,
+    )
+    .await
+}
+
+/// One DNS probe round-trip. With `allow_warm` it takes the warm transport
+/// from `warm_slot` when the slot holds one at `effective_udp_mode` and sets
+/// `used_warm`; otherwise it dials fresh. Either way a successful transport is
+/// stashed back into the slot.
+#[allow(clippy::too_many_arguments)]
+async fn run_dns_probe_once(
+    cache: &DnsCache,
+    group: &str,
+    uplink: &UplinkConfig,
+    probe: &DnsProbeConfig,
+    dial_limit: Arc<Semaphore>,
+    effective_udp_mode: TransportMode,
+    warm_slot: Option<&WarmUdpProbeSlot>,
+    allow_warm: bool,
+    used_warm: &mut bool,
 ) -> Result<(bool, Option<TransportMode>)> {
     let dns_server = probe.target_addr()?;
     let query = build_dns_query(&probe.name);
@@ -46,8 +121,9 @@ pub(super) async fn run_dns_probe(
             // form already carries the target on every datagram, so a
             // cached transport just means "keep the WS open" — no
             // per-session state to worry about.
-            let warm_taken =
-                warm_slot.and_then(|slot| warm_udp::take_if_matches(slot, effective_udp_mode));
+            let warm_taken = warm_slot
+                .filter(|_| allow_warm)
+                .and_then(|slot| warm_udp::take_if_matches(slot, effective_udp_mode));
 
             let (transport, downgraded_from, dialed_fresh) = match warm_taken {
                 Some(WarmUdpProbe::Ws { transport, .. }) => (transport, None, false),
@@ -55,6 +131,7 @@ pub(super) async fn run_dns_probe(
                     // Wrong variant for this WS branch — should not
                     // happen (slot is keyed per uplink) but guard rather
                     // than panic.
+                    *used_warm = true;
                     let _ = transport.close().await;
                     return Err(anyhow!(
                         "warm UDP slot for WS uplink {} held a non-WS transport",
@@ -110,6 +187,7 @@ pub(super) async fn run_dns_probe(
                     (t, downgraded, true)
                 },
             };
+            *used_warm = !dialed_fresh;
 
             let result = async {
                 transport
@@ -172,8 +250,9 @@ pub(super) async fn run_dns_probe(
             // server-side NAT entry, reader task, and DNS resolve for the
             // probe target stay hot. A fresh dial pays all three on every
             // probe, which dominates UDP-probe latency vs. TCP.
-            let warm_taken =
-                warm_slot.and_then(|slot| warm_udp::take_if_matches(slot, effective_udp_mode));
+            let warm_taken = warm_slot
+                .filter(|_| allow_warm)
+                .and_then(|slot| warm_udp::take_if_matches(slot, effective_udp_mode));
 
             let (transport, downgraded_from, dialed_fresh) = match warm_taken {
                 Some(WarmUdpProbe::Vless { transport, .. }) => (transport, None, false),
@@ -181,6 +260,7 @@ pub(super) async fn run_dns_probe(
                     // Wrong variant for this VLESS branch — should not
                     // happen (slot is keyed per uplink) but guard rather
                     // than panic.
+                    *used_warm = true;
                     let _ = transport.close().await;
                     return Err(anyhow!(
                         "warm UDP slot for VLESS uplink {} held a non-VLESS transport",
@@ -229,6 +309,7 @@ pub(super) async fn run_dns_probe(
                     (t, downgraded, true)
                 },
             };
+            *used_warm = !dialed_fresh;
 
             let result = async {
                 transport
