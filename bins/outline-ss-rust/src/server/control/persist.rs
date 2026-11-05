@@ -203,7 +203,7 @@ fn shaped_like(current: Option<&Item>, wanted: Item) -> Item {
             let mut table = inline_to_table(inline);
             *table.decor_mut() = previous.decor().clone();
             if let Some(position) = previous.position() {
-                table.set_position(position);
+                table.set_position(Some(position));
             }
             Item::Table(table)
         },

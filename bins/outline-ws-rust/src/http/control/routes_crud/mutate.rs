@@ -154,7 +154,7 @@ pub(super) fn apply_reorder(doc: &mut DocumentMut, from: usize, to: usize) -> Re
     let mut rebuilt = ArrayOfTables::new();
     for (i, mut t) in tables.into_iter().enumerate() {
         if let Some(&pos) = slots.get(i) {
-            t.set_position(pos);
+            t.set_position(Some(pos));
         }
         rebuilt.push(t);
     }

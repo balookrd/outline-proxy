@@ -339,7 +339,7 @@ pub(super) fn apply_reorder(arr: &mut ArrayOfTables, name: &str, to: usize) -> R
     tables.insert(to, moved);
     for (k, t) in tables.iter_mut().enumerate() {
         if let Some(&pos) = slots.get(k) {
-            t.set_position(pos);
+            t.set_position(Some(pos));
         }
     }
     let mut rebuilt = ArrayOfTables::new();
