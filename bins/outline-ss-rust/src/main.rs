@@ -20,9 +20,15 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 /// after a burst keeps its high-water mark — the very trap the mimalloc purge
 /// thread below was written to work around. `MALLOC_CONF` from the environment
 /// still overrides this, so a node can be retuned without a rebuild.
+///
+/// `calloc_madvise_threshold:0` keeps jemalloc 5.3.0's zeroed-allocation
+/// behaviour: since 5.3.1 a reused dirty extent under the threshold is zeroed
+/// with `memset`, faulting in every page of a mostly idle `vec![0; N]` buffer
+/// (see `outline-ws-rust`'s `MALLOC_CONF` for the fleet numbers).
 #[cfg(feature = "jemalloc")]
 #[unsafe(export_name = "malloc_conf")]
-pub static MALLOC_CONF: &[u8] = b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0\0";
+pub static MALLOC_CONF: &[u8] =
+    b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0,calloc_madvise_threshold:0\0";
 
 /// Period between forced mimalloc reclamation passes. 10 s keeps the window
 /// where post-burst RSS lingers above a cgroup MemoryHigh short; the heap walk
@@ -71,3 +77,7 @@ fn main() -> Result<()> {
     spawn_mimalloc_maintenance();
     outline_ss_rust::run()
 }
+
+#[cfg(test)]
+#[path = "tests/main.rs"]
+mod tests;
