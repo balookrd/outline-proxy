@@ -132,7 +132,12 @@ const UPLINK_WAITING_BYTES_CAP: usize = 4 * 1024 * 1024;
 /// session lingers before the `progress`-clock check reaps it despite ongoing
 /// keepalives, and how long a session that carries its UDP as HTTP/3 datagrams
 /// may go without any uplink before it is reaped the same way.
-pub(in crate::server) const SESSION_IDLE_EVICTION: Duration = Duration::from_secs(180);
+///
+/// Computed from the relay keepalive interval (3 × it, 180 s in production) so
+/// the two stay in proportion when a `test-hooks` build shortens the keepalive.
+pub(in crate::server) fn session_idle_eviction() -> Duration {
+    super::super::constants::ws_keepalive_interval() * 3
+}
 
 /// Process-wide caps for [`XhttpRegistry`]. Sourced from `[tuning]`
 /// (`xhttp_max_sessions` / `xhttp_max_sessions_per_ip` /
@@ -377,7 +382,7 @@ impl XhttpRegistry {
     /// without a GET consumer attached, so the relay task can
     /// finish instead of holding the upstream open indefinitely.
     pub(in crate::server) fn evict_idle(&self) {
-        let cutoff = Instant::now() - SESSION_IDLE_EVICTION;
+        let cutoff = Instant::now() - session_idle_eviction();
         self.sessions.retain(|_, session| {
             if session.is_closed() {
                 return false;
@@ -639,7 +644,7 @@ impl XhttpSession {
     }
 
     /// Whether the registry janitor should evict this session at `cutoff`
-    /// (= `now - SESSION_IDLE_EVICTION`).
+    /// (= `now - session_idle_eviction()`).
     ///
     /// Three independent reasons, any one sufficient:
     /// * **Downlink-stalled.** Bytes are queued for a GET consumer that has not

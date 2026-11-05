@@ -156,6 +156,11 @@ jobs:
 
       - name: check server without default features (control gated off)
         run: cargo check -p outline-ss-rust --no-default-features
+      # `test-hooks` is built only by the e2e harness (as a dependency of the
+      # client's tests, so the clippy gate never lints it); check it here so the
+      # hook cannot rot.
+      - name: check server with test hooks
+        run: cargo check -p outline-ss-rust --features test-hooks
 
       - name: check client without default features
         run: cargo check -p outline-ws-rust --no-default-features

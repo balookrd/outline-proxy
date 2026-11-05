@@ -46,7 +46,7 @@ use crate::{
 use super::super::abort::AbortOnDrop;
 use super::super::connect::connect_tcp_target;
 use super::super::constants::{
-    WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
+    WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, ws_keepalive_interval,
 };
 use super::super::dns_cache::DnsCache;
 use super::super::relay::UpstreamRelayOutcome;
@@ -470,7 +470,7 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     // of how long the remote target takes.  The client's WsReadTransport already
     // handles incoming Pings: it queues a Pong response and loops — every Ping
     // frame also resets the idle timeout.
-    let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
+    let ping_interval = ws_keepalive_interval();
     let pong_deadline = ping_interval * WS_PONG_DEADLINE_MULTIPLIER;
     let mut keepalive = tokio::time::interval(ping_interval);
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

@@ -162,7 +162,7 @@ impl WsSocket for XhttpDuplex {
             // *server* session alive: bump the keepalive clock so the
             // registry janitor does not evict an idle-but-live relay
             // out from under us. Without this a UDP datagram channel
-            // with a lull longer than `SESSION_IDLE_EVICTION` (DNS
+            // with a lull longer than `session_idle_eviction()` (DNS
             // between lookups, a quiet QUIC connection) is torn down
             // mid-session and the client sees a spurious `ws closed`.
             // A session riding HTTP/3 datagrams still ages out after the

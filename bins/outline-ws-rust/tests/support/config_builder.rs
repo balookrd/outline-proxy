@@ -478,6 +478,13 @@ pub struct ProbeSpec {
     pub interval_secs: u64,
     pub timeout_secs: u64,
     pub min_failures: usize,
+    /// `[outline.probe.dns]` target (`None` = no DNS data-path probe). The
+    /// harness's UDP echo upstream works as a target: it returns the query
+    /// verbatim, which passes the probe's txid / rcode check.
+    pub dns: Option<SocketAddr>,
+    /// `liveness_interval_secs` (`None` = the client default): how often a
+    /// probe still runs on an uplink whose cycles are skipped for live traffic.
+    pub liveness_interval_secs: Option<u64>,
 }
 
 impl ProbeSpec {
@@ -489,6 +496,8 @@ impl ProbeSpec {
             interval_secs: 1,
             timeout_secs: 2,
             min_failures: 1,
+            dns: None,
+            liveness_interval_secs: None,
         }
     }
 
@@ -500,7 +509,22 @@ impl ProbeSpec {
             interval_secs: 120,
             timeout_secs: 10,
             min_failures: 1,
+            dns: None,
+            liveness_interval_secs: None,
         }
+    }
+
+    /// Add a DNS data-path probe aimed at `target` (an IP:port reached through
+    /// the uplink's UDP tunnel).
+    pub fn with_dns(mut self, target: SocketAddr) -> Self {
+        self.dns = Some(target);
+        self
+    }
+
+    /// Set `liveness_interval_secs`.
+    pub fn with_liveness_interval(mut self, secs: u64) -> Self {
+        self.liveness_interval_secs = Some(secs);
+        self
     }
 }
 
@@ -608,8 +632,17 @@ impl ClientConfig {
         let _ = writeln!(s, "interval_secs = {}", self.probe.interval_secs);
         let _ = writeln!(s, "timeout_secs = {}", self.probe.timeout_secs);
         let _ = writeln!(s, "min_failures = {}", self.probe.min_failures);
+        if let Some(secs) = self.probe.liveness_interval_secs {
+            let _ = writeln!(s, "liveness_interval_secs = {secs}");
+        }
         let _ = writeln!(s, "\n[outline.probe.ws]");
         let _ = writeln!(s, "enabled = {}", self.probe.enabled);
+        if let Some(dns) = self.probe.dns {
+            let _ = writeln!(s, "\n[outline.probe.dns]");
+            let _ = writeln!(s, "server = \"{}\"", dns.ip());
+            let _ = writeln!(s, "port = {}", dns.port());
+            let _ = writeln!(s, "name = \"probe.test\"");
+        }
 
         for g in &self.groups {
             g.render(&mut s);

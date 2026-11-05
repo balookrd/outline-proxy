@@ -99,6 +99,28 @@ pub(super) const TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 // 300 s client timeout and low enough that even a Ping lost to transient packet
 // loss is recovered before the timer fires.
 pub(super) const WS_TCP_KEEPALIVE_PING_INTERVAL_SECS: u64 = 60;
+
+/// The relay keepalive interval in effect: [`WS_TCP_KEEPALIVE_PING_INTERVAL_SECS`],
+/// unless a build with the `test-hooks` feature sets
+/// `OUTLINE_SS_TEST_WS_KEEPALIVE_SECS`. The pong deadline and the xhttp idle
+/// eviction are derived from it, so an end-to-end test can reach them in
+/// seconds instead of three minutes. Production builds never compile the hook.
+pub(in crate::server) fn ws_keepalive_interval() -> std::time::Duration {
+    #[cfg(feature = "test-hooks")]
+    {
+        static OVERRIDE: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+        let secs = OVERRIDE.get_or_init(|| {
+            std::env::var("OUTLINE_SS_TEST_WS_KEEPALIVE_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|&secs| secs > 0)
+        });
+        if let Some(secs) = *secs {
+            return std::time::Duration::from_secs(secs);
+        }
+    }
+    std::time::Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS)
+}
 /// If no inbound WS frame (Pong, Binary, Ping or Close) is observed for
 /// `WS_TCP_KEEPALIVE_PING_INTERVAL_SECS * WS_PONG_DEADLINE_MULTIPLIER`
 /// seconds, the relay tears down the session. This catches silently-dead
@@ -165,7 +187,7 @@ pub(super) const ORPHAN_SWEEP_INTERVAL_SECS: u64 = 5;
 
 // Period at which the XHTTP registry janitor evicts idle / closed
 // sessions. Sessions whose `XhttpSession::touch` last ran more than
-// `SESSION_IDLE_EVICTION` ago are dropped on the next tick. 30 s
+// `session_idle_eviction()` ago are dropped on the next tick. 30 s
 // caps the leak window for a session that was created by the GET
 // handler but whose relay never started (client disconnected before
 // the first POST landed) — without this, dead sessions accumulate

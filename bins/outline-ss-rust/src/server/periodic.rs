@@ -137,7 +137,7 @@ pub(super) fn spawn_maintenance(
     }
 
     // XHTTP registry janitor: evicts sessions that have been idle past
-    // `SESSION_IDLE_EVICTION` (60 s, defined inside the xhttp module).
+    // `session_idle_eviction()` (180 s, defined inside the xhttp module).
     // Without this loop a session created by the GET handler whose
     // relay never started (client dropped before the first POST) sits
     // in the registry for the whole process lifetime.
