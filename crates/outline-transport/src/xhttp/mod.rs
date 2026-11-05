@@ -32,7 +32,7 @@ use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use http::{HeaderMap, HeaderValue};
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
-use rand::RngCore;
+use rand::Rng;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

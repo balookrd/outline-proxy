@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use hashbrown::{DefaultHashBuilder, HashTable};
 use parking_lot::RwLock;
-use rand::Rng;
+use rand::RngExt;
 
 /// Default TTL used by [`DnsCache::default`] — matches typical DNS record
 /// windows and the previous global cache behaviour.

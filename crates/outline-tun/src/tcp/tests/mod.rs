@@ -19,7 +19,7 @@ use crate::wire::test_utils::{
 use futures_util::StreamExt;
 use outline_transport::{TcpShadowsocksWriter, TransportStream};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng, seq::SliceRandom};
+use rand::{RngExt, SeedableRng, seq::SliceRandom};
 use shadowsocks_crypto::CipherKind;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;

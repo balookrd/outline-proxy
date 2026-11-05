@@ -1,9 +1,8 @@
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
+use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes256};
-use chacha20poly1305::aead::AeadInPlace;
-use chacha20poly1305::{XChaCha20Poly1305, XNonce as XChaNonce};
-use rand::rand_core::RngCore;
+use chacha20poly1305::XChaCha20Poly1305;
+use chacha20poly1305::aead::AeadInOut;
+use rand::Rng;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use outline_wire::ss2022::{
@@ -177,12 +176,12 @@ pub fn encrypt_udp_separate_header(
         CipherKind::Aes128Gcm2022 => {
             let cipher = Aes128::new_from_slice(master_key)
                 .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_128_SS2022 })?;
-            cipher.encrypt_block(GenericArray::from_mut_slice(&mut block));
+            cipher.encrypt_block((&mut block).into());
         },
         CipherKind::Aes256Gcm2022 => {
             let cipher = Aes256::new_from_slice(master_key)
                 .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_256_SS2022 })?;
-            cipher.encrypt_block(GenericArray::from_mut_slice(&mut block));
+            cipher.encrypt_block((&mut block).into());
         },
         _ => return Err(CryptoError::Protocol(ERR_SEPARATE_HEADER_AES_ONLY)),
     }
@@ -199,12 +198,12 @@ pub fn decrypt_udp_separate_header(
         CipherKind::Aes128Gcm2022 => {
             let cipher = Aes128::new_from_slice(master_key)
                 .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_128_SS2022 })?;
-            cipher.decrypt_block(GenericArray::from_mut_slice(&mut block));
+            cipher.decrypt_block((&mut block).into());
         },
         CipherKind::Aes256Gcm2022 => {
             let cipher = Aes256::new_from_slice(master_key)
                 .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_256_SS2022 })?;
-            cipher.decrypt_block(GenericArray::from_mut_slice(&mut block));
+            cipher.decrypt_block((&mut block).into());
         },
         _ => return Err(CryptoError::Protocol(ERR_SEPARATE_HEADER_AES_ONLY)),
     }
@@ -221,6 +220,17 @@ pub(crate) fn encrypt_udp_packet_2022_chacha(
     }
     let mut nonce = [0u8; 24];
     rand::rng().fill_bytes(&mut nonce);
+    seal_xchacha_packet(master_key, &nonce, plaintext)
+}
+
+/// Builds `nonce || ciphertext || tag` for an SS2022 chacha UDP packet under
+/// the given nonce. Split out of [`encrypt_udp_packet_2022_chacha`] so the
+/// known-answer tests can pin the XChaCha20-Poly1305 output.
+pub(crate) fn seal_xchacha_packet(
+    master_key: &[u8],
+    nonce: &[u8; 24],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new_from_slice(master_key)
         .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_XCHACHA })?;
 
@@ -228,10 +238,10 @@ pub(crate) fn encrypt_udp_packet_2022_chacha(
     // instead of into a throwaway `buffer` that is then copied in — the second
     // copy was a full datagram payload, scaling with UDP throughput.
     let mut packet = Vec::with_capacity(nonce.len() + plaintext.len() + SHADOWSOCKS_TAG_LEN);
-    packet.extend_from_slice(&nonce);
+    packet.extend_from_slice(nonce);
     packet.extend_from_slice(plaintext);
     let tag = cipher
-        .encrypt_in_place_detached(XChaNonce::from_slice(&nonce), b"", &mut packet[nonce.len()..])
+        .encrypt_inout_detached(nonce.into(), b"", (&mut packet[nonce.len()..]).into())
         .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_XCHACHA })?;
     packet.extend_from_slice(&tag);
     Ok(packet)
@@ -250,17 +260,17 @@ fn decrypt_udp_packet_2022_chacha(
         return Err(CryptoError::UdpPacketTooShort);
     }
 
-    let mut buffer = packet[24..packet.len() - SHADOWSOCKS_TAG_LEN].to_vec();
-    let tag = &packet[packet.len() - SHADOWSOCKS_TAG_LEN..];
+    let (nonce, rest) = packet
+        .split_first_chunk::<24>()
+        .ok_or(CryptoError::UdpPacketTooShort)?;
+    let (body, tag) = rest
+        .split_last_chunk::<SHADOWSOCKS_TAG_LEN>()
+        .ok_or(CryptoError::UdpPacketTooShort)?;
+    let mut buffer = body.to_vec();
     let cipher = XChaCha20Poly1305::new_from_slice(master_key)
         .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_XCHACHA })?;
     cipher
-        .decrypt_in_place_detached(
-            XChaNonce::from_slice(&packet[..24]),
-            b"",
-            &mut buffer,
-            tag.into(),
-        )
+        .decrypt_inout_detached(nonce.into(), b"", buffer.as_mut_slice().into(), tag.into())
         .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_XCHACHA })?;
 
     let expected = expected_session_bytes(expected_client_session_id);

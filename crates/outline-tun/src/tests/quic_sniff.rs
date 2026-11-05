@@ -1,7 +1,7 @@
 use super::test_vectors::{
     build_initial, build_initial_from_frames, client_hello, push_crypto_frame,
 };
-use super::{derive_initial_secrets, sniff_quic_sni};
+use super::{derive_initial_secrets, header_protection_mask, sniff_quic_sni};
 use crate::sniff::SniffOutcome;
 
 const VERSION_V1: u32 = 0x0000_0001;
@@ -17,6 +17,16 @@ fn derive_initial_secrets_matches_rfc9001_vector() {
     assert_eq!(keys.key, hex16("1f369613dd76d5467730efcbe3b1a22d"));
     assert_eq!(keys.iv, hex12("fa044b2f42a3fd3b46fb255c"));
     assert_eq!(keys.hp, hex16("9f50449e04a0e810283a1e9933adedd2"));
+}
+
+/// RFC 9001 Appendix A.2: the client Initial's header-protection sample and
+/// the first five mask bytes it yields under the A.1 `hp` key. Pins the
+/// AES-128 block encryption that unmasks the packet number.
+#[test]
+fn header_protection_mask_matches_rfc9001_vector() {
+    let hp = hex16("9f50449e04a0e810283a1e9933adedd2");
+    let mask = header_protection_mask(&hp, &hex16("d1b1c98dd7689fb8ec11d242b123dc9b"));
+    assert_eq!(mask[..5], hex("437b9aec36")[..]);
 }
 
 #[test]

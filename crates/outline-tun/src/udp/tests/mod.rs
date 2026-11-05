@@ -13,7 +13,7 @@ use crate::wire::test_utils::{
 };
 use crate::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN, IpVersion, checksum16};
 use bytes::Bytes;
-use rand::Rng;
+use rand::RngExt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[test]

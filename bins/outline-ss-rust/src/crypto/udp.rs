@@ -1,7 +1,7 @@
 use std::{cell::RefCell, sync::Arc};
 
-use aes::cipher::{BlockDecrypt, BlockEncrypt, generic_array::GenericArray};
-use chacha20poly1305::{XNonce, aead::AeadInPlace as _};
+use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt};
+use chacha20poly1305::aead::AeadInOut as _;
 use ring::{
     aead::{Aad, LessSafeKey},
     rand::{SecureRandom, SystemRandom},
@@ -120,13 +120,12 @@ fn try_decrypt_udp_packet_for_user(
             return Ok(None);
         }
 
-        let (nonce_bytes, ciphertext) = packet.split_at(XNONCE_LEN);
+        let Some((nonce_bytes, ciphertext)) = packet.split_first_chunk::<XNONCE_LEN>() else {
+            return Ok(None);
+        };
         let cipher = user.xchacha_cipher()?;
         let parsed = with_scratch(ciphertext, |buf| {
-            if cipher
-                .decrypt_in_place(XNonce::from_slice(nonce_bytes), b"", buf)
-                .is_err()
-            {
+            if cipher.decrypt_in_place(nonce_bytes.into(), b"", buf).is_err() {
                 return Ok(None);
             }
             parse_ss2022_chacha_udp_request_body(buf).map(Some)
@@ -323,11 +322,7 @@ pub fn encrypt_udp_packet_for_response(
 
             let tag = user
                 .xchacha_cipher()?
-                .encrypt_in_place_detached(
-                    XNonce::from_slice(&nonce),
-                    b"",
-                    &mut packet[body_start..],
-                )
+                .encrypt_inout_detached((&nonce).into(), b"", (&mut packet[body_start..]).into())
                 .map_err(|_| CryptoError::Cipher)?;
             packet.extend_from_slice(tag.as_slice());
             Ok(packet)
@@ -339,28 +334,25 @@ fn encrypt_ss2022_separate_header(
     user: &UserKey,
     separate_header: &[u8; SS2022_UDP_SEPARATE_HEADER_LEN],
 ) -> Result<[u8; SS2022_UDP_SEPARATE_HEADER_LEN], CryptoError> {
-    let mut block = GenericArray::clone_from_slice(separate_header);
+    let mut block = *separate_header;
     match user.aes_header_cipher()? {
-        AesHeaderCipher::Aes128(c) => c.encrypt_block(&mut block),
-        AesHeaderCipher::Aes256(c) => c.encrypt_block(&mut block),
+        AesHeaderCipher::Aes128(c) => c.encrypt_block((&mut block).into()),
+        AesHeaderCipher::Aes256(c) => c.encrypt_block((&mut block).into()),
     }
-    let mut out = [0_u8; SS2022_UDP_SEPARATE_HEADER_LEN];
-    out.copy_from_slice(&block);
-    Ok(out)
+    Ok(block)
 }
 
 pub(super) fn decrypt_ss2022_separate_header(
     user: &UserKey,
     encrypted: &[u8],
 ) -> Result<[u8; SS2022_UDP_SEPARATE_HEADER_LEN], CryptoError> {
-    let mut block = GenericArray::clone_from_slice(encrypted);
+    let mut block: [u8; SS2022_UDP_SEPARATE_HEADER_LEN] =
+        encrypted.try_into().map_err(|_| CryptoError::InvalidHeader)?;
     match user.aes_header_cipher()? {
-        AesHeaderCipher::Aes128(c) => c.decrypt_block(&mut block),
-        AesHeaderCipher::Aes256(c) => c.decrypt_block(&mut block),
+        AesHeaderCipher::Aes128(c) => c.decrypt_block((&mut block).into()),
+        AesHeaderCipher::Aes256(c) => c.decrypt_block((&mut block).into()),
     }
-    let mut out = [0_u8; SS2022_UDP_SEPARATE_HEADER_LEN];
-    out.copy_from_slice(&block);
-    Ok(out)
+    Ok(block)
 }
 
 #[cfg(test)]

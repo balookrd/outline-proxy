@@ -1,6 +1,6 @@
-use aes_gcm::aead::AeadInPlace;
-use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit, Nonce as AesNonce};
-use chacha20poly1305::{ChaCha20Poly1305, Nonce as ChaNonce};
+use aes_gcm::aead::AeadInOut;
+use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit};
+use chacha20poly1305::ChaCha20Poly1305;
 
 use crate::cipher_kind::CipherKind;
 use crate::error::{CryptoError, Result};
@@ -48,13 +48,13 @@ impl AeadCipher {
         let mut buffer = payload.to_vec();
         let tag = match self {
             Self::Chacha(c) => c
-                .encrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut buffer)
+                .encrypt_inout_detached(nonce.into(), b"", buffer.as_mut_slice().into())
                 .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_CHACHA })?,
             Self::Aes128(c) => c
-                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer)
+                .encrypt_inout_detached(nonce.into(), b"", buffer.as_mut_slice().into())
                 .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_128 })?,
             Self::Aes256(c) => c
-                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer)
+                .encrypt_inout_detached(nonce.into(), b"", buffer.as_mut_slice().into())
                 .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_256 })?,
         };
         buffer.extend_from_slice(&tag);
@@ -67,13 +67,13 @@ impl AeadCipher {
         out.extend_from_slice(payload);
         let tag = match self {
             Self::Chacha(c) => c
-                .encrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut out[start..])
+                .encrypt_inout_detached(nonce.into(), b"", (&mut out[start..]).into())
                 .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_CHACHA })?,
             Self::Aes128(c) => c
-                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut out[start..])
+                .encrypt_inout_detached(nonce.into(), b"", (&mut out[start..]).into())
                 .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_128 })?,
             Self::Aes256(c) => c
-                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut out[start..])
+                .encrypt_inout_detached(nonce.into(), b"", (&mut out[start..]).into())
                 .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_256 })?,
         };
         out.extend_from_slice(&tag);
@@ -98,30 +98,29 @@ impl AeadCipher {
         // Copy the tag to the stack before taking &mut buf[..split_at].
         let mut tag_arr = [0u8; SHADOWSOCKS_TAG_LEN];
         tag_arr.copy_from_slice(&buf[split_at..]);
-        let tag: &[u8] = &tag_arr;
         match self {
             Self::Chacha(c) => c
-                .decrypt_in_place_detached(
-                    ChaNonce::from_slice(nonce),
+                .decrypt_inout_detached(
+                    nonce.into(),
                     b"",
-                    &mut buf[..split_at],
-                    tag.into(),
+                    (&mut buf[..split_at]).into(),
+                    (&tag_arr).into(),
                 )
                 .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_CHACHA })?,
             Self::Aes128(c) => c
-                .decrypt_in_place_detached(
-                    AesNonce::from_slice(nonce),
+                .decrypt_inout_detached(
+                    nonce.into(),
                     b"",
-                    &mut buf[..split_at],
-                    tag.into(),
+                    (&mut buf[..split_at]).into(),
+                    (&tag_arr).into(),
                 )
                 .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_128 })?,
             Self::Aes256(c) => c
-                .decrypt_in_place_detached(
-                    AesNonce::from_slice(nonce),
+                .decrypt_inout_detached(
+                    nonce.into(),
                     b"",
-                    &mut buf[..split_at],
-                    tag.into(),
+                    (&mut buf[..split_at]).into(),
+                    (&tag_arr).into(),
                 )
                 .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_256 })?,
         };

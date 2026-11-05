@@ -30,7 +30,7 @@ use outline_wire::padding::{
     MAX_PADDING_SEGMENT, PADDING_FRAME_HEADER_LEN, PaddingScheme, datagram_pad_budget,
     encode_frame_into,
 };
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 
 /// Resolved carrier-padding knobs for this process. `Copy` so the transport
 /// layers can stash a snapshot per connection without sharing state.
@@ -199,7 +199,7 @@ pub(crate) fn effective_carrier_padding() -> CarrierPadding {
 ///
 /// Caller must have checked [`PaddingScheme::is_enabled`] — a disabled scheme
 /// would draw zero pad and uselessly wrap every write in a 4-byte header.
-pub(crate) fn frame_payload_into<R: RngCore>(
+pub(crate) fn frame_payload_into<R: Rng>(
     scheme: PaddingScheme,
     data: &[u8],
     rng: &mut R,
@@ -231,7 +231,7 @@ pub(crate) fn frame_payload_into<R: RngCore>(
 /// cut to what is left, so padding never pushes a packet onto the stream;
 /// otherwise the frame is the stream's own (full-range pad) — it will ride the
 /// stream anyway.
-pub(crate) fn frame_datagram_into<R: RngCore>(
+pub(crate) fn frame_datagram_into<R: Rng>(
     scheme: PaddingScheme,
     data: &[u8],
     room: Option<usize>,
@@ -250,7 +250,7 @@ pub(crate) fn frame_datagram_into<R: RngCore>(
 
 /// Adapts `rng` to the `draw(lo, hi)` callback the early-shape planner takes
 /// (uniform in `lo..=hi`).
-pub(crate) fn draw_in(rng: &mut impl rand::Rng) -> impl FnMut(usize, usize) -> usize + '_ {
+pub(crate) fn draw_in(rng: &mut impl rand::RngExt) -> impl FnMut(usize, usize) -> usize + '_ {
     move |lo, hi| rng.random_range(lo..=hi)
 }
 
@@ -308,7 +308,7 @@ pub(crate) fn even_piece_lens(len: usize, cap: usize) -> impl Iterator<Item = us
 /// an h2 carrier: evenly cut pieces of at most `cap` bytes (see
 /// [`h2_uplink_cap`]), each padded for `scheme`, or zero-copy slices of `frame`
 /// when padding is off. A frame within `cap` is one message, as before.
-pub(crate) fn h2_capped_messages<R: RngCore>(
+pub(crate) fn h2_capped_messages<R: Rng>(
     scheme: PaddingScheme,
     cap: usize,
     frame: Bytes,
@@ -339,7 +339,7 @@ pub(crate) fn h2_capped_messages<R: RngCore>(
 /// part of a large write past the window's byte budget — is cut further into
 /// even pieces of at most `h2_cap` bytes; pieces inside the window are far
 /// below it and stay as planned.
-pub(crate) fn shaped_messages<R: RngCore>(
+pub(crate) fn shaped_messages<R: Rng>(
     scheme: PaddingScheme,
     shaper: &mut EarlyShaper,
     frame: &[u8],
@@ -381,7 +381,7 @@ pub(crate) fn shaped_messages<R: RngCore>(
 
 /// Draws a fresh pad buffer of random length in the scheme's range. Contents
 /// are random bytes (never inspected on decode); length is what matters.
-fn draw_pad<R: RngCore>(scheme: PaddingScheme, rng: &mut R) -> Vec<u8> {
+fn draw_pad<R: Rng>(scheme: PaddingScheme, rng: &mut R) -> Vec<u8> {
     let n = scheme.pad_len(rng.random::<u16>()) as usize;
     let mut pad = vec![0u8; n];
     rng.fill_bytes(&mut pad);

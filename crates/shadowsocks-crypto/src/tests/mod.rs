@@ -1,5 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod known_answers;
+
 use crate::cipher_kind::CipherKind;
 
 use super::aead::increment_nonce;

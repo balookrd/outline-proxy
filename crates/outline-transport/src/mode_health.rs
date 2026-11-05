@@ -17,7 +17,7 @@
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use rand::Rng;
+use rand::RngExt;
 
 /// One rank's decaying liveness penalty. Mirrors
 /// `outline_uplink::manager::status::PenaltyState` but on `std::time::Instant`
@@ -129,7 +129,7 @@ pub(crate) fn init(enabled: bool, floor: f64, halflife: Duration, scale: Duratio
 /// over time. The physical fallback cascade in `dial_plan` still runs from the
 /// chosen rank, so this only changes *where the cascade starts*, never whether
 /// a working carrier is reached.
-pub(crate) fn descend_start_rank<R: Rng + ?Sized>(
+pub(crate) fn descend_start_rank<R: RngExt + ?Sized>(
     top_rank: u8,
     penalties: &[ModePenalty],
     now: Instant,

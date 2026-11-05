@@ -1,4 +1,4 @@
-use chacha20poly1305::{XNonce, aead::AeadInPlace as _};
+use chacha20poly1305::aead::AeadInOut as _;
 use ring::aead::Aad;
 
 use super::{
@@ -144,7 +144,10 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                         XNONCE_LEN + TAG_LEN
                     );
                 }
-                let (nonce, ciphertext) = packet.split_at(XNONCE_LEN);
+                // The length check above guarantees the split.
+                let Some((nonce, ciphertext)) = packet.split_first_chunk::<XNONCE_LEN>() else {
+                    return format!("{}:{} insufficient_data", user.id(), user.cipher().as_str());
+                };
                 let cipher = match user.xchacha_cipher() {
                     Ok(cipher) => cipher,
                     Err(_) => {
@@ -152,7 +155,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                     },
                 };
                 let mut candidate = ciphertext.to_vec();
-                match cipher.decrypt_in_place(XNonce::from_slice(nonce), b"", &mut candidate) {
+                match cipher.decrypt_in_place(nonce.into(), b"", &mut candidate) {
                     Ok(()) => match parse_ss2022_chacha_udp_request_body(&candidate) {
                         Ok((plaintext, _, _)) => format!(
                             "{}:{} packet_ok(payload_len={})",

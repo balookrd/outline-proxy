@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use rand::{Rng, SeedableRng};
+use rand::RngExt;
 use tokio::time::{Instant, sleep};
 use tracing::info;
 
@@ -271,13 +271,13 @@ impl UplinkManager {
     /// plain value with no thread-affinity, so it stays `Send` across the
     /// `.await` points inside `reselect_active_uplink_with_rng`.
     pub async fn reselect_active_uplink(&self, reason: &str, soft: bool) -> ReselectOutcome {
-        let mut rng = rand::rngs::StdRng::from_os_rng();
+        let mut rng: rand::rngs::StdRng = rand::make_rng();
         let outcome = self.reselect_active_uplink_with_rng(reason, soft, &mut rng).await;
         outline_metrics::record_uplink_reselect(self.group_name(), outcome.metric_label());
         outcome
     }
 
-    pub(crate) async fn reselect_active_uplink_with_rng<R: Rng + ?Sized>(
+    pub(crate) async fn reselect_active_uplink_with_rng<R: RngExt + ?Sized>(
         &self,
         reason: &str,
         soft: bool,
@@ -313,7 +313,7 @@ impl UplinkManager {
     /// UDP-incapable uplink whose status happens to read UDP-healthy could
     /// win the strict UDP active slot. Returns `None` when no eligible
     /// candidate remains.
-    fn draw_reselect_candidate<R: Rng + ?Sized>(
+    fn draw_reselect_candidate<R: RngExt + ?Sized>(
         &self,
         gate: TransportKind,
         scope: RoutingScope,
@@ -359,7 +359,7 @@ impl UplinkManager {
     }
 
     /// `RoutingScope::Global`: one active slot, one draw.
-    async fn reselect_global<R: Rng + ?Sized>(
+    async fn reselect_global<R: RngExt + ?Sized>(
         &self,
         reason: &str,
         soft: bool,
@@ -426,7 +426,7 @@ impl UplinkManager {
     /// the TCP slot's move if TCP moved, else the UDP slot's move — the only
     /// place both moves are visible when they disagree is the per-transport
     /// `tracing::info!` emitted below for each slot that actually moved.
-    async fn reselect_per_uplink<R: Rng + ?Sized>(
+    async fn reselect_per_uplink<R: RngExt + ?Sized>(
         &self,
         reason: &str,
         soft: bool,
