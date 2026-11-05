@@ -35,3 +35,13 @@ fn sample_process_memory_reports_estimated_heap_state() {
     assert!(sample.heap_bytes.is_some());
     assert!(sample.heap_free_bytes.is_none());
 }
+
+/// jemalloc's page has to equal the kernel's. The build pins it for aarch64
+/// Linux in `.cargo/config.toml` (jemalloc 5.3.1 would otherwise pick 64 KiB
+/// there); this fails if that pin stops reaching the build.
+#[cfg(all(unix, feature = "jemalloc"))]
+#[test]
+fn jemalloc_page_matches_the_kernel_page() {
+    let (jemalloc, kernel) = super::allocator_page_sizes().expect("both page sizes are readable");
+    assert_eq!(jemalloc, kernel, "jemalloc page {jemalloc} vs kernel page {kernel}");
+}

@@ -2,6 +2,16 @@
 # zig as cross-linker/ar for cargo-zigbuild musl targets.
 AR = { value = "zig ar", force = true }
 RANLIB = { value = "zig ranlib", force = true }
+# Pin jemalloc's page size to 4 KiB on 64-bit ARM Linux. Since jemalloc 5.3.1
+# (tikv-jemalloc-sys 0.7) configure defaults aarch64 Linux to 64 KiB pages,
+# while the fleet's aarch64 nodes (NanoPi .104) run 4 KiB-page kernels: a
+# 64 KiB jemalloc page makes slabs, extents and purge granularity 16x coarser
+# on the node with the least RAM. The target-prefixed name is read by
+# tikv-jemalloc-sys's build.rs only for that target, so macOS (16 KiB pages,
+# where a 4 KiB jemalloc page would fail to initialise) is untouched. The
+# binaries log `arenas.page` against the kernel page size at startup.
+AARCH64_UNKNOWN_LINUX_MUSL_JEMALLOC_SYS_WITH_LG_PAGE = "12"
+AARCH64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_LG_PAGE = "12"
 
 [alias]
 # --- outline-ss-rust (server) cross builds ---

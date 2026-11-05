@@ -362,6 +362,45 @@ fn page_size_bytes() -> Option<u64> {
     None
 }
 
+/// jemalloc's page size next to the kernel's, as `(jemalloc, kernel)`.
+///
+/// They must match. jemalloc 5.3.1 defaults aarch64 Linux builds to 64 KiB
+/// pages while the fleet's ARM node runs a 4 KiB-page kernel, so the build pins
+/// `LG_PAGE` through `.cargo/config.toml`; a binary built without that pin
+/// shows up here as a larger jemalloc page. (A smaller one cannot: jemalloc
+/// refuses to initialise on a kernel whose pages are bigger than its own.)
+#[cfg(all(unix, feature = "jemalloc"))]
+pub(crate) fn allocator_page_sizes() -> Option<(usize, usize)> {
+    // SAFETY: `arenas.page` is a read-only `size_t` mallctl, read as `usize`.
+    let jemalloc = unsafe { tikv_jemalloc_ctl::raw::read::<usize>(b"arenas.page\0") }.ok()?;
+    // SAFETY: `sysconf` has no preconditions; it returns -1 on failure.
+    let kernel = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    Some((jemalloc, usize::try_from(kernel).ok()?))
+}
+
+/// Logs the allocator page size once at startup; warns when it differs from
+/// the kernel's (see [`allocator_page_sizes`]).
+#[cfg(all(unix, feature = "jemalloc"))]
+pub fn log_allocator_page_size() {
+    match allocator_page_sizes() {
+        Some((jemalloc, kernel)) if jemalloc == kernel => {
+            tracing::info!(
+                jemalloc_page = jemalloc,
+                kernel_page = kernel,
+                "jemalloc page size matches the kernel"
+            );
+        },
+        Some((jemalloc, kernel)) => {
+            tracing::warn!(
+                jemalloc_page = jemalloc,
+                kernel_page = kernel,
+                "jemalloc page size differs from the kernel page size; the binary was built without the JEMALLOC_SYS_WITH_LG_PAGE pin and wastes memory"
+            );
+        },
+        None => tracing::warn!("could not read the jemalloc or kernel page size"),
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/memory.rs"]
 mod tests;

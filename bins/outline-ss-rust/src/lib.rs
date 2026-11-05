@@ -42,6 +42,8 @@ fn configure_runtime_defaults(_builder: &mut tokio::runtime::Builder) {}
 async fn async_main() -> Result<()> {
     let AppMode::Serve(config) = AppMode::load()?;
     init_tracing();
+    #[cfg(all(unix, feature = "jemalloc"))]
+    metrics::log_allocator_page_size();
     #[cfg(feature = "mimalloc")]
     spawn_mimalloc_maintenance();
     server::run(config).await

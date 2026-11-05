@@ -120,6 +120,9 @@ fn main() -> Result<()> {
         #[cfg(feature = "mimalloc")]
         spawn_mimalloc_maintenance();
 
+        #[cfg(all(unix, feature = "jemalloc"))]
+        outline_ws_rust::memory::log_allocator_page_size();
+
         outline_ws_rust::run(args).await
     })
 }
