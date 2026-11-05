@@ -1,0 +1,10 @@
+# Restart dnsproxy after a certificate renewal. Owned by
+# ops/provision-node/assets/unbound/dnsproxy-cert-reload.cron — install.sh
+# writes this file to /etc/cron.d/dnsproxy-cert-reload, so edit it here rather
+# than on a node. See the script for why a restart is needed at all.
+#
+# Hourly is plenty: lego renews a month before expiry, so the window between
+# the new file landing and dnsproxy picking it up is noise next to that.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+17 * * * * root /opt/unbound/dnsproxy-cert-reload.sh

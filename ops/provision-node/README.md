@@ -12,7 +12,7 @@ self-describing on the target.
 | Profile | Family | Shape |
 |---|---|---|
 | `cloud1` | entry node | ss+ws, ocserv, unbound+dnsproxy, ddns as a container, netplan, IPv4 |
-| `nuxt` | exit node | ss-rust, dumbproxy, unbound, ddns as a container, IPv6 `/64` + ndppd |
+| `nuxt` | exit node | ss-rust, dumbproxy, unbound+dnsproxy, ddns as a container, IPv6 `/64` + ndppd |
 
 Both were built against live nodes (Ubuntu 24.04, x86_64); nothing is hardcoded
 to those hostnames.
@@ -210,13 +210,49 @@ noticing (found and repaired by hand on 2026-08-08):
 |---|---|---|
 | `assets/unbound/unbound.conf` | `/opt/unbound/unbound.conf` | both profiles |
 | `assets/unbound/docker-compose.entry.yml` | `/opt/unbound/docker-compose.yml` | `cloud1` — unbound, unbound-exporter, dnsproxy |
-| `assets/unbound/docker-compose.exit.yml` | `/opt/unbound/docker-compose.yml` | `nuxt` — unbound, unbound-exporter |
+| `assets/unbound/docker-compose.exit.yml` | `/opt/unbound/docker-compose.yml` | `nuxt` — unbound, unbound-exporter, dnsproxy |
+| `assets/unbound/forward-zones.entry.conf` | `/opt/unbound/forward-zones.conf` | `cloud1` — geo-blocked origins and the Google zones, forwarded abroad |
+| `assets/unbound/forward-zones.exit.conf` | `/opt/unbound/forward-zones.conf` | `nuxt` — empty; the include must still exist |
+| `assets/unbound/dnsproxy-cert-reload.sh` | `/opt/unbound/dnsproxy-cert-reload.sh` | both — restarts dnsproxy once the certificate file is newer than the container |
+| `assets/unbound/dnsproxy-cert-reload.cron` | `/etc/cron.d/dnsproxy-cert-reload` | both — runs the script hourly |
 
 The resolver config is one file for both families. Compared to what the exit
 nodes run today it adds a single line, `cache-max-negative-ttl: 60`, which the
 entry nodes already had: without it an NXDOMAIN sticks for `cache-max-ttl`, an
 hour, so a name that starts resolving stays broken long after the authoritative
 side is fixed. A reprovisioned exit node picks that up.
+
+What is *not* shared is the list of forwarded zones: `unbound.conf` ends in
+`include: "/etc/unbound/forward-zones.conf"`, and each profile installs its own
+half there. The entry half forwards the geo-blocked TMDB/Bunny zones to Quad9
+and Mullvad, and `google.com` / `googleapis.com` to the exit nodes' own dnsproxy
+over DoT, so that Google sees the recursion come from abroad. The exit half is
+empty — the Google forward would loop on the node it points at — but unbound
+refuses to start when an included file is missing, so the empty file is
+installed rather than none. Until 2026-11-05 the Google block existed only on
+the live cloud nodes, and had drifted: a decommissioned node was still listed
+as an upstream.
+
+That forward is also why the exit family runs dnsproxy at all, and why
+`dnsproxy-cert-reload` exists. dnsproxy reads `--tls-crt`/`--tls-key` once at
+start-up and never again — no SIGHUP, no file watcher — so after lego renews
+the certificate the container keeps serving the old one on `:8853`/`:8443`
+until it is restarted, and every DoT/DoH client that verifies the chain drops
+the node the moment the old one expires. On 2026-11-05 that took `google.com`
+down for the whole fleet: nuxt's dnsproxy had been serving a certificate
+expired since 2026-10-14, nuxt2's expired that morning, and the renewed files
+had been sitting next to both all along. The hourly cron compares the
+certificate's mtime with the container's start time and restarts dnsproxy when
+the file is newer. It does not touch `/opt/beerloga/update-certs.sh`, which
+stays a reference file: it differs per family and carries the DNS API
+credentials. Checking a node from outside:
+
+```bash
+openssl s_client -connect nuxt.beerloga.su:8853 -servername nuxt.beerloga.su </dev/null 2>/dev/null | openssl x509 -noout -enddate
+```
+
+If that date is behind the one on `:443` (ss-rust re-reads its certificate on
+its own), dnsproxy has not been restarted since the renewal.
 
 Two of its settings are there for the dashboard rather than for the resolver, so
 change them only together with

@@ -3,9 +3,21 @@
 # this file to /opt/unbound/docker-compose.yml verbatim, so edit it here rather
 # than on a node.
 #
-# The resolver listens on loopback only (see unbound.conf) and nothing fronts
-# it: an exit node resolves for itself. The entry family adds dnsproxy on top —
-# see docker-compose.entry.yml.
+# The resolver listens on loopback only (see unbound.conf); dnsproxy fronts it
+# on :8853 (DoT) and :8443 (DoH) with this node's own certificate, the same
+# service the entry family runs (docker-compose.entry.yml). It is not for the
+# public: cloud1/cloud2 forward google.com and googleapis.com here over DoT
+# (assets/unbound/forward-zones.entry.conf) so that Google sees the recursion
+# come from abroad. Until 2026-11-05 this file had no dnsproxy while every
+# live exit node ran one by hand — a reprovisioned exit node would have taken
+# the Google zones down for the whole fleet.
+#
+# dnsproxy reads its certificate once at start-up, so after each renewal it
+# has to be restarted: dnsproxy-cert-reload.sh (hourly cron) does that.
+#
+# %DOMAIN% is expanded by install.sh to this node's FQDN, so the certificate
+# paths name the node the file is installed on and not the reference it was
+# cloned from.
 #
 # `restart: unless-stopped` on every service is not decoration: without it on
 # unbound-exporter the container stayed down from the first reboot onwards and
@@ -22,6 +34,9 @@ services:
     command: ["-d", "-c", "/etc/unbound/unbound.conf"]
     volumes:
       - /opt/unbound/unbound.conf:/etc/unbound/unbound.conf:ro
+      # unbound.conf includes this; install.sh writes it from
+      # forward-zones.exit.conf (empty). unbound refuses to start without it.
+      - /opt/unbound/forward-zones.conf:/etc/unbound/forward-zones.conf:ro
 
   unbound-exporter:
     image: saarphil/unbound_exporter@sha256:64882653fd86e1f68d6f34dd828b427637912d3272c6e117e0adf9b373b9375a # latest; no upstream version tag (pinned 2026-08-12)
@@ -38,3 +53,26 @@ services:
       - "--unbound.ca="
       - "--unbound.cert="
       - "--unbound.key="
+
+  dnsproxy:
+    image: adguard/dnsproxy@sha256:ea24da6f0a00dd53dfe9362486c5cef61e0f90b8350461d64a7756f6668f3cc5 # latest = v0.83.2 (pinned 2026-08-12)
+    container_name: dnsproxy
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - unbound
+    # --hosts-file-enabled=false is load-bearing: dnsproxy resolves from hosts
+    # files by default and `network_mode: host` hands it a copy of this node's
+    # /etc/hosts, so without it the resolver answers `<node>.beerloga.su →
+    # 127.0.1.1` for its own name to everyone using it (2026-08-08 on cloud2).
+    command:
+      - "--listen=::"
+      - --tls-port=8853
+      - --https-port=8443
+      - --tls-crt=/certs/%DOMAIN%.crt
+      - --tls-key=/certs/%DOMAIN%.key
+      - --upstream=127.0.0.1:53
+      - --hosts-file-enabled=false
+      - --http3
+    volumes:
+      - /opt/beerloga/.lego/certificates:/certs:ro

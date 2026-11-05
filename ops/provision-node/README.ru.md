@@ -12,7 +12,7 @@ root-crontab и секреты, которые всё это связывают.
 | Профиль | Семейство | Состав |
 |---|---|---|
 | `cloud1` | узел-вход | ss+ws, ocserv, unbound+dnsproxy, ddns контейнером, netplan, только IPv4 |
-| `nuxt` | узел-выход | ss-rust, dumbproxy, unbound, ddns контейнером, IPv6 `/64` + ndppd |
+| `nuxt` | узел-выход | ss-rust, dumbproxy, unbound+dnsproxy, ddns контейнером, IPv6 `/64` + ndppd |
 
 Оба сделаны по живым узлам (Ubuntu 24.04, x86_64); имена хостов нигде не
 зашиты.
@@ -212,7 +212,11 @@ WAN-интерфейс, его адрес и маршрутизируемый `/
 |---|---|---|
 | `assets/unbound/unbound.conf` | `/opt/unbound/unbound.conf` | оба профиля |
 | `assets/unbound/docker-compose.entry.yml` | `/opt/unbound/docker-compose.yml` | `cloud1` — unbound, unbound-exporter, dnsproxy |
-| `assets/unbound/docker-compose.exit.yml` | `/opt/unbound/docker-compose.yml` | `nuxt` — unbound, unbound-exporter |
+| `assets/unbound/docker-compose.exit.yml` | `/opt/unbound/docker-compose.yml` | `nuxt` — unbound, unbound-exporter, dnsproxy |
+| `assets/unbound/forward-zones.entry.conf` | `/opt/unbound/forward-zones.conf` | `cloud1` — гео-блокированные источники и зоны Google, форвард за границу |
+| `assets/unbound/forward-zones.exit.conf` | `/opt/unbound/forward-zones.conf` | `nuxt` — пустой; include всё равно должен существовать |
+| `assets/unbound/dnsproxy-cert-reload.sh` | `/opt/unbound/dnsproxy-cert-reload.sh` | оба — перезапускает dnsproxy, когда файл сертификата новее контейнера |
+| `assets/unbound/dnsproxy-cert-reload.cron` | `/etc/cron.d/dnsproxy-cert-reload` | оба — гоняет скрипт раз в час |
 
 Конфиг резолвера — один файл на оба семейства. По сравнению с тем, что сейчас
 стоит на узлах-выходах, в нём на одну строку больше — `cache-max-negative-ttl:
@@ -220,6 +224,37 @@ WAN-интерфейс, его адрес и маршрутизируемый `/
 то есть час, и имя, которое начало резолвиться, остаётся сломанным ещё долго
 после того, как авторитативная сторона починена. Переустановленный узел-выход
 эту строку получит.
+
+Что *не* общее — список форвардимых зон: `unbound.conf` заканчивается строкой
+`include: "/etc/unbound/forward-zones.conf"`, и каждый профиль кладёт туда свою
+половину. Входная половина форвардит гео-блокированные зоны TMDB/Bunny на Quad9
+и Mullvad, а `google.com` / `googleapis.com` — по DoT на dnsproxy самих
+узлов-выходов, чтобы Google видел рекурсию из-за границы. Выходная половина
+пустая — форвард Google на этом узле замкнулся бы сам на себя, — но unbound
+отказывается стартовать без включаемого файла, поэтому ставится пустой файл, а
+не никакой. До 2026-11-05 блок Google жил только на боевых cloud-узлах и успел
+разъехаться: в апстримах числился выведенный из парка узел.
+
+Этот форвард — и причина, по которой семейство выходов вообще держит dnsproxy,
+и причина существования `dnsproxy-cert-reload`. dnsproxy читает
+`--tls-crt`/`--tls-key` один раз при старте и больше никогда — ни SIGHUP, ни
+слежения за файлом, — поэтому после продления через lego контейнер продолжает
+отдавать старый сертификат на `:8853`/`:8443`, пока его не перезапустят, и
+каждый DoT/DoH-клиент, проверяющий цепочку, отваливается от узла в момент
+истечения старого. 2026-11-05 так лёг `google.com` для всего парка: dnsproxy на
+nuxt отдавал сертификат, истёкший ещё 2026-10-14, на nuxt2 — истёкший тем же
+утром, а продлённые файлы всё это время лежали рядом. Ежечасный cron сравнивает
+mtime сертификата со временем старта контейнера и перезапускает dnsproxy, если
+файл новее. Сам `/opt/beerloga/update-certs.sh` он не трогает — тот остаётся
+файлом эталона: отличается по семействам и несёт учётные данные DNS API.
+Проверка узла снаружи:
+
+```bash
+openssl s_client -connect nuxt.beerloga.su:8853 -servername nuxt.beerloga.su </dev/null 2>/dev/null | openssl x509 -noout -enddate
+```
+
+Если эта дата отстаёт от даты на `:443` (ss-rust перечитывает сертификат сам),
+dnsproxy после продления не перезапускался.
 
 Две настройки в нём стоят ради дашборда, а не ради резолвера, поэтому менять их
 можно только вместе с
