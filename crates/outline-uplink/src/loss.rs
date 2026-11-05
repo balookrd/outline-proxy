@@ -398,20 +398,48 @@ pub(crate) mod tests_support {
     /// sleeping a guessed interval.
     ///
     /// The deadline is generous and missing it panics: handing back a probe
-    /// that is still alive lets the FIN's ACK land after the caller registers
-    /// it, which moves `tcpi_segs_out` and reads as a traffic window — a
-    /// failure that only shows under a loaded parallel test run.
+    /// whose counters still move lets that traffic land after the caller
+    /// registers it, which reads as a traffic window — a failure that only
+    /// shows under a loaded parallel test run.
+    ///
+    /// Leaving ESTABLISHED is not enough on its own. The probe holds a dup of
+    /// the client fd, so the client side only receives the server's FIN and
+    /// moves to CLOSE_WAIT; the ACK for that FIN may go out after the state
+    /// change (a delayed ACK under load), and it is a real outgoing segment
+    /// that advances `tcpi_segs_out`. Reproduced at 6/200 runs under CPU load.
+    /// So the helper also waits for `sent` to hold still for longer than the
+    /// kernel's 200 ms maximum delayed-ACK interval.
     pub(crate) async fn dead_probe() -> CarrierLossProbe {
+        use std::time::Duration;
+        use tokio::time::{Instant, sleep};
+
+        const POLL: Duration = Duration::from_millis(20);
+        const SETTLED: Duration = Duration::from_millis(300);
+
         let (probe, client, server) = live_pair().await;
         drop(server);
         drop(client);
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while probe.sample().is_some_and(|s| s.alive) {
             assert!(
-                tokio::time::Instant::now() < deadline,
+                Instant::now() < deadline,
                 "loopback carrier still alive 10 s after both ends were dropped"
             );
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            sleep(POLL).await;
+        }
+        let mut sent = probe.sample().map(|s| s.sent);
+        let mut unchanged_since = Instant::now();
+        while unchanged_since.elapsed() < SETTLED {
+            assert!(
+                Instant::now() < deadline,
+                "dead loopback carrier's counters still moving 10 s after both ends were dropped"
+            );
+            sleep(POLL).await;
+            let now = probe.sample().map(|s| s.sent);
+            if now != sent {
+                sent = now;
+                unchanged_since = Instant::now();
+            }
         }
         probe
     }
