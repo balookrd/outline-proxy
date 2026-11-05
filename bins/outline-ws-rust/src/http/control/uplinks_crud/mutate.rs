@@ -420,7 +420,7 @@ pub(super) fn apply_reorder(
     group_tables.insert(to, moved);
     for (k, t) in group_tables.iter_mut().enumerate() {
         if let Some(&pos) = slots.get(k) {
-            t.set_position(pos);
+            t.set_position(Some(pos));
         }
     }
 
