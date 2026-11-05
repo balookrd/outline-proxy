@@ -188,6 +188,13 @@ lock-файлов вместе с vendored-крейтами, которые об
   4-КиБ страницами. Не убирать закрепление; бинарь пишет `arenas.page` против
   страницы ядра при старте (WARN при расхождении), ws — ещё и в
   `GET /control/alloc`, тест `jemalloc_page_matches_the_kernel_page`.
+  `MALLOC_CONF` обоих бинарей содержит `calloc_madvise_threshold:0`: с 5.3.1
+  `calloc` ниже порога (по умолчанию 8 МиБ) из переиспользуемых страниц
+  зануляется `memset` и делает резидентным весь буфер `vec![0; N]`, а не только
+  записанную часть. На `.104` это удвоило RSS ws. Не убирать. mallctl для этой
+  опции нет, поэтому тест `malloc_conf_disables_the_calloc_memset_threshold`
+  проверяет саму строку, а `malloc_conf_reaches_jemalloc` (только Linux) —
+  что jemalloc её читает.
 - **Серверная модель `[[endpoint]]`.** Сервер `outline-ss-rust` использует модель
   множественных эндпоинтов `[[endpoint]]` (пользователи path-independent, padding
   — атрибут эндпоинта). Секция `[dashboard]` в конфигурации серверов запрещена

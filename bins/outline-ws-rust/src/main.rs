@@ -24,11 +24,20 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 /// `muzzy_decay_ms:0` returns the rest immediately rather than keeping a
 /// second tier of half-released pages.
 ///
+/// `calloc_madvise_threshold:0` keeps the jemalloc 5.3.0 behaviour for zeroed
+/// allocations. Since 5.3.1 a `calloc` below the threshold (8 MiB by default)
+/// served from reused dirty pages is zeroed with `memset`, which faults every
+/// page of the buffer in; 5.3.0 purged those pages instead and left the buffer
+/// lazily backed. Per-flow buffers are `vec![0; N]` and mostly idle, so on the
+/// fleet the default doubled RSS (NanoPi .104: RSS/allocated 0.48 -> 1.06,
+/// back to 0.40 with this set).
+///
 /// jemalloc applies `MALLOC_CONF` from the environment after this symbol, so a
 /// node can retune without a rebuild.
 #[cfg(feature = "jemalloc")]
 #[unsafe(export_name = "malloc_conf")]
-pub static MALLOC_CONF: &[u8] = b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0\0";
+pub static MALLOC_CONF: &[u8] =
+    b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0,calloc_madvise_threshold:0\0";
 
 /// Period between forced mimalloc reclamation passes. 10 s keeps the window
 /// where post-burst RSS sits above `MemoryHigh` short (that window is where a
@@ -126,3 +135,7 @@ fn main() -> Result<()> {
         outline_ws_rust::run(args).await
     })
 }
+
+#[cfg(test)]
+#[path = "tests/main.rs"]
+mod tests;
