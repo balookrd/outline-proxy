@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use tokio::sync::Semaphore;
-use tokio::time::{Instant, timeout};
+use tokio::time::Instant;
 use tracing::warn;
 
 use outline_transport::DnsCache;
@@ -30,7 +30,7 @@ use crate::config::{ProbeConfig, SsPathKind, TransportMode, UplinkConfig, Uplink
 
 use self::dns::run_dns_probe;
 use self::http::run_http_probe;
-use self::metrics::record_attempt;
+use self::metrics::run_stage;
 use self::tcp_tunnel::run_tcp_tunnel_probe;
 use self::tls::run_tls_probe;
 use self::ws::run_ws_probe;
@@ -184,17 +184,12 @@ async fn run_tcp_probe(
                     Arc::clone(&dial_limit),
                     probe.timeout,
                 );
-                match timeout(
-                    probe.timeout,
-                    record_attempt(group, &uplink.name, "tcp", "ws", ws_attempt),
-                )
-                .await
-                {
-                    Ok(Ok(marker)) => {
+                match run_stage(group, &uplink.name, "tcp", "ws", probe.timeout, ws_attempt).await {
+                    Ok(marker) => {
                         downgraded_from = downgraded_from.or(marker);
                         (true, true)
                     },
-                    Ok(Err(_)) | Err(_) => (false, true),
+                    Err(_) => (false, true),
                 }
             },
         }
@@ -222,11 +217,12 @@ async fn run_tcp_probe(
         Some(false)
     } else if let Some(tls_probe) = &probe.tls {
         let target_spec = tls_probe.next_target();
-        let attempt = record_attempt(
+        let attempt = run_stage(
             group,
             &uplink.name,
             "tcp",
             "tls",
+            probe.timeout,
             run_tls_probe(
                 cache,
                 group,
@@ -236,20 +232,21 @@ async fn run_tcp_probe(
                 effective_tcp_mode,
             ),
         );
-        match timeout(probe.timeout, attempt).await {
-            Ok(Ok((ok, marker))) => {
+        match attempt.await {
+            Ok((ok, marker)) => {
                 downgraded_from = downgraded_from.or(marker);
                 Some(ok)
             },
-            Ok(Err(_)) | Err(_) => Some(false),
+            Err(_) => Some(false),
         }
     } else if let Some(http_probe) = &probe.http {
         let url = http_probe.next_url();
-        let attempt = record_attempt(
+        let attempt = run_stage(
             group,
             &uplink.name,
             "tcp",
             "http",
+            probe.timeout,
             run_http_probe(
                 cache,
                 group,
@@ -260,19 +257,20 @@ async fn run_tcp_probe(
                 warm_tcp_slot.as_ref(),
             ),
         );
-        match timeout(probe.timeout, attempt).await {
-            Ok(Ok((ok, marker))) => {
+        match attempt.await {
+            Ok((ok, marker)) => {
                 downgraded_from = downgraded_from.or(marker);
                 Some(ok)
             },
-            Ok(Err(_)) | Err(_) => Some(false),
+            Err(_) => Some(false),
         }
     } else if let Some(tcp_probe) = &probe.tcp {
-        let attempt = record_attempt(
+        let attempt = run_stage(
             group,
             &uplink.name,
             "tcp",
             "tcp",
+            probe.timeout,
             run_tcp_tunnel_probe(
                 cache,
                 group,
@@ -282,12 +280,12 @@ async fn run_tcp_probe(
                 effective_tcp_mode,
             ),
         );
-        match timeout(probe.timeout, attempt).await {
-            Ok(Ok((ok, marker))) => {
+        match attempt.await {
+            Ok((ok, marker)) => {
                 downgraded_from = downgraded_from.or(marker);
                 Some(ok)
             },
-            Ok(Err(_)) | Err(_) => Some(false),
+            Err(_) => Some(false),
         }
     } else {
         // Only a WS carrier probe (or nothing) configured: no separate data
@@ -380,17 +378,12 @@ async fn run_udp_probe(
                     Arc::clone(&dial_limit),
                     probe.timeout,
                 );
-                match timeout(
-                    probe.timeout,
-                    record_attempt(group, &uplink.name, "udp", "ws", ws_attempt),
-                )
-                .await
-                {
-                    Ok(Ok(marker)) => {
+                match run_stage(group, &uplink.name, "udp", "ws", probe.timeout, ws_attempt).await {
+                    Ok(marker) => {
                         downgraded_from = downgraded_from.or(marker);
                         (true, true)
                     },
-                    Ok(Err(_)) | Err(_) => (false, true),
+                    Err(_) => (false, true),
                 }
             },
         }
@@ -402,11 +395,12 @@ async fn run_udp_probe(
     let app_ok: Option<bool> = if !carrier_ok {
         Some(false)
     } else if let Some(dns_probe) = &probe.dns {
-        let attempt = record_attempt(
+        let attempt = run_stage(
             group,
             &uplink.name,
             "udp",
             "dns",
+            probe.timeout,
             run_dns_probe(
                 cache,
                 group,
@@ -415,17 +409,17 @@ async fn run_udp_probe(
                 Arc::clone(&dial_limit),
                 effective_udp_mode,
                 warm_udp_slot.as_ref(),
-                // Half the probe timeout for a warm transport that may be
-                // dead, the rest for the fresh redial (see `run_dns_probe`).
-                probe.timeout / 2,
+                // Split between a warm transport that may be dead and the
+                // fresh redial (see `run_dns_probe`).
+                probe.timeout,
             ),
         );
-        match timeout(probe.timeout, attempt).await {
-            Ok(Ok((ok, marker))) => {
+        match attempt.await {
+            Ok((ok, marker)) => {
                 downgraded_from = downgraded_from.or(marker);
                 Some(ok)
             },
-            Ok(Err(_)) | Err(_) => Some(false),
+            Err(_) => Some(false),
         }
     } else {
         None
