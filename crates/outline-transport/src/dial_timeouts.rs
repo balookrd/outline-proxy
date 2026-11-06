@@ -112,6 +112,39 @@ pub(crate) fn h3_open_stream_timeout() -> Duration {
     h3_stream_from(fresh_connect_timeout())
 }
 
+/// Least time a session gets to open on a pooled H3 connection before the
+/// connection is taken for dead. Opening a request on a live connection is one
+/// round trip plus server-side bookkeeping that never waits on the upstream, so
+/// this sits far above any healthy path while still being well short of the
+/// whole dial budget.
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
+const REUSED_H3_OPEN_FLOOR: Duration = Duration::from_secs(3);
+
+/// Round trips a pooled H3 connection gets to open a session, on top of the
+/// floor's worth for slow links where the floor alone would be too tight.
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
+const REUSED_H3_OPEN_RTTS: u32 = 8;
+
+/// Bound for opening a session on an H3 connection taken from a pool.
+///
+/// A pooled connection whose peer went quiet (a dead path, a rebinding NAT, a
+/// server restarted on the same port) still reads as open until QUIC's idle
+/// timeout fires, and a request sent on it never gets an answer. Without a bound
+/// of its own the session waits out [`fresh_connect_timeout`] and then falls back
+/// to a lower carrier family; with this one it gives up after a few round trips
+/// and the caller redials on a fresh connection. `rtt` is the connection's own
+/// smoothed estimate. Never above [`h3_open_stream_timeout`], the bound a stream
+/// open had before.
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
+pub(crate) fn reused_h3_open_budget(rtt: Duration) -> Duration {
+    reused_h3_open_budget_within(rtt, h3_open_stream_timeout())
+}
+
+#[cfg_attr(not(feature = "h3"), allow(dead_code))]
+fn reused_h3_open_budget_within(rtt: Duration, ceiling: Duration) -> Duration {
+    (rtt * REUSED_H3_OPEN_RTTS).max(REUSED_H3_OPEN_FLOOR).min(ceiling)
+}
+
 fn clamp_dial_timeout(configured: Duration) -> Duration {
     configured.clamp(MIN_DIAL_TIMEOUT, MAX_DIAL_TIMEOUT)
 }

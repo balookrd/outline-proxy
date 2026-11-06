@@ -282,6 +282,45 @@ fn session_on(carrier: Arc<SharedXhttpH3Connection>) -> PooledCarrier {
     }
 }
 
+/// A carrier [`acquire`] took from the pool rather than dialing: the session
+/// opening on it gets [`crate::dial_timeouts::reused_h3_open_budget`], and on
+/// failure goes to [`redial`].
+pub(super) struct ReusedCarrier {
+    key: XhttpH3Key,
+    carrier: Arc<SharedXhttpH3Connection>,
+}
+
+impl ReusedCarrier {
+    pub(super) fn id(&self) -> u64 {
+        self.carrier.id
+    }
+
+    /// The connection's smoothed round-trip estimate.
+    pub(super) fn rtt(&self) -> std::time::Duration {
+        self.carrier.connection.rtt()
+    }
+
+    /// QUIC still holds the connection open. An error from a session open on
+    /// such a carrier came from the server, and redialing would not change it.
+    pub(super) fn connection_alive(&self) -> bool {
+        self.carrier.connection.close_reason().is_none()
+    }
+}
+
+/// What [`acquire`] hands a session: its carrier, and whether that carrier came
+/// from the pool.
+pub(super) struct Acquired {
+    pub(super) carrier: PooledCarrier,
+    pub(super) reused: Option<ReusedCarrier>,
+}
+
+fn reused(key: XhttpH3Key, carrier: Arc<SharedXhttpH3Connection>) -> Acquired {
+    Acquired {
+        carrier: session_on(Arc::clone(&carrier)),
+        reused: Some(ReusedCarrier { key, carrier }),
+    }
+}
+
 /// Reuse a pooled carrier for this session, dialing a new one when no open
 /// carrier holds the chosen slot.
 pub(super) async fn acquire(
@@ -290,13 +329,13 @@ pub(super) async fn acquire(
     port: u16,
     fwmark: Option<u32>,
     disable_udp_gso: bool,
-) -> Result<PooledCarrier> {
+) -> Result<Acquired> {
     let tls = crate::fingerprint_profile::dial_tls_family();
     let slot = pick_slot(host, port, fwmark, disable_udp_gso, tls).await;
     let key = XhttpH3Key::new(host, port, fwmark, disable_udp_gso, slot, tls);
 
     if let Some(carrier) = registry().cached(&key).await {
-        return Ok(session_on(carrier));
+        return Ok(reused(key, carrier));
     }
 
     // Serialise dials per key so a burst of sessions opens one connection
@@ -304,13 +343,58 @@ pub(super) async fn acquire(
     let lock = registry().connect_lock(&key);
     let _guard = lock.lock().await;
     if let Some(carrier) = registry().cached(&key).await {
-        return Ok(session_on(carrier));
+        return Ok(reused(key, carrier));
     }
 
+    let carrier = dial_into(&key, server_addr, host, fwmark, disable_udp_gso).await?;
+    Ok(Acquired {
+        carrier: session_on(carrier),
+        reused: None,
+    })
+}
+
+/// Retire a pooled carrier that failed to open a session, and hand the session
+/// a fresh one in the same slot.
+///
+/// The carrier is soft-closed, not closed: sessions already on it keep running
+/// (if its peer really is gone they fail on their own), but no new session lands
+/// there. Under the slot's dial lock a carrier another session has already
+/// redialed into the slot is taken as is: a burst that hit the same dead carrier
+/// opens one connection between them, not one each.
+pub(super) async fn redial(
+    stale: ReusedCarrier,
+    server_addr: SocketAddr,
+    host: &str,
+    fwmark: Option<u32>,
+    disable_udp_gso: bool,
+) -> Result<PooledCarrier> {
+    let ReusedCarrier { key, carrier } = stale;
+    carrier.closed.store(true, Ordering::Relaxed);
+    registry().invalidate_if_current(&key, carrier.id).await;
+    drop(carrier);
+
+    let lock = registry().connect_lock(&key);
+    let _guard = lock.lock().await;
+    if let Some(carrier) = registry().cached(&key).await {
+        return Ok(session_on(carrier));
+    }
+    let carrier = dial_into(&key, server_addr, host, fwmark, disable_udp_gso).await?;
+    Ok(session_on(carrier))
+}
+
+/// Dial a carrier and register it under `key`. The caller holds the key's dial
+/// lock.
+async fn dial_into(
+    key: &XhttpH3Key,
+    server_addr: SocketAddr,
+    host: &str,
+    fwmark: Option<u32>,
+    disable_udp_gso: bool,
+) -> Result<Arc<SharedXhttpH3Connection>> {
     let carrier = Arc::new(dial(server_addr, host, fwmark, disable_udp_gso, key.clone()).await?);
     metrics::record_h3_carrier_dialed(metrics::H3_ENDPOINT_KIND_XHTTP);
-    registry().insert(key, Arc::clone(&carrier)).await;
-    Ok(session_on(carrier))
+    registry().insert(key.clone(), Arc::clone(&carrier)).await;
+    Ok(carrier)
 }
 
 async fn dial(

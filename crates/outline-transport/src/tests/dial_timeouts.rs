@@ -80,3 +80,36 @@ fn config_silence_does_not_clear_an_installed_budget() {
 
 /// Guards the process-wide budget for the two tests that mutate it.
 static STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A pooled connection on a fast path gets the floor: enough for any healthy
+/// open, well short of the 7 s a fresh stream open may take.
+#[test]
+fn a_reused_open_on_a_fast_path_gets_the_floor() {
+    let ceiling = h3_stream_from(DEFAULT_DIAL_TIMEOUT);
+    assert_eq!(
+        reused_h3_open_budget_within(Duration::from_millis(1), ceiling),
+        REUSED_H3_OPEN_FLOOR
+    );
+    assert_eq!(reused_h3_open_budget_within(Duration::ZERO, ceiling), REUSED_H3_OPEN_FLOOR);
+}
+
+/// On a slow link the budget follows the round trip, so the floor never cuts
+/// off a live connection there.
+#[test]
+fn a_reused_open_on_a_slow_path_follows_the_rtt() {
+    let ceiling = h3_stream_from(DEFAULT_DIAL_TIMEOUT);
+    assert_eq!(
+        reused_h3_open_budget_within(Duration::from_millis(500), ceiling),
+        Duration::from_secs(4)
+    );
+}
+
+/// Never above the bound a stream open had before, even when the dial budget
+/// is configured below the floor.
+#[test]
+fn a_reused_open_never_exceeds_the_stream_open_bound() {
+    let ceiling = h3_stream_from(DEFAULT_DIAL_TIMEOUT);
+    assert_eq!(reused_h3_open_budget_within(Duration::from_secs(2), ceiling), ceiling);
+    let tight = h3_stream_from(MIN_DIAL_TIMEOUT);
+    assert_eq!(reused_h3_open_budget_within(Duration::from_millis(1), tight), tight);
+}

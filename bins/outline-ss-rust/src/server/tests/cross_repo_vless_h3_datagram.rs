@@ -11,12 +11,15 @@
 //! command uses the agreed route: a mux session (or TCP) declines it.
 //! Each datagram carries one `len || payload` record, the stream's own framing.
 
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::SinkExt;
+use tokio::net::UdpSocket;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
@@ -66,8 +69,7 @@ impl Carrier {
         }
     }
 
-    fn url(self, server: &DatagramTestServer) -> Result<Url> {
-        let port = server.addr.port();
+    fn url(self, port: u16) -> Result<Url> {
         let url = match self {
             Carrier::WsH3 => format!("wss://localhost:{port}{WS_PATH}"),
             Carrier::XhttpPacketUp => format!("https://localhost:{port}{XHTTP_PATH}"),
@@ -78,11 +80,20 @@ impl Carrier {
         Ok(Url::parse(&url)?)
     }
 
+    /// Connections the client pool keeps warm per server for this carrier
+    /// before it starts reusing them (the transport crate's `*_CARRIER_MIN`).
+    fn warm_carriers(self) -> usize {
+        match self {
+            Carrier::WsH3 => 4,
+            Carrier::XhttpPacketUp | Carrier::XhttpStreamOne => 2,
+        }
+    }
+
     /// A stream-one dial that fails falls back to packet-up and blocks
     /// stream-one for the host; no block means stream-one is under test.
-    async fn assert_carrier(self, server: &DatagramTestServer) -> Result<()> {
+    async fn assert_carrier(self, port: u16) -> Result<()> {
         if matches!(self, Carrier::XhttpStreamOne) {
-            let url = self.url(server)?;
+            let url = self.url(port)?;
             let blocked = outline_transport::xhttp_stream_one_block_remaining(&url).await;
             assert_eq!(blocked, None, "the stream-one dial fell back to packet-up");
         }
@@ -116,7 +127,7 @@ async fn connect(
     };
     let transport = VlessUdpTransport::connect(
         &cache,
-        &carrier.url(server)?,
+        &carrier.url(server.addr.port())?,
         carrier.mode(),
         &parse_uuid(TEST_UUID)?,
         &target,
@@ -125,12 +136,23 @@ async fn connect(
         None,
     )
     .await?;
-    carrier.assert_carrier(server).await?;
+    carrier.assert_carrier(server.addr.port()).await?;
     Ok(transport)
 }
 
 async fn connect_with_resume(
     server: &DatagramTestServer,
+    carrier: Carrier,
+    upstream: SocketAddr,
+    resume: Option<SessionId>,
+) -> Result<(VlessUdpTransport, Option<SessionId>)> {
+    connect_at(server.addr.port(), carrier, upstream, resume).await
+}
+
+/// [`connect_with_resume`] against whatever listens on `port`: the server
+/// itself, or a relay in front of it.
+async fn connect_at(
+    port: u16,
     carrier: Carrier,
     upstream: SocketAddr,
     resume: Option<SessionId>,
@@ -142,7 +164,7 @@ async fn connect_with_resume(
     };
     let (transport, issued, downgraded, _) = VlessUdpTransport::connect_with_resume(
         &cache,
-        &carrier.url(server)?,
+        &carrier.url(port)?,
         carrier.mode(),
         &parse_uuid(TEST_UUID)?,
         &target,
@@ -153,7 +175,7 @@ async fn connect_with_resume(
     )
     .await?;
     assert_eq!(downgraded, None, "the dial must stay on {:?}", carrier.mode());
-    carrier.assert_carrier(server).await?;
+    carrier.assert_carrier(port).await?;
     Ok((transport, issued))
 }
 
@@ -257,7 +279,7 @@ async fn server_with_datagrams_off_declines_and_keeps_the_stream(carrier: Carrie
 async fn mux_session_declines_datagrams(carrier: Carrier) -> Result<()> {
     let server = setup_vless_h3_server(true).await?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
-    let url = carrier.url(&server)?;
+    let url = carrier.url(server.addr.port())?;
     let mut stream = connect_transport(
         TransportDialOptions::new(&cache, &url, carrier.mode(), "cross-repo-vless-h3-datagram")
             .with_resume(DialResumeOptions {
@@ -266,7 +288,7 @@ async fn mux_session_declines_datagrams(carrier: Carrier) -> Result<()> {
             }),
     )
     .await?;
-    carrier.assert_carrier(&server).await?;
+    carrier.assert_carrier(server.addr.port()).await?;
     let mut request = vec![VERSION];
     request.extend_from_slice(&parse_uuid(TEST_UUID)?);
     request.extend_from_slice(&[0, COMMAND_MUX]);
@@ -464,10 +486,122 @@ async fn dropped_client_stops_downlink_datagrams(carrier: Carrier) -> Result<()>
     Ok(())
 }
 
+/// UDP relay standing in for the network path. It forwards every client flow
+/// to the server until [`SilencingRelay::silence_existing`], after which the
+/// flows it already knows are dropped both ways while new ones still pass:
+/// to a pooled QUIC carrier this is a dead path or a rebinding NAT, a peer
+/// that went quiet without closing anything.
+struct SilencingRelay {
+    port: u16,
+    known: Arc<StdMutex<HashSet<SocketAddr>>>,
+    silenced: Arc<StdMutex<HashSet<SocketAddr>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl SilencingRelay {
+    fn silence_existing(&self) {
+        let known = self.known.lock().expect("relay lock").clone();
+        self.silenced.lock().expect("relay lock").extend(known);
+    }
+}
+
+impl Drop for SilencingRelay {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn spawn_silencing_relay(server: SocketAddr) -> Result<SilencingRelay> {
+    let front = Arc::new(UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?);
+    let port = front.local_addr()?.port();
+    let known: Arc<StdMutex<HashSet<SocketAddr>>> = Arc::default();
+    let silenced: Arc<StdMutex<HashSet<SocketAddr>>> = Arc::default();
+    let task = tokio::spawn({
+        let known = Arc::clone(&known);
+        let silenced = Arc::clone(&silenced);
+        async move {
+            // Aborting the relay drops this set, which aborts every downlink pump.
+            let mut pumps = tokio::task::JoinSet::new();
+            let mut backs: HashMap<SocketAddr, Arc<UdpSocket>> = HashMap::new();
+            let mut buf = vec![0u8; 65_535];
+            loop {
+                let Ok((n, client)) = front.recv_from(&mut buf).await else { return };
+                if silenced.lock().expect("relay lock").contains(&client) {
+                    continue;
+                }
+                let back = match backs.get(&client) {
+                    Some(back) => Arc::clone(back),
+                    None => {
+                        let Ok(back) = UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await
+                        else {
+                            return;
+                        };
+                        if back.connect(server).await.is_err() {
+                            return;
+                        }
+                        let back = Arc::new(back);
+                        known.lock().expect("relay lock").insert(client);
+                        backs.insert(client, Arc::clone(&back));
+                        let (pump_front, pump_back, pump_silenced) =
+                            (Arc::clone(&front), Arc::clone(&back), Arc::clone(&silenced));
+                        pumps.spawn(async move {
+                            let mut buf = vec![0u8; 65_535];
+                            while let Ok(n) = pump_back.recv(&mut buf).await {
+                                if !pump_silenced.lock().expect("relay lock").contains(&client) {
+                                    let _ = pump_front.send_to(&buf[..n], client).await;
+                                }
+                            }
+                        });
+                        back
+                    },
+                };
+                let _ = back.send(&buf[..n]).await;
+            }
+        }
+    });
+    Ok(SilencingRelay { port, known, silenced, task })
+}
+
+/// A pooled carrier whose peer went quiet still reads as open until QUIC's
+/// idle timeout. A session landing on it must not wait out the whole dial
+/// budget and fall back to h2: the dial gives the pooled carrier a short
+/// budget, then retires it and redials on a fresh connection.
+async fn a_silent_pooled_carrier_is_redialed(carrier: Carrier) -> Result<()> {
+    let (upstream, _) = spawn_udp_echo().await?;
+    let server = setup_vless_h3_server(false).await?;
+    let relay = spawn_silencing_relay(server.addr).await?;
+    // Fill every warm slot of the pool for the relay's port, so the dial below
+    // can only land on a pooled carrier.
+    for _ in 0..carrier.warm_carriers() {
+        let (transport, _) = connect_at(relay.port, carrier, upstream, None).await?;
+        round_trip(&transport, b"ping").await?;
+        transport.close().await?;
+    }
+
+    relay.silence_existing();
+    let started = tokio::time::Instant::now();
+    let (transport, _) = connect_at(relay.port, carrier, upstream, None)
+        .await
+        .context("the dial did not recover from a silent pooled carrier")?;
+    round_trip(&transport, b"ping").await?;
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(6),
+        "{carrier:?}: recovering from a silent pooled carrier took {took:?}"
+    );
+    transport.close().await?;
+    Ok(())
+}
+
 macro_rules! carrier_tests {
     ($($module:ident => $carrier:expr),+ $(,)?) => {$(
         mod $module {
             use super::*;
+
+            #[tokio::test]
+            async fn a_silent_pooled_carrier_is_redialed() -> Result<()> {
+                super::a_silent_pooled_carrier_is_redialed($carrier).await
+            }
 
             #[tokio::test]
             async fn small_packets_ride_h3_datagrams_after_the_header() -> Result<()> {

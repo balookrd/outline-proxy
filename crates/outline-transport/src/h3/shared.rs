@@ -406,7 +406,17 @@ impl SharedH3Connection {
         };
         crate::resumption::apply_udp_datagram_request_header(resume, request.headers_mut());
 
-        let mut stream: H3RequestStreamHandle = timeout(h3_open_stream_timeout(), async {
+        // A connection that has already carried a stream is a pooled one, and
+        // its peer may have gone quiet without QUIC noticing yet: a few round
+        // trips are enough to tell, after which `open_websocket` soft-closes it
+        // and the caller redials (see `reused_h3_open_budget`). A fresh
+        // connection keeps the full stream-open bound.
+        let open_budget = if self.streams_opened.load(Ordering::Relaxed) > 0 {
+            crate::dial_timeouts::reused_h3_open_budget(self.connection.rtt())
+        } else {
+            h3_open_stream_timeout()
+        };
+        let mut stream: H3RequestStreamHandle = timeout(open_budget, async {
             let mut send_request = self.send_request.lock().await;
             send_request
                 .send_request(request)
@@ -416,8 +426,7 @@ impl SharedH3Connection {
         .await
         .map_err(|_| {
             anyhow!(
-                "HTTP/3 websocket CONNECT request timed out after {}s on shared connection",
-                h3_open_stream_timeout().as_secs()
+                "HTTP/3 websocket CONNECT request timed out after {open_budget:?} on shared connection"
             )
         })??;
 
@@ -432,12 +441,11 @@ impl SharedH3Connection {
             .filter(|_| resume.udp_datagram_requested)
             .map(|demux| demux.register(quarter_stream_id));
 
-        let response = timeout(h3_open_stream_timeout(), stream.recv_response())
+        let response = timeout(open_budget, stream.recv_response())
             .await
             .map_err(|_| {
                 anyhow!(
-                    "HTTP/3 websocket CONNECT response timed out after {}s on shared connection",
-                    h3_open_stream_timeout().as_secs()
+                    "HTTP/3 websocket CONNECT response timed out after {open_budget:?} on shared connection"
                 )
             })?
             .context("failed to receive HTTP/3 websocket response")?;
