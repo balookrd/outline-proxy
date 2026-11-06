@@ -127,7 +127,188 @@ pub(super) async fn connect_xhttp_h3(
     // sub-tasks below.
     let profile = crate::fingerprint_profile::select(url);
 
-    let dial = async {
+    // Opens the session on `pooled`: once, or a second time when the pooled
+    // carrier the first attempt landed on turned out dead.
+    let open_on = |pooled: super::h3_pool::PooledCarrier| {
+        let base_path = base_path.as_str();
+        let host = host.as_str();
+        async move {
+            let super::h3_pool::PooledCarrier {
+                send_request,
+                loss_probe,
+                carrier: quic_carrier,
+                connection,
+                datagrams,
+            } = pooled;
+            // The offer goes out only where datagrams can flow: the dial asked for
+            // it (an SS-UDP session) AND this connection has a demultiplexer.
+            let datagram_offer: Option<DatagramOffer<'_>> = datagrams
+                .as_ref()
+                .filter(|_| udp_datagram)
+                .map(|demux| (&connection, demux));
+            let session_id = generate_session_id(combined_ss_kind)?;
+
+            let authority = super::authority_for(true, host, port);
+            let target = Arc::new(XhttpTarget {
+                scheme: "https".to_string(),
+                authority,
+                base_path: base_path.to_owned(),
+                session_id: session_id.clone(),
+            });
+
+            let (in_tx, in_rx) = inbound_channel();
+            let (out_tx, out_rx) = outbound_channel();
+
+            let (opened, driver, active_submode) = match submode {
+                XhttpSubmode::PacketUp => {
+                    let (opened, request_stream) = open_h3_get(
+                        send_request.clone(),
+                        &target,
+                        resume_request,
+                        ack_prefix_requested,
+                        symmetric_replay_requested,
+                        client_acked_offset,
+                        datagram_records,
+                        datagram_offer,
+                        profile,
+                    )
+                    .await?;
+                    let driver = tokio::spawn(driver_loop_h3(
+                        send_request,
+                        target.clone(),
+                        in_tx,
+                        out_rx,
+                        request_stream,
+                        datagram_records,
+                        opened.datagram.is_some(),
+                        profile,
+                    ));
+                    (opened, driver, XhttpSubmode::PacketUp)
+                },
+                XhttpSubmode::StreamOne => {
+                    // The h3 client closes the connection with `H3_NO_ERROR`
+                    // when the last `SendRequest` drops, so we must keep one
+                    // alive for the lifetime of the bidi stream — otherwise
+                    // the request body's send_data calls race the close
+                    // frame and the server sees `ApplicationClose` before
+                    // any application bytes flow. `open_h3_stream_one`
+                    // takes ownership of its own copy; the cloned guard
+                    // moves into the driver task and is dropped only when
+                    // the carrier shuts down for real.
+                    //
+                    // On dial-time failure we retry packet-up on the same
+                    // QUIC connection (mirror of the h2 inline fallback).
+                    // The handshake cost is sunk; if stream-one is broken
+                    // on this network path, packet-up usually still works
+                    // because it issues one short bidi stream per POST
+                    // instead of one long-lived one.
+                    match open_h3_stream_one(
+                        send_request.clone(),
+                        &target,
+                        resume_request,
+                        ack_prefix_requested,
+                        symmetric_replay_requested,
+                        client_acked_offset,
+                        datagram_records,
+                        datagram_offer,
+                        profile,
+                    )
+                    .await
+                    {
+                        Ok((opened, request_stream)) => {
+                            let driver = tokio::spawn(driver_loop_h3_stream_one(
+                                send_request,
+                                in_tx,
+                                out_rx,
+                                request_stream,
+                            ));
+                            crate::xhttp_submode_cache::record_success(
+                                url,
+                                XhttpSubmode::StreamOne,
+                            )
+                            .await;
+                            (opened, driver, XhttpSubmode::StreamOne)
+                        },
+                        Err(stream_err) => {
+                            warn!(
+                                %url,
+                                error = %format!("{stream_err:#}"),
+                                "xhttp h3 stream-one failed, falling back to packet-up on same connection"
+                            );
+                            crate::xhttp_submode_cache::record_failure(
+                                url,
+                                XhttpSubmode::StreamOne,
+                            )
+                            .await;
+                            let (opened, request_stream) = open_h3_get(
+                                send_request.clone(),
+                                &target,
+                                resume_request,
+                                ack_prefix_requested,
+                                symmetric_replay_requested,
+                                client_acked_offset,
+                                datagram_records,
+                                datagram_offer,
+                                profile,
+                            )
+                            .await?;
+                            let driver = tokio::spawn(driver_loop_h3(
+                                send_request,
+                                target.clone(),
+                                in_tx,
+                                out_rx,
+                                request_stream,
+                                datagram_records,
+                                opened.datagram.is_some(),
+                                profile,
+                            ));
+                            (opened, driver, XhttpSubmode::PacketUp)
+                        },
+                    }
+                },
+            };
+
+            let OpenedSession {
+                issued: issued_session_id,
+                ack_prefix_echo,
+                symmetric_replay_echo,
+                udp_records,
+                datagram,
+                ..
+            } = opened;
+            debug!(
+                %url, %session_id, mode = "xhttp_h3", ?submode, ?active_submode,
+                ?issued_session_id, ?resume_request, ack_prefix_requested, ack_prefix_echo,
+                udp_datagram = datagram.is_some(),
+                "xhttp h3 session opened"
+            );
+            Ok::<_, anyhow::Error>((
+                XhttpStream::from_channels(
+                    in_rx,
+                    out_tx,
+                    AbortOnDrop::new(driver),
+                    active_submode,
+                    true,
+                    udp_records,
+                    loss_probe,
+                    quic_carrier,
+                )
+                .with_h3_datagram(datagram),
+                issued_session_id,
+                ack_prefix_echo,
+                symmetric_replay_echo,
+            ))
+        }
+    };
+
+    /// Where the first attempt left the dial.
+    enum Step<T> {
+        Opened(T),
+        /// The session went to a pooled carrier that never answered.
+        Redial(super::h3_pool::ReusedCarrier, std::net::SocketAddr),
+    }
+
+    let first = async {
         let addrs = resolve_host_with_preference(
             cache,
             &host,
@@ -141,13 +322,7 @@ pub(super) async fn connect_xhttp_h3(
             anyhow::Error::new(TransportOperation::DnsResolveNoAddresses { host: host.clone() })
         })?;
 
-        let super::h3_pool::PooledCarrier {
-            send_request,
-            loss_probe,
-            carrier: quic_carrier,
-            connection,
-            datagrams,
-        } = super::h3_pool::acquire(
+        let acquired = super::h3_pool::acquire(
             server_addr,
             &host,
             port,
@@ -155,164 +330,54 @@ pub(super) async fn connect_xhttp_h3(
             network.disable_udp_gso,
         )
         .await?;
-        // The offer goes out only where datagrams can flow: the dial asked for
-        // it (an SS-UDP session) AND this connection has a demultiplexer.
-        let datagram_offer: Option<DatagramOffer<'_>> = datagrams
-            .as_ref()
-            .filter(|_| udp_datagram)
-            .map(|demux| (&connection, demux));
-        let session_id = generate_session_id(combined_ss_kind)?;
-
-        let authority = super::authority_for(true, &host, port);
-        let target = Arc::new(XhttpTarget {
-            scheme: "https".to_string(),
-            authority,
-            base_path: base_path.clone(),
-            session_id: session_id.clone(),
-        });
-
-        let (in_tx, in_rx) = inbound_channel();
-        let (out_tx, out_rx) = outbound_channel();
-
-        let (opened, driver, active_submode) = match submode {
-            XhttpSubmode::PacketUp => {
-                let (opened, request_stream) = open_h3_get(
-                    send_request.clone(),
-                    &target,
-                    resume_request,
-                    ack_prefix_requested,
-                    symmetric_replay_requested,
-                    client_acked_offset,
-                    datagram_records,
-                    datagram_offer,
-                    profile,
-                )
-                .await?;
-                let driver = tokio::spawn(driver_loop_h3(
-                    send_request,
-                    target.clone(),
-                    in_tx,
-                    out_rx,
-                    request_stream,
-                    datagram_records,
-                    opened.datagram.is_some(),
-                    profile,
-                ));
-                (opened, driver, XhttpSubmode::PacketUp)
-            },
-            XhttpSubmode::StreamOne => {
-                // The h3 client closes the connection with `H3_NO_ERROR`
-                // when the last `SendRequest` drops, so we must keep one
-                // alive for the lifetime of the bidi stream — otherwise
-                // the request body's send_data calls race the close
-                // frame and the server sees `ApplicationClose` before
-                // any application bytes flow. `open_h3_stream_one`
-                // takes ownership of its own copy; the cloned guard
-                // moves into the driver task and is dropped only when
-                // the carrier shuts down for real.
-                //
-                // On dial-time failure we retry packet-up on the same
-                // QUIC connection (mirror of the h2 inline fallback).
-                // The handshake cost is sunk; if stream-one is broken
-                // on this network path, packet-up usually still works
-                // because it issues one short bidi stream per POST
-                // instead of one long-lived one.
-                match open_h3_stream_one(
-                    send_request.clone(),
-                    &target,
-                    resume_request,
-                    ack_prefix_requested,
-                    symmetric_replay_requested,
-                    client_acked_offset,
-                    datagram_records,
-                    datagram_offer,
-                    profile,
-                )
-                .await
-                {
-                    Ok((opened, request_stream)) => {
-                        let driver = tokio::spawn(driver_loop_h3_stream_one(
-                            send_request,
-                            in_tx,
-                            out_rx,
-                            request_stream,
-                        ));
-                        crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
-                            .await;
-                        (opened, driver, XhttpSubmode::StreamOne)
-                    },
-                    Err(stream_err) => {
-                        warn!(
-                            %url,
-                            error = %format!("{stream_err:#}"),
-                            "xhttp h3 stream-one failed, falling back to packet-up on same connection"
-                        );
-                        crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
-                            .await;
-                        let (opened, request_stream) = open_h3_get(
-                            send_request.clone(),
-                            &target,
-                            resume_request,
-                            ack_prefix_requested,
-                            symmetric_replay_requested,
-                            client_acked_offset,
-                            datagram_records,
-                            datagram_offer,
-                            profile,
-                        )
-                        .await?;
-                        let driver = tokio::spawn(driver_loop_h3(
-                            send_request,
-                            target.clone(),
-                            in_tx,
-                            out_rx,
-                            request_stream,
-                            datagram_records,
-                            opened.datagram.is_some(),
-                            profile,
-                        ));
-                        (opened, driver, XhttpSubmode::PacketUp)
-                    },
-                }
-            },
+        let Some(reused) = acquired.reused else {
+            return open_on(acquired.carrier).await.map(Step::Opened);
         };
-
-        let OpenedSession {
-            issued: issued_session_id,
-            ack_prefix_echo,
-            symmetric_replay_echo,
-            udp_records,
-            datagram,
-            ..
-        } = opened;
-        debug!(
-            %url, %session_id, mode = "xhttp_h3", ?submode, ?active_submode,
-            ?issued_session_id, ?resume_request, ack_prefix_requested, ack_prefix_echo,
-            udp_datagram = datagram.is_some(),
-            "xhttp h3 session opened"
+        // A pooled carrier whose peer went quiet still reads as open, and a
+        // request on it is never answered: bound the open by a few round trips
+        // instead of the whole dial budget, then move to a fresh connection.
+        let budget = crate::dial_timeouts::reused_h3_open_budget(reused.rtt());
+        let reason = match timeout(budget, open_on(acquired.carrier)).await {
+            Ok(Ok(opened)) => return Ok(Step::Opened(opened)),
+            // The connection is up and the server answered: its error stands.
+            Ok(Err(error)) if reused.connection_alive() => return Err(error),
+            Ok(Err(error)) => format!("{error:#}"),
+            Err(_) => format!("no session within {budget:?}"),
+        };
+        warn!(
+            %url,
+            carrier = reused.id(),
+            %reason,
+            "pooled xhttp/h3 carrier did not open a session; redialing on a fresh connection"
         );
-        Ok::<_, anyhow::Error>((
-            XhttpStream::from_channels(
-                in_rx,
-                out_tx,
-                AbortOnDrop::new(driver),
-                active_submode,
-                true,
-                udp_records,
-                loss_probe,
-                quic_carrier,
-            )
-            .with_h3_datagram(datagram),
-            issued_session_id,
-            ack_prefix_echo,
-            symmetric_replay_echo,
-        ))
+        Ok(Step::Redial(reused, server_addr))
     };
 
-    timeout(fresh_connect_timeout(), dial)
+    let step = timeout(fresh_connect_timeout(), first)
         .await
         .with_context(|| format!("xhttp/h3 dial to {url} timed out"))?
-        .with_context(|| format!("xhttp/h3 dial to {url} failed"))
+        .with_context(|| format!("xhttp/h3 dial to {url} failed"))?;
+    let (stale, server_addr) = match step {
+        Step::Opened(opened) => return Ok(opened),
+        Step::Redial(stale, server_addr) => (stale, server_addr),
+    };
+    // The fresh dial gets a full budget of its own: the stale carrier's wait
+    // must not eat into a handshake that may need all of it on a slow link.
+    let retry = async {
+        let fresh = super::h3_pool::redial(
+            stale,
+            server_addr,
+            &host,
+            network.fwmark,
+            network.disable_udp_gso,
+        )
+        .await?;
+        open_on(fresh).await
+    };
+    timeout(fresh_connect_timeout(), retry)
+        .await
+        .with_context(|| format!("xhttp/h3 redial to {url} timed out"))?
+        .with_context(|| format!("xhttp/h3 redial to {url} failed"))
 }
 
 /// Synchronously opens the long-lived h3 GET, awaits response
