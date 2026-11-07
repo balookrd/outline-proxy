@@ -1,8 +1,10 @@
 # Локальные патчи
 
-Реестр патчей теперь живёт в корне монорепо как единый источник истины по всем
-vendored-крейтам (один `vendor/` на весь workspace):
+Реестр патчей к vendored-крейтам живёт в корне монорепо. Каталог `vendor/`
+один на весь workspace, поэтому и реестр один на оба бинаря:
 
-- **[PATCHES.ru.md](../../PATCHES.ru.md)** ([English](../../PATCHES.md))
+- [PATCHES.ru.md](../../PATCHES.ru.md) ([English](../../PATCHES.md))
 
-Регенерированные артефакты `h3-0.0.8.patch` и `sockudo-ws-1.7.5.patch` тоже там.
+Регенерированные patch-артефакты тоже лежат в корне: `h3-0.0.8.patch`,
+`sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.19.patch`, `rustls-0.23.46.patch`,
+`hyper-1.12.0.patch`.

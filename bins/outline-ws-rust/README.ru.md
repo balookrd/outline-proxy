@@ -7,33 +7,33 @@
 
 # outline-ws-rust
 
-`outline-ws-rust` — production-ориентированный Rust-прокси, который принимает локальный SOCKS5-трафик и перенаправляет его на Outline-совместимые WebSocket-транспорты по HTTP/1.1, HTTP/2 или HTTP/3, либо на VLESS-over-WebSocket аплинки.
+`outline-ws-rust` — клиентский бинарь монорепо `outline-proxy`. Он принимает локальный SOCKS5-трафик и, опционально, пакеты с существующего TUN-устройства и отправляет их на сервер `outline-ss-rust` (или другой Outline-совместимый / VLESS-сервер) по WebSocket поверх HTTP/1.1, HTTP/2 или HTTP/3 либо по XHTTP поверх тех же трёх версий HTTP.
+
+Документ описывает сборку, настройку и запуск клиента на Linux. Серверная сторона описана в [`bins/outline-ss-rust/README.ru.md`](../outline-ss-rust/README.ru.md), справочник по формам аплинков — [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
 
 Поддерживает:
 
 - SOCKS5 `CONNECT`
 - SOCKS5 `UDP ASSOCIATE` и `hev-socks5` `UDP-in-TCP` (`CMD=0x05`)
-- failover и балансировку нагрузки между несколькими аплинками
-- WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`) и RFC 9220 (`ws-over-h3`)
-- VLESS-over-WebSocket аплинки (UUID-аутентификация, общий WSS dial path, per-destination UDP session-mux)
-- однострочная конфигурация VLESS-аплинка через share-link URI `vless://UUID@HOST:PORT?...#NAME` (TOML-поле `link = "..."`, CLI `--vless-link`, control-plane payload `link`)
-- метрики Prometheus и готовые дашборды Grafana (multi-instance UI оператора теперь в `outline-ui`)
-- интеграцию с существующим TUN-устройством для `tun2udp`
-- stateful `tun2tcp`-реле с production-ориентированными ограничениями
+- несколько аплинков с failover и балансировкой
+- WebSocket поверх HTTP/1.1, RFC 8441 (`ws-over-h2`) и RFC 9220 (`ws-over-h3`)
+- XHTTP (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) для Shadowsocks и VLESS
+- VLESS-аплинки (UUID-аутентификация, per-destination UDP session-mux)
+- конфигурацию аплинка одной строкой из share-link URI `vless://…` или `ss://…` (TOML `link = "..."`, CLI `--vless-link`, поле `link` в control-plane payload)
+- метрики Prometheus и дашборды Grafana; multi-instance UI оператора — отдельный сервис `outline-ui`
+- существующее TUN-устройство: `tun2udp` и userspace-реле `tun2tcp`
 
 ---
 
 *English version: [README.md](README.md)*
 
-## Обзор
-
-На верхнем уровне процесс выполняет пять задач:
+## Что делает процесс
 
 1. Принимает локальный SOCKS5 и опциональный TUN-трафик.
-2. Выбирает лучший доступный аплинк с помощью health-проб, EWMA RTT-скоринга, sticky-маршрутизации, гистерезиса, штрафов и warm standby.
-3. Подключается к Outline WebSocket-транспорту в запрошенном режиме (`http1`, `h2` или `h3`) с автоматическим fallback, либо к VLESS-over-WebSocket аплинку.
-4. Шифрует payload с помощью Shadowsocks AEAD или формирует VLESS-кадры с UUID-аутентификацией перед отправкой в upstream.
-5. Публикует метрики Prometheus для runtime, аплинков, проб, TUN и `tun2tcp`.
+2. Выбирает аплинк по health-пробам, EWMA RTT, sticky-маршрутизации, гистерезису, штрафам за сбои и warm standby.
+3. Дозванивается до аплинка в заданном режиме носителя (`ws_h1` / `ws_h2` / `ws_h3` или `xhttp_h1` / `xhttp_h2` / `xhttp_h3`) и при неудаче дозвона откатывается на более старую версию HTTP.
+4. Шифрует payload через Shadowsocks AEAD или формирует VLESS-кадры с UUID-аутентификацией перед отправкой в upstream.
+5. Экспортирует метрики Prometheus по runtime, аплинкам, пробам, TUN и `tun2tcp`.
 
 ## Архитектура
 
@@ -97,15 +97,15 @@ tun2udp + tun2tcp"]
 ### SOCKS5
 
 - SOCKS5 без аутентификации
-- Опциональная аутентификация по логину/паролю (`RFC 1929`)
+- опциональная аутентификация по логину и паролю (RFC 1929)
 - TCP `CONNECT`
 - UDP `ASSOCIATE`
 - `hev-socks5` `FWD UDP` / `UDP-in-TCP` (`CMD=0x05`)
-- совместимость с pipelined SOCKS5-handshake из `hev-socks5-tunnel`
-- пересборка UDP-фрагментов SOCKS5 на входящем клиентском трафике
-- цели IPv4, IPv6 и по доменному имени
-- декларативный policy routing по CIDR назначения с файловыми списками и hot-reload на правило, per-rule fallback (`fallback_via` / `fallback_direct` / `fallback_drop`) и встроенными таргетами `direct` / `drop`
-- байпасс туннеля на уровне группы (`bypass_when_down` на uplink-группе): пока в группе нет ни одного здорового uplink'а, трафик в неё диспатчится `direct` вместо отказа и возвращается в туннель, как только любой uplink оживает
+- pipelined SOCKS5-handshake из `hev-socks5-tunnel`
+- сборка фрагментированных SOCKS5 UDP-датаграмм от клиента
+- цели IPv4, IPv6 и доменные имена
+- policy routing по CIDR назначения или доменному суффиксу: списки из файлов с перечитыванием по mtime, fallback на правило (`fallback_via` / `fallback_direct` / `fallback_drop`) и встроенные цели `direct` и `drop`
+- байпасс туннеля на уровне группы (`bypass_when_down` у группы аплинков): пока в группе нет здорового аплинка, трафик в неё идёт `direct` вместо отказа и возвращается в туннель, как только любой аплинк восстановится
 
 ### Outline-транспорты
 
@@ -113,14 +113,14 @@ tun2udp + tun2tcp"]
 - HTTP/1.1 Upgrade
 - RFC 8441 WebSocket over HTTP/2
 - RFC 9220 WebSocket over HTTP/3 / QUIC
-- VLESS-over-XHTTP (`vless_mode = "xhttp_h1"`, `"xhttp_h2"` или `"xhttp_h3"`): парный листенер — `xhttp_path_vless` в outline-ss-rust. Dial-URL `vless_xhttp_url` выбирает wire-режим через свой query-параметр — голый URL или `?mode=packet-up` запускает GET + sequenced POSTs, `?mode=stream-one` — один bidirectional POST (только h2 / h3; h1-carrier поддерживает только packet-up и явно отваливается на stream-one). Полезно когда WebSocket-апгрейд режется на пути (Cloudflare-style CDN, captive-portal middleboxes).
-- VLESS-over-WebSocket аплинки (`transport = "vless"`, UUID-аутентификация, общий WSS dial path с `ss`, per-destination UDP session-mux с границей `vless_udp_max_sessions`)
-- transport fallback:
-  - `h3 -> h2 -> http1`
-  - `h2 -> http1`
-  - `xhttp_h3 -> xhttp_h2 -> xhttp_h1` на провал dial'а (только packet-up — stream-one останавливается на h2), с прокидыванием того же `X-Outline-Resume` токена через каждую смену carrier'а — сервер outline-ss-rust с включённой фичей переcаживает на припаркованный VLESS upstream вместо нового connect'а. Шаг h1 — фолбек последнего шанса для путей, режущих и QUIC, и ALPN h2; открывает два keep-alive сокета на сессию (долгоживущий GET + сериализованные POST'ы), потому что h1 не мультиплексирует
-  - **per-аплинковые fallback-транспорты** через `[[outline.uplinks.fallbacks]]` — каждый аплинк может объявить дополнительные wire-формы (другой `transport` + URL/addr), которые dial-loop пробует после провала primary. Поддерживает `vless → ss`, `ss → vless` и т. п. После `probe.min_failures` подряд провалов dial'а активный wire становится sticky на `mode_downgrade_secs` (один knob, два применения), и новые сессии стартуют с fallback'а; auto-failback возвращает на primary по истечении пина. Resume-токены (`X-Outline-Resume`) едут через wire-свитч через identity-level resume-cache, так что handover-via-resume на `vless ↔ ss` бесшовен на сервере с включённой фичей. Цикл chunk-0 failover также пробует каждый другой wire **этого же** аплинка перед прыжком на другой аплинк (handover внутри аплинка). Опциональный per-аплинковый `shuffle_wires = true` перемешивает цепочку при старте процесса (collision-free перестановки внутри `[[uplink_group]]`) и эскалирует uplink-failover после одного полного forward-прохода без успеха ни на одном wire (любой успешный dial обнуляет круг); `shuffle_timer = "1h"` рероллит `active_wire` на per-uplink интервале (`30s` / `5m` / `1h30m` / `2d` / голые секунды) и подавляет probe-driven early-failback на primary, чтобы реролл оставался видимым. `carrier_downgrade = false` свёртывает вертикальный carrier-каскад — фейлы переезжают на следующий wire напрямую (полезно против DPI, который дропает весь upstream независимо от HTTP-версии). См. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md) «Внутри-аплинковые fallback-транспорты».
-- кросс-транспортное возобновление сессии на стороне клиента: WebSocket Upgrade несёт `X-Outline-Resume-Capable: 1`; Session ID, выданный сервером в `X-Outline-Session`, кэшируется по аплинку (а внутри VLESS UDP mux — по (uplink, target)) и предъявляется как `X-Outline-Resume: <hex>` на следующем on-demand dial — сервер outline-ss-rust с включённой фичей переcаживает клиента на припаркованный upstream, минуя connect к таргету. Покрытие: TCP-WS, SS-UDP-WS и VLESS-over-XHTTP (h1, h2, h3, packet-up и stream-one — токен round-trip'ится в том же response, что доставляет первый downlink-чанк). Opt-in на проводе, без overhead'а если сервер не поддерживает.
+- XHTTP (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) для SS (`tcp_xhttp_url` / `udp_xhttp_url`) и VLESS (`vless_xhttp_url`); парные эндпоинты — XHTTP-эндпоинты outline-ss-rust. Подрежим выбирает query-строка URL дозвона: голый URL или `?mode=packet-up` — GET плюс последовательные POST'ы, `?mode=stream-one` — один двунаправленный POST (только h2 / h3; h1-носитель поддерживает только packet-up и на stream-one завершается ошибкой). Используйте, когда WebSocket Upgrade режется на пути (CDN, captive-portal middlebox'ы).
+- VLESS-аплинки (`transport = "vless"`, UUID-аутентификация, per-destination UDP session-mux с лимитом `vless_udp_max_sessions`)
+- fallback носителя при неудаче дозвона:
+  - `ws_h3 -> ws_h2 -> ws_h1`
+  - `ws_h2 -> ws_h1`
+  - `xhttp_h3 -> xhttp_h2 -> xhttp_h1` (только packet-up; stream-one останавливается на h2). Через каждую смену носителя переносится тот же токен `X-Outline-Resume`, поэтому сервер outline-ss-rust с включённым возобновлением сессий подхватывает запаркованный upstream вместо нового. Шаг h1 — для путей, режущих и QUIC, и ALPN h2; он открывает два keep-alive сокета на сессию (долгоживущий GET + сериализованные POST'ы), потому что h1 не мультиплексирует.
+  - fallback-wire'ы на аплинк через `[[outline.uplinks.fallbacks]]`: аплинк может объявить дополнительные wire-формы (другой `transport` + URL), которые dial-цикл пробует после провала primary на этом аплинке, например `vless → ss` или `ss → vless`. После `probe.min_failures` подряд проваленных дозвонов активный wire остаётся на fallback на `mode_downgrade_secs`, и новые сессии стартуют с него; по истечении пина сессии возвращаются на primary. Resume-токены (`X-Outline-Resume`) переживают смену wire через identity-level resume-cache, поэтому сервер с включённым возобновлением подхватывает upstream и при переходе `vless ↔ ss`. Цикл chunk-0 failover пробует все остальные wire'ы того же аплинка, прежде чем перейти на другой аплинк. `shuffle_wires = true` перемешивает цепочку при старте процесса (перестановки без совпадений внутри `[[uplink_group]]`) и передаёт управление uplink-failover'у после одного полного прохода без успешного wire (любой успешный wire сбрасывает проход); `shuffle_timer = "1h"` перевыбирает `active_wire` с заданным интервалом (`30s` / `5m` / `1h30m` / `2d` / голые секунды) и подавляет probe-driven ранний возврат на primary, чтобы перевыбор действовал. `carrier_downgrade = false` отключает каскад носителей внутри wire: сбой сразу переводит на следующий wire (против DPI, который режет upstream независимо от версии HTTP). См. «Внутри-аплинковые fallback-транспорты» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
+- клиентское возобновление сессии между носителями: WebSocket Upgrade несёт `X-Outline-Resume-Capable: 1`; Session ID из ответа сервера (`X-Outline-Session`) кэшируется по аплинку (а внутри VLESS UDP mux — по паре (uplink, target)) и предъявляется как `X-Outline-Resume: <hex>` при следующем дозвоне, так что сервер outline-ss-rust с включённым возобновлением подхватывает запаркованный upstream и пропускает connect к цели. Покрытие: TCP поверх WS, SS-UDP поверх WS и VLESS поверх XHTTP (h1 / h2 / h3, packet-up и stream-one; токен возвращается в том ответе, что несёт первый downlink-чанк). Сервер без возобновления игнорирует заголовок, остальной wire не меняется.
 
 ### Шифрование
 
@@ -133,177 +133,179 @@ tun2udp + tun2tcp"]
 
 ### Управление аплинками
 
-- несколько аплинков
-- выбор по принципу «быстрейший первый»
+- несколько аплинков в группе
 - режим выбора:
-  - `active_active`: новые потоки могут использовать разные аплинки в зависимости от скора, sticky и failover
-  - `active_passive`: удерживать текущий выбранный аплинк, пока он не станет нездоровым или не войдёт в cooldown. Ручное переключение через control-plane или probe-driven failover, сдвигающий активный аплинк с in-flight SOCKS5-сессии, теперь рвёт эту TCP-сессию RST'ом (`SO_LINGER {l_onoff=1, l_linger=0}`), чтобы клиент переподключился через новый активный аплинк, а не продолжал егрессить через теперь-passive (другой source IP / ASN). UDP downlink-цикл будится тем же watch'ем `subscribe_active_uplinks`. Счётчик: `outline_ws_socks_tcp_strict_aborts_total`. `active_active` не затрагивается — там вотчер не вооружается.
+  - `active_active`: новые флоу могут идти через разные аплинки в зависимости от скора, sticky и failover
+  - `active_passive`: держать выбранный аплинк, пока он не станет нездоровым или не уйдёт в cooldown. Когда ручное переключение через control plane или probe-driven failover уводит активный аплинк с идущей SOCKS5-сессии, эта TCP-сессия закрывается RST'ом (`SO_LINGER {l_onoff=1, l_linger=0}`), чтобы клиент переподключился через новый активный аплинк, а не выходил через ставший пассивным (другой source IP / ASN). UDP downlink-цикл просыпается от того же watch'а `subscribe_active_uplinks`. Счётчик: `outline_ws_socks_tcp_strict_aborts_total`. `active_active` это не затрагивает.
 - область маршрутизации:
-  - `per_flow`: решения принимаются независимо для каждого ключа маршрутизации / цели
-  - `per_uplink`: один активный аплинк разделяется на уровне процесса для каждого транспорта (`tcp` и `udp`); в режиме `active_passive` закреплённые TCP и UDP аплинки не истекают по `sticky_ttl`, установленные SOCKS TCP-туннели остаются закреплёнными за аплинком, который завершил setup, а немигрируемые потоки, всё ещё зависящие от старого активного аплинка, могут быть пересозданы или закрыты после переключения, история штрафов не влияет на строгий per-transport скор
-  - `per_client`: каждый входящий клиент закрепляется за одним выбранным балансировщиком аплинком по своему source IP (peer IP SOCKS5 или IP LAN-устройства за TUN-роутером) на `sticky_ttl`, обновляясь пока клиент активен; разные клиенты распределяются по аплинкам, но любой отдельный клиент держит стабильный egress IP, а не размазывается потоками по всем, с failover при деградации закреплённого аплинка (только `active_active`; в `active_passive` ведёт себя как `per_flow`; клиенты без определимого source IP сводятся к одному общему ключу)
-  - `global`: один общий активный аплинк используется для всего нового трафика процесса через `tcp` и `udp`; выбор намеренно смещён в сторону TCP-здоровья, активный глобальный аплинк не истекает по `sticky_ttl`, строгий выбор остаётся закреплённым пока текущий не уйдёт в cooldown, история штрафов не влияет на строгий глобальный скор, TUN-потоки, закреплённые за старым аплинком, активно закрываются после глобального переключения
+  - `per_flow`: решение принимается отдельно для каждого ключа маршрутизации / цели
+  - `per_uplink`: один активный аплинк на транспорт (`tcp` и `udp`) на весь процесс. В `active_passive` закреплённые TCP и UDP аплинки не истекают по `sticky_ttl`; установленные SOCKS TCP-туннели остаются на аплинке, который завершил setup, а немигрируемые флоу, зависящие от старого активного аплинка, после переключения могут быть перевыбраны или закрыты. История штрафов в строгий per-transport скор не входит.
+  - `per_client`: каждый входящий клиент закрепляется за одним выбранным балансировщиком аплинком по своему source IP (peer IP SOCKS5 или IP LAN-устройства за TUN-роутером) на `sticky_ttl`, с продлением, пока клиент активен. Разные клиенты распределяются по аплинкам, один клиент держит один выходной IP, с failover при деградации закреплённого аплинка. Только `active_active` — в `active_passive` ведёт себя как `per_flow`. Клиенты без определимого source IP делят один ключ.
+  - `global`: один активный аплинк для всего нового трафика процесса, TCP и UDP. Ранжирование идёт по TCP-скору, но UDP-способный активный аплинк считается упавшим и тогда, когда UDP-проба помечает его нездоровым или действует его UDP runtime cooldown. Активный глобальный аплинк не истекает по `sticky_ttl`, история штрафов в строгий глобальный скор не входит, а TUN-флоу, оставшиеся на старом аплинке после глобального переключения, закрываются и переподключаются через новый.
 - статический `weight` на аплинк
 - EWMA RTT-скоринг
-- модель штрафов за сбои с затуханием
+- штрафы за сбои с экспоненциальным затуханием
 - sticky-маршрутизация с TTL
-- гистерезис для исключения лишних переключений
+- гистерезис против переключений на малой разнице скоров
 - runtime failover
-- auto-failback отключён по умолчанию (`auto_failback = false`): переключение только при сбое, никогда не возвращается на восстановившийся primary самостоятельно
+- `auto_failback = false` по умолчанию: активный аплинк меняется только при сбое и сам на восстановившийся primary не возвращается
 - warm-standby WebSocket-пулы для TCP и UDP
-- персистентность выбора активного аплинка между рестартами (TOML state-файл, debounced async-запись)
-- плановый взвешенный перевыбор строгого активного аплинка (только `active_passive`): wall-clock слоты `reselect_at` либо фиксированный `reselect_interval`, принудительная ротация, всегда исключающая текущий активный, взвешенная по здоровью/штрафу как у `health_weighted_selection`, плюс `POST /control/reselect` для ручного триггера. См. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md) «Плановый перевыбор».
-- детерминированный, согласованный между узлами вариант этой ротации (`reselect_sync = true`, требует `reselect_at`): порядок слота выводится из имени группы, имён аплинков, локального дня и индекса слота вместо OS-случайного розыгрыша, поэтому независимые узлы с одинаковым конфигом группы оказываются на одном аплинке — один выходной адрес для клиентов, попадающих на любой из них, — без всякой координации.
+- сохранение выбора активного аплинка между рестартами (TOML state-файл, debounced async-запись)
+- плановый взвешенный перевыбор строгого активного аплинка (только `active_passive`): слоты по часам `reselect_at` или фиксированный `reselect_interval`; ротация всегда исключает текущий активный и взвешивает кандидатов по здоровью/штрафу, как `health_weighted_selection`; `POST /control/reselect` запускает её вручную. См. «Плановый перевыбор» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
+- детерминированный вариант этой ротации (`reselect_sync = true`, требует `reselect_at`): порядок слота выводится из имени группы, имён аплинков, локального дня и индекса слота вместо случайного розыгрыша, поэтому независимые узлы с одинаковым конфигом группы выбирают один и тот же аплинк — один выходной адрес для клиентов, попадающих на любой из них, — без обмена сообщениями.
 
 ### Health-пробы
 
-- WebSocket connectivity-пробы (handshake TCP+TLS+WS; без ping/pong — серверы редко отвечают на WebSocket ping control frames)
-- реальные HTTP-пробы через `websocket-stream`
-- реальные DNS-пробы через `websocket-packet`
-- TLS-handshake-пробы к реальному product SNI через туннель — воспроизводят user-flow chunk-0 паттерн, когда upstream-фильтр тихо режет `ServerHello`, что обычная HTTP-проба не видит
+- WebSocket connectivity-пробы (handshake TCP + TLS + WS; без ping/pong — серверы редко отвечают на WebSocket ping control frames)
+- HTTP-пробы через `websocket-stream`
+- DNS-пробы через `websocket-packet`
+- TLS-handshake-пробы к заданному SNI через туннель; ловят upstream-фильтрацию, которая молча режет `ServerHello` для отдельных SNI, — обычная HTTP-проба этого не видит
 - ограничение параллельности проб
-- отдельная изоляция dial'ов для проб
-- немедленное пробуждение probe loop при runtime-сбое для ускорения обнаружения
-- счётчик последовательных успехов для стабильного auto-failback
+- отдельный лимит дозвонов для проб
+- немедленное пробуждение пробы при runtime-сбое (не чаще раза в 15 с на аплинк)
+- счётчик успехов подряд, по которому разрешается auto-failback
 
 ### TUN
 
-- только интеграция с существующим TUN-устройством
-- `tun2udp` с управлением жизненным циклом потоков, сборкой IPv4/IPv6 IP-фрагментов и локальными ICMP echo replies
-- stateful `tun2tcp`-реле с ретрансмитом, zero-window persist/backoff, SACK-aware логикой приёма/отправки, adaptive RTO и bounded buffering
+- только существующее TUN-устройство (процесс его не создаёт)
+- `tun2udp` с управлением жизненным циклом флоу, сборкой IPv4/IPv6-фрагментов и локальными ICMP echo reply
+- userspace-реле `tun2tcp` с ретрансмитом, zero-window persist/backoff, SACK-aware приёмом и отправкой, adaptive RTO и ограниченными буферами
 
-### Операционная поддержка
+### Эксплуатация
 
 - метрики Prometheus
-- готовые дашборды Grafana
-- проактивный контроль срока TLS-сертификатов аплинков (чип на дашборде + Prometheus-gauge `outline_ws_uplink_cert_expiry_timestamp_seconds`)
-- hardened systemd unit
+- дашборды Grafana в [`grafana/`](grafana)
+- контроль срока TLS-сертификатов аплинков: gauge `outline_ws_uplink_cert_expiry_timestamp_seconds` и поле `cert_not_after_unix_ms` у каждого аплинка в `GET /control/topology`
+- systemd-юниты с песочницей (см. [systemd](#systemd))
 - Linux `fwmark` / `SO_MARK`
-- IPv6-совместимые слушатели, upstream'ы, пробы и SOCKS5-цели
+- IPv6 для слушателей, upstream'ов, проб и SOCKS5-целей
 
 ## Текущие ограничения
 
-Проект намеренно практичен, но ограничения есть:
-
-- `tun2tcp` ориентирован на production, но всё ещё не эквивалентен ядерному TCP-стеку.
-- Не-echo ICMP на TUN не поддерживаются.
-- HTTP-проба поддерживает только `http://` — для HTTPS используйте отдельный блок `[outline.probe.tls]`, который выполняет TLS handshake (без HTTP-обмена) к настроенному SNI. `probe.tcp` должен указывать на сервис, который сам первым отправляет данные, например SSH или SMTP, а не на типичный HTTP/HTTPS-порт.
-- TCP failover безопасен до начала полезного обмена данными; живые установленные TCP-туннели не мигрируют прозрачно между аплинками.
+- `tun2tcp` — userspace TCP-реле, не эквивалент ядерного TCP-стека.
+- Не-echo ICMP на TUN не поддерживается.
+- `probe.http` поддерживает только `http://`. Для HTTPS используйте `[outline.probe.tls]`: он выполняет TLS handshake (без HTTP-обмена) к заданному SNI. `probe.tcp` должен указывать на сервис, который первым отправляет данные (SSH, SMTP), а не на HTTP/HTTPS-порт.
+- TCP failover на другой аплинк возможен только до начала полезного обмена. Установленный TCP-туннель между аплинками не переносится; миграция носителя в TUN (см. [Миграция носителя](#миграция-носителя-переживаем-смерть-носителя)) перезванивает в тот же аплинк.
 
 ## Структура репозитория
 
-- [`config.toml`](config.toml) — пример конфигурации (TOML)
-- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — hardened systemd unit
+Пути указаны относительно `bins/outline-ws-rust/`; общие крейты лежат в корне workspace.
+
+- [`config.toml`](config.toml) — пример конфигурации
+- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service), [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — systemd-юниты
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) — основной операционный дашборд
-- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json) — диагностика ситуативных hang'ов
-- [`src/proxy/`](src/proxy) — обработчики TCP/UDP ingress для SOCKS5
-- [`crates/outline-uplink/`](crates/outline-uplink) — выбор аплинка, пробы, failover и standby-логика
-- [`crates/outline-transport/`](crates/outline-transport) — WebSocket / HTTP-2 / HTTP-3 / VLESS транспорты + кросс-транспортный `ResumeCache`
-- [`crates/outline-net/`](crates/outline-net) — DNS-cache и общий net-обвес, вынесенный из `outline-transport`
-- [`crates/outline-tun/`](crates/outline-tun) — stateful TUN relay engines
-- [`crates/outline-metrics/`](crates/outline-metrics) — регистрация Prometheus-метрик и session/transport snapshots
-- [`crates/outline-routing/`](crates/outline-routing) — CIDR-таблица роутинга
-- [`crates/socks5-proto/`](crates/socks5-proto) — примитивы протокола SOCKS5
-- [`crates/shadowsocks-crypto/`](crates/shadowsocks-crypto) — криптография и TLS glue
-- [`PATCHES.md`](PATCHES.md) — реестр локальных патчей vendored-зависимостей
+- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json) — диагностика зависаний
+- [`src/bootstrap/`](src/bootstrap) — запуск: bind слушателей и хранилище состояния
+- [`src/config/`](src/config) — схема CLI и конфига, загрузка, валидация
+- [`src/proxy/`](src/proxy) — SOCKS5 TCP/UDP ingress (диспетчер, TCP failover, UDP-реле)
+- [`src/http/`](src/http) — эндпоинт метрик и control plane
+- [`../../crates/outline-uplink/`](../../crates/outline-uplink) — выбор аплинка, пробы, failover, standby-пулы
+- [`../../crates/outline-transport/`](../../crates/outline-transport) — транспорты WebSocket / HTTP/2 / HTTP/3 / XHTTP / VLESS и кросс-транспортный `ResumeCache`
+- [`../../crates/outline-net/`](../../crates/outline-net) — DNS-кэш и сокетные хелперы (fwmark, keepalive, размеры буферов)
+- [`../../crates/outline-tun/`](../../crates/outline-tun) — TUN-движки (TCP и UDP)
+- [`../../crates/shadowsocks-crypto/`](../../crates/shadowsocks-crypto) — хелперы Shadowsocks AEAD
+- [`../../crates/outline-wire/`](../../crates/outline-wire) — общий с сервером wire-кодек (`CipherKind`, `TargetAddr`, SS2022-заголовки, VLESS/mux)
+- [`../../crates/outline-metrics/`](../../crates/outline-metrics) — регистрация Prometheus-метрик и session/transport snapshots
+- [`../../crates/outline-routing/`](../../crates/outline-routing) — таблица маршрутизации по CIDR и доменам
+- [`../../crates/socks5-proto/`](../../crates/socks5-proto) — примитивы протокола SOCKS5
+- [`../../PATCHES.ru.md`](../../PATCHES.ru.md) — реестр патчей vendored-крейтов (один на весь workspace)
 
 ## Сборка
+
+Все команды ниже выполняйте из корня workspace (`outline-proxy/`).
 
 ### Требования
 
 - Rust toolchain (stable): `rustup update stable`
-- Для кросс-компиляции: [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) — использует компилятор Zig в качестве C-линкера, что избавляет от необходимости ставить отдельный cross-toolchain для каждой платформы.
+- для кросс-компиляции: [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) и Zig; zigbuild использует C-компилятор Zig как линкер, отдельный cross-toolchain под каждую платформу не нужен.
 
 ```bash
 cargo install cargo-zigbuild
 ```
 
-Доступные shortcuts в этом репозитории:
+Установите Rust-таргеты:
 
 ```bash
-cargo release-musl-x86_64
-cargo release-musl-aarch64
-```
-
-### CI-релизы
-
-- Каждый push в `main` запускает workflow `Nightly Release`.
-- Этот workflow передвигает rolling tag `nightly` на текущий коммит `main` и заново публикует GitHub prerelease `Nightly`.
-- Nightly публикует server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, а также `SHA256SUMS.txt`.
-- Nightly server-архивы называются `outline-ws-rust-vnightly-<full-commit-sha>-<target>.tar.gz`.
-- Для стабильного релиза запускайте вручную workflow `Release` и передавайте `major_minor`, например `1.7`.
-- CI находит последний тег вида `v1.7.*`, автоматически увеличивает patch, обновляет `Cargo.toml` и `Cargo.lock`, создает release-коммит и пушит этот коммит в `main`.
-- После появления release-коммита в `main` нужно локально создать и отправить подписанный тег; именно push тега запускает workflow `Tag Release`, который собирает и публикует GitHub Release.
-- В результате один стабильный GitHub Release содержит server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`.
-- Если нужно, push тега вида `v1.2.3` по-прежнему запускает workflow `Tag Release` как отдельный внешний tag-driven путь.
-
-Добавить нужные Rust-таргеты:
-
-```bash
-# Виртуалки / серверы
 rustup target add x86_64-unknown-linux-musl
 rustup target add aarch64-unknown-linux-musl
 ```
 
----
+Алиасы из корневого `.cargo/config.toml`:
+
+```bash
+cargo ws-release-musl-x86_64
+cargo ws-release-musl-aarch64
+```
+
+### CI-релизы
+
+Workflow'ы клиента — `.github/workflows/ws-*.yml`; теги клиента имеют префикс `ws-`.
+
+- Push в `main`, затрагивающий `bins/outline-ws-rust/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock` или `.cargo/**`, запускает `Nightly Release (client)`. Он переносит rolling-тег `ws-nightly` на этот коммит и заново публикует prerelease `Client Nightly`.
+- Nightly публикует `release`-сборки для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl` и `SHA256SUMS.txt`. Архивы называются `outline-ws-rust-nightly-<full-commit-sha>-<target>.tar.gz`.
+- Для стабильного релиза запустите вручную workflow `Release (client)` с `major_minor`, например `1.7`. CI находит последний тег `ws-v1.7.*`, увеличивает patch, обновляет `Cargo.toml` и `Cargo.lock`, создаёт release-коммит и пушит его в `main`.
+- После появления release-коммита в `main` создайте и отправьте подписанный тег локально (`git tag -s ws-vX.Y.Z -m ws-vX.Y.Z`). Push тега запускает `Tag Release (client)`, который собирает и публикует GitHub Release с теми же двумя таргетами.
+- Ручной push тега `ws-v*` тоже запускает `Tag Release (client)`.
 
 ### Feature flags
 
-Бинарь управляется Cargo feature flags. Комбинируйте по необходимости:
-
-| Фича | По умолч. | Эффект |
+| Фича | По умолчанию | Что делает |
 |---|---|---|
-| `h3` | ✓ | Транспорт H3/QUIC (тянет quinn + sockudo-ws/http3) |
-| `metrics` | ✓ | Prometheus-метрики; включает также метрики транспортного уровня (тянет prometheus + serde_json) |
-| `tun` | ✓ | Поддержка TUN-устройств (движки tun2udp + tun2tcp); отключить, чтобы полностью убрать TUN-код |
-| `mimalloc` | ✓ | Заменяет системный аллокатор на mimalloc; снижает RSS-фрагментацию при большом потоке соединений. Фоновый поток периодически вызывает `mi_collect`, возвращая освобождённую память ОС после всплесков трафика |
-| `env-filter` | ✓ | Динамический парсинг `RUST_LOG`; отключить, чтобы жёстко задать уровень `WARN` и сэкономить ~300 КБ на MIPS |
-| `multi-thread` | ✓ | Work-stealing планировщик Tokio; отключить, чтобы принудительно использовать `current_thread` и сэкономить ~100–200 КБ |
+| `h3` | да | HTTP/3-носители (`ws_h3`, `xhttp_h3`): quinn + sockudo-ws/http3 |
+| `metrics` | да | эндпоинт Prometheus `/metrics` и метрики транспортного уровня (prometheus + serde_json) |
+| `control` | да | аутентифицированный control-plane listener (`[control]`) |
+| `socks5` | да | SOCKS5 ingress (`src/proxy`); в Android-сборке выключен |
+| `tun` | да | TUN-движки (`tun2udp` + `tun2tcp`) |
+| `jemalloc` | да | аллокатор jemalloc; метрики кучи отдают `heap_mode="exact"`, `GET /control/alloc` возвращает статистику аллокатора |
+| `env-filter` | да | разбор `RUST_LOG`; без неё уровень логов зафиксирован на `WARN` (экономия ~300 КБ на MIPS) |
+| `multi-thread` | да | work-stealing планировщик Tokio; без неё `current_thread` (экономия ~100–200 КБ на MIPS) |
+| `mimalloc` | нет | прежний аллокатор, оставлен собираемым для сравнения; несовместим с `jemalloc` |
+| `test-tls` | нет | только для e2e-тестов: доверяет самоподписанному корню из `OUTLINE_WS_TEST_TLS_CA_DER`. В боевых сборках не включать |
 
----
+### Сборка бинаря
 
-### Виртуальные машины и серверы
-
-Нативная сборка для текущей машины (быстрее всего, использует все CPU-расширения):
+Нативная сборка под текущую машину:
 
 ```bash
-cargo build --release
+cargo build --release -p outline-ws-rust
 ```
 
-Статический бинарь x86-64 (работает на любом Linux x86-64 без зависимости от glibc):
+Статический бинарь x86-64 (без зависимости от glibc):
 
 ```bash
-cargo zigbuild --release --target x86_64-unknown-linux-musl
-# или короче
-cargo release-musl-x86_64
+cargo zigbuild --release -p outline-ws-rust --target x86_64-unknown-linux-musl
+# или
+cargo ws-release-musl-x86_64
 ```
 
-Статический бинарь AArch64 (ARM64-серверы, AWS Graviton, Ampere):
+Статический бинарь AArch64:
 
 ```bash
-cargo zigbuild --release --target aarch64-unknown-linux-musl
-# или короче
-cargo release-musl-aarch64
+cargo zigbuild --release -p outline-ws-rust --target aarch64-unknown-linux-musl
+# или
+cargo ws-release-musl-aarch64
 ```
 
-Отключить только одну фичу, сохранив остальные (напр. убрать метрики, оставив H3):
+Чтобы убрать одну фичу, отключите дефолтные и перечислите остальные. Пример без `metrics`:
 
 ```bash
-cargo zigbuild --release --no-default-features --features h3 --target x86_64-unknown-linux-musl
+cargo zigbuild --release -p outline-ws-rust --no-default-features \
+  --features h3,control,socks5,tun,jemalloc,env-filter,multi-thread \
+  --target x86_64-unknown-linux-musl
 ```
 
 ## Быстрый старт
 
-Минимальный локальный запуск через `config.toml`:
+`--config` по умолчанию — `config.toml` в текущем каталоге. Из корня workspace укажите путь к примеру:
 
 ```bash
-cargo run --release
+cargo run --release -p outline-ws-rust -- --config bins/outline-ws-rust/config.toml
 ```
 
-Пример запуска с переопределением параметров через CLI:
+Разовый запуск с параметрами из CLI:
 
 ```bash
-cargo run --release -- \
+cargo run --release -p outline-ws-rust -- \
   --listen [::]:1080 \
   --tcp-ws-url wss://example.com/SECRET/tcp \
   --tcp-mode h3 \
@@ -313,16 +315,13 @@ cargo run --release -- \
   --password 'Secret0'
 ```
 
-Пример настроек клиента:
+Настройки клиента для этого примера: SOCKS5-хост `::1` или `127.0.0.1`, порт `1080`.
 
-- SOCKS5 host: `::1` или `127.0.0.1`
-- SOCKS5 port: `1080`
-
-При `listen = "[::]:1080"` большинство систем создают dual-stack слушатель. Если ваша платформа не проксирует IPv4 через IPv6 сокеты, добавьте отдельный IPv4-слушатель.
+`listen = "[::]:1080"` на большинстве систем создаёт dual-stack слушатель. Если ваша платформа не отображает IPv4 на IPv6-сокеты, добавьте отдельный IPv4-слушатель.
 
 ### Совместимость с `hev-socks5-tunnel`
 
-`outline-ws-rust` принимает оба UDP-режима, которые использует [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel):
+`outline-ws-rust` принимает оба UDP-режима [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel):
 
 ```yaml
 socks5:
@@ -333,15 +332,13 @@ socks5:
   # pipeline: true
 ```
 
-- `udp: 'udp'` использует стандартный SOCKS5 `UDP ASSOCIATE`.
-- `udp: 'tcp'` использует проприетарный TCP-несущий UDP relay из `hev-socks5` (`CMD=0x05`), который тоже поддержан.
-- `pipeline: true` тоже принимается, в том числе вместе с username/password-аутентификацией.
+- `udp: 'udp'` — стандартный SOCKS5 `UDP ASSOCIATE`.
+- `udp: 'tcp'` — UDP-реле `hev-socks5` поверх TCP (`CMD=0x05`).
+- `pipeline: true` работает, в том числе с аутентификацией по логину и паролю.
 
 ## Конфигурация
 
-По умолчанию процесс читает [`config.toml`](config.toml).
-
-Пример:
+Процесс читает файл из `--config` / `PROXY_CONFIG` (по умолчанию `config.toml`). Ниже — выдержка; полный пример с комментариями — [`config.toml`](config.toml).
 
 ```toml
 [socks5]
@@ -422,6 +419,7 @@ listen = "[::1]:9090"
 # Достаёт SNI из ClientHello в QUIC Initial первой датаграммы и отправляет
 # наружу домен (а не IP), чтобы его резолвил выходной узел. Зеркалит [tun.tcp]
 # sniffing для QUIC.
+# sniff_quic = true
 # Домены включения в sniff-override (TCP + QUIC): когда задано и не пусто, ТОЛЬКО
 # хосты, совпавшие с суффиксом, перезаписываются в домен (чтобы их резолвил exit);
 # остальные сохраняют литеральный IP. По умолчанию пусто (override для всех, кроме исключений).
@@ -438,7 +436,7 @@ listen = "[::1]:9090"
 # connect_timeout_secs = 10
 # handshake_timeout_secs = 15
 # half_close_timeout_secs = 60
-# max_pending_server_bytes = 4194304
+# max_pending_server_bytes = 2097152
 # backlog_abort_grace_secs = 3
 # backlog_hard_limit_multiplier = 2
 # backlog_no_progress_abort_secs = 8
@@ -466,7 +464,7 @@ listen = "[::1]:9090"
 # запаркованный upstream, доиграть байтовый разрыв в обе стороны и продолжить
 # работу вместо сброса соединения приложения. Включается ТОЛЬКО при
 # подтверждённом server-side resume hit, поэтому против сервера без resumption
-# (дефолт на сервере) она инертна. См. раздел «TUN Mode».
+# (дефолт на сервере) она инертна. См. раздел «TUN-режим».
 # carrier_migration = true
 
 # [outline.probe] — шаблон, наследуемый каждой [[uplink_group]];
@@ -610,76 +608,90 @@ default = true
 via = "main"
 ```
 
-### Ключевые параметры конфигурации
+### Поведение параметров конфигурации
 
-- `transport` принимает `ss` (по умолчанию; алиас `shadowsocks`) или `vless`. Прежние значения `ws` / `websocket` — deprecated-алиасы для `ss` и будут удалены в следующем релизе. VLESS делит WSS-путь дозвона с `ss` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `vless_id` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
-- `link = "vless://UUID@HOST:PORT?type=...&security=...&alpn=...#NAME"` конфигурирует VLESS-аплинк одной share-link URI вместо явных полей `vless_id` / `vless_*_url` / `vless_mode`; `transport = "vless"` подставляется автоматически. То же значение принимает CLI-флаг `--vless-link` (`OUTLINE_VLESS_LINK`) и REST-payload `/control/uplinks` (`link`, алиас `share_link`). Смешение `link` с явными полями отвергается. Таблицу поддерживаемых query-параметров и ограничения см. в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md#5-vless-share-link-uris).
-- Должен быть настроен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Если не задано ни то ни другое, процесс завершится с ошибкой вместо молчаливого bind на `127.0.0.1:1080`.
-- `tcp_mode` / `udp_mode` (для `transport = "ss"`) и `vless_mode` (для `transport = "vless"`) задают per-direction carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade) или `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (только VLESS, XHTTP packet-up). Конфиг-блоки на каждую форму, цепочки fallback на этапе дозвона и поведение resume — см. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
-- `ipv6_first` (по умолчанию `false`) меняет предпочтение адресов после DNS для этого uplink с IPv4-first на IPv6-first для TCP, UDP, H1, H2 и H3 соединений.
-- `ipv4_only` (по умолчанию `false`) фильтрует IPv6 (AAAA-записи) при DNS-резолве серверов аплинка и эндпоинтов, принудительно оставляя только IPv4-адреса. Полезно на хостах без связности по IPv6 во избежание сетевых сбоев `NetworkUnreachable (OS 101)` и сопутствующего флаппинга линков. При `ipv4_only = true` параметр `ipv6_first` игнорируется. Наследуется от `[outline]` к `[[outline.uplinks]]` и далее к `[[outline.uplinks.fallbacks]]`, если не переопределен явно.
-- `disable_udp_gso` (по умолчанию `false`, в `[[outline.uplinks]]` и `[[outline.uplinks.fallbacks]]`) отключает UDP GSO на QUIC-сокетах аплинка (`ws_h3` / `xhttp_h3`): quinn отправляет по одной датаграмме на `sendmsg`. Нужен аплинку, чей выход не принимает сегментированные отправки, — обычно это аплинк, который `fwmark` уводит в VLAN сетевухи без аппаратной контрольной суммы на TX. Там каждая GSO-отправка падает с `EIO`, и каждое новое QUIC-соединение теряет первую пачку рукопожатия (лишняя секунда на дозвон). TCP-носители это не затрагивает. Наследуется fallback'ами, если не переопределён. Подробнее — раздел «Выход без UDP GSO» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
-- `method` также поддерживает `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` должен быть base64-кодированным PSK точной длины ключа выбранного шифра.
-- `[[socks5.users]]` включает локальную SOCKS5-аутентификацию по логину/паролю для нескольких пользователей. В каждой записи должны быть и `username`, и `password`.
-- `[socks5] username` + `password` по-прежнему поддерживаются как shorthand для одного пользователя.
-- CLI/env-эквиваленты `--socks5-username` / `SOCKS5_USERNAME` и `--socks5-password` / `SOCKS5_PASSWORD` тоже задают одного пользователя.
-- Тот же SOCKS5-listener принимает и стандартный `UDP ASSOCIATE`, и `hev-socks5` `UDP-in-TCP` (`CMD=0x05`); отдельный server-side переключатель не нужен.
-- `[outline.probe] min_failures` (по умолчанию `1`): количество последовательных неудачных проб, необходимых для объявления аплинка нездоровым. Увеличьте до `2` или `3`, чтобы допускать разовые сбои проб без запуска failover. То же значение используется в качестве порога стабильности последовательных успехов для `auto_failback`.
-- `[outline.load_balancing] tcp_chunk0_failover_timeout_secs` (по умолчанию `10`): сколько ждать первых байтов ответа от upstream после последней активности клиента, прежде чем разрешать TCP chunk-0 failover на другой аплинк. Увеличьте это значение, если линки всё ещё переключаются на медленных first-byte ответах. (Применимо к single-group конфигам; для multi-group то же поле живёт на каждом `[[uplink_group]]`.)
-- `[outline.load_balancing] auto_failback` (по умолчанию `false`): управляет тем, возвращает ли прокси трафик на восстановившийся аплинк с более высоким приоритетом.
-  - `false` (по умолчанию): активный аплинк заменяется **только при сбое**. Как только прокси переключился на резервный, он остаётся на нём, пока не упадёт сам резервный — никакого автоматического возврата на primary. Рекомендуется для production, чтобы исключить лишние обрывы соединений.
-  - `true`: если текущий активный аплинк здоров, но существует кандидат с **более высоким `weight`** (или равным weight и меньшим индексом в конфиге), прокси может вернуть трафик на него — но только после того, как кандидат накопит `min_failures` последовательных успешных циклов проб. Приоритет определяется `weight`, а не EWMA RTT: это исключает ложные переключения под нагрузкой, когда EWMA активного аплинка временно растёт из-за медленных соединений, а idle-резервный выглядит лучше по latency. Failback всегда движется в сторону большего `weight` (`1.0 → 1.5 → 2.0`): переключение на аплинк с меньшим weight через auto_failback невозможно — это failover, который требует probe-подтверждённого сбоя.
-- `h3_downgrade_secs` (per-group, по умолчанию `60`, принимается также как `mode_downgrade_secs`): сколько секунд аплинк, получивший сбой на «продвинутом» режиме (H3 application-level error) — для `transport = "ss"` и `transport = "vless"`, — будет использовать H2-fallback (далее H2 → H1 при необходимости внутри `connect_transport`) перед повторной попыткой исходного режима. Установите `0`, чтобы отключить автоматический даунгрейд.
-- `carrier_degraded_failover_secs` (per-group, по умолчанию `3 × mode_downgrade_secs`): carrier-quality failover для strict-выбора (`active_passive`). Аплинк, чьи пробы проходят по TCP-фоллбеку, считается полностью здоровым — поэтому раньше он держал активный слот вечно, даже когда каждый dial молча капался ниже сконфигурированного носителя (`ws_h3 → ws_h2` — TCP-over-TCP), и сосед с рабочим QUIC-носителем не выбирался никогда. Теперь, если активный аплинк работает ниже сконфигурированного носителя под одним **непрерывным** downgrade-окном не менее этого числа секунд, а в группе есть probe-здоровый кандидат равного или большего `weight`, чей носитель не деградирован и чья серия успешных проб достигла `min_failures`, выбор мягко (soft-switch) переключает ногу на этого кандидата. Одиночная вспышка ногу сдвинуть не может: единственное окно истекает через `mode_downgrade_secs` само, порог пересекают только сбои, продолжающие продлевать окно. `0` — отключить. Работает при любом `auto_failback`; правило `weight` сохраняется (сосед с меньшим weight не забирает ногу за одно лишь carrier-качество).
-- `state_path` (опционально): путь к TOML-файлу, в котором сохраняется выбор активного аплинка между рестартами. По умолчанию — путь к конфигу с заменой расширения на `.state.toml` (например, `config.toml` → `config.state.toml`). Если файл не удаётся открыть на запись (например, конфиг находится в `/etc/` с `ProtectSystem=strict`), при старте выводится предупреждение и процесс продолжает работу без персистентности. Прилагаемые systemd-юниты задают `STATE_PATH=/var/lib/outline-ws-rust/state.toml`, чтобы состояние попадало в записываемую директорию. Сохраняется только выбор активного аплинка (по имени); EWMA и штрафы не сохраняются — они восстанавливаются за один цикл проб после рестарта.
-- Группы аплинков (`[[uplink_group]]`) полностью изолированы в runtime: у каждой свой probe loop, standby pool, sticky-routes, активный аплинк и load-balancing политика.
-- `[outline.probe]` — шаблон: каждая группа его наследует, а `[uplink_group.probe]` переопределяет поля по отдельности. Подтаблицы пробников (`ws`/`http`/`dns`/`tcp`/`tls`) заменяются целиком — если группа задаёт `[uplink_group.probe.http]`, шаблонный `[outline.probe.http]` для неё игнорируется. Application-level пробы (`http`/`tcp`/`tls`) взаимоисключающие: один цикл выполняет одну, приоритет `tls → http → tcp`.
-- Имена аплинков должны быть глобально уникальны по всем группам (Prometheus-метрики пока используют лейбл `uplink="..."` без квалификатора группы).
-- Устаревшая секция `[bypass]` удалена. Мигрируйте bypass-префиксы в `[[route]]` с `via = "direct"`. Загрузка конфига с оставшейся `[bypass]`-таблицей завершится с явным сообщением о миграции.
-- Аплинки, шаблон пробника и настройки load-balancing живут под `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). Старая плоская форма с top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]` по-прежнему принимается для обратной совместимости и на старте логирует deprecation-предупреждение — мигрируйте в секцию `[outline]`. Без `[[uplinks]]` top-level `tcp_ws_url` / `password` / CLI-флаги (`--tcp-ws-url`, `--password`, ...) синтезируют single-uplink группу `default` как shorthand.
-- Флаги CLI и переменные окружения переопределяют настройки из файла.
-- `--metrics-listen` включает метрики даже без секции `[metrics]` в конфиге.
-- `--control-listen` / `CONTROL_LISTEN` и `--control-token` / `CONTROL_TOKEN` включают control plane без секции `[control]`. Оба значения должны быть заданы вместе; одно без другого приводит к ошибке старта.
-- `--tun-path` включает TUN даже без секции `[tun]` в конфиге.
-- `direct_fwmark` (опционально, top-level): значение `SO_MARK`, применяемое к TCP и UDP сокетам, открываемым для `direct`-маршрутизированных соединений. Используйте, когда bypass-трафик должен быть помечен для OS-level policy routing во избежание петель (например, чтобы bypass-маршрут сам не перехватывался TUN-интерфейсом).
-- `[dial] timeout_secs` (опционально, по умолчанию `10`): верхняя граница одного свежего дозвона носителя — TCP + TLS + HTTP upgrade для семейств WS/XHTTP либо QUIC + HTTP/3 handshake для H3 — и, в размере 70% от неё, на открытие стрима поверх уже установленного H3-соединения. Дефолт рассчитан на broadband и LTE, где свежий TLS-дозвон укладывается в несколько round trip'ов по широкому каналу. Для edge-класса он не годится: на 2G один round trip доходит до секунды, а одна только цепочка сертификатов вытекает несколько секунд, поэтому бюджет истекает посреди рукопожатия, каждая попытка засчитывается как runtime-отказ, а повторы съедают ту самую полосу, которой рукопожатию не хватило, — туннель сходится к состоянию «формально поднят, не несёт ничего». Для таких развёртываний значение стоит поднять (зажимается в `2..=120` с). Плата — худшее время failover'а: та же граница не даёт дозвону в сетевую чёрную дыру подвесить цепочку `h3 → h2 → h1` на весь бюджет SYN-ретрансмитов ОС (Linux ~127 с).
-- SOCKS5 → upstream TCP-сессии подвергаются двунаправленному idle timeout в 5 минут. Если в обоих направлениях не проходит ни одного байта в течение 300 секунд, туннель закрывается и FD освобождаются. Любая активность данных в любом направлении сбрасывает таймер. Это предотвращает накопление FD от брошенных соединений, особенно под TUN-интерцепторами, которые открывают множество TCP-сессий и бросают их без FIN.
-- Half-open TCP-сессии (клиент отправил EOF, прокси ожидает FIN от upstream) закрываются через 30 секунд. Это предотвращает удержание сокетов в полуоткрытом состоянии, если upstream не подтверждает отключение клиента.
+- `transport` принимает `ss` (по умолчанию; алиас `shadowsocks`) или `vless`. `ws` / `websocket` — deprecated-алиасы `ss`, будут удалены. VLESS использует те же поля носителя, что и `ss` (`ipv6_first`, `fwmark`, …), но берёт собственную пару URL/режим — `vless_ws_url` или `vless_xhttp_url` плюс `vless_mode` — и аутентифицируется одним `vless_id` вместо Shadowsocks `method` + `password`; `tcp_ws_url` / `udp_ws_url` при `transport = "vless"` отвергаются на разборе. VLESS UDP открывает по сессии на каждое назначение внутри аплинка, не больше `vless_udp_max_sessions` (по умолчанию `256`, вытеснение LRU), с вытеснением простаивающих через `vless_udp_session_idle_secs` (по умолчанию `60`, `0` отключает), проверка каждые `vless_udp_janitor_interval_secs` (по умолчанию `15`). Эти три ключа задаются в `[outline.load_balancing]` или на каждой `[[uplink_group]]`.
+- `link = "vless://UUID@HOST:PORT?type=...&security=...&alpn=...#NAME"` задаёт VLESS-аплинк одной share-link URI вместо `vless_id` / `vless_*_url` / `vless_mode`; `transport = "vless"` подставляется сам. Ссылка `ss://` (SIP002 userinfo) так же задаёт SS-аплинк. То же значение принимают `--vless-link` (алиас `--link`, env `OUTLINE_VLESS_LINK`) и payload `/control/uplinks` (`link`, алиас `share_link`). Смешивать `link` с явными полями нельзя — конфиг отвергается. Query-параметры и ограничения: [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md#5-vless-share-link-uris).
+- Нужен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Без них процесс завершается с ошибкой, а не слушает `127.0.0.1:1080`.
+- `tcp_mode` / `udp_mode` (`transport = "ss"`) и `vless_mode` (`transport = "vless"`) выбирают носитель: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade) или `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (XHTTP; SS берёт URL из `tcp_xhttp_url` / `udp_xhttp_url`, VLESS — из `vless_xhttp_url`). Старые значения `http1` / `h1`, `h2`, `h3` принимаются как алиасы `ws_h1`, `ws_h2`, `ws_h3`; `quic` отвергается (raw QUIC-аплинки удалены). Блоки конфига для каждой формы, цепочки fallback и поведение resume: [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
+- `ipv6_first` (по умолчанию `false`): аплинк предпочитает IPv6-адреса IPv4 для TCP, UDP, H1, H2 и H3.
+- `ipv4_only` (по умолчанию `false`) отбрасывает AAAA-записи при резолве серверов аплинка. Включайте на хостах без IPv6-связности, где попытки по IPv6 падают с `NetworkUnreachable (OS 101)` и аплинк флапает. При `ipv4_only = true` `ipv6_first` игнорируется. Наследуется от `[outline]` в `[[outline.uplinks]]` и `[[outline.uplinks.fallbacks]]`, если не переопределён.
+- `disable_udp_gso` (по умолчанию `false`, в `[[outline.uplinks]]` и `[[outline.uplinks.fallbacks]]`) отключает UDP GSO на QUIC-сокетах аплинка (`ws_h3` / `xhttp_h3`): quinn отправляет по одной датаграмме на `sendmsg`. Нужен аплинку, чей выход не принимает сегментированные отправки, — обычно тому, что `fwmark` уводит в VLAN сетевой карты без аппаратной контрольной суммы на TX: там каждая GSO-отправка падает с `EIO`, и каждое новое QUIC-соединение теряет первую пачку рукопожатия (~1 с лишняя на дозвон). TCP-носители не затрагиваются. Наследуется fallback'ами, если не переопределён. См. «Выход без UDP GSO» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
+- `method` принимает также `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` — base64-кодированный PSK ровно длины ключа шифра.
+- `[[socks5.users]]` включает локальную SOCKS5-аутентификацию для нескольких пользователей; в каждой записи нужны и `username`, и `password`. Одного пользователя задают `[socks5] username` + `password` или `--socks5-username` / `--socks5-password`.
+- Один и тот же SOCKS5-слушатель принимает и стандартный `UDP ASSOCIATE`, и `hev-socks5` `UDP-in-TCP` (`CMD=0x05`); отдельный переключатель не нужен.
+- `[outline.probe] min_failures` (по умолчанию `3`): сколько проб подряд должно провалиться, чтобы аплинк стал нездоровым. То же значение — порог успехов подряд для `auto_failback`. Поставьте `1`, чтобы уходить на failover после первой проваленной пробы.
+- `[outline.probe] interval_secs` (по умолчанию `120`): период цикла проб. Значение меньше 60 с даёт предупреждение при старте: частые handshake'и проб могут упереться в rate limit upstream'а.
+- `tcp_chunk0_failover_timeout_secs` (по умолчанию `10`, `[outline.load_balancing]` или на `[[uplink_group]]`): сколько ждать первых байтов ответа upstream'а после последней активности клиента, прежде чем разрешить TCP chunk-0 failover на другой аплинк. Увеличьте, если аплинки переключаются на медленных первых байтах ответа.
+- `auto_failback` (по умолчанию `false`, `[outline.load_balancing]` или на `[[uplink_group]]`): возвращать ли трафик на восстановившийся аплинк с более высоким приоритетом.
+  - `false`: активный аплинк меняется только при сбое. Перейдя на резервный, прокси остаётся на нём, пока не упадёт сам резервный. Так нет обрывов соединений, которые вызывает упреждающий возврат.
+  - `true`: пока текущий активный здоров, а есть кандидат с более высоким `weight` (или равным weight и меньшим индексом в конфиге), трафик возвращается на кандидата после того, как он пройдёт `min_failures` циклов проб подряд. Приоритет — `weight`, а не EWMA RTT: под нагрузкой EWMA активного аплинка растёт, а простаивающий резервный выглядит быстрее, и сравнение по EWMA переключало бы на этом. Failback идёт только в сторону большего weight (`1.0 → 1.5 → 2.0`); переход на аплинк с меньшим weight требует подтверждённого пробой failover'а.
+- `mode_downgrade_secs` (на группу, по умолчанию `60`, алиас `h3_downgrade_secs`): сколько аплинк после сбоя на «продвинутом» носителе (например, H3 application error вроде `H3_INTERNAL_ERROR`) остаётся на ранг ниже (`ws_h3 → ws_h2`, `xhttp_h3 → xhttp_h2`), прежде чем снова попробовать заданный носитель. Действует для `ss` и `vless`. `0` отключает даунгрейд.
+- `carrier_degraded_failover_secs` (на группу, по умолчанию `3 × mode_downgrade_secs`): failover по качеству носителя для строгого выбора (`active_passive`). Аплинк, чьи пробы проходят по TCP-фоллбеку, считается здоровым, поэтому без этого параметра он держал бы активный слот, даже когда каждый дозвон ограничен ниже заданного носителя (`ws_h3 → ws_h2`, TCP поверх TCP). Если активный аплинк проработал ниже заданного носителя под одним непрерывным окном даунгрейда не меньше этого числа секунд, а в группе есть здоровый по пробам кандидат с равным или большим `weight`, чей носитель не деградирован и чья серия успешных проб достигла `min_failures`, выбор мягко переключается на этого кандидата. Одиночная вспышка сработать не может: одно окно истекает через `mode_downgrade_secs`, порог пересекают только сбои, которые продолжают продлевать окно. `0` отключает. Работает при любом `auto_failback`; кандидат с меньшим weight не забирает слот только за качество носителя.
+- `state_path` (опционально): TOML-файл, где хранится выбор активного аплинка между рестартами. По умолчанию — путь к конфигу с расширением `.state.toml` (`config.toml` → `config.state.toml`). Если файл нельзя записать (например, конфиг в `/etc/` под `ProtectSystem=strict`), при старте пишется предупреждение и процесс работает без сохранения. Прилагаемые юниты задают `STATE_PATH=/var/lib/outline-ws-rust/_default/state.toml` (шаблон: `/var/lib/outline-ws-rust/<instance>/state.toml`). Сохраняется только имя активного аплинка; EWMA и штрафы восстанавливаются за один цикл проб после рестарта.
+- У каждой `[[uplink_group]]` свой probe loop, standby-пул, sticky-routes, активный аплинк и политика балансировки; группы не делят runtime-состояние.
+- `[outline.probe]` — шаблон: каждая группа его наследует, `[uplink_group.probe]` переопределяет отдельные поля. Подтаблицы проб (`ws` / `http` / `dns` / `tcp` / `tls`) заменяются целиком: если группа задаёт `[uplink_group.probe.http]`, шаблонный `[outline.probe.http]` для неё не действует. Application-level пробы (`http` / `tcp` / `tls`) взаимоисключающие: за цикл выполняется одна, приоритет `tls → http → tcp`.
+- Имена аплинков должны быть уникальны по всем группам: лейбл Prometheus `uplink="..."` не содержит группы.
+- Секция `[bypass]` удалена. Перенесите bypass-префиксы в `[[route]]` с `via = "direct"`; конфиг с `[bypass]` не загружается и выдаёт ошибку с указанием миграции.
+- Аплинки, шаблон проб и настройки балансировки живут под `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). Старая плоская форма (top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]`) ещё загружается и пишет deprecation-предупреждение. Если аплинков не задано, top-level `tcp_ws_url` / `password` или CLI-флаги (`--tcp-ws-url`, `--password`, …) создают группу `default` с одним аплинком.
+- Флаги CLI и переменные окружения переопределяют файл. `--metrics-listen` включает метрики без `[metrics]`; `--tun-path` включает TUN без `[tun]`; `--control-listen` + `--control-token` включают control plane без `[control]` — нужны оба, один без другого даёт ошибку старта.
+- `direct_fwmark` (опционально, top-level): `SO_MARK` для TCP- и UDP-сокетов `direct`-соединений. Нужен, когда bypass-трафик надо пометить для policy routing, например чтобы bypass-маршрут не перехватывался снова TUN-интерфейсом.
+- `[dial] timeout_secs` (по умолчанию `10`, ограничивается диапазоном `2..=120`): верхняя граница одного свежего дозвона носителя — TCP + TLS + HTTP upgrade для WS/XHTTP или QUIC + HTTP/3 handshake — и, в размере 70 % от неё, открытия стрима на установленном H3-соединении. 10 с хватает на broadband и LTE. На 2G один round trip близок к секунде, а одна цепочка сертификатов передаётся несколько секунд, поэтому бюджет в 10 с истекает посреди рукопожатия, каждая попытка засчитывается как runtime-сбой, а повторы съедают полосу, которой рукопожатию не хватило: аплинк числится поднятым и ничего не передаёт. Для таких каналов увеличьте значение. Цена — худшее время failover'а: именно эта граница не даёт дозвону в чёрную дыру держать цепочку `h3 → h2 → h1` весь бюджет SYN-ретрансмитов ОС (Linux ~127 с).
+- `[tcp_timeouts]` ограничивает SOCKS5 TCP-сессии, значения в секундах:
 
-### Полезные переопределения через CLI и переменные окружения
+  | Ключ | По умолчанию | Что делает |
+  |---|---|---|
+  | `socks_upstream_idle_secs` | `300` | закрыть туннелируемую SOCKS5-сессию, если столько времени не было payload ни в одну сторону; keepalive-кадры таймер не сбрасывают. Освобождает FD соединений, которые TUN-интерцепторы открывают и бросают без FIN |
+  | `direct_idle_secs` | `120` | то же для `direct`-сессий |
+  | `post_client_eof_downstream_secs` | `600` | сколько после полузакрытия со стороны клиента ждать, пока downstream доотдаст данные и пришлёт FIN. Нужно долгим запросам (большой upload, затем минуты работы сервера); прежние 30 с обрывали их посреди ответа |
+  | `upstream_response_secs` | `15` | срок ответа chunk-0 на аплинк, когда кандидатов для failover не осталось |
 
-- `--config` / `PROXY_CONFIG`
-- `--listen` / `SOCKS5_LISTEN`
-- `--socks5-username` / `SOCKS5_USERNAME`
-- `--socks5-password` / `SOCKS5_PASSWORD`
-- `--tcp-ws-url` / `OUTLINE_TCP_WS_URL`
-- `--tcp-mode` / `OUTLINE_TCP_MODE`
-- `--udp-ws-url` / `OUTLINE_UDP_WS_URL`
-- `--udp-mode` / `OUTLINE_UDP_MODE`
-- `--method` / `SHADOWSOCKS_METHOD`
-- `--password` / `SHADOWSOCKS_PASSWORD`
-- `--metrics-listen` / `METRICS_LISTEN`
-- `--tun-path` / `TUN_PATH`
-- `--tun-name` / `TUN_NAME`
-- `--tun-mtu` / `TUN_MTU`
-- `--fwmark` / `OUTLINE_FWMARK`
-- `--ipv6-first` / `OUTLINE_IPV6_FIRST`
-- `--ipv4-only` / `OUTLINE_IPV4_ONLY`
-- `--state-path` / `STATE_PATH`
+### Флаги CLI и переменные окружения
+
+| Флаг | Env | Что задаёт |
+|---|---|---|
+| `--config` | `PROXY_CONFIG` | путь к конфигу (по умолчанию `config.toml`) |
+| `--listen` | `SOCKS5_LISTEN` | адрес SOCKS5-слушателя |
+| `--socks5-username` | `SOCKS5_USERNAME` | единственный SOCKS5-пользователь |
+| `--socks5-password` | `SOCKS5_PASSWORD` | пароль этого пользователя |
+| `--transport` | `OUTLINE_TRANSPORT` | `ss` или `vless` |
+| `--tcp-ws-url` | `OUTLINE_TCP_WS_URL` | WebSocket URL для SS TCP |
+| `--tcp-xhttp-url` | `OUTLINE_TCP_XHTTP_URL` | базовый XHTTP URL для SS TCP |
+| `--tcp-mode` | `OUTLINE_TCP_MODE` | носитель SS TCP |
+| `--udp-ws-url` | `OUTLINE_UDP_WS_URL` | WebSocket URL для SS UDP |
+| `--udp-xhttp-url` | `OUTLINE_UDP_XHTTP_URL` | базовый XHTTP URL для SS UDP |
+| `--udp-mode` | `OUTLINE_UDP_MODE` | носитель SS UDP |
+| `--vless-ws-url` | `OUTLINE_VLESS_WS_URL` | WebSocket URL для VLESS |
+| `--vless-xhttp-url` | `OUTLINE_VLESS_XHTTP_URL` | базовый XHTTP URL для VLESS |
+| `--vless-mode` | `OUTLINE_VLESS_MODE` | носитель VLESS |
+| `--vless-link` (`--link`) | `OUTLINE_VLESS_LINK` | аплинк из share-link `vless://` или `ss://` |
+| `--method` | `SHADOWSOCKS_METHOD` | шифр Shadowsocks |
+| `--password` | `SHADOWSOCKS_PASSWORD` | пароль / PSK Shadowsocks |
+| `--fwmark` | `OUTLINE_FWMARK` | `SO_MARK` аплинка |
+| `--ipv6-first` | `OUTLINE_IPV6_FIRST` | предпочитать IPv6 для аплинка |
+| `--ipv4-only` | `OUTLINE_IPV4_ONLY` | только IPv4 для аплинка |
+| `--metrics-listen` | `METRICS_LISTEN` | адрес слушателя метрик |
+| `--control-listen` | `CONTROL_LISTEN` | адрес control-plane слушателя |
+| `--control-token` | `CONTROL_TOKEN` | bearer-токен control plane |
+| `--tun-path` | `TUN_PATH` | путь к TUN-устройству |
+| `--tun-name` | `TUN_NAME` | имя TUN-интерфейса |
+| `--tun-mtu` | `TUN_MTU` | MTU TUN |
+| `--worker-threads` | `WORKER_THREADS` | число worker-потоков Tokio (по умолчанию — число CPU) |
+| `--thread-stack-size-kb` | `THREAD_STACK_SIZE_KB` | стек потока Tokio в КиБ (по умолчанию `2048`) |
+| `--state-path` | `STATE_PATH` | файл состояния активного аплинка |
+| `--fingerprint-profile` | `OUTLINE_FINGERPRINT_PROFILE` | стратегия браузерного отпечатка: `off`, `stable`, `per_host_stable`, `random` |
 
 ## Policy routing
 
-Декларативная маршрутизация по CIDR назначения, вычисляется first-match-wins с явным правилом `default = true`. Каждое правило выбирает один из трёх таргетов через `via = "..."`:
+Маршрутизация по назначению, правила проверяются по порядку до первого совпадения (first-match-wins), плюс одно явное правило `default = true`. Каждое правило выбирает цель через `via = "..."`:
 
-- **имя группы** (одной из объявленных `[[uplink_group]]`) — соединение идёт через UplinkManager этой группы;
-- **`direct`** — напрямую мимо всех аплинков (эквивалент прежнего `[bypass]`);
-- **`drop`** — SOCKS5 `REP=0x02 (connection not allowed)` для TCP, тихий drop для UDP.
+- имя группы (одной из объявленных `[[uplink_group]]`): соединение идёт через uplink manager этой группы;
+- `direct`: напрямую, мимо аплинков (то, что раньше делал `[bypass]`);
+- `drop`: SOCKS5 `REP=0x02 (connection not allowed)` для TCP, тихий сброс для UDP.
 
-IP-цели матчатся по CIDR-префиксам правил. Доменные цели (например, SOCKS5-клиент передал hostname для remote-resolve) в принципе не могут заматчить CIDR-префикс — они матчатся по доменным суффиксам правила (`domains`), а если ни одно правило их не перечисляет — проваливаются в default. Прокси намеренно не резолвит домен локально ради маршрутизации: это утечка DNS мимо туннеля и слом remote-resolve-контракта.
+IP-цели сравниваются с CIDR-префиксами правил. Доменные цели (SOCKS5-клиент передал hostname для удалённого резолва) с CIDR-префиксом не совпадают никогда; они сравниваются с доменными суффиксами `domains` и, если ни одно правило их не перечисляет, уходят в default. Прокси не резолвит домен локально ради маршрутизации: DNS-запрос ушёл бы мимо туннеля, а удалённый резолв сломался бы.
 
-Правила можно редактировать во время работы через `/control/routes` и
-переупорядочивать через `/control/routes/reorder` — эндпоинты и оговорку про
-hot-apply см. «Control plane» ниже.
+Правила можно менять на ходу через `/control/routes` и переупорядочивать через `/control/routes/reorder`; эндпоинты и ограничение hot-apply — в разделе [Control plane](#control-plane).
 
 ### Конфигурация маршрутов
 
@@ -732,70 +744,74 @@ fallback_direct = true    # или: fallback_drop = true / fallback_via = "backu
 
 Поля правила:
 
-- `prefixes` / `file` / `files`: inline-список и/или один или несколько путей к файлам (один CIDR на строку, `#` комментарии и пустые строки игнорируются). Все источники мерджатся в CIDR-набор правила. `file` — удобный шорткат для `files` из одного элемента; их можно комбинировать.
-- `domains` / `domain_file` / `domain_files`: доменные суффиксы, по которым правило матчит **доменные цели** (тот же формат файла, один суффикс на строку). `example.com` матчит сам домен и любой поддомен (`a.b.example.com`), строго по границам лейблов; регистр не важен, завершающая точка игнорируется; `.example.com` и `*.example.com` — эквивалентные написания того же суффикса. Специальный паттерн `"*"` матчит любой домен — используйте его как catch-all-правило, чтобы доменные цели получали явный маршрут, а не default. Правило может совмещать CIDR- и доменные источники: IP матчатся по CIDR-части, домены — по доменной.
-- `file_poll_secs`: как часто (в секундах) проверять mtime каждого файла и перечитывать содержимое при изменении. По умолчанию `60`. Применяется к каждому пути из `files` и `domain_files`.
-- `via`: таргет для матчащего трафика. Обязателен (кроме `default = true`-правила, где выбирает fallthrough).
-- `fallback_via` / `fallback_direct` / `fallback_drop`: взаимоисключающие; используются, когда primary-`via` — группа с нулём healthy-аплинков в момент диспатча.
-- `invert = true`: правило матчит адреса, которых НЕТ в его префикс-наборе. Применяется только к CIDR-части; сочетание с `domains` отклоняется при загрузке («не в этом списке доменов» поверх двух видов адресов неоднозначно — используйте отдельное доменное правило).
-- `default = true`: ровно одно правило должно нести этот флаг; оно матчит всё, что не подошло по предыдущим правилам. `default`-правило не должно задавать ни префиксные, ни доменные источники.
+| Поле | По умолчанию | Значение |
+|---|---|---|
+| `prefixes` / `file` / `files` | — | inline-список CIDR и/или файлы с одним CIDR на строку (комментарии `#` и пустые строки пропускаются). Все источники объединяются в CIDR-набор правила; `file` — сокращение для `files` из одного элемента, их можно сочетать |
+| `domains` / `domain_file` / `domain_files` | — | доменные суффиксы для доменных целей (тот же формат файлов, один суффикс на строку). `example.com` совпадает с самим доменом и любым поддоменом (`a.b.example.com`) по границе меток; регистр не важен, завершающая точка игнорируется, `.example.com` и `*.example.com` — то же самое. `"*"` совпадает с любым доменом — используйте как catch-all, чтобы доменные цели получили явный маршрут. Правило может сочетать CIDR и домены: IP сравниваются с CIDR, домены — с суффиксами |
+| `file_poll_secs` | `60` | как часто делать `stat` каждого файла из `file` / `files` / `domain_file` / `domain_files`; содержимое перечитывается при смене mtime |
+| `via` | — | цель для совпавшего трафика; обязательно, кроме правила `default = true`, где это цель по умолчанию |
+| `fallback_via` / `fallback_direct` / `fallback_drop` | — | взаимоисключающие; применяются, когда `via` — группа без здоровых аплинков в момент диспатча |
+| `invert` | `false` | правило совпадает с адресами вне своего набора префиксов. Только CIDR; с `domains` не сочетается (отвергается при загрузке — заведите отдельное доменное правило) |
+| `default` | — | ровно одно правило должно иметь `default = true`; оно совпадает со всем, что не совпало выше, и не может иметь префиксов или доменов |
 
 ### Матчинг префиксов
 
-Внутренне inline + file префиксы каждого правила мерджатся в [`CidrSet`](src/routing/cidr.rs) — отсортированные `[start, end]` диапазоны (IPv4 как `u32`, IPv6 как `u128`) с объединением перекрывающихся и соседних. Поиск через `partition_point` (бинарный поиск), O(log n) на правило.
+Inline- и файловые префиксы правила объединяются в [`CidrSet`](../../crates/outline-routing/src/cidr.rs): отсортированные диапазоны `[start, end]` (IPv4 как `u32`, IPv6 как `u128`), пересекающиеся и смежные диапазоны слиты. Поиск — двоичный (`partition_point`), O(log n) на правило.
 
 ### Hot-reload
 
-Для каждого правила хотя бы с одним путём в `file` / `files` / `domain_files` запускается фоновая tokio-задача, которая опрашивает `mtime` каждого из перечисленных файлов каждые `file_poll_secs` секунд. При изменении любого из них CIDR- и доменный наборы правила пересобираются из inline-записей и всех перечитанных файлов, после чего атомарно подменяются (`Arc<RwLock<..>>`) — другие правила и структура таблицы не затрагиваются. Ошибка чтения или парсинга при reload оставляет предыдущие наборы и пишет warning.
+Каждое правило хотя бы с одним `file` / `files` / `domain_file` / `domain_files` получает фоновую задачу, которая раз в `file_poll_secs` проверяет mtime каждого файла. При изменении CIDR- и доменный наборы правила собираются заново из inline-записей и всех файлов и атомарно подменяются (`ArcSwap`); другие правила не затрагиваются. При ошибке чтения или разбора остаются прежние наборы, в лог пишется предупреждение.
 
 ### Idle timeout прямых соединений
 
-`direct`-соединения имеют двунаправленный idle timeout 2 минуты. Если в обоих направлениях не проходит ни одного байта в течение 120 секунд — оба сокета закрываются и FD освобождаются. Это предотвращает неограниченное накопление FD от клиентов, которые открывают TCP-соединения (например, DNS-over-HTTPS, DNS-over-TLS) и бросают их без FIN — при этом сервер держит свою сторону открытой. Любая активность данных в любом направлении сбрасывает таймер, поэтому легитимные долгоживущие push-notification и keepalive соединения не затрагиваются.
+`direct`-соединения закрываются после 120 с (`[tcp_timeouts] direct_idle_secs`) без байтов в обе стороны, их FD освобождаются. Иначе клиенты, которые открывают TCP-соединения (DNS-over-HTTPS, DNS-over-TLS) и бросают их без FIN, держали бы оба сокета открытыми. Любые данные в любую сторону сбрасывают таймер.
 
 ### Fallback-семантика
 
-Когда primary-`via` резолвится в группу без healthy-аплинков, пробуется fallback-таргет правила (один уровень, без рекурсии). Health проверяется без побочных эффектов в момент диспатча через `UplinkManager::has_any_healthy(transport)` — дешевле, чем собирать список кандидатов, и не трогает sticky-routes. Если primary-группа восстановится посреди сессии, новые соединения пойдут через неё — fallback консультируется только при диспатче.
+Если `via` указывает на группу без здоровых аплинков, используется fallback-цель правила (один уровень, без рекурсии). Здоровье читается в момент диспатча через `UplinkManager::has_any_healthy(transport)`, без построения списка кандидатов и без изменения sticky-routes. Когда основная группа восстанавливается, новые соединения снова идут через неё; fallback проверяется только при диспатче.
 
 ### Байпасс на уровне группы (`bypass_when_down`)
 
-Вместо `fallback_direct = true` на каждом маршруте байпасс можно включить на самой группе: при `bypass_when_down = true` на `[[uplink_group]]` трафик, маршрутизируемый в группу, диспатчится `direct`, пока в группе нет ни одного здорового uplink'а — включая неявный диспатч «всё в дефолтную группу» при отсутствии `[[route]]`. Явный fallback маршрута по-прежнему имеет приоритет; байпасс затем применяется (на один уровень вглубь) к группе, в которую привёл fallback. Как и route-fallback, решение переоценивается вживую на каждый dial/датаграмму/flow, поэтому трафик возвращается в туннель, как только любой uplink оживает. На хостах, где TUN держит default route, задайте `direct_fwmark`, чтобы байпасс-сокеты выходили из TUN routing loop. Детали — в разделе «Байпасс полностью упавшей группы» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
+Вместо `fallback_direct = true` на каждом маршруте группа может задать `bypass_when_down = true` на своей `[[uplink_group]]`: пока в группе нет здорового аплинка, трафик в неё идёт `direct`, включая неявный диспатч «всё в группу по умолчанию», когда `[[route]]` не задан. Явный fallback маршрута имеет приоритет; байпасс тогда применяется (на один уровень) к группе, куда попал fallback. Решение пересчитывается на каждый дозвон / датаграмму / флоу, поэтому трафик возвращается в туннель, как только любой аплинк восстановится. На хостах, где TUN держит маршрут по умолчанию, задайте `direct_fwmark`, чтобы обходные сокеты не возвращались в TUN. См. «Байпасс полностью упавшей группы» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
 
 ## Транспортные режимы
 
-Четыре поддерживаемых формы аплинка (native SS, SS/WS/H3, VLESS/WS/H3, VLESS/XHTTP/H3) описаны отдельно — с TOML-примерами и полными цепочками fallback на этапе дозвона — в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md). Заметки ниже покрывают только runtime-детали для оператора, которых нет в том документе.
+Четыре формы аплинка — Shadowsocks поверх WebSocket, Shadowsocks поверх XHTTP, VLESS поверх WebSocket и VLESS поверх XHTTP — описаны с TOML-примерами и цепочками fallback при дозвоне в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md). Здесь — runtime-детали, которых в том справочнике нет.
 
-Рекомендуемый подход:
+Выбор носителя:
 
-- предпочитайте `ws_h1` как консервативную базу
-- включайте `ws_h2` только если reverse proxy и origin проверены на совместимость с RFC 8441
-- включайте `ws_h3` только если QUIC явно поддерживается и доступен
-- включайте `xhttp_h2` / `xhttp_h3`, когда WebSocket Upgrade блокируется на сети; диспетчер автоматически проваливается до `xhttp_h1`, если режутся и QUIC, и ALPN h2 (h1-шаг ограничен по throughput, но wire-URL остаётся идентичным xray)
+- `ws_h1` проходит через любой reverse proxy, пропускающий WebSocket Upgrade;
+- `ws_h2` требует reverse proxy и origin с поддержкой RFC 8441;
+- `ws_h3` требует доступности сервера по QUIC (UDP);
+- `xhttp_h2` / `xhttp_h3` — когда WebSocket Upgrade режется на пути; дозвон сам спускается до `xhttp_h1`, если режутся ещё и QUIC, и ALPN h2 (у h1 ниже пропускная способность, но URL тот же, что у xray).
 
-**Общий QUIC-эндпоинт:** H3-соединения без per-uplink `fwmark` разделяют один UDP-сокет на address family (один для IPv4, один для IPv6). Это означает, что N warm-standby соединений не открывают N UDP-сокетов. Соединения с `fwmark` по-прежнему используют выделенный сокет, поскольку метка должна быть применена до первого `sendmsg`.
+QUIC-эндпоинты. Каждое H3-соединение (`ws_h3`, `xhttp_h3`) получает собственный QUIC-эндпоинт и UDP-сокет на новом локальном порту и живёт ровно столько, сколько соединение. Поэтому NAT-трансляция, застрявшая на мёртвом назначении, затрагивает одно соединение, а не все последующие дозвоны. Каждый эндпоинт выделяет ~2,9 МиБ приёмного буфера на Linux с GRO; gauge `outline_ws_h3_endpoints_active{kind}` считает живые эндпоинты. `fwmark` ставится на сокет до первого `sendmsg`.
 
-QUIC keep-alive пинги отправляются каждые 10 секунд для предотвращения истечения NAT-маппингов и обнаружения мёртвых соединений.
+QUIC keep-alive PING уходят каждые 8–12 с (джиттер на процесс; `[quic] keepalive_secs` переопределяет), чтобы NAT-трансляции не истекали, а сервер замечал мёртвые соединения раньше idle timeout (`[quic] idle_timeout_secs`, по умолчанию 30 с из браузерного профиля).
 
-**Окно даунгрейда режима:** per-uplink окно, в течение которого «продвинутый» режим (H3 / xhttp_h3) пропускается после сбоя, конфигурируется параметром `h3_downgrade_secs` (по умолчанию 60 с; принимается также как `mode_downgrade_secs`). `0` отключает. То же окно открывается и при сбоях TCP-проб на H3-аплинках — без этого probe-driven чередование pass/fail вызывало бы failover-переключение на каждом цикле в режиме `active_passive + global`. Раскладка по двум слоям (per-host cache + per-uplink window) — см. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md#механика-окна-даунгрейда).
+Окно даунгрейда. После сбоя на «продвинутом» носителе (H3 / `xhttp_h3`) аплинк остаётся на ранг ниже на `mode_downgrade_secs` (по умолчанию 60 с; алиас `h3_downgrade_secs`; `0` отключает). То же окно открывают провалы TCP-проб на H3-аплинках; иначе в `active_passive + global` проба, чередующая успех и провал, вызывала бы failover каждый цикл. Два уровня (кэш на хост + окно на аплинк) описаны в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md#механика-окна-даунгрейда).
 
-Скоринг во время окна даунгрейда (`per_flow` scope):
-- Пока активен таймер даунгрейда, к эффективному latency-скору аплинка добавляется `failure_penalty_max` поверх обычного штрафа. Это предотвращает возврат `active_active + per_flow`-потоков на primary, пока тот работает в H2-режиме.
+Скоринг во время окна даунгрейда (scope `per_flow`): пока окно открыто, к эффективной задержке аплинка поверх обычного штрафа добавляется `failure_penalty_max_ms`. Когда обычный штраф затухает, эта добавка не даёт флоу `active_active + per_flow` вернуться на primary, работающий на H2-фоллбеке, пока окно не закроется.
 
-Warm-standby соединения учитывают активное состояние даунгрейда: пока аплинк в режиме H3→H2, новые standby-слоты заполняются через H2.
+Warm-standby следует даунгрейду: пока аплинк ограничен с H3 до H2, новые standby-соединения открываются по H2.
 
-**Таймауты транспортных рукопожатий:** каждый путь установки WebSocket-соединения имеет жёсткий верхний предел, чтобы тихо сломанный сервер или чёрная дыра в сети не могли подвесить новые сессии на минуты, пока аплинк формально считается «здоровым».
+Таймауты рукопожатия. У каждого пути подключения есть верхняя граница, чтобы сервер в чёрной дыре не задерживал новые сессии на минуты, пока аплинк числится здоровым:
 
-- **Свежий коннект** (новый TCP/QUIC + TLS + handshake протокола): 10 с для H1, H2 и H3. Без этого предела сетевая чёрная дыра может держать соединение до ~127 с (TCP SYN retransmit в Linux, для H1/H2) или до 120 с (QUIC `max_idle_timeout`, для H3).
-- **Переиспользуемое shared H2/H3-соединение** (открытие нового WebSocket-стрима поверх уже установленного коннекта): 7 с на каждое await у H3, 10 с на каждое await у H2. Это ловит случай, когда handle из shared-пула ещё формально «открыт» с точки зрения клиентской библиотеки, но нижележащий путь уже мёртв — например, после NAT rebinding, запоздало принятого graceful-close от сервера, или тихой потери пакетов.
+| Ситуация | Граница (по умолчанию) | Без границы |
+|---|---|---|
+| Свежее подключение (TCP/QUIC + TLS + HTTP handshake), H1 / H2 / H3 | `[dial] timeout_secs`, 10 с | ретрансмиты SYN в Linux ~127 с (H1/H2); QUIC idle timeout (H3) |
+| Новый стрим на общем H2-соединении | `[dial] timeout_secs`, 10 с | ожидание мёртвого соединения |
+| Новая сессия на H3-соединении из пула | 8 × сглаженный RTT соединения, не меньше 3 с и не больше 70 % от `[dial] timeout_secs` (7 с); затем сессия перезванивает на новое соединение | ожидание, пока QUIC idle timeout закроет соединение |
 
-При срабатывании таймаута ошибка трактуется как upstream runtime failure: запись в shared-пуле (если была) инвалидируется при следующей попытке открыть стрим, `report_runtime_failure` выставляет cooldown, и probe немедленно будится. В режиме `active_passive + global` активный аплинк меняется только после того, как probe подтвердит недоступность primary на собственном свежем коннекте — транзиентные сбои shared-пула не меняют exit IP, а восстановление при реальной недоступности primary укладывается примерно в один цикл пробы.
+Соединение из пула, чей путь умер (NAT rebinding, запоздавшее закрытие сервером, тихие потери), для клиентской библиотеки выглядит открытым; эти границы такие случаи ловят. Таймаут считается runtime-сбоем upstream'а: запись в пуле инвалидируется при следующем открытии, `report_runtime_failure` ставит cooldown и будит пробу. В `active_passive + global` активный аплинк меняется только после того, как проба подтвердит сбой на собственном свежем подключении, поэтому кратковременный сбой пула не меняет выходной IP, а восстановление при действительно недоступном primary занимает около одного цикла проб.
 
-**Сериализация переподключений shared-соединений:** когда shared H2 или H3-соединение падает и N сессий одновременно пытаются переподключиться, выполняется только один новый TCP+TLS+H2 или QUIC+TLS+H3 хэндшейк. Per-server-key `tokio::sync::Mutex<()>` сериализует медленный путь: первый ожидающий устанавливает соединение и кэширует его; все остальные находят свежую запись под локом и переиспользуют её без запуска собственного хэндшейка. Это предотвращает thundering herd, когда N сессий независимо открывают полное TLS-согласование с одним сервером после падения shared-соединения.
+Переподключение общего соединения. Когда общее H2- или H3-соединение рвётся и N сессий одновременно пытаются переподключиться, выполняется одно новое рукопожатие. Медленный путь сериализуется `tokio::sync::Mutex<()>` на ключ сервера: первый ожидающий подключается и кладёт соединение в кэш, остальные находят его под блокировкой и переиспользуют вместо N TLS-рукопожатий к одному серверу.
 
-**Классификация обрывов SOCKS5-согласования:** когда локальный SOCKS5-клиент (TUN-интерцептор, например Sing-box или Clash) прерывает хэндшейк досрочно — закрывает TCP-соединение после метод-согласования, но до или во время CONNECT-запроса — возникающие ошибки `early eof` / `failed to read request header` классифицируются как ожидаемые отключения клиента и логируются на уровне `debug`, а не `warn`. Это нормальное поведение при reconnect-штормах, когда TUN-интерцептор сбрасывает пул соединений.
+Обрывы SOCKS5-согласования. Когда локальный SOCKS5-клиент (TUN-интерцептор вроде sing-box или Clash) закрывает соединение после greeting, но до или во время запроса CONNECT, ошибки `early eof` / `failed to read request header` пишутся на уровне `debug`, а не `warn`. TUN-интерцепторы так делают, когда сбрасывают пул соединений при переподключениях.
 
 ## UDP по HTTP/3 datagram
 
-На `ws_h3` и `xhttp_h3` клиентский UDP (Shadowsocks / SS2022 и VLESS) может идти фреймами HTTP/3 DATAGRAM (RFC 9297), привязанными к потоку запроса носителя, а не внутри надёжного потока. Так убираются блокировка очереди и двойная повторная отправка у вложенного QUIC. Подробности и правила по протоколам — в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md#udp-по-http3-datagram).
+На `ws_h3` и `xhttp_h3` клиентский UDP (Shadowsocks / SS2022 и VLESS) может идти в HTTP/3 DATAGRAM-кадрах (RFC 9297), привязанных к request stream носителя, вместо самого стрима. Это убирает head-of-line blocking и двойную ретрансмиссию QUIC внутри QUIC. Правила по протоколам: [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md#udp-по-http3-datagram).
 
 ```toml
 [quic]
@@ -804,321 +820,379 @@ Warm-standby соединения учитывают активное состо
 # udp_datagrams = true
 ```
 
-- **Согласование.** Клиент шлёт `x-outline-udp-datagram: 1`; сервер соглашается, вернув заголовок (его собственный `[server.h3] udp_datagrams`, по умолчанию `true`). Нет эха — поток, байт в байт как раньше, поэтому любая сторона может быть старой.
-- **Где работает.** Только `ws_h3` / `xhttp_h3`, только UDP-планы, никогда с Safari-профилем (он не объявляет `max_datagram_frame_size`).
-- **Размеры.** Выбор на каждый пакет по текущему `max_datagram_size()`; не влезающий пакет идёт по потоку. Клиент стартует с MTU 1200 до PMTUD, поэтому сразу после подключения большинство полноразмерных пакетов ещё идёт по потоку. Максимальный UDP-payload сервера — 1452. Буферы датаграмм — по 1 MiB с обеих сторон.
-- **Выкатка.** Сначала серверы, потом клиенты (любой порядок безопасен). Откат: `udp_datagrams = false` на той стороне, где проблема, и перезапуск этого сервиса (пересборка не нужна).
+- Согласование. Клиент шлёт `x-outline-udp-datagram: 1`; сервер в знак согласия возвращает его (серверный ключ `[server.h3] udp_datagrams`, по умолчанию `true`). Без эха UDP остаётся в стриме байт в байт как раньше, поэтому любая сторона может быть старой версии.
+- Где действует. Только `ws_h3` / `xhttp_h3`, только UDP-планы, никогда с отпечатком Safari (он не объявляет `max_datagram_frame_size`).
+- Размеры. Выбор делается на каждый пакет по текущему `max_datagram_size()`; пакет, который не помещается, идёт по стриму. До PMTUD клиент начинает с MTU 1200, поэтому сразу после подключения большинство полноразмерных пакетов ещё идёт по стриму. Максимальный UDP payload сервера — 1452. Буферы датаграмм — 1 МиБ с каждой стороны.
+- Выкатка. Сначала серверы, потом клиенты; безопасен любой порядок. Откат: `udp_datagrams = false` на стороне, которая сбоит, и перезапуск этого сервиса (без пересборки).
 
-**Кэш MTU пути.** Клиент запоминает MTU, на котором остановился каждый H3-путь (ключ — сервер, порт, fwmark и хэш локального source-адреса, то есть сеть, в которой он находится), в файле рядом с файлом состояния: то же имя, но с расширением `.pmtu` (по умолчанию `<config>.state.pmtu`). Следующее соединение по тому же пути первой пробой проверяет этот размер: одна MTU-проба вместо лесенки 1326 → 1389 → 1420 → …, которую пассивный наблюдатель видел бы на каждом соединении. Устаревшее значение (путь сузился) стоит одного отвергнутого размера, после чего ниже него идёт обычный поиск. Живое значение из кэша — это первая проба, а после подтверждения — потолок соединения. Значение 1452 (верхняя граница H3) живо 3 суток с момента, когда путь впервые его подтвердил, значение ниже 1452 — 1 час: если поиск остановился низко из-за случайной потери пробы, он не ограничивает соединения сутками. Истёкшее значение (не старше 30 суток) всё равно уходит первой пробой, но только как затравка: поиск продолжается выше неё, поэтому прежний или выросший путь находится без лесенки (сузившийся стоит одного отвергнутого размера и поиска ниже него), а результат записывается заново. Если этот поиск отверг какой-то размер, соединение получает потолок на единицу ниже наименьшего отвергнутого, поэтому на прежнем пути отвергнутый размер оплачивается один раз за соединение, а не при каждом повторном поиске раз в 10 минут. Initial остаётся 1200 байт.
+Кэш path MTU. Клиент запоминает path MTU, на котором остановился каждый H3-путь (ключ — сервер, порт, fwmark и хэш локального адреса источника, то есть сеть, в которой он находится), в файле рядом с state-файлом с расширением `.pmtu` (по умолчанию `<config>.state.pmtu`; с прилагаемым юнитом — `/var/lib/outline-ws-rust/_default/state.pmtu`). Следующий дозвон по тому же пути пробует этот размер первым: одна MTU-проба вместо лесенки 1326 → 1389 → 1420 → …, которую пассивный наблюдатель видел бы на каждом соединении.
 
-Метрики (на эндпоинте `/metrics`):
+| Значение в кэше | Срок жизни | Что происходит при следующем соединении |
+|---|---|---|
+| 1452 (верхняя граница H3) | 3 дня с момента, когда путь впервые на нём остановился | первая проба и, после подтверждения, потолок соединения |
+| меньше 1452 | 1 час | то же; короткий срок не даёт поиску, остановившемуся низко из-за случайной потери пробы, ограничивать соединения сутками |
+| истёкшее, не старше 30 дней | — | первая проба, которая только задаёт начало поиска: поиск продолжается выше, результат сохраняется заново |
 
-| Метрика | Метки | Смысл |
+Устаревшее значение (путь сузился) стоит одного отвергнутого размера пробы, дальше обычный поиск идёт ниже. Если поиск отверг какой-то размер, потолок соединения ставится на единицу ниже наименьшего отвергнутого, поэтому неизменный путь платит за отвергнутый размер один раз за соединение, а не при каждом повторном поиске раз в 10 минут. Initial остаётся 1200 байт.
+
+Метрики (на `/metrics`):
+
+| Метрика | Лейблы | Значение |
 | --- | --- | --- |
-| `outline_ws_udp_h3_datagrams_total` | `direction`, `transport`, `proto` | UDP-пакеты, пошедшие H3-датаграммами (`up` = переданы в quinn, который при заполнении буфера отправки может выбросить самый старый) |
-| `outline_ws_udp_h3_datagram_fallback_total` | `direction`, `transport`, `proto`, `reason` | пакеты / записи VLESS согласованной сессии, пошедшие по потоку; `reason` для `up`: `unarmed` (VLESS, ушёл до первого ответа сервера), `too_large` (не влез в размер датаграммы), `send_failed` (quinn отказал по другой причине); для `down` всегда `stream` (причину пишет счётчик сервера) |
-| `outline_ws_udp_h3_datagram_dropped_total` | `reason` | отброшенные входящие датаграммы: `unknown_stream`, `closed_stream` (поток закрыт менее 10 с назад), `malformed`, `queue_full` (ограниченную очередь приёма потока переполнил всплеск), `queue_stalled` (она переполнилась, когда потребитель не читал 50 мс), `early` (VLESS, до заголовка ответа) |
-| `outline_ws_udp_h3_datagram_sessions_total` | `transport`, `state` | предложения по исходу, `negotiated` / `declined`; считает потоки-якоря, включая пополнение standby-пула и пробы |
-| `outline_ws_quic_path_mtu_bytes` | `transport` | гистограмма MTU пути у соединений с датаграммами, сэмпл раз в 10 с, не при закрытии (соединение короче 10 с точку не добавляет; black holes и потерянные пробы при закрытии всё равно сбрасываются); 1200 — минимум QUIC после black hole, при нём пакеты примерно от 1100 байт идут по потоку |
-| `outline_ws_quic_black_holes_total` | `transport` | 10-секундные сэмплы, в которых соединение с датаграммами обнаружило MTU black hole (каждое обнаружение сбрасывает MTU пути до 1200), не больше одного на сэмпл: умирающее соединение срабатывает тысячи раз в минуту |
-| `outline_ws_quic_mtu_probes_lost_total` | `transport` | потерянные пробы DPLPMTUD на соединениях с датаграммами |
+| `outline_ws_udp_h3_datagrams_total` | `direction`, `transport`, `proto` | UDP-пакеты, ушедшие H3-датаграммами (`up` = отданы quinn, который при полном буфере отправки может выбросить самую старую) |
+| `outline_ws_udp_h3_datagram_fallback_total` | `direction`, `transport`, `proto`, `reason` | пакеты / VLESS-записи согласованной сессии, ушедшие по стриму; `reason` для `up`: `unarmed` (VLESS, отправлено до первого ответа сервера), `too_large` (не влез в размер датаграммы), `send_failed` (quinn отказал по другой причине); для `down` всегда `stream` (причину показывает счётчик сервера) |
+| `outline_ws_udp_h3_datagram_dropped_total` | `reason` | отброшенные входящие датаграммы: `unknown_stream`, `closed_stream` (стрим закрыт менее 10 с назад), `malformed`, `queue_full` (всплеск переполнил ограниченную очередь приёма стрима), `queue_stalled` (переполнилась, пока потребитель не читал 50 мс), `early` (VLESS, до заголовка ответа) |
+| `outline_ws_udp_h3_datagram_sessions_total` | `transport`, `state` | предложения по итогу, `negotiated` / `declined`; считаются якорные стримы, включая пополнение standby-пула и дозвоны проб |
+| `outline_ws_quic_path_mtu_bytes` | `transport` | гистограмма path MTU соединений с датаграммами, отсчёт раз в 10 с, а не при закрытии (соединение короче 10 с точки не даёт; чёрные дыры и потерянные пробы всё равно сбрасываются при закрытии); 1200 — минимум QUIC после чёрной дыры, тогда пакеты примерно от 1100 байт идут по стриму |
+| `outline_ws_quic_black_holes_total` | `transport` | 10-секундные отсчёты, в которых соединение с датаграммами обнаружило MTU black hole (каждое обнаружение сбрасывает path MTU до 1200), не больше одного на отсчёт: умирающее соединение срабатывает детектором тысячи раз в минуту |
+| `outline_ws_quic_mtu_probes_lost_total` | `transport` | потерянные DPLPMTUD-пробы на соединениях с датаграммами |
 
 ## Carrier-padding
 
-Опциональный application-layer padding для WebSocket / XHTTP дайлов — клиентская половина серверной опции `[padding]`. Каждый Shadowsocks-chunk или VLESS-кадр оборачивается в length-delimited кадр `real_len | pad_len | real | pad`, поэтому размер внешней TLS-записи больше не повторяет размер payload — это ломает корреляцию по размеру записей, на которую опираются TLS-in-TLS классификаторы.
+Опциональный паддинг на уровне приложения для WebSocket- и XHTTP-дозвонов — клиентская половина серверного паддинга. Каждый Shadowsocks-чанк или VLESS-кадр оборачивается в кадр с длинами `real_len | pad_len | real | pad`, и размер внешней TLS-записи перестаёт следовать за размером payload. На этой корреляции размеров записей работают классификаторы TLS-in-TLS.
 
-- **Глобальный дефолт + per-uplink override.** Блок `[padding]` задаёт параметры схемы и дефолтный on/off (`enabled`); каждый `[[outline.uplinks]]` может переопределить его через `padding = true` / `padding = false`. Эффективное решение для дайла — per-uplink значение, если задано, иначе глобальный дефолт (та же схема override/fallback, что у per-uplink `fingerprint_profile`). Оставьте глобальный дефолт выключенным и ставьте `padding = true` на аплинках, ведущих на ваши padded-серверы; либо оставьте включённым и ставьте `padding = false` на VLESS-аплинке к стороннему серверу (xray / sing-box), чтобы он остался чистым. Padded-дайл (и SS, и VLESS, и TCP, и UDP) обязан указывать на серверные пути, которые тоже паддятся.
-- **Config-синхронизация, без согласования.** Сервер обязан включить `[padding]` на соответствующем carrier-пути (`outline-ss-rust` `[padding] paths`), иначе padded-кадры сломают его декодер. По умолчанию выключено (wire неизменен).
-- **Cover-трафик.** При `cover = true` uplink отправляет pad-only кадры на простаивающем соединении со случайным интервалом (`cover_jitter_min_ms` … `cover_jitter_max_ms`).
+- Глобальное значение плюс переопределение на аплинке. `[padding]` задаёт параметры схемы и значение по умолчанию (`enabled`, по умолчанию `false`); каждый `[[outline.uplinks]]` может задать `padding = true` / `padding = false`. Дозвон берёт значение аплинка, если оно задано, иначе глобальное (та же схема, что у `fingerprint_profile` на аплинке). Либо оставьте глобальное выключенным и задайте `padding = true` на аплинках, ведущих на ваши padded-эндпоинты сервера, либо включите глобально и задайте `padding = false` на VLESS-аплинке к стороннему серверу (xray / sing-box). Padded-дозвон (SS и VLESS, TCP и UDP) должен идти на эндпоинты сервера, где паддинг тоже включён.
+- Задаётся конфигом на обеих сторонах, не согласуется по сети. На outline-ss-rust у соответствующего `[[endpoint]]` должно быть `padded = true`; иначе padded-кадры попадут в обычный декодер и сессия упадёт.
+- Cover-трафик. При `cover = true` простаивающее соединение шлёт кадры из одного паддинга со случайным интервалом (`cover_jitter_min_ms` … `cover_jitter_max_ms`, по умолчанию 250 / 1500).
 
-Покрывает SS- и VLESS-over-WebSocket (h1/h2/h3) и -over-XHTTP одинаково, а UDP паддится по датаграмме на любом WS-носителе — и SS-UDP (split: внесите его путь; combined: общий base-path), и VLESS-UDP. Полный справочник: [`docs/PADDING.ru.md`](../../docs/PADDING.ru.md); параметры — в блоке `[padding]` в `config.toml`.
+Покрывает SS и VLESS поверх WebSocket (h1/h2/h3) и поверх XHTTP. UDP паддится по датаграммам на каждом WS-носителе — SS-UDP (split: укажите его путь; combined: общий базовый путь) и VLESS-UDP. Полное описание: [`docs/PADDING.ru.md`](../../docs/PADDING.ru.md); ключи перечислены в блоке `[padding]` в `config.toml`.
 
 ## Выбор аплинка и runtime-поведение
 
-Каждый аплинк имеет собственные:
+У каждого аплинка свои:
 
 - TCP URL и режим
 - UDP URL и режим
-- шифр и пароль
+- шифр и пароль (или `vless_id`)
 - опциональный Linux `fwmark`
-- per-uplink приоритет через `weight` — это **жёсткий** приоритет: среди здоровых кандидатов всегда побеждает тот, у кого больше `weight`, вне зависимости от EWMA. Используйте `weight`, чтобы пометить резервы, на которые failover/sticky-путь не должен «соскакивать». Среди равновесных аплинков тайбрейк делает EWMA-скор (и в последнюю очередь — индекс в конфиге).
+- приоритет через `weight`. Среди здоровых кандидатов всегда выигрывает больший weight, независимо от EWMA; так помечают резервные аплинки, на которые failover и sticky не должны уходить. При равном weight порядок задаёт скор на основе EWMA, затем индекс в конфиге.
 
-Пайплайн выбора:
+Конвейер выбора:
 
-1. Health-пробы обновляют последний raw RTT и EWMA RTT.
-2. Probe-подтверждённые сбои добавляют затухающий штраф за сбой. При включённых пробах runtime-сбои (например, сброс H3-соединения под нагрузкой) сами по себе штраф не начисляют — только устанавливают временный cooldown. Штраф добавляется только когда проба подтверждает реальный отказ (`consecutive_failures ≥ min_failures`). Это предотвращает накопление штрафа на здоровом аплинке из-за транзитных ошибок под нагрузкой.
-3. Эффективный latency = EWMA RTT + текущий штраф.
-4. Сортировка кандидатов: сначала healthy, затем `weight` (выше — раньше), затем `effective_latency / weight`, затем индекс конфига. EWMA-скор ранжирует только внутри **одного** weight-уровня — он не может вытащить аплинк с меньшим weight выше аплинка с большим.
-5. Sticky-маршрутизация и гистерезис снижают ненужные переключения.
-6. Warm-standby пулы снижают задержку установки соединений.
+1. Health-пробы обновляют последний RTT и EWMA RTT.
+2. Подтверждённые пробой сбои добавляют затухающий штраф. При включённых пробах runtime-сбой (например, сброс H3-соединения под нагрузкой) только ставит временный cooldown; штраф добавляется, когда проба подтверждает сбой (`consecutive_failures ≥ min_failures`). Поэтому кратковременные ошибки под нагрузкой не копят штрафы на здоровом аплинке.
+3. Эффективная задержка = EWMA RTT + текущий штраф.
+4. Кандидаты сортируются: сначала здоровые, затем по `weight` (больший первым), затем по `effective_latency / weight`, затем по индексу в конфиге. Скор ранжирует только аплинки с одинаковым weight.
+5. Sticky-маршрутизация и гистерезис держат флоу на их аплинке, пока разница скоров не превысит `hysteresis_ms`.
+6. Warm-standby пулы держат заранее установленные соединения, и новая сессия пропускает рукопожатие.
 
-**Ограничение sticky-route таблицы:** таблица sticky-маршрутов ограничена 100 000 per-flow записями. При трафике из крупных NAT-пулов или множества уникальных клиентов в scope `per_flow` таблица иначе росла бы неограниченно. Новые per-flow записи сверх лимита тихо отбрасываются — поток получает свежую latency-ordered выборку вместо sticky. Глобально и per-transport закреплённые записи (для scope `global` и `per_uplink`) сохраняются всегда, вне зависимости от этого ограничения.
+Лимит sticky-маршрутов: таблица хранит не более 100 000 per-flow записей. При больших NAT-пулах или множестве клиентов в scope `per_flow` новые записи сверх лимита не сохраняются, и флоу получает свежий выбор по задержке. Глобальные и per-transport закрепления (scope `global` и `per_uplink`) сохраняются всегда.
 
-Поведение в зависимости от области маршрутизации:
+Область маршрутизации:
 
-- `per_flow`: разные цели могут выбирать разные аплинки
-- `per_uplink`: один выбранный аплинк разделяется на транспорт, TCP и UDP могут использовать разные; в режиме `active_passive` каждый транспорт держит свой закреплённый аплинк до failover, штрафы не влияют на строгий per-transport скор
-- `global`: один выбранный аплинк разделяется для всего нового трафика до failover; TCP-скор остаётся приоритетным при ранжировании, но UDP-capable активный аплинк тоже должен оставаться здоровым по UDP: UDP probe failure или активный UDP runtime cooldown могут вызвать глобальный failover. Штрафы не влияют на строгий глобальный скор.
+- `per_flow`: разные цели могут идти через разные аплинки.
+- `per_uplink`: один выбранный аплинк на транспорт, TCP и UDP могут идти через разные аплинки. В `active_passive` каждый транспорт держит свой закреплённый аплинк до failover или явного перевыбора; штрафы не влияют на строгий per-transport скор.
+- `global`: один выбранный аплинк для всего нового трафика до failover или явного перевыбора. Ранжирует TCP-скор, но UDP-способный активный аплинк должен держать и UDP здоровым: провал UDP-пробы или UDP runtime cooldown вызывает глобальный failover. Штрафы не влияют на строгий глобальный скор.
 
-**Поведение auto-failback:** управляется параметром `load_balancing.auto_failback` (по умолчанию `false`).
+Auto-failback (`auto_failback`, по умолчанию `false`):
 
-- `false` (по умолчанию): активный аплинк **заменяется только при сбое** (уход в cooldown или потеря здоровья). Пока активный аплинк здоров, он остаётся активным вне зависимости от того, восстановился ли аплинк с более высоким приоритетом. Рекомендуется для production, поскольку исключает обрывы соединений из-за проактивного предпочтения primary.
-- `true`: если текущий активный здоров и существует probe-healthy кандидат с более высоким `weight` (или равным weight и меньшим индексом), прокси возвращает трафик на него — но только после накопления `min_failures` последовательных успешных проб. Приоритет определяется `weight`, а не EWMA: это предотвращает ложные переключения под нагрузкой, когда EWMA активного аплинка временно выше из-за медленных соединений. Failback двигается только в сторону большего weight; переключение к аплинку с меньшим weight возможно только через probe-подтверждённый failover.
+- `false`: активный аплинк меняется только при сбое (cooldown или потеря здоровья). Пока он здоров, он остаётся активным, даже если восстановился аплинк с большим приоритетом. Так нет обрывов соединений, которые вызывает упреждающий возврат на primary.
+- `true`: пока текущий активный здоров, а есть здоровый по пробам кандидат с большим `weight` (или равным weight и меньшим индексом в конфиге), трафик возвращается на кандидата после `min_failures` успешных циклов проб подряд. Приоритет — `weight`, а не EWMA, потому что EWMA активного аплинка растёт под нагрузкой. Failback идёт только в сторону большего weight; переход на меньший weight требует подтверждённого пробой failover'а.
 
-**Плановый перевыбор:** `load_balancing.reselect_at` (wall-clock слоты `"HH:MM"`, наступает в течение до 90 с после настроенного времени) либо `load_balancing.reselect_interval` (фиксированный период) по таймеру запускает взвешенно-случайную ротацию строгого активного аплинка в режиме `active_passive` — текущий активный всегда исключается, а победитель выбирается среди здоровых, включённых, не в cooldown'е кандидатов, взвешенных по `penalty_weight × weight` (с полом `health_weight_floor`). Оба ключа взаимоисключимы, и оба требуют `active_passive`. **Осторожно с `auto_failback = true`:** поскольку у выбора нет приоритетного правила, он может приземлиться на аплинк с меньшим весом, чем тот, что заменил, и следующая же серия подряд здоровых проб на более весомом аплинке молча откатывает это перемещение через failback. Задайте всем аплинкам группы одинаковый `weight`, если плановое перемещение должно удерживаться, либо держите `auto_failback` выключенным (дефолт) при использовании этой функции. `POST /control/reselect` запускает ту же ротацию по требованию. Полную семантику см. в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md) «Плановый перевыбор».
+Плановый перевыбор: `reselect_at` (слоты по часам `"HH:MM"`, срабатывают в течение 90 с после заданного времени) или `reselect_interval` (фиксированный период) принудительно запускает взвешенно-случайную ротацию строгого активного аплинка в режиме `active_passive`. Текущий активный всегда исключается; победитель разыгрывается среди здоровых, включённых, не находящихся в cooldown кандидатов с весом `penalty_weight × weight` (с нижней границей `health_weight_floor`). Ключи взаимоисключающие, оба требуют `active_passive`. `POST /control/reselect` запускает ту же ротацию вручную. См. «Плановый перевыбор» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
 
-**Синхронный перевыбор:** `load_balancing.reselect_sync = true` (требует `reselect_at`) заменяет взвешенно-случайный розыгрыш детерминированным: порядок предпочтения слота выводится из имени группы, имён аплинков, локального календарного дня и индекса слота, а активным становится первый элемент этого порядка, здоровый на данном узле. Независимые узлы с одинаковым конфигом группы выбирают один и тот же аплинк, ничем не обмениваясь, — благодаря чему клиенты, попадающие на любой из них, выходят с одного адреса. Здоровье, cooldown и админ-состояние остаются локальными: узел с умершей ногой уходит с неё сразу, а если отказ видит только один из двух — пара остаётся разведённой до следующего слота. Старт применяет решение слота поверх активного аплинка, восстановленного из состояния, а `POST /control/reselect` становится идемпотентным внутри слота. Все узлы одного домена синхронизации обязаны быть в одной таймзоне. См. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md) «Синхронный перевыбор».
+**Внимание:** при `auto_failback = true` розыгрыш может выпасть на аплинк с меньшим weight, и следующая серия здоровых проб аплинка с большим weight вернёт переключение через failback. Если плановый переход должен сохраняться, задайте группе одинаковый `weight` или оставьте `auto_failback = false` (по умолчанию).
 
-**Penalty-aware failover:** при уходе активного аплинка в cooldown кандидаты пересортируются по схеме: healthy первыми → cooldown remaining → `weight` (выше — раньше) → penalty-aware EWMA-скор (`(EWMA + штраф) / weight`) → индекс. `weight` — основной ключ, чтобы намеренно занижённый резерв не вытеснил другие за счёт более низкого raw RTT; penalty-aware скор всё ещё разрывает ничьи внутри одного веса, что предотвращает осцилляцию при трёх и более равновесных аплинках (без штрафов очищенный пробой primary с лучшим raw EWMA сразу же выбрался бы снова, несмотря на только что случившийся сбой).
+Синхронный перевыбор: `reselect_sync = true` (требует `reselect_at`) заменяет случайный розыгрыш детерминированным. Порядок предпочтения в слоте выводится из имени группы, имён аплинков, локальной календарной даты и индекса слота; активным становится первый аплинк этого порядка, здоровый на данном узле. Независимые узлы с одинаковым конфигом группы выбирают один аплинк без обмена данными, и клиенты, попадающие на любой из них, сохраняют один выходной адрес. Здоровье, cooldown и административное состояние остаются локальными: узел, чей аплинк умер, сразу уходит на failover, а если сбой видит только один узел, пара остаётся разделённой до следующего слота. При старте решение слота перекрывает активный аплинк, восстановленный из state-файла, а `POST /control/reselect` в пределах слота идемпотентен. Все узлы одного sync-домена должны работать в одном часовом поясе. См. «Синхронный перевыбор» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
+
+Failover с учётом штрафов: когда активный аплинк уходит в cooldown, кандидаты на замену сортируются так: сначала здоровые → оставшийся cooldown → `weight` (больший первым) → скор со штрафом (`(EWMA + penalty) / weight`) → индекс в конфиге. Намеренно понижённый резервный аплинк не продвигается только за счёт лучшего RTT пробы; внутри одного weight слагаемое штрафа не даёт трём и более равным аплинкам переключаться по кругу (без него только что упавший primary, очищенный пробой, сразу выигрывал бы за счёт лучшего сырого EWMA).
 
 Runtime failover:
 
-- UDP может переключать аплинки внутри активной ассоциации после runtime send/read сбоя.
-- TCP может выполнять failover до установки рабочего туннеля.
-- Живые установленные TCP-туннели не мигрируют.
+- UDP может сменить аплинк внутри активной ассоциации после сбоя отправки или чтения.
+- TCP может уйти на failover до установления рабочего туннеля.
+- Установленные TCP-туннели на другой аплинк не переносятся.
 
 ## Health-пробы
 
-Доступные типы проб:
+Типы проб:
 
-- `ws`: проверяет TCP+TLS+WebSocket handshake-связность с аплинком. WebSocket ping/pong фреймы не отправляются — многие серверы не отвечают на WebSocket ping control frames. Подтверждает, что новое соединение может быть установлено; целостность data path проверяется HTTP/DNS-пробами.
-- `http`: реальный HTTP-запрос через `websocket-stream` — проверяет полный data path.
-- `dns`: реальный DNS-обмен через `websocket-packet` — проверяет полный UDP data path.
+| Тип | Что проверяет |
+|---|---|
+| `ws` | рукопожатие TCP + TLS + WebSocket к аплинку. Без ping/pong-кадров (многие серверы на них не отвечают). Подтверждает, что новое соединение открывается; целостность data path проверяют `http` / `dns` |
+| `http` | HTTP `HEAD` через `websocket-stream`; успех — статус `200..400` |
+| `dns` | DNS-обмен через `websocket-packet`; проверяет UDP data path |
+| `tcp` | подключение через туннель к TCP-сервису, который первым отправляет данные |
+| `tls` | TLS handshake к заданному SNI через туннель, без HTTP-обмена |
 
-Управление выполнением проб:
+Параметры проб (`[outline.probe]`):
 
-- `max_concurrent`: общее количество параллельных задач проб
-- `max_dials`: отдельный лимит на dial-попытки проб
-- `min_failures`: количество последовательных неудачных проб для объявления аплинка нездоровым (по умолчанию `1`). Также используется как порог стабильности последовательных успехов для auto-failback: при `auto_failback = true` восстановившийся primary должен накопить `min_failures` последовательных успешных проб, прежде чем трафик может быть возвращён на него.
-- `attempts`: количество попыток пробы на аплинк за цикл. Каждая неудачная попытка инкрементирует счётчик последовательных сбоев; успешная попытка сбрасывает его в ноль и инкрементирует счётчик последовательных успехов.
-- `endpoint_check` (по умолчанию `false`): проверка достижимости голым TCP-connect по всем эндпоинтам аплинка (primary + fallback'и, обе плоскости, дедуп по `host:port` плюс параметры егресса), выполняется параллельно. Это **ускоритель, а не судья**: последнее слово о здоровье остаётся за обычной пробой. Отказ засчитывается как хостовый, только когда обе согласны — ни один эндпоинт не принял connect **и** сама проба не прошла ни по одной плоскости; тогда после `min_failures` таких циклов аплинк помечается нездоровым без carrier-спуска (`h3 → h2 → h1`) и без обхода цепочки wire, а список эндпоинтов попадает в `last_error`. Именно это превращает «хост выключили» из многоминутного открытия в пару циклов. Прошедшая проба перебивает проверку: голый connect не отличает «сервера нет» от «новый TCP к нему отклоняют, пока трафик идёт по уже поднятому QUIC-носителю», и путать эти случаи нельзя.
+| Ключ | По умолчанию | Значение |
+|---|---|---|
+| `interval_secs` | `120` | период цикла проб |
+| `timeout_secs` | `10` | таймаут одной пробы |
+| `max_concurrent` | `4` | параллельные задачи проб |
+| `max_dials` | `2` | параллельные дозвоны проб |
+| `min_failures` | `3` | провалов подряд до признания аплинка нездоровым; также серия успехов перед auto-failback |
+| `attempts` | `1` | попыток на аплинк за цикл; каждая неудачная увеличивает счётчик провалов, успешная обнуляет его и увеличивает счётчик успехов. Значение больше 1 даёт предупреждение |
+| `skip_when_active` | `true` | пропускать цикл для аплинка, по которому недавно шёл трафик (см. ниже) |
+| `liveness_interval_secs` | `300` | при `skip_when_active` принудительно проводить цикл хотя бы так часто; `0` отключает |
+| `endpoint_check` | `false` | проверка доступности эндпоинтов аплинка голым TCP (см. ниже) |
+| `endpoint_check_timeout_ms` | `2000` | срок на эндпоинт для `endpoint_check`, включая резолв (минимум 100) |
 
-  Проверка выполняется **после** пробы и только на тех циклах, где проба провалилась по всем плоскостям, — именно они и есть единственные, чей вердикт может использовать её ответ. Скорость детекта не меняется (провалившийся цикл платит те же две стадии, только в другом порядке), но здоровый аплинк больше не тратит по одному connect'у за цикл. На той стороне это заметно: все wire одного аплинка обычно ходят на один и тот же `host:port`, поэтому проверка — это connect-and-drop, который сервер видит как TCP-соединение, закрытое до какого-либо ClientHello; при `interval_secs = 10` это 8640 таких соединений в сутки на аплинк с каждого клиента. Следствие для дашбордов: `probe="endpoint"` в устоявшемся режиме теперь имеет частоту около нуля вместо повторения частоты циклов; ненулевая частота означает, что аплинки действительно валят пробы.
-- `endpoint_check_timeout_ms` (по умолчанию `2000`): дедлайн на один эндпоинт для `endpoint_check`, включая резолв. Держите его заметно ниже `timeout_secs`: он платится поверх уже провалившегося цикла проб, а мёртвый хост стоит полного дедлайна каждый раз, потому что SYN в чёрную дыру не вызывает RST. Результаты пишутся как `probe="endpoint"` в `outline_ws_probe_runs_total` / `outline_ws_probe_duration_seconds`.
+`endpoint_check` параллельно подключается к каждому эндпоинту аплинка (primary + fallback'и, обе плоскости, без дублей по `host:port` и параметрам выхода). Он только ускоряет вердикт, к которому уже пришла обычная проба. Если ни один эндпоинт не принимает подключение и проба не прошла ни по одной плоскости, сбой считается сбоем хоста: аплинк помечается нездоровым после `min_failures` таких циклов без спуска по носителям (`h3 → h2 → h1`) и без ротации цепочки wire'ов, а список эндпоинтов попадает в `last_error`. Выключенный хост тогда обнаруживается за пару циклов вместо нескольких минут. Прошедшая проба перевешивает проверку: голый connect не отличает «сервера нет» от «новый TCP к нему отклоняют, пока трафик идёт по уже поднятому QUIC-носителю».
+
+Проверка выполняется после пробы и только в циклах, где проба провалилась по всем плоскостям. Время обнаружения такое же, как при запуске первой, а здоровый аплинк не тратит лишнего подключения за цикл. На сервере каждая проверка — TCP-соединение, закрытое до ClientHello; при `interval_secs = 10` это было бы 8 640 в сутки на аплинк на клиента. На дашбордах `probe="endpoint"` в `outline_ws_probe_runs_total` / `outline_ws_probe_duration_seconds` в штатном режиме имеет почти нулевой rate; ненулевой rate значит, что аплинки проваливают пробы. Держите `endpoint_check_timeout_ms` заметно меньше `timeout_secs`: он платится поверх уже проваленного цикла, а мёртвый хост стоит полного срока, потому что на SYN в чёрную дыру RST не приходит.
 
 Тайминг проб:
 
-- Пробы обычно запускаются по фиксированному таймеру `interval`.
-- При runtime-сбое, устанавливающем свежий failure cooldown на аплинке, probe loop немедленно пробуждается (через внутренний `Notify`), чтобы failover был подтверждён в течение одного цикла проб, а не ждал следующего планового интервала. Это значительно снижает сквозную задержку failover.
-- **Подавление проб при активном трафике (global + probe):** в режиме `routing_scope = global` с включёнными пробами цикл проб пропускается для аплинка, если одновременно выполняются три условия: (1) реальный трафик наблюдался в течение последнего `interval`, (2) аплинк probe-здоров (`tcp_healthy = true`), (3) область маршрутизации — `global`. Активный трафик является более сильным доказательством работоспособности, чем probe ping. Это предотвращает ложные негативные результаты проб под нагрузкой: когда probe loop пробуждается сразу после runtime-сбоя H3, сервер может быть занят и не успевать принять новое QUIC-соединение для пробы — что привело бы к ложному failover. Для non-global scopes проба запускается даже при активном трафике, чтобы подтвердить восстановление после cooldown.
+- Пробы идут по таймеру `interval_secs`.
+- Когда runtime-сбой ставит новый cooldown, probe loop будится сразу (внутренний `Notify`, не чаще раза в 15 с на аплинк и транспорт), и failover подтверждается в пределах одного цикла, а не на следующем плановом.
+- Пропуск проб при трафике (`skip_when_active = true`, все области маршрутизации): цикл для аплинка пропускается, если по нему за последние `interval_secs` был TCP-трафик, аплинк здоров по пробам и runtime cooldown не действует. Проба всё равно выполняется, если недавно был chunk-0 сбой (`chunk0_failure_window_secs`, по умолчанию 300) или с последнего полного цикла прошло `liveness_interval_secs`. Нездоровый аплинк пробуется всегда: только проба возвращает его в строй.
 
-Валидация warm-standby:
+Проверка warm-standby: раз в 15 с standby-соединения проверяются неблокирующим чтением с таймаутом 1 мс. EOF, close frame или ошибка очищают слот и запускают пополнение; таймаут (нет данных за 1 мс) значит, что соединение открыто.
 
-- Каждые 15 секунд standby-соединения проверяются с помощью неблокирующего чтения с таймаутом 1 мс. Если сервер закрыл соединение (EOF, close frame или ошибка), слот очищается и заполняется заново. Таймаут (нет данных за 1 мс) означает, что соединение ещё открыто.
+Включение проб:
 
-Правила активации проб:
+- пробы работают только при заданных настройках проб;
+- один `[outline.probe]` не включает ни одной проверки;
+- нужен хотя бы один из `[outline.probe.ws]`, `.http`, `.dns`, `.tcp` или `.tls`.
 
-- пробы не запускаются, пока настройки проб явно не сконфигурированы
-- одна секция `[probe]` не включает ни одну проверку
-- должна присутствовать хотя бы одна из: `[probe.ws]`, `[probe.http]`, `[probe.dns]`, `[probe.tcp]`, `[probe.tls]`
-
-Аплинки без `udp_ws_url` считаются TCP-only: UDP health state и standby-слоты для них не создаются и не отслеживаются, UDP-результаты проб не влияют на их UDP health метрику.
+Аплинки без `udp_ws_url` — только TCP: UDP-состояние здоровья и standby-слоты для них не создаются, исходы UDP-проб не влияют на их UDP-метрику здоровья.
 
 ## IPv6
 
 Поддерживается:
 
 - IPv6-цели SOCKS5
-- IPv6 literal upstream URLs, например `wss://[2001:db8::10]/SECRET/tcp`
+- upstream URL с IPv6-литералом, например `wss://[2001:db8::10]/SECRET/tcp`
 - IPv6-пробы
 - IPv6-слушатели
 - IPv6 UDP-пакеты в TUN-режиме
-- IPv6 upstream transport для `h2` и `h3`
+- IPv6 upstream-транспорт для `h2` и `h3`
 
 ## TUN-режим
 
-Процесс подключается только к уже существующему TUN-устройству. Создание интерфейса, назначение адресов, маршрутизация и policy routing остаются вне приложения.
+Процесс подключается к существующему TUN-устройству. Создание интерфейса, адреса, маршруты и policy routing настраиваются вне приложения.
 
 ### tun2udp
 
-Возможности:
-
-- перенаправление UDP-пакетов IPv4 и IPv6
-- сборка IPv4 и IPv6 IP-фрагментов на входе с TUN
-- локальная обработка ICMP echo reply (`ping`) для IPv4
-- локальная обработка ICMPv6 echo reply для IPv6, с source fragmentation до минимального IPv6 MTU при необходимости
-- опциональный health-gate этих echo reply (`tun_suppress_icmp_reply_when_down` на uplink-группе): ping'и, маршрутизируемые в группу, перестают отвечаться, пока в группе нет ни одного здорового uplink'а — внешний watchdog может так детектировать мёртвый туннель
-- этот же гейт требует, чтобы вердикт о здоровье был **свежим** (`tun_icmp_liveness_window_secs`). Ответ генерируется локально — ping вообще не покидает хост, — поэтому сам по себе он доказывает лишь то, что отработал этот цикл; а `healthy` — липкий: демон, у которого умер probe-loop, хранит последний вердикт вечно и продолжал бы отвечать, не пропуская ни байта трафика. С окном требуется ещё и чтобы у здорового uplink'а внутри него был реальный трафик или завершённый цикл пробы; иначе ответ не отправляется и учитывается как `icmp_reply_suppressed_stale`. Без значения окно выводится из расписания проб (`max(3 × interval, liveness_interval + 60s, 60s)`); `0` возвращает поведение «решает только флаг здоровья», а для группы без проб половина про свежесть не применяется вовсе
-- поддержка UDP и ICMPv6 через поддерживаемые IPv6 extension-header paths
-- per-flow uplink transport
-- очистка idle-потоков
-- ограниченное количество потоков
-- вытеснение старейшего потока при переполнении
-- метрики потоков и исходов пакетов, включая локальные ICMP replies
+- пересылка UDP по IPv4 и IPv6
+- сборка IPv4- и IPv6-фрагментов на входе с TUN
+- локальные ICMP echo reply для IPv4 (`ping`)
+- локальные ICMPv6 echo reply, с фрагментацией у источника до минимального MTU IPv6 при необходимости
+- опциональная привязка этих ответов к здоровью группы (`tun_suppress_icmp_reply_when_down` у группы аплинков): ping'и, маршрутизируемые в группу, не получают ответа, пока в группе нет здорового аплинка, — внешний watchdog видит мёртвый туннель
+- эта привязка требует ещё и свежести вердикта (`tun_icmp_liveness_window_secs`). Ответ генерируется локально — ping не покидает хост — и доказывает только то, что этот цикл работает, а флаг `healthy` сохраняет последнее значение, если probe loop умер. С окном нужно ещё, чтобы какой-то здоровый аплинк в его пределах пронёс трафик или завершил цикл проб; иначе ответ не отправляется и считается как `icmp_reply_suppressed_stale`. Без значения окно равно `max(3 × interval, liveness_interval + 60s, 60s)`; `0` — проверяется только флаг здоровья; у групп без проб проверка свежести не выполняется
+- IPv6 UDP и ICMPv6 через поддерживаемые цепочки extension header'ов
+- транспорт через аплинк на каждый флоу
+- очистка простаивающих флоу (`[tun] idle_timeout_secs`, по умолчанию 300)
+- лимит числа флоу (`max_flows`, по умолчанию 4096) с вытеснением давно не виденного флоу
+- метрики флоу и исходов пакетов, включая локальные ICMP-ответы
 
 ### tun2tcp
 
-Возможности:
-
-- stateful userspace TCP-реле через Outline TCP-аплинки
+- userspace TCP-реле через Outline TCP-аплинки
 - обработка SYN / SYN-ACK / FIN / RST
-- буферизация пакетов вне порядка
+- буферизация out-of-order сегментов
 - соблюдение receive window
-- SACK-aware логика приёма/отправки
+- SACK-aware приём и отправка
 - adaptive RTO
 - zero-window persist/backoff
-- ограниченное буферирование и бюджеты ретрансмитов
-- завершение потока по таймауту, переполнению или ошибке реле
-- репортинг ошибок транспорта в систему штрафов аплинков: внезапные закрытия upstream (например, QUIC `APPLICATION_CLOSE` / `H3_INTERNAL_ERROR`) передаются в `report_runtime_failure`, так что H3→H2 даунгрейд и штраф за сбой применяются к TUN TCP-потокам так же, как к SOCKS5-потокам; чистые WebSocket-закрытия (FIN или Close frame) не считаются сбоями
+- ограниченные буферы и бюджет ретрансмитов (`[tun.tcp] max_retransmits`, по умолчанию 12)
+- завершение флоу по таймауту, переполнению или сбою реле
+- транспортные ошибки идут в систему штрафов аплинка: резкие закрытия upstream'а (например, QUIC `APPLICATION_CLOSE` / `H3_INTERNAL_ERROR`) передаются в `report_runtime_failure`, поэтому даунгрейд H3→H2 и штраф действуют на TUN TCP-флоу так же, как на SOCKS5; чистые закрытия WebSocket (FIN или Close frame) сбоями не считаются
 
-Предназначен для реальной эксплуатации, но всё ещё не является эквивалентом ядерного TCP-стека.
+`tun2tcp` не эквивалентен ядерному TCP-стеку.
 
 ### Bypass IKE / IPsec NAT-T
 
-`tun.ipsec_bypass = true` включает hard-coded fast-path: UDP-потоки с destination-портом **500** или **4500** обходят policy routing и резолвятся в direct-путь (тот же, что у `via = "direct"`). VoWiFi и другие IKEv2/IPsec-клиенты после этого могут поднимать ESP-in-UDP-датаграммы, которые иначе теряются — TUN-классификатор пропускает только TCP/UDP/ICMP, поэтому сырой ESP (IP protocol 50) дропается независимо от routing-решения.
+`tun.ipsec_bypass = true` отправляет UDP-флоу с портом назначения 500 или 4500 в direct-путь (как `via = "direct"`) мимо policy routing. VoWiFi и другие IKEv2/IPsec-клиенты тогда достают свой шлюз через ESP-in-UDP; голый ESP (IP protocol 50) отбрасывается всегда, потому что TUN-классификатор пропускает только TCP/UDP/ICMP.
 
-Bypass использует локальный сокет direct-пути, который идёт к destination через системный routing. На хостах, где TUN ловит default route, такой сокет уйдёт обратно в TUN — на Linux задайте `direct_fwmark` и добавьте соответствующее правило `ip rule fwmark X lookup Y`, чтобы bypass-поток вышел из петли. Без `direct_fwmark` и policy routing-правила процесс пишет startup-warning.
+Bypass использует локальный сокет direct-пути. На хостах, где TUN держит маршрут по умолчанию, этот сокет вернулся бы в TUN: на Linux задайте `direct_fwmark` и добавьте `ip rule fwmark <mark> lookup <table>`, где `<mark>` — значение `direct_fwmark`, а `<table>` — таблица маршрутизации с физическим маршрутом по умолчанию. Без `direct_fwmark` при старте пишется предупреждение.
 
-По умолчанию: `false`. Оба порта матчатся вместе — IKEv2-стеки в середине сессии уводят IKE_AUTH с порта 500 через NAT_DETECTION, поэтому bypass только 4500 всё равно ломает handshake.
+По умолчанию `false`. Порты матчатся вместе: IKEv2 переносит IKE_AUTH с 500 на 4500 посреди сессии через NAT_DETECTION, и bypass одного 4500 ломает рукопожатие.
 
-### Миграция носителя (переживаем смерть carrier'а)
+### Миграция носителя (переживаем смерть носителя)
 
-Туннельный TUN-флоу не владеет своим транспортом: он делит один **носитель** (carrier) — единственное H3/H2/H1-соединение — со всеми остальными флоу этого аплинка. Когда носитель схлопывается (connection-level ошибка H3 роняет разом всё, что на нём мультиплексировано), все флоу на нём теряют транспорт в одну и ту же секунду, и каждое приложение видит оборванное соединение.
+Туннелируемый TUN-флоу не владеет своим транспортом: он делит один носитель — одно H3/H2/H1-соединение — с остальными флоу этого аплинка. Когда носитель рушится (ошибка уровня H3-соединения разом обрывает всё, что на нём мультиплексировано), все флоу на нём теряют транспорт в один момент, и каждое приложение видит обрыв соединения.
 
-Но upstream-сокеты при этом не исчезают. Сервер перекладывает каждый из них в orphan-registry под тем Session ID, который он выдал этому флоу, и держит 30 с ([`docs/SESSION-RESUMPTION.md`](../outline-ss-rust/docs/SESSION-RESUMPTION.md)). При `[tun.tcp] carrier_migration = true` (по умолчанию) флоу с умершим носителем переподключается на свежий, предъявляет **свой собственный** Session ID, получает запаркованный upstream обратно и закрывает байтовый разрыв в обе стороны, прежде чем продолжить: **Ack-Prefix Protocol (v1)** сообщает, сколько именно uplink-байт сервер реально успел переслать наверх, поэтому доигрывается ровно тот хвост, который потерялся в полёте, а **Symmetric Downlink Replay (v2)** возвращает downstream-байты, которые мёртвый носитель так и не доставил, — они отдаются приложению раньше всего, что произведёт новый носитель. Приложение не наблюдает разрыва: ни FIN, ни RST, ни дыры, ни дублированного байта.
+Upstream-сокеты при этом живы. Сервер переносит каждый в реестр сирот под Session ID, выданным этому флоу, и держит 30 с ([`docs/SESSION-RESUMPTION.ru.md`](../outline-ss-rust/docs/SESSION-RESUMPTION.ru.md)). При `[tun.tcp] carrier_migration = true` (по умолчанию) флоу, чей носитель умер, дозванивается на новый, предъявляет свой Session ID, получает запаркованный upstream обратно и закрывает байтовый разрыв в обе стороны, прежде чем продолжить. Ack-Prefix Protocol (v1) сообщает клиенту, сколько uplink-байт сервер реально переслал, и клиент повторяет только хвост, потерянный в пути; Symmetric Downlink Replay (v2) возвращает downstream-байты, которые мёртвый носитель не доставил, и они отдаются приложению раньше всего, что пришлёт новый носитель. Приложение не видит обрыва: ни FIN, ни RST, ни дыры, ни дублированного байта.
 
-**Включается только при подтверждённом resume hit.** Переподключение с предъявленным id может промахнуться — парковка истекла, либо у сервера resumption выключен, — а при промахе сервер открывает к назначению *свежий* upstream, начиная байтовый поток с нуля. Продолжить флоу на нём — значит склеить новый поток с недоделанным и выдать приложению порчу, которая выглядит как успех. Поэтому клиент мигрирует, только если сервер *доказал* re-attach, прислав v1-control-кадр (он шлёт его лишь после успешного orphan-take; заголовок-capability в ответе на upgrade доказательством НЕ является — его сервер echo-ит и на промахе). Всё остальное — промах, таймаут, неразобранный кадр, replay, который клиент уже не может воспроизвести байт-в-байт, обрезанный downstream-срез — уходит в обычный teardown, без изменений.
+Миграция срабатывает только при подтверждённом resume hit. Перезвон с ID может промахнуться — парковка истекла или у сервера выключено возобновление, — и при промахе сервер открывает к назначению новый upstream, байтовый поток которого начинается с нуля. Продолжить флоу на нём значило бы пришить новый поток к недочитанному и отдать приложению испорченные данные, похожие на корректные. Поэтому клиент мигрирует только тогда, когда сервер доказал подхват, прислав управляющий кадр v1, — а он шлёт его только после того, как забрал сироту. Capability-заголовок в ответе на upgrade доказательством не является: сервер возвращает его и при попадании, и при промахе. Всё остальное — промах, таймаут, неразбираемый кадр, повтор, который клиент уже не может воспроизвести байт в байт, обрезанный downstream-срез — уходит в обычное закрытие.
 
-Что стоит знать:
+Следствия:
 
-- **На сервере resumption по умолчанию выключен**, а сервер без него не выдаёт Session ID — такие флоу вообще не проходят отбор, и кноб там ничего не стоит. Без серверного `[resumption]` ничего из этого не работает.
-- **Direct-флоу (`via = "direct"`) не мигрируют никогда**: у них обычный сокет до origin — нет ни носителя, с которого мигрировать, ни запаркованного upstream'а.
-- Всё ограничено: не больше **2 попыток на флоу**, ни одна не стартует позже 20 с после первой (серверный park TTL — 30 с), а uplink replay-ring ограничен 64 KiB на флоу — флоу, отправивший один чанк крупнее, теряет ring, а с ним и возможность доказать байт-точность, поэтому рвётся как раньше, а не воскресает с дырой.
-- **Дайл миграции просит настроенный носитель уплинка, а не закапанный.** Смерть носителя, из-за которой мы мигрируем, сама же репортится как runtime-ошибка и опускает уплинк на ранг ниже (`ws_h3` → `ws_h2`) на `mode_downgrade_secs`. Если уважать этот cap, каждый спасённый флоу получит TCP-over-TCP-носитель и останется на нём до конца жизни — живой флоу назад никто не мигрирует, — и длинная закачка, спасённая с мёртвого H3-носителя, будет ползти там, где раньше рвалась и переоткрывалась на полной скорости. Если носитель сломан по-настоящему, дайл сам сфоллбечит `h3 → h2 → h1`, поэтому игнорировать cap ничего не стоит в тех случаях, когда cap был прав. (По той же причине миграция ре-дилит свой уплинк, а не переотобранный: смерть могла положить этот уплинк в cooldown.)
-- Наблюдается на `outline_ws_tun_tcp_events_total{event=…}`: `carrier_migrated`, `carrier_migration_miss`, `carrier_migration_dial_failed`, `carrier_migration_replay_evicted`, `carrier_migration_replay_ahead`, `carrier_migration_downlink_truncated`, `carrier_migration_downlink_frame_invalid`, плюс по счётчику на каждую причину, по которой флоу признан *неподходящим* ещё до всякого дозвона, — `carrier_migration_disabled`, `carrier_migration_abandoned`, `carrier_migration_no_session_id`, `carrier_migration_no_replay_ring`, `carrier_migration_budget_spent`, `carrier_migration_deadline_passed`. Эти шесть существуют потому, что заблокированный на предусловии флоу вообще не дозванивается: остальные счётчики не двигаются, и «миграция не пробовалась» иначе неотличимо от «в этой сборке нет кода миграции».
+- Возобновление на сервере по умолчанию выключено (`[session_resumption] enabled` в outline-ss-rust). Сервер без него не выдаёт Session ID, его флоу к миграции не допускаются, и клиентская настройка там ни на что не влияет.
+- Direct-флоу (`via = "direct"`) не мигрируют никогда: у них свой сокет до origin, носителя, с которого уходить, нет, и подхватывать нечего.
+- Лимиты: не больше 2 попыток на флоу, ни одна не стартует позже 20 с после первой (TTL парковки на сервере — 30 с), кольцо повтора uplink ограничено 64 КиБ на флоу. Флоу, отправивший один чанк больше этого, теряет кольцо, не может доказать побайтовую точность и закрывается как раньше, а не возобновляется с дырой.
+- Миграционный дозвон запрашивает заданный носитель аплинка, а не ограниченный. Смерть носителя, вызвавшая миграцию, сама засчитывается как runtime-сбой и опускает аплинк на ранг ниже (`ws_h3` → `ws_h2`) на `mode_downgrade_secs`. Если соблюдать это ограничение, каждый спасённый флоу до конца жизни ехал бы по TCP поверх TCP — живой флоу обратно наверх ничто не переносит, — и долгая загрузка, спасённая с мёртвого H3-носителя, ползла бы вместо переподключения на полной скорости. Если носитель действительно сломан, дозвон сам спускается `h3 → h2 → h1`. По той же причине миграция перезванивает в свой аплинк, а не в перевыбранный: смерть носителя могла отправить этот аплинк в cooldown.
+- Счётчики в `outline_ws_tun_tcp_events_total{event=…}`: `carrier_migrated`, `carrier_migration_miss`, `carrier_migration_dial_failed`, `carrier_migration_replay_evicted`, `carrier_migration_replay_ahead`, `carrier_migration_downlink_truncated`, `carrier_migration_downlink_frame_invalid`, плюс по счётчику на каждую причину, по которой флоу оказался непригоден до всякого дозвона: `carrier_migration_disabled`, `carrier_migration_abandoned`, `carrier_migration_no_session_id`, `carrier_migration_no_replay_ring`, `carrier_migration_budget_spent`, `carrier_migration_deadline_passed`. Флоу, остановленный на предусловии, не дозванивается, поэтому без этих шести «миграция не пробовалась» выглядело бы так же, как «в этой сборке нет кода миграции».
 
-`carrier_migration = false` возвращает поведение до миграции (мёртвый носитель сразу превращается в FIN/RST).
+`carrier_migration = false` возвращает прежнее поведение: мёртвый носитель сразу превращается в FIN/RST.
 
 #### Операторский soft switch
 
-Тот же механизм переносит живые TUN TCP-флоу через **операторский soft switch** — `POST /control/activate {"group":"…","uplink":"…","soft":true}` на группе с `mode = "active_passive"` и `shared_resume = true`.
+Тот же механизм переносит живые TUN TCP-флоу через операторский soft switch: `POST /control/activate {"group":"…","uplink":"…","soft":true}` на группе с `mode = "active_passive"` и `shared_resume = true`.
 
-В строгом `active_passive` у группы ровно один активный uplink, и флоу, оставшийся на любом другом, сносится по RST (`event="global_switch"`). Soft switch это приостанавливает: вместо сброса upstream-reader флоу **сначала выводит из эксплуатации старый носитель, а затем** переподключается к **новому активному** uplink'у, предъявляя собственный Session ID флоу. Поскольку mesh-кластер делит один resume-scope, а id несёт в себе домашний шард, новый edge релеит на тот home, который запарковал upstream, и переприкрепляет его — то же правило подтверждённого попадания, тот же v1/v2-реплей, та же гарантия «ни FIN, ни RST, ни дыры, ни дублированного байта». Всё, что меньше подтверждённого попадания, проваливается в тот же RST, который дал бы hard switch: soft switch всё равно сходится, просто сначала пробует.
+В строгом `active_passive` у группы один активный аплинк, и флоу, оставшийся на другом, закрывается RST'ом (`event="global_switch"`). Soft switch заменяет это: reader upstream'а флоу закрывает старый носитель и затем дозванивается в новый активный аплинк со своим Session ID. Mesh-кластер делит один resume-scope, а ID несёт свой домашний шард, поэтому новый edge-узел ретранслирует на домашний узел, где запаркован upstream, и подхватывает его — то же правило подтверждённого попадания, тот же повтор v1/v2, тот же результат без FIN, RST, дыр и дублей. Всё, что не дотянуло до подтверждённого попадания, уходит в RST, который дал бы жёсткий switch.
 
-Порядок «сначала закрыть, потом дозвониться» — не оптимизация: в отличие от смерти носителя, здесь старый носитель совершенно здоров, а сервер держит запаркованный upstream только после того, как этот носитель закрылся. Дозвон, пришедший раньше, искал бы id против ещё живой сессии, получил бы `miss-unknown` и свежий upstream — гарантированный промах. Закрытие первым заводит флоу внутрь серверного park-before-resume-барьера, который закрывает остаток гонки. (По той же причине клиент шлёт `X-Xhttp-Fin` на XHTTP-носителях: бесплатного сигнала о закрытии у них нет, а idle-развёртка для soft switch безнадёжно поздняя.)
+Порядок «сначала закрыть, потом дозвониться» обязателен. В отличие от смерти носителя, здесь старый носитель здоров, а сервер паркует upstream только после закрытия этого носителя. Перезвон, пришедший первым, нашёл бы ID на живой сессии, получил бы `miss-unknown` и новый upstream — гарантированный промах. Закрытие носителя первым ставит флоу за барьер park-before-resume на сервере, который закрывает оставшуюся гонку. (По той же причине клиент шлёт `X-Xhttp-Fin` на XHTTP-носителях: собственного сигнала закрытия у них нет, а idle-проход для soft switch слишком поздний.)
 
-- `soft` учитывается только на группе с `shared_resume`. Во всём остальном `/control/activate` зажимает его до hard switch и возвращает фактическое значение в ответе.
-- Наблюдается на `outline_ws_tun_tcp_events_total{event=…}`: `soft_switch_migrated` и `soft_switch_migration_failed` (за вторым следует обычный `global_switch`-teardown).
+- `soft` учитывается только на группе с `shared_resume`. В остальных случаях `/control/activate` превращает его в жёсткий switch и возвращает действующее значение в ответе.
+- Счётчики в `outline_ws_tun_tcp_events_total{event=…}`: `soft_switch_migrated` и `soft_switch_migration_failed` (за последним следует обычное закрытие `global_switch`).
 
 #### Какие перевыборы мигрируют, а какие бросают
 
-Судьбу оставшегося не у дел флоу решает не то, *кто* сдвинул указатель, а **намерено ли переключение его бросить**. Публикуемый снапшот несёт `SwitchIntent`:
+Судьбу оставшегося флоу решает не то, кто сдвинул указатель, а то, собирается ли переключение его бросить. Публикуемый снимок несёт `SwitchIntent`:
 
-| Намерение | Кем ставится | Живые флоу на старом uplink'е |
+| Intent | Кем выставляется | Живые флоу на старом аплинке |
 | --- | --- | --- |
-| `OperatorHard` | `/control/activate {"soft":false}`, жёсткий плановый reselect или любой soft-запрос, зажатый вне кластера | RST (`global_switch`) |
-| `OperatorSoft` | `/control/activate {"soft":true}` на группе с `shared_resume` | мигрируют, с откатом в RST |
-| `Failover` | failover по пробе, failover по runtime-отказу, auto-failback, carrier-degraded failover, начальный выбор | мигрируют на группе с `shared_resume`, иначе RST |
+| `OperatorHard` | `/control/activate {"soft":false}`, жёсткий плановый перевыбор или любой soft-запрос, принудительно сделанный жёстким вне кластера | RST (`global_switch`) |
+| `OperatorSoft` | `/control/activate {"soft":true}` на группе с `shared_resume` | миграция, при неудаче RST |
+| `Failover` | failover по пробе, failover по runtime-сбою, auto-failback, failover по деградации носителя, failover по потерям, начальный выбор | миграция на группе с `shared_resume`, иначе RST |
 
-Hard switch бросает намеренно: под mesh-кластером мигрировавшая сессия релеится обратно на свой **home** — на тот самый узел, который сливают, — и миграция сорвала бы слив. Failover — противоположность: никто не решал, что сессии должны закончиться, а uplink, с которого ушёл указатель, обычно как раз нездоров — и именно тогда resume стоит попытки: запаркованный upstream живёт на *сервере*, и mesh достаёт до него с нового edge, минуя сломанный путь клиента к старому. Вне кластера (`shared_resume = false`) не мигрирует ничего: переприкреплять нечего, и дозвон добавил бы только задержку перед тем же teardown'ом.
+Жёсткий switch бросает намеренно: в mesh-кластере мигрированная сессия ретранслируется обратно на домашний узел, а это и есть выводимый из работы узел, так что миграция сорвала бы вывод. При failover никто не решал, что сессии должны закончиться, а аплинк, с которого ушли, обычно и есть нездоровый — запаркованный upstream живёт на сервере, и mesh достаёт его с нового edge-узла без сломанного пути клиента. Вне кластера (`shared_resume = false`) ничего не мигрирует: подхватывать нечего, и дозвон только добавил бы задержку перед тем же закрытием.
 
 #### TUN UDP-флоу
 
-Тот же вердикт управляет туннельными **UDP**-флоу с одним сознательным отличием: защищать байтовую непрерывность здесь нечего, поэтому нет и правила подтверждённого попадания. Запаркованная UDP-сессия не держит back-buffer пакетов в сторону upstream (UDP по своей природе терпим к потерям), так что промах resume стоит нового исходящего порта на exit'е — но никогда не сращённого байтового потока, из-за угрозы которого TCP-путь и отказывается принимать что-либо, кроме доказательства.
+То же решение действует для туннелируемых UDP-флоу, с одним отличием: байтовой непрерывности нет, поэтому нет и правила подтверждённого попадания. Запаркованная UDP-сессия не хранит буфер пакетов в сторону upstream, и промах resume стоит нового исходящего порта на выходе — никогда не сшитого байтового потока, из-за которого TCP-путь требует доказательства.
 
-Попадание сохраняет **сессию**: сервер перенаправляет запаркованные NAT-записи флоу (SS-UDP) или переприкрепляет его прибитый сокет (VLESS-UDP), поэтому exit сохраняет тот же исходящий порт, а NAT-привязка пира, его path validation и состояние по адресу переживают переключение. Uplink-задача флоу выводит из эксплуатации старый носитель — сначала reader, затем носитель, затем дозвон — по той же причине park-before-resume, что и в TCP.
+Попадание сохраняет сессию: сервер переводит запаркованные NAT-записи флоу (SS-UDP) или подхватывает его закреплённый сокет (VLESS-UDP), поэтому выход сохраняет исходящий порт, а NAT-привязка, path validation и состояние по адресу у собеседника переживают переключение. Uplink-задача флоу закрывает старый носитель — сначала reader, затем носитель, затем перезвон — по той же причине park-before-resume, что и в TCP.
 
-- Наблюдается на `outline_ws_tun_udp_events_total{event=…}`: `soft_switch_migrated`, `soft_switch_migrated_no_resume_id` (флоу перенесён, но сервер не выдавал ему Session ID, поэтому исходящий порт на exit'е всё же сменился), `soft_switch_migration_failed` (дозвон не удался; флоу сносится так же, как это сделал бы hard switch), `soft_switch_target_invalid`.
-- У каждого туннельного UDP-флоу — и у каждой SOCKS5 UDP-ассоциации — **свой** resume-слот. TUN дозванивается по одному носителю на флоу, поэтому общий процессный слот `<resume-scope>#udp` означал, что свежий флоу предъявляет id, запаркованный предыдущим закрывшимся; попадание по нему — это попадание в чужую сессию, а не промах resume.
+- Счётчики в `outline_ws_tun_udp_events_total{event=…}`: `soft_switch_migrated`, `soft_switch_migrated_no_resume_id` (флоу перенесён, но сервер не выдал ему Session ID, поэтому исходящий порт на выходе сменился), `soft_switch_migration_failed` (перезвон не удался, флоу закрыт как при жёстком switch), `soft_switch_target_invalid`.
+- Каждый туннелируемый UDP-флоу и каждая SOCKS5 UDP-ассоциация держат собственный resume-слот. TUN дозванивается отдельным носителем на каждый флоу; с прежним общим на процесс слотом `<resume-scope>#udp` новый флоу предъявлял запаркованный ID предыдущего, и попадание по нему было попаданием в чужую сессию.
 
 ### TUN PMTUD safety gate
 
-Когда upstream-транспорт отказывается принять oversize UDP-датаграмму на TUN-пути (SS-UDP, VLESS-UDP, SS-2022 и т. п.), engine синтезирует ICMP «Fragmentation Needed» (IPv4) или «Packet Too Big» (IPv6) в адрес исходного отправителя, чтобы сработала его PMTUD state machine. Boolean-ручка `tun.pmtud_emit_below_quic_initial` отвечает на один вопрос: **можно ли в этом PTB рекламировать path MTU ниже QUIC v1 Initial-datagram минимума (1200 v4 / 1280 v6, RFC 9000 §14.1)?**
+Когда upstream-транспорт отказывается принять слишком большую UDP-датаграмму на TUN-пути (SS-UDP, VLESS-UDP, SS-2022, …), движок шлёт исходному отправителю ICMP «Fragmentation Needed» (IPv4) или «Packet Too Big» (IPv6), чтобы его PMTUD отреагировал, не чаще одного PTB в секунду на флоу. `tun.pmtud_emit_below_quic_initial` решает, может ли такой PTB объявлять path MTU ниже минимума Initial-датаграммы QUIC v1 (1200 v4 / 1280 v6, RFC 9000 §14.1).
 
-По умолчанию `false` — sub-минимум PTB подавляются. Compliant QUIC-стеки воспринимают такой PTB как «destination не умеет нести QUIC» и откатываются на TCP, поэтому подавление удерживает реальный QUIC-трафик (YouTube, Google services) на UDP даже когда per-datagram budget TUN uplink-а сидит чуть ниже 1200 байт. Sub-минимум oversize-дропы молча проглатываются, а собственная retransmit / timeout логика отправителя со временем подстраивается.
+По умолчанию `false`: такие PTB подавляются. QUIC-стеки воспринимают PTB ниже минимума как «это назначение не может нести QUIC» и уходят на TCP; с гейтом QUIC-трафик (YouTube, сервисы Google) остаётся на UDP, даже когда бюджет датаграммы TUN-аплинка чуть ниже 1200 байт. Слишком большая датаграмма отбрасывается молча, отправитель подстраивается своими ретрансмитами и таймаутами.
 
-Установите `tun.pmtud_emit_below_quic_initial = true`, чтобы вернуть безусловную отправку. Используйте на инсталляциях, где вытеснение QUIC не проблема, а явный PMTUD-сигнал на каждом sub-минимум дропе важнее — например на чистом VoWiFi / IKEv2 концентраторе, который везёт IKE_AUTH с сертификатами поверх узкого туннельного uplink-а, где PTB — единственный способ для IKE retransmit loop узнать реальный tunnel MTU. Полный контракт — когда срабатывает PTB, что throttled, откуда взялся минимум, что меняется при opt-in — описан в [docs/TUN-PMTUD.ru.md](docs/TUN-PMTUD.ru.md).
+`tun.pmtud_emit_below_quic_initial = true` шлёт PTB всегда. Включайте там, где уход QUIC на TCP не важен, а сигнал PMTUD на каждом отбросе важен, — например, на VoWiFi / IKEv2-концентраторе, где IKE_AUTH с сертификатами идёт через узкий аплинк и PTB — единственный способ для IKE узнать MTU туннеля. Полный контракт: [docs/TUN-PMTUD.ru.md](docs/TUN-PMTUD.ru.md).
 
 ## Linux fwmark
 
-Per-uplink `fwmark` применяет `SO_MARK` к исходящим сокетам:
+`fwmark` аплинка ставит `SO_MARK` на исходящие сокеты:
 
-- TCP-сокеты HTTP/1.1 WebSocket
-- TCP-сокеты HTTP/2 WebSocket
-- UDP-сокеты HTTP/3 QUIC
-- dial'ы проб
+- TCP-сокеты WebSocket по HTTP/1.1
+- TCP-сокеты WebSocket по HTTP/2
+- UDP-сокеты QUIC для HTTP/3
+- дозвоны проб
 - warm-standby соединения
 
 Требования:
 
 - только Linux
 - `CAP_NET_ADMIN`
-- под systemd — `PrivateUsers=no`: `setsockopt(SO_MARK)` авторизуется против
-  user namespace, ВЛАДЕЮЩЕГО сетевым стеком (init ns), поэтому при
-  `PrivateUsers=true` капабилити действует только внутри приватного userns и
-  каждый помеченный dial падает с `EPERM` — одного `CAP_NET_ADMIN`
-  недостаточно. Касается и per-uplink `fwmark`, и top-level `direct_fwmark`.
+- под systemd `PrivateUsers=no`: `setsockopt(SO_MARK)` проверяется против user namespace, которому принадлежит сетевой стек (init namespace). При `PrivateUsers=true` capability действует только внутри приватного namespace, и каждый помеченный дозвон падает с `EPERM`. Относится и к `fwmark` аплинка, и к top-level `direct_fwmark`.
 
-## Метрики и дашборды
+## Метрики
 
-> **Дашборд вынесен из этого бинаря.** Его отдаёт из k3s сервис `outline-ui` по
-> адресу `https://ui.k3s.beerloga.su/ws`, агрегируя control API всех инстансов,
-> вместо того чтобы жить на узле. Этот бинарь теперь отдаёт только read-only
-> эндпоинт метрик и аутентифицированную control-плоскость, к которой UI
-> проксирует. См. [`bins/outline-ui/README.ru.md`](../outline-ui/README.ru.md).
+Multi-instance дашборд не входит в этот бинарь. Его отдаёт сервис `outline-ui`, который собирает control API всех инстансов; см. [`bins/outline-ui/README.ru.md`](../outline-ui/README.ru.md). Этот бинарь отдаёт эндпоинт метрик только для чтения и аутентифицированный control plane.
 
-При включённой секции `[metrics]` процесс обслуживает только read-only
-эндпоинт Prometheus:
+При заданном `[metrics]` процесс отдаёт:
 
-- `/metrics` — Prometheus text exposition
+- `/metrics` — текстовый формат Prometheus
 
 ```bash
 curl http://[::1]:9090/metrics
 ```
 
-На metrics-listener больше **нет** мутирующих эндпоинтов. Прежний `/switch`
-вынесен на отдельный аутентифицированный control-plane listener (см. ниже),
-чтобы доступ к observability не давал автоматически право переключать
-активный аплинк.
+У слушателя метрик нет изменяющих эндпоинтов; `/switch` и остальные живут на отдельном аутентифицированном control-слушателе, поэтому доступ на чтение метрик не даёт права переключать активный аплинк.
+
+Пример scrape-конфига Prometheus:
+
+```yaml
+scrape_configs:
+  - job_name: outline-ws-rust
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "[::1]:9090"
+```
+
+Группы метрик:
+
+- информация о сборке и старте
+- gauge'и резидентной памяти и кучи процесса
+- SOCKS5-запросы и активные сессии, включая `command="connect"`, `command="udp_associate"` и `command="udp_in_tcp"`
+- гистограмма длительности сессий
+- байты payload и UDP-датаграммы
+- отбросы слишком больших UDP-пакетов в обе стороны
+- здоровье аплинков, задержка, EWMA RTT, штрафы, скор, cooldown, готовность standby. `uplink_health` равен `1` (здоров) или `0` (нездоров) только после того, как проба подтвердила состояние; до первого цикла проб серии нет, и это значит «неизвестно», а не «нездоров».
+- состояние policy routing и выбора активного аплинка
+- результаты и задержка проб
+- исходы получения и пополнения warm-standby
+- метрики TUN-флоу и пакетов
+- метрики `tun2tcp`: ретрансмиты, backlog, окно, RTT и RTO
+
+На Linux сэмплер памяти процесса обновляет:
+
+- `outline_ws_process_resident_memory_bytes`
+- `outline_ws_process_virtual_memory_bytes`
+- `outline_ws_process_heap_allocated_bytes`
+- `outline_ws_process_heap_mode_info{mode}`
+- `outline_ws_process_open_fds`
+- `outline_ws_process_threads`
+
+С фичей `jemalloc` (по умолчанию) значения кучи берутся из собственных счётчиков jemalloc (`stats.allocated` / `stats.resident`), и `heap_mode_info{mode="exact"}` равен `1`. Сборки без jemalloc оценивают кучу по `VmData` (`mode="estimated"`); сборки не под Linux отдают `mode="unavailable"`.
+
+На Linux процесс также периодически пишет в лог опись дескрипторов `process fd snapshot`: число открытых FD и разбивку на сокеты, pipe'ы, anon inode, обычные файлы и прочее.
+
+`outline_ws_selection_mode_info{mode}`, `outline_ws_routing_scope_info{scope}`, `outline_ws_global_active_uplink_info{uplink}` и `outline_ws_sticky_routes` показывают конфигурацию селектора и состояние активного аплинка.
+
+`outline_ws_group_bypass_active{group, transport}` показывает состояние `bypass_when_down`: `1`, пока новые флоу этого транспорта идут direct, потому что в группе нет здорового аплинка, `0`, пока трафик идёт в туннель. Серия есть только у групп с `bypass_when_down = true`. Дашборд outline-ui показывает то же состояние чипом в заголовке группы (`bypass armed` / `bypass: direct`); в дашборде Grafana это панели «Direct Bypass (bypass_when_down)» и «Direct Bypass Timeline» в разделе Routing Policy.
+
+Учёт открытых соединений по аплинкам — для соединений, утекающих в неактивный аплинк после переключения `global` / `per_uplink`:
+
+- `outline_ws_uplink_open_connections{group, transport, uplink}` — gauge открытых upstream-транспортов по аплинку. После переключения новый активный аплинк набирает соединения, старый их сливает; серия, которая не опускается, — признак утечки.
+- `outline_ws_uplink_connection_close_total{group, transport, uplink, classification}` — счётчик закрытий upstream-транспортов, классифицированных в момент закрытия: `active` (аплинк ещё был активным), `inactive` (указатель активного уже ушёл — сливается оставшаяся сессия) или `unknown` (scope `per_flow`, указателя нет). `rate(...{classification="inactive"}[5m])` — скорость слива после переключения; устойчиво ненулевое значение вне недавнего переключения указывает на устаревший sticky-маршрут или warm-standby пул.
+
+Обе метрики выведены в строку Grafana «Inactive Uplink Leak (Global / Per-Uplink)» в `grafana/outline-ws-rust-dashboard.json`. Соединения проб не учитываются; метрики покрывают только дозвоны пользовательского трафика.
+
+`outline_ws_carrier_writer_terminations_total{writer, reason}` считает writer-задачи WebSocket-носителя, остановившиеся из-за ошибки записи. `writer` — `ss` (SS поверх WS) или `frame` (writer VLESS-чанков / датаграмм); `reason` — `peer_closed`, если носитель уже был закрыт (штатно, лог на `debug`), или `error` для настоящей ошибки записи (лог на `warn`). Устойчивый rate `reason="error"` значит, что аплинк не может писать. Строка Grafana: «Carrier Writer Terminations».
+
+Прочие счётчики:
+
+- `outline_ws_tun_udp_forward_errors_total{reason}` — TUN UDP-пакеты, которые не удалось отправить в upstream: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
+- `outline_ws_udp_oversized_dropped_total{direction="up|down", cause}` — слишком большие UDP-пакеты, отброшенные до отправки в аплинк (`up`) или до доставки клиенту (`down`); `cause` — `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`, `ss_socket`, `vless_udp` или `xhttp_records`.
+- `outline_ws_udp_malformed_dropped_total{cause}` — клиентские датаграммы, которые SOCKS5 UDP ingress не может разобрать; отбрасываются поштучно, ассоциация продолжает работать: `parse` (испорченный SOCKS5 UDP-заголовок или неподдерживаемый тип адреса), `reassembly` (последовательность фрагментов не по порядку, со сменой цели или сверх лимита сборки).
+- `outline_ws_uplink_payload_integrity_errors_total{transport, group, uplink, cause}` — downlink-датаграммы, не прошедшие проверку целостности payload: `decrypt_failed`, `packet_too_short`, `udp_out_of_order` (replay/reorder в SS2022). Отделён от `outline_ws_uplink_runtime_failures_total`: испорченный payload говорит о байтах, а не о носителе, поэтому не даёт cooldown, штрафа, серии runtime-сбоев и даунгрейда носителя (`xhttp_h3 → xhttp_h2`). Закрывается только затронутый флоу: на TUN UDP-пути — с причиной `payload_error` (пересоздаётся следующим пакетом); на SOCKS5 UDP downlink датаграмма отбрасывается, а ассоциация сохраняет транспорт. Когда такие ошибки списывались на носитель, боевой аплинк 69,6 % времени работал на UDP поверх TCP при доле испорченных датаграмм ~0,1 %. Растущий rate — всё равно дефект, но за носителем; смотрите его на отдельной панели, а не на графике failover.
+- `outline_ws_tun_icmp_local_replies_total{ip_family}` — локальные ICMP echo reply.
+
+На TUN UDP-пути отбросы слишком больших пакетов дополнительно порождают ICMP PTB отправителю; см. [TUN PMTUD safety gate](#tun-pmtud-safety-gate) и [docs/TUN-PMTUD.ru.md](docs/TUN-PMTUD.ru.md).
+
+Дашборды Grafana (см. [`grafana/README.md`](grafana/README.md)):
+
+- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
+- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json)
 
 ## Control plane
 
-При включённой секции `[control]` процесс поднимает **отдельный** TCP-listener
-для мутирующих эндпоинтов, защищённый обязательным bearer-токеном:
+При заданном `[control]` процесс отдаёт изменяющие эндпоинты на отдельном TCP-слушателе, который требует bearer-токен:
 
-- `GET /control/topology` — топология instance/group/uplink для дашборда
-- `GET /control/summary` — компактные счётчики для stat-карточек
-- `POST /control/activate` — JSON API активации для click action
-- `POST /control/reselect` — форсировать взвешенно-случайный перевыбор строгого активного аплинка группы («reselect now») — та же ротация, что выполняют плановые циклы `reselect_at`/`reselect_interval`. JSON-тело `{"group":"main","soft":true}` (`soft` по умолчанию `true`)
-- `POST /control/uplink_enabled` — административно включить/выключить аплинк (operator on/off). JSON-тело `{"group":"main","uplink":"backup","enabled":false}`. Выключенный аплинк убирается из **всех** автоматических механизмов — probe, выбор кандидатов, failover, пополнение warm-standby — до повторного включения; если он был активным, трафик сразу уходит на включённый резерв. Только runtime: override **не** персистится, после рестарта процесса все аплинки включены. В дашборде — кнопка On/Off у каждого аплинка.
-- `GET`/`POST`/`PATCH`/`DELETE /control/uplinks` — staged-правки `[[outline.uplinks]]` в файле конфигурации
-- `GET`/`POST`/`PATCH`/`DELETE /control/routes` — staged-правки `[[route]]` в файле конфигурации
-- `POST /control/routes/reorder` — переместить правило на новую позицию в списке first-match-wins
-- `GET`/`PATCH /control/config` — чтение и in-place модификация конфигурации подсистем клиента (`[probe]`, `[socks5]`, `[tun]`, `[dial]`, `[padding]`, `[quic]`, `[h2]`, `[tcp_timeouts]`, `fingerprint_profile`, `prefer_public_ipv6_src`, `direct_fwmark`). Возвращает `{ "status": "ok", "apply_required": true, "restart_required": bool }`
-- `POST /control/apply` — hot-apply staged-правок аплинков, а также staged-правок маршрутов (если routing уже был настроен при старте), без рестарта процесса
-- `POST /switch` — ручное переключение активного аплинка
+| Метод и путь | Назначение |
+|---|---|
+| `GET /control/topology` | топология инстанс / группа / аплинк для дашбордов |
+| `GET /control/summary` | компактные счётчики здоровья групп и аплинков |
+| `POST /control/activate` | JSON API активации (действия по клику в дашборде) |
+| `POST /control/reselect` | взвешенно-случайный перевыбор строгого активного аплинка группы сейчас — та же ротация, что `reselect_at` / `reselect_interval` делают по расписанию. Тело `{"group":"main","soft":true}` (`soft` по умолчанию `true`) |
+| `POST /control/uplink_enabled` | административно включить/выключить аплинк. Тело `{"group":"main","uplink":"backup","enabled":false}`. Выключенный аплинк исключается из проб, выбора кандидатов, failover и пополнения standby до повторного включения; если он был активным, трафик сразу уходит на включённый аплинк. Не сохраняется: после рестарта все аплинки включены. В дашборде outline-ui — кнопка питания у аплинка (Enable / Disable) |
+| `GET` / `POST` / `PATCH` / `DELETE /control/uplinks`, `POST /control/uplinks/reorder` | подготовка правок `[[outline.uplinks]]` в файле конфига |
+| `GET` / `POST` / `PATCH` / `DELETE /control/uplink_groups`, `POST /control/uplink_groups/reorder` | подготовка правок `[[uplink_group]]` в файле конфига (см. «`/control/uplink_groups` (CRUD)» в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md)) |
+| `GET` / `POST` / `PATCH` / `DELETE /control/routes`, `POST /control/routes/reorder` | подготовка правок `[[route]]`; reorder перемещает правило в списке first-match-wins |
+| `GET` / `PATCH /control/config` | чтение и изменение настроек подсистем клиента в файле конфига (`[probe]`, `[socks5]`, `[tun]`, `[dial]`, `[padding]`, `[quic]`, `[h2]`, `[tcp_timeouts]`, `fingerprint_profile`, `prefer_public_ipv6_src`, `direct_fwmark`). Возвращает `{ "status": "ok", "apply_required": true, "restart_required": bool }` |
+| `POST /control/apply` | применить без рестарта подготовленные правки аплинков и групп, а также маршрутов, если маршрутизация была настроена при старте |
+| `GET /control/alloc` | статистика аллокатора (счётчики jemalloc в сборке по умолчанию) |
+| `POST /switch` | ручное переопределение активного аплинка |
 
-Анонимного доступа нет: запросы без корректного заголовка
-`Authorization: Bearer <token>` отклоняются с `401 Unauthorized` ещё до
-обработки тела.
+Запросы без совпадающего заголовка `Authorization: Bearer <token>` отклоняются с `401 Unauthorized` до чтения тела; анонимного доступа нет.
 
 ### Конфигурация
 
-Либо задайте `listen` и токен в `[control]`, либо передайте `--control-listen`
-(`CONTROL_LISTEN`) вместе с `--control-token` (`CONTROL_TOKEN`). Также можно
-прочитать токен из соседнего файла через `token_file = "..."` (путь
-разрешается относительно файла конфига). Указание только одной из двух
-половин — ошибка старта.
+Задайте `listen` и токен в `[control]` либо передайте `--control-listen` (`CONTROL_LISTEN`) вместе с `--control-token` (`CONTROL_TOKEN`). Токен можно читать из файла через `token_file = "..."` (путь относительно файла конфига). Только одна из двух половин — ошибка старта.
 
-Привязывайте control-listener к loopback или management-сети; токен —
-дополнительный слой защиты, а не замена сетевой изоляции.
+Привязывайте control-слушатель к loopback или management VLAN; токен не заменяет сетевую изоляцию.
 
 ### Ручное переключение активного аплинка
 
-`POST /switch` позволяет оператору вручную закрепить активный аплинк в группе
-с режимом `active_passive`, не дожидаясь следующего цикла проб. Выбор
-сохраняется через state store (если он настроен) и переживает рестарт.
+`POST /switch` закрепляет активный аплинк группы `active_passive`, не дожидаясь probe loop. Выбор сохраняется через state store (если он настроен) и переживает рестарт.
 
-Параметры запроса:
+Query-параметры:
 
-- `uplink` (обязательный) — имя аплинка, который нужно сделать активным.
-- `group` (необязательный) — целевая группа. Если не указан, поиск идёт по
-  всем группам (имена аплинков уникальны глобально).
-- `transport` (необязательный) — `tcp`, `udp` или `both` (по умолчанию).
-  Учитывается только при `routing_scope = per_uplink`; в режиме `global`
-  игнорируется.
-
-Примеры:
+- `uplink` (обязательный) — имя аплинка, который нужно активировать.
+- `group` (опциональный) — целевая группа. Без него поиск идёт по всем группам (имена аплинков глобально уникальны).
+- `transport` (опциональный) — `tcp`, `udp` или `both` (по умолчанию). Учитывается только при `routing_scope = per_uplink`; в `global` игнорируется.
 
 ```bash
 TOKEN="long-random-secret"
@@ -1137,25 +1211,15 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
   'http://127.0.0.1:9091/switch?group=main&uplink=backup'
 ```
 
-Возвращает `200` при успехе, `400` если аплинк/группа не найдены или режим
-группы не `active_passive`, `401` при отсутствующем или неверном bearer-токене
-и `405` для не-POST методов. Переопределение держится, пока выбранный аплинк
-здоров; если проба позже отметит его нездоровым, сработает обычный failover.
-При `auto_failback = true` цикл проб может позже вернуться на более
-приоритетный аплинк, как только тот стабилизируется.
+Ответы: `200` при успехе; `400`, если аплинк или группа неизвестны или группа не в режиме `active_passive`; `401`, если bearer-токен отсутствует или неверен; `405` для методов кроме POST. Переопределение действует, пока выбранный аплинк здоров; когда probe loop пометит его нездоровым, работает обычный failover. При `auto_failback = true` цикл может вернуться на аплинк с большим приоритетом, когда тот стабилизируется.
 
 ### Control API для дашбордов
 
-`GET /control/topology` возвращает JSON с группами и аплинками, включая
-флаги `active_global`, `active_tcp`, `active_udp` для каждого аплинка —
-для дашборда outline-ui или внешних control-клиентов.
+`GET /control/topology` возвращает группы и аплинки в JSON, включая булевы `active_global`, `active_tcp`, `active_udp` у каждого аплинка, для дашборда outline-ui или других клиентов control plane.
 
-`GET /control/summary` возвращает компактные счётчики:
-`groups_total`, `uplinks_total`, healthy/unhealthy по TCP/UDP и счётчики
-активных выборов.
+`GET /control/summary` возвращает счётчики: `groups_total`, `uplinks_total`, число здоровых/нездоровых по TCP/UDP и счётчики активного выбора.
 
-`POST /control/activate` принимает JSON и использует ту же внутреннюю логику
-переключения, что и `/switch`:
+`POST /control/activate` принимает JSON и использует ту же логику переключения, что `/switch`:
 
 ```json
 {
@@ -1165,11 +1229,7 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
 }
 ```
 
-`POST /control/reselect` форсирует тот же взвешенно-случайный перевыбор, что
-выполняют плановые циклы (`reselect_at` / `reselect_interval`), вне
-расписания («reselect now»). Имеет смысл только для группы в режиме
-`active_passive` с единым строгим активным слотом (routing_scope `global`
-или `per_uplink`); для остальных групп ответ несёт `outcome: "skipped"`.
+`POST /control/reselect` выполняет взвешенно-случайный перевыбор, который `reselect_at` / `reselect_interval` делают по расписанию, вне расписания. Применим к группе `active_passive` с одним строгим активным слотом (scope `global` или `per_uplink`); остальные группы возвращают `outcome: "skipped"`.
 
 ```json
 {
@@ -1178,11 +1238,7 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
 }
 ```
 
-`soft` по умолчанию `true` и запрашивает переключение с сохранением сессий
-через cluster resume; на группе без `shared_resume` он клампится до жёсткого
-переключения — так же, как у `/control/activate`. Ответ сообщает
-*фактическое* значение `soft`, а также имена аплинков `from`/`to`, если слот
-сдвинулся:
+`soft` по умолчанию `true` и запрашивает переключение с сохранением сессий через cluster resume; на группе без `shared_resume` переключение становится жёстким, как в `/control/activate`. Ответ содержит действующее значение `soft` и имена аплинков `from` / `to`, если слот сдвинулся:
 
 ```json
 {
@@ -1194,33 +1250,11 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
 }
 ```
 
-`outcome` принимает одно из значений `switched`, `no_candidate` (не осталось
-ни одного подходящего аплинка после исключения текущего активного и
-аплинков, которые отключены, нездоровы или в cooldown'е) или `skipped`
-(группа не в режиме
-`active_passive`, либо у неё нет единого строгого активного слота для
-ротации). В дашборде — кнопка «⟳ Reselect» на уровне группы; в отличие от
-soft switch, она доступна независимо от `cluster_resume_enabled`.
+`outcome` — `switched`, `no_candidate` (не осталось подходящего аплинка после исключения текущего активного и выключенных / нездоровых / находящихся в cooldown) или `skipped` (группа не `active_passive` или у неё нет одного строгого активного слота). В дашборде outline-ui это кнопка группы **Reselect**; в отличие от soft switch, она показывается независимо от `cluster_resume_enabled`.
 
-`/control/uplinks` меняет canonical-массив `[[outline.uplinks]]` в TOML на
-диске. Ответы на мутации включают `apply_required: true`, когда
-`/control/apply` может активировать staged-правку; `restart_required`
-зарезервирован для control-состояний без hot-apply.
+`/control/uplinks` правит массив `[[outline.uplinks]]` в TOML-файле на диске. Ответы на изменения содержат `apply_required: true`, если `/control/apply` может активировать подготовленную правку; `restart_required` зарезервирован для правок, которые нельзя применить на ходу.
 
-`/control/routes` меняет canonical-массив `[[route]]` точно так же, но
-адресует правила по индексу в массиве, а не по имени — у правила нет ключа
-идентичности, — и защищён optimistic-concurrency `revision`: устаревший
-индекс из параллельной правки отклоняется, а не двигает не то правило.
-`POST /control/routes/reorder` переносит одно правило на новый индекс в том
-же массиве — от порядка как раз и зависит first-match-wins. `POST
-/control/apply` выполняет hot-apply staged-правки маршрута так же, как
-staged-правки аплинка, **но только если `[[route]]` уже был настроен при
-старте процесса**: включение policy routing впервые на узле, который
-стартовал без него (весь трафик шёл через первую группу), всё ещё требует
-рестарта — живой таблицы маршрутов, куда можно было бы подставить
-новую, просто не существует.
-
-Примеры:
+`/control/routes` правит массив `[[route]]` так же, но по индексу в массиве, а не по имени (у правила нет ключа идентичности), с оптимистичной проверкой `revision`: устаревший индекс от параллельной правки отвергается, а не сдвигает чужое правило. `POST /control/routes/reorder` переносит одно правило на новый индекс, потому что first-match-wins зависит от порядка. `POST /control/apply` применяет подготовленную правку маршрутов так же, как правку аплинков, но только если `[[route]]` был при старте процесса. Включение policy routing на узле, стартовавшем без него (всё через первую группу), требует рестарта: живой таблицы маршрутизации для подмены нет.
 
 ```bash
 TOKEN="long-random-secret"
@@ -1237,102 +1271,11 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
   'http://127.0.0.1:9091/control/activate'
 ```
 
-Пример конфигурации Prometheus:
-
-```yaml
-scrape_configs:
-  - job_name: outline-ws-rust
-    metrics_path: /metrics
-    static_configs:
-      - targets:
-          - "[::1]:9090"
-```
-
-Метрики включают:
-
-- информацию о сборке и запуске
-- gauges resident memory и heap usage процесса
-- запросы SOCKS5 и активные сессии, включая `command="connect"`, `command="udp_associate"` и `command="udp_in_tcp"`
-- гистограмму длительности сессий
-- payload bytes и UDP datagrams
-- счётчики дропа oversized UDP-пакетов для входящих клиентских пакетов и исходящих ответов клиенту
-- health, latency, EWMA RTT, штрафы, скор, cooldown, готовность standby аплинков. `uplink_health` экспортируется как `1` (здоров) или `0` (нездоров) только если проба выполнялась и подтвердила состояние. До первого цикла проб метрика отсутствует — пустое значение означает «неизвестно», а не нездоров.
-- состояние routing policy и выбор активного uplink
-- результаты и latency проб
-- исходы acquire и refill warm-standby
-- метрики потоков и пакетов TUN
-- метрики ретрансмитов, backlog, window, RTT и RTO `tun2tcp`
-
-На Linux семплер памяти процесса обновляет:
-
-- `outline_ws_process_resident_memory_bytes`
-- `outline_ws_process_virtual_memory_bytes`
-- `outline_ws_process_heap_allocated_bytes`
-- `outline_ws_process_heap_mode_info{mode}`
-- `outline_ws_process_open_fds`
-- `outline_ws_process_threads`
-
-Метрики heap на Linux сейчас рассчитываются через оценку по `VmData` и экспортируют `heap_mode_info{mode="estimated"}`.
-
-На Linux процесс также периодически выводит в лог inventory дескрипторов:
-
-- `process fd snapshot`
-
-Snapshot дескрипторов включает общее количество открытых FD и разбивку на сокеты, pipes, anon inodes, обычные файлы и прочее.
-
-`outline_ws_selection_mode_info{mode}`, `outline_ws_routing_scope_info{scope}`, `outline_ws_global_active_uplink_info{uplink}` и `outline_ws_sticky_routes` экспортируют конфигурацию селектора и состояние активного uplink.
-
-`outline_ws_group_bypass_active{group, transport}` отражает живое состояние `bypass_when_down`: `1` — новые потоки этого транспорта сейчас диспатчатся direct (байпасс туннеля), потому что в группе нет здорового uplink'а; `0` — трафик туннелируется нормально. Серия существует только для групп с `bypass_when_down = true`; дашборд outline-ui показывает тот же сигнал чипом в заголовке группы (серый `Bypass: armed` / янтарный `Bypass: DIRECT`), а Grafana-дашборд — парной stat-панелью и таймлайном в секции Routing Policy.
-
-Учёт открытых соединений по uplink (используется для детекции утекания
-коннектов в неактивный uplink после переключения active в режимах
-`Global` / `PerUplink`) экспортируется через:
-
-- `outline_ws_uplink_open_connections{group, transport, uplink}` —
-  gauge с текущим числом открытых upstream-транспортов, привязанных к
-  конкретному uplink. После переключения новый active поднимается, старый
-  понемногу слив сессии заканчивает; серия, которая не сходит к нулю —
-  сигнал утечки.
-- `outline_ws_uplink_connection_close_total{group, transport, uplink, classification}`
-  — счётчик закрытий upstream-транспортов с классификацией на момент close:
-  `active` (uplink всё ещё активный), `inactive` (active уже сменился —
-  дренаж осиротевшей сессии), `unknown` (`PerFlow` scope без понятия
-  active). `rate(...{classification="inactive"}[5m])` показывает скорость
-  слива после переключения; устойчивое ненулевое значение вне недавнего
-  switchover указывает на устаревший sticky route или warm-standby пул.
-
-Обе метрики выведены в строку `Inactive Uplink Leak (Global / Per-Uplink)`
-дашборда `grafana/outline-ws-rust-dashboard.json`. Probe / health-check
-коннекты намеренно НЕ привязаны — метрики покрывают только
-пользовательский трафик.
-
-`outline_ws_carrier_writer_terminations_total{writer, reason}` считает задачи
-writer'а WebSocket-носителя, остановленные неудачной записью в sink. `writer` —
-`ss` (writer SS-over-WS) или `frame` (writer VLESS-чанков / датаграмм);
-`reason` — `peer_closed`, когда носитель уже был закрыт (штатный случай,
-логируется на debug), либо `error` для настоящего сбоя записи (по-прежнему
-логируется на warn). Устойчивый `reason="error"` означает, что uplink не
-дописывает данные; `peer_closed` отражает обычную смену сессий. Строка
-дашборда: `Carrier Writer Terminations`.
-
-При ошибке UDP-forwarding в TUN метрика `outline_ws_tun_udp_forward_errors_total{reason}` разбивает их по: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
-Дроп oversized SOCKS5 UDP-пакетов до отправки в uplink и oversized UDP-ответов до отправки клиенту экспортируется как `outline_ws_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (label `cause` различает `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
-Клиентские датаграммы, которые SOCKS5 UDP-ingress не смог декодировать, дропаются поштучно — ассоциация и остальные её flow продолжают работать — и считаются как `outline_ws_udp_malformed_dropped_total{cause}` (`parse` — битый заголовок SOCKS5 UDP-запроса или неподдерживаемый тип адреса, `reassembly` — последовательность фрагментов, отвергнутая как out-of-order, со сменой таргета или сверх лимита реассемблинга).
-Датаграммы downlink, не прошедшие проверку целостности *payload* — отказ AEAD-открытия, обрезанный пакет, отклонение SS2022 как дубль/переупорядоченный, — считаются в `outline_ws_uplink_payload_integrity_errors_total{transport, group, uplink, cause}` (`decrypt_failed`, `packet_too_short`, `udp_out_of_order`). Счётчик намеренно отделён от `outline_ws_uplink_runtime_failures_total`: битый payload — свидетельство о байтах, а не о носителе, который их доставил, поэтому он НЕ ставит cooldown, НЕ добавляет penalty, НЕ увеличивает streak runtime-провалов и НЕ запускает спуск носителя (`xhttp_h3 → xhttp_h2`). Рвётся только пострадавший flow: на TUN UDP-пути он закрывается с причиной `payload_error` и пересоздаётся на следующем пакете, на SOCKS5 UDP-downlink датаграмма дропается, а транспорт ассоциации остаётся. Именно списывание таких ошибок на носитель однажды держало боевой uplink в UDP-поверх-TCP 69.6% времени при доле битых датаграмм ~0.1%. Растущий rate здесь — всё ещё реальный дефект, просто он живёт за носителем, поэтому смотреть на него нужно на отдельной панели, а не в графике failover'ов.
-На TUN UDP-пути oversize-дропы дополнительно синтезируют ICMP «Fragmentation Needed» (IPv4) или «Packet Too Big» (IPv6) в адрес отправителя, чтобы сработала его собственная PMTUD state machine — throttled до одного PTB в секунду на flow и полностью подавлены ниже QUIC v1 Initial-datagram floor (1200 v4 / 1280 v6), чтобы compliant QUIC-клиентов не выбивало с UDP в TCP fallback. Полный контракт описан в [docs/TUN-PMTUD.ru.md](docs/TUN-PMTUD.ru.md).
-
-Дашборды Grafana:
-
-- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
-- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json)
-
-Экспериментальный Grafana-дешборд для uplinks/control-plane намеренно не поставляется; для multi-instance активации аплинков используйте встроенный UI `/dashboard`.
-
 ## Production-эксплуатация
 
 ### `install-client.sh`
 
-Для базовой production-установки на Linux используйте bundled-скрипт [install-client.sh](../../install-client.sh). Запускайте от `root` на целевом хосте:
+[install-client.sh](../../install-client.sh) устанавливает клиент на Linux x86-64 или AArch64 из GitHub-релизов. Запускайте от `root` на целевом хосте:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/balookrd/outline-proxy/main/install-client.sh -o install-client.sh
@@ -1341,82 +1284,69 @@ chmod +x install-client.sh
 sudo ./install-client.sh
 ```
 
-Режимы установки:
-
-- По умолчанию ставится последний stable-релиз под текущую архитектуру
-- `CHANNEL=nightly` ставит rolling prerelease nightly
-- `VERSION=v1.2.3` фиксирует установку на конкретный stable-тег
-
-Примеры:
+Режимы:
 
 ```bash
-./install-client.sh --help
-sudo ./install-client.sh
-sudo ./install-client.sh --force
-sudo CHANNEL=nightly ./install-client.sh
-sudo VERSION=v1.2.3 ./install-client.sh
-sudo ./install-client.sh --remove
+sudo ./install-client.sh                       # последний stable-релиз (новейший тег ws-v*)
+sudo ./install-client.sh --force               # переустановить, даже если версия совпадает
+sudo CHANNEL=nightly ./install-client.sh       # rolling prerelease ws-nightly
+sudo VERSION=v1.2.3 ./install-client.sh        # закрепить stable-версию (тег ws-v1.2.3)
+sudo ./install-client.sh --remove              # алиас --uninstall
 sudo ./install-client.sh --purge
 ```
 
 Что делает скрипт:
 
-- определяет архитектуру хоста и скачивает артефакт последнего GitHub release
-- пропускает скачивание, если установленная версия уже совпадает с выбранным релизом; передай `--force` или `FORCE=1`, чтобы переустановить принудительно
-- для канала nightly хранит SHA коммита релиза в `/var/lib/outline-ws-rust/nightly-commit` для определения новых сборок
-- ставит бинарник в `/usr/local/bin/outline-ws-rust`
-- кладёт unit-файлы в `/etc/systemd/system`
-- создаёт `/etc/outline-ws-rust` и `/var/lib/outline-ws-rust`
+- выбирает артефакт релиза по `uname -m` (`x86_64`/`amd64` → `x86_64-unknown-linux-musl`, `aarch64`/`arm64` → `aarch64-unknown-linux-musl`); другие архитектуры отвергает
+- не скачивает, если установленная версия совпадает с выбранным релизом (`--force` или `FORCE=1` отменяют проверку); для nightly отслеживает SHA коммита релиза в `/etc/outline-ws-rust/nightly-commit`
+- ставит бинарь в `/usr/local/bin/outline-ws-rust`, предыдущий сохраняет как `<path>.bak.<timestamp>`
+- ставит `outline-ws-rust.service` и `outline-ws-rust@.service` в `/etc/systemd/system`, взятые из того же релизного тега, что и бинарь
+- создаёт системного пользователя и группу `outline-ws`, каталоги `/etc/outline-ws-rust` и `/var/lib/outline-ws-rust` и отдаёт каталог конфигурации `outline-ws` (`0750`, файлы `0640`), чтобы control API мог писать конфиг
 - скачивает `config.toml` и `instances/example.toml`, только если их ещё нет
-- перезапускает только уже активные `outline-ws-rust` unit'ы
-- не включает автозапуск нового сервиса автоматически
+- перезапускает только те unit'ы `outline-ws-rust`, что были активны; новый сервис не включает и не запускает, остановленный остаётся остановленным
 
 После первой установки:
 
 1. Отредактируйте `/etc/outline-ws-rust/config.toml`.
-2. Включите один из вариантов сервиса:
-   - единственный инстанс: `sudo systemctl enable --now outline-ws-rust.service`
-   - именованный инстанс: `sudo systemctl enable --now outline-ws-rust@NAME.service`
+2. Включите один из вариантов:
+   - один инстанс: `sudo systemctl enable --now outline-ws-rust.service`
+   - именованный инстанс (конфиг `/etc/outline-ws-rust/instances/<name>.toml`): `sudo systemctl enable --now outline-ws-rust@<name>.service`
 3. Проверьте статус: `systemctl status outline-ws-rust --no-pager`.
 4. Проверьте логи: `journalctl -u outline-ws-rust -e --no-pager`.
 
-Скрипт можно безопасно запускать повторно для обновления: он сравнивает установленную версию с выбранным релизом и скачивает бинарник только при наличии новой версии. После замены автоматически перезапускает активные `outline-ws-rust` unit'ы. Если сервис был остановлен, скрипт не будет запускать его сам.
+Для обновления запустите скрипт ещё раз; бинарь заменяется, только если выбранный релиз отличается от установленного.
 
-Сейчас поддерживаются только те архитектуры, для которых GitHub CI публикует release-артефакты: `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`.
+Переменные окружения:
 
-Полезные переопределения:
-
-- `CHANNEL=stable|nightly`: выбор release-канала; по умолчанию `stable`
-- `VERSION=v1.2.3`: зафиксировать установку на конкретном stable-теге
-- `FORCE=1`: переустановить, даже если версия уже совпадает
-- `INSTALL_PATH=/path`: установить бинарник не в `/usr/local/bin`
-- `CONFIG_DIR=/path`: хранить конфиг не в `/etc/outline-ws-rust`
-- `STATE_DIR=/path`: использовать другой state-каталог
-- `GITHUB_TOKEN=...`: GitHub-токен для обхода rate limit API
-
-`VERSION` и `CHANNEL=nightly` одновременно использовать нельзя.
+| Переменная | По умолчанию | Значение |
+|---|---|---|
+| `CHANNEL` | `stable` | `stable` или `nightly` |
+| `VERSION` | последняя | stable: `1.2.3` или `v1.2.3`; при `CHANNEL=nightly` допустимо только `nightly` |
+| `FORCE` | пусто | `1` — переустановить, даже если версия совпадает |
+| `INSTALL_PATH` | `/usr/local/bin/outline-ws-rust` | полный путь устанавливаемого бинаря |
+| `CONFIG_DIR` | `/etc/outline-ws-rust` | каталог конфигурации |
+| `STATE_DIR` | `/var/lib/outline-ws-rust` | каталог состояния |
+| `SERVICE_USER` / `SERVICE_GROUP` | `outline-ws` | системный пользователь и группа сервиса |
+| `GITHUB_TOKEN` | пусто | GitHub-токен против rate limit API |
 
 Удаление:
 
-```bash
-sudo ./install-client.sh --remove   # остановить+отключить все unit'ы, снять unit-файлы, бинарь и backup'ы
-sudo ./install-client.sh --purge    # дополнительно удалить конфиг, state-каталог и сервис-юзера/группу
-```
+- `--remove` (алиас `--uninstall`): останавливает и отключает `outline-ws-rust.service` и все `outline-ws-rust@<name>.service`, удаляет оба unit-файла (с последующим `daemon-reload`), бинарь и его `.bak.*`. Оставляет `/etc/outline-ws-rust` (включая `instances/`), `/var/lib/outline-ws-rust` и пользователя/группу `outline-ws`, чтобы переустановка подхватила конфиг.
+- `--purge`: всё, что делает `--remove`, плюс удаляет `/etc/outline-ws-rust`, `/var/lib/outline-ws-rust` и пользователя/группу `outline-ws`.
 
-- `--remove` (синоним `--uninstall`): останавливает и отключает основной `outline-ws-rust.service` **и все** инстансы `outline-ws-rust@NAME.service`, удаляет оба unit-файла (обычный + шаблонный, с последующим `daemon-reload`), бинарь и его backup'ы `.bak.*`. Сохраняет `/etc/outline-ws-rust` (включая `instances/`), `/var/lib/outline-ws-rust` и пользователя/группу `outline-ws`, поэтому повторная установка переиспользует существующий конфиг.
-- `--purge`: всё, что делает `--remove`, плюс удаление `/etc/outline-ws-rust`, `/var/lib/outline-ws-rust` и пользователя/группы `outline-ws` — полное удаление. Оба режима идемпотентны: отсутствующие артефакты пропускаются, а не считаются ошибкой.
+Оба режима идемпотентны: отсутствующие артефакты пропускаются.
 
 #### Установка через HTTP(S) прокси
 
-Если с хоста недоступен `github.com` или его CDN для релизов (`objects.githubusercontent.com`), установку можно прогнать через любой HTTP/SOCKS5 прокси, который видит GitHub. Скрипт менять не нужно — `curl` сам подхватывает стандартные proxy-переменные окружения.
+Если `github.com` или его CDN релизов (`objects.githubusercontent.com`) недоступны с хоста, запустите установку через HTTP- или SOCKS5-прокси с доступом к GitHub; `curl` в скрипте учитывает стандартные переменные прокси.
 
-Важно: `sudo` по умолчанию вырезает `http_proxy`/`https_proxy` из окружения, поэтому передавай их явно:
+`sudo` по умолчанию сбрасывает `http_proxy` / `https_proxy`, поэтому передайте их явно:
 
 ```bash
 sudo https_proxy=http://HOST:PORT http_proxy=http://HOST:PORT ./install-client.sh
 ```
 
-или экспортируй и запускай через `sudo -E`:
+либо экспортируйте и используйте `sudo -E`:
 
 ```bash
 export https_proxy=http://HOST:PORT
@@ -1424,9 +1354,9 @@ export http_proxy=http://HOST:PORT
 sudo -E ./install-client.sh
 ```
 
-Для SOCKS5 (например, туннель `ssh -D 1080 user@vps`) используй `ALL_PROXY=socks5h://HOST:PORT`. Прокси с авторизацией — `http://USER:PASS@HOST:PORT` (спецсимволы в пароле URL-encode'ить).
+Для SOCKS5 (например, туннель `ssh -D 1080 user@vps`) используйте `ALL_PROXY=socks5h://HOST:PORT`. Прокси с аутентификацией: `http://USER:PASS@HOST:PORT` (спецсимволы в пароле — URL-encode).
 
-Проверить, что прокси работает, до запуска установщика:
+Проверьте прокси перед запуском установщика:
 
 ```bash
 curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
@@ -1434,101 +1364,85 @@ curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
 
 ### systemd
 
-Production-ориентированные systemd unit'ы находятся в:
+Юниты:
 
-- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — единственный инстанс
-- [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — шаблон для именованных инстансов (читает конфиг из `instances/NAME.toml`)
+- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — один инстанс, конфиг `/etc/outline-ws-rust/config.toml`, состояние в `/var/lib/outline-ws-rust/_default/`
+- [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — шаблон именованного инстанса, конфиг `/etc/outline-ws-rust/instances/<name>.toml`, состояние в `/var/lib/outline-ws-rust/<name>/`
 
-Типичная процедура установки:
+Ручная установка (`install-client.sh` делает то же самое):
 
-1. Установить бинарник в `/usr/local/bin/outline-ws-rust`.
-2. Установить конфигурацию в `/etc/outline-ws-rust/config.toml`.
-3. Скопировать оба unit-файла в `/etc/systemd/system/`.
-4. Перечитать конфигурацию и включить сервис:
+1. Установите бинарь в `/usr/local/bin/outline-ws-rust`.
+2. Создайте пользователя и группу сервиса:
+   `sudo groupadd --system outline-ws && sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid outline-ws outline-ws`
+3. Положите конфигурацию в `/etc/outline-ws-rust/config.toml` и отдайте каталог пользователю сервиса:
+   `sudo chown -R outline-ws:outline-ws /etc/outline-ws-rust && sudo chmod 0750 /etc/outline-ws-rust`
+4. Скопируйте оба unit-файла в `/etc/systemd/system/`.
+5. Перечитайте конфигурацию systemd и включите сервис:
    `sudo systemctl daemon-reload && sudo systemctl enable --now outline-ws-rust`
 
-Unit включает:
+Что задают юниты:
 
-- автоматический перезапуск при сбое
-- логирование через journald
-- увеличенный `LimitNOFILE`
-- `LimitSTACK=8M`, чтобы не раздувать anonymous thread-stack mappings
-- фиксированный системный пользователь / группа `outline-ws` (создаётся `install-client.sh`) — state-файлы сохраняют стабильного владельца между рестартами, а `StateDirectory=outline-ws-rust/_default` оседает на записываемом, управляемом юнитом пути
-- `CAP_NET_ADMIN` для `fwmark`; удалите, если `fwmark` не используется. Использование `fwmark` / `direct_fwmark` также требует `PrivateUsers=no` (через drop-in) — `SO_MARK` падает с `EPERM` внутри дефолтного приватного user namespace даже при наличии капабилити
-- `PrivateDevices=false` — необходим для TUN-режима; безвреден, если TUN не используется
-- консервативные флаги hardening systemd
+- `Restart=on-failure`, `RestartSec=3s`
+- `RUST_LOG=info`, логи в journald
+- `LimitNOFILE=1048576`, `LimitSTACK=8M`, `TasksMax=infinity`
+- `MemoryHigh=70%`, `MemoryMax=85%`: на хосте с малым объёмом RAM всплеск флоу может исчерпать память быстрее, чем ядро её освободит, и подвесить весь хост; с лимитами ядро убивает по OOM сервис, и systemd его перезапускает. Для фиксированных значений переопределите drop-in'ом
+- `User=outline-ws` / `Group=outline-ws` и `StateDirectory=outline-ws-rust/_default` (шаблон: `outline-ws-rust/%i`), чтобы у файлов состояния был постоянный владелец
+- `ReadWritePaths` включает `/etc/outline-ws-rust` (шаблон: `/etc/outline-ws-rust/instances`), чтобы правки через control API и миграция конфига могли записать файл
+- `AmbientCapabilities=CAP_NET_ADMIN` для `fwmark`; уберите обе строки с capability, если `fwmark` / `direct_fwmark` не используются. Для них нужен ещё `PrivateUsers=no` в drop-in'е: юниты задают `PrivateUsers=true`, а `SO_MARK` внутри приватного user namespace падает с `EPERM` даже при наличии capability
+- `PrivateDevices=false` для доступа к `/dev/net/tun` (TUN-режим)
+- `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service` и остальные опции `Protect*` / `Restrict*` в файле юнита
 
-На Linux bundled runtime фиксирует размер стеков Tokio worker- и blocking-потоков на уровне 2 MiB, чтобы процесс не наследовал слишком большие виртуальные stack mappings от окружения хоста.
+Стеки потоков: worker- и blocking-потоки Tokio по умолчанию получают стек 2048 КиБ, а не наследуют лимит стека хоста (`--thread-stack-size-kb` / `THREAD_STACK_SIZE_KB`). Юнит одного инстанса задаёт `THREAD_STACK_SIZE_KB=512`; если нативный резолвер или глубокий FFI-вызов его переполнит, процесс упадёт при старте — увеличьте значение.
 
 ### Логирование
 
-Сервис использует `tracing` для структурированных логов. Bundled systemd unit задаёт:
+Сервис пишет логи через `tracing`; прилагаемые юниты задают `RUST_LOG=info`. `debug` включайте только для диагностики: события жизненного цикла соединений и транспорта становятся заметно многословнее.
 
-```text
-RUST_LOG=info
-```
+Строки жизненного цикла носителя пишутся в target `outline_transport::conn_life` парами: у каждой `… connection opened` ровно одна `… connection closed` того же уровня, с `id`, `peer`, `mode`, `age_secs`, `streams` и `class`. Соединение, закрытое локально (проба, отпущенная после замера, кэшированный носитель, у которого закончился последний стрим), отчитывается собственным drop guard'ом как `class=local_drop`: driver-задача, ждущая закрытия на уровне протокола, при drop отменяется и отчитаться не может. Поскольку пары сходятся, утечка дескрипторов видна как разница между двумя счётчиками. До появления пар `opened` против `closed` на нагруженном узле давали 34 515 против 0 и выглядели в точности как утечка.
 
-Используйте уровень `debug` только при отладке — события жизненного цикла соединений и транспортного слоя становятся значительно подробнее.
+Общие (кэшированные) носители пишут пару на `info`; соединения проб — один дозвон на замер, десятки тысяч в сутки — пишут её на `debug`.
 
-Строки жизненного цикла носителя пишутся в target `outline_transport::conn_life`
-и **парные**: у каждой `… connection opened` ровно одна `… connection closed`
-того же уровня, с полями `id`, `peer`, `mode`, `age_secs`, `streams` и `class`.
-Соединение, снесённое локально (проба, отпущенная после измерения; закэшированный
-носитель, у которого закончился последний stream), фиксируется собственным
-drop-guard'ом соединения как `class=local_drop` — driver-таск, следящий за
-протокольным закрытием, при дропе отменяется и сообщить об этом уже не может.
-Раз пара сходится, настоящая утечка дескрипторов видна как реальный разрыв между
-двумя счётчиками; до появления парности `opened` против `closed` читалось как
-34 515 против 0 на нагруженном узле и выглядело ровно как утечка.
-
-Общие (закэшированные) носители пишут эту пару на `info`; probe-соединения —
-один дозвон на измерение, десятки тысяч в сутки — пишут ту же пару на `debug`.
-
-Ещё два штатных события намеренно убраны с `warn`, поскольку ни одно из них
-ничего не говорит о самом процессе: остановка WS-writer'а из-за уже закрытого
-носителя (вместо строки её считает
-`outline_ws_carrier_writer_terminations_total{reason="peer_closed"}`) и
-HTTP-клиент, оборвавший запрос к листенеру метрик / control
-(`request aborted by client`). Настоящие сбои записи и настоящие ошибки запросов
-остаются на `warn`.
+Два штатных события пишутся ниже `warn`, потому что ни одно не говорит о проблеме в этом процессе: остановка WS writer-задачи из-за уже закрытого носителя (считается в `outline_ws_carrier_writer_terminations_total{reason="peer_closed"}`) и разрыв HTTP-клиентом соединения со слушателем метрик / control до завершения запроса (`request aborted by client`). Настоящие ошибки записи и ошибки запросов остаются на `warn`.
 
 ### Безопасность
 
-- Защитите `metrics.listen`; не публикуйте его без дополнительных средств контроля доступа.
-- Защитите `control.listen` ещё строже: привязывайте к loopback или
-  management-сети, относитесь к bearer-токену как к учётным данным (ротация,
-  хранение вне репозитория) и никогда не используйте порт metrics для control.
-  Control-listener — единственный путь, через который можно мутировать выбор
-  активного аплинка.
-- Защита listener'ов от slowloris / idle-DoS встроена: SOCKS5 accept-цикл
-  ограничивает in-flight соединения значением 4096 и накладывает таймаут
-  10 с на `negotiate`; listener `/metrics` ограничен 64 соединениями и 5 с
-  на чтение заголовков; control-listener ограничен 16 соединениями с тем же
-  5-секундным таймаутом (проверка bearer-токена выполняется только после
-  чтения заголовков, поэтому именно таймаут не даёт неаутентифицированным
-  клиентам удерживать сокеты). Эти лимиты захардкожены и не настраиваются
-  через конфиг.
-- HTTP/3 требует публичной доступности UDP на выбранном порту.
-- `fwmark` работает только на Linux и требует `CAP_NET_ADMIN` или root; под user-namespaced systemd-песочницей дополнительно требуется `PrivateUsers=no` (`SO_MARK` проверяется против init user namespace).
-- TUN-режим требует доступа к `/dev/net/tun` на хосте (`PrivateDevices=false`).
+- Не открывайте `metrics.listen` без контроля доступа.
+- `control.listen` ограничьте ещё строже: привяжите к loopback или management-сети, обращайтесь с bearer-токеном как с учётными данными (ротируйте, храните вне конфига через `token_file`) и не используйте для него порт метрик. Control-слушатель — единственный путь, которым можно изменить выбор активного аплинка.
+- Встроенные ограничения слушателей против slowloris и простаивающих соединений (вкомпилированы, не настраиваются):
+
+  | Слушатель | Максимум одновременных соединений | Таймаут |
+  |---|---|---|
+  | SOCKS5 | 4096 | 10 с на SOCKS5 handshake |
+  | `/metrics` | 64 | 5 с на чтение заголовков запроса |
+  | control | 16 | 5 с на чтение заголовков запроса; проверка bearer-токена идёт только после получения заголовков, поэтому именно этот таймаут не даёт неаутентифицированным клиентам держать сокеты |
+
+- HTTP/3-носителям нужна доступность порта сервера по UDP.
+- `fwmark` работает только на Linux и требует `CAP_NET_ADMIN` или root; в песочнице systemd с приватным user namespace нужен ещё `PrivateUsers=no`.
+- TUN-режиму нужен доступ к `/dev/net/tun` (`PrivateDevices=false`).
 
 ## Тестирование
 
-Полезные локальные проверки:
+Из корня workspace:
 
 ```bash
-cargo check
-cargo test
+cargo check -p outline-ws-rust
+cargo test -p outline-ws-rust
 ```
 
-Ручные интеграционные тесты с реальным upstream существуют для HTTP/2 и HTTP/3:
+CI-гейт (fmt, clippy, тесты, feature matrix) описан в корневом [`AGENTS.md`](../../AGENTS.md). End-to-end тесты против настоящих процессов `outline-ss-rust` (`tests/e2e_*.rs`) запускаются только с `RUN_E2E_FAILOVER=1`, а набор TLS/H3-носителей требует фичи `test-tls`:
+
+```bash
+RUN_E2E_FAILOVER=1 cargo test -p outline-ws-rust --features test-tls --test 'e2e_*' -- --test-threads=1
+```
+
+Ручные тесты против реального сервера есть для HTTP/1.1, HTTP/2 и HTTP/3 (`real_server_h1`, `real_server_h2`, `real_server_h3`); каждый пропускается, если его переменная `RUN_REAL_SERVER_*` не равна `1`:
 
 ```bash
 RUN_REAL_SERVER_H2=1 \
 OUTLINE_TCP_WS_URL='wss://example.com/SECRET/tcp' \
 OUTLINE_UDP_WS_URL='wss://example.com/SECRET/udp' \
 SHADOWSOCKS_PASSWORD='Secret0' \
-cargo test --test real_server_h2 -- --nocapture
+cargo test -p outline-ws-rust --test real_server_h2 -- --nocapture
 ```
 
 ```bash
@@ -1536,19 +1450,19 @@ RUN_REAL_SERVER_H3=1 \
 OUTLINE_TCP_WS_URL='wss://example.com/SECRET/tcp' \
 OUTLINE_UDP_WS_URL='wss://example.com/SECRET/udp' \
 SHADOWSOCKS_PASSWORD='Secret0' \
-cargo test --test real_server_h3 -- --nocapture
+cargo test -p outline-ws-rust --test real_server_h3 -- --nocapture
 ```
 
-Интеграционные тесты изоляции групп, fallback и прямого диспатча:
+Изоляция групп, fallback и direct-диспатч:
 
 ```bash
-cargo test --test group_routing -- --nocapture
+cargo test -p outline-ws-rust --test group_routing -- --nocapture
 ```
 
-Интеграционный тест warm-standby:
+Warm standby:
 
 ```bash
-cargo test --test standby_validation -- --nocapture
+cargo test -p outline-ws-rust --test standby_validation -- --nocapture
 ```
 
 ## Ссылки на протоколы
@@ -1556,14 +1470,10 @@ cargo test --test standby_validation -- --nocapture
 - [Outline `outline-ss-server`](https://github.com/Jigsaw-Code/outline-ss-server)
 - [`hev-socks5-core`](https://github.com/heiher/hev-socks5-core)
 - [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel)
-- [Shadowsocks AEAD specification](https://shadowsocks.org/doc/aead.html)
+- [Спецификация Shadowsocks AEAD](https://shadowsocks.org/doc/aead.html)
 - [RFC 8441: Bootstrapping WebSockets with HTTP/2](https://datatracker.ietf.org/doc/html/rfc8441)
 - [RFC 9220: Bootstrapping WebSockets with HTTP/3](https://datatracker.ietf.org/doc/html/rfc9220)
 
 ## Отслеживание локальных патчей
 
-Патчи на vendored-зависимости отслеживаются в:
-
-- [`PATCHES.md`](PATCHES.md)
-
-Это единственный источник правды для локальных отличий от upstream crates, включая vendored-патч `h3` для поддержки RFC 9220.
+Патчи vendored-крейтов (`vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`, `vendor/rustls`, `vendor/hyper`) перечислены в общем для workspace [`PATCHES.ru.md`](../../PATCHES.ru.md), включая патч `h3` для RFC 9220.

@@ -3,15 +3,17 @@
 Target commit: `cce11c51`. Supersedes the fleet's current build `3e0d3c481fe1`
 (x86_64) / `affa2a1f536b` (aarch64), deployed 2026-07-28.
 
-## What is actually changing, and why the risk is not where it looks
+Real fleet node names, domains and addresses in this document are replaced with stand-ins: `fleet.example` is the fleet domain; `relay-a`…`relay-d` are the cloud relay nodes; `exit-a`…`exit-e` are the exit nodes; `198.51.100.0/24` is the home network (`.102`, `.104` etc. are the last octet); `203.0.113.x` are public addresses. The mapping lives in the local, uncommitted `FLEET.local.md`.
+
+## What changes in this build
 
 Two independent things ship together:
 
-1. **The mesh relay is rewritten.** Client crypto now terminates on the edge and
-   the mesh carries plaintext. **This is dead code on the fleet today** —
+1. The mesh relay is rewritten. Client crypto now terminates on the edge and
+   the mesh carries plaintext. This is dead code on the fleet today —
    `[cluster] enabled = false` on all three servers, so nothing exercises it
    until step 4. Deploying it changes nothing on its own.
-2. **The client's XHTTP carrier learned to signal session close** (`386baa76`).
+2. The client's XHTTP carrier learned to signal session close (`386baa76`).
    This *is* live from the moment a client binary lands: XHTTP packet-up
    sessions now tell the server when they end, so the server parks them instead
    of letting them linger to the idle sweep. XHTTP is the fleet's primary
@@ -23,8 +25,8 @@ the shared crate `crates/outline-transport/src/xhttp/{h1,h2,h3,mod}.rs`, which
 is compiled into the client. Both binaries still need rebuilding, because the
 server links that crate too.
 
-**Neither skew is dangerous, so the ordering is a convenience, not a
-constraint.** `x-xhttp-fin` is *not* new server surface: the currently deployed
+Neither skew is dangerous, so the ordering is a convenience, not a
+constraint. `x-xhttp-fin` is *not* new server surface: the currently deployed
 build already reads it in both `handlers.rs` and `h3.rs`, and its handling is
 byte-identical to the new build's (only line numbers moved). What `386baa76`
 changed is that the client finally *sends* it — the server half was already
@@ -35,28 +37,29 @@ waiting. So:
   i.e. today's behaviour.
 
 Servers still go first, for a weaker but real reason: with the cluster off, the
-server deploy is a **no-op**, so doing it first establishes that a plain binary
+server deploy is a no-op, so doing it first establishes that a plain binary
 swap is clean. Then step 3 introduces the single live behaviour change in
 isolation, and anything that moves afterwards is attributable to it.
 
-**The relay has never once worked in production.** `mesh_bytes_total
-{direction="down"}` was zero on every node against megabytes relayed out. There
+Before this build the relay had not worked in production once:
+`outline_ss_mesh_bytes_total{direction="down"}` was zero on every node against
+megabytes relayed out. There
 is no "it used to work" baseline to compare against — step 5 has to prove it
 works, and a quiet fleet is not evidence.
 
-## Non-negotiable rules for touching this fleet
+## Rules for touching this fleet
 
-Learned the hard way on 2026-07-30, when a `for`-loop restart of all three
+Origin: on 2026-07-30 a `for`-loop restart of all three
 servers took the whole fleet down at once — including the operator's own
 connectivity, because the Mac tunnels through Beelink whose uplinks *are* those
 three servers. There was then nothing left to diagnose or roll back with.
 
-1. **Drain the server before you touch it — from _all four_ clients, not just
-   the one you happen to be working on.** A server is shared: `.102`, `.104`,
-   cloud3 and cloud4 each pick their own active uplink independently, so moving
-   one client off `senko` leaves the other three still on it.
+1. Drain the server before you touch it — from _all four_ clients, not just
+   the one you happen to be working on. A server is shared: `.102`, `.104`,
+   relay-c and relay-d each pick their own active uplink independently, so moving
+   one client off `exit-c` leaves the other three still on it.
 
-   For every one of the four — **unconditionally, all four, every time** — pin
+   For every one of the four — unconditionally, all four, every time — pin
    the active uplink to something other than the target:
 
    ```bash
@@ -64,9 +67,9 @@ three servers. There was then nothing left to diagnose or roll back with.
      -d '{"group":"main","uplink":"<not-the-target>"}' http://127.0.0.1:9191/control/activate
    ```
 
-   **Do not substitute "check the metrics, then move whoever is on it."** That
-   shortcut has failed twice. An idle client — reliably cloud4, sometimes cloud3
-   — emits **no** `outline_ws_uplink_open_connections` line at all for the group.
+   Do not substitute "check the metrics, then move whoever is on it." That
+   shortcut has failed twice. An idle client — reliably relay-d, sometimes relay-c
+   — emits no `outline_ws_uplink_open_connections` line at all for the group.
    A missing line does not mean "not on this node"; it means "no traffic right
    now", while its active uplink may still point at the target, so it lands there
    the moment traffic resumes — including mid-restart. Silence is not evidence.
@@ -84,37 +87,37 @@ three servers. There was then nothing left to diagnose or roll back with.
    curl -s http://127.0.0.1:9090/metrics | grep '^outline_ss_active_websocket_sessions'
    ```
 
-   Do **not** wait for that gauge to hit zero — it will not. Warm standby keeps
+   Do not wait for that gauge to hit zero — it will not. Warm standby keeps
    a couple of connections open to every uplink a client knows about, target
    included, so a fully drained server still shows a small non-zero count. The
-   criterion that matters is that **no client has this node as its _active_
-   uplink**; the gauge is only there to confirm the count dropped to that
+   criterion that matters is that no client has this node as its _active_
+   uplink; the gauge is only there to confirm the count dropped to that
    residual floor rather than staying at load, and that no fresh
    authentications are arriving. *Then* restart. A
    drained server's restart is invisible to users; a loaded one's is an outage,
    and if it is carrying the operator's own path it also removes the means to
    fix it.
-2. **One node at a time, with verification between.** `systemctl is-active`,
+2. One node at a time, with verification between. `systemctl is-active`,
    `/metrics` 200, `NRestarts` still 0, and WARN volume unchanged. Only then the
    next node.
-3. **Never write users through the control API or the dashboard UI — until the
-   fix is deployed.** It rewrites `config.toml` and **destroys the other
-   users** — observed on nuxt, which went from 137 lines and 9 users to 88 lines
+3. Never write users through the control API or the dashboard UI — until the
+   fix is deployed. It rewrites `config.toml` and destroys the other
+   users — observed on exit-a, which went from 137 lines and 9 users to 88 lines
    and 1 user while the service stayed `active` from memory, i.e. a time bomb
    that only fires on the next restart. Edit the config by hand (append via
    `sudo tee -a` from stdin), and diff against a backup before restarting.
 
    Fixed in `b48525b5` (merged to main 2026-07-30): mutations now patch the one
    named `[[users]]` entry, the write happens before the change goes live, and
-   `atomic_write` preserves owner as well as mode. **That build is not on the
-   fleet yet** — the four client-side nodes carry `00f1160c34a4`/`d63b4a6dddcb`,
+   `atomic_write` preserves owner as well as mode. That build is not on the
+   fleet yet — the four client-side nodes carry `00f1160c34a4`/`d63b4a6dddcb`,
    which predate it, and the three exit servers are older still. Until each node
    runs a binary at or after `b48525b5`, the prohibition stands for that node.
-4. **Back up before every config edit**, and check the diff is exactly what you
+4. Back up before every config edit, and check the diff is exactly what you
    intended before any restart. `deploy-binary.sh` auto-rolls back a bad
    *binary*; nothing protects you from a bad *config*.
 
-## Ports, so they are not guessed
+## Ports
 
 | Service | Metrics | Control |
 |---|---|---|
@@ -122,30 +125,30 @@ three servers. There was then nothing left to diagnose or roll back with.
 | `outline-ws-rust` (clients) | `127.0.0.1:9091` | `127.0.0.1:9191` |
 
 Both control ports need `Authorization: Bearer <token>` from the config's
-`[control] token`. Note the server's metrics port is **9090**, not 9092 — a
+`[control] token`. Note the server's metrics port is 9090, not 9092 — a
 wrong port returns an empty body that reads like "no such metrics" rather than
 an error.
 
-## Pre-flight — verified 2026-07-30, re-check before starting
+## Pre-flight checks (verified 2026-07-30, re-check before starting)
 
 | Check | State | Why it matters |
 |---|---|---|
-| User names identical on senko/nuxt/aeza | ✅ `alice mmv-mac mmv-zflip miklyaev dankrd socks5 cloud beerloga` | The new validator **refuses to start** a clustered node whose user name is empty or >64 bytes. A mismatch here is a boot failure, not a relay failure. |
-| UDP 9443 open peer-to-peer | ✅ three `-s <peer>/32 -p udp --dport 9443 -j ACCEPT` rules per server | QUIC is UDP. Without this the mesh silently never connects. |
-| `shared_resume = true` on group `main` | ✅ on `.104` and cloud3 | This is what puts one resume id in front of all three uplinks, which is what makes a resume land on a foreign shard. **Without it the relay never fires and step 5 proves nothing.** |
+| User names identical on exit-c/exit-a/exit-d | yes: `alice bob carol dave erin socks5 cloud fleet` | The new validator refuses to start a clustered node whose user name is empty or >64 bytes. A mismatch here is a boot failure, not a relay failure. |
+| UDP 9443 open peer-to-peer | yes: three `-s <peer>/32 -p udp --dport 9443 -j ACCEPT` rules per server | QUIC is UDP. Without this the mesh silently never connects. |
+| `shared_resume = true` on group `main` | yes: on `.104` and relay-c | This is what puts one resume id in front of all three uplinks, which is what makes a resume land on a foreign shard. Without it the relay never fires and step 5 proves nothing. |
 | `[cluster] enabled` | `false` on all three servers | Deliberate. Step 4 flips it. |
 | Backups present | 3 per node | `deploy-binary.sh` rotates by mtime and auto-rolls back if `/metrics` does not answer after restart. |
 
 Re-run the first three before starting — they are cheap and each one turns a
 silent failure into a loud one.
 
-## Known limitation to accept before starting
+## Known limitation: user `cloud` and its aliases
 
-User `cloud` carries aliases `cloud3` and `cloud4`, and those are exactly the
-nodes that reach these servers. The SS-TCP park is keyed on the **base** id
-(`cloud`) while the mesh attestation uses the **effective label**
-(`cloud3`/`cloud4`), so **cross-node resume will not work for that user on the
-SS path.** It predates this migration and is not fixed here.
+User `cloud` carries aliases `relay-c` and `relay-d`, and those are exactly the
+nodes that reach these servers. The SS-TCP park is keyed on the base id
+(`cloud`) while the mesh attestation uses the effective label
+(`relay-c`/`relay-d`), so cross-node resume will not work for that user on the
+SS path. It predates this migration and is not fixed here.
 
 Impact is bounded: the fleet's uplinks dial VLESS first (`vless_xhttp_url`) and
 VLESS is self-consistent — it parks under the effective label. SS is the
@@ -154,22 +157,22 @@ on the SS path, not as broken sessions. Do not chase it as a config problem: the
 log line was softened precisely because it used to send operators after a
 mismatch that does not exist.
 
-## Executed 2026-07-30 — the four client-side nodes
+## Executed 2026-07-30: the four client-side nodes
 
-Deployed in the operator's order — `.104`, cloud4, cloud3, `.102` — one node at a
+Deployed in the operator's order — `.104`, relay-d, relay-c, `.102` — one node at a
 time, both binaries per node, verification between. Every node runs *both* units,
 so this was eight binary swaps, not four.
 
 | Node | Arch | ss-rust | ws-rust | Result |
 |---|---|---|---|---|
 | `.104` | aarch64 | `d63b4a6dddcb` | `f4cbc1b8ac43` | active, NRestarts 0, 6/6 uplinks healthy, tunnel 204 @ 0.198s |
-| cloud4 | x86_64 | `00f1160c34a4` | `97975c660e54` | active, NRestarts 0, 10/10 healthy, 204 @ 0.559s |
-| cloud3 | x86_64 | `00f1160c34a4` | `97975c660e54` | active, NRestarts 0, 10/10 healthy, 204 @ 0.392s |
+| relay-d | x86_64 | `00f1160c34a4` | `97975c660e54` | active, NRestarts 0, 10/10 healthy, 204 @ 0.559s |
+| relay-c | x86_64 | `00f1160c34a4` | `97975c660e54` | active, NRestarts 0, 10/10 healthy, 204 @ 0.392s |
 | `.102` | x86_64 | `00f1160c34a4` | `97975c660e54` | active, NRestarts 0, 6/6 healthy, 204 @ 0.262s |
 
 Superseded builds: ss `3e0d3c481fe1`/`affa2a1f536b`, ws `1d1d412b4449`/`50317acbfd6a`.
 
-The three exit servers (senko, nuxt, aeza) were **not** touched and still run
+The three exit servers (exit-c, exit-a, exit-d) were not touched and still run
 `3e0d3c481fe1`. That skew is safe — see the FIN analysis above — but it means the
 mesh rewrite is not yet deployed where step 4 would enable it.
 
@@ -177,60 +180,60 @@ mesh rewrite is not yet deployed where step 4 would enable it.
 
 The four nodes are mutually dependent, which the original step 2/3 split missed:
 
-- `.104` and `.102` carry uplinks to cloud3/cloud4 (group `beerloga`).
-- cloud3 and cloud4 carry uplinks to `ss.beerloga.su:5443` and `:6443`, which are
-  the router's port-forwards to **`.104`** (`beerloga-1`) and **`.102`**
-  (`beerloga-2`) — group `russia`, `active_passive`, no `shared_resume`, so a
+- `.104` and `.102` carry uplinks to relay-c/relay-d (group `fleet`).
+- relay-c and relay-d carry uplinks to `ss.fleet.example:5443` and `:6443`, which are
+  the router's port-forwards to `.104` (`fleet-1`) and `.102`
+  (`fleet-2`) — group `russia`, `active_passive`, no `shared_resume`, so a
   hard switch.
 
-So restarting `.104` or `.102` breaks a *live* leg of cloud3/cloud4. Before each,
+So restarting `.104` or `.102` breaks a *live* leg of relay-c/relay-d. Before each,
 steer the group away with `POST /control/activate`:
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"group":"russia","uplink":"beerloga-2"}' http://127.0.0.1:9191/control/activate
+  -d '{"group":"russia","uplink":"fleet-2"}' http://127.0.0.1:9191/control/activate
 ```
 
-Note a restart **resets** the pin to the config default, so re-pin after
-restarting cloud3/cloud4 and before restarting `.102`. The `beerloga` group on
+Note a restart resets the pin to the config default, so re-pin after
+restarting relay-c/relay-d and before restarting `.102`. The `fleet` group on
 `.104`/`.102` needs no drain — it has never been selected (no
 `uplink_selected_total` samples at all).
 
 ### What could not be drained
 
-`.104` had 27 live sessions and cloud3 had 122 (104 of them UDP-shadowsocks) from
+`.104` had 27 live sessions and relay-c had 122 (104 of them UDP-shadowsocks) from
 third-party clients (happ/outline) arriving through the port-forwards. Those
 cannot be steered — there is no control plane on the client side of them. The
 restart drops them and they reconnect on their own. Do not compare the recovered
-session count against the pre-restart one: cloud3's 122 had accumulated over two
+session count against the pre-restart one: relay-c's 122 had accumulated over two
 days of uptime as long-lived UDP NAT entries, so a ten-minute-old table is a
 smaller number for reasons that have nothing to do with health.
 
-### Two measurement traps hit during this run
+### Measurement traps seen during this run
 
-1. **A bare `curl` from `.104`/`.102` does not use the tunnel.** The main-table
-   default is `via 198.18.1.1 dev eth0` (the LAN gateway), so an egress probe
+1. A bare `curl` from `.104`/`.102` does not use the tunnel. The main-table
+   default is `via 198.51.100.1 dev eth0` (the LAN gateway), so an egress probe
    times out with `http=000` while the tunnel is perfectly healthy. Test through
    the client's own SOCKS5 ingress instead — and note the port differs per node
-   (`127.0.0.1:1080` on `.104`/`.102`, `[::1]:31080` on cloud3/cloud4, the latter
+   (`127.0.0.1:1080` on `.104`/`.102`, `[::1]:31080` on relay-c/relay-d, the latter
    with credentials).
-2. **A restart makes WARN volume jump for reasons that are not regressions.**
+2. A restart makes WARN volume jump for reasons that are not regressions.
    Every node showed a spike that decayed to zero within ~2 minutes. The sources
    are once-per-boot (`config::load::probe`, `bootstrap`, `TUNSETOFFLOAD rejected
    USO` on `.104`'s vendor 6.1 kernel) plus the teardown of the very sessions the
    restart killed (`failed to accept HTTP/3 request`). Judge the *settled* rate in
    a window that excludes boot, not the first reading.
 
-   Related: cloud3's ss-rust logs `tls handshake failed … DecryptError` from a
-   single peer at ~6/min. This is **pre-existing** — the hourly history runs back
+   Related: relay-c's ss-rust logs `tls handshake failed … DecryptError` from a
+   single peer at ~6/min. This is pre-existing — the hourly history runs back
    through the previous day at the same magnitude (29 at 14:00 *before* the
    deploy, 26 at 15:00 after). A 10-minute pre-deploy baseline read zero purely
    because the phenomenon is bursty. Do not attribute it to a deploy.
 
-## 2026-07-30 — the relay works. Step 5's criterion is met.
+## Result 2026-07-30: the relay carries traffic, step 5 criterion met
 
 After four more fixes landed and the client binary was deployed, a forced soft
-switch on `.104` (nuxt → aeza) produced, on the client:
+switch on `.104` (exit-a → exit-d) produced, on the client:
 
 | counter | value |
 |---|---|
@@ -239,19 +242,19 @@ switch on `.104` (nuxt → aeza) produced, on the client:
 | `tun_udp_events_total{event="soft_switch_migrated"}` | 69 |
 | `soft_switch_migration_failed` / `global_switch` | 7 / 7 |
 
-and on the servers `orphan_resume_hit_total{kind="tcp"}` = 70 on nuxt, matching
+and on the servers `orphan_resume_hit_total{kind="tcp"}` = 70 on exit-a, matching
 the client's 70 exactly. 91% of live flows carried over; the 7 that could not
 fell through to the RST a hard switch would have given, which is the documented
 fallback, not a failure.
 
-**`mesh_bytes_total` is non-zero, and the pairs reconcile.** This is the counter
+`mesh_bytes_total` is non-zero, and the pairs reconcile. This is the counter
 whose fleet-wide zero hid a dead relay for months:
 
-- senko as home, `down/udp`: 146,209,509 — and nuxt as edge, `down/udp`:
+- exit-c as home, `down/udp`: 146,209,509 — and exit-a as edge, `down/udp`:
   146,209,509. Identical.
-- nuxt as home `down/tcp` 5,586,711 and `down/udp` 31,839,197 against aeza as
+- exit-a as home `down/tcp` 5,586,711 and `down/udp` 31,839,197 against exit-d as
   edge 5,587,911 and 31,845,063 — the small excess is in flight.
-- `mesh_relay_outcome_total{outcome="hit"}` 30 on nuxt, 1 on senko;
+- `mesh_relay_outcome_total{outcome="hit"}` 30 on exit-a, 1 on exit-c;
   `mesh_relay_active` 45.
 
 The relay had never carried a byte in production. It does now, and it did so
@@ -262,7 +265,7 @@ cross-shard resume.
 Nothing was rolled back and no node needed its automatic rollback. Fleet after:
 all seven `active`, `NRestarts=0`, settled WARN 0/min, zero unhealthy uplinks.
 
-## Executed 2026-07-30 — exit servers, and the cluster switched on
+## Executed 2026-07-30: exit servers and cluster enablement
 
 The three exit servers were deployed after the client-side four, in a second
 pass, then `[cluster]` was enabled in a third. All from `73526e0d`, hash
@@ -270,30 +273,28 @@ pass, then `[cluster]` was enabled in a third. All from `73526e0d`, hash
 
 | Node | shard | Public IP | Result |
 |---|---|---|---|
-| senko | 1 | 91.132.161.142 | active, NRestarts 0, RSS 31 MB against 262/367 MB limits |
-| nuxt | 0 | 185.78.76.246 | active, NRestarts 0, RSS 27 MB |
-| aeza | 2 | 77.221.141.167 | active, NRestarts 0 |
+| exit-c | 1 | 203.0.113.3 | active, NRestarts 0, RSS 31 MB against 262/367 MB limits |
+| exit-a | 0 | 203.0.113.1 | active, NRestarts 0, RSS 27 MB |
+| exit-d | 2 | 203.0.113.4 | active, NRestarts 0 |
 
 The `[cluster]` edit is simpler than the awk block guard prescribed below: in
-every one of these files `enabled = false` is the **only** such line (the other
+every one of these files `enabled = false` is the only such line (the other
 two `enabled` keys are `true`), so `sed 's/^enabled = false/enabled = true/'`
 over a `cp -p` backup, redirected into the existing file by `sudo sh -c`, is
 unambiguous and preserves `640 outline-ss-rust:outline-ss-rust`. Verify the diff
 is exactly one line before restarting. Check the count first — the shortcut is
 only safe while it holds.
 
-**UDP 9443 is listening on all three for the first time since 2026-07-28.**
+UDP 9443 is listening on all three for the first time since 2026-07-28.
 
 ### Step 5 result: the mesh connects, but no relay has hit a park yet
 
-Honest state, because the difference matters.
-
 What is now proven to work, and never did before:
 
-- Peers reach each other. `tcpdump` on nuxt caught live mesh traffic with senko,
+- Peers reach each other. `tcpdump` on exit-a caught live mesh traffic with exit-c,
   9443 ↔ 9443, in both directions.
-- Full OPEN → ack round-trips complete. nuxt as edge shows
-  `mesh_relay_opened_total{outcome="refused"} 5`, and senko and aeza as homes
+- Full OPEN → ack round-trips complete. exit-a as edge shows
+  `mesh_relay_opened_total{outcome="refused"} 5`, and exit-c and exit-d as homes
   show the matching `mesh_relay_rejected_total{reason="no_session"}` and
   `mesh_relay_outcome_total{outcome="miss"}`. `refused` is *not* a transport
   error — it is the home answering "I hold no park under this id", which is the
@@ -301,17 +302,17 @@ What is now proven to work, and never did before:
   all means the QUIC handshake, the PSK-derived pin, the OPEN frame and the ack
   path all work end to end. Previously this was `empty route` and nothing else.
 
-What is **not** achieved:
+What is not achieved:
 
 - No `outcome="hit"` on any node, and `mesh_bytes_total` has never been emitted
   — so `{direction="down"}` is still zero, and the success criterion below is
-  **not met**. The relay connects; it has not yet carried a byte.
-- Two forced soft switches of `.104` (nuxt→senko, senko→nuxt, both with
+  not met. The relay connects; it has not yet carried a byte.
+- Two forced soft switches of `.104` (exit-a→exit-c, exit-c→exit-a, both with
   `soft: true` on a `shared_resume` group) produced one `opened{outcome="fail"}`
-  on senko and then, on the second switch, **no counter movement at all** —
+  on exit-c and then, on the second switch, no counter movement at all —
   meaning the second switch did not even attempt a relay.
 
-Reading of `opened{outcome="fail"}` (senko 1, nuxt 8, aeza 4): it is recorded
+Reading of `opened{outcome="fail"}` (exit-c 1, exit-a 8, exit-d 4): it is recorded
 when `pool.open_relay` returns `Err`, and logged only at `debug`, which the
 fleet's `RUST_LOG=outline_ss_rust=info` suppresses. Most of these fall in the
 window when the three nodes were being enabled one at a time and a peer's 9443
@@ -325,26 +326,26 @@ the correction at its end):
 
 | Node | clustered | `orphan_park_total{tcp}` | `resume_hit{tcp}` | `resume_hit{vless_udp_single}` |
 |---|---|---|---|---|
-| nuxt | yes | 1208 | **0** | 5 |
-| senko | yes | 244 | **0** | 0 |
-| aeza | yes | 244 | **0** | 0 |
-| `.104` | **no** | 396 | **0** | 19 |
+| exit-a | yes | 1208 | 0 | 5 |
+| exit-c | yes | 244 | 0 | 0 |
+| exit-d | yes | 244 | 0 | 0 |
+| `.104` | no | 396 | 0 | 19 |
 
-~2100 TCP parks across the fleet and **not one TCP resume hit, ever**. Meanwhile
+~2100 TCP parks across the fleet and not one TCP resume hit, ever. Meanwhile
 `vless_udp_single` resumes fine on the same binaries — 19 hits on `.104`, 5 on
-nuxt — so the resumption machinery as a whole works. Almost every TCP park dies
-`ttl_expired` (nuxt: 1125 of 1134 at the time of measurement).
+exit-a — so the resumption machinery as a whole works. Almost every TCP park dies
+`ttl_expired` (exit-a: 1125 of 1134 at the time of measurement).
 
 Every client that carries TUN traffic shows the matching client-side symptom,
 `outline_ws_tun_tcp_events_total{event="carrier_migration_miss"}` — `.102` 16,
-cloud3 9, `.104` 2 — and no migration hits anywhere. That metric is recorded when
+relay-c 9, `.104` 2 — and no migration hits anywhere. That metric is recorded when
 the client *did* redial presenting its resume headers and the server answered
-**without** an Ack-Prefix frame, i.e. it opened a fresh upstream instead of
+without an Ack-Prefix frame, i.e. it opened a fresh upstream instead of
 re-attaching the park.
 
-**The discriminator that settles it:** one of cloud3's misses is against
-`group="russia", uplink="beerloga-1"`, which is `.104` — a node with **no
-`[cluster]` section at all** and 9443 not listening. The failure reproduces
+The discriminator that settles it: one of relay-c's misses is against
+`group="russia", uplink="fleet-1"`, which is `.104` — a node with no
+`[cluster]` section at all and 9443 not listening. The failure reproduces
 identically where there is no cluster. So the cluster neither causes this nor can
 fix it; the relay sits idle because the cross-shard resume that would drive it
 never happens on TCP in the first place.
@@ -357,9 +358,9 @@ compare against the id the home parked under. A clean control already exists in
 
 ### Superseded reading: "the chain breaks on the client"
 
-The debug drop-in was installed on senko (idle at the time; `.102` had been moved
-to aeza first so the operator's own path never rode a restarted node) and `.104`
-was soft-switched onto it. senko logged **nothing** and incremented **no**
+The debug drop-in was installed on exit-c (idle at the time; `.102` had been moved
+to exit-d first so the operator's own path never rode a restarted node) and `.104`
+was soft-switched onto it. exit-c logged nothing and incremented no
 counter — it never attempted a relay at all.
 
 The client side says why:
@@ -368,11 +369,11 @@ The client side says why:
   — the client looked for a resume token for the shared-resume group and found
   none.
 - `outline_ws_tun_tcp_events_total{event="carrier_migration_miss"} 2`.
-- Its log shows plain `created TUN TCP flow … uplink=senko` lines: on switching
-  it builds **fresh** flows rather than resuming.
+- Its log shows plain `created TUN TCP flow … uplink=exit-c` lines: on switching
+  it builds fresh flows rather than resuming.
 
 The conclusion drawn at the time — "the client never presents a resume id" — was
-**wrong**, and the section above corrects it. `carrier_migration_miss` is
+wrong, and the section above corrects it. `carrier_migration_miss` is
 recorded only *after* the client has redialled presenting its resume headers and
 the server declined to confirm; it is evidence that the client does try, not that
 it doesn't. The right reading is that the server never confirms a TCP resume, on
@@ -392,15 +393,15 @@ path tears sessions down instead of orphaning them. That is a client-side
 investigation (`outline-ws-rust` resume registry), not a mesh one.
 
 The debug drop-in that produced this evidence
-(`/etc/systemd/system/outline-ss-rust.service.d/99-mesh-debug.conf` on senko) has
-since been **removed**: `.104` was moved off senko first, then `rm` +
+(`/etc/systemd/system/outline-ss-rust.service.d/99-mesh-debug.conf` on exit-c) has
+since been removed: `.104` was moved off exit-c first, then `rm` +
 `daemon-reload` + restart. `RUST_LOG` is back to `outline_ss_rust=info,tower_http=info`
 and no drop-in of ours remains — note the neighbouring `20-memory.conf` is
 pre-existing and must be left alone, it carries this node's 250/350 MB cgroup
 limits. Use `rmdir --ignore-fail-on-non-empty` rather than `rm -r` on that
 directory for exactly that reason.
 
-## Step 1 — build
+## Step 1: build
 
 ```bash
 cargo ss-release-musl-x86_64 && cargo ss-release-musl-aarch64 && cargo ws-release-musl-x86_64 && cargo ws-release-musl-aarch64
@@ -408,21 +409,21 @@ cargo ss-release-musl-x86_64 && cargo ss-release-musl-aarch64 && cargo ws-releas
 
 Record the four hashes; they are the rollback boundary.
 
-## Step 2 — servers, cluster still off
+## Step 2: servers, cluster still off
 
-senko is the weakest node (960 MB, one core) and the one that carried the
+exit-c is the weakest node (960 MB, one core) and the one that carried the
 original incident. Take it first: if the new binary misbehaves under memory
 pressure, it shows there first and the blast radius is one exit node.
 
 ```bash
-ops/deploy/deploy-binary.sh sysadm@senko.beerloga.su outline-ss-rust target/x86_64-unknown-linux-musl/release/outline-ss-rust
+ops/deploy/deploy-binary.sh sysadm@exit-c.fleet.example outline-ss-rust target/x86_64-unknown-linux-musl/release/outline-ss-rust
 ```
 
-Then nuxt, then aeza, then the four client-side nodes that also run
-`outline-ss-rust` (`.102`, cloud3, cloud4 x86_64; `.104` aarch64).
+Then exit-a, then exit-d, then the four client-side nodes that also run
+`outline-ss-rust` (`.102`, relay-c, relay-d x86_64; `.104` aarch64).
 
 After each: the script itself asserts `active` + `/metrics` 200 and rolls back
-otherwise. Additionally confirm the node did not start rejecting its own users:
+otherwise. Also confirm the node did not start rejecting its own users:
 
 ```bash
 sudo journalctl -u outline-ss-rust --since -3min --no-pager | grep -cE ' (WARN|ERROR) '
@@ -430,19 +431,19 @@ sudo journalctl -u outline-ss-rust --since -3min --no-pager | grep -cE ' (WARN|E
 
 Expect the same order of magnitude as before the deploy. A jump means stop.
 
-**Do not proceed to step 3 until all seven are green.** Not because the skew is
+Do not proceed to step 3 until all seven are green. Not because the skew is
 unsafe — it is not, see above — but because step 2 is meant to be a provable
 no-op. If anything is off here, it is not the carrier change, and finding that
 out after step 3 costs you the attribution.
 
-## Step 3 — clients
+## Step 3: clients
 
 ```bash
-ops/deploy/deploy-binary.sh mmv@198.18.1.104 outline-ws-rust target/aarch64-unknown-linux-musl/release/outline-ws-rust
+ops/deploy/deploy-binary.sh mmv@198.51.100.104 outline-ws-rust target/aarch64-unknown-linux-musl/release/outline-ws-rust
 ```
 
-`.104` first, for the same reason as senko — it is the constrained node, and it
-is where the original decrypt storm was measured. Then `.102`, cloud3, cloud4.
+`.104` first, for the same reason as exit-c — it is the constrained node, and it
+is where the original decrypt storm was measured. Then `.102`, relay-c, relay-d.
 
 This is the step that changes live behaviour (XHTTP close signalling). Watch for
 one cycle before continuing:
@@ -455,9 +456,9 @@ The expected shape is *fewer* warnings than before, not more. If
 `decryption failed` or `UDP packet is too short` appear at any rate, stop — that
 is the original incident's signature and it should be extinct.
 
-## Step 4 — enable the cluster
+## Step 4: enable the cluster
 
-Only after steps 2 and 3 are quiet. On each of senko, nuxt, aeza:
+Only after steps 2 and 3 are quiet. On each of exit-c, exit-a, exit-d:
 
 ```bash
 sudo cp -p /etc/outline-ss-rust/config.toml /etc/outline-ss-rust/config.toml.bak.pre-cluster-on
@@ -471,11 +472,14 @@ and a blind `sed` hits them:
 sudo sh -c 'awk "/^\[cluster\]/{inb=1} /^\[/ && !/^\[cluster\]/{inb=0} inb && /^enabled[ \t]*=/ && !done {sub(/false/,\"true\"); done=1} {print}" /etc/outline-ss-rust/config.toml.bak.pre-cluster-on > /etc/outline-ss-rust/config.toml'
 ```
 
-Note `sudo tee < file` does **not** work here — the redirect reads the file
+Note `sudo tee < file` does not work here — the redirect reads the file
 without sudo and the config is `640 outline-ss-rust:outline-ss-rust`.
 
-Diff must show exactly one changed line. Then restart — `/control/apply` does
-**not** raise the mesh listener, it is built in `build_services` at startup:
+Diff must show exactly one changed line. Then restart. The mesh listener is
+bound only at startup (`ClusterCtx::build`, called from `services::build` in
+`bins/outline-ss-rust/src/server/services.rs`); the server control API
+(`PATCH /control/config`) only writes `[cluster]` to disk and answers
+`"requires_restart": true`:
 
 ```bash
 sudo systemctl restart outline-ss-rust
@@ -487,30 +491,31 @@ Confirm the listener is actually up, which it has not been since 2026-07-28:
 sudo ss -lnup | grep 9443
 ```
 
-## Step 5 — prove the relay works
+## Step 5: prove the relay works
 
-This is the step that matters. Everything before it only proves nothing broke.
+Steps 1–4 only prove that nothing broke; this step proves the relay works.
 
 A relay fires when a client resumes a session whose shard points at another
 node. Do not wait for a natural failover — force one. On a client with
-`shared_resume` (`.104` or cloud3):
+`shared_resume` (`.104` or relay-c):
 
 ```bash
-curl -s -X POST http://127.0.0.1:9091/control/reselect -d '{"group":"main"}'
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"group":"main"}' http://127.0.0.1:9191/control/reselect
 ```
 
-That performs a soft switch, which migrates live sessions through cluster
-resume — exactly the traffic path under test. Then, on the home that owned those
+`soft` defaults to `true` for `reselect`, so this is a soft switch: it migrates
+live sessions through cluster resume, which is the traffic path under test. Then, on the home that owned those
 sessions:
 
 ```bash
-curl -s http://127.0.0.1:9092/metrics | grep -E 'mesh_relay_outcome_total|mesh_bytes_total|mesh_relay_rejected_total'
+curl -s http://127.0.0.1:9090/metrics | grep -E 'mesh_relay_outcome_total|mesh_bytes_total|mesh_relay_rejected_total'
 ```
 
-**Success is all three of:**
+Success is all three of:
 
 - `outline_ss_mesh_relay_outcome_total{outcome="hit"}` is non-zero and rising.
-- `outline_ss_mesh_bytes_total{direction="down"}` is **non-zero** — this is the
+- `outline_ss_mesh_bytes_total{direction="down"}` is non-zero — this is the
   counter whose fleet-wide zero hid a dead relay for months. If it stays at zero
   while `hit` climbs, stop and investigate; that combination is the original
   symptom.
@@ -525,10 +530,10 @@ non-zero `active` means relays are running, not missing.
 Repeat the reselect on a second client so at least two of the three shard pairs
 are exercised.
 
-## Step 6 — soak
+## Step 6: soak
 
 The scheduled reselect fires nightly at 03:00 (`.104`), 03:05 (`.102`), 03:10
-(cloud3), 03:15 (cloud4) and exercises the relay without help. Check the morning
+(relay-c), 03:15 (relay-d) and exercises the relay without help. Check the morning
 after:
 
 ```bash
@@ -541,7 +546,7 @@ Watch for a week:
   against `hit` is not.
 - `rejected{reason="park_shape"}` or `{reason="park_incomplete"}` should be near
   zero; they mean a client is presenting one id across different session kinds.
-- Memory on senko. It is the one node where a new long-lived structure would
+- Memory on exit-c. It is the one node where a new long-lived structure would
   show up as pressure first, and it has livelocked on memory before.
 
 ## Rollback

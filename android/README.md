@@ -5,48 +5,51 @@
 
 # Outline Proxy — Android client
 
-Android VPN client that connects to your servers using the full `outline-ws-rust`
-uplink stack (padding + VLESS / SS / WS / TLS, failover). The Rust core is reused
-unchanged; Android adds a modern Material Design 3 (Material You) UI + `VpnService` layer.
+Russian version: [README.ru.md](README.ru.md).
 
-> Status: **feature-complete client, not yet run against a live server**.
-> Increments 1–5 are done — Rust⇄Kotlin bridge, a native `outline-tun` engine
-> attached to the `VpnService` fd, QUIC/HTTP-3 carriers, a persisted server-list
-> UI, Wi-Fi⇄cellular handover, per-app split tunneling, and `outline://`
-> external control — plus a run of later work: config-over-URL subscriptions,
-> full Material Design 3 (Material You dynamic theming on Android 12+, themed monochrome launcher icons on Android 13+),
-> new brand identity (shield & speed stream tunnel), signed release builds, a unified
-> connect/disconnect action with connecting indicators, keep-the-tunnel-alive across kills / reboot / OEM
-> cleanup, a profile-named foreground notification, and system-back navigation.
-> The whole Rust stack (incl. quinn + h3) cross-compiles under NDK r29, and the
-> Gradle/Kotlin app builds (debug APK, minified release APK, green JVM unit
-> tests). It has run on an **emulator** (under the earlier tun2proxy bridge,
-> since replaced by the native engine); on **real hardware** only the keep-alive
-> checklist screen and its vendor intents have been exercised. No traffic has
-> crossed a live server yet, and the native TUN engine has not been booted at
-> runtime — see "What is verified vs. not".
+Android VPN client built on the `outline-ws-rust` uplink stack (padding, VLESS,
+SS, WS, TLS, failover). The Rust core is reused unchanged; Android adds a
+Material Design 3 UI (Jetpack Compose) and the `VpnService` layer.
+
+> Status: increments 1–6 are done (see "Development history"): Rust⇄Kotlin
+> bridge, the native `outline-tun` engine attached to the `VpnService` fd,
+> QUIC/HTTP-3 carriers, a persisted server list, Wi-Fi⇄cellular handover,
+> per-app split tunneling, `outline://` external control, config-over-URL
+> subscriptions, Material You dynamic colour on Android 12+, themed monochrome
+> launcher icon on Android 13+, signed release builds, keeping the tunnel alive
+> across kills / reboot / OEM cleanup, a profile-named foreground notification
+> and system-back navigation. The Rust stack (including quinn + h3)
+> cross-compiles under NDK r29; the Gradle build produces a debug APK and a
+> minified release APK, and the JVM unit tests pass. What has and has not been
+> run is listed in "Verification status".
+> [verify: the verification status is older than the code — `DialTimeout.kt`
+> describes a HONOR device carrying LTE traffic through the tunnel]
 
 ## Layout
 
 ```
 android/
+  build-rust.sh    # builds the .so and the UniFFI Kotlin bindings
   rust/            # outline-android: cdylib + UniFFI wrapper around ws-rust
     src/lib.rs       # start() / stop() / is_running()
+    src/bin/         # uniffi-bindgen
   app/             # Android app (Gradle, Kotlin, Compose)
     src/main/java/com/outline/proxy/
       OutlineVpnService.kt   # VpnService: establish() TUN, drive the core
-      MainActivity.kt        # config editor + connect/disconnect, screens
-      ServerProfile.kt / ProfileStore.kt        # profile model + persistence
+      MainActivity.kt / HomeScreen.kt          # screens, connect/disconnect
+      ServerProfile.kt / ProfileStore.kt       # profile model + persistence
       SplitTunnel.kt         # per-app allow/deny modes
-      ConfigFetcher.kt / SubscriptionWorker.kt  # config-over-URL subscription
-      ExternalControl.kt / ControlActivity.kt   # outline:// grammar + entry point
-      AppTheme.kt            # system light/dark theme
+      ConfigFetcher.kt / SubscriptionWorker.kt / SubscriptionRefresh.kt  # config-over-URL
+      ExternalControl.kt / ControlActivity.kt  # outline:// grammar + entry point
+      DialTimeout.kt         # carrier-dial budget per link
+      TcpOnlyConfig.kt       # "TCP only" config rewrite
+      LinkProbe.kt / LinkInfo.kt / LinkQuality.kt  # link readout on the home screen
       KeepAlivePolicy.kt / KeepAliveState.kt / KeepAliveScreen.kt
       AutomationPolicy.kt / AutomationStore.kt / AutomationState.kt / WifiAutomationScreen.kt
-      keepalive/             # BootReceiver, WatchdogAlarm/Worker/Receiver, helper
-    src/test/java/com/outline/proxy/
-      ExternalControlTest.kt, KeepAlivePolicyTest.kt, AutomationPolicyTest.kt,   # JVM unit tests
-      SubscriptionProfileTest.kt, ConfigValidationTest.kt
+      OutlineTileService.kt / QuickConnectActivity.kt  # quick-settings tile, shortcut
+      UpdateChecker.kt / ReleaseNotes.kt       # in-app update check
+      keepalive/             # BootReceiver, WatchdogAlarm/Worker/Receiver, vendor profiles
+    src/test/java/com/outline/proxy/           # JVM unit tests
 ```
 
 ## Architecture
@@ -63,33 +66,39 @@ VpnService.establish() ──tun_fd──┐
 ```
 
 The Rust core attaches the native `outline-tun` engine directly to the
-`VpnService` TUN fd via `RunOptions.tun_fd` and drives TCP/UDP flows straight
-into the uplink stack — no tun2proxy bridge, no SOCKS5 loopback hop in
-between. Loop avoidance is unchanged: the Kotlin side excludes this app's own
-package from the VPN (`addDisallowedApplication(self)`), so every socket the
-uplinks open bypasses the TUN automatically — no per-socket
-`VpnService.protect()`.
+`VpnService` TUN fd via `RunOptions.tun_fd` and passes TCP/UDP flows straight
+into the uplink stack, with no tun2proxy bridge and no SOCKS5 loopback hop in
+between. Loop avoidance: the Kotlin side excludes this app's own package from
+the VPN (`addDisallowedApplication(self)`), so every socket the uplinks open
+bypasses the TUN without a per-socket `VpnService.protect()`.
 
-Those uplink sockets ride whatever network the tunnel is bound to with
-`setUnderlyingNetworks`, so `OutlineVpnService` watches the best **non-VPN**
-network offering `INTERNET` — `registerBestMatchingNetworkCallback` on API 31+,
-a ranked pick (validated first, then Ethernet > Wi-Fi > cellular) over the
-matching networks below that — and re-binds on Wi-Fi ⇄ cellular handovers. Two
-filters carry their weight: `NET_CAPABILITY_NOT_VPN`, because a default-network
-callback reports our own VPN network back to us and the tunnel would end up as
-its own underlying network; and the bookkeeping of which network is actually in
-use, so that a network coming up beside a better one cannot steal the binding
-and the loss of a network we are not riding is ignored. Watching networks needs
-`ACCESS_NETWORK_STATE`; without it the callback throws and only the handover
+The uplink sockets use whatever network the tunnel is bound to with
+`setUnderlyingNetworks`. `OutlineVpnService` watches the best non-VPN network
+with `INTERNET` and re-binds on Wi-Fi ⇄ cellular handovers:
+
+- API 31+: `registerBestMatchingNetworkCallback`, which delivers the single best
+  match.
+- Below API 31: the app picks from all matching networks itself — validated
+  first, then Ethernet > Wi-Fi > cellular (`LinkProbe.bestNonVpn`).
+
+Two filters matter here. `NET_CAPABILITY_NOT_VPN`: a default-network callback
+reports our own VPN network back to us, and the tunnel would become its own
+underlying network. And tracking which network is actually in use: a network
+coming up next to a better one does not take over the binding, and the loss of
+a network we are not using is ignored. Watching networks needs
+`ACCESS_NETWORK_STATE`; without it the callback throws and only handover
 tracking is lost, not the tunnel.
 
-The Rust core is built slim (`--no-default-features` + `h3, tun`): the native
-TUN engine, the WS/TLS uplink stack, and the QUIC/HTTP-3 carriers — without
-mimalloc, metrics, dashboard, or SOCKS5 ingress (the `socks5` feature stays
-off, and `outline-ws-rust` also gates the listener at runtime: given a
-`tun_fd`, it never starts, regardless of the TOML).
+The Rust core is built with `default-features = false` plus `h3` and `tun`
+(`android/rust/Cargo.toml`): the native TUN engine, the WS/TLS uplink stack and
+the QUIC/HTTP-3 carriers. Left out are the `socks5` ingress, `metrics`,
+`control`, `env-filter`, `multi-thread` and the `jemalloc` allocator. On top of
+the compiled-out `socks5` feature, `outline-ws-rust` also skips the SOCKS5
+listener at runtime when a `tun_fd` is passed, regardless of the TOML.
 
-## Prerequisites
+## Requirements
+
+Rust side:
 
 ```sh
 rustup target add aarch64-linux-android      # + armv7/x86_64 for more ABIs
@@ -98,63 +107,85 @@ brew install --cask android-ndk              # NDK r29 -> /opt/homebrew/share/an
 export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk
 ```
 
-For the **app** you also need Android Studio (it bundles a JDK 17 + the Android
-SDK). No system-wide JDK/SDK/Gradle is required — the Gradle **wrapper** is
-checked in (`gradlew`, `gradle/wrapper/`).
+App side:
 
-## Build the Rust artifacts
+- JDK 17. Gradle fails under openjdk 25, and recent Android Studio releases
+  bundle JBR 25 (`/Applications/Android Studio.app/Contents/jbr/Contents/Home`),
+  so do not point `JAVA_HOME` at the bundled JBR. CI uses Temurin 17
+  (`.github/workflows/_android-release-build.yml`); the build itself targets
+  Java 17 (`compileOptions` in `app/build.gradle.kts`).
+- Android SDK with platform 37 (`compileSdk = 37`). Android Studio installs it;
+  for a CLI-only build set `sdk.dir` in `local.properties`.
+- Gradle itself is not needed: the wrapper is checked in (`gradlew`,
+  `gradle/wrapper/`, Gradle 9.7.0).
 
-One script regenerates both the native `.so` (into `app/src/main/jniLibs/`) and
-the UniFFI Kotlin bindings (into `app/src/main/java/uniffi/`):
+## Building the Rust artifacts
+
+`build-rust.sh` regenerates both the native library
+(`app/src/main/jniLibs/<abi>/liboutline_android.so`) and the UniFFI Kotlin
+bindings (`app/src/main/java/uniffi/`):
 
 ```sh
 export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk
-./build-rust.sh                 # arm64-v8a, debug
+./build-rust.sh                      # arm64-v8a, debug
 ./build-rust.sh arm64-v8a --release
 ```
 
-Both outputs are gitignored — rerun this after any change under `android/rust/`
-(or the monorepo crates it pulls in).
+Both outputs are gitignored. Rerun the script after any change under
+`android/rust/` or in the monorepo crates it pulls in.
 
 Notes:
-- The crate enables the ws-rust `h3` and `tun` features — QUIC/HTTP-3 carriers
-  and the native TUN engine, no SOCKS5 (`socks5` stays off). `h3` pulls quinn +
-  the patched `h3` fork (`vendor/h3`); `android/rust` is a detached workspace,
-  so it repeats the root's `[patch.crates-io] h3 = …` — without it the
-  vendored `sockudo-ws` HTTP/3 carrier fails to compile against upstream `h3`.
-- Bindings are generated from the **host** `.dylib` (a cross-compiled `.so`
-  can't be loaded on the build host); the script handles this.
-- cargo-ndk 4.x: API level is `--platform N` (not `-p N`, which is cargo's
-  `--package`); cargo args go after `--`.
-- uniffi 0.31+ auto-detects a library source, so the bindgen takes the `.dylib`
-  as a positional argument; the old `--library <path>` flag is a no-op.
 
-## Build & run the app
+- The app ships only `arm64-v8a` (`abiFilters` in `app/build.gradle.kts`).
+- `h3` pulls quinn and the patched forks in `vendor/`. `android/rust` is a
+  detached workspace, so its `Cargo.toml` repeats the root's
+  `[patch.crates-io]` entries for `h3`, `hyper`, `quinn-proto` and `rustls`;
+  without the `h3` patch the vendored `sockudo-ws` HTTP/3 carrier fails to
+  compile against upstream `h3`.
+- Bindings are generated from the host library (`.dylib` on macOS, `.so` on
+  Linux): a cross-compiled Android `.so` cannot be loaded on the build host. The
+  script builds the host library for this.
+- cargo-ndk 4.x: the API level is `--platform N` (the script passes 24), not
+  `-p N`, which is cargo's `--package`; cargo arguments go after `--`.
+- uniffi 0.31+ detects a library source on its own, so the bindgen takes the
+  library path as a positional argument; the old `--library <path>` flag is a
+  no-op.
 
-1. `./build-rust.sh` (once, and after Rust changes).
-2. Open `android/` in Android Studio — it writes `local.properties` (SDK path)
-   and downloads the Gradle 9.7.0 distribution on first sync. `compileSdk = 37`
-   is pulled in automatically if the platform is missing.
-3. Run on a device/emulator, add a server, Connect.
+## Building and running the app
 
-CLI alternative (needs a JDK 17+ and an Android SDK, `local.properties` with
-`sdk.dir`): `./gradlew :app:assembleDebug`, `./gradlew :app:testDebugUnitTest`
-for the JVM unit tests. Without a system JDK, Android Studio's bundled one
-works: `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
+1. Run `./build-rust.sh` (once, and after Rust changes).
+2. Open `android/` in Android Studio. On first sync it writes
+   `local.properties` (SDK path) and downloads Gradle 9.7.0. Set
+   **Settings → Build, Execution, Deployment → Build Tools → Gradle → Gradle
+   JDK** to a JDK 17.
+3. Run on a device or emulator, add a server, press **Connect**.
+
+From the command line (JDK 17, Android SDK, `local.properties` with `sdk.dir`):
+
+```sh
+cd android
+export JAVA_HOME=<jdk17_home>   # a JDK 17 installation, not Android Studio's JBR 25
+./gradlew :app:assembleDebug        # debug APK
+./gradlew :app:testDebugUnitTest    # JVM unit tests
+./gradlew :app:lintDebug            # EN/RU string parity (MissingTranslation, ExtraTranslation)
+```
+
+The debug build has the application ID `com.outline.proxy.debug`, so it installs
+next to a release build instead of replacing it.
 
 ### Release signing
 
-`:app:assembleRelease` signs the APK when release credentials are available, and
-falls back to an unsigned APK when they are not — a fresh clone builds either
+`:app:assembleRelease` signs the APK when release credentials are available,
+and produces an unsigned APK when they are not, so a fresh clone builds either
 way. Credentials come from `android/keystore.properties` first, and from the
 environment (`OUTLINE_KEYSTORE_FILE`, `OUTLINE_KEYSTORE_PASSWORD`,
 `OUTLINE_KEY_ALIAS`, `OUTLINE_KEY_PASSWORD`) when that file is absent. A
-*partial* set is a hard error rather than a silent downgrade: an unsigned APK
-cannot be installed over a signed one, and finding that out at `adb install`
-time is worse than failing the build.
+partial set fails the build (`Incomplete release-signing config; missing: …`):
+an unsigned APK cannot be installed over a signed one, and finding that out at
+`adb install` time is worse than failing the build.
 
 The properties file and any `*.jks`/`*.keystore`/`*.p12` in the tree are
-gitignored; keep the keystore itself outside the work tree
+gitignored; keep the keystore outside the work tree
 (`~/.android/outline-proxy-release.jks`). To create one:
 
 ```sh
@@ -164,176 +195,177 @@ keytool -genkeypair -v -keystore ~/.android/outline-proxy-release.jks \
 ```
 
 Then point `keystore.properties` at it (`storeFile`, `storePassword`,
-`keyAlias`, `keyPassword`). Only v2/v3 signature schemes are enabled: `minSdk`
-is 24, the release that introduced v2, so the legacy v1 JAR signature is dead
-weight. **Back the keystore and its password up** — losing them means the app
-can only ever be reinstalled from scratch, never upgraded in place.
+`keyAlias`, `keyPassword`). Only the v2/v3 signature schemes are enabled:
+`minSdk` is 24, the release that introduced v2, so the legacy v1 JAR signature
+adds nothing.
 
-Verify what you shipped:
+**Warning:** back up the keystore and its password. Without them the app can
+only be reinstalled from scratch (losing its data), never upgraded in place.
+
+Verify the signed APK:
 
 ```sh
 $ANDROID_HOME/build-tools/<ver>/apksigner verify --print-certs -v \
   app/build/outputs/apk/release/app-release.apk
 ```
 
+`<ver>` is an installed build-tools version.
+
 ### Gradle toolchain
 
-AGP 9.3.1 / Gradle 9.7.0 / Kotlin 2.4.10 on stock AGP 9 defaults —
-`gradle.properties` carries no `android.*` compatibility flags, and the build
-draws no deprecation warnings from AGP or Gradle (the two `Expression is
-unused` ones come from the generated UniFFI bindings). Three consequences
-worth knowing:
+AGP 9.4.0, Gradle 9.7.0, Compose compiler plugin 2.4.10 on AGP 9 defaults:
+`gradle.properties` sets only `android.useAndroidX` and
+`android.nonTransitiveRClass`, no compatibility flags. The two
+`Expression is unused` warnings in the build output come from the generated
+UniFFI bindings.
 
-- **AGP compiles Kotlin itself** (built-in Kotlin). There is no
-  `org.jetbrains.kotlin.android` plugin — only the Compose compiler plugin is
-  applied on top, which AGP finds by plugin id and wires into its own compile
-  tasks. That plugin was also the sole caller of the legacy variant API
+- AGP compiles Kotlin itself (built-in Kotlin). There is no
+  `org.jetbrains.kotlin.android` plugin; only the Compose compiler plugin is
+  applied, and AGP finds it by plugin id and wires it into its own compile
+  tasks. That plugin was also the only caller of the legacy variant API
   (`testVariants`/`unitTestVariants`), removed in AGP 10.
-- **The JVM target is set once.** Built-in Kotlin defaults `jvmTarget` to
+- The JVM target is set once. Built-in Kotlin takes `jvmTarget` from
   `compileOptions.targetCompatibility` and fails the build if the two diverge,
-  so `compileOptions` alone pins both compilers to 17. A `kotlin { }` block
-  would be redundant, and a conflicting one is a build error.
-- **R8 minification is on, and it only survives because of keep rules.** JNA
-  and the UniFFI bindings are wired by reflection and by symbol name
-  (`Native.register`), so R8 cannot see how any of it is used;
-  `proguard-rules.pro` pins those names and silences JNA's desktop AWT paths
-  (`-dontwarn java.awt.**`), which android.jar has no classes for. Verify a
-  rule change by *running* the release build, not by building it: renaming
-  breaks at runtime, never at build time.
+  so `compileOptions` alone pins both compilers to 17. A `kotlin { }` block is
+  redundant, and a conflicting one is a build error.
+- R8 minification is on and depends on keep rules. JNA and the UniFFI bindings
+  are wired by reflection and by symbol name (`Native.register`), so R8 cannot
+  see their use; `proguard-rules.pro` pins those names and silences JNA's
+  desktop AWT paths (`-dontwarn java.awt.**`), which android.jar has no classes
+  for. Check a rule change by running the release build, not by building it:
+  a wrong rule breaks at runtime, never at build time.
 
 ## Where the config comes from
 
-The node generates a ready client config per user — `<user>.toml`, next to
-`.conf` and `.json` (`ops/access-keys/generate_keys.py`; the report calls its
-link `ws_url`). It carries the full carrier chain for every entry node, failover
-between nodes, and live-flow migration — none of which the profile's structured
-form can express, since a single `vless://` / `ss://` link describes one carrier
-of one node. Paste it whole into the **Raw TOML override** field.
+The node generates a client config per user: `<user>.toml`, next to `.conf`
+and `.json` (`ops/access-keys/generate_keys.py`; the report calls its link
+`ws_url`). It carries the full carrier chain for every entry node, failover
+between nodes and live-flow migration. The structured profile form cannot
+express that: a single `vless://` / `ss://` link describes one carrier of one
+node. Paste the file whole into the **Raw TOML override** field.
 
-The generated `[tun] mtu` must match `ServerProfile.TUN_MTU` — 1500 on both
-sides today. Change one and you must change the other, or the VPN comes up with
-an MTU the proxy core does not know about.
+The generated `[tun] mtu` must match `ServerProfile.TUN_MTU`: 1500 on both sides
+(`TUN_MTU` in `ops/access-keys/ws_toml.py`). Change one and you must change the
+other, or the VPN comes up with an MTU the proxy core does not know about.
 
 What lands in the config depends on the node: the h3 carrier mode, the set of
-paths, padding, carrier migration and soft node switching are only turned on
-when the node ships the matching sections. The generator reports the ones that
-are off as `warning:` lines — see
+paths, padding, carrier migration and soft node switching are turned on only
+when the node has the matching sections. The generator reports the ones that
+are off as `warning:` lines; see
 [`ops/access-keys/README.md`](../ops/access-keys/README.md).
 
-The generated profile also carries `[outline.probe]` — a DNS probe plus TLS
-handshakes through the tunnel, mirroring the fleet's own `main` group. Without
-it the client has no health signal independent of traffic: an uplink marked down
-can only be cleared by data flowing over it, so losing every uplink at once (a
-SIM switch, a dead cell) used to read as "no link" until the tunnel was
-reconnected by hand. The probe interval is 60 s rather than the fleet's 10 s —
-on a phone the difference is battery, and on an edge-class cell it is the very
-bandwidth the tunnel needs.
+The generated profile also carries `[outline.probe]`: a DNS probe plus TLS
+handshakes through the tunnel, mirroring the fleet's `main` group. Without it
+the client has no health signal independent of traffic: an uplink marked down
+is cleared only by data flowing over it, so losing every uplink at once (a SIM
+switch, a dead cell) read as "no link" until the tunnel was reconnected by hand.
+The probe interval is 300 s (`PROBE_INTERVAL_SECS` in
+`ops/access-keys/ws_toml.py`) instead of the fleet's 10 s: on a phone each probe
+cycle costs battery and, on an edge-class cell, bandwidth the tunnel needs.
 
 ### Subscription URL
 
 Instead of pasting the config, a profile can point at an HTTPS URL that serves
-one (**Config URL** field in the editor) — the same `<user>.toml` the node
-generates, fetched and kept current the way Happ tracks a subscription. With a
-URL set, the transport fields are hidden: the URL is the single source of the
-config.
+one (**Config URL (subscription)** field in the editor) — the same
+`<user>.toml` the node generates. With a URL set, the transport fields are
+hidden: the URL is the only source of the config.
 
-- The body must be a whole client config (not an xray-style list of servers);
+- The body must be a whole client config, not an xray-style list of servers;
   one URL is one profile with all its uplinks inside.
-- **HTTPS only** — the config carries UUIDs and passwords. The URL's path is a
-  secret token, so it is never logged in full, only masked (`host/…tail`).
-- The fetched config is cached in the profile. A background worker
-  (`SubscriptionWorker`, WorkManager, every 12 h) refreshes it; a failed fetch
-  keeps the last good cache and never disturbs a running tunnel. The list shows
-  "updated N h ago" and a **Refresh** button for an immediate pull.
-- A response only replaces the cache if it looks like a config (has `[tun]` or
-  `[[outline.uplinks]]`), so an HTML error page or captcha cannot blank out a
-  working subscription.
-- The fetch goes out directly (this app is excluded from its own VPN). If the
-  source is only reachable *through* the tunnel, background refresh will fail and
-  the cache carries on — a known limitation.
+- HTTPS only: the config carries UUIDs and passwords. The URL path is a secret
+  token, so it is never logged in full, only masked (`host/…tail`).
+- The fetched config is cached in the profile. `SubscriptionWorker`
+  (WorkManager, every 12 h) refreshes it; a failed fetch keeps the last good
+  cache and does not touch a running tunnel. The server list shows
+  "updated N h ago" and a refresh button for an immediate fetch.
+- A response replaces the cache only if it contains `[tun]` or
+  `[[outline.uplinks]]`, so an HTML error page or a captcha cannot replace a
+  working config.
+- The fetch goes out directly, since the app is excluded from its own VPN. If
+  the source is reachable only through the tunnel, background refresh fails
+  and the cached config stays in use.
 
 ### Dial budget on slow links
 
-The generated config carries no `[dial]` section, so the core bounds every fresh
-carrier dial at its 10 s default. That fits Wi-Fi and LTE and is the *cause* of
-failure on an edge-class cell: a 2G round trip runs close to a second and the
-certificate chain alone takes seconds to clock out, so the budget expires
-mid-handshake, every attempt is scored a failure, and the retries eat the
-bandwidth the handshake needed — the tunnel reports itself up while carrying
-nothing.
+The generated config has no `[dial]` section, so the core bounds every fresh
+carrier dial at its default of 10 s (`DEFAULT_DIAL_TIMEOUT` in
+`crates/outline-transport/src/dial_timeouts.rs`). On an edge-class cell that
+budget is the cause of failure: a 2G round trip is close to a second and the
+certificate chain alone takes seconds, so the budget expires mid-handshake,
+every attempt is scored a failure, and the retries eat the bandwidth the
+handshake needed. The tunnel reports itself up while carrying nothing.
 
-So the app fills the section in from what the platform says about the link it is
-about to ride (`DialTimeout`): a cellular link estimated at or below 200 kbit/s
-gets 60 s, one below 2 Mbit/s gets 30 s, anything faster keeps the default. Wi-Fi
-and Ethernet are never widened — a slow Wi-Fi is usually a slow backhaul, where
-the handshake still completes in a couple of round trips, and widening the bound
-would only delay failover. A link the platform has not characterised yet is left
-alone rather than assumed slow.
+The app therefore sets the budget itself (`DialTimeout.secondsFor`):
 
-A config that declares `[dial]` itself is never touched: an explicit value from
-the operator outranks this guess.
+| Input | Condition | Budget |
+|---|---|---|
+| Path RTT measured by the core (any transport) | ≥ 3000 ms | 60 s |
+| | ≥ 1000 ms | 30 s |
+| | below 1000 ms | core default (10 s) |
+| No RTT yet; platform bandwidth estimate (cellular only) | ≤ 200 kbit/s | 60 s |
+| | ≤ 2000 kbit/s | 30 s |
+| | faster | core default |
 
-The budget **follows the link**, it is not frozen at connect time. The service
-watches the network it rides — including `onCapabilitiesChanged`, which is how a
-cell handover, a generation change (2G ↔ 3G ↔ LTE ↔ 5G) and, on many devices, a
-data-SIM switch actually arrive: the `Network` object stays the same while its
-properties change underneath. Walking from Wi-Fi into a 2G cell widens the bound,
-walking back restores the default (leaving 60 s on a fast link would only slow
-failover down), and the engine picks the new value up on its next dial —
-handshakes already in flight keep the deadline they started with. Nothing is torn
-down, and a repeated estimate is not re-applied, so a signal-strength wobble
-costs nothing.
+- A measured RTT always wins over the estimate: some firmware invents the
+  estimate (one HONOR device reported 14 kbit/s on a full-signal LTE cell that
+  carried traffic normally). The estimate covers the cold start, before a
+  carrier exists to measure.
+- Wi-Fi and Ethernet are never widened on the estimate: a slow Wi-Fi usually
+  means a slow backhaul, where the handshake still completes in a couple of
+  round trips, and a wider bound would only delay failover. A measured RTT
+  widens any transport.
+- An estimate of 0 or none (the link is not characterised yet) is ignored, not
+  treated as 2G.
+- A config that declares `[dial]` itself is never touched.
 
-Generations land where you would expect them: GPRS and EDGE are estimated at or
-below 200 kbit/s and get 60 s, UMTS and a weak HSPA or LTE land under 2 Mbit/s
-and get 30 s, and anything healthier keeps the default. Since not every firmware
-re-reports the bandwidth estimate when only the radio technology changes, the
-budget is also re-checked on the service's existing 2-second tick — a capability
-read and a comparison, free when nothing moved.
+The budget follows the link. The service recomputes it in its network callbacks
+(`onAvailable`, `onCapabilitiesChanged`, `onLost`); `onCapabilitiesChanged` is
+how a cell handover, a generation change (2G ↔ 3G ↔ LTE ↔ 5G) and, on many
+devices, a data-SIM switch arrive, because the `Network` object stays the same
+while its properties change. Moving from Wi-Fi to a 2G cell widens the bound,
+moving back restores the default. The engine picks the new value up on its next
+dial (`setDialTimeoutSecs`); handshakes already in flight keep their deadline.
+Nothing is torn down, and an unchanged value is not re-applied.
 
 ### TCP only mode (no HTTP/3)
 
-On networks where UDP port 443 or QUIC traffic is blocked or throttled (e.g. mobile operators or restricted Wi-Fi), tunnels configured with HTTP/3 (`xhttp_h3` or `ws_h3`) can experience prolonged handshake timeouts (10–60 s) before falling back to HTTP/2, as well as periodic recovery attempts back to H3 that trigger repeated stalls.
+On networks where UDP 443 or QUIC is blocked or throttled, uplinks configured
+with `xhttp_h3` or `ws_h3` wait for the H3 handshake to time out before falling
+back to H2, and later attempts to return to H3 stall again.
 
-The app provides a **TCP only** switch on the Keeping Alive screen (and individually per profile in the server editor):
-- Forces all carriers to HTTP/2 or HTTP/1.1 over TCP (`xhttp_h2`, `ws_h2`, `alpn=h2`).
-- Completely strips HTTP/3 from structured profiles, share links, subscriptions, and raw TOML overrides.
-- Ensures the core never attempts QUIC/H3 handshakes or probes, eliminating fallback delays.
-- User UDP traffic inside the tunnel (DNS, VoIP) continues to be multiplexed over the HTTP/2 connection.
+The **TCP only** switch on the **Keeping Alive** screen (for all profiles) and
+in the server editor (per profile) rewrites the config before start
+(`TcpOnlyConfig`): `xhttp_h3` → `xhttp_h2`, `ws_h3` → `ws_h2` in
+`vless_mode`/`ss_mode`/`tcp_mode`/`udp_mode`, and `h3` → `h2` in `alpn=` of
+share links. It applies to structured profiles, share links, subscriptions and
+raw TOML overrides. UDP inside the tunnel (DNS, VoIP) is carried over the
+HTTP/2 connection. A change takes effect on the next connect.
 
 ### What the home screen says about the link
 
-Under the tunnel status the card shows the network the tunnel is actually
-riding: `Wi-Fi · 20 ms`, or `LTE · 4.2 s`. Two facts, both of them measured or
-named by the platform, and either is dropped rather than faked when unknown:
+Under the tunnel status the card shows the network the tunnel is using:
+`Wi-Fi · 20 ms` or `LTE · 4.2 s`. Either part is omitted when unknown:
 
-- **What the link is.** Wi-Fi and Ethernet name themselves. A cellular link
-  names its radio technology (2G / 3G / LTE / 5G) when the app is allowed to
-  read it, and says "Cellular" otherwise. Note that this is the radio actually
-  carrying data (`dataNetworkType`), which routinely disagrees with the
-  status-bar icon: that icon commonly tracks 5G *coverage* or a 5G-capable NSA
-  anchor, so "5G" up there and `LTE` here is normal, not a bug.
-- **What the link costs the tunnel** — the last round-trip the core measured on
-  a real dial.
+- The link type. Wi-Fi and Ethernet name themselves. A cellular link shows its
+  radio technology (2G / 3G / LTE / 5G) when the app may read it
+  (`dataNetworkType`), and `Cellular` otherwise. This is the radio carrying
+  data, which often disagrees with the status-bar icon: that icon commonly
+  tracks 5G coverage or a 5G-capable NSA anchor, so "5G" in the status bar and
+  `LTE` here is expected.
+- The path round-trip measured continuously on the live carrier (the kernel's
+  `tcpi_rtt`, quinn's `PathStats`), not the elapsed time of a dial. A dial time
+  includes the handshakes and, after an `h3 → h2` descent, the failed attempt,
+  so it showed values such as "10.0 s" on a 10 s budget for healthy links. At
+  700 ms and above the status reads as slow (`LinkQuality.SLOW_LATENCY_MS`).
 
-Nothing derived is shown. An earlier version also printed the platform's
-bandwidth estimate and a speed class computed from it, and both were removed:
-firmware invents the estimate (one device reported 14 kbit/s on a full-signal
-LTE cell that was carrying traffic perfectly well), and a label computed from a
-wrong number is a wrong number with more confidence behind it. The estimate is
-still read — it sizes the dial budget before anything has been measured — it is
-just not put on screen.
+The platform's bandwidth estimate is not shown: firmware invents it (see the
+HONOR example above). It is still read to size the dial budget before anything
+is measured.
 
-A round-trip that reaches the dial budget is dropped too. That is a dial which
-ran out of time, and the number it yields is the budget rather than the link:
-the first probe after a connect produced exactly "10.0 s" on a 10-second budget.
-Showing nothing beats showing a timeout dressed up as a measurement.
-
-Naming the radio technology needs `READ_PHONE_STATE`. The app never asks for it
-on its own: it sits on the **Keeping Alive** checklist with the other grants,
-marked optional, because nothing the tunnel decides depends on it — the dial
-budget is sized from the bandwidth estimate either way, and denying it costs a
-label and nothing else.
+Naming the radio technology needs `READ_PHONE_STATE`. The app does not request
+it on its own: it is an optional item on the **Keeping Alive** checklist,
+because no tunnel decision depends on it. Denying it removes the label and
+nothing else.
 
 ## External control (`outline://`)
 
@@ -348,148 +380,140 @@ outline://toggle[?profile=<name|id>]  # down if up, otherwise connect
 ```
 
 Scheme, command and query keys are case-insensitive; values are
-percent-decoded (`?profile=Home%20VPN`). A command never creates a server — the
-profile must already exist in the list, matched by id first, then by name. On
-success nothing is shown; the foreground-service notification is the status
-indicator. Refusals raise a Toast and a `OutlineControl` warning in logcat.
+percent-decoded (`?profile=Home%20VPN`). A command never creates a server: the
+profile must already exist, matched by id first, then by name (case-insensitive).
+On success nothing is shown; the foreground-service notification shows the
+state. A refusal shows a Toast and logs a warning with tag `OutlineControl`.
 
 ```sh
 adb shell am start -a android.intent.action.VIEW -d 'outline://connect'
 adb shell am start -a android.intent.action.VIEW -d 'outline://toggle?profile=Home&token=s3cret'
 ```
 
-Access is gated in **External control…** on the main screen: a switch (on by
+Access is controlled on the **External Control** screen: a switch (on by
 default) and an optional token. Once a token is set, commands without a
-matching `?token=` are ignored — the comparison is content-independent
-(`MessageDigest.isEqual`). Any installed app, and — because the intent filter
-carries `BROWSABLE` — any web page, can fire these URIs, so set a token if a
-silent `disconnect` would matter to you.
+matching `?token=` are ignored; the comparison is constant-time
+(`MessageDigest.isEqual`). Any installed app, and any web page (the intent
+filter carries `BROWSABLE`), can fire these URIs, so set a token if an
+unexpected `disconnect` matters to you.
 
-Implementation: `ControlActivity` is a transparent activity that dispatches the
-command and finishes. It cannot be a receiver or an exported service — the
-system VPN consent dialog needs an activity to launch from, and Android 12+
-forbids starting a foreground service from the background. Callers must
-themselves be allowed to start activities: a background app without that
-privilege (Tasker without "Draw over other apps", say) will have the URI
-silently dropped by the platform.
+`ControlActivity` is a transparent activity that dispatches the command and
+finishes. It cannot be a receiver or an exported service: the system VPN
+consent dialog needs an activity to launch from, and Android 12+ forbids
+starting a foreground service from the background. Callers must be allowed to
+start activities: for a background app without that permission (e.g. Tasker
+without "Display over other apps") the platform drops the URI silently.
 
 ## Keeping the tunnel alive
 
-Every path that might have to bring the tunnel back — always-on VPN, boot, the
-watchdog alarm, the WorkManager job, `onDestroy` — routes through a single
-`OutlineVpnService.ensure()`. It reads the user's *intent* (`KeepAliveState.shouldRun`,
-set on connect, cleared on an explicit disconnect) and the live core state
-(`isRunning()`), and `KeepAlivePolicy.decide(...)` — a pure, unit-tested function —
-returns one of: do nothing, stop, give up (and notify), or connect. A failing
-connect backs off 5 → 15 → 30 min; a healthy tunnel cancels exact alarms to prevent
-waking the device from Deep Doze.
+Every path that may have to bring the tunnel back — always-on VPN, boot, the
+watchdog alarm, the WorkManager job, `onDestroy` — goes through
+`OutlineVpnService.ensure()`. It reads the user's intent
+(`KeepAliveState.shouldRun`, set on connect, cleared on an explicit disconnect)
+and the core state (`isRunning()`), and `KeepAlivePolicy.decide(...)`, a pure
+unit-tested function, returns one of: do nothing, stop, give up (and notify),
+or connect. A failing connect is retried every 5 min for the first three
+failures, every 15 min for the fourth and fifth, then every 30 min
+(`KeepAlivePolicy.backoffFor`). While the tunnel is healthy, the exact alarm is cancelled so it does not
+wake the device from Doze.
 
-Four ways the tunnel comes back:
+The tunnel comes back in four ways:
 
-- **Always-on VPN** — the strongest, and the reason `onStartCommand(null)` maps
-  to `ensure()`: the system starts and restarts the service itself. Enabled by
-  the user in system settings.
-- **Boot / app update** — `BootReceiver` (BOOT_COMPLETED, MY_PACKAGE_REPLACED),
+- Always-on VPN: the system starts and restarts the service itself, which is
+  why `onStartCommand(null)` maps to `ensure()`. The user enables it in system
+  settings.
+- Boot / app update: `BootReceiver` (`BOOT_COMPLETED`, `MY_PACKAGE_REPLACED`),
   after unlock. Not direct-boot aware on purpose: profiles hold credentials and
   stay in credential-protected storage.
-- **Watchdog pair** — an exact alarm (`WatchdogAlarm`, pierces Doze during
-  reconnection backoff, cancels while the tunnel is healthy) and a 15-minute
-  WorkManager job (`WatchdogWorker`, its schedule survives reboot); each calls
-  `ensure()`. The alarm is exact only once `SCHEDULE_EXACT_ALARM` is granted, otherwise the system batches it at its own
-  discretion; `USE_EXACT_ALARM`, which would grant that without asking, is
-  deliberately left out — the manifest comment says why.
-- **Swipe / kill** — `stopWithTask="false"` plus `onTaskRemoved`/`onDestroy`
-  schedule a check right behind the process going away.
+- Watchdog pair: an exact alarm (`WatchdogAlarm`; fires through Doze during
+  reconnection backoff, cancelled while the tunnel is healthy) and a 15-minute
+  WorkManager job (`WatchdogWorker`; its schedule survives reboot); each calls
+  `ensure()`. The alarm is exact only once `SCHEDULE_EXACT_ALARM` is granted;
+  otherwise the system batches it. `USE_EXACT_ALARM`, which would grant that
+  without asking, is left out on purpose; the reason is in a comment in
+  `AndroidManifest.xml`.
+- Swipe / kill: `stopWithTask="false"` plus `onTaskRemoved`/`onDestroy`
+  schedule a check right after the process goes away.
 
-The **Keeping alive…** screen is a checklist of what only the user can grant —
+The **Keeping Alive** screen is a checklist of what only the user can grant:
 always-on VPN, battery-optimisation exemption, exact alarms, notifications, and
-the vendor autostart screen (probed per-device with `resolveActivity`; on this
-HONOR it opens `com.hihonor.systemmanager`). Each row shows its status and a
-button to the right system screen. These grants are also what makes starting a
-foreground service from the background legal on Android 12+.
+the vendor autostart screen (probed per device with `resolveActivity`; on HONOR
+it opens `com.hihonor.systemmanager`). Each row shows its status and a button to
+the system screen. These grants also make starting a foreground service from
+the background legal on Android 12+.
 
-`specialUse` is **not** on Android 15's list of FGS types barred from
-`BOOT_COMPLETED`, so the boot path is open. Test the restriction without changing
-`targetSdk`:
+`specialUse` is not on Android 15's list of foreground-service types barred
+from `BOOT_COMPLETED`, so the boot path is open. Test the restriction without
+changing `targetSdk`:
 
 ```sh
 adb shell am compat enable FGS_BOOT_COMPLETED_RESTRICTIONS com.outline.proxy
 adb shell am broadcast -a android.intent.action.BOOT_COMPLETED com.outline.proxy
 ```
 
-Verified so far: unit tests for the decision table; on-device, the checklist
-screen and its system-screen intents (HONOR / MagicOS). The background revival
-paths (force-stop → return, reboot) are wired but not yet run end-to-end on
-hardware. The vendor table for MIUI/EMUI/ColorOS/One UI is carried unverified.
+Verified: unit tests for the decision table; on a device, the checklist screen
+and its system-screen intents (HONOR / MagicOS). The background revival paths
+(force-stop → return, reboot) are implemented but not yet run end-to-end on
+hardware. The vendor table for MIUI/EMUI/ColorOS/One UI is not verified.
 
-## Roadmap
+## Development history
 
-- **Increment 1 (done):** Rust⇄Kotlin bridge, SOCKS5 + uplinks boot, `VpnService`
-  + Compose scaffold. `.so` verified to cross-compile under NDK r29.
-- **Increment 2 (done, now superseded by native TUN):** shipped a tun2proxy
-  bridge (TUN fd → SOCKS5) so the tunnel carried traffic, loop avoidance via
-  `addDisallowedApplication(self)`. tun2proxy is gone — replaced by the native
-  `outline-tun` engine attached directly to the `VpnService` fd via
-  `RunOptions.tun_fd` (see Architecture). SOCKS5 ingress is compiled out for
-  Android (`socks5` feature off, plus a runtime gate: fd present ⇒ no
-  listener); loop avoidance is unchanged. `.so` (built with the `h3, tun`
-  features) verified to cross-compile under NDK r29 and the debug APK builds
-  against it; not yet exercised end-to-end on an emulator or device.
-- **Increment 3 (done):** QUIC/h3 (`h3` feature; quinn + h3 verified to
-  cross-compile under NDK), logcat logging (paranoid-android), persisted
-  server-list UI, reconnect on network change (`setUnderlyingNetworks`). Rust
-  verified; Kotlin authored but not yet built on a device.
-- **Increment 4 (done):** per-app split tunneling (`addAllowedApplication` /
-  `addDisallowedApplication`) with an app-picker UI — modes OFF / ALLOWLIST /
-  DENYLIST, persisted in SharedPreferences, applied in `OutlineVpnService`.
-  Kotlin authored, not yet built on a device.
-- **Increment 5 (done):** external control over the `outline://` scheme
-  (connect / disconnect / toggle, optional profile selector), gated by a switch
-  and an optional token; parser and gate covered by JVM unit tests.
-- **Increment 6 (done):** productisation — config-over-URL subscriptions
-  (`ConfigFetcher` / `SubscriptionWorker`), keep-the-tunnel-alive infrastructure
-  (`KeepAlivePolicy` + the `keepalive/` watchdog pair), a system light/dark
-  theme, a launcher icon, signed release builds, a single connect/disconnect
-  button, and a profile-named foreground notification. See the sections above
-  for each.
+- Increment 1: Rust⇄Kotlin bridge, SOCKS5 + uplinks boot, `VpnService` +
+  Compose scaffold.
+- Increment 2: a tun2proxy bridge (TUN fd → SOCKS5) with loop avoidance via
+  `addDisallowedApplication(self)`. Later replaced by the native `outline-tun`
+  engine attached to the `VpnService` fd via `RunOptions.tun_fd` (see
+  "Architecture"); SOCKS5 ingress is compiled out for Android (`socks5` feature
+  off, plus the runtime check on `tun_fd`).
+- Increment 3: QUIC/h3 (`h3` feature), logcat logging (`paranoid-android`),
+  persisted server list, re-binding on network change (`setUnderlyingNetworks`).
+- Increment 4: per-app split tunneling (`addAllowedApplication` /
+  `addDisallowedApplication`) with an app picker. Modes OFF / ALLOWLIST /
+  DENYLIST; the allow and deny lists are stored separately in
+  SharedPreferences, and only the list of the active mode is applied (Android
+  does not allow mixing them on one `VpnService.Builder`).
+- Increment 5: external control over `outline://` (connect / disconnect /
+  toggle, optional profile selector) behind a switch and an optional token;
+  the parser and the access check have JVM unit tests.
+- Increment 6: config-over-URL subscriptions (`ConfigFetcher` /
+  `SubscriptionWorker`), keep-alive (`KeepAlivePolicy` + the `keepalive/`
+  watchdog pair), system light/dark theme, launcher icon, signed release
+  builds, a single connect/disconnect button, a profile-named foreground
+  notification.
 
-## What is verified vs. not
+## Verification status
 
-- **Verified by build:** the Rust core (`outline-android` cdylib) cross-compiles
-  to a loadable `aarch64` Android `.so`, including the native TUN engine, the
-  uplink stack, and the QUIC/h3 carriers — SOCKS5 ingress and tun2proxy are
-  compiled out (see Architecture).
-- **Verified by build (Kotlin):** `:app:assembleDebug` produces a debug APK and
-  `:app:testDebugUnitTest` passes — the latter covers the `outline://` parser,
-  the access gate, and profile resolution on the JVM.
-- **Verified on an emulator** (Pixel_10, API 37, arm64), debug build, under the
-  original tun2proxy bridge (now superseded — see Architecture): the service
-  established the TUN, the Rust core booted (SOCKS5 listening on
-  127.0.0.1:1080, uplink registry up) and tun2proxy connected into it,
-  `outline://connect` / `disconnect` dispatched, and the underlying-network
-  tracking followed a Wi-Fi ⇄ cellular handover both ways — `dumpsys
-  connectivity` showed the VPN agent's `underlying{[N]}` swapping between the
-  cellular and Wi-Fi networks, never binding the VPN network itself. The
-  native TUN engine that replaced tun2proxy has not had an equivalent run yet
-  (see "Not verified" below).
-- **Verified on an emulator**, release build: with R8 minification on, the
-  `.so` loads and `start()` reaches Rust — the keep rules hold. Checked by
-  running the signed release APK, since a bad keep rule fails at runtime only.
-- **Not verified:** on real hardware only the keep-alive checklist screen and
-  its vendor intents have been exercised (a HONOR / MagicOS device) — no data
-  plane has, and no traffic has been carried end-to-end through a live server
-  (the emulator runs pointed at a dead endpoint). Per-app split tunneling still
-  needs a real run. The native TUN engine itself has not been exercised on an
-  emulator or a device yet — cross-compile and the debug APK build are confirmed
-  (see Roadmap, increment 2), but nobody has booted the tunnel and watched
-  packets cross it.
+[verify: this list is older than the code — `DialTimeout.kt` describes a HONOR
+device carrying LTE traffic through the tunnel]
+
+- Build: the Rust core (`outline-android` cdylib) cross-compiles to a loadable
+  `aarch64` Android `.so`, including the native TUN engine, the uplink stack and
+  the QUIC/h3 carriers; SOCKS5 ingress and tun2proxy are not in it.
+- Build (Kotlin): `:app:assembleDebug` produces a debug APK and
+  `:app:testDebugUnitTest` passes.
+- Emulator (Pixel_10, API 37, arm64), debug build, under the old tun2proxy
+  bridge: the service established the TUN, the Rust core started (SOCKS5 on
+  127.0.0.1:1080, uplink registry up), tun2proxy connected to it,
+  `outline://connect` / `disconnect` worked, and underlying-network tracking
+  followed a Wi-Fi ⇄ cellular handover both ways: in `dumpsys connectivity` the
+  VPN agent's `underlying{[N]}` switched between the cellular and Wi-Fi
+  networks and never pointed at the VPN network itself.
+- Emulator, release build: with R8 minification on, the `.so` loads and
+  `start()` reaches Rust, so the keep rules hold. Checked by running the signed
+  release APK.
+- Not verified: on real hardware only the keep-alive checklist screen and its
+  vendor intents have been run (HONOR / MagicOS); no traffic has gone
+  end-to-end through a live server (the emulator ran against a dead endpoint).
+  Per-app split tunneling has not been run on a device. The native TUN engine
+  has not been run on an emulator or a device.
 
 ## Notes for porting
 
-The Rust core needs a few `cfg(android)` adaptations as features expand:
-- `outline-net` `SO_MARK` is privileged on Android — use `VpnService.protect()`.
-- `freebind` / `/proc/net/if_inet6` IPv6-source logic is not applicable; gate it off.
-- `outline-tun` now runs on Android too: `/dev/net/tun` + `TUNSETIFF` (needs
-  root) stays the desktop path, and a second one attaches the engine to an
-  already-open fd (`RunOptions.tun_fd`) — the one the `VpnService` hands us, no
-  root needed.
+The Rust core needs a few `cfg(android)` adaptations as features are added:
+
+- `outline-net` `SO_MARK` is privileged on Android; use `VpnService.protect()`.
+- The `freebind` / `/proc/net/if_inet6` IPv6-source logic does not apply; gate
+  it off.
+- `outline-tun` has two device paths: `/dev/net/tun` + `TUNSETIFF` (needs
+  root) on desktop, and attaching to an already-open fd (`RunOptions.tun_fd`),
+  the one `VpnService` hands over, without root.

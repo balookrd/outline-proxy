@@ -1,145 +1,82 @@
-# TUN UDP Path-MTU Discovery
+# TUN UDP path-MTU discovery
 
-How the TUN UDP engine handles datagrams the upstream transport refuses
-for being too large, and the safety net that keeps it from blackholing
-QUIC for legitimate clients.
+This document describes how the TUN UDP engine of `outline-ws-rust` (`crates/outline-tun`) handles datagrams that the upstream transport refuses as too large: when it sends an ICMP "packet too big" signal to the sender, what MTU it advertises, and when it stays silent so QUIC clients do not fall back to TCP. It is for operators of the TUN client and developers of the UDP data path.
 
 *Russian version: [TUN-PMTUD.ru.md](TUN-PMTUD.ru.md)*
 
----
+## When the PMTUD path runs
 
-## When this fires
+For every UDP flow read from the TUN device and routed to a tunnel uplink, the engine wraps the payload in SOCKS5 UDP framing and passes it to the transport's `send_packet`. Some transports refuse payloads above a hard limit:
 
-For every TUN-ingested UDP flow that resolves to a tunnel uplink, the
-engine wraps the payload in SOCKS5 framing and hands it to the
-transport's `send_packet`. Several transports refuse oversized payloads
-they cannot fragment around:
+| Transport | Limit | Error |
+|---|---|---|
+| VLESS-UDP | 65 536 bytes of payload (`MAX_VLESS_UDP_PAYLOAD`) | `OversizedUdpDatagram { transport: "vless-udp", payload_len, limit }` |
+| Shadowsocks UDP over a plain UDP socket (`UdpWsTransport::from_socket`) | 65 507 bytes (`MAX_UDP_SOCKET_PACKET_SIZE`) | `Ss2022Error::OversizedUdpUplink` (carries no limit) |
 
-- VLESS-UDP framing — hard 64 KiB ceiling on the length-prefixed frame;
-- Shadowsocks 2022 UDP — refuses anything that exceeds the AEAD record
-  limit on the uplink leg.
+The engine detects both errors with `is_dropped_oversized_udp_error` and sends the failure to the PMTUD path instead of treating it as an uplink failure.
 
-A refusal surfaces as `OversizedUdpDatagram { transport, payload_len,
-limit }` or `Ss2022Error::OversizedUdpUplink`. The TUN engine detects
-both via `is_dropped_oversized_udp_error` and routes the failure to
-the PMTUD path instead of treating it as an uplink failure.
+UDP over HTTP/3 datagrams does not reach this path: a packet that does not fit the current datagram size is sent on the stream instead and counted on `outline_ws_udp_h3_datagram_fallback_total{reason="too_large"}`.
 
-## Why we send an ICMP signal
+## Why the engine sends an ICMP signal
 
-The transport drop is invisible to the client: the sender keeps
-retransmitting the same too-large payload on every loss timer. Without
-an in-band signal it never learns the effective tunnel MTU. Real
-production breakage came from VoWiFi IKE_AUTH carrying client
-certificates over a tunnel uplink — the IKE retransmits piled up,
-the certificate exchange never completed, and the call failed.
+The transport drop is invisible to the sender: it keeps retransmitting the same oversized payload on every loss timer and never learns the effective tunnel MTU. In production this broke VoWiFi: IKE_AUTH with client certificates over a tunnel uplink was retransmitted until the certificate exchange timed out and the call failed.
 
-The fix is to synthesise an ICMP error toward the original sender so
-its own PMTUD state machine reacts:
+The engine therefore synthesises an ICMP error toward the original sender so that the sender's own PMTUD reacts:
 
-- **IPv4** — `Destination Unreachable / Fragmentation Needed` (Type 3 /
-  Code 4) with the advertised Next-Hop MTU in the second word of the
-  ICMP header (RFC 1191).
-- **IPv6** — `Packet Too Big` (Type 2 / Code 0) with the advertised MTU
-  in the second word (RFC 4443 §3.2).
+- IPv4: `Destination Unreachable / Fragmentation Needed` (Type 3 / Code 4) with the Next-Hop MTU in the second word of the ICMP header (RFC 1191).
+- IPv6: `Packet Too Big` (Type 2 / Code 0) with the MTU in the second word (RFC 4443 §3.2).
 
-The reply quotes the original IP header and UDP header (8 bytes of
-upper-layer data) so the sender's stack can match it back to the
-offending socket, per RFC 1812 §4.3.2.3 and RFC 4443 §3.2.
+The reply quotes the original IP header and the 8-byte UDP header, so the sender's stack can match it to the socket (RFC 1812 §4.3.2.3, RFC 4443 §3.2). The quoted header is rebuilt from the flow key (`build_ipv4_udp_packet` / `build_ipv6_udp_packet` with an empty payload).
 
-## Advertised Next-Hop MTU
+## Advertised MTU
 
-The transport-reported `limit` (bytes the transport will accept for the
-SOCKS5-wrapped payload) is passed through to the ICMP advertised MTU,
-clamped to each family's protocol minimum:
+The transport's `limit` (bytes it accepts for the SOCKS5-wrapped payload) becomes the advertised MTU, raised to the family's protocol minimum:
 
-- IPv4: clamped to `IPV4_MIN_PATH_MTU = 576` (RFC 791);
-- IPv6: clamped to `IPV6_MIN_PATH_MTU = 1280` (RFC 8200).
+| Family | Minimum | Constant |
+|---|---|---|
+| IPv4 | 576 (RFC 791) | `IPV4_MIN_PATH_MTU` |
+| IPv6 | 1280 (RFC 8200) | `IPV6_MIN_PATH_MTU` |
 
-The ICMPv6 PTB payload itself is truncated so the final packet does not
-exceed the IPv6 minimum link MTU, per RFC 4443 §2.4(c).
+When the error carries no limit (`Ss2022Error::OversizedUdpUplink`), the advertised MTU is the family minimum. A limit that does not fit the header field (for example VLESS-UDP's 65 536 in the 16-bit IPv4 field) is capped at the field's maximum.
 
-## Throttle
+The ICMPv6 Packet Too Big payload is truncated so the whole packet does not exceed the IPv6 minimum link MTU (RFC 4443 §2.4(c)).
 
-Each flow is allowed one PTB per second, matching the Linux
-`net.ipv4.icmp_ratelimit` default. RFC 4443 §2.4(f) makes rate-limiting
-mandatory for ICMPv6; RFC 1812 §4.3.2.8 strongly recommends it for
-IPv4. Bursts of oversize retransmits therefore produce one PTB per
-second per flow — enough for any reasonable PMTUD state machine to
-react, but small enough that a misbehaving sender cannot trigger an
-ICMP storm out of the TUN interface.
+## Rate limit
 
-The throttle state lives on the flow's `last_ptb_sent` timestamp, so
-once a flow is evicted from the table the PTB budget resets with it.
-For a flow that has just been evicted but is still racing the cleanup
-path, the throttle conservatively returns "suppress" — better a missed
-PTB than an unbounded one during teardown.
+Each flow gets at most one PTB per second (`PTB_THROTTLE`, the same as the Linux `net.ipv4.icmp_ratelimit` default of 1000 ms). RFC 4443 §2.4(f) requires rate limiting for ICMPv6; RFC 1812 §4.3.2.8 recommends it for IPv4. A burst of oversized retransmits therefore produces one PTB per second per flow, so a misbehaving sender cannot make the TUN interface emit an ICMP storm.
 
-## QUIC floor — why we sometimes stay silent
+The throttle state is the flow's `last_ptb_sent` timestamp, so it is reset when the flow is evicted from the table. If the flow is already gone from the table when the PTB would be sent (it is being torn down), no PTB is sent.
 
-A PTB advertising a path MTU below QUIC's own Initial-datagram floor is
-a problem rather than a fix. RFC 9000 §14.1 requires QUIC v1 endpoints
-to send UDP datagrams carrying Initial packets at least **1200 bytes**
-in the UDP payload (IPv6 endpoints additionally honour the 1280-byte
-minimum link MTU). A compliant stack that receives an ICMP error
-claiming the path MTU is below that floor concludes the destination
-cannot carry QUIC at all — and disables QUIC for the destination,
-falling back to TCP.
+## QUIC floor: when the engine stays silent
 
-That is the opposite of what an operator carrying real QUIC traffic
-wants. The motivating regression: Samsung Smart-TV YouTube clients
-shipped QUIC Initial datagrams of 1200 bytes through the TUN to
-googlevideo. The SS-over-QUIC datagram channel surfaced
-`OversizedUdpDatagram { limit ≈ 1180 }` for the framed payload, the
-engine synthesised a PTB advertising 1180 bytes, and the TV's QUIC
-stack promptly disabled HTTP/3 for googlevideo. The session stayed on
-TCP forever, and dashboards showed UDP traffic vanish from the uplink.
+A PTB that advertises a path MTU below QUIC's Initial datagram minimum makes things worse. RFC 9000 §14.1 requires QUIC v1 endpoints to send Initial packets in UDP datagrams with at least 1200 bytes of UDP payload (IPv6 endpoints also observe the 1280-byte minimum link MTU). A compliant stack that gets an ICMP error claiming a smaller path MTU concludes that the destination cannot carry QUIC, disables QUIC for it and falls back to TCP.
 
-The engine therefore suppresses the PTB entirely when the transport
-limit sits below QUIC's family-specific floor:
+The regression that introduced the check: Samsung Smart TV YouTube clients sent 1200-byte QUIC Initial datagrams through the TUN to googlevideo. The SS-over-QUIC datagram carrier (since removed) reported `OversizedUdpDatagram { limit ≈ 1180 }` for the framed payload, the engine sent a PTB advertising 1180 bytes, and the TV's QUIC stack disabled HTTP/3 for googlevideo. The sessions stayed on TCP, and UDP traffic disappeared from the uplink.
 
-| IP family | Floor (bytes) | Source                                          |
-| --------- | ------------- | ----------------------------------------------- |
-| IPv4      | 1200          | RFC 9000 §14.1 minimum Initial UDP payload       |
-| IPv6      | 1280          | RFC 9000 §14.1 + RFC 8200 minimum link MTU       |
+The engine therefore sends no PTB when the transport limit is below the family's QUIC floor (`should_emit_ptb_for_limit`):
 
-Below the floor the oversize drop falls back to its pre-PMTUD
-behaviour: the engine silently drops the datagram, the sender retries
-or times out on its own schedule, and clients keep their QUIC state
-intact. Above the floor — the entire ~1300–1450 byte range where real
-PMTUD breakage lives — the PTB still goes out unchanged.
+| IP family | Floor (bytes) | Constant | Source |
+|---|---|---|---|
+| IPv4 | 1200 | `QUIC_MIN_INITIAL_PAYLOAD_V4` | RFC 9000 §14.1 minimum Initial UDP payload |
+| IPv6 | 1280 | `QUIC_MIN_INITIAL_PAYLOAD_V6` | RFC 9000 §14.1 + RFC 8200 minimum link MTU |
 
-`limit == None` (the transport refused without surfacing a specific
-size) is treated as permissive: suppressing in that case would mute
-legitimate PMTUD signals on transports that simply do not report a
-size. The protocol-minimum clamps in the ICMP builders (576 v4 / 1280
-v6) still apply, so the wire-level advertisement is always well-formed.
+Below the floor the datagram is dropped silently, as before PMTUD existed: the sender retries or times out on its own schedule and keeps its QUIC state. At or above the floor (including the ~1300–1450 byte range where path MTU problems usually are) the PTB is sent.
 
-## What an operator sees
+An error without a limit (`limit == None`) always gets a PTB: without a reported size the engine cannot show that the floor is violated, and suppressing would hide PMTUD signals on transports that do not report a size. The advertised MTU is then the family minimum (576 / 1280).
 
-Counters and dashboards remain the source of truth for diagnosing
-oversize behaviour:
+Of the current transports only VLESS-UDP reports a limit (65 536 bytes, above both floors), so the floor check does not suppress anything on current carriers; it applies to any transport that reports a smaller limit.
 
-- `outline_ws_udp_oversized_dropped_total{direction, cause}` —
-  every oversize drop, broken down by cause (`quic_dgram`,
-  `vless_quic_dgram`, `vless_udp`, `ss_socket`, …). A spike with no
-  matching PTB on the wire means the QUIC-floor gate is keeping a
-  client out of TCP fallback.
-- `outline_ws_tun_packets_total{direction="down"}` —
-  any synthesised PTB shows up here as one accepted upstream-to-TUN
-  packet per emission.
+## Diagnostics
 
-A QUIC stack that does accept the PTB and lowers its path MTU will
-typically also re-emit Initial datagrams of the new size; if those
-still oversize the transport the loop is self-throttled by the
-1 PTB / sec / flow limit and visible as a steady, low-rate
-`quic_dgram` drop series.
+- `outline_ws_udp_oversized_dropped_total{direction, cause}` counts every oversize drop. `cause` values: `vless_udp`, `ss_socket`, `xhttp_records`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`. The two causes that feed the TUN PMTUD path are `vless_udp` and `ss_socket`.
+- `outline_ws_udp_h3_datagram_fallback_total{reason="too_large"}` counts HTTP/3 datagrams that did not fit and went on the stream.
+- There is no counter for emitted PTBs: `write_pmtud_packet` writes the ICMP packet to the TUN device without recording a metric. A failed PTB write is logged at `DEBUG` (`failed to emit ICMP PTB after TUN UDP oversize drop`).
 
-## Tuning surface
+A QUIC stack that accepts the PTB and lowers its path MTU usually resends Initial datagrams at the new size. If those are still too large for the transport, the loop is limited to one PTB per second per flow and shows up as a steady low-rate series of oversize drops.
 
-The QUIC Initial-datagram minimum itself is a protocol-level constant
-baked into RFC 9000 and not negotiable per-deployment. The single
-operator-visible knob is whether the engine may emit PTBs that
-advertise a path MTU below that minimum:
+## Configuration
+
+The QUIC Initial minimum is fixed by RFC 9000. The one setting is whether the engine may send PTBs that advertise a path MTU below that minimum:
 
 ```toml
 [tun]
@@ -149,37 +86,27 @@ advertise a path MTU below that minimum:
 pmtud_emit_below_quic_initial = false
 ```
 
-Setting `pmtud_emit_below_quic_initial = true` restores unconditional
-PTB emission for every oversize drop that has a known transport limit
-(`None` limits remain permissive under both settings — see
-`should_emit_ptb_for_limit`). Use it on deployments where QUIC
-eviction is a non-issue and the explicit PMTUD signal on every drop
-is worth more: pure VoWiFi / IKEv2 concentrators carrying IKE_AUTH
-with certificates over a narrow tunnel uplink are the canonical
-example — the PTB is the only signal that lets the IKE retransmit
-loop learn the effective tunnel MTU before the call times out.
+| Key | Default | What it does | When to change |
+|---|---|---|---|
+| `pmtud_emit_below_quic_initial` | `false` | `true` sends a PTB for every oversize drop with a known limit, including limits below the QUIC floor. Errors without a limit get a PTB under both settings | Set `true` on hosts without QUIC clients where the PMTUD signal matters more, for example VoWiFi / IKEv2 with certificate-bearing IKE_AUTH over a narrow tunnel uplink: the PTB lets IKE learn the tunnel MTU before the call times out |
 
-The trade-off:
+Effect of the setting on sub-floor drops:
 
-| Setting | `quic_dgram` sub-minimum drops           | VoWiFi / IKE convergence on narrow uplinks |
-| ------- | ---------------------------------------- | ------------------------------------------- |
-| `false` | silent (sender retries on its own clock) | slower (no in-band MTU hint)                |
-| `true`  | one PTB / sec / flow                     | fast (PMTUD reacts immediately)             |
+| Setting | Sub-floor drops | VoWiFi / IKE on narrow uplinks |
+|---|---|---|
+| `false` | Silent; the sender retries on its own timer | Slower: no in-band MTU hint |
+| `true` | One PTB per second per flow | PMTUD reacts on the first PTB |
 
-The throttle, builders, and protocol-minimum clamps (576 v4 / 1280 v6
-in the ICMP header itself) all apply unchanged under either setting.
+The rate limit, the ICMP builders and the protocol-minimum clamps (576 / 1280 in the ICMP header) work the same under both settings.
 
-If an operator wants to disable PMTUD synthesis altogether (mirror the
-pre-bcaf86d behaviour exactly), the upstream transport's reported
-limit remains the only handle: a transport that does not surface
-`OversizedUdpDatagram` skips the PMTUD path entirely.
+There is no setting that disables PTB synthesis entirely (the behaviour before commit `bcaf86d`). A transport that does not raise `OversizedUdpDatagram` or `Ss2022Error::OversizedUdpUplink` never enters the PMTUD path.
 
 ## References
 
-- RFC 791 §3.1 — IPv4 minimum datagram size (576 bytes)
-- RFC 1191 — IPv4 Path MTU Discovery
-- RFC 1812 §4.3.2.3, §4.3.2.8 — ICMP error quoting and rate limiting
-- RFC 4443 §2.4(c), §2.4(f), §3.2 — ICMPv6 error message rules
-- RFC 8200 §5 — IPv6 minimum link MTU (1280 bytes)
-- RFC 9000 §14.1, §14.2.1 — QUIC datagram size and ICMP handling
-- RFC 9221 — Unreliable Datagram Extension for QUIC
+- RFC 791 §3.1: IPv4 minimum datagram size (576 bytes)
+- RFC 1191: IPv4 Path MTU Discovery
+- RFC 1812 §4.3.2.3, §4.3.2.8: ICMP error quoting and rate limiting
+- RFC 4443 §2.4(c), §2.4(f), §3.2: ICMPv6 error message rules
+- RFC 8200 §5: IPv6 minimum link MTU (1280 bytes)
+- RFC 9000 §14.1, §14.2.1: QUIC datagram size and ICMP handling
+- RFC 9221: Unreliable Datagram Extension for QUIC

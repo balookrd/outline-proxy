@@ -1,80 +1,130 @@
 # outline-ui
 
-Aggregating web UI for the fleet. Serves both dashboards and nothing else — no
-uplinks, no listeners, no traffic.
-
 Russian version: [README.ru.md](README.ru.md).
 
-## What it is
+Real fleet node names, domains and addresses in this document are replaced with stand-ins: `fleet.example` is the fleet domain; `relay-a`…`relay-d` are the cloud relay nodes; `198.51.100.0/24` is the home network (`.102`, `.104` etc. are the last octet). The mapping lives in the local, uncommitted `FLEET.local.md`.
 
-The client and server dashboards were never really part of the data plane: both
-are HTTP clients that fan out to each instance's control API and render the
-answers. This binary is those two dashboards with the data plane unhooked.
+Web UI for the fleet. Serves the client and server dashboards and nothing
+else: no uplinks, no listeners for proxied traffic, no traffic.
+
+Both dashboards are HTTP clients of the instances' control APIs: the browser
+talks to `outline-ui`, and `outline-ui` forwards each API call to the
+instance's `control_url` with that instance's token.
 
 | Path | Dashboard | Source |
 |---|---|---|
-| `/ws` | uplinks, routing, groups, settings, topology, carrier loss | client control API (`:9191`) |
-| `/ss` | users, mesh cluster, server settings | server control API (`:9190`) |
+| `/ws` | uplinks, routing, groups, settings, topology, carrier loss | client control API (`:9191` on the fleet) |
+| `/ss` | users, mesh cluster, server settings | server control API (`:9190` on the fleet) |
 | `/` | index linking both | — |
 
-It holds no state, keeps nothing on disk, and stores no credentials of its own
-beyond what its config points at.
+The service keeps no state and writes nothing to disk. The only secrets it
+holds are its own token and the instance tokens its config points at.
 
-The `/ss` dashboard provides:
-- **Users** (`/ss`): CRUD access key management (Shadowsocks AEAD / VLESS), blocking, cloning, and credential generation.
-- **Mesh cluster** (`/ss/cluster`): multi-node anycast cluster and shard relay configuration (`[cluster]`). Allows viewing and configuring local Shard ID (0..15), QUIC mesh listening socket, cluster PSK (ChaCha20-Poly1305 / Blake3 KDF), relay budget, and remote peer shards.
-- **Server settings** (`/ss/settings`): server listening sockets (TCP & HTTP/3 QUIC with `h3_initial_mtu`), TLS certificates/keys, session resumption (0-RTT reconnect limits, TTL, downlink buffer), outbound IP routing (prefer IPv4, IPv6 rotation pool prefix, dynamic prefix discovery interface, refresh interval, sticky sessions, egress interface), tuning profiles (`large`, `medium`, `small`), carrier padding and jitter obfuscation (`[padding]`), HTTP camouflage fallback (`[http_fallback]`), and carrier endpoint pathways.
+## Server dashboard (`/ss`)
 
-The `/ws` dashboard provides:
-- **Topology** (`/ws`): active wires, live EWMA RTT latencies, carrier packet loss ratios, and manual active uplink selection.
-- **Uplinks** (`/ws/uplinks`): CRUD editor for `[[outline.uplinks]]` entries, fallback wire chains, reordering, per-wire `ipv4_only` / `ipv6_first` resolution selectors, and anti-DPI carrier parameters (`shuffle_wires`, `shuffle_timer`, per-uplink `padding` override).
-- **Routing** (`/ws/routing`): dynamic rule matching (`[[route]]`) — create, update, delete, reorder, and hot-apply without a restart.
-- **Uplink groups** (`/ws/groups`): CRUD editor for `[[uplink_group]]` policy (mode, routing scope, reselect, warm standby, cluster resume, scoring/failover/keepalive knobs).
-- **Client settings** (`/ws/settings`): in-place editor for client configuration:
-  - Quality and liveness probes (`[probe]`): intervals, timeouts, min failures, attempts, max concurrent probes, endpoint pre-check, HTTP rotation URLs, TLS target hosts, DNS/TCP tests.
-  - Network & IP policy: global `ipv4_only`, `ipv6_first`, direct IPv6 prefix interface, and custom carrier UDP socket buffer sizes (`udp_recv_buf_bytes`, `udp_send_buf_bytes`).
-  - Ingress and local interfaces: SOCKS5 listen address and credentials (`[socks5]`, multi-user `[[socks5.users]]` list), TUN interface device parameters, MTU, max flows, SNI routing, QUIC sniffing, IPsec bypass, PMTUD below QUIC initial, Linux GSO/GRO/USO offloads (`[tun]`), and advanced TUN TCP engine (`[tun.tcp]`: payload sniffing, direct re-resolve, carrier migration, downlink rate caps, and buffers).
-  - Carrier & dial policies: dial timeout (`[dial]`), TLS fingerprint profile diversification (`off`, `stable`, `random`), direct fwmark, prefer public IPv6 source, and wire padding obfuscation (`[padding]`: min/max bytes, cover traffic jitter, throttle reactivity).
-  - Transport buffers & timeouts: QUIC stream/connection receive windows and keepalive (`[quic]`), HTTP/2 stream/connection window sizes and ping keepalive (`[h2]`), TCP idle and upstream response timeouts (`[tcp_timeouts]`).
-  - Instant hot-apply via **Apply now** or graceful restart notification when socket/device parameters are modified.
+- Users (`/ss`): create, edit, block, clone and delete access keys
+  (Shadowsocks AEAD / VLESS), generate credentials.
+- Mesh cluster (`/ss/cluster`): the `[cluster]` section — local shard ID
+  (0..15), mesh listen address, relay budget (ms), cluster PSK (the mesh mutual
+  TLS identity and the shard obfuscation key are derived from it with BLAKE3),
+  peer list.
+- Server settings (`/ss/settings`): TCP/TLS and HTTP/3 listen addresses,
+  `h3_initial_mtu`, TLS certificate and key paths; session resumption (TCP/UDP
+  TTL, per-user and global caps, downlink buffer); outbound policy (prefer IPv4,
+  sticky IPv6 sessions, IPv6 prefix pool, dynamic prefix interface and its
+  refresh interval, outbound interface); tuning profile (`large`, `medium`,
+  `small`); `[padding]` (min/max bytes, cover jitter, throttle detection); SNI
+  routing (`match_sni`); `[http_fallback]`; the list of carrier endpoints.
 
-## Why it exists
+## Client dashboard (`/ws`)
 
-Three problems, all of them consequences of the UI living inside the binaries
-that carry traffic:
+- Topology (`/ws`): active wires, RTT, carrier packet-loss ratio per leg, manual
+  selection of the active uplink.
+- Uplinks (`/ws/uplinks`): editor of `[[outline.uplinks]]` entries and their
+  fallback wire chains: order, per-wire `ipv4_only` / `ipv6_first` (unset /
+  true / false), `shuffle_wires`, `shuffle_timer`, per-uplink `padding`
+  override.
+- Routing (`/ws/routing`): `[[route]]` rules — create, edit, delete, reorder
+  (first match wins); applied without a restart.
+- Uplink groups (`/ws/groups`): editor of `[[uplink_group]]` (mode, routing
+  scope, reselect, warm standby, cluster resume, scoring/failover/keepalive
+  parameters).
+- Client settings (`/ws/settings`):
+  - `[probe]`: intervals, timeouts, min failures, attempts, max concurrent
+    probes, endpoint pre-check, HTTP URLs, TLS targets, DNS/TCP tests.
+  - Network: global `ipv4_only`, `ipv6_first`, `direct_ipv6_prefix_interface`,
+    carrier UDP socket buffers (`udp_recv_buf_bytes`, `udp_send_buf_bytes`).
+  - Ingress: `[socks5]` listen address and credentials (single user or
+    `[[socks5.users]]`); `[tun]` device, MTU, max flows, SNI routing, QUIC
+    sniffing, IPsec bypass, PMTUD, Linux GSO/GRO/USO offloads; `[tun.tcp]`
+    (payload sniffing, direct re-resolve, carrier migration, downlink rate
+    caps, buffers).
+  - Dial and fingerprint: `[dial]` timeout, TLS fingerprint profile (`off`,
+    `stable`, `random`), direct fwmark, prefer public IPv6 source, `[padding]`
+    (min/max bytes, cover jitter, throttle reaction).
+  - Transport: `[quic]` receive windows and keepalive, `[h2]` window sizes and
+    ping keepalive, `[tcp_timeouts]`.
+  - **Apply now** applies the changes in place; when a socket or TUN device
+    parameter changed, the page reports that a restart is needed instead.
 
-- **Web surface on production nodes.** Reaching a dashboard listener is
-  equivalent to holding every instance token it is configured with — the tokens
-  are injected server-side on every proxied request. That authority sat on the
-  same process as the data plane.
-- **UI changes cost a restart.** The dashboard HTML used to be `include_str!`-ed
-  straight into `outline-ws-rust`/`outline-ss-rust`, so a cosmetic fix meant
-  rebuilding and redeploying the traffic-carrying binary and restarting it —
-  dropping every flow on that node.
-- **The UI could not move to the cluster**, where Grafana and VictoriaMetrics
-  already live.
+## Moving the UI out of the traffic binaries
+
+The dashboards used to live inside `outline-ws-rust` and `outline-ss-rust`.
+That caused three problems:
+
+- Web surface on production nodes. Reaching a dashboard listener is equivalent
+  to holding every instance token it is configured with: the tokens are
+  injected server-side on every proxied request. That authority sat in the same
+  process as the data plane.
+- A UI change cost a restart. The dashboard HTML was `include_str!`-ed into the
+  binaries, so a cosmetic fix meant rebuilding and redeploying the
+  traffic-carrying binary and restarting it, which drops every flow on that
+  node.
+- The UI could not move to the k3s cluster, where Grafana and VictoriaMetrics
+  run.
+
+The dashboards are now removed from both binaries; they expose only their
+metrics and control listeners. Since `0.2.0` the UI is a Svelte SPA instead of
+server-rendered HTML.
+
+Design and plan of the extraction:
+[spec](../../docs/superpowers/specs/2026-08-12-outline-ui-dashboard-extraction-design.md),
+[plan](../../docs/superpowers/plans/2026-08-12-outline-ui.md); the Svelte
+rewrite:
+[spec](../../docs/superpowers/specs/2026-08-12-outline-ui-svelte-rewrite-design.md),
+[plan](../../docs/superpowers/plans/2026-08-12-outline-ui-svelte-rewrite.md).
 
 ## Two gates, both before routing
 
-Neither subsumes the other, and both run ahead of route matching so a route
-added later cannot sit outside a check by simply not asking for it.
+Both gates are middleware layers on the whole `Router` (`main.rs`), so they run
+before route matching, and a route added later cannot bypass them. Neither
+replaces the other.
 
-**Credentials** (`auth.rs`) — *who* may drive the panel. `Bearer` for scripted
-clients, `Basic` for browsers (any username, the password carries the token),
-compared in constant time. `WWW-Authenticate` is sent so a browser shows a login
-prompt instead of a bare 401.
+Credentials (`auth.rs`) decide who may use the panel. `Bearer <token>` for
+scripts, `Basic` for browsers (any username, the password is the token); the
+comparison is constant-time. A rejected request gets `401` with
+`WWW-Authenticate: Basic realm="outline-ui"`, so a browser shows a login prompt.
 
-**Origin policy** (`origin.rs`) — *from where* a request may come. Credentials
+Origin policy (`origin.rs`) decides where a request may come from. Credentials
 alone do not stop CSRF: a browser attaches cached Basic credentials to a
-cross-site request on its own. Three checks — `Host` names this listener,
-`Origin` (when present) is this panel's own, and any body-bearing method declares
-`Content-Type: application/json`. An absent `Origin` is allowed on purpose: curl
-never sends one, and a page cannot suppress it.
+cross-site request on its own. Three checks:
 
-`[server].token` is **mandatory**. In a pod the listener is on `0.0.0.0`, and an
-unauthenticated one would hand the whole fleet to whoever reached it.
+1. `Host` is one of `allowed_hosts`; otherwise `403`.
+2. `Origin`, when present, is this panel's own; otherwise `403`.
+3. Any method with a body declares `Content-Type: application/json`; otherwise
+   `415`.
+
+An absent `Origin` is allowed on purpose: curl never sends one, and a page
+cannot suppress it.
+
+`[server].token` (or `token_file`) is mandatory: without it the binary refuses
+to start. In a pod the listener is on `0.0.0.0`, and an unauthenticated one
+would hand every configured instance token to whoever reached it.
 
 ## Configuration
+
+The config path is `--config` or `OUTLINE_UI_CONFIG`; the default is
+`/etc/outline-ui/config.toml`.
 
 ```toml
 [server]
@@ -85,28 +135,38 @@ token_file = "/etc/outline-ui/secrets/ui-token"
 # Behind an ingress the browser's Host is the public name, not the pod's listen
 # address. Add the Service DNS too, or every check from inside the cluster is
 # answered 403 by the origin policy.
-allowed_hosts = ["ui.k3s.beerloga.su", "outline-ui.monitoring"]
+allowed_hosts = ["ui.k3s.fleet.example", "outline-ui.monitoring"]
 request_timeout_secs = 10   # optional, default 10
 refresh_interval_secs = 5   # optional, default 5
 
 [[ws.instances]]
 name = "beelink102"
-control_url = "http://198.18.1.102:9191"
+control_url = "http://198.51.100.102:9191"
 token_file = "/etc/outline-ui/secrets/ws-beelink102"
 
 [[ss.instances]]
-name = "cloud1"
-control_url = "https://cloud1.beerloga.su/rust-ss-exporter"
-token_file = "/etc/outline-ui/secrets/ss-cloud1"
+name = "relay-a"
+control_url = "https://relay-a.fleet.example/rust-ss-exporter"
+token_file = "/etc/outline-ui/secrets/ss-relay-a"
 ```
 
-Every token may be given inline as `token` or from disk as `token_file`, never
-both. A trailing newline in a token file is stripped — secret mounts and `echo`
-add one, and carrying it into an `Authorization` header turns every request into
-an unexplainable 401.
+| Key | Default | What it does |
+|---|---|---|
+| `[server] listen` | — (required) | Listen address |
+| `[server] token` / `token_file` | — (one of them required) | Panel token for `Bearer`/`Basic` |
+| `[server] allowed_hosts` | `[]` | Values of `Host` the origin policy accepts |
+| `[server] request_timeout_secs` | `10` | Timeout of a call to an instance's control API |
+| `[server] refresh_interval_secs` | `5` | Polling interval of the dashboards |
+| `[[ws.instances]]` / `[[ss.instances]]` `name`, `control_url` | — (required) | Instance name and base URL of its control API |
+| `[[ws.instances]]` / `[[ss.instances]]` `token` / `token_file` | — (one of them required) | Instance control token |
+
+Every token is given either inline as `token` or from disk as `token_file`,
+never both. Trailing whitespace in a token file is stripped: secret mounts and
+`echo` add a newline, and carrying it into an `Authorization` header turns
+every request into a 401.
 
 `control_url` keeps its base path, so an instance behind a reverse proxy
-(`https://host/rust-ws-exporter`) is reached correctly.
+(`https://host/rust-ws-exporter`) is reached under that path.
 
 ## Running locally
 
@@ -121,27 +181,27 @@ EOF
 cargo run -p outline-ui -- --config /tmp/ui/config.toml
 ```
 
-Then `curl -H 'Authorization: Bearer devtoken' http://127.0.0.1:9500/`. Without
-the header the answer is 401; with it, `/` serves the SPA shell — the "assets
-not embedded" stub unless the binary was built with `--features embed-assets`
-against a `pnpm build`-ed `frontend/dist` (see "Frontend development" below).
-The JSON APIs both dashboards use are reachable the same way, e.g.
-`/ws/dashboard/api/instances`.
+Check it:
 
-For live-reloading UI development against this backend, see "Frontend
-development" below.
+```bash
+curl -H 'Authorization: Bearer devtoken' http://127.0.0.1:9500/
+```
+
+Without the header the answer is 401. With it, `/` serves the SPA shell: the
+"assets not embedded" stub unless the binary was built with
+`--features embed-assets` against a `pnpm build`-ed `frontend/dist` (see
+"Frontend development"). The JSON APIs of both dashboards are reachable the same
+way, e.g. `/ws/dashboard/api/instances`.
 
 ## Frontend development
 
 The dashboard UI is a Svelte 5 + TypeScript SPA in [`frontend/`](frontend),
-built with Vite and Tailwind and tested with `svelte-check`/Vitest.
-`frontend/README.md` is the generic Vite/Svelte template boilerplate;
-everything below is specific to how it plugs into this binary.
+built with Vite and Tailwind and tested with `svelte-check` and Vitest.
 
-Two processes, run side by side:
+Run two processes side by side:
 
 ```bash
-# terminal 1: the JSON APIs — "Running locally" above, listens on :9500
+# terminal 1: the JSON APIs, listening on :9500 (see "Running locally")
 cargo run -p outline-ui -- --config /tmp/ui/config.toml
 
 # terminal 2: the SPA with hot reload
@@ -151,34 +211,53 @@ pnpm dev   # http://localhost:5173
 ```
 
 `vite.config.ts` proxies `/ss/dashboard/api` and `/ws/dashboard/api` to
-`127.0.0.1:9500`, so the dev server's own origin serves the SPA while its API
-calls reach the real backend process and, through it, whatever
-`control_url`s its `config.toml` points at. Requests still need the
-`Bearer`/`Basic` credentials the two gates require — the dev server does not
-exempt itself from `auth.rs`/`origin.rs`.
+`127.0.0.1:9500`: the dev server serves the SPA from its own origin, and its API
+calls reach the backend process and, through it, the `control_url`s in its
+`config.toml`. The requests still need `Bearer`/`Basic` credentials; the dev
+server does not bypass `auth.rs`/`origin.rs`.
 
-`pnpm build` compiles the SPA to `frontend/dist/`: hashed `/ui-assets/*`
-filenames, `index.html` referencing them by absolute path
-(`vite.config.ts`'s `base: '/ui-assets/'`). Nothing in the Rust build reads
-that directory unless the `embed-assets` Cargo feature is on — plain
-`cargo build`/`cargo test` never need Node installed, which is why the
-default Rust CI jobs stay node-less. See "Deployment" below for the release
-build that turns the feature on.
+`pnpm build` compiles the SPA to `frontend/dist/`: hashed file names, and
+`index.html` references them under the absolute prefix `/ui-assets/`
+(`base: '/ui-assets/'` in `vite.config.ts`). The Rust build reads that directory
+only with the `embed-assets` Cargo feature on, so plain `cargo build` and
+`cargo test` do not need Node, and the Rust CI jobs run without it.
 
-`.github/workflows/ci.yml`'s `frontend` job runs `svelte-check`, `vitest
-run`, and `pnpm build` on every PR and push to `main` — the frontend's own
-gate, independent of the Rust jobs.
+The `frontend` job in `.github/workflows/ci.yml` runs on every pull request and
+push to `main`: `pnpm install --frozen-lockfile`, `svelte-check`, `vitest run`,
+`pnpm build`, then `cargo build -p outline-ui --features embed-assets` against
+the fresh `dist`. It is the only CI job that builds the feature.
+
+## Serving two UIs under one port
+
+One `Router` (`main.rs`) answers three kinds of requests, all behind the same
+two gates:
+
+- `/ui-assets/*` — hashed JS/CSS/font files (`assets::asset`). Vite emits
+  assets under this prefix so they cannot collide with either dashboard's API
+  tree.
+- `/ws/dashboard/api/...` and `/ss/dashboard/api/...` — the two dashboards'
+  JSON APIs, each `.nest`-ed under `/ws`/`/ss` (`ws::router`/`ss::router`).
+- Everything else — `/`, a deep link like `/ws/uplinks`, a typo — serves the
+  same `index.html` shell (`assets::spa_index`), including the `.fallback`
+  inside the nested `/ws` and `/ss` routers.
+
+Once the shell has loaded,
+[`router.svelte.ts`](frontend/src/lib/router.svelte.ts) reads
+`location.pathname` and picks the `ws`, `ss` or `landing` view. There is no
+server-side templating: the same `index.html` is served for every route.
 
 ## Deployment
 
-Runs in k3s, namespace `monitoring`, behind `ui.k3s.beerloga.su`. Manifests:
+Runs in k3s, namespace `monitoring`, behind `ui.k3s.fleet.example`. Manifests:
 [`ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml`](../../ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml),
 ingress entry in
 [`apps/ingress/ingress-routes.yaml`](../../ops/nanopi-r5c-k3s/apps/ingress/ingress-routes.yaml).
+Cluster nodes are aarch64 (NanoPi R5C), hence the target and `--platform`.
 
-The release binary embeds the built SPA, so the frontend is built *first*,
-and the Rust build has to ask for the result explicitly — plain `cargo
-build` never embeds it:
+The release binary embeds the built SPA, so build the frontend first and ask the
+Rust build for the result explicitly. `<version>` below is `version` from
+`bins/outline-ui/Cargo.toml`; set the same tag in the `image:` field of
+`outline-ui.yaml` before `kubectl apply`.
 
 ```bash
 pnpm -C bins/outline-ui/frontend install
@@ -191,77 +270,49 @@ cargo zigbuild --release -p outline-ui --features embed-assets \
 # tag) → the image stops pulling on nodes without a local cache.
 docker build --provenance=false --sbom=false --platform linux/arm64 \
   -f bins/outline-ui/Dockerfile \
-  -t registry.k3s.beerloga.su/outline-ui:0.2.0 .
-docker push registry.k3s.beerloga.su/outline-ui:0.2.0
+  -t registry.k3s.fleet.example/outline-ui:<version> .
+docker push registry.k3s.fleet.example/outline-ui:<version>
 export KUBECONFIG=~/.kube/k3s-home.yaml
 kubectl apply -f ops/nanopi-r5c-k3s/apps/monitoring/outline-ui.yaml
 kubectl -n monitoring rollout restart deploy/outline-ui
 ```
 
-`Dockerfile` is a plain `COPY` into `scratch`, not a multi-stage build: the
-binary is cross-compiled outside Docker (`cargo zigbuild`, same as
-`outline-ss-rust`/`outline-ws-rust`), and Docker's only job is packaging the
-binary that build already produced — assets and all. Nothing checks at build
-time that `frontend/dist` is fresh or that `--features embed-assets` was
-passed; skip either step and the image still builds, it just serves the
-"assets not embedded" stub at `/` instead of the dashboard.
+Check the result: `kubectl -n monitoring rollout status deploy/outline-ui`,
+then open `https://ui.k3s.fleet.example/` — a page with the "assets not embedded"
+stub means the binary was built without the frontend.
 
-`ops/deploy/deploy-binary.sh` does not cover this binary — it pushes to a
-systemd unit on a fleet node (`outline-ws-rust`/`outline-ss-rust` only) and
-restarts it in place, which doesn't match how `outline-ui` ships: no systemd
-unit, no fleet node, a container image rolled out to k3s instead. The five
-commands above are the whole release procedure.
+`Dockerfile` is a single `COPY` of
+`target/aarch64-unknown-linux-musl/release/outline-ui` into `scratch`, run as
+`65534:65534`, not a multi-stage build: the binary is cross-compiled outside
+Docker (`cargo zigbuild`, as for `outline-ss-rust`/`outline-ws-rust`). Nothing
+checks at build time that `frontend/dist` is fresh or that
+`--features embed-assets` was passed; skip either step and the image still
+builds, but serves the stub at `/`.
 
-Cluster nodes are aarch64 (NanoPi R5C), hence the target and `--platform`.
+The cargo alias `cargo ui-release-musl-aarch64` does not pass
+`--features embed-assets`; use the full command above.
 
-The config is read once at startup, so a ConfigMap edit needs a pod restart to
-take effect.
+`ops/deploy/deploy-binary.sh` does not cover this binary: it replaces the binary
+of a systemd unit on a fleet node and restarts it, while `outline-ui` ships as a
+container image to k3s. The commands above are the whole release procedure.
 
-### Traps met while deploying
+The config is read once at startup, so a ConfigMap edit takes effect only after
+a pod restart.
 
-- **The registry is behind basic auth.** Without `imagePullSecrets` the pull
-  fails with `no basic auth credentials` and the pod sits in `ImagePullBackOff`.
-  The `registry-creds` secret has to exist in this namespace.
-- **`allowed_hosts` must include the Service DNS**, not just the public name, or
-  a request from inside the cluster is answered 403 with a valid token — which
-  reads as an auth failure and is not one.
-- **There is no liveness probe on purpose.** Every route is behind the credential
-  gate, so an unauthenticated probe would get a 401 and the kubelet would restart
+### Known problems
+
+- The registry is behind basic auth. Without `imagePullSecrets` the pull fails
+  with `no basic auth credentials` and the pod sits in `ImagePullBackOff`. The
+  `registry-creds` secret has to exist in the `monitoring` namespace.
+- `allowed_hosts` must include the Service DNS in addition to the public name.
+  Otherwise a request from inside the cluster with a valid token gets 403,
+  which looks like an auth failure but comes from the origin policy.
+- There is no liveness probe on purpose. Every route is behind the credential
+  gate, so an unauthenticated probe would get 401 and the kubelet would restart
   a healthy pod in a loop. A probe needs an unauthenticated health route added
-  deliberately first.
-
-## Serving two UIs under one port
-
-One binary answers three kinds of request, all through the same `Router`
-(`main.rs`), gated identically before any of them is matched:
-
-- `/ui-assets/*` — hashed JS/CSS/font files (`assets::asset`), the prefix
-  Vite is configured to emit (`base: '/ui-assets/'` in `vite.config.ts`)
-  precisely so it cannot collide with either dashboard's API tree.
-- `/ws/dashboard/api/...` and `/ss/dashboard/api/...` — the two dashboards'
-  JSON APIs, unchanged in shape, each `.nest`-ed under `/ws`/`/ss`
-  (`ws::router`/`ss::router`).
-- Everything else — `/`, a deep link like `/ws/uplinks`, a typo — serves the
-  same `index.html` shell (`assets::spa_index`), including the `.fallback`
-  inside the `/ws` and `/ss` nested routers themselves.
-
-Once that shell has loaded,
-[`router.svelte.ts`](frontend/src/lib/router.svelte.ts) reads
-`location.pathname` client-side and picks the `ws`/`ss`/`landing` view — there
-is no more server-side templating to keep in sync with it: the same
-`index.html` is served for every route, and the two dashboards no longer have
-pages of their own to collide over.
-
-## Current state
-
-The dashboards have been **removed from `outline-ws-rust` and `outline-ss-rust`**;
-this service is the only place they run now, and — as of `0.2.0` — as a
-Svelte SPA rather than server-rendered HTML. The binaries expose only their
-metrics and control listeners.
-
-Design and plan — extraction from the traffic binaries:
-[spec](../../docs/superpowers/specs/2026-08-12-outline-ui-dashboard-extraction-design.md),
-[plan](../../docs/superpowers/plans/2026-08-12-outline-ui.md); the Svelte
-rewrite:
-[spec](../../docs/superpowers/specs/2026-08-12-outline-ui-svelte-rewrite-design.md),
-[plan](../../docs/superpowers/plans/2026-08-12-outline-ui-svelte-rewrite.md).
+  first.
+- The `ui-release-musl-*` aliases in `.cargo/config.toml` do not enable
+  `embed-assets`. A binary built with the bare alias serves the "assets not
+  embedded" stub; pass `--features embed-assets` after `pnpm build`, as the
+  release workflow (`.github/workflows/_ui-release-build.yml`) and the
+  procedure above do.

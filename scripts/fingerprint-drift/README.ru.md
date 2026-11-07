@@ -1,21 +1,22 @@
 # Монитор дрейфа браузерных отпечатков
 
-🌐 [English](README.md)
+English version: [README.md](README.md).
 
 `outline-ws-rust` выдаёт себя за браузер на всех слоях, которые видит DPI:
 ClientHello по TCP и QUIC, transport parameters QUIC, преамбула HTTP/2 и
 заголовки запросов. Профили (`crates/outline-transport/src/fingerprint_profile.rs`
-и таблицы рядом) подогнаны под Chrome 157 и Firefox 159. `cargo test` ловит
-регрессии нашего кода относительно этих захватов, но не замечает, что браузеры
-ушли вперёд. Это делает монитор: раз в неделю
-`.github/workflows/fingerprint-drift.yml` снимает свежие Chrome stable и Firefox
-release, сравнивает их с `baseline/*.json` и держит открытой одну issue
-`fingerprint-drift`, пока они расходятся.
+и таблицы рядом) подогнаны под Chrome 157 и Firefox 159
+(`tests/data/versions.json`). `cargo test` ловит регрессии нашего кода
+относительно этих захватов, но не замечает, что браузеры ушли вперёд. Это
+делает монитор: `.github/workflows/fingerprint-drift.yml` (по понедельникам в
+06:00 UTC и вручную) снимает свежие Chrome stable и Firefox release, сравнивает
+их с `baseline/*.json` и держит открытой одну issue `fingerprint-drift`, пока
+они расходятся.
 
 Сравниваются только браузеры, наш клиент не участвует: эталон — это то, что
 браузер отправлял, когда подгоняли профили.
 
-## Состав
+## Файлы
 
 | Файл | Назначение |
 |---|---|
@@ -23,6 +24,9 @@ release, сравнивает их с `baseline/*.json` и держит откр
 | `tls_sink.py` | Записывает каждый ClientHello, терминирует TLS, отвечает по h2/h1, записывает запросы |
 | `../quic-initial-sink.py` | Записывает QUIC Initial-датаграммы |
 | `ca.sh`, `page.html` | Эфемерный CA для `localtest.me`; страница с fetch GET/POST и WebSocket |
+| `pcapwrite.py` | Пишет полученные приёмниками байты в pcap синтетическими IPv4/TCP-пакетами |
+| `pcapread.py` | Читает pcap через tshark (расшифровка QUIC Initial, сборка CRYPTO/TCP, JA4, HPACK) |
+| `hello.py` | Разбирает ClientHello на сравнимые поля |
 | `normalize.py` | pcap → JSON-снимок; единственное место, где решается, что считать шумом. Падает, если мажор из UA не совпадает с `versions.json` |
 | `compare.py` | Снимок против эталона → markdown-отчёт; код 0 — совпадает, 1 — дрейф, 2 — снимок неполный, 3 — дрейф рядом с неполным снимком. У списков показывает, что добавилось и что пропало |
 | `issue.sh` | Открывает, обновляет или закрывает issue `fingerprint-drift` |
@@ -43,8 +47,8 @@ ID, зарезервированные версии QUIC, c-часть JA4 (её
 `sec-websocket-key`, `accept-language` (сам заголовок — имя и позиция —
 сравнивается). Платформа в `user-agent` и `sec-ch-ua-platform` маскируется:
 эталон снят на macOS, CI работает на Linux. Приёмник не выдаёт TLS session
-tickets, поэтому последующие соединения не возобновляются (у возобновлённого
-hello появляется `pre_shared_key`).
+tickets (`num_tickets = 0` в `tls_sink.py`), поэтому последующие соединения не
+возобновляются: у возобновлённого hello появляется `pre_shared_key`.
 
 ## Локальный запуск
 
@@ -56,33 +60,46 @@ python3 scripts/fingerprint-drift/normalize.py /tmp/cap /tmp/snap
 python3 scripts/fingerprint-drift/compare.py scripts/fingerprint-drift/baseline /tmp/snap /tmp/report.md
 ```
 
-`CHROME=` и `FIREFOX=` задают другие бинари, например `CHROME=chromium` на arm64.
-У Google Chrome нет сборки под linux/arm64, а под QEMU-эмуляцией Docker на
-Apple silicon Chrome падает. Юнит-тесты:
-`python3 -m unittest discover -s scripts/fingerprint-drift/tests -t scripts/fingerprint-drift/tests`.
+`CHROME=` и `FIREFOX=` задают другие бинари (по умолчанию `google-chrome` и
+`firefox`), например `CHROME=chromium` на arm64: у Google Chrome нет сборки под
+linux/arm64, а под QEMU-эмуляцией Docker на Apple silicon Chrome падает.
+
+Юнит-тесты:
+
+```bash
+python3 -m unittest discover -s scripts/fingerprint-drift/tests -t scripts/fingerprint-drift/tests
+```
 
 ## Когда прогон упал
 
 Неполный снимок («Snapshot lacks layers») — это частичный захват, а не дрейф:
 джоб падает, а issue обновляется, только если дрейфанул второй браузер. Захват,
 сорвавшийся целиком (ни одного ClientHello), роняет джоб ещё в `capture.sh` /
-`normalize.py`, до сравнения. Прежде
-чем винить браузер, посмотрите net-log Chrome в артефакте прогона
+`normalize.py`, до сравнения.
+
+Прежде чем винить браузер, посмотрите net-log Chrome в артефакте прогона
 (`*.netlog.json.gz`; JSON в нём не закрыт, потому что Chrome убивается по
 таймауту). Свежий Google Chrome в первые мгновения пересоздаёт верификатор
-сертификатов и рвёт все соединения, поэтому `page.html` ждёт 2 с.
+сертификатов и рвёт все соединения, поэтому `page.html` ждёт 2 с перед первым
+запросом.
 
 ## Когда открылась issue
 
-1. Прочитать отчёт. Новый мажор — значит, новые строки UA и `sec-ch-ua`.
+1. Прочитайте отчёт. Новый мажор — значит, новые строки UA и `sec-ch-ua`.
    Изменение hello, преамбулы или заголовков — значит, то же изменение нужно в
    таблицах профилей.
-2. Перезамерить и обновить `PROFILES` и таблицы (чеклист — в комментарии к
-   `PROFILES_REFRESHED_AT_UNIX`).
-3. Пересобрать эталон из новых захватов. Положить каталоги браузеров и
-   `versions.json` в `tests/data/` (в раскладке `capture.sh`, она же лежит в
-   артефакте CI), но не каталог `ca/`: в нём одноразовый приватный ключ. Затем
-   выполнить
-   `python3 scripts/fingerprint-drift/normalize.py scripts/fingerprint-drift/tests/data scripts/fingerprint-drift/baseline`.
-   `cargo test` проверит, что мажоры эталона совпадают с `PROFILES`.
-4. Следующий прогон закроет issue.
+2. Перезамерьте и обновите `PROFILES` и таблицы. Чеклист — в комментарии к
+   `PROFILES_REFRESHED_AT_UNIX` (`crates/outline-transport/src/fingerprint_profile.rs`).
+3. Положите каталоги браузеров и `versions.json` из нового захвата в
+   `tests/data/` (в раскладке `capture.sh`, она же лежит в артефакте CI).
+   Каталог `ca/` не копируйте: в нём одноразовый приватный ключ.
+4. Пересоберите эталон:
+
+   ```bash
+   python3 scripts/fingerprint-drift/normalize.py scripts/fingerprint-drift/tests/data scripts/fingerprint-drift/baseline
+   ```
+
+5. Запустите `cargo test -p outline-transport`: тест
+   `drift_baselines_describe_the_profiled_browser_majors` проверяет, что мажоры
+   эталона совпадают с `PROFILES`.
+6. Следующий плановый прогон закроет issue.

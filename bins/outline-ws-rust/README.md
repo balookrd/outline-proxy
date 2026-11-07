@@ -7,33 +7,33 @@
 
 # outline-ws-rust
 
-`outline-ws-rust` is a production-oriented Rust proxy that accepts local SOCKS5 traffic and forwards it to Outline-compatible WebSocket transports over HTTP/1.1, HTTP/2, or HTTP/3, or to VLESS-over-WebSocket uplinks.
+`outline-ws-rust` is the client binary of the `outline-proxy` monorepo. It accepts local SOCKS5 traffic and, optionally, packets from an existing TUN device, and forwards them to an `outline-ss-rust` server (or another Outline-compatible / VLESS server) over WebSocket on HTTP/1.1, HTTP/2 or HTTP/3, or over XHTTP on the same three HTTP versions.
+
+This document covers building, configuring and running the client on Linux. Operating the server side is described in [`bins/outline-ss-rust/README.md`](../outline-ss-rust/README.md); the per-shape uplink reference is [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
 
 It supports:
 
 - SOCKS5 `CONNECT`
 - SOCKS5 `UDP ASSOCIATE` and `hev-socks5` `UDP-in-TCP` (`CMD=0x05`)
-- multi-uplink failover and load balancing
-- WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`), and RFC 9220 (`ws-over-h3`)
-- VLESS-over-WebSocket uplinks (UUID auth, shared WSS dial path, per-destination UDP session-mux)
-- one-line VLESS uplink config via `vless://UUID@HOST:PORT?...#NAME` share-link URIs (TOML `link = "..."`, CLI `--vless-link`, control-plane `link` payload field)
-- Prometheus metrics and packaged Grafana dashboards (the multi-instance operator UI now lives in `outline-ui`)
-- existing TUN device integration for `tun2udp`
-- stateful `tun2tcp` relay with production-oriented guardrails
+- several uplinks with failover and load balancing
+- WebSocket over HTTP/1.1, RFC 8441 (`ws-over-h2`) and RFC 9220 (`ws-over-h3`)
+- XHTTP (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) for Shadowsocks and VLESS
+- VLESS uplinks (UUID auth, per-destination UDP session-mux)
+- one-line uplink config from a `vless://…` or `ss://…` share-link URI (TOML `link = "..."`, CLI `--vless-link`, control-plane `link` payload field)
+- Prometheus metrics and Grafana dashboards; the multi-instance operator UI is the separate `outline-ui` service
+- an existing TUN device: `tun2udp` and a userspace `tun2tcp` relay
 
 ---
 
 *Русская версия: [README.ru.md](README.ru.md)*
 
-## Overview
-
-At a high level, the process does five jobs:
+## What the process does
 
 1. Accepts local SOCKS5 and optional TUN traffic.
-2. Selects the best available uplink using health probes, EWMA RTT scoring, sticky routing, hysteresis, penalties, and warm standby.
-3. Connects to an Outline WebSocket transport using the requested mode (`http1`, `h2`, or `h3`) with automatic fallback, or to a VLESS-over-WebSocket uplink.
-4. Encrypts payloads using Shadowsocks AEAD, or frames them as VLESS with UUID auth, before sending them upstream.
-5. Exposes Prometheus metrics for runtime, uplink, probe, TUN, and `tun2tcp` behavior.
+2. Selects an uplink using health probes, EWMA RTT scoring, sticky routing, hysteresis, failure penalties and warm standby.
+3. Dials the uplink in the configured carrier mode (`ws_h1` / `ws_h2` / `ws_h3` or `xhttp_h1` / `xhttp_h2` / `xhttp_h3`) and falls back to a lower HTTP version when the dial fails.
+4. Encrypts payloads with Shadowsocks AEAD, or frames them as VLESS with UUID auth, before sending them upstream.
+5. Exports Prometheus metrics for runtime, uplinks, probes, TUN and `tun2tcp`.
 
 ## Architecture
 
@@ -92,20 +92,20 @@ tun2udp + tun2tcp"]
     PR --> AL
 ```
 
-## Supported Features
+## Supported features
 
 ### SOCKS5
 
-- No-auth SOCKS5
-- Optional username/password auth (`RFC 1929`)
+- no-auth SOCKS5
+- optional username/password auth (RFC 1929)
 - TCP `CONNECT`
 - UDP `ASSOCIATE`
 - `hev-socks5` `FWD UDP` / `UDP-in-TCP` (`CMD=0x05`)
-- pipelined SOCKS5 handshake compatibility for `hev-socks5-tunnel`
-- SOCKS5 UDP fragmentation reassembly on inbound client traffic
-- IPv4, IPv6, and domain-name targets
-- declarative policy routing by destination CIDR with per-rule file-backed lists (hot-reloaded), per-rule fallback (`fallback_via` / `fallback_direct` / `fallback_drop`), and a `direct` / `drop` built-in targets for bypass or policy blocks
-- group-level tunnel bypass (`bypass_when_down` on the uplink group): while a group has no healthy uplink, traffic routed to it dispatches `direct` instead of failing, and returns to the tunnel as soon as any uplink recovers
+- pipelined SOCKS5 handshake from `hev-socks5-tunnel`
+- reassembly of fragmented SOCKS5 UDP datagrams from the client
+- IPv4, IPv6 and domain-name targets
+- policy routing by destination CIDR or domain suffix, with file-backed lists reloaded on mtime change, per-rule fallback (`fallback_via` / `fallback_direct` / `fallback_drop`) and the built-in targets `direct` and `drop`
+- group-level tunnel bypass (`bypass_when_down` on the uplink group): while a group has no healthy uplink, traffic routed to it goes `direct` instead of failing, and returns to the tunnel as soon as any uplink recovers
 
 ### Outline transports
 
@@ -113,14 +113,14 @@ tun2udp + tun2tcp"]
 - HTTP/1.1 Upgrade
 - RFC 8441 WebSocket over HTTP/2
 - RFC 9220 WebSocket over HTTP/3 / QUIC
-- VLESS-over-XHTTP (`vless_mode = "xhttp_h1"`, `"xhttp_h2"` or `"xhttp_h3"`): pairs with the `xhttp_path_vless` listener on outline-ss-rust. The dial URL `vless_xhttp_url` selects the wire mode through its query string — bare URL or `?mode=packet-up` runs the GET + sequenced POSTs pair, `?mode=stream-one` runs a single bidirectional POST (h2 / h3 only; the h1 carrier supports packet-up only and bails on stream-one). Useful when WebSocket upgrades are blocked on the path (Cloudflare-style CDNs, captive-portal middleboxes).
-- VLESS-over-WebSocket uplinks (`transport = "vless"`, UUID auth, shared WSS dial path with `ss`, per-destination UDP session-mux bounded by `vless_udp_max_sessions`)
-- transport fallback:
-  - `h3 -> h2 -> http1`
-  - `h2 -> http1`
-  - `xhttp_h3 -> xhttp_h2 -> xhttp_h1` on dial failure (packet-up only — stream-one stops at h2), carrying the same `X-Outline-Resume` token across each carrier switch so a feature-enabled outline-ss-rust server re-attaches the parked VLESS upstream instead of opening a fresh one. The h1 step is the last-resort fallback for paths blocking both QUIC and h2 ALPN; it dials two keep-alive sockets per session (long-lived GET + serialised POSTs) since h1 cannot multiplex.
-  - **per-uplink fallback transports** via `[[outline.uplinks.fallbacks]]` — each uplink may declare additional wire shapes (different `transport` + URL/addr) that the dial loop tries when the primary fails on this uplink. Supports `vless → ss`, `ss → vless`, etc. After `probe.min_failures` consecutive dial failures the active wire becomes sticky for `mode_downgrade_secs` (one knob, two uses) and new sessions start at the fallback; auto-failback snaps back to primary on pin expiry. Resume tokens (`X-Outline-Resume`) ride through the wire switch via the identity-level resume cache, so handover-via-resume across `vless ↔ ss` is seamless on a feature-enabled server. The chunk-0 failover loop also tries every other wire on the *same* uplink before jumping to a different uplink (handover within uplink). Optional per-uplink `shuffle_wires = true` reshuffles the chain at process startup (collision-free permutations within an `[[uplink_group]]`) and surrenders to uplink-failover after one full forward pass without any wire success (round resets on any-wire success); `shuffle_timer = "1h"` rerolls `active_wire` on a per-uplink interval (`30s` / `5m` / `1h30m` / `2d` / bare seconds) and suppresses probe-driven early-failback to primary so the reroll stays visible. `carrier_downgrade = false` collapses the vertical carrier cascade so failures roll over wire-to-wire directly (useful against DPI that drops the whole upstream regardless of HTTP version). See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) "Per-uplink fallback transports".
-- cross-transport client-side session resumption: WebSocket Upgrades carry `X-Outline-Resume-Capable: 1`; the server-issued `X-Outline-Session` ID is cached per uplink (and per (uplink, target) inside the VLESS UDP mux) and presented as `X-Outline-Resume: <hex>` on the next on-demand dial so a feature-enabled outline-ss-rust server can re-attach the parked upstream and skip the connect-to-target. Covers TCP-WS, SS-UDP-WS, and VLESS-over-XHTTP (h1 / h2 / h3, packet-up and stream-one alike — the token round-trips on the same response that delivers the first downlink chunk). Opt-in on the wire and zero-overhead when the server doesn't support it.
+- XHTTP (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) for SS (`tcp_xhttp_url` / `udp_xhttp_url`) and VLESS (`vless_xhttp_url`); pairs with the XHTTP endpoints of outline-ss-rust. The query string of the dial URL selects the submode: a bare URL or `?mode=packet-up` runs a GET plus sequenced POSTs, `?mode=stream-one` runs one bidirectional POST (h2 / h3 only; the h1 carrier supports packet-up only and fails on stream-one). Use it when WebSocket upgrades are blocked on the path (CDNs, captive-portal middleboxes).
+- VLESS uplinks (`transport = "vless"`, UUID auth, per-destination UDP session-mux bounded by `vless_udp_max_sessions`)
+- carrier fallback on dial failure:
+  - `ws_h3 -> ws_h2 -> ws_h1`
+  - `ws_h2 -> ws_h1`
+  - `xhttp_h3 -> xhttp_h2 -> xhttp_h1` (packet-up only; stream-one stops at h2). The same `X-Outline-Resume` token is carried across each carrier switch, so an outline-ss-rust server with session resumption enabled re-attaches the parked upstream instead of opening a new one. The h1 step is for paths that block both QUIC and the h2 ALPN; it opens two keep-alive sockets per session (long-lived GET + serialised POSTs) because h1 cannot multiplex.
+  - per-uplink fallback wires via `[[outline.uplinks.fallbacks]]`: each uplink may declare further wire shapes (another `transport` + URL) that the dial loop tries when the primary fails on this uplink, e.g. `vless → ss` or `ss → vless`. After `probe.min_failures` consecutive dial failures the active wire stays on the fallback for `mode_downgrade_secs` and new sessions start there; when that pin expires, sessions return to the primary. Resume tokens (`X-Outline-Resume`) survive the wire switch through the identity-level resume cache, so a resume-enabled server re-attaches the upstream across `vless ↔ ss`. The chunk-0 failover loop tries every other wire of the same uplink before moving to another uplink. `shuffle_wires = true` shuffles the chain at process start (collision-free permutations within an `[[uplink_group]]`) and hands over to uplink failover after one full pass without a successful wire (any successful wire resets the pass); `shuffle_timer = "1h"` rerolls `active_wire` on a per-uplink interval (`30s` / `5m` / `1h30m` / `2d` / bare seconds) and suppresses probe-driven early failback to the primary so the reroll stays in effect. `carrier_downgrade = false` disables the carrier cascade inside a wire, so a failure moves straight to the next wire (for DPI that drops the upstream regardless of HTTP version). See "Per-uplink fallback transports" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
+- client-side session resumption across carriers: WebSocket upgrades carry `X-Outline-Resume-Capable: 1`; the `X-Outline-Session` ID the server returns is cached per uplink (and per (uplink, target) inside the VLESS UDP mux) and sent as `X-Outline-Resume: <hex>` on the next dial, so an outline-ss-rust server with resumption enabled re-attaches the parked upstream and skips the connect to the target. Covers TCP over WS, SS-UDP over WS and VLESS over XHTTP (h1 / h2 / h3, packet-up and stream-one; the token comes back on the response that carries the first downlink chunk). A server without resumption ignores the header; the wire is otherwise unchanged.
 
 ### Encryption
 
@@ -133,179 +133,179 @@ tun2udp + tun2tcp"]
 
 ### Uplink management
 
-- multiple uplinks
-- fastest-first selection
+- several uplinks per group
 - selection mode:
-  - `active_active`: new flows can use different uplinks based on score, stickiness, and failover
-  - `active_passive`: keep the current selected uplink until it becomes unhealthy or enters cooldown. A manual control-plane switch or probe-driven failover that moves the active uplink off an in-flight SOCKS5 session now tears that TCP session down with RST (`SO_LINGER {l_onoff=1, l_linger=0}`) so the client reconnects through the new active uplink instead of egressing through the now-passive one (different source IP / ASN). UDP-side downlink loop wakes on the same `subscribe_active_uplinks` watch. Counter: `outline_ws_socks_tcp_strict_aborts_total`. `active_active` is unaffected — the watcher never arms there.
+  - `active_active`: new flows can use different uplinks based on score, stickiness and failover
+  - `active_passive`: keep the selected uplink until it becomes unhealthy or enters cooldown. When a manual control-plane switch or a probe-driven failover moves the active uplink away from an in-flight SOCKS5 session, that TCP session is closed with RST (`SO_LINGER {l_onoff=1, l_linger=0}`) so the client reconnects through the new active uplink instead of leaving through the now-passive one (different source IP / ASN). The UDP downlink loop wakes on the same `subscribe_active_uplinks` watch. Counter: `outline_ws_socks_tcp_strict_aborts_total`. `active_active` is not affected.
 - routing scope:
   - `per_flow`: decisions are made independently per routing key / target
-  - `per_uplink`: one active uplink is shared process-wide per transport (`tcp` and `udp`); in `active_passive` mode the pinned TCP and UDP uplinks do not expire with `sticky_ttl`, established SOCKS TCP tunnels stay pinned to the uplink that completed setup while non-migratable flows that still depend on the older active uplink may be reselected or closed after a switch, and penalty history is not folded into the strict per-transport score
-  - `per_client`: each ingress client sticks to one balancer-chosen uplink, keyed by the client's source IP (SOCKS5 peer IP, or the LAN device IP behind a TUN router) for `sticky_ttl` and refreshed while active; distinct clients spread across the uplinks while any single client keeps a stable egress IP instead of fanning its flows out, with failover when its pinned uplink goes unhealthy (`active_active` only — behaves like `per_flow` under `active_passive`; clients with no determinable source IP collapse to one shared key)
-  - `global`: one shared process-wide active uplink is used for new user traffic across both `tcp` and `udp`; selection is intentionally biased toward TCP score, but a UDP-capable active uplink is considered failed when its UDP probe marks it unhealthy or its UDP runtime cooldown is active, the active global uplink does not expire with `sticky_ttl`, penalty history is not folded into the strict global score, and TUN flows that remain pinned to an older uplink after a global switch are actively closed so they reconnect through the new global uplink
+  - `per_uplink`: one active uplink per transport (`tcp` and `udp`) for the whole process. In `active_passive` the pinned TCP and UDP uplinks do not expire with `sticky_ttl`; established SOCKS TCP tunnels stay on the uplink that completed setup, while non-migratable flows that depend on the old active uplink may be reselected or closed after a switch. Penalty history is not folded into the strict per-transport score.
+  - `per_client`: each ingress client sticks to one balancer-chosen uplink, keyed by its source IP (SOCKS5 peer IP, or the LAN device IP behind a TUN router), for `sticky_ttl`, refreshed while active. Different clients spread across uplinks; one client keeps one egress IP, with failover when its pinned uplink goes unhealthy. `active_active` only — under `active_passive` it behaves like `per_flow`. Clients without a determinable source IP share one key.
+  - `global`: one active uplink for all new traffic of the process, TCP and UDP. Ranking uses the TCP score, but a UDP-capable active uplink also counts as failed when its UDP probe marks it unhealthy or its UDP runtime cooldown is active. The active global uplink does not expire with `sticky_ttl`, penalty history is not folded into the strict global score, and TUN flows still pinned to the old uplink after a global switch are closed so they reconnect through the new one.
 - per-uplink static `weight`
 - RTT EWMA scoring
-- failure penalty model with decay
+- failure penalties with exponential decay
 - sticky routing with TTL
-- hysteresis to avoid unnecessary churn
+- hysteresis against switching on small score differences
 - runtime failover
-- auto-failback disabled by default (`auto_failback = false`): switches only on failure, never proactively back to a recovered primary
+- `auto_failback = false` by default: the active uplink changes only on failure, never back to a recovered primary on its own
 - warm-standby WebSocket pools for TCP and UDP
 - active-uplink selection persisted across restarts (TOML state file, debounced async writes)
-- scheduled weighted re-selection of the strict active uplink (`active_passive` only): wall-clock `reselect_at` slots or a fixed `reselect_interval`, forced rotation that always excludes the current active, weighted by health/penalty like `health_weighted_selection`, plus `POST /control/reselect` for an on-demand trigger. See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) "Scheduled re-selection".
-- deterministic, cross-node-agreeing variant of that rotation (`reselect_sync = true`, requires `reselect_at`): the slot's order is derived from group name, uplink names, local day and slot index instead of an OS-seeded draw, so independent nodes sharing a group config land on the same uplink — one egress address for a client population that reaches either node — with no coordination between them.
+- scheduled weighted re-selection of the strict active uplink (`active_passive` only): wall-clock `reselect_at` slots or a fixed `reselect_interval`; the rotation always excludes the current active and weights candidates by health/penalty like `health_weighted_selection`; `POST /control/reselect` triggers it on demand. See "Scheduled re-selection" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
+- deterministic variant of that rotation (`reselect_sync = true`, requires `reselect_at`): the slot order is derived from group name, uplink names, local day and slot index instead of a random draw, so independent nodes with the same group config pick the same uplink — one egress address for clients that reach either node — without exchanging any messages.
 
 ### Health probing
 
-- WebSocket connectivity probes (TCP+TLS+WS handshake; no ping/pong — servers rarely respond to WebSocket ping control frames)
-- real HTTP probes over `websocket-stream`
-- real DNS probes over `websocket-packet`
-- TLS handshake-only probes against a real product SNI through the tunnel — reproduces the user-flow chunk-0 failure pattern when upstream filtering silently drops `ServerHello` records, which the plain HTTP probe cannot see
+- WebSocket connectivity probes (TCP + TLS + WS handshake; no ping/pong — servers rarely answer WebSocket ping control frames)
+- HTTP probes over `websocket-stream`
+- DNS probes over `websocket-packet`
+- TLS handshake-only probes against a configured SNI through the tunnel; they catch upstream filtering that silently drops `ServerHello` for specific SNIs, which the plain HTTP probe cannot see
 - probe concurrency limits
-- separate probe dial isolation
-- immediate probe wakeup on runtime failure to accelerate detection
-- consecutive-success counter for stable auto-failback gating
+- a separate dial limit for probes
+- immediate probe wakeup on runtime failure (at most once per 15 s per uplink)
+- consecutive-success counter that gates auto-failback
 
 ### TUN
 
-- existing TUN device integration only
-- `tun2udp` with flow lifecycle management, IPv4/IPv6 IP fragment reassembly, and local ICMP echo replies
-- stateful `tun2tcp` relay with retransmit, zero-window persist/backoff, SACK-aware receive/send behavior, adaptive RTO, and bounded buffering
+- an existing TUN device only (the process does not create it)
+- `tun2udp` with flow lifecycle management, IPv4/IPv6 fragment reassembly and local ICMP echo replies
+- userspace `tun2tcp` relay with retransmit, zero-window persist/backoff, SACK-aware receive/send, adaptive RTO and bounded buffers
 
 ### Operations
 
 - Prometheus metrics
-- packaged Grafana dashboards
-- proactive uplink TLS certificate-expiry monitoring (dashboard chip + Prometheus gauge `outline_ws_uplink_cert_expiry_timestamp_seconds`)
-- hardened systemd unit
+- Grafana dashboards in [`grafana/`](grafana)
+- TLS certificate-expiry tracking for uplinks: gauge `outline_ws_uplink_cert_expiry_timestamp_seconds` and field `cert_not_after_unix_ms` per uplink in `GET /control/topology`
+- systemd units with sandboxing (see [systemd](#systemd))
 - Linux `fwmark` / `SO_MARK`
-- IPv6-capable listeners, upstreams, probes, and SOCKS5 targets
+- IPv6 listeners, upstreams, probes and SOCKS5 targets
 
-## Current Limits
+## Current limits
 
-The project is intentionally practical, but there are still boundaries:
+- `tun2tcp` is a userspace TCP relay, not a kernel-equivalent TCP stack.
+- Non-echo ICMP on TUN is not supported.
+- `probe.http` supports `http://` only. For HTTPS use `[outline.probe.tls]`, which runs a TLS handshake (no HTTP exchange) against a configured SNI. `probe.tcp` must target a speak-first TCP service such as SSH or SMTP, not an HTTP/HTTPS port.
+- TCP failover to another uplink happens only before useful payload exchange. An established TCP tunnel is not moved between uplinks; the TUN carrier migration described in [Carrier migration](#carrier-migration-surviving-a-dead-carrier) re-dials the same uplink.
 
-- `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
-- Non-echo ICMP traffic on TUN is not supported.
-- `probe.http` supports `http://` only — for HTTPS use the dedicated `[outline.probe.tls]` block, which drives a TLS handshake (no HTTP exchange) against a configured SNI. `probe.tcp` should target a speak-first TCP service such as SSH or SMTP, not a typical HTTP/HTTPS port.
-- TCP failover is safe before useful payload exchange; live established TCP tunnels cannot be migrated transparently between uplinks.
+## Repository layout
 
-## Repository Layout
+Paths are relative to `bins/outline-ws-rust/`; shared crates live at the workspace root.
 
-- [`config.toml`](config.toml) - example configuration
-- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) - hardened systemd unit
-- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) - main operational dashboard
-- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json) - situational hang diagnostics
-- [`src/bootstrap/`](src/bootstrap) - startup sequence: listener binding and persistent state store
-- [`src/config/`](src/config) - configuration loading, schema, and validated types
-- [`src/proxy/`](src/proxy) - SOCKS5 TCP/UDP ingress handlers (dispatcher, TCP failover, UDP relay)
-- [`crates/outline-uplink/`](crates/outline-uplink) - uplink selection, probing, failover, and standby management
-- [`crates/outline-transport/`](crates/outline-transport) - WebSocket / HTTP-2 / HTTP-3 / VLESS transports + the cross-transport `ResumeCache`
-- [`crates/outline-net/`](crates/outline-net) - DNS cache and shared net plumbing extracted from `outline-transport`
-- [`crates/outline-tun/`](crates/outline-tun) - stateful TUN relay engines (TCP and UDP)
-- [`crates/shadowsocks-crypto/`](crates/shadowsocks-crypto) - AEAD crypto helpers for Shadowsocks
-- [`crates/outline-metrics/`](crates/outline-metrics) - Prometheus metrics registration and session/transport snapshots
-- [`crates/outline-routing/`](crates/outline-routing) - CIDR routing table
-- [`crates/socks5-proto/`](crates/socks5-proto) - SOCKS5 protocol primitives
-- [`PATCHES.md`](PATCHES.md) - local vendored patch inventory
+- [`config.toml`](config.toml) — example configuration
+- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service), [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — systemd units
+- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) — main operational dashboard
+- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json) — hang diagnostics
+- [`src/bootstrap/`](src/bootstrap) — startup sequence: listener binding and persistent state store
+- [`src/config/`](src/config) — CLI and config schema, loading, validation
+- [`src/proxy/`](src/proxy) — SOCKS5 TCP/UDP ingress (dispatcher, TCP failover, UDP relay)
+- [`src/http/`](src/http) — metrics endpoint and control plane
+- [`../../crates/outline-uplink/`](../../crates/outline-uplink) — uplink selection, probing, failover, standby pools
+- [`../../crates/outline-transport/`](../../crates/outline-transport) — WebSocket / HTTP/2 / HTTP/3 / XHTTP / VLESS transports and the cross-transport `ResumeCache`
+- [`../../crates/outline-net/`](../../crates/outline-net) — DNS cache and socket helpers (fwmark, keepalive, buffer sizing)
+- [`../../crates/outline-tun/`](../../crates/outline-tun) — TUN relay engines (TCP and UDP)
+- [`../../crates/shadowsocks-crypto/`](../../crates/shadowsocks-crypto) — Shadowsocks AEAD helpers
+- [`../../crates/outline-wire/`](../../crates/outline-wire) — wire codec shared with the server (`CipherKind`, `TargetAddr`, SS2022 headers, VLESS/mux)
+- [`../../crates/outline-metrics/`](../../crates/outline-metrics) — Prometheus registration and session/transport snapshots
+- [`../../crates/outline-routing/`](../../crates/outline-routing) — CIDR and domain routing table
+- [`../../crates/socks5-proto/`](../../crates/socks5-proto) — SOCKS5 protocol primitives
+- [`../../PATCHES.md`](../../PATCHES.md) — inventory of vendored crate patches (one for the whole workspace)
 
 ## Build
+
+Run every command below from the workspace root (`outline-proxy/`).
 
 ### Prerequisites
 
 - Rust toolchain (stable): `rustup update stable`
-- For cross-compilation: [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) — wraps the Zig C compiler to eliminate the need for a dedicated cross-linker per target.
+- For cross-compilation: [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) and Zig; zigbuild uses the Zig C compiler as the linker, so no per-target cross toolchain is needed.
 
 ```bash
 cargo install cargo-zigbuild
 ```
 
-Shortcuts available in this repository:
+Install the Rust targets:
 
 ```bash
-cargo release-musl-x86_64
-cargo release-musl-aarch64
-```
-
-### CI Releases
-
-- Every push to `main` triggers the `Nightly Release` workflow.
-- That workflow moves the rolling tag `nightly` to the current `main` commit and republishes the `Nightly` GitHub prerelease.
-- Nightly publishes server `release` artifacts for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, plus `SHA256SUMS.txt`.
-- Nightly server archives are named `outline-ws-rust-vnightly-<full-commit-sha>-<target>.tar.gz`.
-- To cut a stable release, run the manual `Release` workflow and pass `major_minor` such as `1.7`.
-- CI finds the latest `v1.7.*` tag, increments the patch automatically, updates `Cargo.toml` and `Cargo.lock`, creates a release commit, and pushes that commit to `main`.
-- After the release commit lands on `main`, create and push a signed tag locally; the tag push triggers the `Tag Release` workflow, which builds and publishes the GitHub Release.
-- The stable release includes server `release` assets for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
-- Pushing a tag like `v1.2.3` manually still triggers the `Tag Release` workflow as a separate external tag-driven path.
-
-Install the required Rust targets:
-
-```bash
-# VMs / servers
 rustup target add x86_64-unknown-linux-musl
 rustup target add aarch64-unknown-linux-musl
 ```
 
----
+Aliases from the root `.cargo/config.toml`:
+
+```bash
+cargo ws-release-musl-x86_64
+cargo ws-release-musl-aarch64
+```
+
+### CI releases
+
+Client workflows live in `.github/workflows/ws-*.yml`; tags of the client carry the `ws-` prefix.
+
+- A push to `main` that touches `bins/outline-ws-rust/**`, `crates/**`, `vendor/**`, `Cargo.toml`, `Cargo.lock` or `.cargo/**` runs `Nightly Release (client)`. It moves the rolling tag `ws-nightly` to that commit and republishes the `Client Nightly` prerelease.
+- Nightly publishes `release` builds for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` plus `SHA256SUMS.txt`. Archives are named `outline-ws-rust-nightly-<full-commit-sha>-<target>.tar.gz`.
+- To cut a stable release, run the manual `Release (client)` workflow with `major_minor`, e.g. `1.7`. CI finds the latest `ws-v1.7.*` tag, increments the patch, updates `Cargo.toml` and `Cargo.lock`, creates a release commit and pushes it to `main`.
+- After the release commit lands on `main`, create and push a signed tag locally (`git tag -s ws-vX.Y.Z -m ws-vX.Y.Z`). The tag push runs `Tag Release (client)`, which builds and publishes the GitHub Release with the same two targets.
+- Pushing a `ws-v*` tag manually also runs `Tag Release (client)`.
 
 ### Feature flags
 
-The binary is controlled by Cargo feature flags. Mix and match as needed:
-
 | Feature | Default | Effect |
 |---|---|---|
-| `h3` | ✓ | H3/QUIC transport (pulls in quinn + sockudo-ws/http3) |
-| `metrics` | ✓ | Prometheus metrics endpoint; also enables transport-layer metrics (pulls in prometheus + serde_json) |
-| `tun` | ✓ | TUN device support (tun2udp + tun2tcp engines); remove to exclude all TUN code |
-| `mimalloc` | ✓ | Replace the system allocator with mimalloc; reduces RSS fragmentation under connection churn. A background thread periodically runs `mi_collect` to hand freed memory back to the OS after traffic bursts |
-| `env-filter` | ✓ | Dynamic `RUST_LOG` parsing; disable to hardcode log level at `WARN` and save ~300 KB on MIPS |
-| `multi-thread` | ✓ | Tokio work-stealing scheduler; disable to force `current_thread` and save ~100–200 KB |
+| `h3` | yes | HTTP/3 carriers (`ws_h3`, `xhttp_h3`): quinn + sockudo-ws/http3 |
+| `metrics` | yes | Prometheus `/metrics` endpoint and transport-layer metrics (prometheus + serde_json) |
+| `control` | yes | authenticated control-plane listener (`[control]`) |
+| `socks5` | yes | SOCKS5 ingress (`src/proxy`); off in the Android build |
+| `tun` | yes | TUN engines (`tun2udp` + `tun2tcp`) |
+| `jemalloc` | yes | jemalloc allocator; heap metrics report `heap_mode="exact"`, `GET /control/alloc` returns allocator stats |
+| `env-filter` | yes | `RUST_LOG` parsing; without it the log level is fixed at `WARN` (saves ~300 KB on MIPS) |
+| `multi-thread` | yes | Tokio work-stealing scheduler; without it `current_thread` (saves ~100–200 KB on MIPS) |
+| `mimalloc` | no | previous allocator, kept buildable for comparison; mutually exclusive with `jemalloc` |
+| `test-tls` | no | e2e tests only: trusts a self-signed root from `OUTLINE_WS_TEST_TLS_CA_DER`. Never enable in production builds |
 
----
+### Building the binary
 
-### Virtual machines and servers
-
-Native build for the current machine (fastest, uses all CPU features):
+Native build for the current machine:
 
 ```bash
-cargo build --release
+cargo build --release -p outline-ws-rust
 ```
 
-Static x86-64 binary (runs on any Linux x86-64 without glibc dependency):
+Static x86-64 binary (no glibc dependency):
 
 ```bash
-cargo zigbuild --release --target x86_64-unknown-linux-musl
-# or shorter
-cargo release-musl-x86_64
+cargo zigbuild --release -p outline-ws-rust --target x86_64-unknown-linux-musl
+# or
+cargo ws-release-musl-x86_64
 ```
 
-Static AArch64 binary (ARM64 servers, AWS Graviton, Ampere):
+Static AArch64 binary:
 
 ```bash
-cargo zigbuild --release --target aarch64-unknown-linux-musl
-# or shorter
-cargo release-musl-aarch64
+cargo zigbuild --release -p outline-ws-rust --target aarch64-unknown-linux-musl
+# or
+cargo ws-release-musl-aarch64
 ```
 
-To disable only one feature while keeping others (e.g. strip metrics but keep H3):
+To drop one feature, disable the defaults and list the rest. Example without `metrics`:
 
 ```bash
-cargo zigbuild --release --no-default-features --features h3 --target x86_64-unknown-linux-musl
+cargo zigbuild --release -p outline-ws-rust --no-default-features \
+  --features h3,control,socks5,tun,jemalloc,env-filter,multi-thread \
+  --target x86_64-unknown-linux-musl
 ```
 
-## Quick Start
+## Quick start
 
-Minimal local run using `config.toml`:
+`--config` defaults to `config.toml` in the current directory. From the workspace root, point it at the example:
 
 ```bash
-cargo run --release
+cargo run --release -p outline-ws-rust -- --config bins/outline-ws-rust/config.toml
 ```
 
-Example one-shot CLI override:
+One-shot run with CLI overrides:
 
 ```bash
-cargo run --release -- \
+cargo run --release -p outline-ws-rust -- \
   --listen [::]:1080 \
   --tcp-ws-url wss://example.com/SECRET/tcp \
   --tcp-mode h3 \
@@ -315,16 +315,13 @@ cargo run --release -- \
   --password 'Secret0'
 ```
 
-Example client settings:
+Client settings for this example: SOCKS5 host `::1` or `127.0.0.1`, port `1080`.
 
-- SOCKS5 host: `::1` or `127.0.0.1`
-- SOCKS5 port: `1080`
-
-For `listen = "[::]:1080"`, many systems create a dual-stack listener. If your platform does not map IPv4 to IPv6 sockets, bind an additional IPv4 listener instead.
+`listen = "[::]:1080"` creates a dual-stack listener on most systems. If your platform does not map IPv4 onto IPv6 sockets, bind an additional IPv4 listener.
 
 ### `hev-socks5-tunnel` compatibility
 
-`outline-ws-rust` accepts both UDP relay modes used by [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel):
+`outline-ws-rust` accepts both UDP relay modes of [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel):
 
 ```yaml
 socks5:
@@ -336,14 +333,12 @@ socks5:
 ```
 
 - `udp: 'udp'` uses standard SOCKS5 `UDP ASSOCIATE`.
-- `udp: 'tcp'` uses the proprietary `hev-socks5` TCP-carried UDP relay (`CMD=0x05`), which is also supported.
-- `pipeline: true` is accepted, including when username/password auth is enabled.
+- `udp: 'tcp'` uses the `hev-socks5` TCP-carried UDP relay (`CMD=0x05`).
+- `pipeline: true` works, including with username/password auth.
 
 ## Configuration
 
-By default the process reads [`config.toml`](config.toml).
-
-Example:
+The process reads the file given by `--config` / `PROXY_CONFIG` (default `config.toml`). The example below is an excerpt; the full commented example is [`config.toml`](config.toml).
 
 ```toml
 [socks5]
@@ -413,7 +408,7 @@ listen = "[::1]:9090"
 # the flow's lifetime) and the burst handshakes in fast waves instead of all at
 # once. Steady-state flow concurrency is unaffected. 0 disables the gate.
 # max_concurrent_upstream_dials = 32
-# Built-in IKE / IPsec NAT-T bypass — see "TUN Mode" section below.
+# Built-in IKE / IPsec NAT-T bypass — see "TUN mode" below.
 # ipsec_bypass = false
 # Allow ICMP PTBs that advertise a path MTU below QUIC's Initial-datagram
 # minimum (1200 v4 / 1280 v6) on TUN UDP oversize drops. Default false
@@ -423,6 +418,7 @@ listen = "[::1]:9090"
 # QUIC connection sniffing (Xray-style destOverride; default on). Recovers the
 # SNI from the first datagram's QUIC Initial ClientHello and sends the domain
 # (not the IP) upstream so the exit node resolves it. Mirrors [tun.tcp] sniffing.
+# sniff_quic = true
 # Domains included for sniff override (TCP + QUIC): when non-empty, ONLY hosts
 # matching at least one suffix are rewritten to a domain target; all other hosts
 # keep the literal IP. Default empty (override all, except sniff_override_exclude).
@@ -439,7 +435,7 @@ listen = "[::1]:9090"
 # connect_timeout_secs = 10
 # handshake_timeout_secs = 15
 # half_close_timeout_secs = 60
-# max_pending_server_bytes = 4194304
+# max_pending_server_bytes = 2097152
 # backlog_abort_grace_secs = 3
 # backlog_hard_limit_multiplier = 2
 # backlog_no_progress_abort_secs = 8
@@ -465,7 +461,7 @@ listen = "[::1]:9090"
 # dies, re-dial, have the server re-attach the upstream it parked, replay the
 # byte gap both ways, and keep the flow running instead of resetting the app's
 # connection. Engages ONLY on a confirmed server-side resume hit, so it is inert
-# against a server with resumption disabled (the server default). See "TUN Mode".
+# against a server with resumption disabled (the server default). See "TUN mode".
 # carrier_migration = true
 
 # [outline.probe] acts as a template inherited by every [[uplink_group]].
@@ -610,76 +606,90 @@ default = true
 via = "main"
 ```
 
-### Key config behavior
+### Config behavior
 
-- `transport` accepts `ss` (default; alias `shadowsocks`) or `vless`. The legacy `ws` / `websocket` values are deprecated aliases for `ss` and will be removed in a future release. VLESS shares the WSS dial path with `ss` (same `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark` fields) but authenticates with a single `vless_id` instead of a Shadowsocks `method` + `password`. VLESS UDP opens one WSS session per destination inside the uplink (bounded by `[outline.load_balancing] vless_udp_max_sessions`, LRU-evicted, with idle eviction controlled by `vless_udp_session_idle_secs`).
-- `link = "vless://UUID@HOST:PORT?type=...&security=...&alpn=...#NAME"` configures a VLESS uplink from a single share-link URI in lieu of the explicit `vless_id` / `vless_*_url` / `vless_mode` fields; `transport = "vless"` is implied. The same value is accepted via the `--vless-link` CLI flag (`OUTLINE_VLESS_LINK`) and the `/control/uplinks` REST payload (`link`, alias `share_link`). Mixing `link` with the explicit fields is rejected. See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#5-vless-share-link-uris) for the recognised query-parameter table and constraints.
-- At least one ingress must be configured: `--listen` / `[socks5].listen` and/or `[tun]`. If neither is present, the process exits with an error instead of silently binding `127.0.0.1:1080`.
-- `tcp_mode` / `udp_mode` (`transport = "ss"`) and `vless_mode` (`transport = "vless"`) pick the per-direction transport carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade), or `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (VLESS-only XHTTP packet-up). See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) for per-shape config blocks, dial-time fallback chains, and resume behaviour.
-- `ipv6_first` (default `false`) changes resolved-address preference for that uplink from IPv4-first to IPv6-first for TCP, UDP, H1, H2, and H3 connections.
-- `ipv4_only` (default `false`) filters out IPv6 (AAAA records) during DNS resolution for uplink servers and endpoints, keeping only IPv4 addresses. Useful on hosts without IPv6 connectivity to prevent `NetworkUnreachable (OS 101)` failures and link-flapping storms. When `ipv4_only = true`, `ipv6_first` is ignored. Inherited from `[outline]` down to `[[outline.uplinks]]` and `[[outline.uplinks.fallbacks]]` unless explicitly overridden.
-- `disable_udp_gso` (default `false`, `[[outline.uplinks]]` and `[[outline.uplinks.fallbacks]]`) keeps the uplink's QUIC sockets (`ws_h3` / `xhttp_h3`) off UDP GSO, so quinn sends one datagram per `sendmsg`. Set it on an uplink whose egress rejects segmented sends — typically one an `fwmark` routes onto a VLAN of a NIC without TX checksum offload, where every GSO send fails with `EIO` and each new QUIC connection loses its first handshake flight (~1 s extra per dial). TCP carriers are unaffected. Inherited by fallbacks unless overridden. See "Egress without UDP GSO" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
-- `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
-- `[[socks5.users]]` enables local SOCKS5 username/password auth for multiple users. Each entry must include both `username` and `password`.
-- `[socks5] username` + `password` is still accepted as a shorthand for a single user.
-- CLI/env equivalents `--socks5-username` / `SOCKS5_USERNAME` and `--socks5-password` / `SOCKS5_PASSWORD` also configure a single user.
-- The same SOCKS5 listener accepts both standard `UDP ASSOCIATE` and `hev-socks5` `UDP-in-TCP` (`CMD=0x05`); no extra config switch is required on the server.
-- `[outline.probe] min_failures` (default `1`): consecutive probe failures required before an uplink is declared unhealthy. Increase to `2` or `3` to tolerate intermittent probe blips without triggering failover. The same value also sets the consecutive-success stability threshold for `auto_failback`.
-- `[outline.load_balancing] tcp_chunk0_failover_timeout_secs` (default `10`): how long the proxy waits for the first upstream response bytes after the most recent client request activity before allowing TCP chunk-0 failover to another uplink. Increase this if links still switch on slow first-byte responses. (Applies to single-group configs; for multi-group setups the same field lives on each `[[uplink_group]]`.)
-- `[outline.load_balancing] auto_failback` (default `false`): controls whether the proxy proactively returns traffic to a recovered higher-priority uplink.
-  - `false` (default): the active uplink is replaced **only when it fails**. Once on a backup, the proxy stays there until the backup itself fails — no automatic return to primary. Recommended for production use to prevent unnecessary connection disruption.
-  - `true`: when the current active is healthy and a candidate with a **higher `weight`** (or equal weight and lower config index) exists, the proxy may return traffic to that candidate — but only after the candidate has accumulated `min_failures` consecutive successful probe cycles. Priority is determined by `weight`, not EWMA RTT: this prevents spurious switches under load, when the active uplink's EWMA temporarily inflates due to slow connections while an idle backup looks better by latency. Failback always moves toward higher weight (`1.0 → 1.5 → 2.0`): switching to a lower-weight uplink via auto_failback is not possible — that requires a probe-confirmed failover.
-- `h3_downgrade_secs` (per-group, default `60`, also accepted as `mode_downgrade_secs`): how long an uplink that experienced a failure on its advanced mode — an H3 application-level error (e.g. `H3_INTERNAL_ERROR`) — stays in H2 fallback mode before the original mode is retried. Applies to both `transport = "ss"` and `transport = "vless"`. Set to `0` to disable automatic downgrade.
-- `carrier_degraded_failover_secs` (per-group, default `3 × mode_downgrade_secs`): carrier-quality failover for strict (`active_passive`) selection. An uplink whose probes pass on its TCP fallback counts as fully healthy, so it used to hold the active slot forever even when every dial was silently capped below the configured carrier (`ws_h3 → ws_h2` — TCP-over-TCP) — a sibling with a working QUIC carrier was never preferred. Now, once the active uplink has been running below its configured carrier under one **unbroken** downgrade window for at least this many seconds, and the group has a probe-healthy candidate of equal-or-higher `weight` whose carrier is not degraded and whose probe-success streak has reached `min_failures`, selection soft-switches the leg to that candidate. An isolated flap can never move the leg: a single window expires after `mode_downgrade_secs` on its own, so only failures that keep re-extending the window cross the threshold. Set `0` to disable. Works with either `auto_failback` setting; the `weight` rule still stands (a lower-weight sibling never takes the leg on carrier quality alone).
-- `state_path` (optional): path to a TOML file where the active-uplink selection is persisted across restarts. Defaults to the config file path with the extension replaced by `.state.toml` (e.g. `config.toml` → `config.state.toml`). If the file cannot be written (e.g. config lives in a read-only `/etc/` directory under `ProtectSystem=strict`), the process logs a warning at startup and continues without persistence. The bundled systemd units set `STATE_PATH=/var/lib/outline-ws-rust/state.toml` so the state lands in the writable state directory. Only the active-uplink selection is persisted (by uplink name); EWMA and penalty values are not — they are re-established within one probe cycle after restart.
-- Uplink groups (`[[uplink_group]]`) each hold their own probe loop, standby pool, sticky-routes store, active-uplink state, and load-balancing policy — groups are fully isolated at runtime.
-- `[outline.probe]` acts as a template: each group inherits it, and `[uplink_group.probe]` overrides individual fields per group. Probe sub-tables (`ws`/`http`/`dns`/`tcp`/`tls`) are replaced wholesale — if a group sets `[uplink_group.probe.http]`, the template's `[outline.probe.http]` is dropped for that group. Application-level probes (`http`/`tcp`/`tls`) are mutually exclusive: one runs per cycle, priority `tls → http → tcp`.
-- Uplink names must be globally unique across all groups (Prometheus labels currently use `uplink="..."` without a group qualifier).
-- The legacy `[bypass]` section has been removed. Migrate bypass prefixes to a `[[route]]` with `via = "direct"`. Loading a config that still has a `[bypass]` table fails with an explicit migration error.
-- Uplinks, the probe template, and load-balancing settings all live under `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). The older flat layout with top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]` is still accepted for backwards compatibility and logs a deprecation warning on startup — migrate to the `[outline]` section. Without any `[[uplinks]]` entry, top-level `tcp_ws_url` / `password` / CLI flags (`--tcp-ws-url`, `--password`, …) synthesise a single-uplink `default` group as a shorthand.
-- CLI flags and environment variables can override file settings.
-- `--metrics-listen` can enable metrics even if `[metrics]` is not present.
-- `--control-listen` / `CONTROL_LISTEN` and `--control-token` / `CONTROL_TOKEN` can enable the control plane without `[control]` in the config. Both must be supplied together; either alone is rejected at startup.
-- `--tun-path` can enable TUN even if `[tun]` is not present.
-- `direct_fwmark` (optional, top-level): `SO_MARK` value applied to TCP and UDP sockets opened for `direct`-routed connections. Use when bypass traffic must be tagged for OS-level policy routing to avoid loops (e.g. the bypass route must itself not be intercepted by the TUN interface).
-- `[dial] timeout_secs` (optional, default `10`): upper bound on one fresh carrier dial — TCP + TLS + HTTP upgrade for the WS/XHTTP families, or the QUIC + HTTP/3 handshake for the H3 ones — and, at 70% of it, on opening a stream over an already-established H3 connection. The default fits broadband and LTE, where a fresh TLS dial is a handful of round trips over a fat pipe. It does not fit an edge-class link: on 2G a round trip runs close to a second and the certificate chain alone takes seconds to clock out, so the budget expires mid-handshake, every attempt is scored a runtime failure, and the retries consume the bandwidth the handshake needed in the first place — the tunnel converges on carrying nothing while reporting itself up. Raise it (clamped to `2..=120` s) for such deployments. The cost is worst-case failover latency: this same bound is what keeps a dial into a network black hole from stalling the `h3 → h2 → h1` chain for the OS SYN-retransmit budget (Linux ~127 s).
-- SOCKS5 → upstream TCP sessions are subject to a 5-minute bidirectional idle timeout. If no bytes flow in either direction for 300 seconds, the tunnel is closed and FDs are reclaimed. Any data activity in either direction resets the timer. This prevents FD accumulation from abandoned connections, particularly under TUN interceptors that open many TCP sessions and release them without FIN.
-- Half-open TCP sessions (client sent EOF, proxy is waiting for upstream FIN) are closed after 30 seconds. This prevents sockets from staying half-open indefinitely when the upstream does not acknowledge the client's disconnect.
+- `transport` accepts `ss` (default; alias `shadowsocks`) or `vless`. `ws` / `websocket` are deprecated aliases for `ss` and will be removed. VLESS uses the same carrier fields as `ss` (`ipv6_first`, `fwmark`, …) but takes its own URL/mode pair — `vless_ws_url` or `vless_xhttp_url` plus `vless_mode` — and authenticates with one `vless_id` instead of Shadowsocks `method` + `password`; `tcp_ws_url` / `udp_ws_url` with `transport = "vless"` are rejected at parse time. VLESS UDP opens one session per destination inside the uplink, bounded by `vless_udp_max_sessions` (default `256`, LRU eviction), with idle eviction after `vless_udp_session_idle_secs` (default `60`, `0` disables) checked every `vless_udp_janitor_interval_secs` (default `15`). These three keys live in `[outline.load_balancing]` or on each `[[uplink_group]]`.
+- `link = "vless://UUID@HOST:PORT?type=...&security=...&alpn=...#NAME"` configures a VLESS uplink from one share-link URI instead of `vless_id` / `vless_*_url` / `vless_mode`; `transport = "vless"` is implied. An `ss://` link (SIP002 userinfo) configures an SS uplink the same way. The value is also accepted by `--vless-link` (alias `--link`, env `OUTLINE_VLESS_LINK`) and by the `/control/uplinks` payload (`link`, alias `share_link`). Mixing `link` with the explicit fields is rejected. Query parameters and constraints: [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#5-vless-share-link-uris).
+- At least one ingress is required: `--listen` / `[socks5].listen` and/or `[tun]`. Without either, the process exits with an error instead of binding `127.0.0.1:1080`.
+- `tcp_mode` / `udp_mode` (`transport = "ss"`) and `vless_mode` (`transport = "vless"`) select the carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade) or `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (XHTTP; SS takes the URL from `tcp_xhttp_url` / `udp_xhttp_url`, VLESS from `vless_xhttp_url`). The old values `http1` / `h1`, `h2`, `h3` are accepted as aliases of `ws_h1`, `ws_h2`, `ws_h3`; `quic` is rejected (raw QUIC uplinks were removed). Per-shape config blocks, fallback chains and resume behaviour: [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
+- `ipv6_first` (default `false`) makes the uplink prefer IPv6 addresses over IPv4 for TCP, UDP, H1, H2 and H3 connections.
+- `ipv4_only` (default `false`) drops AAAA records when resolving the uplink's servers. Set it on hosts without IPv6 connectivity, where IPv6 attempts fail with `NetworkUnreachable (OS 101)` and make the uplink flap. With `ipv4_only = true`, `ipv6_first` is ignored. Inherited from `[outline]` by `[[outline.uplinks]]` and `[[outline.uplinks.fallbacks]]` unless overridden.
+- `disable_udp_gso` (default `false`, `[[outline.uplinks]]` and `[[outline.uplinks.fallbacks]]`) keeps the uplink's QUIC sockets (`ws_h3` / `xhttp_h3`) off UDP GSO, so quinn sends one datagram per `sendmsg`. Set it on an uplink whose egress rejects segmented sends — typically one that `fwmark` routes onto a VLAN of a NIC without TX checksum offload: there every GSO send fails with `EIO` and each new QUIC connection loses its first handshake flight (~1 s extra per dial). TCP carriers are not affected. Inherited by fallbacks unless overridden. See "Egress without UDP GSO" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
+- `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` and `2022-blake3-chacha20-poly1305`; for these, `password` must be a base64-encoded PSK of exactly the cipher's key length.
+- `[[socks5.users]]` enables local SOCKS5 username/password auth for several users; each entry needs both `username` and `password`. `[socks5] username` + `password`, or `--socks5-username` / `--socks5-password`, configure a single user.
+- The same SOCKS5 listener accepts standard `UDP ASSOCIATE` and `hev-socks5` `UDP-in-TCP` (`CMD=0x05`); no extra switch is needed.
+- `[outline.probe] min_failures` (default `3`): consecutive probe failures before an uplink is declared unhealthy. The same value is the consecutive-success threshold for `auto_failback`. Lower it to `1` to fail over on the first failed probe.
+- `[outline.probe] interval_secs` (default `120`): probe cycle period. Values below 60 s log a warning at startup: frequent probe handshakes can trip upstream rate limits.
+- `tcp_chunk0_failover_timeout_secs` (default `10`, `[outline.load_balancing]` or per `[[uplink_group]]`): how long to wait for the first upstream response bytes after the last client request activity before TCP chunk-0 failover to another uplink is allowed. Raise it if uplinks switch on slow first-byte responses.
+- `auto_failback` (default `false`, `[outline.load_balancing]` or per `[[uplink_group]]`): whether traffic returns to a recovered higher-priority uplink.
+  - `false`: the active uplink is replaced only when it fails. Once on a backup, the proxy stays there until the backup fails. Use this to avoid the connection resets a proactive return causes.
+  - `true`: while the current active is healthy and a candidate with a higher `weight` (or equal weight and lower config index) exists, traffic returns to that candidate after it has passed `min_failures` consecutive probe cycles. Priority is `weight`, not EWMA RTT: under load the active uplink's EWMA rises while an idle backup looks faster, and comparing EWMA would switch on that. Failback only moves toward higher weight (`1.0 → 1.5 → 2.0`); moving to a lower-weight uplink requires a probe-confirmed failover.
+- `mode_downgrade_secs` (per group, default `60`, alias `h3_downgrade_secs`): how long an uplink that failed on its advanced carrier (e.g. an H3 application error such as `H3_INTERNAL_ERROR`) stays capped one rank lower (`ws_h3 → ws_h2`, `xhttp_h3 → xhttp_h2`) before the configured carrier is retried. Applies to `ss` and `vless`. `0` disables the downgrade.
+- `carrier_degraded_failover_secs` (per group, default `3 × mode_downgrade_secs`): carrier-quality failover for strict (`active_passive`) selection. An uplink whose probes pass on its TCP fallback counts as healthy, so without this knob it would keep the active slot while every dial is capped below the configured carrier (`ws_h3 → ws_h2`, TCP over TCP). When the active uplink has run below its configured carrier under one unbroken downgrade window for at least this many seconds, and the group has a probe-healthy candidate of equal or higher `weight` whose carrier is not degraded and whose probe-success streak has reached `min_failures`, selection soft-switches to that candidate. A single flap cannot trigger it: one window expires after `mode_downgrade_secs`, so only failures that keep extending the window cross the threshold. `0` disables. Works with either `auto_failback` value; a lower-weight candidate never takes the slot on carrier quality alone.
+- `state_path` (optional): TOML file where the active-uplink selection is persisted across restarts. Default: the config path with the extension replaced by `.state.toml` (`config.toml` → `config.state.toml`). If the file cannot be written (e.g. the config lives in `/etc/` under `ProtectSystem=strict`), the process logs a warning at startup and runs without persistence. The bundled units set `STATE_PATH=/var/lib/outline-ws-rust/_default/state.toml` (template: `/var/lib/outline-ws-rust/<instance>/state.toml`). Only the active uplink name is stored; EWMA and penalties are rebuilt within one probe cycle after restart.
+- Each `[[uplink_group]]` has its own probe loop, standby pool, sticky-routes store, active-uplink state and load-balancing policy; groups do not share runtime state.
+- `[outline.probe]` is a template: each group inherits it, and `[uplink_group.probe]` overrides individual fields. Probe sub-tables (`ws` / `http` / `dns` / `tcp` / `tls`) are replaced as a whole: if a group sets `[uplink_group.probe.http]`, the template's `[outline.probe.http]` is dropped for that group. Application-level probes (`http` / `tcp` / `tls`) are mutually exclusive: one runs per cycle, priority `tls → http → tcp`.
+- Uplink names must be unique across all groups: Prometheus labels use `uplink="..."` without a group qualifier.
+- The `[bypass]` section was removed. Move bypass prefixes to a `[[route]]` with `via = "direct"`; a config that still has `[bypass]` fails to load with a migration error.
+- Uplinks, the probe template and load-balancing settings live under `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). The old flat layout (top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]`) still loads and logs a deprecation warning. Without any uplink entry, top-level `tcp_ws_url` / `password` or the CLI flags (`--tcp-ws-url`, `--password`, …) create a single-uplink group named `default`.
+- CLI flags and environment variables override file settings. `--metrics-listen` enables metrics without `[metrics]`; `--tun-path` enables TUN without `[tun]`; `--control-listen` + `--control-token` enable the control plane without `[control]` — both must be given, either alone is a startup error.
+- `direct_fwmark` (optional, top level): `SO_MARK` for TCP and UDP sockets of `direct`-routed connections. Set it when bypass traffic must be marked for policy routing, e.g. so that the bypass route is not captured by the TUN interface again.
+- `[dial] timeout_secs` (default `10`, clamped to `2..=120`): upper bound on one fresh carrier dial — TCP + TLS + HTTP upgrade for WS/XHTTP, or the QUIC + HTTP/3 handshake — and, at 70 % of it, on opening a stream on an established H3 connection. 10 s fits broadband and LTE. On 2G a round trip is close to a second and the certificate chain alone takes seconds, so a 10 s budget expires mid-handshake, every attempt counts as a runtime failure, and retries use up the bandwidth the handshake needed: the uplink stays "up" and carries nothing. Raise the value for such links. Cost: worst-case failover latency, because this bound is what stops a dial into a black hole from holding the `h3 → h2 → h1` chain for the OS SYN-retransmit budget (Linux ~127 s).
+- `[tcp_timeouts]` bounds SOCKS5 TCP sessions; values are in seconds:
 
-### Useful CLI and env overrides
+  | Key | Default | Effect |
+  |---|---|---|
+  | `socks_upstream_idle_secs` | `300` | close a tunnelled SOCKS5 session when no payload moved in either direction for this long; keepalive frames do not reset the timer. Reclaims FDs of connections that TUN interceptors open and drop without FIN |
+  | `direct_idle_secs` | `120` | the same for `direct` sessions |
+  | `post_client_eof_downstream_secs` | `600` | after the client half-closes, how long the downstream may take to finish and send FIN. Long-running requests (large upload, then minutes of server think time) need this; 30 s cut them off mid-response |
+  | `upstream_response_secs` | `15` | chunk-0 response deadline per uplink when no failover candidate is left |
 
-- `--config` / `PROXY_CONFIG`
-- `--listen` / `SOCKS5_LISTEN`
-- `--socks5-username` / `SOCKS5_USERNAME`
-- `--socks5-password` / `SOCKS5_PASSWORD`
-- `--tcp-ws-url` / `OUTLINE_TCP_WS_URL`
-- `--tcp-mode` / `OUTLINE_TCP_MODE`
-- `--udp-ws-url` / `OUTLINE_UDP_WS_URL`
-- `--udp-mode` / `OUTLINE_UDP_MODE`
-- `--method` / `SHADOWSOCKS_METHOD`
-- `--password` / `SHADOWSOCKS_PASSWORD`
-- `--metrics-listen` / `METRICS_LISTEN`
-- `--tun-path` / `TUN_PATH`
-- `--tun-name` / `TUN_NAME`
-- `--tun-mtu` / `TUN_MTU`
-- `--fwmark` / `OUTLINE_FWMARK`
-- `--ipv6-first` / `OUTLINE_IPV6_FIRST`
-- `--ipv4-only` / `OUTLINE_IPV4_ONLY`
-- `--state-path` / `STATE_PATH`
+### CLI flags and environment variables
+
+| Flag | Env | Sets |
+|---|---|---|
+| `--config` | `PROXY_CONFIG` | config file path (default `config.toml`) |
+| `--listen` | `SOCKS5_LISTEN` | SOCKS5 listen address |
+| `--socks5-username` | `SOCKS5_USERNAME` | single SOCKS5 user |
+| `--socks5-password` | `SOCKS5_PASSWORD` | single SOCKS5 user's password |
+| `--transport` | `OUTLINE_TRANSPORT` | `ss` or `vless` |
+| `--tcp-ws-url` | `OUTLINE_TCP_WS_URL` | SS TCP WebSocket URL |
+| `--tcp-xhttp-url` | `OUTLINE_TCP_XHTTP_URL` | SS TCP XHTTP base URL |
+| `--tcp-mode` | `OUTLINE_TCP_MODE` | SS TCP carrier |
+| `--udp-ws-url` | `OUTLINE_UDP_WS_URL` | SS UDP WebSocket URL |
+| `--udp-xhttp-url` | `OUTLINE_UDP_XHTTP_URL` | SS UDP XHTTP base URL |
+| `--udp-mode` | `OUTLINE_UDP_MODE` | SS UDP carrier |
+| `--vless-ws-url` | `OUTLINE_VLESS_WS_URL` | VLESS WebSocket URL |
+| `--vless-xhttp-url` | `OUTLINE_VLESS_XHTTP_URL` | VLESS XHTTP base URL |
+| `--vless-mode` | `OUTLINE_VLESS_MODE` | VLESS carrier |
+| `--vless-link` (`--link`) | `OUTLINE_VLESS_LINK` | uplink from a `vless://` or `ss://` share link |
+| `--method` | `SHADOWSOCKS_METHOD` | Shadowsocks cipher |
+| `--password` | `SHADOWSOCKS_PASSWORD` | Shadowsocks password / PSK |
+| `--fwmark` | `OUTLINE_FWMARK` | uplink `SO_MARK` |
+| `--ipv6-first` | `OUTLINE_IPV6_FIRST` | prefer IPv6 for the uplink |
+| `--ipv4-only` | `OUTLINE_IPV4_ONLY` | IPv4 only for the uplink |
+| `--metrics-listen` | `METRICS_LISTEN` | metrics listen address |
+| `--control-listen` | `CONTROL_LISTEN` | control-plane listen address |
+| `--control-token` | `CONTROL_TOKEN` | control-plane bearer token |
+| `--tun-path` | `TUN_PATH` | TUN device path |
+| `--tun-name` | `TUN_NAME` | TUN interface name |
+| `--tun-mtu` | `TUN_MTU` | TUN MTU |
+| `--worker-threads` | `WORKER_THREADS` | Tokio worker threads (default: CPU count) |
+| `--thread-stack-size-kb` | `THREAD_STACK_SIZE_KB` | stack per Tokio thread in KiB (default `2048`) |
+| `--state-path` | `STATE_PATH` | active-uplink state file |
+| `--fingerprint-profile` | `OUTLINE_FINGERPRINT_PROFILE` | browser fingerprint strategy: `off`, `stable`, `per_host_stable`, `random` |
 
 ## Policy routing
 
-Declarative routing by destination CIDR, evaluated first-match-wins with an explicit `default = true` rule. Each rule picks one of three targets via `via = "..."`:
+Routing by destination, evaluated first-match-wins, with one explicit `default = true` rule. Each rule picks a target with `via = "..."`:
 
-- **a group name** (one of the declared `[[uplink_group]]`s) — the connection goes through that group's uplink manager;
-- **`direct`** — forwarded outside any uplink (equivalent to the old `[bypass]` behaviour);
-- **`drop`** — SOCKS5 `REP=0x02 (connection not allowed)` for TCP, silent drop for UDP.
+- a group name (one of the declared `[[uplink_group]]`s): the connection goes through that group's uplink manager;
+- `direct`: forwarded outside any uplink (what `[bypass]` used to do);
+- `drop`: SOCKS5 `REP=0x02 (connection not allowed)` for TCP, silent drop for UDP.
 
-IP targets are matched against each rule's CIDR prefixes. Domain-name targets (e.g. a SOCKS5 client that hands over a hostname for remote resolution) can never match a CIDR prefix — they are matched against each rule's `domains` suffixes instead, and fall through to the default when no rule lists them. The proxy deliberately does not resolve a domain locally just to route it: that would leak DNS outside the tunnel and break the remote-resolve contract.
+IP targets are matched against each rule's CIDR prefixes. Domain-name targets (a SOCKS5 client handing over a hostname for remote resolution) never match a CIDR prefix; they are matched against each rule's `domains` suffixes and fall through to the default when no rule lists them. The proxy does not resolve a domain locally to route it: that would send the DNS query outside the tunnel and break remote resolution.
 
-Rules can be edited at runtime through `/control/routes` and reordered
-through `/control/routes/reorder` — see "Control plane" below for the
-endpoints and the hot-apply caveat.
+Rules can be edited at runtime through `/control/routes` and reordered through `/control/routes/reorder`; see [Control plane](#control-plane) for the endpoints and the hot-apply limitation.
 
 ### Route config
 
@@ -732,70 +742,74 @@ fallback_direct = true    # or: fallback_drop = true / fallback_via = "backup"
 
 Rule fields:
 
-- `prefixes` / `file` / `files`: inline list and/or one or more paths to files (one CIDR per line, `#` comments and blank lines ignored). All sources are merged into the rule's CIDR set. `file` is a convenience shorthand for a single-entry `files`; both may be combined.
-- `domains` / `domain_file` / `domain_files`: domain suffixes this rule matches **domain targets** against (same file format, one suffix per line). `example.com` matches the domain itself and any subdomain (`a.b.example.com`), on label boundaries only; matching is case-insensitive and a trailing dot is ignored; `.example.com` and `*.example.com` are accepted spellings of the same suffix. The special pattern `"*"` matches every domain — use it as a catch-all rule so domain targets get an explicit route instead of the default. A rule may combine CIDR and domain sources: IPs match the CIDR side, domains the domain side.
-- `file_poll_secs`: how often (in seconds) to `stat` each file and reload its contents on mtime change. Default `60`. Applies to every path in `files` and `domain_files`.
-- `via`: target for matching traffic. Required (except on `default = true` rules, where it picks the fallthrough target).
-- `fallback_via` / `fallback_direct` / `fallback_drop`: mutually exclusive; consulted when the primary `via` is a group that has zero healthy uplinks at dispatch time.
-- `invert = true`: the rule matches addresses NOT in its prefix set. Applies to the CIDR side only and cannot be combined with `domains` (rejected at load — "not in this domain list" across the two address kinds is ambiguous; use a separate domain rule).
-- `default = true`: exactly one rule must carry this; it matches everything not caught by the previous rules. The `default` rule must not set prefix or domain sources.
+| Field | Default | Meaning |
+|---|---|---|
+| `prefixes` / `file` / `files` | — | inline CIDR list and/or files with one CIDR per line (`#` comments and blank lines ignored). All sources are merged into the rule's CIDR set; `file` is shorthand for a one-entry `files`, both may be combined |
+| `domains` / `domain_file` / `domain_files` | — | domain suffixes matched against domain targets (same file format, one suffix per line). `example.com` matches the domain and any subdomain (`a.b.example.com`) on label boundaries; matching is case-insensitive, a trailing dot is ignored, `.example.com` and `*.example.com` mean the same suffix. `"*"` matches every domain — use it as a catch-all so domain targets get an explicit route. A rule may combine CIDR and domain sources: IPs match the CIDR side, domains the domain side |
+| `file_poll_secs` | `60` | how often each file in `file` / `files` / `domain_file` / `domain_files` is `stat`-ed; contents are reloaded on mtime change |
+| `via` | — | target for matching traffic; required except on the `default = true` rule, where it is the fallthrough target |
+| `fallback_via` / `fallback_direct` / `fallback_drop` | — | mutually exclusive; used when `via` is a group with zero healthy uplinks at dispatch time |
+| `invert` | `false` | the rule matches addresses not in its prefix set. CIDR side only; cannot be combined with `domains` (rejected at load — use a separate domain rule) |
+| `default` | — | exactly one rule must set `default = true`; it matches everything the previous rules did not and must not set prefix or domain sources |
 
 ### Prefix matching
 
-Internally each rule's inline + file prefixes are merged into a [`CidrSet`](src/routing/cidr.rs) — sorted `[start, end]` ranges (IPv4 as `u32`, IPv6 as `u128`) with overlapping and adjacent ranges merged. Lookup uses `partition_point` (binary search), O(log n) per rule.
+Each rule's inline and file prefixes are merged into a [`CidrSet`](../../crates/outline-routing/src/cidr.rs): sorted `[start, end]` ranges (IPv4 as `u32`, IPv6 as `u128`) with overlapping and adjacent ranges merged. Lookup is a binary search (`partition_point`), O(log n) per rule.
 
 ### Hot-reload
 
-Every rule with at least one `file` / `files` / `domain_files` entry gets a background tokio task that polls `mtime` of every listed path every `file_poll_secs` seconds. When any of them changes, the rule's CIDR and domain sets are rebuilt from the inline entries plus all reloaded files and swapped atomically (`Arc<RwLock<..>>`) — other rules and the table shape are unaffected. Parse or read errors on reload leave the previous sets in place and log a warning.
+Every rule with at least one `file` / `files` / `domain_file` / `domain_files` entry gets a background task that checks the mtime of each listed path every `file_poll_secs`. When one changes, the rule's CIDR and domain sets are rebuilt from the inline entries plus all files and swapped atomically (`ArcSwap`); other rules are not touched. A read or parse error keeps the previous sets and logs a warning.
 
 ### Direct session idle timeout
 
-`direct` connections are subject to a 2-minute bidirectional idle timeout. If no bytes flow in either direction for 120 seconds, both sockets are closed and FDs reclaimed. This prevents unbounded FD accumulation from clients that open TCP connections (e.g. DNS-over-HTTPS, DNS-over-TLS) and abandon them without sending FIN — leaving the server half open indefinitely. Any data activity in either direction resets the timer, so legitimate long-lived push-notification and keepalive connections are unaffected.
+`direct` connections are closed after 120 s (`[tcp_timeouts] direct_idle_secs`) without bytes in either direction, and their FDs are reclaimed. Clients that open TCP connections (DNS-over-HTTPS, DNS-over-TLS) and abandon them without FIN would otherwise keep both sockets open. Any data in either direction resets the timer.
 
 ### Fallback semantics
 
-When the primary `via` resolves to a group with no currently-healthy uplinks, the rule's fallback target is tried instead (one level, no recursion). Health is checked non-side-effectingly at dispatch time via `UplinkManager::has_any_healthy(transport)`; this is cheaper than building a candidate list and does not touch sticky-routes state. If the primary group recovers mid-session, future connections go through it normally — fallback is only consulted at dispatch.
+When `via` resolves to a group with no healthy uplink, the rule's fallback target is used instead (one level, no recursion). Health is read at dispatch time via `UplinkManager::has_any_healthy(transport)`, without building a candidate list or touching sticky routes. When the primary group recovers, new connections go through it again; the fallback is consulted only at dispatch.
 
 ### Group-level bypass (`bypass_when_down`)
 
-Instead of declaring `fallback_direct = true` on every route, a group can opt into the bypass itself: with `bypass_when_down = true` on the `[[uplink_group]]`, traffic routed to the group dispatches `direct` while the group has no healthy uplink — including the implicit "everything to the default group" dispatch when no `[[route]]` is configured. An explicit route fallback still takes precedence; the bypass then applies (one level deep) to the group the fallback lands on. Like route fallbacks, the decision is re-evaluated live per dial/datagram/flow, so traffic returns to the tunnel as soon as any uplink recovers. On hosts where TUN holds the default route, set `direct_fwmark` so bypassed sockets escape the TUN routing loop. See "Bypass on a fully-down group" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) for details.
+Instead of `fallback_direct = true` on every route, a group can set `bypass_when_down = true` on its `[[uplink_group]]`: traffic routed to the group goes `direct` while the group has no healthy uplink, including the implicit "everything to the default group" dispatch when no `[[route]]` is configured. An explicit route fallback takes precedence; the bypass then applies (one level deep) to the group the fallback lands on. The decision is re-evaluated per dial / datagram / flow, so traffic returns to the tunnel as soon as any uplink recovers. On hosts where TUN holds the default route, set `direct_fwmark` so bypassed sockets do not loop back into TUN. See "Bypass on a fully-down group" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
 
-## Transport Modes
+## Transport modes
 
-The six supported uplink shapes (native SS, SS/QUIC, SS/WS/H3, VLESS/QUIC, VLESS/WS/H3, VLESS/XHTTP/H3) are documented separately, with TOML examples and full dial-time fallback chains, in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md). The notes below cover only the operator-facing runtime details that aren't part of that reference.
+The four uplink shapes — Shadowsocks over WebSocket, Shadowsocks over XHTTP, VLESS over WebSocket and VLESS over XHTTP — are documented with TOML examples and dial-time fallback chains in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md). This section covers runtime details not in that reference.
 
-Recommended operator stance:
+Choosing a carrier:
 
-- prefer `ws_h1` as a conservative baseline
-- enable `ws_h2` only when the reverse proxy and origin are known-good for RFC 8441
-- enable `ws_h3` only when QUIC is explicitly supported and reachable
-- enable `xhttp_h2` / `xhttp_h3` when WebSocket Upgrade is blocked on the network path; the dispatcher falls through to `xhttp_h1` automatically when both QUIC and h2 ALPN are also blocked (the h1 step is throughput-limited but keeps the wire URL identical to xray)
+- `ws_h1` works through any reverse proxy that passes WebSocket Upgrade;
+- `ws_h2` needs a reverse proxy and origin that support RFC 8441;
+- `ws_h3` needs QUIC (UDP) reachability to the server;
+- `xhttp_h2` / `xhttp_h3` when WebSocket Upgrade is blocked on the path; the dial falls through to `xhttp_h1` when QUIC and the h2 ALPN are blocked too (h1 has lower throughput but uses the same URL as xray).
 
-**Shared QUIC endpoint:** H3 connections that do not use a per-uplink `fwmark` share a single UDP socket per address family (one for IPv4, one for IPv6). This means N warm-standby connections do not open N UDP sockets. Connections that require a specific `fwmark` still use their own dedicated socket because the mark must be applied before the first `sendmsg`.
+QUIC endpoints. Every H3 connection (`ws_h3`, `xhttp_h3`) gets its own QUIC endpoint and UDP socket on a fresh local port, alive for exactly as long as the connection. A NAT translation stuck on a dead destination therefore affects one connection, not every later dial. Each endpoint allocates a ~2.9 MiB receive buffer on Linux with GRO; the gauge `outline_ws_h3_endpoints_active{kind}` counts live endpoints. `fwmark` is applied to the socket before the first `sendmsg`.
 
-QUIC keep-alive pings are sent every 10 seconds to prevent NAT mapping expiry and to allow the server to detect dead connections without waiting for the full idle timeout.
+QUIC keep-alive PINGs go out every 8–12 s (per-process jitter; `[quic] keepalive_secs` overrides it), so NAT mappings do not expire and the server can detect dead connections before the idle timeout (`[quic] idle_timeout_secs`, default 30 s from the browser profile).
 
-**Mode downgrade window:** the per-uplink window that gates re-attempts of an "advanced mode" (H3 / xhttp_h3) after a failure is configured by `h3_downgrade_secs` (default: 60s; also accepted as `mode_downgrade_secs`). Set to `0` to disable. The same window is also opened by TCP probe failures on H3 uplinks — without that, intermittent advanced-mode probe pass/fail alternation would cause a failover switch every probe cycle in `active_passive + global` mode. See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#downgrade-window-mechanics) for the two-layer (per-host cache + per-uplink window) breakdown.
+Mode downgrade window. After a failure on an advanced carrier (H3 / `xhttp_h3`), the uplink stays one rank lower for `mode_downgrade_secs` (default 60 s; alias `h3_downgrade_secs`; `0` disables). TCP probe failures on H3 uplinks open the same window; otherwise, in `active_passive + global`, a probe that alternates between pass and fail would trigger a failover every cycle. The two layers (per-host cache + per-uplink window) are described in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#downgrade-window-mechanics).
 
-Scoring during a downgrade window (`per_flow` scope):
-- While the downgrade timer is active, the uplink's effective latency score has `failure_penalty_max` added on top of the normal failure penalty. This prevents `active_active + per_flow` flows from switching back to the primary uplink while it is operating in H2 fallback mode: as the normal failure penalty decays, the extra downgrade penalty keeps the primary's score unfavorable until the window closes.
+Scoring during a downgrade window (`per_flow` scope): while the window is open, `failure_penalty_max_ms` is added to the uplink's effective latency on top of the normal failure penalty. As the normal penalty decays, this term keeps `active_active + per_flow` flows from moving back to the primary while it runs on the H2 fallback, until the window closes.
 
-Warm-standby connections respect the active downgrade state: while an uplink is in H3→H2 downgrade, new standby slots are filled using H2.
+Warm-standby slots follow the downgrade: while an uplink is capped from H3 to H2, new standby connections are opened with H2.
 
-**Transport handshake timeouts:** every WebSocket connect path enforces an upper bound so that a silently-broken or black-holed server cannot stall new sessions for minutes while keeping the uplink nominally "healthy".
+Transport handshake timeouts. Every connect path has an upper bound, so a black-holed server cannot stall new sessions for minutes while the uplink still counts as healthy:
 
-- **Fresh connect** (new TCP/QUIC + TLS + protocol handshake): 10 s for H1, H2, and H3. Without this bound a network black hole can hang up to ~127 s (Linux TCP SYN retransmit, H1/H2) or up to 120 s (QUIC `max_idle_timeout`, H3).
-- **Reused shared H2/H3 connection** (opening a new WebSocket stream over an already-established connection): 7 s per await for H3, 10 s per await for H2. This catches the case where the shared pool handle is still nominally "open" to the client-side library but the underlying path has died — e.g. NAT rebinding, server graceful close received late, or silent packet loss.
+| Situation | Bound (defaults) | Without the bound |
+|---|---|---|
+| Fresh connect (TCP/QUIC + TLS + HTTP handshake), H1 / H2 / H3 | `[dial] timeout_secs`, 10 s | Linux TCP SYN retransmits ~127 s (H1/H2); QUIC idle timeout (H3) |
+| New stream on a shared H2 connection | `[dial] timeout_secs`, 10 s | waits for the dead connection |
+| New session on a pooled H3 connection | 8 × the connection's smoothed RTT, at least 3 s, at most 70 % of `[dial] timeout_secs` (7 s); then the session redials on a fresh connection | waits until the QUIC idle timeout closes the connection |
 
-When a timeout fires, the error is treated as an upstream runtime failure: the shared pool entry (if any) is invalidated on the next open attempt, `report_runtime_failure` sets a cooldown, and the probe is woken immediately. In `active_passive + global` mode the active uplink is replaced only after the probe confirms the primary as down on a fresh connect of its own — transient shared-pool glitches do not change the exit IP, while recovery when the primary is genuinely unreachable is bounded to roughly one probe cycle.
+A pooled connection whose path died (NAT rebinding, late server close, silent loss) still looks open to the client library; these bounds catch that. A timeout counts as an upstream runtime failure: the pooled entry is invalidated on the next open, `report_runtime_failure` sets a cooldown and wakes the probe. In `active_passive + global` the active uplink is replaced only after the probe confirms the failure on a fresh connect of its own, so a transient pool glitch does not change the exit IP, and recovery from a really unreachable primary takes about one probe cycle.
 
-**Shared connection reconnect serialization:** when the shared H2 or H3 connection drops and N sessions simultaneously try to reconnect, only one new TCP+TLS+H2 or QUIC+TLS+H3 handshake is performed. A per-server-key `tokio::sync::Mutex<()>` serialises the slow path: the first waiter establishes the connection and caches it; all other waiters find the fresh entry under the lock and reuse it without starting their own handshake. This prevents thundering herd storms where N sessions each independently open a full TLS negotiation toward the same server after a shared connection drop.
+Shared connection reconnect. When a shared H2 or H3 connection drops and N sessions try to reconnect at once, one new handshake is performed. A per-server-key `tokio::sync::Mutex<()>` serialises the slow path: the first waiter connects and caches the connection; the others find it under the lock and reuse it instead of opening N TLS handshakes to the same server.
 
-**SOCKS5 negotiation abort classification:** when a local SOCKS5 client (TUN interceptor such as Sing-box or Clash) aborts the handshake early — closing the TCP connection after the method-negotiation greeting but before or during the CONNECT request — the resulting `early eof` / `failed to read request header` errors are classified as expected client disconnects and logged at `debug` level rather than `warn`. This is normal behaviour during reconnect storms when the TUN interceptor flushes its connection pool.
+SOCKS5 negotiation aborts. When a local SOCKS5 client (a TUN interceptor such as sing-box or Clash) closes the connection after the greeting but before or during the CONNECT request, the resulting `early eof` / `failed to read request header` errors are logged at `debug`, not `warn`. TUN interceptors do this when they flush their connection pool during reconnects.
 
 ## UDP over HTTP/3 datagrams
 
-On `ws_h3` and `xhttp_h3`, client UDP (Shadowsocks / SS2022 and VLESS) can ride HTTP/3 DATAGRAM frames (RFC 9297) bound to the carrier's request stream instead of the reliable stream. This removes head-of-line blocking and the double retransmission under a nested QUIC. Details and the per-protocol rules are in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#udp-over-http3-datagrams).
+On `ws_h3` and `xhttp_h3`, client UDP (Shadowsocks / SS2022 and VLESS) can ride HTTP/3 DATAGRAM frames (RFC 9297) bound to the carrier's request stream instead of the stream itself. This removes head-of-line blocking and the double retransmission of QUIC inside QUIC. Per-protocol rules: [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#udp-over-http3-datagrams).
 
 ```toml
 [quic]
@@ -804,14 +818,22 @@ On `ws_h3` and `xhttp_h3`, client UDP (Shadowsocks / SS2022 and VLESS) can ride 
 # udp_datagrams = true
 ```
 
-- **Agreement.** The client sends `x-outline-udp-datagram: 1`; the server echoes it to agree (its own `[server.h3] udp_datagrams`, default `true`). No echo means the stream, byte for byte as before, so either side may be older.
-- **Where it applies.** Only `ws_h3` / `xhttp_h3`, only UDP plans, never with the Safari profile (it advertises no `max_datagram_frame_size`).
-- **Sizes.** The choice is per packet by the current `max_datagram_size()`; a packet that does not fit goes over the stream. The client starts at an MTU of 1200 before PMTUD, so right after connect most full-size packets still use the stream. The server's maximum UDP payload is 1452. Datagram buffers are 1 MiB on both sides.
-- **Rollout.** Servers first, then clients (either order is safe). Rollback: set `udp_datagrams = false` on the side that misbehaves and restart that service (no rebuild needed).
+- Agreement. The client sends `x-outline-udp-datagram: 1`; the server echoes it to agree (server key `[server.h3] udp_datagrams`, default `true`). Without the echo UDP stays on the stream, byte for byte as before, so either side may run an older version.
+- Scope. Only `ws_h3` / `xhttp_h3`, only UDP plans, never with the Safari fingerprint profile (it advertises no `max_datagram_frame_size`).
+- Sizes. The choice is made per packet against the current `max_datagram_size()`; a packet that does not fit goes over the stream. The client starts at an MTU of 1200 before PMTUD, so right after connect most full-size packets still use the stream. The server's maximum UDP payload is 1452. Datagram buffers are 1 MiB on both sides.
+- Rollout. Servers first, then clients; either order works. Rollback: set `udp_datagrams = false` on the misbehaving side and restart that service (no rebuild).
 
-**Path MTU cache.** The client remembers the path MTU each H3 path settled at (keyed by server, port, fwmark and a hash of the local source address, i.e. the network it is on) in a file next to the state file, same name with the extension `.pmtu` (default `<config>.state.pmtu`). The next dial on the same path probes that size first: one MTU probe instead of the 1326 → 1389 → 1420 → … ladder a passive observer would see on every connection. A stale value (the path shrank) costs one rejected probe size, after which the regular search runs below it. A live cached value is the first probe and, once confirmed, the connection's ceiling. A value of 1452 (the H3 upper bound) stays live for 3 days after the path first settled at it; a value below 1452 for 1 hour, so a search that settled low after a spurious probe loss does not cap connections for days. An expired value (up to 30 days old) is still the first probe but only seeds the search: the search goes on above it, so an unchanged or grown path is found without the ladder (a path that shrank costs one rejected size and a search below it), and the result is stored afresh. If that search rejected a size, the connection is capped one below the smallest rejected size, so an unchanged path pays its one rejected size once per connection, not on every 10-minute re-search. The Initial stays 1200 bytes.
+Path MTU cache. The client stores the path MTU each H3 path settled at (keyed by server, port, fwmark and a hash of the local source address, i.e. the network it is on) in a file next to the state file with the extension `.pmtu` (default `<config>.state.pmtu`; with the bundled unit `/var/lib/outline-ws-rust/_default/state.pmtu`). The next dial on the same path probes that size first: one MTU probe instead of the 1326 → 1389 → 1420 → … ladder a passive observer would see on every connection.
 
-Metrics (all on the `/metrics` endpoint):
+| Cached value | Lifetime | Effect on the next connection |
+|---|---|---|
+| 1452 (H3 upper bound) | 3 days after the path first settled at it | first probe and, once confirmed, the connection's ceiling |
+| below 1452 | 1 hour | the same; the short lifetime keeps a search that settled low after a spurious probe loss from capping connections for days |
+| expired, up to 30 days old | — | first probe that only seeds the search: the search continues above it and the result is stored again |
+
+A stale value (the path shrank) costs one rejected probe size, then the regular search runs below it. If a search rejected a size, the connection is capped one below the smallest rejected size, so an unchanged path pays its rejected size once per connection, not on every 10-minute re-search. The Initial stays 1200 bytes.
+
+Metrics (on `/metrics`):
 
 | Metric | Labels | Meaning |
 | --- | --- | --- |
@@ -823,96 +845,108 @@ Metrics (all on the `/metrics` endpoint):
 | `outline_ws_quic_black_holes_total` | `transport` | 10 s samples in which a datagram connection detected an MTU black hole (each detection drops the path MTU to 1200), at most one per sample: a dying connection re-fires the detector thousands of times a minute |
 | `outline_ws_quic_mtu_probes_lost_total` | `transport` | lost DPLPMTUD probes on datagram connections |
 
-## Carrier Padding
+## Carrier padding
 
-Optional application-layer padding for the WebSocket / XHTTP dials — the client half of the server's `[padding]` feature. Each Shadowsocks chunk or VLESS frame is wrapped in a length-delimited `real_len | pad_len | real | pad` frame so the outer TLS record size no longer tracks the payload size, defeating the record-size correlation TLS-in-TLS classifiers key on.
+Optional application-layer padding for WebSocket and XHTTP dials — the client half of the server's padding feature. Each Shadowsocks chunk or VLESS frame is wrapped in a length-delimited `real_len | pad_len | real | pad` frame, so the outer TLS record size no longer follows the payload size. TLS-in-TLS classifiers use that record-size correlation.
 
-- **Global default + per-uplink override.** The `[padding]` block sets the scheme parameters and a default on/off (`enabled`); each `[[outline.uplinks]]` may override it with `padding = true` / `padding = false`. The effective decision for a dial is the per-uplink value when set, else the global default (same override/fallback shape as the per-uplink `fingerprint_profile`). Leave the global default off and set `padding = true` on the uplinks pointing at your own padded servers; or leave it on and set `padding = false` on a VLESS uplink aimed at a third-party server (xray / sing-box) so it stays plain. A padded dial (SS and VLESS, TCP and UDP alike) must point at server path(s) that are also padded.
-- **Config-synchronised, not negotiated.** The server must enable `[padding]` on the matching carrier path (`outline-ss-rust` `[padding] paths`) or the padded frames break its decoder. Off by default (wire unchanged).
-- **Cover traffic.** With `cover = true` the uplink emits pad-only frames on an idle connection at a jittered interval (`cover_jitter_min_ms` … `cover_jitter_max_ms`).
+- Global default plus per-uplink override. `[padding]` holds the scheme parameters and the default on/off (`enabled`, default `false`); each `[[outline.uplinks]]` may set `padding = true` / `padding = false`. A dial uses the per-uplink value when set, else the global default (the same override shape as the per-uplink `fingerprint_profile`). Either keep the default off and set `padding = true` on uplinks that point at your padded server endpoints, or keep it on and set `padding = false` on a VLESS uplink aimed at a third-party server (xray / sing-box). A padded dial (SS and VLESS, TCP and UDP) must point at server endpoints that are padded too.
+- Set by config on both sides, not negotiated. On outline-ss-rust the matching `[[endpoint]]` must have `padded = true`; otherwise padded frames reach a plain decoder and the session fails.
+- Cover traffic. With `cover = true` an idle connection emits pad-only frames at a jittered interval (`cover_jitter_min_ms` … `cover_jitter_max_ms`, defaults 250 / 1500).
 
-Covers SS- and VLESS-over-WebSocket (h1/h2/h3) and -over-XHTTP alike, and UDP is padded per-datagram on every WS carrier — SS-UDP (split: list its path; combined: the shared base path) and VLESS-UDP both. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in `config.toml` lists the knobs.
+Covers SS and VLESS over WebSocket (h1/h2/h3) and over XHTTP. UDP is padded per datagram on every WS carrier — SS-UDP (split: list its path; combined: the shared base path) and VLESS-UDP. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in `config.toml` lists the keys.
 
-## Uplink Selection and Runtime Behavior
+## Uplink selection and runtime behavior
 
 Each uplink has its own:
 
 - TCP URL and mode
 - UDP URL and mode
-- cipher and password
+- cipher and password (or `vless_id`)
 - optional Linux `fwmark`
-- per-uplink priority via `weight` — treated as a **hard** ordering signal: among healthy candidates the highest weight always wins, regardless of EWMA. Use `weight` to mark backups you do not want the failover/sticky path to drift onto. Equal-weight uplinks are tie-broken by EWMA-derived score (and finally by config index).
+- priority via `weight`. Among healthy candidates the highest weight always wins, regardless of EWMA; use it to mark backups that failover and sticky routing must not drift onto. Equal weights are ordered by the EWMA-based score, then by config index.
 
 Selection pipeline:
 
 1. Health probes update the latest raw RTT and EWMA RTT.
-2. Probe-confirmed failures add a decaying failure penalty. When probes are enabled, runtime failures (e.g. an H3 connection reset under load) do not add a penalty on their own — they only set a temporary cooldown. The penalty is added only when a probe confirms a real failure (`consecutive_failures ≥ min_failures`). This prevents penalty accumulation on a healthy uplink due to transient errors under load.
-3. Effective latency is derived from EWMA RTT plus current penalty.
-4. Candidates are sorted: healthy first, then by `weight` (higher first), then by `effective_latency / weight`, then by config index. EWMA-derived score only ranks within the **same** weight band — it cannot promote a lower-weight uplink above a higher-weight one.
-5. Sticky routing and hysteresis reduce avoidable switches.
-6. Warm-standby pools reduce connection setup latency.
+2. Probe-confirmed failures add a decaying failure penalty. With probes enabled, a runtime failure (e.g. an H3 connection reset under load) only sets a temporary cooldown; the penalty is added when a probe confirms the failure (`consecutive_failures ≥ min_failures`). Transient errors under load therefore do not accumulate penalties on a healthy uplink.
+3. Effective latency = EWMA RTT + current penalty.
+4. Candidates are sorted: healthy first, then `weight` (higher first), then `effective_latency / weight`, then config index. The score only ranks uplinks of the same weight.
+5. Sticky routing and hysteresis keep flows on their uplink unless the score difference exceeds `hysteresis_ms`.
+6. Warm-standby pools hold pre-dialed connections, so a new session skips the handshake.
 
-**Sticky-route cap:** the sticky-route table is bounded at 100,000 per-flow entries. Under traffic from large NAT pools or many distinct clients in `per_flow` routing scope, the table would otherwise grow unboundedly. New per-flow entries beyond the cap are silently dropped — the flow falls back to a fresh latency-ordered selection instead of a sticky one. Global and per-transport pinned entries (used in `global` and `per_uplink` scopes) are always stored regardless of this limit.
+Sticky-route cap: the sticky-route table holds at most 100 000 per-flow entries. With large NAT pools or many clients in `per_flow` scope, new per-flow entries beyond the cap are not stored and the flow gets a fresh latency-ordered selection. Global and per-transport pins (`global` and `per_uplink` scopes) are always stored.
 
-Routing scope behavior:
+Routing scope:
 
-- `per_flow`: different targets can choose different uplinks
-- `per_uplink`: one selected uplink is shared per transport, so TCP and UDP may still use different uplinks; in `active_passive` mode each transport keeps its own pinned active uplink until failover or explicit reselection, and penalties no longer bias the strict transport score
-- `global`: one selected uplink is shared across all new user traffic until failover or explicit reselection. TCP score still takes priority for ranking, but UDP-capable active uplinks must also keep UDP healthy: a UDP probe failure or UDP runtime cooldown can trigger a global failover. Penalties no longer bias the strict global score.
+- `per_flow`: different targets can use different uplinks.
+- `per_uplink`: one selected uplink per transport, so TCP and UDP may use different uplinks. In `active_passive` each transport keeps its pinned uplink until failover or explicit reselection; penalties do not affect the strict per-transport score.
+- `global`: one selected uplink for all new traffic until failover or explicit reselection. TCP score ranks, but a UDP-capable active uplink must also keep UDP healthy: a UDP probe failure or UDP runtime cooldown triggers a global failover. Penalties do not affect the strict global score.
 
-**Auto-failback behavior:** controlled by `load_balancing.auto_failback` (default `false`).
+Auto-failback (`auto_failback`, default `false`):
 
-- `false` (default): the active uplink is **only replaced when it fails** (enters cooldown or is no longer healthy). While the active uplink is still healthy, it stays active regardless of whether a higher-priority uplink has recovered. This is the recommended setting for production because it avoids connection disruption caused by proactive primary preference.
-- `true`: when the current active uplink is healthy and a probe-healthy candidate with a higher `weight` (or equal weight and lower config index) exists, the proxy may return traffic to that candidate — but only after the candidate has accumulated `min_failures` consecutive successful probe cycles. Priority is determined by `weight`, not EWMA: this prevents spurious switches under load, when the active uplink's EWMA is temporarily elevated. Failback only moves toward higher weight; switching to a lower-weight uplink requires a probe-confirmed failover.
+- `false`: the active uplink is replaced only when it fails (enters cooldown or turns unhealthy). While it is healthy it stays active even if a higher-priority uplink has recovered. This avoids the connection resets a proactive return to the primary causes.
+- `true`: while the current active is healthy and a probe-healthy candidate with a higher `weight` (or equal weight and lower config index) exists, traffic returns to that candidate after it has passed `min_failures` consecutive probe cycles. Priority is `weight`, not EWMA, because the active uplink's EWMA rises under load. Failback only moves toward higher weight; moving to a lower-weight uplink requires a probe-confirmed failover.
 
-**Scheduled re-selection:** `load_balancing.reselect_at` (wall-clock `"HH:MM"` slots, due for up to 90 s after the configured time) or `load_balancing.reselect_interval` (a fixed period) forces a weighted-random rotation of the strict active uplink in `active_passive` mode on a timer — the current active is always excluded, and the winner is drawn among healthy, enabled, non-cooldown candidates weighted by `penalty_weight × weight` (floored by `health_weight_floor`). Mutually exclusive with each other; both require `active_passive`. **Caution with `auto_failback = true`:** since the draw has no priority rule, it can land on a lower-weight uplink than the one it replaced, and the very next stretch of consecutive-healthy probes on the higher-weight uplink then silently reverts the move via failback. Use equal `weight` across the group if the scheduled move should stick, or leave `auto_failback` off (the default) with this feature. `POST /control/reselect` triggers the same rotation on demand. See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) "Scheduled re-selection" for full semantics.
+Scheduled re-selection: `reselect_at` (wall-clock `"HH:MM"` slots, due for up to 90 s after the configured time) or `reselect_interval` (a fixed period) forces a weighted-random rotation of the strict active uplink in `active_passive` mode. The current active is always excluded; the winner is drawn among healthy, enabled, non-cooldown candidates weighted by `penalty_weight × weight` (floored by `health_weight_floor`). The two keys are mutually exclusive; both require `active_passive`. `POST /control/reselect` runs the same rotation on demand. See "Scheduled re-selection" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
 
-**Synchronized re-selection:** `load_balancing.reselect_sync = true` (requires `reselect_at`) replaces the weighted-random draw with a deterministic one: the slot's preference order is derived from the group name, the uplink names, the local calendar day and the slot index, and the active uplink becomes the first entry of that order that is healthy on this node. Independent nodes carrying the same group config therefore choose the same uplink without exchanging anything, which keeps a client population that reaches either node on a single egress address. Health, cooldown and admin state stay local — a node whose leg dies fails over immediately, and if only one node sees the failure the pair stays split until the next slot. Startup applies the slot decision over any restored-from-state active, and `POST /control/reselect` becomes idempotent within a slot. All nodes of one sync domain must share a timezone. See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) "Synchronized re-selection".
+**Warning:** with `auto_failback = true` the draw can land on a lower-weight uplink, and the next run of consecutive healthy probes on the higher-weight uplink reverts the move through failback. Give the group equal `weight` if the scheduled move must stick, or keep `auto_failback = false` (the default).
 
-**Penalty-aware failover:** when the current active uplink enters cooldown and the selector must pick a replacement, candidates are re-sorted as: healthy first → cooldown remaining → `weight` (higher first) → penalty-aware EWMA score (`(EWMA + penalty) / weight`) → config index. `weight` is the primary ordering signal so a deliberately downranked backup is not promoted by a faster probe RTT alone; the penalty-aware score still breaks ties within the same weight, preventing oscillation with three or more equal-weight uplinks (without penalties a probe-cleared primary with a better raw EWMA would be selected again immediately even though it just failed).
+Synchronized re-selection: `reselect_sync = true` (requires `reselect_at`) replaces the random draw with a deterministic one. The slot's preference order is derived from the group name, the uplink names, the local calendar day and the slot index; the active uplink becomes the first entry of that order that is healthy on this node. Independent nodes with the same group config therefore choose the same uplink without exchanging anything, and clients that reach either node keep one egress address. Health, cooldown and admin state stay local: a node whose uplink dies fails over immediately, and if only one node sees the failure the pair stays split until the next slot. At startup the slot decision overrides an active uplink restored from the state file, and `POST /control/reselect` is idempotent within a slot. All nodes of one sync domain must use the same timezone. See "Synchronized re-selection" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md).
+
+Penalty-aware failover: when the active uplink enters cooldown, replacement candidates are sorted healthy first → remaining cooldown → `weight` (higher first) → penalty-aware score (`(EWMA + penalty) / weight`) → config index. A deliberately down-ranked backup is not promoted by a faster probe RTT alone; within one weight, the penalty term keeps three or more equal uplinks from oscillating (without it, a primary that just failed and was cleared by a probe would win again on its better raw EWMA).
 
 Runtime failover:
 
-- UDP can switch uplinks within an active association after runtime send/read failure.
+- UDP can switch uplinks within an active association after a send/read failure.
 - TCP can fail over before a usable tunnel is established.
-- Established TCP tunnels are not live-migrated.
+- Established TCP tunnels are not moved to another uplink.
 
-## Health Probes
+## Health probes
 
-Available probe types:
+Probe types:
 
-- `ws`: verifies TCP+TLS+WebSocket handshake connectivity to the uplink. No WebSocket ping/pong frames are sent — many servers do not respond to WebSocket ping control frames. Confirms that a new connection can be established; data-path integrity is verified by HTTP/DNS probes.
-- `http`: real HTTP request over `websocket-stream` — verifies the full data path.
-- `dns`: real DNS exchange over `websocket-packet` — verifies the full UDP data path.
+| Type | What it checks |
+|---|---|
+| `ws` | TCP + TLS + WebSocket handshake to the uplink. No ping/pong frames (many servers do not answer them). Confirms a new connection can be opened; data-path integrity is checked by `http` / `dns` |
+| `http` | HTTP `HEAD` over `websocket-stream`; status `200..400` is success |
+| `dns` | DNS exchange over `websocket-packet`; checks the UDP data path |
+| `tcp` | connect to a speak-first TCP service through the tunnel |
+| `tls` | TLS handshake against a configured SNI through the tunnel, no HTTP exchange |
 
-Probe execution controls:
+Probe settings (`[outline.probe]`):
 
-- `max_concurrent`: total concurrent probe tasks
-- `max_dials`: dedicated cap for probe dial attempts
-- `min_failures`: consecutive probe failures required before the uplink is marked unhealthy (default: `1`). Also used as the consecutive-success threshold for auto-failback stability: when `auto_failback = true`, a recovered primary must accumulate `min_failures` consecutive probe successes before traffic can be returned to it.
-- `attempts`: number of probe attempts per uplink per cycle. Each attempt that fails increments the consecutive-failure counter; a passing attempt resets it to zero and increments the consecutive-success counter.
-- `endpoint_check` (default `false`): bare-TCP reachability check across every endpoint of the uplink (primary + fallbacks, both planes, deduplicated by `host:port` plus egress options), run concurrently. It is an **accelerator, not a judge**: the regular probe keeps the last word on health. Only when both agree — no endpoint accepts a connect *and* the probe itself got through on neither plane — is the failure treated as host-level, and then the uplink is marked unhealthy after `min_failures` such cycles without walking the carrier descent (`h3 → h2 → h1`) or rotating the wire chain, with the endpoint list surfaced in `last_error`. That is what turns "host switched off" from a multi-minute discovery into a couple of cycles. A probe that got through overrules the check: a bare connect cannot tell "the server is gone" from "new TCP to it is refused while traffic rides an already-established QUIC carrier", and the two must not be treated alike.
+| Key | Default | Meaning |
+|---|---|---|
+| `interval_secs` | `120` | probe cycle period |
+| `timeout_secs` | `10` | per-probe timeout |
+| `max_concurrent` | `4` | concurrent probe tasks |
+| `max_dials` | `2` | concurrent probe dials |
+| `min_failures` | `3` | consecutive failures before the uplink is unhealthy; also the success streak required before auto-failback |
+| `attempts` | `1` | attempts per uplink per cycle; each failed attempt increments the failure counter, a passing one resets it and increments the success counter. Values above 1 log a warning |
+| `skip_when_active` | `true` | skip the cycle for an uplink that carried traffic recently (see below) |
+| `liveness_interval_secs` | `300` | with `skip_when_active`, force one probe cycle at least this often; `0` disables |
+| `endpoint_check` | `false` | bare-TCP reachability check of the uplink's endpoints (see below) |
+| `endpoint_check_timeout_ms` | `2000` | per-endpoint deadline for `endpoint_check`, resolution included (minimum 100) |
 
-  The check runs **after** the probe, only on cycles where the probe failed on every plane — those are the only cycles whose verdict can use the answer. Detection latency is unchanged (a failing cycle pays the same two stages, in the other order), but a healthy uplink no longer spends one connect per cycle. That matters on the far end: every wire of an uplink usually dials the same `host:port`, so the check is a connect-and-drop that the server sees as a TCP connection closed before any ClientHello — at `interval_secs = 10` that is 8 640 of them per uplink per day, per client. Consequence for dashboards: `probe="endpoint"` now has a near-zero rate in steady state instead of tracking the cycle rate; a non-zero rate means uplinks are actually failing probes.
-- `endpoint_check_timeout_ms` (default `2000`): per-endpoint deadline for `endpoint_check`, resolution included. Keep it well under `timeout_secs`: it is paid on top of a probe cycle that already failed, and a dead host costs the full deadline every time, since a blackholed SYN never draws an RST. Outcomes are recorded as `probe="endpoint"` in `outline_ws_probe_runs_total` / `outline_ws_probe_duration_seconds`.
+`endpoint_check` connects to every endpoint of the uplink (primary + fallbacks, both planes, deduplicated by `host:port` plus egress options) concurrently. It only speeds up a verdict the regular probe already reached. When no endpoint accepts a connect and the probe got through on neither plane, the failure is treated as host-level: the uplink is marked unhealthy after `min_failures` such cycles without walking the carrier descent (`h3 → h2 → h1`) or rotating the wire chain, and the endpoint list appears in `last_error`. A switched-off host is then detected in a couple of cycles instead of several minutes. A probe that got through overrules the check: a bare connect cannot tell "the server is gone" from "new TCP is refused while traffic rides an established QUIC carrier".
+
+The check runs after the probe, and only on cycles where the probe failed on every plane. Detection latency is the same as running it first, and a healthy uplink spends no extra connect per cycle. On the server each check is a TCP connection closed before any ClientHello; at `interval_secs = 10` that would be 8 640 per uplink per day per client. On dashboards, `probe="endpoint"` in `outline_ws_probe_runs_total` / `outline_ws_probe_duration_seconds` has a near-zero rate in steady state; a non-zero rate means uplinks are failing probes. Keep `endpoint_check_timeout_ms` well below `timeout_secs`: it is paid on top of a failed cycle, and a dead host costs the full deadline because a black-holed SYN never draws an RST.
 
 Probe timing:
 
-- Probes normally run on a fixed `interval` timer.
-- When a runtime failure sets a fresh failure cooldown on an uplink, the probe loop is immediately woken up (via an internal `Notify`) so that failover is confirmed within one probe cycle rather than waiting for the next scheduled interval. This significantly reduces end-to-end failover latency.
-- **Probe suppression under active traffic (global + probe):** in `routing_scope = global` mode with probes enabled, the probe cycle is skipped for an uplink when all three conditions are met: (1) real traffic was observed within the last `interval`, (2) the uplink is probe-healthy (`tcp_healthy = true`), (3) routing scope is `global`. Active traffic is stronger evidence of reachability than a probe ping. This prevents false-negative probe results under load: when the probe loop wakes immediately after an H3 runtime failure, the server may be busy and unable to accept a new QUIC connection for the probe — which would otherwise cause a spurious failover. For non-global scopes the probe still runs even when traffic is active, to confirm recovery after cooldown.
+- Probes run on the `interval_secs` timer.
+- When a runtime failure sets a new cooldown, the probe loop is woken immediately (internal `Notify`, at most once per 15 s per uplink and transport), so the failover is confirmed within one probe cycle instead of at the next scheduled one.
+- Probe skip under traffic (`skip_when_active = true`, all routing scopes): the cycle is skipped for an uplink when TCP traffic was seen within the last `interval_secs`, the uplink is probe-healthy and no runtime cooldown is active. The probe still runs when a chunk-0 failure was seen recently (`chunk0_failure_window_secs`, default 300) or when `liveness_interval_secs` has passed since the last full cycle. An unhealthy uplink is always probed, since the probe is what restores it.
 
-Warm-standby validation:
+Warm-standby validation: every 15 s, standby connections are checked with a 1 ms non-blocking read. EOF, a close frame or an error clears the slot and refills it; a timeout (no data within 1 ms) means the connection is still open.
 
-- Every 15 seconds, standby connections are validated using a 1 ms non-blocking read. If the server closed the connection (EOF, close frame, or error), the slot is cleared and refilled. A timeout (no data in 1 ms) means the connection is still open.
+Probe activation:
 
-Probe activation rules:
+- probes run only when probe settings are configured;
+- `[outline.probe]` alone enables no check;
+- at least one of `[outline.probe.ws]`, `.http`, `.dns`, `.tcp` or `.tls` must be present.
 
-- probes do not start unless probe settings are explicitly configured
-- `[probe]` alone does not enable any check
-- at least one of `[probe.ws]`, `[probe.http]`, `[probe.dns]`, `[probe.tcp]`, or `[probe.tls]` must be present
-
-Uplinks without a `udp_ws_url` are treated as TCP-only: UDP health state and standby slots are not created or tracked for them, and UDP-related probe outcomes do not affect their UDP health metric.
+Uplinks without a `udp_ws_url` are TCP-only: no UDP health state or standby slots are created for them, and UDP probe outcomes do not affect their UDP health metric.
 
 ## IPv6
 
@@ -925,113 +959,108 @@ Supported:
 - IPv6 UDP packets in TUN mode
 - IPv6 upstream transport for `h2` and `h3`
 
-## TUN Mode
+## TUN mode
 
-The process attaches only to an already existing TUN device. Interface creation, addresses, routing, and policy routing stay outside the app.
+The process attaches to an existing TUN device. Interface creation, addresses, routes and policy routing are configured outside the app.
 
 ### tun2udp
 
-Capabilities:
-
-- IPv4 and IPv6 UDP packet forwarding
-- IPv4 and IPv6 IP fragment reassembly on the TUN ingress path
-- local IPv4 ICMP echo reply (`ping`) handling
-- local IPv6 ICMPv6 echo reply handling, with source fragmentation to the IPv6 minimum MTU when needed
-- optional group-health gating of those echo replies (`tun_suppress_icmp_reply_when_down` on the uplink group): pings routed to a group stop being answered while the group has no healthy uplink, so an external watchdog can detect a dead tunnel
-- that gate also demands the health verdict be *fresh* (`tun_icmp_liveness_window_secs`). The reply is generated locally — the ping never leaves the host — so answering it only proves this loop ran, and `healthy` is sticky: a daemon whose probe loop has died keeps its last verdict forever and would go on answering while carrying no traffic. With the window, some healthy uplink must also have seen real traffic or completed a probe cycle inside it; otherwise the reply is withheld and counted as `icmp_reply_suppressed_stale`. Unset derives the window from the probe schedule (`max(3 × interval, liveness_interval + 60s, 60s)`); `0` restores the health-flag-only behaviour, and the freshness half is skipped entirely for a group with no probes configured
-- IPv6 UDP and ICMPv6 handling across supported extension-header paths
+- IPv4 and IPv6 UDP forwarding
+- IPv4 and IPv6 fragment reassembly on the TUN ingress path
+- local IPv4 ICMP echo replies (`ping`)
+- local ICMPv6 echo replies, with source fragmentation to the IPv6 minimum MTU when needed
+- optional group-health gating of those replies (`tun_suppress_icmp_reply_when_down` on the uplink group): pings routed to a group are not answered while the group has no healthy uplink, so an external watchdog can detect a dead tunnel
+- the gate also requires a fresh health verdict (`tun_icmp_liveness_window_secs`). The reply is generated locally — the ping never leaves the host — so answering it only proves this loop runs, and the `healthy` flag keeps its last value if the probe loop dies. With the window, some healthy uplink must also have carried traffic or completed a probe cycle inside it; otherwise the reply is withheld and counted as `icmp_reply_suppressed_stale`. Unset, the window is `max(3 × interval, liveness_interval + 60s, 60s)`; `0` checks the health flag only; groups without probes skip the freshness check
+- IPv6 UDP and ICMPv6 across the supported extension-header paths
 - per-flow uplink transport
-- flow idle cleanup
-- bounded flow count
-- oldest-flow eviction on overflow
-- flow metrics and packet outcome metrics, including local ICMP replies
+- idle flow cleanup (`[tun] idle_timeout_secs`, default 300)
+- flow count limit (`max_flows`, default 4096) with eviction of the least recently seen flow
+- flow and packet-outcome metrics, including local ICMP replies
 
 ### tun2tcp
 
-Capabilities:
-
-- stateful userspace TCP relay over Outline TCP uplinks
+- userspace TCP relay over Outline TCP uplinks
 - SYN / SYN-ACK / FIN / RST handling
 - out-of-order buffering
 - receive-window enforcement
-- SACK-aware receive/send logic
+- SACK-aware receive/send
 - adaptive RTO
 - zero-window persist/backoff
-- bounded buffering and retransmit budgets
-- flow termination on timeout, overflow, or relay failure
-- transport-error reporting to the uplink penalty system: abrupt upstream closes (e.g. QUIC `APPLICATION_CLOSE` / `H3_INTERNAL_ERROR`) are forwarded to `report_runtime_failure`, so the H3→H2 downgrade and failure penalty apply to TUN TCP flows the same way they apply to SOCKS5 flows; clean WebSocket closes (FIN or Close frame) are not counted as failures
+- bounded buffers and retransmit budget (`[tun.tcp] max_retransmits`, default 12)
+- flow termination on timeout, overflow or relay failure
+- transport errors feed the uplink penalty system: abrupt upstream closes (e.g. QUIC `APPLICATION_CLOSE` / `H3_INTERNAL_ERROR`) go to `report_runtime_failure`, so the H3→H2 downgrade and failure penalty apply to TUN TCP flows as they do to SOCKS5 flows; clean WebSocket closes (FIN or Close frame) are not failures
 
-This is intended for real operations, but it is still not equivalent to a kernel TCP stack.
+`tun2tcp` is not equivalent to a kernel TCP stack.
 
 ### IKE / IPsec NAT-T bypass
 
-`tun.ipsec_bypass = true` adds a hard-coded fast-path: UDP flows whose destination port is **500** or **4500** skip policy routing and resolve to the direct path (same as `via = "direct"`). VoWiFi and other IKEv2/IPsec clients can then establish ESP-in-UDP datagrams that would otherwise be lost — the TUN classifier only forwards TCP/UDP/ICMP, so raw ESP (IP protocol 50) is always dropped regardless of the routing decision.
+`tun.ipsec_bypass = true` sends UDP flows with destination port 500 or 4500 to the direct path (as `via = "direct"`), bypassing policy routing. VoWiFi and other IKEv2/IPsec clients then reach their gateway with ESP-in-UDP; raw ESP (IP protocol 50) is always dropped because the TUN classifier forwards only TCP/UDP/ICMP.
 
-The bypass relies on the direct path's local socket to reach the destination. On hosts where TUN catches the default route, that socket would loop straight back into TUN; on Linux set `direct_fwmark` and add a matching `ip rule fwmark X lookup Y` so the bypassed flow escapes the loop. Without `direct_fwmark` and a corresponding policy-routing rule, the process logs a startup warning.
+The bypass uses the direct path's local socket. On hosts where TUN holds the default route, that socket would loop back into TUN: on Linux set `direct_fwmark` and add a matching `ip rule fwmark <mark> lookup <table>`, where `<mark>` is the `direct_fwmark` value and `<table>` a routing table with the physical default route. Without `direct_fwmark` the process logs a warning at startup.
 
-Default: `false`. Both ports must be matched together — IKEv2 stacks move IKE_AUTH off port 500 mid-session via NAT_DETECTION, so bypassing only 4500 still breaks the handshake.
+Default: `false`. Both ports are matched together: IKEv2 moves IKE_AUTH from 500 to 4500 mid-session via NAT_DETECTION, so bypassing only 4500 breaks the handshake.
 
 ### Carrier migration (surviving a dead carrier)
 
-A tunnelled TUN flow does not own its transport: it shares one **carrier** — a single H3/H2/H1 connection — with every other flow on that uplink. When the carrier collapses (an H3 connection-level error takes down everything multiplexed on it at once), every flow riding it loses its transport in the same instant, and each application sees its connection die.
+A tunnelled TUN flow does not own its transport: it shares one carrier — a single H3/H2/H1 connection — with the other flows on that uplink. When the carrier collapses (an H3 connection-level error takes down everything multiplexed on it at once), every flow on it loses its transport at the same moment, and each application sees its connection die.
 
-The upstream sockets, however, are not gone. The server moves each one into its orphan registry, keyed by the Session ID it minted for that flow, and holds it for 30 s ([`docs/SESSION-RESUMPTION.md`](../outline-ss-rust/docs/SESSION-RESUMPTION.md)). With `[tun.tcp] carrier_migration = true` (the default) a flow whose carrier dies re-dials a fresh one, presents **its own** Session ID, gets the parked upstream re-attached, and closes the byte gap in both directions before resuming: the **Ack-Prefix Protocol (v1)** tells it exactly how many uplink bytes the server actually forwarded, so it replays only the tail that was lost in flight, and **Symmetric Downlink Replay (v2)** hands back the downstream bytes the dead carrier never delivered, which are flushed to the application ahead of anything the new carrier produces. The application observes no disconnect — no FIN, no RST, no gap, no duplicate byte.
+The upstream sockets are still there. The server moves each one into its orphan registry, keyed by the Session ID it issued for that flow, and holds it for 30 s ([`docs/SESSION-RESUMPTION.md`](../outline-ss-rust/docs/SESSION-RESUMPTION.md)). With `[tun.tcp] carrier_migration = true` (the default), a flow whose carrier dies dials a new one, presents its own Session ID, gets the parked upstream re-attached, and closes the byte gap in both directions before continuing. The Ack-Prefix Protocol (v1) tells the client how many uplink bytes the server actually forwarded, so it replays only the tail lost in flight; Symmetric Downlink Replay (v2) returns the downstream bytes the dead carrier never delivered, and they are flushed to the application before anything from the new carrier. The application sees no disconnect: no FIN, no RST, no gap, no duplicate byte.
 
-**It engages only on a confirmed resume hit.** A redial that presents an id can miss — the park expired, or the server has resumption off — and on a miss the server opens a *fresh* upstream to the destination, starting the byte stream from zero. Continuing a flow on that would splice a brand-new stream onto a half-finished one and hand the application a corrupt result that looks like success. So the client migrates only when the server *proves* the re-attach by emitting the v1 control frame (which it emits only after the orphan-take succeeded — the capability header on the upgrade response is not proof, since the server echoes it hit or miss). Everything else — a miss, a timeout, an unparseable frame, a replay the client can no longer reproduce byte-exact, a truncated downstream slice — falls through to the ordinary teardown, unchanged.
+It engages only on a confirmed resume hit. A redial that presents an ID can miss — the park expired, or the server has resumption off — and on a miss the server opens a new upstream to the destination, with the byte stream starting from zero. Continuing the flow on that would splice a new stream onto a half-finished one and hand the application corrupt data that looks valid. So the client migrates only when the server proves the re-attach by sending the v1 control frame, which it sends only after the orphan was taken. The capability header on the upgrade response is not proof: the server echoes it on hit and miss alike. Everything else — a miss, a timeout, an unparseable frame, a replay the client can no longer reproduce byte-exact, a truncated downstream slice — falls through to the ordinary teardown.
 
-Consequences worth knowing:
+Consequences:
 
-- **Server-side resumption is off by default**, and a server without it never issues a Session ID — so those flows are never even eligible, and the knob costs nothing there. Turn on the server's `[resumption]` to get any of this.
-- **Direct (`via = "direct"`) flows never migrate**: they own a plain socket to the origin, so there is no carrier to migrate off and nothing parked to re-attach.
-- Bounded: at most **2 attempts per flow**, none started more than 20 s after the first (the server's park TTL is 30 s), and the uplink replay ring is capped at 64 KiB per flow — a flow that sends a single chunk larger than that loses its ring, and with it the ability to prove byte-exactness, so it tears down as before rather than resuming with a hole.
-- **The migration dial asks for the uplink's configured carrier, not the capped one.** The carrier death that triggers a migration is itself reported as a runtime failure, which caps the uplink one rank down (`ws_h3` → `ws_h2`) for `mode_downgrade_secs`. Honouring that cap would hand every rescued flow the TCP-over-TCP carrier and it would keep it for life — nothing migrates a live flow back up — so a long download rescued from a dead H3 carrier would crawl where it used to reset and reconnect at full speed. The dial still falls back `h3 → h2 → h1` on its own when the carrier is genuinely broken, so ignoring the cap costs nothing when the cap was right. (Same reason the migration re-dials its own uplink rather than a re-selected one: the death may have put that uplink in cooldown.)
-- Observable on `outline_ws_tun_tcp_events_total{event=…}`: `carrier_migrated`, `carrier_migration_miss`, `carrier_migration_dial_failed`, `carrier_migration_replay_evicted`, `carrier_migration_replay_ahead`, `carrier_migration_downlink_truncated`, `carrier_migration_downlink_frame_invalid`, plus one counter per reason a flow was found *ineligible* before any dial happened — `carrier_migration_disabled`, `carrier_migration_abandoned`, `carrier_migration_no_session_id`, `carrier_migration_no_replay_ring`, `carrier_migration_budget_spent`, `carrier_migration_deadline_passed`. Those six exist because a flow blocked on a precondition never dials, so none of the other counters move and "no migration was attempted" is otherwise indistinguishable from "this build has no migration code".
+- Server-side resumption is off by default (`[session_resumption] enabled` on outline-ss-rust). A server without it never issues a Session ID, so its flows are never eligible and the client setting has no effect there.
+- Direct (`via = "direct"`) flows never migrate: they own a plain socket to the origin, there is no carrier to move off and nothing parked to re-attach.
+- Limits: at most 2 attempts per flow, none started later than 20 s after the first (the server's park TTL is 30 s), and the uplink replay ring is capped at 64 KiB per flow. A flow that sends one chunk larger than that loses its ring, cannot prove byte-exactness, and tears down as before instead of resuming with a hole.
+- The migration dial requests the uplink's configured carrier, not the capped one. The carrier death that triggers a migration is itself a runtime failure, which caps the uplink one rank down (`ws_h3` → `ws_h2`) for `mode_downgrade_secs`. Honouring that cap would put every rescued flow on TCP over TCP for the rest of its life — nothing moves a live flow back up — so a long download rescued from a dead H3 carrier would crawl instead of reconnecting at full speed. The dial still falls back `h3 → h2 → h1` on its own when the carrier is really broken. For the same reason the migration re-dials its own uplink rather than a re-selected one: the carrier death may have put that uplink in cooldown.
+- Counters in `outline_ws_tun_tcp_events_total{event=…}`: `carrier_migrated`, `carrier_migration_miss`, `carrier_migration_dial_failed`, `carrier_migration_replay_evicted`, `carrier_migration_replay_ahead`, `carrier_migration_downlink_truncated`, `carrier_migration_downlink_frame_invalid`, plus one counter per reason a flow was ineligible before any dial: `carrier_migration_disabled`, `carrier_migration_abandoned`, `carrier_migration_no_session_id`, `carrier_migration_no_replay_ring`, `carrier_migration_budget_spent`, `carrier_migration_deadline_passed`. A flow blocked on a precondition never dials, so without these six "no migration was attempted" would look the same as "this build has no migration code".
 
-Set `carrier_migration = false` to restore the pre-migration behaviour (a dead carrier becomes a FIN/RST immediately).
+`carrier_migration = false` restores the old behaviour: a dead carrier becomes a FIN/RST immediately.
 
 #### Operator soft switch
 
-The same machinery carries live TUN TCP flows across an **operator soft switch** — `POST /control/activate {"group":"…","uplink":"…","soft":true}` on a group with `mode = "active_passive"` and `shared_resume = true`.
+The same mechanism carries live TUN TCP flows across an operator soft switch: `POST /control/activate {"group":"…","uplink":"…","soft":true}` on a group with `mode = "active_passive"` and `shared_resume = true`.
 
-In strict `active_passive` a group has exactly one active uplink, and a flow left on any other one is torn down with RST (`event="global_switch"`). A soft switch suspends that: instead of resetting the flow, its upstream reader **retires the old carrier and then** re-dials the **new active** uplink presenting the flow's own Session ID. Because a mesh cluster shares one resume scope and the id carries its home shard, the new edge relays to the home that parked the upstream and re-attaches it — same confirmed-hit rule, same v1/v2 replay, same "no FIN, no RST, no gap, no duplicate byte" guarantee. Anything short of a confirmed hit falls through to the RST a hard switch would have given, so a soft switch still converges; it just tries first.
+In strict `active_passive` a group has one active uplink, and a flow left on another one is closed with RST (`event="global_switch"`). A soft switch replaces that: the flow's upstream reader retires the old carrier and then dials the new active uplink with the flow's own Session ID. A mesh cluster shares one resume scope and the ID carries its home shard, so the new edge relays to the home node that parked the upstream and re-attaches it — same confirmed-hit rule, same v1/v2 replay, same no-FIN/no-RST/no-gap/no-duplicate result. Anything short of a confirmed hit falls through to the RST a hard switch would have sent.
 
-The retire-then-redial order is not an optimisation: unlike a carrier death, the old carrier here is perfectly healthy, and a server only holds a parked upstream once that carrier has closed. A redial that arrived first would look the id up against a still-live session, get `miss-unknown`, and be handed a fresh upstream — a guaranteed miss. Closing it first puts the flow inside the server's park-before-resume barrier, which covers the remaining race. (Same reason the client sends `X-Xhttp-Fin` on the XHTTP carriers: they have no free close signal, and the idle sweep is far too late for a soft switch.)
+The retire-then-redial order is required. Unlike a carrier death, the old carrier is healthy here, and the server parks an upstream only after that carrier has closed. A redial that arrived first would find the ID on a live session, get `miss-unknown`, and be given a new upstream — a guaranteed miss. Closing the carrier first puts the flow inside the server's park-before-resume barrier, which covers the remaining race. (For the same reason the client sends `X-Xhttp-Fin` on XHTTP carriers: they have no close signal of their own, and the idle sweep comes too late for a soft switch.)
 
-- `soft` is honoured only on a `shared_resume` group. Everywhere else `/control/activate` clamps it to a hard switch and reports the effective value back in the response.
-- Observable on `outline_ws_tun_tcp_events_total{event=…}`: `soft_switch_migrated` and `soft_switch_migration_failed` (the latter is followed by the ordinary `global_switch` teardown).
+- `soft` is honoured only on a `shared_resume` group. Elsewhere `/control/activate` turns it into a hard switch and reports the effective value in the response.
+- Counters in `outline_ws_tun_tcp_events_total{event=…}`: `soft_switch_migrated` and `soft_switch_migration_failed` (the latter is followed by the ordinary `global_switch` teardown).
 
 #### Which repoints migrate, and which abandon
 
-What decides a stranded flow's fate is not *who* moved the pointer but **whether the switch means to abandon it**. The published snapshot carries a `SwitchIntent`:
+What decides a stranded flow's fate is whether the switch means to abandon it, not who moved the pointer. The published snapshot carries a `SwitchIntent`:
 
 | Intent | Set by | Live flows on the old uplink |
 | --- | --- | --- |
 | `OperatorHard` | `/control/activate {"soft":false}`, a hard scheduled reselect, or any soft request clamped off a cluster | RST (`global_switch`) |
 | `OperatorSoft` | `/control/activate {"soft":true}` on a `shared_resume` group | migrate, falling back to RST |
-| `Failover` | probe failover, runtime-failure failover, auto-failback, carrier-degraded failover, initial selection | migrate on a `shared_resume` group, else RST |
+| `Failover` | probe failover, runtime-failure failover, auto-failback, carrier-degraded failover, loss-driven failover, initial selection | migrate on a `shared_resume` group, else RST |
 
-A hard switch abandons on purpose: under a mesh cluster a migrated session is relayed back to its **home**, which is the node being drained — migrating it would defeat the drain. A failover is the opposite: nobody decided the sessions should end, and the uplink it moved off is usually the unhealthy one, which is exactly when a resume is worth attempting — the parked upstream lives on the *server*, and the mesh reaches it from the new edge without the client's broken path to the old one. Off a cluster (`shared_resume = false`) nothing migrates: there is nothing parked to re-attach, so a dial could only add latency before the same teardown.
+A hard switch abandons on purpose: under a mesh cluster a migrated session is relayed back to its home node, which is the node being drained, so migrating would defeat the drain. In a failover nobody decided the sessions should end, and the uplink it moved off is usually the unhealthy one — the parked upstream lives on the server, and the mesh reaches it from the new edge without the client's broken path. Without a cluster (`shared_resume = false`) nothing migrates: there is nothing parked to re-attach, so a dial would only add latency before the same teardown.
 
 #### TUN UDP flows
 
-The same verdict governs tunnelled **UDP** flows, with one deliberate difference: there is no byte-continuity to protect and therefore no confirmed-hit rule. A parked UDP session keeps no back-buffer of upstream-bound packets (UDP is loss-tolerant by design), so a resume miss costs a fresh exit source port — never a spliced byte stream, which is what makes the TCP path refuse anything short of proof.
+The same verdict applies to tunnelled UDP flows, with one difference: there is no byte continuity to protect, so there is no confirmed-hit rule. A parked UDP session keeps no back-buffer of upstream-bound packets, so a resume miss costs a new exit source port — never a spliced byte stream, which is what makes the TCP path insist on proof.
 
-What a hit preserves is the **session**: the server re-points the flow's parked NAT entries (SS-UDP) or re-attaches its pinned socket (VLESS-UDP), so the exit keeps the same source port and the peer's NAT binding, path validation and per-address state all survive the switch. The flow's uplink task retires the old carrier — reader first, then the carrier, then the redial — for the same park-before-resume reason as TCP.
+A hit preserves the session: the server re-points the flow's parked NAT entries (SS-UDP) or re-attaches its pinned socket (VLESS-UDP), so the exit keeps the same source port and the peer's NAT binding, path validation and per-address state survive the switch. The flow's uplink task retires the old carrier — reader first, then the carrier, then the redial — for the same park-before-resume reason as TCP.
 
-- Observable on `outline_ws_tun_udp_events_total{event=…}`: `soft_switch_migrated`, `soft_switch_migrated_no_resume_id` (the flow was carried over, but the server had issued it no Session ID, so the exit source port did change), `soft_switch_migration_failed` (the redial failed; the flow is torn down as a hard switch would have), `soft_switch_target_invalid`.
-- Each tunnelled UDP flow — and each SOCKS5 UDP association — holds its **own** resume slot. TUN dials one carrier per flow, so the process-wide `<resume-scope>#udp` slot they used to share meant a fresh flow presented the previously-closed flow's parked id; a hit on that is a hit on someone else's session, not a missed resume.
+- Counters in `outline_ws_tun_udp_events_total{event=…}`: `soft_switch_migrated`, `soft_switch_migrated_no_resume_id` (the flow was carried over, but the server had issued no Session ID, so the exit source port changed), `soft_switch_migration_failed` (the redial failed; the flow is torn down as in a hard switch), `soft_switch_target_invalid`.
+- Each tunnelled UDP flow, and each SOCKS5 UDP association, holds its own resume slot. TUN dials one carrier per flow; with the process-wide `<resume-scope>#udp` slot they used to share, a new flow presented the previous flow's parked ID, and a hit on that was a hit on another flow's session.
 
 ### TUN PMTUD safety gate
 
-When the upstream transport refuses an oversize UDP datagram on the TUN path (SS-UDP, VLESS-UDP, SS-2022, …), the engine synthesises an ICMP "Fragmentation Needed" (IPv4) or "Packet Too Big" (IPv6) toward the original sender so its PMTUD state machine can react. The boolean knob `tun.pmtud_emit_below_quic_initial` controls a single question: **may that PTB advertise a path MTU below QUIC v1's Initial-datagram minimum (1200 v4 / 1280 v6, RFC 9000 §14.1)?**
+When the upstream transport refuses an oversize UDP datagram on the TUN path (SS-UDP, VLESS-UDP, SS-2022, …), the engine sends an ICMP "Fragmentation Needed" (IPv4) or "Packet Too Big" (IPv6) to the original sender so its PMTUD can react, at most one PTB per second per flow. `tun.pmtud_emit_below_quic_initial` decides whether that PTB may advertise a path MTU below QUIC v1's Initial-datagram minimum (1200 v4 / 1280 v6, RFC 9000 §14.1).
 
-Default `false` — sub-minimum PTBs are suppressed. Compliant QUIC stacks treat such a PTB as "destination cannot carry QUIC" and fall back to TCP, so leaving the gate in place keeps real QUIC traffic (YouTube, Google services) on UDP even when the TUN uplink's per-datagram budget sits just below 1200 bytes. Sub-minimum oversize drops are silently absorbed and the sender's own retransmit / timeout logic eventually adjusts.
+Default `false`: such PTBs are suppressed. QUIC stacks treat a PTB below the minimum as "this destination cannot carry QUIC" and fall back to TCP; with the gate, QUIC traffic (YouTube, Google services) stays on UDP even when the TUN uplink's per-datagram budget is slightly below 1200 bytes. The oversize drop is absorbed and the sender's own retransmit/timeout logic adjusts.
 
-Set `tun.pmtud_emit_below_quic_initial = true` to restore unconditional PTB emission. Use it on deployments where QUIC eviction is a non-issue and the explicit PMTUD signal on every sub-minimum drop is worth more — for example a pure VoWiFi / IKEv2 concentrator carrying IKE_AUTH with certificates over a narrow tunnel uplink, where the PTB is the only way for the IKE retransmit loop to learn the effective tunnel MTU. The full contract — when the PTB fires, what is throttled, where the minimum comes from, what changes on opt-in — lives in [docs/TUN-PMTUD.md](docs/TUN-PMTUD.md).
+`tun.pmtud_emit_below_quic_initial = true` emits the PTB unconditionally. Use it where pushing QUIC to TCP does not matter and the PMTUD signal on every drop does — e.g. a VoWiFi / IKEv2 concentrator carrying IKE_AUTH with certificates over a narrow uplink, where the PTB is the only way for the IKE retransmit loop to learn the tunnel MTU. Full contract: [docs/TUN-PMTUD.md](docs/TUN-PMTUD.md).
 
 ## Linux fwmark
 
-Per-uplink `fwmark` applies `SO_MARK` to outbound sockets:
+Per-uplink `fwmark` sets `SO_MARK` on outbound sockets:
 
 - HTTP/1.1 WebSocket TCP sockets
 - HTTP/2 WebSocket TCP sockets
@@ -1043,81 +1072,125 @@ Requirements:
 
 - Linux only
 - `CAP_NET_ADMIN`
-- under systemd, `PrivateUsers=no`: `setsockopt(SO_MARK)` is authorized against
-  the network stack's owning (init) user namespace, so with `PrivateUsers=true`
-  the capability applies only inside the private userns and every marked dial
-  fails `EPERM` — `CAP_NET_ADMIN` alone is not enough. This applies to both
-  per-uplink `fwmark` and top-level `direct_fwmark`.
+- under systemd, `PrivateUsers=no`: `setsockopt(SO_MARK)` is checked against the user namespace that owns the network stack (the init namespace). With `PrivateUsers=true` the capability applies only inside the private namespace and every marked dial fails with `EPERM`. This applies to per-uplink `fwmark` and to top-level `direct_fwmark`.
 
-## Metrics and Dashboards
+## Metrics
 
-> **The dashboard has moved out of this binary.** It is served from k3s by
-> `outline-ui` at `https://ui.k3s.beerloga.su/ws`, aggregating every instance's
-> control API instead of living on the node. This binary now exposes only the
-> read-only metrics endpoint and the authenticated control plane the UI proxies
-> to. See [`bins/outline-ui/README.md`](../outline-ui/README.md).
+The multi-instance dashboard is not part of this binary. It is served by the `outline-ui` service, which aggregates the control API of every instance; see [`bins/outline-ui/README.md`](../outline-ui/README.md). This binary exposes the read-only metrics endpoint and the authenticated control plane.
 
-If `[metrics]` is configured the process serves the read-only Prometheus
-endpoint:
+With `[metrics]` configured, the process serves:
 
-- `/metrics` - Prometheus text exposition
+- `/metrics` — Prometheus text exposition
 
 ```bash
 curl http://[::1]:9090/metrics
 ```
 
-The metrics listener has **no** mutating endpoints. The earlier `/switch`
-handler has been moved to a separate, authenticated control-plane listener
-(see below) so observability access does not also grant authority to flip the
-active uplink.
+The metrics listener has no mutating endpoints; `/switch` and the rest live on the separate, authenticated control listener, so read access to metrics does not allow switching the active uplink.
+
+Prometheus scrape example:
+
+```yaml
+scrape_configs:
+  - job_name: outline-ws-rust
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "[::1]:9090"
+```
+
+Metric groups:
+
+- build and startup info
+- process resident memory and heap gauges
+- SOCKS5 requests and active sessions, including `command="connect"`, `command="udp_associate"` and `command="udp_in_tcp"`
+- session duration histogram
+- payload bytes and UDP datagrams
+- oversized UDP drops in both directions
+- uplink health, latency, EWMA RTT, penalties, score, cooldown, standby readiness. `uplink_health` is `1` (healthy) or `0` (unhealthy) only after a probe has confirmed a state; before the first probe cycle the series is absent, which means "unknown", not unhealthy.
+- routing policy and active-uplink selection state
+- probe results and latency
+- warm-standby acquire and refill outcomes
+- TUN flow and packet metrics
+- `tun2tcp` retransmit, backlog, window, RTT and RTO metrics
+
+On Linux the process memory sampler updates:
+
+- `outline_ws_process_resident_memory_bytes`
+- `outline_ws_process_virtual_memory_bytes`
+- `outline_ws_process_heap_allocated_bytes`
+- `outline_ws_process_heap_mode_info{mode}`
+- `outline_ws_process_open_fds`
+- `outline_ws_process_threads`
+
+With the default `jemalloc` feature the heap values come from jemalloc's own counters (`stats.allocated` / `stats.resident`) and `heap_mode_info{mode="exact"}` is `1`. Builds without jemalloc estimate the heap from `VmData` (`mode="estimated"`); non-Linux builds report `mode="unavailable"`.
+
+On Linux the process also logs a periodic descriptor inventory, `process fd snapshot`: total open FDs plus a breakdown into sockets, pipes, anon inodes, regular files and other types.
+
+`outline_ws_selection_mode_info{mode}`, `outline_ws_routing_scope_info{scope}`, `outline_ws_global_active_uplink_info{uplink}` and `outline_ws_sticky_routes` expose selector configuration and active-uplink state.
+
+`outline_ws_group_bypass_active{group, transport}` reports the `bypass_when_down` state: `1` while new flows of that transport go direct because the group has no healthy uplink, `0` while traffic tunnels. The series exists only for groups with `bypass_when_down = true`. The outline-ui dashboard shows the same state as a group-header chip (`bypass armed` / `bypass: direct`); the Grafana dashboard has the panels "Direct Bypass (bypass_when_down)" and "Direct Bypass Timeline" in the Routing Policy section.
+
+Per-uplink open-connection accounting, for connections that leak into a non-active uplink after a `global` / `per_uplink` switch:
+
+- `outline_ws_uplink_open_connections{group, transport, uplink}` — gauge of open upstream transports per uplink. After a switch the new active uplink ramps up while the old one drains; a series that does not drain is the leak signal.
+- `outline_ws_uplink_connection_close_total{group, transport, uplink, classification}` — counter of upstream-transport closes, classified at close time as `active` (the uplink was still active), `inactive` (the active pointer had moved — a stranded session draining) or `unknown` (`per_flow` scope, no active pointer). `rate(...{classification="inactive"}[5m])` is the drain rate after a switch; a sustained non-zero rate outside a recent switch points at a stale sticky route or warm-standby pool.
+
+Both feed the Grafana row "Inactive Uplink Leak (Global / Per-Uplink)" in `grafana/outline-ws-rust-dashboard.json`. Probe connections are not counted; the metrics cover user-traffic dials only.
+
+`outline_ws_carrier_writer_terminations_total{writer, reason}` counts WebSocket carrier writer tasks that stopped because a sink write failed. `writer` is `ss` (SS over WS) or `frame` (VLESS byte-chunk / datagram writer); `reason` is `peer_closed` when the carrier was already closed (routine, logged at `debug`) or `error` for a real write failure (logged at `warn`). A sustained `reason="error"` rate means the uplink is failing writes. Grafana row: "Carrier Writer Terminations".
+
+Further counters:
+
+- `outline_ws_tun_udp_forward_errors_total{reason}` — TUN UDP packets that could not be delivered upstream: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
+- `outline_ws_udp_oversized_dropped_total{direction="up|down", cause}` — oversized UDP packets dropped before uplink forwarding (`up`) or before client delivery (`down`); `cause` is `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`, `ss_socket`, `vless_udp` or `xhttp_records`.
+- `outline_ws_udp_malformed_dropped_total{cause}` — client datagrams the SOCKS5 UDP ingress cannot decode, dropped one by one while the association keeps running: `parse` (malformed SOCKS5 UDP header or unsupported address type), `reassembly` (fragment sequence out of order, target changed, or over the reassembly cap).
+- `outline_ws_uplink_payload_integrity_errors_total{transport, group, uplink, cause}` — downlink datagrams that fail payload integrity: `decrypt_failed`, `packet_too_short`, `udp_out_of_order` (SS2022 replay/reorder). Kept separate from `outline_ws_uplink_runtime_failures_total`: a corrupt payload says something about the bytes, not the carrier, so it causes no cooldown, no penalty, no runtime-failure streak and no carrier downgrade (`xhttp_h3 → xhttp_h2`). Only the affected flow is closed: on the TUN UDP path with reason `payload_error` (recreated on the next packet); on the SOCKS5 UDP downlink the datagram is dropped and the association keeps its transport. When these were charged to the carrier, a production uplink spent 69.6 % of the time on UDP over TCP at a ~0.1 % corrupt-datagram rate. A rising rate is still a defect past the carrier; watch it on its own panel, not in the failover graph.
+- `outline_ws_tun_icmp_local_replies_total{ip_family}` — local ICMP echo replies.
+
+On the TUN UDP path oversize drops also produce an ICMP PTB toward the sender; see [TUN PMTUD safety gate](#tun-pmtud-safety-gate) and [docs/TUN-PMTUD.md](docs/TUN-PMTUD.md).
+
+Grafana dashboards (see [`grafana/README.md`](grafana/README.md)):
+
+- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
+- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json)
 
 ## Control plane
 
-If `[control]` is configured the process serves mutating endpoints on a
-**separate** TCP listener, gated by a mandatory bearer token:
+With `[control]` configured, the process serves mutating endpoints on a separate TCP listener that requires a bearer token:
 
-- `GET /control/topology` - instance/group/uplink topology for dashboards
-- `GET /control/summary` - compact group/uplink health counters
-- `POST /control/activate` - JSON activation API for UI click actions
-- `POST /control/reselect` - force a weighted-random re-selection of a group's strict active uplink ("reselect now"), the same rotation the scheduled `reselect_at`/`reselect_interval` loops perform. JSON body `{"group":"main","soft":true}` (`soft` defaults to `true`)
-- `POST /control/uplink_enabled` - administratively enable/disable an uplink (operator on/off). JSON body `{"group":"main","uplink":"backup","enabled":false}`. A disabled uplink is removed from **all** automatic machinery — probing, candidate selection, failover, and warm-standby refill — until re-enabled; if it was the active uplink, traffic fails over to an enabled standby immediately. Runtime-only: the override is **not** persisted, so a process restart starts every uplink enabled. Exposed in the dashboard as the per-uplink On/Off button.
-- `GET`/`POST`/`PATCH`/`DELETE /control/uplinks` - stage `[[outline.uplinks]]` edits in the config file
-- `GET`/`POST`/`PATCH`/`DELETE /control/routes` - stage `[[route]]` edits in the config file
-- `POST /control/routes/reorder` - move a rule to a new position in the first-match-wins list
-- `GET`/`PATCH /control/config` - read and modify client subsystem configuration in-place (`[probe]`, `[socks5]`, `[tun]`, `[dial]`, `[padding]`, `[quic]`, `[h2]`, `[tcp_timeouts]`, `fingerprint_profile`, `prefer_public_ipv6_src`, `direct_fwmark`). Returns `{ "status": "ok", "apply_required": true, "restart_required": bool }`
-- `POST /control/apply` - hot-apply staged uplink edits, and staged route edits when routing was already configured at startup, without a process restart
-- `POST /switch` - manual active-uplink override
+| Method and path | Purpose |
+|---|---|
+| `GET /control/topology` | instance / group / uplink topology for dashboards |
+| `GET /control/summary` | compact group / uplink health counters |
+| `POST /control/activate` | JSON activation API (dashboard click actions) |
+| `POST /control/reselect` | weighted-random re-selection of a group's strict active uplink now — the rotation `reselect_at` / `reselect_interval` run on schedule. Body `{"group":"main","soft":true}` (`soft` defaults to `true`) |
+| `POST /control/uplink_enabled` | administratively enable/disable an uplink. Body `{"group":"main","uplink":"backup","enabled":false}`. A disabled uplink is excluded from probing, candidate selection, failover and standby refill until re-enabled; if it was active, traffic fails over to an enabled uplink immediately. Not persisted: after a restart every uplink is enabled. The outline-ui dashboard shows it as the per-uplink power button (Enable / Disable) |
+| `GET` / `POST` / `PATCH` / `DELETE /control/uplinks`, `POST /control/uplinks/reorder` | stage `[[outline.uplinks]]` edits in the config file |
+| `GET` / `POST` / `PATCH` / `DELETE /control/uplink_groups`, `POST /control/uplink_groups/reorder` | stage `[[uplink_group]]` edits in the config file (see "`/control/uplink_groups` (CRUD)" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md)) |
+| `GET` / `POST` / `PATCH` / `DELETE /control/routes`, `POST /control/routes/reorder` | stage `[[route]]` edits; reorder moves a rule within the first-match-wins list |
+| `GET` / `PATCH /control/config` | read and modify client subsystem settings in the config file (`[probe]`, `[socks5]`, `[tun]`, `[dial]`, `[padding]`, `[quic]`, `[h2]`, `[tcp_timeouts]`, `fingerprint_profile`, `prefer_public_ipv6_src`, `direct_fwmark`). Returns `{ "status": "ok", "apply_required": true, "restart_required": bool }` |
+| `POST /control/apply` | hot-apply staged uplink and group edits, and staged route edits when routing was configured at startup, without a restart |
+| `GET /control/alloc` | allocator statistics (jemalloc counters in the default build) |
+| `POST /switch` | manual active-uplink override |
 
-There is no anonymous access path. Requests without a matching
-`Authorization: Bearer <token>` header are rejected with `401 Unauthorized`
-before the request body is inspected.
+Requests without a matching `Authorization: Bearer <token>` header are rejected with `401 Unauthorized` before the body is read; there is no anonymous access.
 
 ### Configuration
 
-Either configure both `listen` and a token in `[control]`, or pass
-`--control-listen` (`CONTROL_LISTEN`) together with `--control-token`
-(`CONTROL_TOKEN`). The token may also be read from a sidecar file via
-`token_file = "..."` (path resolved relative to the config file). Setting
-only one of the two halves is a startup error.
+Configure `listen` and a token in `[control]`, or pass `--control-listen` (`CONTROL_LISTEN`) together with `--control-token` (`CONTROL_TOKEN`). The token can also come from a file via `token_file = "..."` (path relative to the config file). Setting only one of the two halves is a startup error.
 
-Bind the control listener to loopback or a management VLAN; the token is
-defence in depth, not a substitute for network-level isolation.
+Bind the control listener to loopback or a management VLAN; the token does not replace network-level isolation.
 
 ### Manual uplink switch
 
-`POST /switch` lets an operator pin the active uplink for an `active_passive`
-group without waiting for the probe loop. The selection is persisted via the
-state store (when configured) so it survives restarts.
+`POST /switch` pins the active uplink of an `active_passive` group without waiting for the probe loop. The selection is persisted via the state store (when configured) and survives restarts.
 
 Query parameters:
 
-- `uplink` (required) - uplink name to activate.
-- `group` (optional) - target group. When omitted, the registry searches all
-  groups (uplink names are globally unique).
-- `transport` (optional) - `tcp`, `udp`, or `both` (default). Honoured only in
-  `routing_scope = per_uplink`; ignored under `global` scope.
-
-Examples:
+- `uplink` (required) — uplink name to activate.
+- `group` (optional) — target group. When omitted, all groups are searched (uplink names are globally unique).
+- `transport` (optional) — `tcp`, `udp` or `both` (default). Used only with `routing_scope = per_uplink`; ignored under `global`.
 
 ```bash
 TOKEN="long-random-secret"
@@ -1135,25 +1208,15 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
   'http://127.0.0.1:9091/switch?group=main&uplink=backup'
 ```
 
-Returns `200` on success, `400` when the uplink/group is unknown or the group
-is not in `active_passive` mode, `401` when the bearer token is missing or
-incorrect, and `405` for non-POST methods. The override holds while the
-chosen uplink is healthy; if the probe loop later marks it unhealthy, normal
-failover takes over. With `auto_failback = true`, the loop may flip back to a
-higher-priority uplink once it stabilises.
+Responses: `200` on success; `400` when the uplink/group is unknown or the group is not in `active_passive` mode; `401` when the bearer token is missing or wrong; `405` for non-POST methods. The override holds while the chosen uplink is healthy; when the probe loop marks it unhealthy, normal failover takes over. With `auto_failback = true` the loop may return to a higher-priority uplink once it is stable.
 
-### Dashboard-oriented control APIs
+### Control API for dashboards
 
-`GET /control/topology` returns JSON with groups and uplinks (including
-`active_global`, `active_tcp`, `active_udp` booleans per uplink) for the
-outline-ui dashboard or external control clients.
+`GET /control/topology` returns groups and uplinks as JSON, including the booleans `active_global`, `active_tcp`, `active_udp` per uplink, for the outline-ui dashboard or other control clients.
 
-`GET /control/summary` returns compact counters:
-`groups_total`, `uplinks_total`, healthy/unhealthy TCP/UDP counts, and active
-selection counters.
+`GET /control/summary` returns counters: `groups_total`, `uplinks_total`, healthy/unhealthy TCP/UDP counts and active-selection counters.
 
-`POST /control/activate` accepts JSON and reuses the same internal switching
-logic as `/switch`:
+`POST /control/activate` takes JSON and uses the same switching logic as `/switch`:
 
 ```json
 {
@@ -1163,11 +1226,7 @@ logic as `/switch`:
 }
 ```
 
-`POST /control/reselect` forces the same weighted-random re-selection the
-scheduled re-selection loops (`reselect_at` / `reselect_interval`) perform,
-outside of their schedule ("reselect now"). Only meaningful for a group in
-`active_passive` mode with a single strict active slot (`global` or
-`per_uplink` routing scope); other groups report `outcome: "skipped"`.
+`POST /control/reselect` runs the weighted-random re-selection that `reselect_at` / `reselect_interval` perform, outside their schedule. It applies to an `active_passive` group with a single strict active slot (`global` or `per_uplink` scope); other groups return `outcome: "skipped"`.
 
 ```json
 {
@@ -1176,10 +1235,7 @@ outside of their schedule ("reselect now"). Only meaningful for a group in
 }
 ```
 
-`soft` defaults to `true` and requests a session-preserving switch via cluster
-resume; it is clamped to a hard switch on a group without `shared_resume`, same
-as `/control/activate`. The response reports the *effective* `soft` value,
-plus `from`/`to` uplink names when the slot moved:
+`soft` defaults to `true` and requests a session-preserving switch via cluster resume; on a group without `shared_resume` it becomes a hard switch, as in `/control/activate`. The response reports the effective `soft` value, plus `from` / `to` uplink names when the slot moved:
 
 ```json
 {
@@ -1191,31 +1247,11 @@ plus `from`/`to` uplink names when the slot moved:
 }
 ```
 
-`outcome` is one of `switched`, `no_candidate` (no eligible uplink remained
-once the current active and disabled/unhealthy/cooldown uplinks were
-excluded), or `skipped` (the group is not in `active_passive` mode, or has no
-single strict active slot to rotate). Exposed in the dashboard as the
-per-group "⟳ Reselect" button — unlike soft switch, it is offered regardless
-of `cluster_resume_enabled`.
+`outcome` is `switched`, `no_candidate` (no eligible uplink left after excluding the current active and disabled / unhealthy / cooldown uplinks) or `skipped` (the group is not `active_passive` or has no single strict active slot). The outline-ui dashboard shows it as the per-group **Reselect** button; unlike the soft switch, it is offered whether or not `cluster_resume_enabled` is set.
 
-`/control/uplinks` mutates the canonical `[[outline.uplinks]]` array in the
-on-disk TOML. Mutation responses include `apply_required: true` when
-`/control/apply` can activate the staged change; `restart_required` is reserved
-for control states that cannot hot-apply.
+`/control/uplinks` edits the `[[outline.uplinks]]` array in the TOML file on disk. Mutation responses include `apply_required: true` when `/control/apply` can activate the staged change; `restart_required` is reserved for changes that cannot be hot-applied.
 
-`/control/routes` mutates the canonical `[[route]]` array the same way, but by
-array index rather than name — a rule has no identity key — guarded by an
-optimistic-concurrency `revision` so a stale index from a concurrent edit is
-rejected instead of moving the wrong rule. `POST /control/routes/reorder`
-moves one rule to a new index in that same array, since ordering is what
-first-match-wins evaluation depends on. `POST /control/apply` hot-applies a
-staged route edit exactly like a staged uplink edit, **but only when
-`[[route]]` was already present at process startup**: turning policy routing
-on for the first time on a node that started without it (routing everything
-through the first group) still needs a restart, since there is no live
-routing table yet to swap into.
-
-Examples:
+`/control/routes` edits the `[[route]]` array the same way, but by array index rather than name (a rule has no identity key), guarded by an optimistic-concurrency `revision`: a stale index from a concurrent edit is rejected instead of moving the wrong rule. `POST /control/routes/reorder` moves one rule to a new index, since first-match-wins evaluation depends on order. `POST /control/apply` hot-applies a staged route edit like an uplink edit, but only when `[[route]]` was present at process start. Enabling policy routing on a node that started without it (everything through the first group) needs a restart, because there is no live routing table to swap.
 
 ```bash
 TOKEN="long-random-secret"
@@ -1232,102 +1268,11 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
   'http://127.0.0.1:9091/control/activate'
 ```
 
-Prometheus example:
-
-```yaml
-scrape_configs:
-  - job_name: outline-ws-rust
-    metrics_path: /metrics
-    static_configs:
-      - targets:
-          - "[::1]:9090"
-```
-
-Metrics include:
-
-- build and startup info
-- process resident memory and heap usage gauges
-- SOCKS5 requests and active sessions, including `command="connect"`, `command="udp_associate"`, and `command="udp_in_tcp"`
-- session duration histogram
-- payload bytes and UDP datagrams
-- oversized UDP drop counters for incoming client packets and outgoing client responses
-- uplink health, latency, EWMA RTT, penalties, score, cooldown, standby readiness. `uplink_health` is exported as `1` (healthy) or `0` (unhealthy) only when the probe has run and confirmed a state. Before the first probe cycle the metric is absent — an empty value means "unknown", not unhealthy.
-- routing policy and active-uplink selection state
-- probe results and latency
-- warm-standby acquire and refill outcomes
-- TUN flow and packet metrics
-- `tun2tcp` retransmit, backlog, window, RTT, and RTO metrics
-
-On Linux, the process memory sampler updates:
-
-- `outline_ws_process_resident_memory_bytes`
-- `outline_ws_process_virtual_memory_bytes`
-- `outline_ws_process_heap_allocated_bytes`
-- `outline_ws_process_heap_mode_info{mode}`
-- `outline_ws_process_open_fds`
-- `outline_ws_process_threads`
-
-Heap metrics currently fall back to `VmData`-based estimation on Linux and export `heap_mode_info{mode="estimated"}`.
-
-On Linux, the process also emits a periodic descriptor inventory log:
-
-- `process fd snapshot`
-
-The descriptor snapshot includes total open FDs plus a breakdown for sockets, pipes, anon inodes, regular files, and other descriptor types.
-
-`outline_ws_selection_mode_info{mode}`, `outline_ws_routing_scope_info{scope}`, `outline_ws_global_active_uplink_info{uplink}`, and `outline_ws_sticky_routes` expose selector configuration and active-uplink state.
-
-`outline_ws_group_bypass_active{group, transport}` reports the live `bypass_when_down` state: `1` while new flows of that transport are being dispatched direct (tunnel bypass) because the group has no healthy uplink, `0` while traffic tunnels normally. The series exists only for groups with `bypass_when_down = true`; the outline-ui dashboard renders the same signal as a group-header chip (grey `Bypass: armed` / amber `Bypass: DIRECT`), and the Grafana dashboard carries a matching stat + timeline in the Routing Policy section.
-
-Per-uplink open-connection accounting (used to detect connections leaking
-into a non-active uplink after a `Global` / `PerUplink` switchover) is
-exported by:
-
-- `outline_ws_uplink_open_connections{group, transport, uplink}` — gauge
-  of currently open upstream transports attributed to each uplink. After a
-  switchover the new active uplink ramps up while the old one drains; a
-  series that fails to drain is the leak signal.
-- `outline_ws_uplink_connection_close_total{group, transport, uplink, classification}`
-  — counter of upstream-transport closes, classified at close time as
-  `active` (the uplink was still active), `inactive` (the active pointer
-  had moved elsewhere — a stranded session draining), or `unknown`
-  (`PerFlow` scope where no active pointer exists).
-  `rate(...{classification="inactive"}[5m])` is the drain rate after a
-  switchover; sustained non-zero outside a recent switch points at a stale
-  sticky route or warm-standby pool.
-
-Both are wired to the dashboard row `Inactive Uplink Leak (Global / Per-Uplink)`
-in `grafana/outline-ws-rust-dashboard.json`. Probe / health-check
-connections are intentionally *not* attributed — the metrics cover only
-user-traffic dials.
-
-`outline_ws_carrier_writer_terminations_total{writer, reason}` counts WebSocket
-carrier writer tasks that stopped because a sink write failed. `writer` is `ss`
-(the SS-over-WS writer) or `frame` (the VLESS byte-chunk / datagram writer);
-`reason` is `peer_closed` when the carrier was already closed — the routine
-case, which is logged at debug — or `error` for a genuine write failure, which
-is still logged at warn. Sustained `reason="error"` means the uplink is failing
-writes; `peer_closed` tracks ordinary session churn. Dashboard row: `Carrier
-Writer Terminations`.
-When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_tun_udp_forward_errors_total{reason}` breaks that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
-Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (the `cause` label distinguishes `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
-Client datagrams the SOCKS5 UDP ingress cannot decode are dropped individually — the association and its other flows keep running — and counted as `outline_ws_udp_malformed_dropped_total{cause}` (`parse` for a malformed SOCKS5 UDP request header or unsupported address type, `reassembly` for a fragment sequence rejected as out-of-order, target-changed, or over the reassembly cap).
-Downlink datagrams that fail *payload* integrity — an AEAD open failure, a truncated packet, or an SS2022 replay/reorder rejection — are counted as `outline_ws_uplink_payload_integrity_errors_total{transport, group, uplink, cause}` (`decrypt_failed`, `packet_too_short`, `udp_out_of_order`). This counter is deliberately separate from `outline_ws_uplink_runtime_failures_total`: a corrupt payload is evidence about the bytes, not about the carrier that delivered them, so it takes **no** cooldown, **no** penalty, **no** runtime-failure streak and drives **no** carrier downgrade (`xhttp_h3 → xhttp_h2`). Only the affected flow is torn down — on the TUN UDP path it is closed with reason `payload_error` and recreated on the next packet; on the SOCKS5 UDP downlink the datagram is dropped and the association keeps its transport. Charging these to the carrier is what once held a production uplink in UDP-over-TCP 69.6% of the time on a ~0.1% corrupt-datagram rate. A rising rate here is still a real defect — it just lives past the carrier, so watch it on its own panel rather than in the failover graph.
-On the TUN UDP path, oversize drops also synthesise an ICMP "Fragmentation Needed" (IPv4) or "Packet Too Big" (IPv6) reply toward the sender so its own PMTUD state machine can react — throttled to one PTB per second per flow, and suppressed below QUIC v1's Initial-datagram floor (1200 v4 / 1280 v6) so well-behaved QUIC clients are not pushed off UDP into a TCP fallback. See [docs/TUN-PMTUD.md](docs/TUN-PMTUD.md) for the full contract.
-Local ICMP echo handling is exported separately via `outline_ws_tun_icmp_local_replies_total{ip_family}`.
-
-Grafana dashboards:
-
-- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
-- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json)
-
-The experimental uplinks/control-plane Grafana dashboard is intentionally not packaged; use the outline-ui service for multi-instance uplink activation.
-
-## Production Operations
+## Production operations
 
 ### `install-client.sh`
 
-For a basic production install on Linux use the bundled [install-client.sh](../../install-client.sh) script. Run it as `root` on the target host:
+[install-client.sh](../../install-client.sh) installs the client on Linux x86-64 or AArch64 from GitHub releases. Run it as `root` on the target host:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/balookrd/outline-proxy/main/install-client.sh -o install-client.sh
@@ -1336,82 +1281,69 @@ chmod +x install-client.sh
 sudo ./install-client.sh
 ```
 
-Install modes:
-
-- Default: installs the latest stable release for the current architecture
-- `CHANNEL=nightly`: installs the rolling nightly prerelease
-- `VERSION=v1.2.3`: pins the install to a specific stable tag
-
-Examples:
+Modes:
 
 ```bash
-./install-client.sh --help
-sudo ./install-client.sh
-sudo ./install-client.sh --force
-sudo CHANNEL=nightly ./install-client.sh
-sudo VERSION=v1.2.3 ./install-client.sh
-sudo ./install-client.sh --remove
+sudo ./install-client.sh                       # latest stable release (newest ws-v* tag)
+sudo ./install-client.sh --force               # reinstall even if the version matches
+sudo CHANNEL=nightly ./install-client.sh       # rolling ws-nightly prerelease
+sudo VERSION=v1.2.3 ./install-client.sh        # pin a stable version (tag ws-v1.2.3)
+sudo ./install-client.sh --remove              # alias --uninstall
 sudo ./install-client.sh --purge
 ```
 
 What the script does:
 
-- detects the host architecture and downloads the latest GitHub release artifact
-- skips the download if the installed version already matches the selected release; use `--force` or `FORCE=1` to override
-- for the nightly channel, tracks the release commit SHA in `/var/lib/outline-ws-rust/nightly-commit` to detect new builds
-- installs the binary to `/usr/local/bin/outline-ws-rust`
-- installs unit files into `/etc/systemd/system`
-- creates `/etc/outline-ws-rust` and `/var/lib/outline-ws-rust`
-- downloads `config.toml` and `instances/example.toml` only if they do not already exist
-- restarts only already-active `outline-ws-rust` units
-- does not automatically enable/start a fresh service
+- picks the release asset for `uname -m` (`x86_64`/`amd64` → `x86_64-unknown-linux-musl`, `aarch64`/`arm64` → `aarch64-unknown-linux-musl`); other architectures are rejected
+- skips the download when the installed version already matches the selected release (`--force` or `FORCE=1` overrides); for the nightly channel it tracks the release commit SHA in `/etc/outline-ws-rust/nightly-commit`
+- installs the binary to `/usr/local/bin/outline-ws-rust`, keeping the previous one as `<path>.bak.<timestamp>`
+- installs `outline-ws-rust.service` and `outline-ws-rust@.service` into `/etc/systemd/system`, taken from the same release tag as the binary
+- creates the system user and group `outline-ws`, the directories `/etc/outline-ws-rust` and `/var/lib/outline-ws-rust`, and gives the config directory to `outline-ws` (`0750`, files `0640`) so the control API can write the config
+- downloads `config.toml` and `instances/example.toml` only if they do not exist yet
+- restarts only `outline-ws-rust` units that were active; it does not enable or start a fresh service, and a stopped service stays stopped
 
 After the first install:
 
 1. Edit `/etc/outline-ws-rust/config.toml`.
-2. Enable one of the service variants:
+2. Enable one variant:
    - single instance: `sudo systemctl enable --now outline-ws-rust.service`
-   - named instance: `sudo systemctl enable --now outline-ws-rust@NAME.service`
-3. Check status with `systemctl status outline-ws-rust --no-pager`.
-4. Check logs with `journalctl -u outline-ws-rust -e --no-pager`.
+   - named instance (config `/etc/outline-ws-rust/instances/<name>.toml`): `sudo systemctl enable --now outline-ws-rust@<name>.service`
+3. Check the status: `systemctl status outline-ws-rust --no-pager`.
+4. Check the logs: `journalctl -u outline-ws-rust -e --no-pager`.
 
-The script is safe to re-run for upgrades: it compares the installed version against the selected release and only downloads and replaces the binary when a newer version is available. It automatically restarts any active `outline-ws-rust` units after upgrade. If the service was stopped, the script leaves it stopped.
+Re-run the script to upgrade; it replaces the binary only when the selected release differs from the installed one.
 
-Supported release architectures currently match GitHub CI artifacts: `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
+Environment overrides:
 
-Useful overrides:
-
-- `CHANNEL=stable|nightly`: choose the release channel; default is `stable`
-- `VERSION=v1.2.3`: pin the install to a specific stable tag
-- `FORCE=1`: reinstall even when the installed version already matches
-- `INSTALL_PATH=/path`: install the binary outside `/usr/local/bin`
-- `CONFIG_DIR=/path`: keep configuration outside `/etc/outline-ws-rust`
-- `STATE_DIR=/path`: use a different state directory
-- `GITHUB_TOKEN=...`: GitHub token to avoid API rate limits
-
-`VERSION` and `CHANNEL=nightly` are mutually exclusive.
+| Variable | Default | Meaning |
+|---|---|---|
+| `CHANNEL` | `stable` | `stable` or `nightly` |
+| `VERSION` | latest | stable: `1.2.3` or `v1.2.3`; with `CHANNEL=nightly` only `nightly` is accepted |
+| `FORCE` | empty | `1` reinstalls even if the version matches |
+| `INSTALL_PATH` | `/usr/local/bin/outline-ws-rust` | full path of the installed binary |
+| `CONFIG_DIR` | `/etc/outline-ws-rust` | configuration directory |
+| `STATE_DIR` | `/var/lib/outline-ws-rust` | state directory |
+| `SERVICE_USER` / `SERVICE_GROUP` | `outline-ws` | system user and group of the service |
+| `GITHUB_TOKEN` | empty | GitHub token against API rate limits |
 
 Removal:
 
-```bash
-sudo ./install-client.sh --remove   # stop+disable every unit, drop unit files, binary and backups
-sudo ./install-client.sh --purge    # also delete config, state dir and the service user/group
-```
+- `--remove` (alias `--uninstall`): stops and disables `outline-ws-rust.service` and every `outline-ws-rust@<name>.service`, removes both unit files (followed by `daemon-reload`), the binary and its `.bak.*` backups. Keeps `/etc/outline-ws-rust` (including `instances/`), `/var/lib/outline-ws-rust` and the `outline-ws` user/group, so a reinstall reuses the config.
+- `--purge`: everything `--remove` does, plus deletes `/etc/outline-ws-rust`, `/var/lib/outline-ws-rust` and the `outline-ws` user/group.
 
-- `--remove` (alias `--uninstall`): stops and disables the main `outline-ws-rust.service` **and every** `outline-ws-rust@NAME.service` instance, removes both unit files (plain + template, followed by `daemon-reload`), the binary and its `.bak.*` backups. Keeps `/etc/outline-ws-rust` (including `instances/`), `/var/lib/outline-ws-rust` and the `outline-ws` user/group, so a later reinstall reuses the existing config.
-- `--purge`: everything `--remove` does, plus deletes `/etc/outline-ws-rust`, `/var/lib/outline-ws-rust` and the `outline-ws` user/group — a complete uninstall. Both modes are idempotent: missing artifacts are skipped, not treated as errors.
+Both modes are idempotent: missing artifacts are skipped.
 
 #### Installing through an HTTP(S) proxy
 
-If `github.com` or its release CDN (`objects.githubusercontent.com`) is unreachable from the host, route the install through any HTTP/SOCKS5 proxy that can reach GitHub. The script does not need to be modified — `curl` honours the standard proxy environment variables.
+If `github.com` or its release CDN (`objects.githubusercontent.com`) is unreachable from the host, run the install through an HTTP or SOCKS5 proxy that can reach GitHub; `curl` in the script honours the standard proxy variables.
 
-Important: `sudo` strips `http_proxy`/`https_proxy` from the environment by default, so pass them explicitly:
+`sudo` drops `http_proxy` / `https_proxy` by default, so pass them explicitly:
 
 ```bash
 sudo https_proxy=http://HOST:PORT http_proxy=http://HOST:PORT ./install-client.sh
 ```
 
-or export and use `sudo -E`:
+or export them and use `sudo -E`:
 
 ```bash
 export https_proxy=http://HOST:PORT
@@ -1421,7 +1353,7 @@ sudo -E ./install-client.sh
 
 For SOCKS5 (e.g. an `ssh -D 1080 user@vps` tunnel) use `ALL_PROXY=socks5h://HOST:PORT`. Authenticated proxies use `http://USER:PASS@HOST:PORT` (URL-encode special characters in the password).
 
-Verify the proxy works before running the installer:
+Check the proxy before running the installer:
 
 ```bash
 curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
@@ -1429,100 +1361,85 @@ curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
 
 ### systemd
 
-Production-oriented systemd units are included at:
+Units:
 
-- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — single instance
-- [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — named-instance template (reads config from `instances/NAME.toml`)
+- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — single instance, config `/etc/outline-ws-rust/config.toml`, state in `/var/lib/outline-ws-rust/_default/`
+- [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — named-instance template, config `/etc/outline-ws-rust/instances/<name>.toml`, state in `/var/lib/outline-ws-rust/<name>/`
 
-Typical installation flow:
+Manual installation (`install-client.sh` does the same):
 
 1. Install the binary to `/usr/local/bin/outline-ws-rust`.
-2. Install the configuration to `/etc/outline-ws-rust/config.toml`.
-3. Copy both unit files to `/etc/systemd/system/`.
-4. Reload and enable the service:
+2. Create the service user and group:
+   `sudo groupadd --system outline-ws && sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid outline-ws outline-ws`
+3. Install the configuration to `/etc/outline-ws-rust/config.toml` and give the directory to the service user:
+   `sudo chown -R outline-ws:outline-ws /etc/outline-ws-rust && sudo chmod 0750 /etc/outline-ws-rust`
+4. Copy both unit files to `/etc/systemd/system/`.
+5. Reload and enable the service:
    `sudo systemctl daemon-reload && sudo systemctl enable --now outline-ws-rust`
 
-The unit includes:
+What the units set:
 
-- automatic restart on failure
-- journald logging
-- elevated `LimitNOFILE`
-- `LimitSTACK=8M` to avoid oversized anonymous thread-stack reservations
-- a fixed `outline-ws` system user / group (provisioned by `install-client.sh`) so state files keep a stable owner across restarts and `StateDirectory=outline-ws-rust/_default` lands on a writable, unit-managed path
-- `CAP_NET_ADMIN` for `fwmark`; remove if `fwmark` is not used. Using `fwmark` / `direct_fwmark` also requires `PrivateUsers=no` (a drop-in override) — `SO_MARK` fails `EPERM` inside the default private user namespace even with the capability held
-- `PrivateDevices=false` — required for TUN mode; harmless if TUN is not used
-- conservative systemd hardening flags
+- `Restart=on-failure`, `RestartSec=3s`
+- `RUST_LOG=info`, logs to journald
+- `LimitNOFILE=1048576`, `LimitSTACK=8M`, `TasksMax=infinity`
+- `MemoryHigh=70%`, `MemoryMax=85%`: on a low-RAM host a burst of flows can exhaust memory faster than the kernel reclaims it and hang the whole host; with the limits the kernel OOM-kills the service and systemd restarts it. Override with a drop-in for fixed values
+- `User=outline-ws` / `Group=outline-ws` with `StateDirectory=outline-ws-rust/_default` (template: `outline-ws-rust/%i`), so state files keep a stable owner
+- `ReadWritePaths` includes `/etc/outline-ws-rust` (template: `/etc/outline-ws-rust/instances`) so control-API edits and config migration can write the file
+- `AmbientCapabilities=CAP_NET_ADMIN` for `fwmark`; remove both capability lines if `fwmark` / `direct_fwmark` are not used. Using them also requires `PrivateUsers=no` in a drop-in: the units set `PrivateUsers=true`, and `SO_MARK` fails with `EPERM` inside a private user namespace even with the capability
+- `PrivateDevices=false` for access to `/dev/net/tun` (TUN mode)
+- `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `SystemCallFilter=@system-service` and the other `Protect*` / `Restrict*` options in the unit file
 
-On Linux, the bundled runtime pins Tokio worker and blocking thread stacks to 2 MiB so the process does not inherit very large per-thread virtual stack mappings from the host environment.
+Thread stacks: Tokio worker and blocking threads use 2048 KiB stacks by default instead of inheriting the host's stack limit (`--thread-stack-size-kb` / `THREAD_STACK_SIZE_KB`). The single-instance unit sets `THREAD_STACK_SIZE_KB=512`; if a native resolver or deep FFI call overflows that, the process crashes at startup — raise the value.
 
 ### Logging
 
-The service uses `tracing` for structured logs. The bundled systemd unit sets:
+The service logs through `tracing`; the bundled units set `RUST_LOG=info`. Use `debug` only for troubleshooting: connection lifecycle and transport events become much more verbose.
 
-```text
-RUST_LOG=info
-```
+Carrier lifecycle lines are emitted on the `outline_transport::conn_life` target in pairs: every `… connection opened` has exactly one `… connection closed` at the same level, with `id`, `peer`, `mode`, `age_secs`, `streams` and a `class`. A connection torn down locally (a probe released after its measurement, a cached carrier whose last stream ended) is reported by the connection's own drop guard as `class=local_drop`; the driver task that watches for a protocol-level close is cancelled on drop and cannot report it. Because the pairs balance, a descriptor leak shows up as a gap between the two counts. Before the pairing, `opened` vs `closed` read 34 515 vs 0 on a busy node and looked exactly like a leak.
 
-Use `debug` only during troubleshooting — connection lifecycle and transport-layer events become much more verbose.
+Shared (cached) carriers log the pair at `info`; probe connections — one dial per measurement, tens of thousands a day — log it at `debug`.
 
-Carrier lifecycle lines are emitted on the `outline_transport::conn_life`
-target and are **paired**: every `… connection opened` has exactly one
-`… connection closed`, at the same level, carrying `id`, `peer`, `mode`,
-`age_secs`, `streams`, and a `class`. A connection torn down locally (a probe
-released after its measurement, a cached carrier whose last stream ended) is
-reported by the connection's own drop guard as `class=local_drop` — the driver
-task that watches for a protocol-level close is cancelled on drop and cannot
-report it. Because the pair balances, a real descriptor leak shows up as a
-genuine gap between the two counts; before this pairing existed, `opened` vs
-`closed` read 34 515 vs 0 on a busy node and looked exactly like one.
+Two routine events are logged below `warn` because neither indicates a problem in this process: a WS writer task stopping because its carrier was already closed (counted by `outline_ws_carrier_writer_terminations_total{reason="peer_closed"}`), and an HTTP client hanging up on the metrics / control listener before its request completed (`request aborted by client`). Real write failures and request failures stay at `warn`.
 
-Shared (cached) carriers log that pair at `info`; probe connections — one dial
-per measurement, tens of thousands a day — log the identical pair at `debug`.
+### Security notes
 
-Two other routine events are deliberately kept off `warn`, since neither says
-anything about this process: a WS writer task stopping because its carrier was
-already closed (counted instead by
-`outline_ws_carrier_writer_terminations_total{reason="peer_closed"}`), and an
-HTTP client hanging up on the metrics / control listener before its
-request completed (`request aborted by client`). Genuine write failures and
-genuine request failures keep their `warn`.
+- Do not expose `metrics.listen` without access control.
+- Restrict `control.listen` further: bind it to loopback or a management network, treat the bearer token as a credential (rotate it, store it outside the config via `token_file`), and never reuse the metrics port for it. The control listener is the only path that can change the active-uplink selection.
+- Built-in listener limits against slowloris / idle connections (compiled in, not configurable):
 
-### Security Notes
+  | Listener | Max concurrent connections | Timeout |
+  |---|---|---|
+  | SOCKS5 | 4096 | 10 s for the SOCKS5 handshake |
+  | `/metrics` | 64 | 5 s to read request headers |
+  | control | 16 | 5 s to read request headers; the bearer check runs only after the headers arrive, so this timeout is what stops unauthenticated peers from holding sockets |
 
-- Protect `metrics.listen`; do not expose it without additional access controls.
-- Protect `control.listen` even more strictly: bind it to loopback or a
-  management network, treat the bearer token as a credential (rotate, store
-  out of band), and never re-use the metrics port for it. The control listener
-  is the only path that can mutate active-uplink selection.
-- Listener hardening against slowloris / idle-connection DoS is built in:
-  the SOCKS5 accept loop caps in-flight connections at 4096 and enforces a
-  10 s handshake timeout on `negotiate`; the `/metrics` listener caps
-  concurrency at 64 with a 5 s header-read timeout; the control listener
-  caps concurrency at 16 with the same 5 s header-read timeout (the bearer
-  check runs only after headers are received, so the timeout is what keeps
-  unauthenticated peers from pinning sockets). These ceilings are compiled
-  in and not config-tunable.
-- HTTP/3 requires public UDP reachability on the selected port.
-- `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root; under a user-namespaced systemd sandbox it additionally requires `PrivateUsers=no` (`SO_MARK` is checked against the init user namespace).
-- TUN mode requires `/dev/net/tun` access on the host (`PrivateDevices=false`).
+- HTTP/3 carriers need UDP reachability to the server port.
+- `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root; under a systemd sandbox with a private user namespace it also requires `PrivateUsers=no`.
+- TUN mode needs access to `/dev/net/tun` (`PrivateDevices=false`).
 
 ## Testing
 
-Useful local checks:
+From the workspace root:
 
 ```bash
-cargo check
-cargo test
+cargo check -p outline-ws-rust
+cargo test -p outline-ws-rust
 ```
 
-Manual real-upstream integration tests exist for HTTP/2 and HTTP/3:
+The CI gate (fmt, clippy, tests, feature matrix) is described in the root [`AGENTS.md`](../../AGENTS.md). End-to-end tests against real `outline-ss-rust` processes (`tests/e2e_*.rs`) run only with `RUN_E2E_FAILOVER=1`, and the TLS/H3 carrier set needs the `test-tls` feature:
+
+```bash
+RUN_E2E_FAILOVER=1 cargo test -p outline-ws-rust --features test-tls --test 'e2e_*' -- --test-threads=1
+```
+
+Manual tests against a real server exist for HTTP/1.1, HTTP/2 and HTTP/3 (`real_server_h1`, `real_server_h2`, `real_server_h3`); each is skipped unless its `RUN_REAL_SERVER_*` variable is `1`:
 
 ```bash
 RUN_REAL_SERVER_H2=1 \
 OUTLINE_TCP_WS_URL='wss://example.com/SECRET/tcp' \
 OUTLINE_UDP_WS_URL='wss://example.com/SECRET/udp' \
 SHADOWSOCKS_PASSWORD='Secret0' \
-cargo test --test real_server_h2 -- --nocapture
+cargo test -p outline-ws-rust --test real_server_h2 -- --nocapture
 ```
 
 ```bash
@@ -1530,22 +1447,22 @@ RUN_REAL_SERVER_H3=1 \
 OUTLINE_TCP_WS_URL='wss://example.com/SECRET/tcp' \
 OUTLINE_UDP_WS_URL='wss://example.com/SECRET/udp' \
 SHADOWSOCKS_PASSWORD='Secret0' \
-cargo test --test real_server_h3 -- --nocapture
+cargo test -p outline-ws-rust --test real_server_h3 -- --nocapture
 ```
 
-Integration tests for group isolation, fallback, and direct dispatch:
+Group isolation, fallback and direct dispatch:
 
 ```bash
-cargo test --test group_routing -- --nocapture
+cargo test -p outline-ws-rust --test group_routing -- --nocapture
 ```
 
-Warm-standby integration test:
+Warm standby:
 
 ```bash
-cargo test --test standby_validation -- --nocapture
+cargo test -p outline-ws-rust --test standby_validation -- --nocapture
 ```
 
-## Protocol References
+## Protocol references
 
 - [Outline `outline-ss-server`](https://github.com/Jigsaw-Code/outline-ss-server)
 - [`hev-socks5-core`](https://github.com/heiher/hev-socks5-core)
@@ -1554,10 +1471,6 @@ cargo test --test standby_validation -- --nocapture
 - [RFC 8441: Bootstrapping WebSockets with HTTP/2](https://datatracker.ietf.org/doc/html/rfc8441)
 - [RFC 9220: Bootstrapping WebSockets with HTTP/3](https://datatracker.ietf.org/doc/html/rfc9220)
 
-## Local Patch Tracking
+## Local patch tracking
 
-Vendored dependency patches are tracked in:
-
-- [`PATCHES.md`](PATCHES.md)
-
-This is the source of truth for local deviations from upstream crates, including the vendored `h3` patch used for RFC 9220 support.
+Patches to vendored crates (`vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`, `vendor/rustls`, `vendor/hyper`) are listed in the workspace-wide [`PATCHES.md`](../../PATCHES.md), including the `h3` patch used for RFC 9220.

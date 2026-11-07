@@ -7,88 +7,90 @@
 
 # outline-proxy
 
-`outline-proxy` — это Cargo workspace (монорепозиторий), в котором живёт
-Outline-совместимая прокси-система на базе Shadowsocks AEAD и VLESS поверх
-WebSocket / XHTTP / HTTP/3 — сервер, клиент, агрегирующий dashboard-UI и
-Android-клиент.
+`outline-proxy` — Cargo workspace (монорепозиторий) с Outline-совместимым
+прокси на базе Shadowsocks AEAD и VLESS поверх WebSocket / XHTTP / HTTP/3. В нём
+сервер, клиент, агрегирующий dashboard-UI, Android-VPN-клиент и клиент для
+строки меню macOS.
 
-- **[`outline-ss-rust`](bins/outline-ss-rust/)** — **серверный** data plane.
+- [`outline-ss-rust`](bins/outline-ss-rust/) — серверный data plane.
   Принимает Shadowsocks AEAD или VLESS поверх WebSocket (HTTP/1.1, RFC 8441 H2,
-  RFC 9220 H3) и XHTTP и релеит на произвольные TCP/UDP назначения.
-  Multi-user с per-user политиками, Prometheus-метрики, опциональные встроенные
-  TLS- и QUIC/H3-listener'ы и опциональный mesh-кластер между узлами.
-- **[`outline-ws-rust`](bins/outline-ws-rust/)** — **клиент**. Принимает
-  локальный SOCKS5 (и опциональный TUN) трафик и отправляет его через
-  соответствующие транспорты, с multi-uplink failover, балансировкой нагрузки
-  и health-пробами.
-- **[`outline-ui`](bins/outline-ui/)** — агрегирующий **web-UI**: отдаёт оба
-  дашборда (серверный и клиентский) из одного бинаря (`/ss` и `/ws`), без
-  собственного data plane — только фан-аут в control API каждого узла.
-- **[`android/`](android/)** — **Android**-VPN-клиент, переиспользующий весь
-  uplink-стек `outline-ws-rust` без изменений под тонким слоем `VpnService` +
-  Compose-UI.
-- **[`macos/`](macos/)** — клиент для **macOS** в строке меню: гибридное
-  переключение режимов SOCKS5 (системный прокси без root) и TUN (полный L3 VPN
-  через ядровый `utun`), управление профилями серверов и журналом событий без
-  необходимости платного аккаунта Apple Developer. Автоматическая сборка Universal DMG-образов
-  через `./macos/scripts/package-dmg.sh` и в GitHub Actions.
+  RFC 9220 H3) и XHTTP и релеит на произвольные TCP/UDP-назначения. У каждого
+  пользователя свои `method`, `fwmark`, флаг `enabled` и IP-`aliases`; сервер
+  отдаёт Prometheus-метрики, умеет встроенные TLS- и QUIC/H3-listener'ы и
+  mesh-кластер между узлами.
+- [`outline-ws-rust`](bins/outline-ws-rust/) — клиент. Принимает локальный
+  SOCKS5 (и, опционально, TUN) трафик и отправляет его через те же носители, с
+  multi-uplink failover, балансировкой нагрузки и health-пробами.
+- [`outline-ui`](bins/outline-ui/) — отдаёт оба дашборда, серверный и
+  клиентский, из одного бинаря (`/ss` и `/ws`). Своего data plane нет, он только
+  опрашивает control API каждого узла.
+- [`android/`](android/) — Android-VPN-клиент. Запускает uplink-стек
+  `outline-ws-rust` без изменений под слоем `VpnService` + Compose-UI.
+- [`macos/`](macos/) — клиент для строки меню macOS. Переключает режимы SOCKS5
+  (системный прокси без root) и TUN (L3 VPN через ядровый интерфейс `utun`),
+  управляет профилями серверов и показывает журнал; платный аккаунт Apple
+  Developer не нужен. Universal DMG собирают `./macos/scripts/package-dmg.sh` и
+  GitHub Actions.
 
-Клиент дайлит сервер; обе стороны говорят на одном wire-протоколе и делят набор
-общих крейтов — поэтому они в одном репозитории.
+Клиент дозванивается до сервера; обе стороны говорят на одном wire-протоколе и
+делят набор общих крейтов, поэтому они в одном репозитории.
 
 *English version: [README.md](README.md)*
 
 ## Поддерживаемые протоколы и транспорты
 
-Две независимые оси: **протокол полезной нагрузки (payload)** — что едет внутри —
-и **транспорт-носитель (carrier)** — как он доставляется. Клиент и сервер
-согласуют пару из обоих на каждый uplink.
+Осей две, и они независимы: протокол полезной нагрузки (payload) — что едет
+внутри — и носитель (carrier) — как он доставляется. Клиент и сервер
+договариваются об одной паре на каждый uplink.
 
 | Payload \ Carrier | WebSocket (h1/h2/h3) | XHTTP (h1/h2/h3) |
 |---|:---:|:---:|
-| **Shadowsocks** (AEAD / SS2022) | ✅ | ✅ |
-| **VLESS** | ✅ | ✅ |
+| Shadowsocks (AEAD / SS2022) | да | да |
+| VLESS | да | да |
 
-XHTTP — это протокол `packet-up` / `stream-one`. VLESS ходит по нему для
-TCP + UDP на одном пути; Shadowsocks — на **forward-пути** (client→server) и для
-TCP, и для UDP. По умолчанию TCP и UDP идут по раздельным base-путям (серверные
-`xhttp_path_tcp` / `xhttp_path_udp`, зеркаля WS-разделение `ws_path_tcp` /
-`ws_path_udp`); опционально их можно свести на **один общий путь** (серверный
-`xhttp_path_ss`, клиентский `ss_xhttp_url` + `ss_mode`). Тогда разделение TCP/UDP
-несёт скрытый дискриминатор в session id, и цензор видит один endpoint вместо
-двух. Тот же combined-вариант работает и для WebSocket (серверный `ws_path_ss`,
-клиентский `ss_ws_url`). Все остальные ячейки поддерживаются в обе стороны.
+XHTTP — протокол `packet-up` / `stream-one`. VLESS ходит по нему для TCP + UDP
+на одном пути; Shadowsocks — на forward-пути (client→server) и для TCP, и для
+UDP. По умолчанию TCP и UDP идут через раздельные серверные эндпоинты
+(`[[endpoint]] kind = "xhttp_ss_tcp"` / `"xhttp_ss_udp"`, то же разделение, что
+`ws_ss_tcp` / `ws_ss_udp` у WebSocket). Опционально их можно свести на один
+общий эндпоинт (серверный `kind = "xhttp_ss"`, клиентские `ss_xhttp_url` +
+`ss_mode`); тогда разделение TCP/UDP несёт скрытый дискриминатор в session id, и
+цензор видит один эндпоинт вместо двух. У WebSocket есть тот же combined-вариант
+(серверный `kind = "ws_ss"`, клиентский `ss_ws_url`). Все остальные ячейки
+поддерживаются в обе стороны.
 
 Клиент выбирает пару `transport` + `mode` на каждый uplink:
 
 | `transport` | режим | допустимые значения `*_mode` | поле URL для dial |
 |---|---|---|---|
 | `ss` (алиас `shadowsocks`; deprecated `ws` / `websocket`) | split | `ws_h1` · `ws_h2` · `ws_h3` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `tcp_ws_url` / `udp_ws_url` (ws) · `tcp_xhttp_url` / `udp_xhttp_url` (xhttp) |
-| `ss` | combined | `ws_h1` · `ws_h2` · `ws_h3` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `ss_ws_url` or `ss_xhttp_url` + `ss_mode` |
+| `ss` | combined | `ws_h1` · `ws_h2` · `ws_h3` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `ss_ws_url` или `ss_xhttp_url` + `ss_mode` |
 | `vless` | — | `ws_h1` · `ws_h2` · `ws_h3` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `vless_ws_url` (ws) · `vless_xhttp_url` (xhttp) |
 
-Алиасы носителей: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
+Алиасы режимов: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
 
-**Носители (carrier)**
+### Носители
 
-- **WebSocket h1 / h2 / h3** — RFC 6455, RFC 8441 (H2 Extended CONNECT), RFC 9220
-  (H3 Extended CONNECT). Базовый путь для обоих payload'ов.
-- **XHTTP** — два sub-режима: `packet-up` (каждый пакет — отдельный запрос,
-  работает на h1 / h2 / h3) и `stream-one` (один bidi-POST, нужен мультиплекс —
-  только h2 / h3; на h1 сервер отдаёт 505). Несёт VLESS (TCP + UDP) и
-  Shadowsocks (forward-путь TCP + UDP).
+- WebSocket h1 / h2 / h3: RFC 6455, RFC 8441 (H2 Extended CONNECT), RFC 9220
+  (H3 Extended CONNECT). Несёт оба payload'а.
+- У XHTTP два sub-режима: `packet-up` (каждый пакет — отдельный запрос, работает
+  на h1 / h2 / h3) и `stream-one` (один двунаправленный POST; нужен
+  мультиплекс, поэтому только h2 / h3, на h1 сервер отвечает 505). Несёт VLESS
+  (TCP + UDP) и Shadowsocks (forward-путь TCP + UDP).
 
-**Автоматический fallback** (per-uplink, в том числе mid-session): WebSocket
-деградирует `h3 → h2 → h1`, XHTTP — `xhttp_h3 → xhttp_h2 → xhttp_h1`.
+Автоматический fallback работает per-uplink, в том числе посреди сессии:
+WebSocket спускается `h3 → h2 → h1`, XHTTP — `xhttp_h3 → xhttp_h2 → xhttp_h1`.
 
-> **Совместимость с Outline:** Shadowsocks-over-WebSocket — это путь, на котором
-> говорят приложения Outline: сервер выдаёт для него Outline-ключ доступа
-> (`$type: websocket`, TCP + UDP). Shadowsocks-over-XHTTP —
-> standalone-режим только для встроенного клиента
-> `outline-ws-rust`, наружу как Outline-ключ не отдаётся — но для combined-path
-> Shadowsocks-юзера сервер также выдаёт share-link `ss://…` (`ws` / `xhttp`,
-> SIP002 userinfo) для этого клиента. VLESS отдаётся как share-link
-> `vless://…` (`ws` / `xhttp`).
+### Совместимость с Outline
+
+Shadowsocks поверх WebSocket — путь, на котором говорят приложения Outline.
+Генератор ключей [`ops/access-keys`](ops/access-keys/) выдаёт пользователю
+Outline-ключ доступа (`$type: websocket`, TCP + UDP), если на сервере есть пара
+раздельных эндпоинтов `ws_ss_tcp` / `ws_ss_udp`. Shadowsocks поверх XHTTP
+работает только со встроенным клиентом `outline-ws-rust`, Outline-ключа для
+него нет; вместо этого на каждый combined-эндпоинт (`ws_ss` / `xhttp_ss`)
+генератор выдаёт share-link `ss://…` (SIP002 userinfo) для этого клиента.
+VLESS-эндпоинты (`ws_vless` / `xhttp_vless`) получают share-link `vless://…`.
 
 ## Структура
 
@@ -99,33 +101,35 @@ outline-proxy/
 │   ├── outline-ws-rust/   # клиентский бинарь  (+ его README, CHANGELOG, docs/)
 │   └── outline-ui/        # агрегирующий dashboard-UI (+ его README)
 ├── android/               # Android-VPN-клиент (отдельный workspace: Rust-ядро + Gradle/Kotlin-приложение)
+├── macos/                 # клиент для строки меню macOS (Swift/AppKit)
 ├── crates/                # общие крейты (wire-протокол, transport, uplink, tun, crypto, routing, …)
-├── vendor/                # пропатченные h3 + sockudo-ws (одна копия, на уровне workspace)
+├── vendor/                # пропатченные h3, sockudo-ws, quinn-proto, rustls, hyper (одна копия, на уровне workspace)
 ├── .cargo/config.toml     # cross-build алиасы (ss-* / ws-* / ui-*)
-├── .github/workflows/     # CI: per-binary release / nightly / tag пайплайны
+├── .github/workflows/     # CI: lint/test-гейт, release / nightly / tag пайплайны по компонентам
 ├── AGENTS.md              # правила для контрибьюторов + монорепо-инварианты
+├── PATCHES.md             # что меняет каждый vendored-крейт относительно upstream
 └── Cargo.toml             # корень workspace: members, профили, [patch.crates-io]
 ```
 
-Документация по каждому компоненту лежит рядом с ним —
-[README сервера](bins/outline-ss-rust/README.md) ·
-[README клиента](bins/outline-ws-rust/README.md) ·
+Документация по каждому компоненту лежит рядом с ним:
+[README сервера](bins/outline-ss-rust/README.ru.md) ·
+[README клиента](bins/outline-ws-rust/README.ru.md) ·
 [README dashboard-UI](bins/outline-ui/README.ru.md) ·
-[README Android-клиента](android/README.ru.md) — а более детальные материалы
-под каждым `bins/*/docs/` (архитектура, session resumption, настройка uplink'ов,
-TUN PMTUD).
+[README Android-клиента](android/README.ru.md) ·
+[README клиента macOS](macos/README.ru.md). Подробности — в `bins/*/docs/`:
+архитектура сервера и session resumption, конфигурации uplink'ов клиента, TUN
+PMTUD и TUN GSO.
 
-Сквозные темы под [`docs/`](docs/):
+Сквозные темы в [`docs/`](docs/):
 [carrier-padding](docs/PADDING.ru.md) ·
 [фрейминг записей SS-UDP поверх XHTTP](docs/XHTTP-UDP-RECORDS.ru.md) ·
 [выбор исходящего IPv6](docs/OUTBOUND-IPV6.ru.md) ·
 [mesh-кластер серверов](docs/CLUSTER.ru.md) ·
 [развёртывание кластера](docs/CLUSTER-DEPLOY.ru.md).
 
-Для навигации по коду с меньшим расходом токенов можно сгенерировать локальную
-структурную карту репозитория через
-[`scripts/code-index.py`](scripts/code-index.py); использование описано в
-[`docs/CODE-INDEX.ru.md`](docs/CODE-INDEX.ru.md).
+[`scripts/code-index.py`](scripts/code-index.py) генерирует локальную
+структурную карту workspace (пакеты, файлы, верхнеуровневые элементы);
+использование описано в [`docs/CODE-INDEX.ru.md`](docs/CODE-INDEX.ru.md).
 
 ## Сборка
 
@@ -134,7 +138,7 @@ TUN PMTUD).
 ```bash
 # весь workspace
 cargo build --release
-cargo test --workspace
+cargo test --workspace --exclude sockudo-ws
 
 # один бинарь
 cargo build --release -p outline-ss-rust
@@ -146,40 +150,54 @@ cargo ws-release-musl-aarch64
 cargo ui-release-musl-aarch64
 ```
 
-`rustls` во всём workspace использует провайдер `aws-lc-rs`, а HTTP/3 WebSocket
-path зависит от пропатченных `vendor/h3` и `vendor/sockudo-ws`. Полный набор
-монорепо-инвариантов — в [`AGENTS.md`](AGENTS.md).
+`sockudo-ws` — явный member workspace, поэтому голый `--workspace` его
+захватывает; CI его исключает, команда тестов выше тоже.
 
-Android-клиент живёт под [`android/`](android/) как **отдельный** Cargo
-workspace (корневой `cargo build --workspace` его не видит) плюс Gradle/Kotlin-
-приложение; собирается оттуда — см. [его README](android/README.ru.md).
+`rustls` во всём workspace использует провайдер `aws-lc-rs`. HTTP/3
+WebSocket-путь зависит от пропатченных `vendor/h3` и `vendor/sockudo-ws`; патчи
+всех пяти vendored-крейтов описаны в [`PATCHES.ru.md`](PATCHES.ru.md).
+Монорепо-инварианты и точные команды CI-гейта — в [`AGENTS.md`](AGENTS.md).
+
+Android-клиент живёт в [`android/`](android/) как отдельный Cargo workspace
+(корневой `cargo build --workspace` его не видит) плюс Gradle/Kotlin-приложение;
+собирается оттуда, см. [его README](android/README.ru.md).
 
 ## Релизы
 
-Каждый бинарь версионируется и релизится независимо через префиксные теги:
+Каждый компонент версионируется и релизится независимо через префиксные теги:
 
-- `ss-v<x.y.z>` → собирает и публикует **сервер** (workflow *Tag Release (server)*)
-- `ws-v<x.y.z>` → собирает и публикует **клиент** (workflow *Tag Release (client)*)
-- `ui-v<x.y.z>` → собирает и публикует **dashboard UI** (workflow *Tag Release (ui)*)
-- `android-v<x.y.z>` → собирает и публикует **Android-приложение** (workflow *Tag Release (android)*)
+| Тег | Что собирает и публикует | Workflow |
+|---|---|---|
+| `ss-v<x.y.z>` | сервер | *Tag Release (server)* |
+| `ws-v<x.y.z>` | клиент | *Tag Release (client)* |
+| `ui-v<x.y.z>` | dashboard-UI | *Tag Release (ui)* |
+| `android-v<x.y.z>` | Android-приложение | *Tag Release (android)* |
+| `macos-v<x.y.z>` | приложение macOS | *Tag Release (macos)* |
 
-Push'и в `main` публикуют rolling-предрелизы `ss-nightly` / `ws-nightly` /
-`ui-nightly` / `android-nightly` (с path-фильтром — пересобирается только
-затронутый компонент; фильтр Android дополнительно покрывает клиент и общие
-крейты, которые линкует его нативная библиотека). Ручные workflow
-*Release (server|client|ui)* поднимают версию в соответствующем
-`bins/*/Cargo.toml` и запускают процесс тегирования.
+Push'и в `main` публикуют скользящие предрелизы `ss-nightly` / `ws-nightly` /
+`ui-nightly` / `android-nightly` / `macos-nightly`. У каждого nightly-workflow
+есть path-фильтр, поэтому пересобирается только затронутый компонент; фильтры
+Android и macOS дополнительно покрывают клиент, общие и vendored-крейты, которые
+линкует их нативный код.
+
+Ручные workflow *Release (server|client|ui|android|macos)* принимают серию
+`MAJOR.MINOR`, вычисляют следующую patch-версию по существующим тегам,
+записывают её в файл версии компонента (`bins/*/Cargo.toml` для трёх бинарей,
+`android/rust/Cargo.toml` для Android, `macos/Resources/Info.plist` для macOS),
+пушат в `main` коммит `release: cut <tag>` и печатают команду `git tag -s <tag>`
+для локального запуска. Push этого подписанного тега запускает соответствующий
+*Tag Release*.
 
 ### Установка Android-приложения
 
-Приложения нет ни в одном сторе: к каждому релизу приложен **подписанный APK**
-(`outline-proxy-<версия>-arm64-v8a.apk`, а на скользящем теге —
-`outline-proxy-nightly-<sha>-arm64-v8a.apk`) — скачайте его и откройте, чтобы
-установить. Установленная сборка умеет обновляться сама: тап по метке версии
-внизу главного экрана проверяет тот канал, из которого она собрана, качает APK в
-«Загрузки» и передаёт его системному установщику. Сама она ничего не
-устанавливает — поэтому и не просит разрешения на установку.
+Приложения нет ни в одном сторе. К каждому релизу на GitHub приложен
+подписанный APK (`outline-proxy-<версия>-arm64-v8a.apk`, а на скользящем теге —
+`outline-proxy-nightly-<sha>-arm64-v8a.apk`): скачайте его и откройте, чтобы
+установить. Установленная сборка умеет обновляться: тап по метке версии внизу
+главного экрана проверяет тот канал, из которого она собрана, качает APK в
+«Загрузки» и передаёт его системному установщику. Само приложение ничего не
+устанавливает, поэтому разрешения на установку не запрашивает.
 
 ## Лицензия
 
-GPL-3.0 — см. [LICENSE](LICENSE).
+GPL-3.0, см. [LICENSE](LICENSE).
