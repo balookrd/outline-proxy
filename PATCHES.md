@@ -296,7 +296,7 @@ Baseline — crates.io `quinn-proto 0.11.19`. Logical changes carried by
    sized for its default 1.25 MB window. The H3 client grants 8 MiB and the server's
    `medium` / `large` profiles 4 / 16 MiB; while the read offset waits for a lost
    packet, a lossy path fills such a window with more than 1024 gaps, and the receiver
-   killed the whole connection (on the fleet: `.104` from nuxt2, about three
+   killed the whole connection (on the fleet: `.104` from one exit node, about three
    connections a day, up to 184 streams each). The per-span overhead keeps the same
    share of the window as upstream, the compaction trigger stays at twice the limit,
    and CRYPTO streams keep 1024. Tests: `assembler::test::chunk_limit_scales_with_open_window`,
