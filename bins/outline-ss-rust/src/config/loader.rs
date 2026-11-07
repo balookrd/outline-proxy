@@ -250,7 +250,7 @@ fn resolve_cluster(section: Option<ClusterSection>) -> Result<Option<ClusterConf
         .mesh_listen
         .context("cluster.mesh_listen is required when cluster.enabled")?
         .parse()
-        .context("cluster.mesh_listen must be a valid host:port")?;
+        .context("cluster.mesh_listen must be an IP:port socket address")?;
 
     let budget_ms = section.mesh_relay_budget_ms.unwrap_or(4000).max(1);
     let mesh_relay_budget = Duration::from_millis(budget_ms);
@@ -264,10 +264,9 @@ fn resolve_cluster(section: Option<ClusterSection>) -> Result<Option<ClusterConf
         if peer_shard == shard {
             continue;
         }
-        let addr = peer
-            .addr
-            .parse()
-            .with_context(|| format!("cluster.peers[{idx}].addr must be a valid host:port"))?;
+        let addr = peer.addr.parse().with_context(|| {
+            format!("cluster.peers[{idx}].addr must be an IP:port socket address")
+        })?;
         if peers.insert(peer_shard, addr).is_some() {
             bail!("duplicate cluster.peers entry for shard {}", peer.shard);
         }
