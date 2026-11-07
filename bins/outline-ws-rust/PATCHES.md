@@ -1,9 +1,11 @@
-# Local Patches
+# Local patches
 
-The patch inventory now lives at the monorepo root as a single source of truth
-for all vendored crates (one `vendor/` is shared workspace-wide):
+The inventory of patches to vendored crates lives at the monorepo root. One
+`vendor/` directory is shared by the whole workspace, so there is one inventory
+for both binaries:
 
-- **[PATCHES.md](../../PATCHES.md)** ([Русский](../../PATCHES.ru.md))
+- [PATCHES.md](../../PATCHES.md) ([Русский](../../PATCHES.ru.md))
 
-The regenerated artifacts `h3-0.0.8.patch` and `sockudo-ws-1.7.5.patch` live
-there too.
+The regenerated patch artifacts are in the root as well: `h3-0.0.8.patch`,
+`sockudo-ws-1.7.5.patch`, `quinn-proto-0.11.19.patch`, `rustls-0.23.46.patch`,
+`hyper-1.12.0.patch`.

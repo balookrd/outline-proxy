@@ -1,47 +1,36 @@
-# Svelte + TS + Vite
+# outline-ui frontend
 
-This template should help get you started developing with Svelte and TypeScript in Vite.
+Svelte 5 + TypeScript SPA for both `outline-ui` dashboards (`/ws` and `/ss`),
+built with Vite and Tailwind. How it plugs into the Rust binary (proxying,
+`embed-assets`, deployment) is described in [`../README.md`](../README.md).
 
-## Recommended IDE Setup
+Requirements: Node 22 and pnpm 9 (the versions the `frontend` job in
+`.github/workflows/ci.yml` uses).
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
+## Commands
 
-## Need an official Svelte framework?
+Run from `bins/outline-ui/frontend`:
 
-Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
+| Command | What it does |
+|---|---|
+| `pnpm install --frozen-lockfile` | Installs dependencies from `pnpm-lock.yaml` |
+| `pnpm dev` | Dev server on `http://localhost:5173`; proxies `/ss/dashboard/api` and `/ws/dashboard/api` to `127.0.0.1:9500` |
+| `pnpm build` | Production build into `dist/`, assets under `/ui-assets/` |
+| `pnpm check` | `svelte-check --tsconfig ./tsconfig.app.json` plus `tsc -p tsconfig.node.json` |
+| `pnpm exec vitest run` | Unit tests (`src/lib/*.test.ts`) |
 
-## Technical considerations
+`pnpm dev` needs a running `outline-ui` backend on `127.0.0.1:9500`; see
+"Running locally" in [`../README.md`](../README.md).
 
-**Why use this over SvelteKit?**
+## Layout
 
-- It brings its own routing solution which might not be preferable for some users.
-- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
-
-This template contains as little as possible to get started with Vite + TypeScript + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
-
-Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
-
-**Why `global.d.ts` instead of `compilerOptions.types` inside `jsconfig.json` or `tsconfig.json`?**
-
-Setting `compilerOptions.types` shuts out all other types not explicitly listed in the configuration. Using triple-slash references keeps the default TypeScript setting of accepting type information from the entire workspace, while also adding `svelte` and `vite/client` type information.
-
-**Why include `.vscode/extensions.json`?**
-
-Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
-
-**Why enable `allowJs` in the TS template?**
-
-While `allowJs: false` would indeed prevent the use of `.js` files in the project, it does not prevent the use of JavaScript syntax in `.svelte` files. In addition, it would force `checkJs: false`, bringing the worst of both worlds: not being able to guarantee the entire codebase is TypeScript, and also having worse typechecking for the existing JavaScript. In addition, there are valid use cases in which a mixed codebase may be relevant.
-
-**Why is HMR not preserving my local component state?**
-
-HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/rixo/svelte-hmr#svelte-hmr).
-
-If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
-
-```ts
-// store.ts
-// An extremely simple external store
-import { writable } from 'svelte/store'
-export default writable(0)
-```
+| Path | Contents |
+|---|---|
+| `src/App.svelte`, `src/main.ts` | Entry point and top-level view switch |
+| `src/lib/router.svelte.ts` | Client-side routing: `/ss*` → server dashboard, `/ws*` → client dashboard, anything else → landing |
+| `src/lib/api.ts`, `src/lib/types.ts` | Calls to `/ws/dashboard/api` and `/ss/dashboard/api`, response types |
+| `src/lib/*Form.ts` | Form models of users, uplinks, routes and groups |
+| `src/features/ss/` | Server dashboard pages: users, cluster, server settings |
+| `src/features/ws/` | Client dashboard pages: topology, uplinks, routing, groups, settings |
+| `src/features/landing/` | Index page linking both dashboards |
+| `src/components/layout/` | Top bar, sidebar, instance selector, error banner, toasts |

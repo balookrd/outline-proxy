@@ -1,4 +1,4 @@
-# SS-UDP Record Framing over XHTTP
+# SS-UDP record framing over XHTTP
 
 *Русская версия: [XHTTP-UDP-RECORDS.ru.md](XHTTP-UDP-RECORDS.ru.md)*
 
@@ -7,7 +7,7 @@ Explicit datagram boundaries for Shadowsocks UDP carried over an XHTTP carrier
 silently merges and splits packets, and every per-packet AEAD decrypt on the
 receiving side fails.
 
-## Why
+## Why XHTTP loses datagram boundaries
 
 The datagram transports assume the carrier preserves packet boundaries: one
 send is one packet, one receive is one packet — that is the contract of
@@ -57,7 +57,7 @@ records, whole or partial. A `len = 0` record carries nothing and is skipped
 expressed; the transport drops it, exactly as it drops any oversized UDP packet
 — no real UDP datagram reaches that size.
 
-Framing sits **outside** [carrier padding](PADDING.md): the record payload is
+Framing sits outside [carrier padding](PADDING.md): the record payload is
 the padded frame when padding is on, and the bare encrypted packet when it is
 off, so the two features compose in either combination.
 
@@ -81,35 +81,37 @@ it only when the base path resolves to an SS-UDP route, latching the decision on
 the session — a packet-up client's GET and POST are separate requests and either
 may be the one that creates the session.
 
-Framing is on only when **both** sides said `1`. Consequences:
+Framing is on only when both sides said `1`. Consequences:
 
 - an older server never echoes → the client keeps the historical unframed wire;
 - an older client never asks → the server never frames;
 - a third-party client (xray, sing-box, Outline) is unaffected: it neither sends
   nor receives the header, and its wire is byte-for-byte what it was.
 
-Negotiation is why this on-wire change is safe to roll out gradually, and it is
-also why the capability must reach the server *at dial time*: warm-standby
-SS-UDP streams are dialled ahead of use, so the pool dials with the flag set
-(`with_datagram_records`) rather than trying to negotiate afterwards.
+Because of the negotiation, servers and clients can be updated in any order
+and at different times. It also means the capability must reach the server at
+dial time: warm-standby SS-UDP streams are dialled ahead of use, so the pool
+dials with the flag set (`with_datagram_records`) rather than trying to
+negotiate afterwards.
 
 ## Rollout order
 
-1. **Servers first.** A server that frames only when asked is a no-op for every
-   client already in the field.
-2. **Clients second.** Each updated client starts asking; sessions against an
+1. Update the servers. A server frames only when a client asks, so this
+   changes nothing for clients already in the field.
+2. Update the clients. Each updated client starts asking; sessions against an
    updated server begin framing immediately, sessions against an older one keep
-   the current behaviour.
-3. No config change is needed on either side, and no coordinated restart: the
-   negotiation is per session, so a client that reconnects after the server was
-   updated picks framing up on its next dial.
+   the unframed wire.
 
-Rolling back is symmetric — a downgraded server stops echoing and clients fall
+Neither side needs a config change or a coordinated restart: the negotiation is
+per session, so a client that reconnects after the server was updated picks
+framing up on its next dial.
+
+Rolling back is symmetric: a downgraded server stops echoing, and clients fall
 back to the unframed wire on their next dial.
 
 ## Verification
 
-The failure mode is loud, so the fix is visible in the logs: on a busy SS-UDP
+The failure shows in the logs. With framing negotiated, on a busy SS-UDP
 XHTTP uplink, the `decryption failed` / `packet is too short` pairs on the
 client and the `no configured key matched the incoming udp data` / `packet too
 short` pairs on the server stop, while the same client's `ws_h3` carriers (which

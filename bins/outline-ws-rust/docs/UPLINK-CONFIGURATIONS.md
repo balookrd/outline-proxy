@@ -1,11 +1,13 @@
-# Uplink Configurations and Fallback Behavior
+# Uplink configurations and fallback behavior
 
 Defines the four supported `[[outline.uplinks]]` shapes, with a minimal
 config block and the dial-time fallback chain for each.
 
+Real fleet node names, domains and addresses in this document are replaced with stand-ins: `exit-a`…`exit-e` are the exit nodes. The mapping lives in the local, uncommitted `FLEET.local.md`.
+
 Each fallback step fires only when the previous step returns an error
 during the dial / handshake. Once an "advanced" mode (`ws_h3`,
-`xhttp_h3`) fails for an uplink, a per-uplink **downgrade window** opens:
+`xhttp_h3`) fails for an uplink, a per-uplink downgrade window opens:
 subsequent dials within the window skip the broken mode entirely. The
 window closes when an explicit recovery probe confirms the advanced mode
 is reachable again — at that point the uplink is restored to the
@@ -35,15 +37,15 @@ password = "Secret0"
 weight = 1.0
 ```
 
-- **TCP fallback chain:** `ws_h3 → ws_h2 → ws_h1`. Inline fallback
+- TCP fallback chain: `ws_h3 → ws_h2 → ws_h1`. Inline fallback
   inside `connect_transport`. Each step is a fresh
   handshake on the same `tcp_ws_url`. Failure of `ws_h3` also records a
   host-level cap in `ws_mode_cache`, so subsequent dials within the
   cache TTL skip H3 even before the per-uplink downgrade window kicks
   in.
-- **UDP fallback chain:** `ws_h3 → ws_h2 → ws_h1`. Same logic on the
+- UDP fallback chain: `ws_h3 → ws_h2 → ws_h1`. Same logic on the
   UDP-WS path.
-- **Resume:** the TCP Session ID belongs to the **session**, not to the
+- Resume: the TCP Session ID belongs to the session, not to the
   uplink: a fresh dial presents no `X-Outline-Resume` and the server
   mints a new ID for it; only a redial of that same session (mid-session
   retry, cluster soft-switch) presents the ID that session was issued.
@@ -57,7 +59,7 @@ weight = 1.0
 Shadowsocks AEAD stream over the XHTTP packet-up / stream-one driver
 instead of WebSocket — the same carrier VLESS uses, but with the SS
 payload. The base URL goes into `tcp_xhttp_url` (not `tcp_ws_url`); the
-per-session id is appended at dial time as one path segment. Useful
+per-session id is appended at dial time as one path segment. Use it
 when WebSocket Upgrade is blocked but plain HTTP POST/GET pass (CDN
 gateways, captive-portal middleboxes).
 
@@ -76,32 +78,33 @@ password = "Secret0"
 weight = 1.0
 ```
 
-- **Carrier vs URL:** `tcp_mode` selects the carrier family; an XHTTP
+- Carrier vs URL: `tcp_mode` selects the carrier family; an XHTTP
   mode dials `tcp_xhttp_url`, a WS mode dials `tcp_ws_url`. Setting the
   wrong URL for the mode (or both at once) is rejected at config load.
   One wire carries one family — switch WS↔XHTTP with a separate
   fallback wire.
-- **TCP fallback chain:** `xhttp_h3 → xhttp_h2 → xhttp_h1`, identical to
+- TCP fallback chain: `xhttp_h3 → xhttp_h2 → xhttp_h1`, identical to
   the VLESS-XHTTP descent (see section 4). The h1 carrier coerces
   stream-one to packet-up exactly as VLESS does.
-- **Submode:** packet-up (default) or stream-one, selected via `?mode=`
+- Submode: packet-up (default) or stream-one, selected via `?mode=`
   on `tcp_xhttp_url` — same rules as the VLESS-XHTTP submode table.
-- **Server:** the matching server listener is `xhttp_path_ss` (distinct
-  from `xhttp_path_vless` — one base path serves one protocol).
-- **UDP:** set `udp_xhttp_url` with `udp_mode = xhttp_h*` to carry SS-UDP
+- Server: the matching server endpoint is `[[endpoint]]` with
+  `kind = "xhttp_ss_tcp"` (VLESS uses `kind = "xhttp_vless"`; one path
+  serves one kind).
+- UDP: set `udp_xhttp_url` with `udp_mode = xhttp_h*` to carry SS-UDP
   datagrams over XHTTP too. Unlike VLESS (which muxes TCP + UDP on one
-  path), SS keeps TCP and UDP on **separate** base paths — the server
-  registers `xhttp_path_ss_udp` for the UDP datagrams, mirroring the
-  `ws_path_tcp` / `ws_path_udp` split. TCP-only uplinks just leave the
-  UDP fields unset.
+  path), SS keeps TCP and UDP on separate base paths — the server
+  serves the UDP datagrams on a `kind = "xhttp_ss_udp"` endpoint, the
+  same split as `ws_ss_tcp` / `ws_ss_udp` on WebSocket. TCP-only uplinks
+  leave the UDP fields unset.
 
 ### Combined path: one URL for TCP and UDP
 
-Optionally you can collapse TCP and UDP onto **one** base path so a censor
-sees a single endpoint instead of two. Set `ss_xhttp_url` (one URL for both
-legs) and `ss_mode` instead of the split `tcp_*` / `udp_*` fields — and on the
-server set the combined `xhttp_path_ss` (instead of the split `xhttp_path_tcp`
-+ `xhttp_path_udp`). The client then encodes the TCP-vs-UDP discriminator into
+TCP and UDP can share one base path, so a censor sees a single endpoint
+instead of two. Set `ss_xhttp_url` (one URL for both legs) and `ss_mode`
+instead of the split `tcp_*` / `udp_*` fields, and on the server declare one
+`[[endpoint]]` with `kind = "xhttp_ss"` (`ws_ss` for WebSocket) instead of the
+split `xhttp_ss_tcp` + `xhttp_ss_udp` pair. The client then encodes the TCP-vs-UDP discriminator into
 the first character of the per-session id — invisible inside TLS, statistically
 indistinguishable from a random id — so the server routes each request to the
 right relay with no second path.
@@ -188,8 +191,8 @@ It is decomposed piece by piece:
 | `path=%2Fsecret%2Fss` | percent-decode → `/secret/ss` | dial-URL path |
 | `#edge` | percent-decode | `name = edge` |
 
-The resulting `UplinkConfig` (and the long-form TOML it is **exactly
-equivalent** to):
+The resulting `UplinkConfig` (and the long-form TOML it is exactly
+equivalent to):
 
 ```toml
 [[outline.uplinks]]
@@ -210,7 +213,7 @@ ss_xhttp_url = "https://ss.example.com:443/xhttp?mode=stream-one"   # type=xhttp
 ss_mode = "xhttp_h3"
 ```
 
-There is no dedicated dial logic for the link — it simply fills the same
+There is no dedicated dial logic for the link: it fills the same
 combined-path fields, which then flow through the identical `combined_ss`
 validation and `resolve_primary_credentials` path as a hand-written TOML uplink.
 
@@ -223,7 +226,7 @@ validation and `resolve_primary_credentials` path as a hand-written TOML uplink.
   `aes-128-gcm`, `aes-256-gcm`, `2022-blake3-*`).
 - `link` is mutually exclusive with `method`, `password`, every `ss_*` /
   `tcp_*` / `udp_*` field, and the `vless_*` fields. Mixing them errors at
-  config load; use the URI **or** the explicit fields.
+  config load; use the URI or the explicit fields.
 - `type=quic` is not supported — raw QUIC has been removed as a carrier; use a
   `ws` or `xhttp` carrier instead.
 - `sni=` and `host=` are only accepted when they match the authority host
@@ -234,13 +237,13 @@ The same `link` field is accepted by the CLI flag (`--link` / `--vless-link` /
 `OUTLINE_VLESS_LINK`) and the `/control/uplinks` REST endpoints (`link`, alias
 `share_link`) — the scheme (`ss://` vs `vless://`) selects the transport.
 
-For the **split** two-path SS layout (separate `tcp_*` and `udp_*` URLs) there
+For the split two-path SS layout (separate `tcp_*` and `udp_*` URLs) there
 is no single-URL share-link form — use the long-form TOML above.
 
 ## 3. VLESS over WebSocket (H3)
 
 WebSocket carrier with VLESS framing. The VLESS server exposes a single
-WS path (`ws_path_vless`) shared by TCP and UDP — VLESS UDP rides the
+WS path (`[[endpoint]]` with `kind = "ws_vless"`) shared by TCP and UDP — VLESS UDP rides the
 same WS session as TCP with mux.cool / XUDP framing.
 
 ```toml
@@ -254,12 +257,12 @@ vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 1.0
 ```
 
-- **TCP fallback chain:** `ws_h3 → ws_h2 → ws_h1`. Inline
+- TCP fallback chain: `ws_h3 → ws_h2 → ws_h1`. Inline
   `connect_transport` fallback, same as SS-over-WS.
-- **UDP fallback chain:** `ws_h3 → ws_h2 → ws_h1`. UDP is multiplexed
+- UDP fallback chain: `ws_h3 → ws_h2 → ws_h1`. UDP is multiplexed
   in the same WS session as TCP, so the carrier is shared and the
   downgrade marker propagates across both directions.
-- **Resume:** the TCP Session ID is per-session (presented only when
+- Resume: the TCP Session ID is per-session (presented only when
   that session redials). UDP rides the same WS session, so it follows
   TCP's reconnects implicitly (no separate UDP resume token).
 
@@ -269,7 +272,7 @@ weight = 1.0
 The driver opens one long-lived GET (downlink) and pipelines POSTs
 (uplink) sequenced by `X-Xhttp-Seq`. The base URL goes into
 `vless_xhttp_url` (not `vless_ws_url`); the per-session id is appended
-at dial time as one path segment after the base path. Useful when
+at dial time as one path segment after the base path. Use it when
 WebSocket Upgrade is blocked on the network path (CDN gateways,
 captive-portal middleboxes).
 
@@ -284,28 +287,30 @@ vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 1.0
 ```
 
-- **TCP fallback chain:** `xhttp_h3 → xhttp_h2 → xhttp_h1`. The
+- TCP fallback chain: `xhttp_h3 → xhttp_h2 → xhttp_h1`. The
   dispatcher reuses the same `resume_request` token across each
   carrier switch, so a parked upstream re-attaches without producing
   a new VLESS session. The h1 carrier is the last-resort fallback
   for paths that block both QUIC and h2 ALPN; throughput is strictly
   worse (no multiplexing — see "h1 carrier shape" below) but the
   wire URL stays identical (`<base>/<session>/<seq>`) so the same
-  `xhttp_path_vless` listener serves it.
-- **UDP fallback chain:** `xhttp_h3 → xhttp_h2 → xhttp_h1`. XHTTP is
+  `kind = "xhttp_vless"` endpoint serves it.
+- UDP fallback chain: `xhttp_h3 → xhttp_h2 → xhttp_h1`. XHTTP is
   a bidirectional packet-up driver on the same connection, so UDP
   rides alongside TCP in the same carrier and downgrades
   synchronously.
-- **Resume:** a redialing session's own token is reused across every
+- Resume: a redialing session's own token is reused across every
   step of the `xhttp_h3 → xhttp_h2 → xhttp_h1` carrier switch — the
   same `resume_request` is presented on each carrier, so the server
   re-attaches that session's parked upstream instead of opening a fresh
   session. A first dial carries no token. UDP rides the same XHTTP
   carrier and inherits TCP's reconnect behaviour.
 
-**h1 carrier shape.** Unlike h2 / h3, HTTP/1.1 cannot multiplex a
+#### h1 carrier shape
+
+Unlike h2 / h3, HTTP/1.1 cannot multiplex a
 streaming GET against concurrent POSTs on a single connection, so the
-h1 carrier dials **two** keep-alive sockets per session: one
+h1 carrier dials two keep-alive sockets per session: one
 dedicated to the long-lived downlink GET (chunked response body), and
 one for strictly serialised uplink POSTs (one in-flight request at a
 time). Pipelining is intentionally avoided — it is too brittle through
@@ -316,7 +321,7 @@ CDN / proxy intermediaries to rely on. As a result:
 - A single POST failure tears the uplink socket down and the driver
   exits, so the upstream sees a clean session drop rather than
   partial corruption. The next dial reattaches via the resume token.
-- Stream-one submode is **not** carried on h1 — h1 cannot multiplex
+- Stream-one submode is not carried on h1 — h1 cannot multiplex
   a streaming GET against a streaming POST on a single connection,
   so `?mode=stream-one` with `vless_mode = xhttp_h1` (or a chain that
   falls through to h1) is silently coerced to packet-up at dial time.
@@ -383,8 +388,8 @@ It is decomposed piece by piece:
 | `encryption=none` | — | accepted, no field (VLESS has no other modes) |
 | `#edge` | percent-decode | `name = edge` |
 
-The resulting `UplinkConfig` (and the long-form TOML it is **exactly
-equivalent** to):
+The resulting `UplinkConfig` (and the long-form TOML it is exactly
+equivalent to):
 
 ```toml
 [[outline.uplinks]]
@@ -404,7 +409,7 @@ vless_xhttp_url = "https://vless.example.com:443/xhttp?mode=stream-one"   # type
 vless_mode = "xhttp_h3"
 ```
 
-There is no dedicated dial logic for the link — it simply fills the same
+There is no dedicated dial logic for the link: it fills the same
 `vless_*` fields, which then flow through the identical per-transport validation
 and `resolve_primary_credentials` path as a hand-written TOML uplink.
 
@@ -412,8 +417,8 @@ and `resolve_primary_credentials` path as a hand-written TOML uplink.
 
 - The URI must have an explicit `:port` — there is no scheme default.
 - `link` is mutually exclusive with `vless_id`, `vless_ws_url`,
-  `vless_xhttp_url` and `vless_mode`. Mixing them errors out at config
-  load with a clear message; use the URI **or** the explicit fields.
+  `vless_xhttp_url` and `vless_mode`. Mixing them fails the config
+  load; use the URI or the explicit fields.
 - `flow=...` (xtls-rprx-vision) and `encryption=` other than `none`
   are rejected — no client-side implementation.
 - `sni=` and `host=` parameters are only accepted when they match the
@@ -421,7 +426,8 @@ and `resolve_primary_credentials` path as a hand-written TOML uplink.
   both SNI and the HTTP `Host` header, so divergent values would be
   silently dropped — the loader fails fast instead.
 - `type=tcp` / `type=grpc` / `type=h2` are rejected — the codebase
-  has no carrier for them.
+  has no carrier for them. A link without `type` is read as `type=tcp`
+  and rejected too.
 - Reality-specific parameters (`pbk`, `sid`, `spx`, `fp`) are accepted
   but have no effect; treat `security=reality` as a synonym for
   `security=tls` until reality lands.
@@ -449,12 +455,12 @@ is read on every dial, so flipping the URL is enough.
 | `https://host/path/xhttp?mode=stream-one`        | `stream-one`           |
 | `https://host/path/xhttp?mode=stream_one`        | `stream-one` (alias)   |
 
-- **packet-up** (default) — one long-lived GET (downlink) plus a
+- packet-up (default) — one long-lived GET (downlink) plus a
   pipeline of POSTs (uplink) sequenced via `X-Xhttp-Seq`. Each uplink
   chunk is its own short request. Most tolerant to CDNs and
   middleboxes that buffer or close long-running POST bodies. Start
   here.
-- **stream-one** — one bidirectional POST whose request body carries
+- stream-one — one bidirectional POST whose request body carries
   the uplink and response body carries the downlink. Less per-chunk
   overhead and lower small-packet latency. Requires `xhttp_h2` /
   `xhttp_h3` and a path that does not buffer POST bodies — proxies
@@ -474,7 +480,7 @@ see below.
 Stream-one's single long-lived POST is sensitive to middleboxes that
 buffer or close streaming request bodies (CDNs, corporate proxies,
 some mobile NATs). When the dial-time stream-one open fails on
-`xhttp_h2` / `xhttp_h3`, the carrier retries packet-up on the **same**
+`xhttp_h2` / `xhttp_h3`, the carrier retries packet-up on the same
 TCP/TLS/h2 (or QUIC/h3) connection and records the failure in the
 per-host XHTTP submode cache. Subsequent dials skip stream-one
 upfront for `mode_downgrade_secs` and go straight to packet-up,
@@ -485,10 +491,7 @@ The submode and h-version axes are independent: a stream-one block
 on a host does not lower the h-version cap, and an h-version
 downgrade does not refresh the stream-one block.
 
-The dashboard surfaces the effective submode on the protocol pill —
-configured `stream-one` displays as `/S`, packet-up adds no suffix,
-and a live block renders as `/S↘P` to show the silent downgrade.
-Snapshot fields:
+The uplink snapshot carries the submode state:
 
 - `tcp_xhttp_submode` / `udp_xhttp_submode` — submode parsed from
   the dial URL (`packet-up` / `stream-one`); `None` outside VLESS.
@@ -499,11 +502,10 @@ Snapshot fields:
 
 ---
 
-## Summary
+## Fallback chains by configuration
 
 | Configuration         | TCP chain                  | UDP chain                            | TCP resume          | UDP resume                |
 |-----------------------|----------------------------|--------------------------------------|---------------------|---------------------------|
-| Native SS             | none                       | none                                 | —                   | —                         |
 | SS / WS / H3          | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (per-session)   | yes (`#udp`)              |
 | VLESS / WS / H3       | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (per-session)   | shared with TCP carrier   |
 | VLESS / XHTTP / H3    | `xhttp_h3 → xhttp_h2→ xhttp_h1` | `xhttp_h3 → xhttp_h2 → xhttp_h1` | yes (per-session) | shared with TCP carrier   |
@@ -512,18 +514,18 @@ Snapshot fields:
 
 The `[outline]` table groups everything that drives the proxying engine —
 transports, uplinks, probing, load balancing — separately from host-level
-concerns (`[socks5]`, `[metrics]`, `[control]`, `[dashboard]`,
-`[tcp_timeouts]`, `[tun]`, `[[route]]`). Two configuration shapes are
-supported.
+concerns (`[socks5]`, `[metrics]`, `[control]`, `[tcp_timeouts]`,
+`[tun]`, `[[route]]`). Two configuration shapes are supported.
 
-**1. Inline single-uplink shorthand.** Writing `transport`, `tcp_ws_url`,
+### Inline single-uplink shorthand
+
+Writing `transport`, `tcp_ws_url`,
 `udp_ws_url`, `vless_ws_url`, `vless_xhttp_url`, `tcp_mode` / `udp_mode` /
 `vless_mode`, `link`, `method`, `password`,
 `fwmark`, `ipv6_first`, `ipv4_only` directly under `[outline]` (or — for backward
 compatibility — at the top level) declares a single implicit uplink. CLI
-flags (`--tcp-ws-url`, `--password`, …) target this shape. Convenient for
-trivial deployments; not used together with `[[outline.uplinks]]` /
-`[[uplink_group]]`.
+flags (`--tcp-ws-url`, `--password`, …) target this shape. It is not used
+together with `[[outline.uplinks]]` / `[[uplink_group]]`.
 
 ```toml
 [outline]
@@ -540,11 +542,13 @@ password = "Secret0"
 
 | value             | wire shape                                                                       |
 |-------------------|----------------------------------------------------------------------------------|
-| `ss`              | Shadowsocks AEAD framing inside a WebSocket carrier (default; alias `shadowsocks`) |
-| `ws` / `websocket`| **Deprecated** aliases for `ss` — still accepted, removed in a future release    |
+| `ss`              | Shadowsocks AEAD framing inside a WebSocket or XHTTP carrier (default; alias `shadowsocks`) |
+| `ws` / `websocket`| deprecated aliases for `ss`, still accepted; to be dropped in a future release |
 | `vless`           | VLESS over WebSocket or XHTTP (h1/h2/h3) — see §§ 3–4                            |
 
-**2. Multi-uplink + groups (production shape).** `[[outline.uplinks]]`
+### Multi-uplink shape with groups
+
+This is the shape used in production. `[[outline.uplinks]]`
 declares uplinks; `[[uplink_group]]` (top-level, *not* nested under
 `[outline]`) declares groups; each uplink names its group via
 `group = "..."`. In this shape every uplink carries its own `transport`
@@ -554,14 +558,14 @@ field, so the inline `outline.transport` is unused.
 
 Two equivalent surfaces, picked by config shape:
 
-- **`[outline.load_balancing]`** — applies in inline single-uplink
+- `[outline.load_balancing]` — applies in inline single-uplink
   shorthand (no `[[uplink_group]]` declared). Folded into the implicit
-  default group at load time
-  ([groups.rs:21](src/config/load/groups.rs:21)).
-- **Fields directly under `[[uplink_group]]`** — apply per group when
+  default group at load time (`load_groups` in
+  [groups.rs](../src/config/load/groups.rs)).
+- Fields directly under `[[uplink_group]]` — apply per group when
   `[[uplink_group]]` is in use (the `[outline.load_balancing]` block is
-  silently ignored in this shape;
-  [groups.rs:171](src/config/load/groups.rs:171)).
+  silently ignored in this shape; `load_balancing_config_from_group` in
+  [groups.rs](../src/config/load/groups.rs)).
 
 Field names and defaults are identical between the two surfaces. All
 fields are optional; omitted fields fall back to the defaults below.
@@ -588,7 +592,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `loss_sample_min_packets`            | `50`               | int   | minimum packets a wire must send within one sampling window for that window's loss ratio to count |
 | `loss_ewma_alpha`                    | `0.2`              | (0,1] | smoothing factor for the per-wire carrier-loss EWMA                                               |
 | `loss_failover_ratio`                | `0.0`              | [0,1] | loss ratio above which the strict active uplink counts as degraded for loss-driven failover; `0.0` disables the check entirely — this is the one part of the carrier-loss feature that moves traffic without an operator asking. See "Carrier loss in uplink selection" below |
-| `loss_failover_secs`                 | unset (disabled)   | s     | how long `loss_failover_ratio` must be exceeded **continuously** before the active uplink yields to a clean, equal-or-higher-weight sibling; one tick back at or below the ratio restarts the clock. Unset disables the check independently of `loss_failover_ratio`; `0` is equivalent to unset |
+| `loss_failover_secs`                 | unset (disabled)   | s     | how long `loss_failover_ratio` must be exceeded continuously before the active uplink yields to a clean, equal-or-higher-weight sibling; one tick back at or below the ratio restarts the clock. Unset disables the check independently of `loss_failover_ratio`; `0` is equivalent to unset |
 | `failure_penalty_ms`                 | `500`              | ms    | initial RTT penalty added on a fresh runtime failure                                              |
 | `failure_penalty_max_ms`             | `30000`            | ms    | cap on the cumulative failure penalty                                                             |
 | `failure_penalty_halflife_secs`      | `60`               | s     | half-life of the failure-penalty exponential decay                                                |
@@ -611,25 +615,25 @@ fields are optional; omitted fields fall back to the defaults below.
 | `vless_udp_session_idle_secs`        | `60`               | s     | evict VLESS UDP sessions idle longer than this (`0` disables eviction)                            |
 | `vless_udp_janitor_interval_secs`    | `15`               | s     | how often the VLESS UDP janitor scans for idle sessions                                           |
 | `reselect_at`                        | unset (disabled)   | list  | wall-clock `"HH:MM"` local-time slots for scheduled weighted re-selection of the strict active uplink (`active_passive` only); mutually exclusive with `reselect_interval`. See "Scheduled re-selection" below |
-| `reselect_interval`                  | unset (disabled)   | duration | fixed-period equivalent of `reselect_at` (`"90m"`, `"1h30m"`; a bare integer is read as seconds but a unit suffix is recommended); minimum `60s`; mutually exclusive with `reselect_at`         |
+| `reselect_interval`                  | unset (disabled)   | duration | fixed-period equivalent of `reselect_at` (`"90m"`, `"1h30m"`; a bare integer is read as seconds, so write the unit suffix); minimum `60s`; mutually exclusive with `reselect_at`         |
 | `reselect_sync`                      | `false`            | bool  | derive the scheduled re-selection order deterministically from group name, uplink names, local day and slot index, so that independent nodes sharing this group config pick the same uplink without coordinating. Requires `reselect_at`. See "Synchronized re-selection" below |
 
 Source of defaults:
-[`src/config/load/balancing.rs`](src/config/load/balancing.rs); the
-`vless_udp_*` fallback comes from
-[`crates/outline-transport/src/vless/udp_mux.rs`](crates/outline-transport/src/vless/udp_mux.rs).
+[`src/config/load/balancing.rs`](../src/config/load/balancing.rs); the
+`vless_udp_*` defaults come from `VlessUdpMuxLimits::default()` in
+[`crates/outline-transport/src/vless/udp_mux_core.rs`](../../../crates/outline-transport/src/vless/udp_mux_core.rs).
 
 Routing-scope cheat sheet:
 
-- **`per_flow`** — recommended default. Each new SOCKS/TUN session picks
+- `per_flow` — the default. Each new SOCKS/TUN session picks
   an uplink based on weight, RTT EWMA and current penalties; existing
-  sessions stay on their uplink for the whole flow. Best parallelism,
-  smallest blast radius.
-- **`per_uplink`** — assigns flows that share a `(host, port)` to the
-  same uplink for `sticky_ttl_secs`. Useful when an origin is sensitive
+  sessions stay on their uplink for the whole flow, so one uplink
+  failure only affects the sessions pinned to it.
+- `per_uplink` — assigns flows that share a `(host, port)` to the
+  same uplink for `sticky_ttl_secs`. Use it when an origin is sensitive
   to source-IP churn (anti-fraud, sticky session cookies bound to
   client IP).
-- **`per_client`** — pins each ingress client to one balancer-chosen
+- `per_client` — pins each ingress client to one balancer-chosen
   uplink for `sticky_ttl_secs` (refreshed while the client stays
   active), keyed by the client's source IP: the SOCKS5 peer IP, or the
   LAN device IP behind a TUN router. Distinct clients spread across the
@@ -639,10 +643,10 @@ Routing-scope cheat sheet:
   unhealthy. `active_active` only (it behaves like `per_flow` under
   `active_passive`). Clients that cannot be attributed to a source IP
   fall back to one shared key.
-- **`global`** — exactly one uplink is `active` instance-wide; failover
-  is gated by `hysteresis_ms` + `failure_cooldown_secs`. Use for clean
-  dashboard semantics on devices that should look like they have a
-  single egress (routers, single-purpose home-gateway).
+- `global` — exactly one uplink is `active` instance-wide; failover
+  is gated by `hysteresis_ms` + `failure_cooldown_secs`. Use it on
+  devices that should have a single egress (routers, a home
+  gateway).
 
 Mode-vs-scope interaction:
 
@@ -665,18 +669,18 @@ the now-passive uplink — different uplinks usually have different
 egress IPs and leaving an inflight session on the stale uplink would
 break source-IP-bound state on the destination side.
 
-- **SOCKS5 TCP**: the pinned-relay watcher observes the active-uplink
+- SOCKS5 TCP: the pinned-relay watcher observes the active-uplink
   switch and forcibly closes the SOCKS5 client socket with TCP RST
   (`SO_LINGER {l_onoff=1, l_linger=0}` + drop). The client
   application sees a hard reset on its TCP and reconnects through the
   new active uplink. Counted on
   `outline_ws_socks_tcp_strict_aborts_total{reason="global_switch"}`.
-- **SOCKS5 UDP**: the per-group downlink loop subscribes to the same
+- SOCKS5 UDP: the per-group downlink loop subscribes to the same
   signal and atomically replaces the transport on switch
   (`reconcile_global_udp_transport`); the client never sees an L4
   close (UDP has no analogue) but the next datagram already uses the
   new uplink.
-- **TUN TCP**: mirrors the SOCKS5 behaviour but at L3 — the TUN
+- TUN TCP: mirrors the SOCKS5 behaviour but at L3 — the TUN
   engine emits a `RST+ACK` segment to the in-kernel TCP of the client
   app. See `outline_ws_tun_tcp_events_total{event="global_switch"}`.
 
@@ -686,7 +690,9 @@ never fires there because there is no single "active" uplink to
 diverge from. Operators who want session-by-session migration without
 the abort should stay on `active_active` + `per_flow`.
 
-**Soft switch (migrate instead of RST).** On a cluster group
+### Soft switch: migrate instead of RST
+
+On a cluster group
 (`shared_resume = true`, i.e. the uplinks are edges of one server-side
 mesh `[cluster]`) an operator *soft* switch migrates live SOCKS5 TCP
 sessions to the new active uplink instead of resetting them. The
@@ -709,7 +715,7 @@ triggered the switch. Three values:
 | `OperatorSoft` | `/control/activate {"soft":true}` on a cluster group | migrate |
 | `Failover` | probe/runtime failover, auto-failback, carrier-degraded failover, loss-driven failover, initial selection | migrate on a cluster |
 
-Only an operator **drain** tears sessions down, and for a concrete
+Only an operator drain tears sessions down, and for a concrete
 reason: under a mesh a migrated session is relayed back to its *home*,
 which is the node being drained, so migrating it would defeat the
 drain. A health failover is not that decision — nobody chose to end
@@ -720,36 +726,38 @@ new edge without the client's broken path to the old one. (Before this
 was three-valued, every machine-driven repoint published `soft = false`
 and was indistinguishable from a drain — so a mass carrier death reset
 every session it stranded, beating each session's own carrier-death
-migration to the punch.) The dashboard offers a **⇄ Soft
-switch** button next to
-**▶ Activate** on cluster groups (shown only when `cluster_resume_enabled`);
-it posts `soft: true` to `/control/activate`, and the response's `soft`
-field reports whether the migration was actually applied or clamped to a
+migration to the punch.) The `outline-ui` dashboard shows a
+Soft switch (cluster resume) button next to Activate (hard switch)
+on cluster groups (only when `cluster_resume_enabled`); it sends
+`soft: true`, which reaches `/control/activate`, and the response's `soft`
+field reports whether the migration was applied or clamped to a
 hard switch.
 
-**UDP cross-node migration.** Under `shared_resume` the UDP resume scope is
+### UDP cross-node migration
+
+Under `shared_resume` the UDP resume scope is
 group-shared too (it was previously pinned per-uplink to sidestep a then-broken
 relay leg). So a soft switch — and any UDP wire re-selection — keeps a live UDP
 flow on its original home instead of re-establishing it on the new edge:
 
-- **SS-UDP** funnels every destination through one id keyed `<group>#udp`. The
+- SS-UDP funnels every destination through one id keyed `<group>#udp`. The
   new edge decodes the id's home shard and relays the datagram carrier to the
   home, which re-attaches the parked NAT entry — one upstream source port
   survives the switch.
-- **VLESS-UDP** fans one uplink out to many single-destination sessions, so it
+- VLESS-UDP fans one uplink out to many single-destination sessions, so it
   keeps a durable per-target id keyed `<group>#<target>`. Each target migrates
   independently: the fresh mux the manager builds for the new edge re-presents
   that target's shard-carrying id, and the home resumes the parked per-target
   socket. VLESS-UDP rides the VLESS-TCP mesh carrier on the home, so no
   dedicated UDP carrier kind exists.
 
-Those keys name a **slot**, and who owns the slot matters as much as the key.
+Those keys name a slot, and who owns the slot matters as much as the key.
 Each carrier's owner holds its own (`UdpResumeStore::Private`): one per
 tunnelled TUN UDP flow, one per SOCKS5 UDP association. The process-wide caches
 they used to share are sound only where one carrier exists per scope — which
 SOCKS *nearly* satisfies and TUN does not, since it dials one carrier per flow.
 Sharing meant a fresh flow presented whatever the last closed flow had parked,
-and a hit on that is not a missed resume but a hit on **another session**: the
+and a hit on that is not a missed resume but a hit on another session: the
 server re-points that flow's NAT entries at this carrier, and the TUN reader
 re-sources every reply from its own remote, so one flow's peer traffic reached
 the client wearing another flow's address.
@@ -764,7 +772,8 @@ Off a cluster (`shared_resume = false`) UDP stays per-uplink and every wire
 resolves locally, exactly as before — sharing a UDP id across unrelated homes
 would only ever miss.
 
-**Scheduled re-selection (`reselect_at` / `reselect_interval`).**
+### Scheduled re-selection (`reselect_at` / `reselect_interval`)
+
 Independent of failover, a group in `active_passive` mode can rotate its
 strict active uplink on a timer — forcing traffic off a working uplink on
 a schedule, not only when something fails:
@@ -774,18 +783,18 @@ a schedule, not only when something fails:
 # reselect_interval = "10h"          # ...or a fixed period ("90m", "1h30m"); minimum 60s
 ```
 
-- **`reselect_interval` shares `parse_human_duration` with `shuffle_timer`**:
-  a bare integer (e.g. `"300"`) is still read as seconds, but a unit suffix
-  is the recommended form for this key — a bare-integer typo one keystroke
+- `reselect_interval` shares `parse_human_duration` with `shuffle_timer`:
+  a bare integer (e.g. `"300"`) is still read as seconds, but write the
+  unit suffix for this key: a bare-integer typo one keystroke
   off the intended unit (`"10"` instead of `"10h"`) is exactly the kind of
   mistake the 60 s floor below exists to catch, and it only catches values
   below that floor, not a bare integer that lands above it by accident
   (e.g. `"600"` meant as `"600m"`).
-- **Mutually exclusive**, and both require `mode = "active_passive"` and
+- Mutually exclusive, and both require `mode = "active_passive"` and
   `routing_scope = "global"` or `"per_uplink"` (the config loader rejects
   any other combination) — re-selection moves the
   strict active slot, which exists only there.
-- **The draw is a forced rotation.** The current active is always
+- The draw is a forced rotation. The current active is always
   excluded, so every tick actually moves the slot (barring
   `no_candidate`, below) rather than only "maybe" switching. Among the
   remaining uplinks that are administratively enabled, healthy, and not
@@ -797,12 +806,12 @@ a schedule, not only when something fails:
   remains (a single-uplink group, or every other uplink is down,
   disabled, or cooling down) the tick is a no-op
   (`outcome = "no_candidate"`).
-- **`routing_scope = "per_uplink"` draws TCP and UDP independently** —
+- `routing_scope = "per_uplink"` draws TCP and UDP independently —
   each transport's slot is gated on that transport's own
   health/cooldown/penalty and excludes only that transport's own current
   active, so the two transports can legitimately land on different
   uplinks from the same tick.
-- **Scheduling.** `reselect_at` entries are local-time `"HH:MM"` slots,
+- Scheduling. `reselect_at` entries are local-time `"HH:MM"` slots,
   parsed, sorted, and deduplicated by the config loader. The wall-clock
   loop polls every 30 s and treats a slot as due for up to roughly 90 s
   *after* its configured time — never before it; a slot slept through
@@ -825,27 +834,27 @@ a schedule, not only when something fails:
   by anywhere up to almost a full extra `interval` (worst case: the
   restart lands an instant before the undisturbed schedule's next tick
   was due) — it never brings a firing forward.
-- **Soft switch.** The scheduled or manually-triggered rotation requests a
+- Soft switch. The scheduled or manually-triggered rotation requests a
   soft (resume-preserving) switch, same as the carrier-degraded automatic
   failover; it is clamped to a hard switch off a `shared_resume` cluster
   group, same as `/control/activate` and `/control/reselect`. See "Soft
   switch" above.
-- **Accumulated state is not reset.** Unlike the clean-slate reset a
+- Accumulated state is not reset. Unlike the clean-slate reset a
   manual operator switch performs via `/control/activate`, a scheduled or
   manual re-selection leaves every uplink's accumulated
   health/RTT-EWMA/failure-penalty state untouched — only the active slot
   moves.
-- **Manual trigger.** `POST /control/reselect` performs the same
+- Manual trigger. `POST /control/reselect` performs the same
   weighted draw on demand ("reselect now"), outside of the schedule — see
   the README's control-plane reference for the request/response shape.
-- **Interaction with `auto_failback = true`.** `auto_failback` only ever
+- Interaction with `auto_failback = true`. `auto_failback` only ever
   moves the active slot *up*: from a probe-healthy active to a candidate
   with strictly higher `weight` (or equal weight and a lower config
   index), and only once that candidate has stayed probe-healthy for
   `probe.min_failures` consecutive successful probe cycles — it is
   otherwise a no-op while the active stays healthy. A scheduled
   re-selection has no such priority rule; it is a pure weighted draw, so
-  it can just as easily land on a *lower*-weight uplink than the one it
+  it can land on a *lower*-weight uplink than the one it
   replaced. If it does, and `auto_failback = true`, the next stretch of
   consecutive-healthy probes on the higher-weight uplink triggers a
   failback that silently reverts the scheduled move — the group ends up
@@ -860,7 +869,7 @@ a schedule, not only when something fails:
   in `active_passive` mode, or has no single strict active slot to
   rotate).
 
-**Synchronized re-selection (`reselect_sync`).**
+### Synchronized re-selection (`reselect_sync`)
 
 ```toml
 [[uplink_group]]
@@ -879,23 +888,23 @@ calendar day and the slot index, hashed (BLAKE3) into a seed and turned into a
 full preference order weighted by the configured `weight` alone. The active
 uplink becomes the first entry of that order which is healthy *on this node*.
 
-- **No coordination.** Nothing is exchanged between the nodes; a dead
+- No coordination. Nothing is exchanged between the nodes; a dead
   neighbour changes nothing about this node's choice.
-- **Health stays local.** A node whose leg dies fails over immediately, on its
+- Health stays local. A node whose leg dies fails over immediately, on its
   own. If only one node sees the failure, the two diverge until the next slot —
   there is no intra-day re-convergence.
-- **Rotation is preserved** by excluding the previous slot's *deterministic*
+- Rotation is preserved by excluding the previous slot's *deterministic*
   winner (computed the same way, without health filtering, so every node
   excludes the same uplink). The exclusion is dropped when honouring it would
   leave nothing healthy — converging on the single working leg matters more.
-- **Local penalty state is deliberately ignored** in the order. It differs per
+- Local penalty state is deliberately ignored in the order. It differs per
   node, and weighting by it would defeat the shared seed; it still governs
   ordinary failover, which this flag does not touch.
-- **Startup follows the slot, not the state store.** A restarted node lands
+- Startup follows the slot, not the state store. A restarted node lands
   where a freshly started one does, instead of resuming the leg it happened to
   be on when it stopped — that leg may be a failover leftover its twin never
   followed. Startup probes first, then applies the slot decision.
-- **`POST /control/reselect` becomes idempotent within a slot**: it re-applies
+- `POST /control/reselect` becomes idempotent within a slot: it re-applies
   the slot's decision (`outcome = "skipped"` when the node is already correct)
   rather than drawing something new. Pressing it on both nodes is the fastest
   way to converge them without waiting for the next slot.
@@ -909,7 +918,7 @@ sync domain instead of changing the pair's shared decision. Finally, the order
 is derived from configuration rather than from secrets: it is reproducible by
 anyone who knows the group and uplink names.
 
-Bypass on a fully-down group (`bypass_when_down`):
+### Bypass on a fully-down group (`bypass_when_down`)
 
 - With `bypass_when_down = true` on a group, any flow or datagram whose
   route resolves to that group is dispatched `direct` — out the host's
@@ -921,7 +930,7 @@ Bypass on a fully-down group (`bypass_when_down`):
   on the SOCKS5 path it is per-transport (`has_any_healthy` for TCP or
   UDP respectively — a TCP-healthy group keeps tunnelling TCP even
   while its UDP side is fully down), on the TUN path the group must be
-  down on **both** transports, same as
+  down on both transports, same as
   `tun_suppress_icmp_reply_when_down`.
 - Precedence: an explicit `fallback_via` / `fallback_direct` /
   `fallback_drop` on the matching `[[route]]` rule wins. The bypass
@@ -935,16 +944,15 @@ Bypass on a fully-down group (`bypass_when_down`):
   bypassed sockets escape the TUN routing loop; startup logs a warning
   for the missing combination on Linux. Combined with
   `tun_suppress_icmp_reply_when_down`, pings keep being answered while
-  the bypass is active — the path is alive, just not tunnelled.
+  the bypass is active — the path is alive but not tunnelled.
 - Note: right after startup a group has no probe verdict yet and
   counts as down, so the first moments of traffic may go direct until
   the first probe (or first successful flow) confirms an uplink.
   Bypassed traffic is visible in metrics under the `direct` group
   label, like any policy-direct traffic.
-- Visibility: the built-in dashboard renders a chip in the group
-  header — grey `Bypass: armed` while every transport still has a
-  healthy uplink, amber `Bypass: DIRECT (TCP + UDP)` naming the
-  diverted transports while the bypass is live. The same state is
+- Visibility: the `outline-ui` dashboard shows a chip in the group
+  header — `bypass armed` while every transport still has a
+  healthy uplink, `bypass: direct` while the bypass is live. The state is
   exported as `outline_ws_group_bypass_active{group, transport}`
   (`1` = diverting direct, `0` = tunnelling; series exist only for
   opted-in groups) and rides through `/control/topology` as the
@@ -954,7 +962,7 @@ Bypass on a fully-down group (`bypass_when_down`):
   Policy section. Alert example:
   `max by (group) (outline_ws_group_bypass_active) == 1`.
 
-Mid-session retry (Ack-Prefix Protocol v1):
+### Mid-session retry (Ack-Prefix Protocol v1)
 
 - When a pinned SOCKS TCP session loses its upstream transport
   mid-stream (H3 APPLICATION_CLOSE, NAT eviction, server-initiated
@@ -966,15 +974,11 @@ Mid-session retry (Ack-Prefix Protocol v1):
   the buffered uplink tail from that offset so the upstream sees
   every byte exactly once.
 - `tcp_mid_session_retry_buffer_bytes` sets the per-session ring-
-  buffer cap. Default `262144` (256 KiB) — large enough to absorb
-  most HTTP request bodies and idempotent RPC payloads, small enough
-  that holding it for N concurrent sessions stays negligible
-  compared with kernel socket buffers. Set to `0` to disable retry
+  buffer cap. Default `262144` (256 KiB); with N concurrent sessions
+  the worst case is N × 256 KiB. Set to `0` to disable retry
   entirely (the buffer is never allocated).
 - `tcp_mid_session_retry_budget` caps the number of redial attempts
-  per session. Default `1` — most retriable mid-session failures
-  recover on the first attempt. Higher values pay off only against
-  genuinely-flaky transports; each attempt costs one full buffer
+  per session. Default `1`. Each attempt costs one full buffer
   replay even on persistent failure. `0` disables retry entirely
   (same effect as setting the buffer cap to `0`).
 - `tcp_mid_session_retry_overflow_policy` decides what happens when
@@ -994,37 +998,33 @@ Mid-session retry (Ack-Prefix Protocol v1):
   orchestrator waits for the server to emit the v1 Ack-Prefix
   control frame on a successful resume hit. The server's emit
   happens immediately on resume; the timeout exists to fail fast
-  when the path is broken or the server is misbehaving. Default `5`
-  comfortably absorbs satellite + cellular latencies. Tighten on
-  known-low-RTT deployments; significantly larger values usually
-  mask retry behaviour problems.
+  when the path is broken or the server is misbehaving. Default `5`.
 - v1 sweet spot: HTTP request bodies, idempotent RPCs. NOT for
   SSH-style downlink-heavy sessions on its own — v1 does not
   replay the downlink direction. The v2 Symmetric Downlink Replay
   protocol (see below) closes that gap.
-- Gated to WS-family carriers — SS-WS (`transport = "ss"`) and
-  VLESS-WS (`transport = "vless"`).
-- The redial dials the **wire the manager currently considers
-  active** for this transport (`active_wire`), not unconditionally
+- Gated on `transport = "ss"` or `"vless"` (`retry_eligible` in
+  `pinned_relay.rs`), on any carrier of those transports. These are the
+  only two transports, so the gate passes for every uplink once the
+  buffer and budget are non-zero.
+- The redial dials the wire the manager currently considers
+  active for this transport (`active_wire`), not unconditionally
   the primary. When an earlier primary failure has advanced
   `active_wire` to a fallback, the retry dials that fallback with
   the same Ack-Prefix / Symmetric Downlink Replay capability the
   primary path uses, instead of slamming the dead primary URL and
-  inflating the parent uplink's runtime-failure streak. The
-  fallback wire must itself be SS-WS or VLESS-WS for the retry to
-  apply; a non-WS fallback collapses the retry to a
-  no-op and the session ends on the original mid-stream error.
+  inflating the parent uplink's runtime-failure streak.
 - Outcomes are exposed on
   `outline_ws_uplink_mid_session_retries_total{outcome}` with
   `outcome ∈ {success, failed_redial, failed_replay,
-  buffer_overflow, downlink_truncated}`. See
-  `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1) in the
-  outline-ss-rust repo for the wire format.
+  buffer_overflow, downlink_truncated}`. Wire format:
+  [`bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`](../../outline-ss-rust/docs/SESSION-RESUMPTION.md),
+  section "Ack-Prefix Protocol (v1)".
 
-Symmetric Downlink Replay (v2):
+### Symmetric Downlink Replay (v2)
 
 - Optional opt-in extension on top of v1.x. Closes the
-  byte-loss gap in the **downstream** direction (server→client)
+  byte-loss gap in the downstream direction (server→client)
   that v1 leaves open: bytes the server emitted to the WebSocket
   but the client never observed before the carrier TCP died are
   replayed on the next resume hit, in order, BEFORE any fresh
@@ -1040,8 +1040,8 @@ Symmetric Downlink Replay (v2):
   after the v1 `"ORSM"` frame on the resume hit. Server gates v2
   on (a) v1 also being negotiated and (b) its
   `[session_resumption].downlink_buffer_bytes > 0` config knob
-  (default `0` = disabled). Full spec lives in the server repo's
-  `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
+  (default `0` = disabled). Full spec: section "Symmetric Downlink
+  Replay (v2)" of the same `SESSION-RESUMPTION.md`.
 - `tcp_symmetric_replay_enabled` (default `true`) — operator
   switch. The capability is engaged at runtime only when (a)
   v1.x retry is enabled (`tcp_mid_session_retry_buffer_bytes > 0`
@@ -1051,10 +1051,8 @@ Symmetric Downlink Replay (v2):
 - `tcp_symmetric_replay_max_bytes` (default `1048576` = 1 MiB) —
   hard cap on the v2 `replay_len` the client will accept. Server
   replies above this drop the session per spec; protects against
-  a hostile peer forcing unbounded buffering. Servers in a sane
-  deployment configure `downlink_buffer_bytes` well below this
-  cap (default 64 KiB on the server side), so this fires only on
-  a genuinely misbehaving peer.
+  a hostile peer forcing unbounded buffering. A server with
+  `downlink_buffer_bytes` below 1 MiB never trips it.
 - Truncation policy: when the server signals
   `REPLAY_TRUNCATED` (its ring rolled past the client-reported
   offset, e.g. very long park or very small server buffer), the
@@ -1064,12 +1062,11 @@ Symmetric Downlink Replay (v2):
   `outline_ws_uplink_mid_session_retries_total{outcome="downlink_truncated"}`;
   `"hard"` drops the session immediately. Use the same value as
   for the v1 buffer-overflow case to keep policy consistent.
-- Same eligibility gate as v1 — SS-WS / VLESS-WS / VLESS-XHTTP
-  carriers.
+- Same eligibility gate as v1.
 
 ### Ageing RTT measurements
 
-**Why this exists.** An RTT measurement used to rank an uplink forever,
+An RTT measurement used to rank an uplink forever,
 however old it was. That is a self-sustaining trap for any wire that is
 not primary: a bad score keeps the balancer from sending the uplink
 traffic, and traffic is what would produce a new measurement. On
@@ -1080,14 +1077,18 @@ measured, and a separate client pinned to the very same carrier
 measured 0.199 s. The only cure was deleting the uplink from the config
 and re-applying it, because that is what creates empty slots.
 
-**What ages.** Each wire's RTT EWMA carries the instant it last moved.
+#### What ages
+
+Each wire's RTT EWMA carries the instant it last moved.
 When selection ranks an uplink, a slot keeps weight
 `0.5^(age / rtt_ewma_halflife_secs)` and the remainder goes to the next
 link of the same chain the ranking already walks: the active wire's
 slot, then primary's EWMA, then the last probe sample. Past four
 half-lives a slot stops counting as measured at all.
 
-**What it does not do.** Decay never makes an uplink look better than
+#### What decay does not do
+
+Decay never makes an uplink look better than
 something actually measured about it: a stale slot fades toward another
 *measurement*, never toward zero, and a slot with nothing behind it in
 the chain keeps its full weight however old it is — dropping it would
@@ -1098,7 +1099,9 @@ liveness penalty (`health_weighted_selection`) and the carrier-descent
 window's penalty surcharge. Fresh bad samples land at full weight
 immediately, through the EWMA, exactly as before.
 
-**The refresh probe.** Decay alone would decide by assumption rather
+#### Refresh probe
+
+Decay alone would decide by assumption rather
 than by measurement, so once the active wire's slot is one half-life
 old, the fallback-wire probe (previously run only when the primary
 probe failed) runs on that uplink's cycle as well. That is at most one
@@ -1107,7 +1110,7 @@ extra handshake per multi-wire uplink per half-life; the rate follows
 schedule does not multiply these. Uplinks with no fallbacks never pay
 it — primary's slot is refreshed by the regular probe every cycle.
 
-**Reading it in the metrics.**
+#### RTT age metrics
 
 | series | meaning |
 | ------ | ------- |
@@ -1124,24 +1127,26 @@ first link with any value wins outright.
 
 ### Carrier loss in uplink selection
 
-**Why this exists.** Selection ranks uplinks by RTT — and RTT alone is
+Selection ranks uplinks by RTT — and RTT alone is
 blind to loss. On 2026-08-02 a gateway sat six and a half hours on an
 uplink whose path was dropping packets while its RTT stayed a steady
 0.21–0.32 s EWMA, the best score in the group, `health = 1` on every
 probe cycle, and a runtime-failure counter that never moved once.
 Nothing selection looked at saw the loss. This feature measures loss on
 the carrier socket itself and lets it multiply the latency selection
-ranks by — shipped **off** by default, because there is no principled
-coefficient to pick a priori; see "Choosing `loss_latency_penalty_k`"
+ranks by. It ships off by default, because there is no
+coefficient that fits every fleet; see "Choosing `loss_latency_penalty_k`"
 below.
 
-**What is measured, and where.** For the wire currently carrying
+#### What is measured, and where
+
+For the wire currently carrying
 traffic (primary, or the active fallback), the manager samples the
 carrier socket's OS-level loss counters on a fixed grid
 (`loss_sample_interval_secs`, default `30s`): QUIC `PathStats`
 (lost/sent packets) on an H3/QUIC carrier, `TCP_INFO`
 (retransmits/segments-out) on a TCP carrier. This is deliberately
-**not** the LAN leg to the local SOCKS5/TUN client, and **not** the
+not the LAN leg to the local SOCKS5/TUN client, and not the
 probe connection — a probe dials its own short-lived socket and never
 carries user traffic. Sampling runs on its own timer, independent of
 `probe.interval`: probe cycles are routinely skipped for an uplink
@@ -1149,10 +1154,12 @@ that is already carrying real traffic (`probe.skip_when_active`), but
 differencing cumulative kernel counters into a ratio needs an even
 sampling grid regardless of whether a probe happened to run.
 
-**This is a send-direction measurement.** QUIC's `lost_packets` and
+#### Send direction only
+
+QUIC's `lost_packets` and
 TCP's `tcpi_total_retrans` both count packets *this endpoint sent* that
 it had to declare lost or retransmit — never packets the peer failed to
-deliver to us. A path that is lossy predominantly **server→client**
+deliver to us. A path that is lossy predominantly server→client
 (downlink) — the 2026-08-02 incident was downlink video — registers on
 this signal only indirectly, through the delayed or dropped ACKs that
 inflate the client's own retransmission count, not as a direct downlink
@@ -1161,7 +1168,7 @@ or `loss_failover_ratio` against a downlink-shaped symptom: the number
 you are tuning against is "how much this endpoint had to resend", not
 "how much the other side lost".
 
-**The five knobs** live under `[outline.load_balancing]` (or the
+The five knobs live under `[outline.load_balancing]` (or the
 per-group equivalent — see the reference table above for the row with
 each default):
 
@@ -1175,15 +1182,16 @@ each default):
   without paying for the sampling loop, e.g. while staging the feature.
   Not entirely free, though: eviction of dead/idle probes happens only
   inside the sampling tick, so with the timer off each (uplink,
-  transport, wire) can accumulate up to `MAX_PROBES_PER_WIRE` (8)
+  transport, wire) can accumulate up to `MAX_PROBES_PER_WIRE` (64)
   duplicated descriptors before the registry's own newest-wins bound
-  starts pushing the oldest out on the next dial. Bounded and
-  self-limiting, not a leak — just not a completely free no-op either.
-- `loss_sample_min_packets` (default `50`) — minimum volume per window, counted in packets this side **sent**.
+  starts pushing the oldest out on the next dial. The growth is bounded
+  by that cap.
+- `loss_sample_min_packets` (default `50`) — minimum volume per window, counted in packets this side sent.
 - `loss_ewma_alpha` (default `0.2`) — smoothing for the per-wire EWMA.
 
-**The shipped default measures without acting.** `loss_latency_penalty_k
-= 0.0` yields a multiplier of exactly `1.0`
+#### Default: measure without acting
+
+`loss_latency_penalty_k = 0.0` yields a multiplier of exactly `1.0`
 (`LossEwma::inflation`), so turning this feature on with its defaults
 changes nothing about which uplink gets selected — it only starts
 publishing `outline_ws_uplink_carrier_loss_ratio`. The ratio is sampled
@@ -1191,21 +1199,24 @@ and published unconditionally, regardless of `loss_latency_penalty_k`;
 turning it into an actual failover signal is a deliberate second step
 once you know what loss levels your own fleet sees (below).
 
-**A `/control/apply` hot-swap resets the loss signal.** The new manager's
+#### `/control/apply` resets the loss signal
+
+The new manager's
 carrier-loss registry always starts empty — carriers already dialed
 under the previous manager stay registered there, not here. Those
 carriers contribute no loss signal until they are naturally redialed
-(session end, wire flip, standby refill); self-healing within one dial
-cycle, not a leak, but worth knowing if a ratio looks freshly reset right
-after an apply.
+(session end, wire flip, standby refill), so a ratio that looks freshly
+reset right after an apply recovers within one dial cycle.
 
-**Reading the metrics.** Three gauges, all labelled `{group, transport,
+#### Loss metrics
+
+Three gauges, all labelled `{group, transport,
 uplink}`:
 
 - `outline_ws_uplink_carrier_loss_ratio` — the smoothed loss ratio
   (EWMA, `loss_ewma_alpha`) for the wire currently carrying traffic.
 - `outline_ws_uplink_carrier_loss_observed_packets` — packets that ratio
-  is based on, cumulative **since the wire's last reset** (a fresh dial,
+  is based on, cumulative since the wire's last reset (a fresh dial,
   or the wire losing its last registered carrier — see reason 4 below),
   not since process start. It tells you *how long this wire has been
   measured*, not *how confident the current ratio is*: the ratio is a
@@ -1224,8 +1235,8 @@ uplink}`:
   `k` is set, comparing the two series is what shows the penalty
   actually being applied.
 
-**When both planes share a wire, `tcp` and `udp` are the same
-measurement twice, not two independent ones.** `CarrierLossRegistry::register`
+When both planes share a wire, `tcp` and `udp` are the same
+measurement twice, not two independent ones. `CarrierLossRegistry::register`
 (`crates/outline-uplink/src/loss.rs`) de-duplicates probes by
 `(transport, wire, identity)` — `transport` is part of the key, not a
 filter on what gets measured. On a carrier that is genuinely shared
@@ -1241,7 +1252,7 @@ the same wire. A shared wire index is necessary for the duplication but
 not sufficient: VLESS builds its UDP mux per destination, separate from
 the TCP connections, so both planes can report `active_wire_index = 0`
 and still be measuring two different QUIC connections. Measured on
-`senko` while its planes both sat on wire 0: `tcp` read 19.58% loss over
+`exit-c` while its planes both sat on wire 0: `tcp` read 19.58% loss over
 49 142 packets while `udp` read 0.0038% over 144 167 — four orders of
 magnitude apart, on the same wire index. The reliable tell is the values
 themselves: duplication makes the two series identical packet-for-packet,
@@ -1249,7 +1260,7 @@ so equal numbers mean one carrier and diverging numbers mean two,
 whatever the indices say.
 
 Measured on the fleet, packets sampled per 2-minute interval on uplink
-`senko` (`wire tcp`/`wire udp` are `active_wire_index` per plane):
+`exit-c` (`wire tcp`/`wire udp` are `active_wire_index` per plane):
 
 ```
 wire tcp=0 udp=1 | pkts tcp=5133    udp=10504     different
@@ -1263,7 +1274,7 @@ wire tcp=1 udp=2 | pkts tcp=50539   udp=16389     different
 In that sample the correlation was exact — but read it as evidence of
 what duplication looks like, not as a rule for detecting it: different
 wire indices always mean two carriers, while equal indices only *may*
-mean one (see the `senko` counter-example above). This is how the
+mean one (see the `exit-c` counter-example above). This is how the
 duplication was first noticed — an operator watching a `tcp`-labelled
 loss row rise in step with a user's QUIC video traffic, because the row
 was, in fact, describing the QUIC connection carrying that video. The
@@ -1275,8 +1286,8 @@ caveat justifies. Read a `tcp` row on a shared-wire uplink as describing
 the carrier, including whatever `udp` traffic rides it — not as an
 isolated TCP-only measurement.
 
-**The limit of this caveat: on different wires, the two planes are
-fully independent measurements.** Measured minutes later on the same
+The limit of this caveat: on different wires, the two planes are
+fully independent measurements. Measured minutes later on the same
 uplink, with `tcp` on wire 0 and `udp` on wire 3:
 
 ```
@@ -1293,7 +1304,9 @@ before comparing their loss numbers. Equal wire index means "same
 carrier, don't double-count it as two data points"; different wire
 index means "trust both numbers independently."
 
-**An absent series means "not measured" — never "no loss".** There are
+#### Absent series: not measured, not "no loss"
+
+There are
 four distinct reasons a wire may have no `carrier_loss_ratio` series
 at a given moment, and none of them is "this path is clean":
 
@@ -1304,8 +1317,8 @@ at a given moment, and none of them is "this path is clean":
    quiet uplink look catastrophically lossy. Cross-check
    `outline_ws_uplink_carrier_loss_observed_packets` to tell "not
    enough traffic yet" apart from "measured and clean".
-2. The wire is `xhttp_h1`. That carrier dials **two independent plain
-   sockets** — a long-lived downlink GET and a serialised uplink-POST
+2. The wire is `xhttp_h1`. That carrier dials two independent plain
+   sockets — a long-lived downlink GET and a serialised uplink-POST
    socket — instead of one shared connection, so there is no single
    carrier to attribute loss to. This carrier family never registers a
    loss probe, by construction.
@@ -1324,10 +1337,12 @@ at a given moment, and none of them is "this path is clean":
 
 These are structural or lifecycle properties of a wire, not faults to
 chase. Do not read "no series" on an `xhttp_h1` wire, a VLESS-UDP wire,
-or one that just lost its last carrier as "no loss" — there is simply no
-verdict published for it.
+or one that just lost its last carrier as "no loss": no verdict is
+published for it.
 
-**Choosing `loss_latency_penalty_k`.** There is no principled default —
+#### Choosing `loss_latency_penalty_k`
+
+There is no principled default —
 `0.0` is not "a small value", it is "off". Derive a value from your own
 fleet's numbers instead of guessing:
 
@@ -1340,8 +1355,7 @@ fleet's numbers instead of guessing:
    latency crosses a clean candidate's *plain* latency:
    `inflated_latency = latency × (1 + k × loss)`, clamped to
    `loss_latency_inflation_max`.
-3. Worked example — **check the arithmetic before trusting an estimate,
-   this is where a wrong guess is easy to make**: at `k = 20`, a path
+3. Worked example: at `k = 20`, a path
    with a `210 ms` RTT and `2 %` measured loss scores
    `210 ms × (1 + 20 × 0.02) = 210 ms × 1.4 = 294 ms` — it still *beats*
    a clean `300 ms` candidate; `2 %` loss alone does not move it at this
@@ -1356,20 +1370,20 @@ fleet's numbers instead of guessing:
    spread that matters is the one in your metrics, not the one in this
    example.
 
-**`loss_latency_inflation_max` bounds the damage of one bad window.**
+`loss_latency_inflation_max` bounds the damage of one bad window.
 The multiplier `(1 + k × loss)` is clamped to this ceiling (default
 `4.0`, validated at load time to `[1.0, 100.0]`) before it is applied,
 so a single catastrophic sampling window cannot send an uplink's
-scoring latency to an absurd value. A lossy uplink is **never removed
-from candidacy** by `loss_latency_penalty_k` — only ranked lower. It
+scoring latency to an absurd value. A lossy uplink is never removed
+from candidacy by `loss_latency_penalty_k` — only ranked lower. It
 may be the only live path in the group, and an outright exclusion
 would pull it out of rotation entirely instead of letting it keep
 carrying traffic at reduced preference.
 
-**Ranking lower is not the same as being left — that is
-`loss_failover_ratio` / `loss_failover_secs`, below.** In `mode =
+Ranking lower is not the same as being left — that is
+`loss_failover_ratio` / `loss_failover_secs`, below. In `mode =
 "active_active"` a lower rank is enough: the balancer picks among
-candidates on every selection, so a lossy uplink simply loses more of
+candidates on every selection, so a lossy uplink loses more of
 those picks to its cleaner siblings. But the fleet's actual shape is
 `mode = "active_passive"` with `auto_failback = false`: one uplink is
 *pinned* active, and `strict_transport_candidates` keeps it the moment
@@ -1395,14 +1409,18 @@ This is the one part of the whole carrier-loss feature that moves
 production traffic without an operator asking for it, so — like every
 other knob in this section — it ships inert.
 
-**Requires sampling to be on.** `loss_sample_interval_secs = 0` — the
+#### Requires loss sampling
+
+`loss_sample_interval_secs = 0` — the
 documented off switch for the loss-*sampling* timer itself (see above) —
 spawns no sampling loop at all, so the "elevated since" episode is never
 maintained and `loss_failover_ratio` / `loss_failover_secs` stay silently
 inert regardless of their own values. If you set either knob, keep
 `loss_sample_interval_secs` at its default (`30`) or another nonzero value.
 
-**Requires probing to be on, too.** The candidate stability bar below
+#### Requires probing
+
+The candidate stability bar below
 (`probe.min_failures` consecutive successes) is counted purely from probe
 outcomes. With probing disabled for a group (no `[probe.ws]` /
 `[probe.http]` / `[probe.dns]` / `[probe.tcp]` / `[probe.tls]` configured),
@@ -1412,7 +1430,9 @@ the streak bar and the loss-driven failover can never fire — whatever
 `carrier_degraded_failover_secs`, which has the same requirement for the
 same reason.
 
-**How it decides.** On every carrier-loss sampling tick
+#### Decision rule
+
+On every carrier-loss sampling tick
 (`loss_sample_interval_secs`), the manager reassesses the strict active
 uplink's active-wire loss ratio against `loss_failover_ratio` and
 maintains a continuous "elevated since" timestamp for it: a tick whose
@@ -1427,7 +1447,7 @@ smoothed ratio itself crosses back under the threshold, every tick still
 reads "elevated" and the episode keeps aging even though the path has
 already recovered. A tick is only reassessed on a *fresh* ratio — the
 wire's last *qualifying* measurement (one that met `loss_sample_min_packets`)
-must be within roughly 3 sampling ticks. Without this, a wire that measured
+must be within `3 × loss_sample_interval_secs` (`loss_max_staleness`). Without this, a wire that measured
 high loss once and then only carries light traffic under the volume floor
 (sparse keepalives, an overnight lull) would keep reading its last,
 no-longer-current ratio as ongoing evidence indefinitely — the episode
@@ -1435,13 +1455,13 @@ would "age" on a measurement that stopped being observed, and the actual
 duration of loss the operator configured would stop meaning what it says.
 A stale or entirely absent ratio (e.g. `loss_sample_min_packets` has never
 been reached) clears the episode the same as a smoothed-clean tick does.
-Once the episode has run **continuously** for at least `loss_failover_secs`,
+Once the episode has run continuously for at least `loss_failover_secs`,
 the active yields to a candidate that is:
 
 - probe-healthy, of equal-or-higher weight (operator priority still stands
   — this is a failover, not a failback), and has `probe.min_failures`
   consecutive probe successes — the same stability bar the carrier-degraded
-  check applies. This last clause matters more than it looks: in
+  check applies. This last clause is required: in
   `routing_scope = "global"`, a candidate can be "healthy" purely by
   bootstrap admission (an uplink with `[[outline.uplinks.fallbacks]]`
   configured that has never proven a single successful dial is still let
@@ -1453,21 +1473,21 @@ the active yields to a candidate that is:
   lossy-but-working primary, immediately fail the very next dispatch's
   health check, fail back to the lossy primary, and re-trigger on the
   following tick: a switch on every connection.
-- itself at or below `loss_failover_ratio`, **on a fresh reading** — the
-  same "last qualifying measurement within roughly 3 sampling ticks" test
+- itself at or below `loss_failover_ratio`, on a fresh reading — the
+  same "last qualifying measurement within `3 × loss_sample_interval_secs`" test
   described above for the active, applied to the candidate's own ratio. A
-  candidate with **no** loss verdict of its own counts as clean: absence
+  candidate with no loss verdict of its own counts as clean: absence
   means "not measured", never "no loss" and never "measured lossy" (see
   the four reasons a series can be absent, above) — refusing to switch to
   an unmeasured candidate would strand the gateway on the lossy path for
   no reason. A candidate that *does* have a verdict but it has gone
   stale — a warm-standby wire pinged too lightly to ever clear
-  `loss_sample_min_packets` again — is **not** treated as clean just
+  `loss_sample_min_packets` again — is not treated as clean just
   because the frozen number happens to read low: a reading nobody has
   reconfirmed is not proof the candidate is currently clean, only that it
   once was.
 
-If no such candidate exists the active uplink **stays** — a lossy path
+If no such candidate exists the active uplink stays — a lossy path
 still carrying traffic beats none, and switching between two lossy
 uplinks would be churn, not recovery. The switch is published as
 `SwitchIntent::Failover` (see the `SwitchIntent` table above), so on a
@@ -1477,13 +1497,17 @@ manual-switch reason both name the two uplinks and the observed loss
 ratio, so the decision is legible on its own without cross-referencing
 metrics.
 
-**One continuous episode, not an accumulating one.** An uplink flapping
+#### One continuous episode
+
+An uplink flapping
 around the threshold — one tick over, one tick under, repeat — never
 crosses `loss_failover_secs`: the very first clean tick resets the
 episode to "not started", the same discipline
 `carrier_degraded_failover_secs` applies to a descending carrier window.
 
-**Does not compose with `auto_failback = true`.** This check runs before
+#### Conflict with `auto_failback = true`
+
+This check runs before
 the weight-driven auto-failback block, so it can move the active to an
 equal-weight, higher-index sibling — and `auto_failback`'s own filter
 excludes neither a lossy nor a carrier-degraded candidate, so the very
@@ -1492,17 +1516,21 @@ for `carrier_degraded_failover_secs`; this knob only widens the exposure.
 The fleet runs `auto_failback = false` (the default), where this does not
 arise — the mismatch only matters if you turn both features on together.
 
-**Picking values.** Follow "Choosing `loss_latency_penalty_k`" above to
+#### Picking values
+
+Follow "Choosing `loss_latency_penalty_k`" above to
 find your fleet's actual loss spread first — `loss_failover_ratio` should
 sit at or above the level of loss you have already decided is
 unacceptable, not below it (a threshold set too low turns ordinary noise
 into a failover trigger). `loss_failover_secs` should be long enough that
-a single bad sampling window cannot fire it alone: a few multiples of
-`loss_sample_interval_secs` is a reasonable floor, mirroring the `3 ×
+a single bad sampling window cannot fire it alone: use at least a few
+multiples of `loss_sample_interval_secs`, mirroring the `3 ×
 mode_downgrade_secs` default `carrier_degraded_failover_secs` uses for the
 same reason.
 
-**Watching it before it fires.** Two more series, alongside the ones
+#### Metrics before the switch
+
+Two more series, alongside the ones
 above:
 
 - `outline_ws_uplink_loss_elevated_seconds{group, transport, uplink}` —
@@ -1521,7 +1549,9 @@ above:
   that surfaces a TCP-loss-driven switch is counted under
   `transport="tcp"`, not `"udp"`.
 
-Example — `[outline.load_balancing]` for the inline shape, and the same
+### Load-balancing config example
+
+`[outline.load_balancing]` for the inline shape, and the same
 fields lifted onto a group:
 
 ```toml
@@ -1559,24 +1589,24 @@ warm_standby_tcp = 1
 
 `[outline.probe]` is a template inherited by every `[[uplink_group]]`.
 Individual groups can override probe parameters via `[uplink_group.probe]`,
-which is bound to the **most recently declared** `[[uplink_group]]` table —
+which is bound to the most recently declared `[[uplink_group]]` table —
 place the override block immediately after the group it should apply to and
 before the next `[[uplink_group]]`.
 
 Merge rules:
 
-- **Scalar fields** (`interval_secs`, `timeout_secs`, `max_concurrent`,
+- Scalar fields (`interval_secs`, `timeout_secs`, `max_concurrent`,
   `max_dials`, `min_failures`, `attempts`) are merged field-by-field with
   the template — fields not set in the override fall back to
   `[outline.probe]`.
-- **Sub-tables** (`ws` / `http` / `dns` / `tcp` / `tls`) are replaced
+- Sub-tables (`ws` / `http` / `dns` / `tcp` / `tls`) are replaced
   wholesale. If a group sets `[uplink_group.probe.http]`, the template's
   `[outline.probe.http]` is dropped for that group — repeat every field
   you still want.
-- **Activation requires at least one of `ws` / `http` / `dns` / `tcp` /
-  `tls`** in the resulting (post-merge) probe config; otherwise the
+- Activation requires at least one of `ws` / `http` / `dns` / `tcp` /
+  `tls` in the resulting (post-merge) probe config; otherwise the
   probe loop will not start for that group.
-- **Application-level sub-probes are mutually exclusive.** Only one of
+- Application-level sub-probes are mutually exclusive. Only one of
   `tls` / `http` / `tcp` runs per cycle to bound the per-cycle handshake
   count. Priority is `tls` → `http` → `tcp`: when `[outline.probe.tls]`
   is set, the `http` and `tcp` sub-tables are silently skipped each
@@ -1629,12 +1659,13 @@ url = "http://backup-canary.example.net/"
 # the template's `ws` and `dns` sub-tables unchanged.
 ```
 
-**Disabling a probe type in a single group:**
+#### Disabling a probe type in a single group
 
 - `ws`: set `[uplink_group.probe.ws] enabled = false` in the override —
   `WsProbeConfig` carries an explicit `enabled` flag.
 - `http` / `dns` / `tcp` / `tls`: cannot be disabled per group. The merge
-  uses `override.or(template)` ([groups.rs:160](src/config/load/groups.rs:160)),
+  uses `override.or(template)` (`merge_probe_section` in
+  [groups.rs](../src/config/load/groups.rs)),
   so an omitted sub-table inherits the template's value, and there is no
   syntax for "explicit none". To run a group without one of these probes
   while another group keeps it, remove the sub-table from
@@ -1652,7 +1683,7 @@ target, no response bytes ever come back) therefore goes unnoticed:
 `uplink_health` stays `1`, the streak that would flip it never reaches
 `probe.min_failures`, and per-flow rescue keeps absorbing the symptom.
 
-`[outline.probe.tls]` closes that gap. It opens the same tunnel as the
+`[outline.probe.tls]` covers that case. It opens the same tunnel as the
 HTTP probe and then drives a real `ClientHello → ServerHello /
 Certificate → Finished → close_notify` handshake against a configured
 `(SNI, port)` target. No HTTP exchange follows — the goal is to
@@ -1685,14 +1716,14 @@ Choosing targets:
 - Pick SNIs the deployment's user traffic actually hits, not stub
   origins like `example.com`. The probe is only useful when its target
   is sensitive to the same upstream filter the user flows are.
-- Two to four targets is plenty. Probes pay one fresh handshake per
-  uplink per cycle, and rotation across the list spreads cycle load.
+- Use two to four targets. The probe makes one fresh handshake per
+  uplink per cycle and takes the next target from the list each cycle.
 - Skip self-hosted SNIs (your own uplink server's WS host) — the WS
   sub-probe already covers that path.
 
 Metrics emit `probe="tls"`. Split it out from `probe="http"` /
-`probe="ws"` on the dashboard's "Probe Runs (success/error, by
-sub-probe)" panel to see the new signal independently. In a TLS-DPI
+`probe="ws"` on the Grafana dashboard's "Probe Runs (success/error, by
+sub-probe)" panel. In a TLS-DPI
 episode the `probe="tls" result="error"` series should track the
 user-flow `runtime_failure_signatures_total{signature="chunk0_timeout"}`
 shape; if it stays flat while user flows pile up, the chosen targets
@@ -1708,7 +1739,7 @@ is set.
 
 Recorded in two layers:
 
-1. **Per-host caches** (short TTL, one per axis).
+1. Per-host caches (short TTL, one per axis).
    - `ws_mode_cache` — set when an h3/h2 WS handshake fails. Caps
      subsequent dials to the same host at the recorded ceiling
      (`WsH2` after a `WsH3` failure, `WsH1` after a `WsH2` failure).
@@ -1725,13 +1756,13 @@ Recorded in two layers:
      the h-version cache so a stream-one failure does not refresh
      the h-version cap and vice versa.
 
-   All three caches are keyed by **destination** `host:port` (the
+   All three caches are keyed by destination `host:port` (the
    dial URL, not the local interface), so they survive across
    uplinks pointing at the same upstream and across changes in the
    local route / `fwmark`. The shared `mode_downgrade_secs` knob
    governs the TTL for all three.
 
-2. **Per-uplink `mode_downgrade_until`** + family-aware
+2. Per-uplink `mode_downgrade_until` + family-aware
    `mode_downgrade_capped_to`. Set by a runtime failure
    (`report_runtime_failure_for_wire`), a probe failure, or a dial that
    silently fell back (`note_silent_transport_fallback`), each attributed
@@ -1746,9 +1777,9 @@ Recorded in two layers:
    active window and never raises it. Cleared by a successful H3
    recovery probe (WS path) or by natural TTL expiry (XHTTP path —
    no recovery probe). The cap is published through the snapshot
-   (`tcp_mode_capped_to` / `udp_mode_capped_to`) so the dashboard's
-   `tcp_mode_effective` / `udp_mode_effective` columns reflect the
-   actual carrier the dispatcher will use.
+   (`tcp_mode_capped_to` / `udp_mode_capped_to`), and the
+   `tcp_mode_effective` / `udp_mode_effective` fields of
+   `/control/topology` show the carrier the dispatcher will use.
 
 When both layers report the same constraint, `effective_*_mode` is
 authoritative for routing and the host cache governs the inline
@@ -1756,23 +1787,23 @@ authoritative for routing and the host cache governs the inline
 
 ## Session resumption mechanics
 
-A Session ID is **server-minted and owned by one session**. On a resume
+A Session ID is server-minted and owned by one session. On a resume
 hit the server ignores the target in the new handshake — the parked
 target is authoritative — and re-attaches whatever upstream is parked
 under the presented ID. So an ID may only ever be presented back by the
 session it was issued to.
 
-**TCP.** Every dial advertises `X-Outline-Resume-Capable: 1`, so the
+TCP. Every dial advertises `X-Outline-Resume-Capable: 1`, so the
 server mints an ID and returns it in `X-Outline-Session: <hex>`. The
 client reads that ID off the carrier
 (`TransportStream::issued_session_id()`) and stores it *on the session*:
 
-- **A fresh dial presents no `X-Outline-Resume`.** It is a new session
+- A fresh dial presents no `X-Outline-Resume`. It is a new session
   and has nothing to resume. (There is deliberately no per-uplink cache
   to read from: one shared slot per uplink meant a fresh dial of session
   B could present session A's parked ID and get spliced onto A's
   destination.)
-- **A redial of an existing session presents that session's own ID** —
+- A redial of an existing session presents that session's own ID —
   the mid-session retry path (`redial_for_mid_session_retry`) and the
   cluster soft-switch migration. The redial hit mints a new ID, which
   replaces the old one on the session.
@@ -1783,15 +1814,15 @@ client reads that ID off the carrier
 `outline_ws_resume_lookup_total{transport="tcp",result}` counts `hit` for
 a redial that carried an ID and `miss` for a dial that had none.
 
-**UDP** keys its ids `<resume-scope>#udp` (plus
+UDP keys its ids `<resume-scope>#udp` (plus
 `<resume-scope>#<target>` for VLESS-UDP), but the slot those keys name
-belongs to **one carrier's owner** — one tunnelled TUN UDP flow, one
+belongs to one carrier's owner — one tunnelled TUN UDP flow, one
 SOCKS5 UDP association (`UdpResumeStore::Private`). The process-wide
 caches those keys used to live in are last-write-wins, which is sound
 only where one carrier exists per scope. TUN dials one carrier per
 *flow*, so under a shared slot a fresh flow presented the id the
 previously-closed flow had parked, and a hit on that re-attaches
-**that** flow's upstream — a cross-session splice, not a missed resume.
+that flow's upstream — a cross-session splice, not a missed resume.
 Configurations where UDP rides the TCP carrier (VLESS/WS, VLESS/XHTTP)
 keep no UDP slot — UDP follows TCP's lifetime.
 
@@ -1814,16 +1845,16 @@ The choice is made per packet: if the varint plus the payload fit the connection
 
 ### Per protocol
 
-- **Shadowsocks / SS2022.** One datagram carries one UDP packet in the same encrypted form as a WebSocket binary frame.
-- **VLESS.** Plain UDP command only; mux and XUDP stay on the stream. The first packet (the VLESS header) always goes over the stream and the client sends datagrams only after the response header. The server sends downlink datagrams only after the first uplink datagram, so a datagram never overtakes the header. One `len||payload` record per datagram.
-- **xhttp.** Datagrams bind to the GET (`packet-up`) or the stream-one stream and carry the bare packet without an xhttp record. A re-attached GET recounts the agreement; on VLESS the downlink waits on the stream until the next uplink datagram.
-- **Cover traffic (padding).** While datagrams flow the server holds cover frames; cover never travels as a datagram.
+- Shadowsocks / SS2022: one datagram carries one UDP packet in the same encrypted form as a WebSocket binary frame.
+- VLESS: plain UDP command only; mux and XUDP stay on the stream. The first packet (the VLESS header) always goes over the stream and the client sends datagrams only after the response header. The server sends downlink datagrams only after the first uplink datagram, so a datagram never overtakes the header. One `len||payload` record per datagram.
+- xhttp: datagrams bind to the GET (`packet-up`) or the stream-one stream and carry the bare packet without an xhttp record. A re-attached GET recounts the agreement; on VLESS the downlink waits on the stream until the next uplink datagram.
+- Cover traffic (padding): while datagrams flow the server holds cover frames; cover never travels as a datagram.
 
 An unknown stream id, a malformed varint or an overflowing per-stream receive queue (`queue_full` for a burst, `queue_stalled` when its consumer had not read for 50 ms) drops the datagram and bumps `datagram_dropped_total{reason}`; the connection is not closed. Datagrams that quinn evicts from its own send buffer are not counted: `datagrams_total{up}` counts datagrams handed to quinn.
 
-### Observability
+### Datagram metrics
 
-Client: `outline_ws_udp_h3_datagrams_total{direction,transport,proto}`, `outline_ws_udp_h3_datagram_fallback_total{direction,transport,proto,reason}` (`up`: `unarmed`, `too_large`, `send_failed`; `down`: `stream`), `outline_ws_udp_h3_datagram_dropped_total{reason}` (`unknown_stream`, `closed_stream`, `malformed`, `queue_full`, `queue_stalled`, `early`) and `outline_ws_udp_h3_datagram_sessions_total{transport,state}` (`negotiated` / `declined`; counts anchor streams, including standby-pool refills and probe dials). Server: `outline_ss_udp_h3_datagrams_total{direction,proto}`, `outline_ss_udp_h3_datagram_fallback_total{direction,proto}`, `outline_ss_udp_h3_datagram_dropped_total{reason}` and `outline_ss_udp_h3_datagram_sessions_total{state}`. A healthy rollout shows `datagrams_total` growing on both sides and `sessions_total{state="negotiated"}` dominating `declined`. Both Grafana dashboards have a "UDP over HTTP/3 datagrams" row.
+Client: `outline_ws_udp_h3_datagrams_total{direction,transport,proto}`, `outline_ws_udp_h3_datagram_fallback_total{direction,transport,proto,reason}` (`up`: `unarmed`, `too_large`, `send_failed`; `down`: `stream`), `outline_ws_udp_h3_datagram_dropped_total{reason}` (`unknown_stream`, `closed_stream`, `malformed`, `queue_full`, `queue_stalled`, `early`) and `outline_ws_udp_h3_datagram_sessions_total{transport,state}` (`negotiated` / `declined`; counts anchor streams, including standby-pool refills and probe dials). Server: `outline_ss_udp_h3_datagrams_total{direction,transport,proto}`, `outline_ss_udp_h3_datagram_fallback_total{direction,transport,proto,reason}`, `outline_ss_udp_h3_datagram_dropped_total{reason}` and `outline_ss_udp_h3_datagram_sessions_total{transport,state}`. A healthy rollout shows `datagrams_total` growing on both sides and `sessions_total{state="negotiated"}` dominating `declined`. Both Grafana dashboards have a "UDP over HTTP/3 datagrams" row.
 
 ### Rollout and rollback
 
@@ -1839,8 +1870,8 @@ Chrome 157 (macOS, Linux, Android), Firefox 159 (macOS, Linux),
 Safari 27 (macOS). There is no Windows client, so there is no Windows
 pool.
 
-The profile is picked **only from the pool of the OS the client really
-runs on**, because the TCP SYN (TTL, option layout) is visible to a DPI
+The profile is picked only from the pool of the OS the client really
+runs on, because the TCP SYN (TTL, option layout) is visible to a DPI
 next to the ClientHello and a Safari hello from a Linux stack is an
 incompatible pair: macOS — Chrome, Firefox, Safari; Linux — Chrome,
 Firefox; Android — Chrome; any other OS uses the Linux pool. The strategies below work within that pool. The TLS
@@ -1875,8 +1906,8 @@ can be up to one warm set per family per server. The carrier's own
 `X-Outline-*` headers follow the browser ones. Without a profile no browser
 header is sent at all.
 
-Two stable strategies are offered. **`process_stable` (the
-recommended default)** picks one identity at process start and uses
+Two stable strategies are offered. `process_stable` (recommended)
+picks one identity at process start and uses
 it for every dial regardless of which uplink fires — matching how a
 real user with a single browser appears to an on-path observer:
 one source IP, one User-Agent. The pick is seeded from the OS-level
@@ -1894,8 +1925,8 @@ or the equivalent runtime knob; reading the shell variable
 
 `per_host_stable` is the legacy peer-split: profile is hashed from
 `(host, port)`, so each peer sees one consistent identity but
-**different** peers see different identities from the same source
-IP. Useful only when peers are fully decoupled across observers
+different peers see different identities from the same source
+IP. Use it only when peers are fully decoupled across observers
 (different ASes, different jurisdictions, no global DPI on the
 client's path). For most deployments this leaks "automated
 multi-pseudo-client" because a global observer correlates: the
@@ -1903,9 +1934,9 @@ same source IP shouldn't produce four browser identities in 30
 seconds against four different hosts. Prefer `process_stable`
 unless you have a specific reason.
 
-The knob is opt-in. Default behaviour leaves the wire shape exactly
-as in pre-fingerprint builds — no headers added beyond
-`X-Outline-Resume-*`. Enable it via the top-level `fingerprint_profile`
+The knob is opt-in. By default no browser headers are added beyond
+`X-Outline-Resume-*`; TLS dials still send the Chromium ClientHello
+(`Strategy::None` in `fingerprint_profile.rs`). Enable it via the top-level `fingerprint_profile`
 key in `config.toml`:
 
 ```toml
@@ -1917,23 +1948,20 @@ Accepted values:
 
 - `"off"` / `"none"` / `"disabled"` / omitted — default, no headers added.
 - `"stable"` / `"process"` / `"process_stable"` / `"process-stable"` —
-  **recommended.** One identity for the entire process; a real-user
-  shape on the wire from the perspective of any observer.
+  recommended. One identity for the entire process.
 - `"per_host_stable"` / `"per-host-stable"` / `"per-host"` — legacy
   per-peer split; see caveat above.
-- `"random"` — fresh profile on every dial. Useful for testing or
-  when peer-stable identity is itself undesirable.
+- `"random"` — fresh profile on every dial: for testing, or
+  when a stable per-peer identity is undesirable.
 
-> Note: the bare `stable` shorthand previously aliased to
-> `per_host_stable`. It now resolves to `process_stable`. Operators
-> carrying older configs spelling `stable` get the safer behaviour
-> automatically; those who specifically want the per-peer split
-> must spell `per_host_stable` in full.
+The bare `stable` shorthand previously aliased to `per_host_stable`;
+it now resolves to `process_stable`. To keep the per-peer split, spell
+`per_host_stable` in full.
 
 The same value can be set on the command line or via environment,
-which **overrides** the top-level TOML key (per-uplink overrides
+which overrides the top-level TOML key (per-uplink overrides
 still win on top of either source — same precedence as
-`--listen` / `--metrics-listen`):
+`--listen` / `--metrics-listen` over their TOML keys):
 
 ```sh
 outline-ws-rust --fingerprint-profile stable
@@ -1941,8 +1969,8 @@ outline-ws-rust --fingerprint-profile stable
 OUTLINE_FINGERPRINT_PROFILE=random outline-ws-rust
 ```
 
-Accepts the same alias set as the TOML key. Useful for one-shot
-opt-in tests against a deployed config without editing the file.
+Accepts the same alias set as the TOML key, so a deployed config can be
+tested with a profile without editing the file.
 
 For embedded callers (tests, custom binaries) the strategy can also be
 wired directly via the Rust API; the bootstrap binary picks the
@@ -1956,46 +1984,32 @@ use outline_transport::{
 init_fingerprint_profile_strategy(FingerprintProfileStrategy::ProcessStable);
 ```
 
-### Observability
+### Fingerprint logs and metrics
 
 `tracing::info!` logs each `(host, port, profile)` triple the first
-time it is observed in the process — useful for verifying that the
-strategy actually engaged after a config change.
+time it is observed in the process; use it to check that the
+strategy engaged after a config change.
 
 Prometheus exposes `outline_ws_uplink_fingerprint_profile_strategy_info`
 with labels `group`, `uplink`, and `strategy` (one of `none`,
 `per_host_stable`, `process_stable`, `random`). The gauge is `1` on the active strategy
 and `0` on the others, published unconditionally — an absent series
 points at a snapshot-pipeline bug, not at the feature being off.
-The series reflects the **effective** strategy: per-uplink override
+The series reflects the effective strategy: per-uplink override
 when set, otherwise the process-wide default. The same string is
-available on the `/snapshot` control endpoint as the
-`fingerprint_profile_strategy` field on each uplink entry — the field
-is omitted from the JSON when the strategy resolves to `none`, so
-older snapshot consumers see the same wire shape they had before
-this knob landed.
+available in `GET /control/topology` as the
+`fingerprint_profile_strategy` field on each uplink entry; the field
+is omitted from the JSON when the strategy resolves to `none`.
 
-The bundled Grafana dashboard ships a stat panel **"Fingerprint
-Strategy"** in the top-status row alongside `Selection Mode`,
-`Routing Scope`, and `Active Uplink`. Each cell shows how many uplinks
-in the selected `group` filter currently sit on each strategy bucket;
-zero buckets stay greyed-out so the active distribution reads at a
-glance.
+The bundled Grafana dashboard has a stat panel "Fingerprint
+Strategy" in the top-status row next to `Selection Mode`,
+`Routing Scope` and `Active Uplink`. Each cell shows how many uplinks
+in the selected `group` filter sit on each strategy.
 
-The bundled HTML control-plane dashboard renders a per-uplink chip
-showing the **active profile** (e.g. `Chrome 157 macOS`) next to the
-protocol pill on every row where the effective strategy resolves to
-something other than `none`. The chip is colour-coded by family:
-blue for the stable profiles (Chrome / Firefox / Safari / Edge under
-`process_stable` or `per_host_stable`) and purple for `Random` —
-at-a-glance the operator can tell whether the identity is pinned or
-rolling. Uplinks on `none` get no chip — the common opt-out
-deployment stays visually unchanged. The tooltip carries both the
-raw profile id and the strategy
-(`fingerprint_profile_name = chrome-157-macos · strategy = process_stable`)
-so the rendered label can be correlated immediately with the
-Prometheus `strategy` label and the snapshot JSON without translating
-between forms.
+The `outline-ui` dashboard shows the active profile as a chip: one chip
+in the group header when every uplink of the group has the same identity
+(`process_stable`, `random`), one per row under `per_host_stable`.
+Uplinks on `none` get no chip.
 
 The active profile is computed in the snapshot builder by running
 `select_with_strategy(primary_dial_url, effective_strategy)` —
@@ -2009,7 +2023,7 @@ absent).
 ### Per-uplink override
 
 Each `[[outline.uplinks]]` entry can override the top-level value with
-its own `fingerprint_profile` key. Useful when one uplink must keep a
+its own `fingerprint_profile` key. Use it when one uplink must keep a
 byte-identical xray-style wire shape while siblings on the same host
 opt into per-host-stable identities:
 
@@ -2031,23 +2045,29 @@ fingerprint_profile = "off"      # explicit opt-out for byte-identity
 
 The override propagates through a per-dial task-local scope inside
 `outline-uplink::dial::dial_in_uplink_scope`, so probes, warm-standby
-refills, and live dispatches all honour the same value for a given
+refills, and live dispatches all use the same value for a given
 uplink. The scope drops when the dial future returns; spawned
-post-handshake tasks (drivers, body-drain loops) inherit nothing —
-which is fine because the only `select` call lives at the dial
-entry-point.
+post-handshake tasks (drivers, body-drain loops) inherit nothing,
+because the only `select` call is at the dial entry point.
 
-What this does **not** cover (separate, costlier work):
+This module only picks the profile and adds headers. The lower layers
+follow the picked profile's browser family in other modules:
 
-- TLS ClientHello / JA3 / JA4 fingerprint — rustls does not expose
-  cipher / extension / curve order, so meaningful diversification
-  here needs a uTLS-style stack (e.g. `boring`/BoringSSL).
-- ALPN ordering — currently fixed per carrier (`h2`, `http/1.1`,
-  `h3`). The TLS configs are cached per ALPN list,
-  so per-host ALPN reshuffling needs a new caching key.
-- HTTP/2 `SETTINGS` frame fingerprint (Akamai/JA4H2) — owned by
-  the `h2` crate and largely closed to client-side tweaks.
-- QUIC transport-parameter ordering — owned by `quinn`.
+- TLS ClientHello: `tcp_tls_profile` (TCP carriers, the certificate
+  check, the HTTPS probe) and `quic::tls_profile` (H3), through the
+  vendored rustls `client_hello_shape` patch (see
+  [`PATCHES.md`](../../../PATCHES.md)).
+- HTTP/2 SETTINGS, windows and header order: `h2_profile`, as far as
+  `hyper` / `h2` allow — pseudo-header order, the priority flag,
+  Firefox's first stream id, Safari's SETTINGS order and id 9 and the
+  always-sent `MAX_HEADER_LIST_SIZE` stay hyper's.
+- QUIC transport parameters: `crate::quic`, through the vendored
+  `quinn-proto` patches.
+
+Not aligned with the browsers: resumed / 0-RTT hellos. The ALPN list
+follows the carrier (`h2, http/1.1` or `http/1.1`), not the profile, so
+the Firefox profile on an `http/1.1`-only carrier differs from Firefox,
+which offers `h2, http/1.1` for WebSocket too.
 
 ## Egress without UDP GSO (`disable_udp_gso`)
 
@@ -2070,7 +2090,7 @@ Opt such an uplink out:
 
 ```toml
 [[outline.uplinks]]
-name            = "nuxt-bee"
+name            = "exit-a-bee"
 group           = "main"
 fwmark          = 18      # policy route onto the second ISP
 disable_udp_gso = true    # its VLAN rejects segmented sends
@@ -2094,13 +2114,13 @@ link            = "vless://…"
 ## Per-uplink fallback transports
 
 A single `[[outline.uplinks]]` entry can carry an ordered list of
-**fallback transports** that the dial loop tries when the primary
-transport on this uplink fails to dial. The motivating use-case is a
+fallback transports that the dial loop tries when the primary
+transport on this uplink fails to dial. The typical case is a
 VLESS endpoint that gets blocked at the network path: instead of
 demoting the whole uplink and failing over to a different one in the
 group, the loop falls through to a WS or VLESS wire on the
-**same** uplink, keeping the operator's identity / weight / group
-attribution intact.
+same uplink, keeping the operator's identity / weight / group
+attribution unchanged.
 
 ```toml
 [[outline.uplinks]]
@@ -2133,15 +2153,15 @@ password        = "BASE64=="
 ### Fields
 
 Every fallback entry carries its own wire-shape fields, mirroring the
-top-level `[[outline.uplinks]]` schema **minus** the identity attributes
+top-level `[[outline.uplinks]]` schema minus the identity attributes
 that belong to the parent (`name`, `weight`, `group`):
 
 | Field | Required for | Notes |
 |---|---|---|
-| `transport` | unless `link` is set | `ss` / `vless` (`ss` also accepts the deprecated `ws` / `websocket` aliases). Omit it next to a `link` — the URI scheme supplies it; a value that disagrees with the scheme is rejected at load. **No uniqueness restriction** — same-transport-as-parent and duplicate-transport entries are explicitly allowed. The most common cross-family shape is a VLESS primary on `xhttp_h*` with a VLESS fallback on `ws_h*` (same `transport = "vless"`, different carrier family, different dial URL); two VLESS fallbacks at distinct hosts as belt-and-suspenders also work. The dial loop and per-wire mode tracking treat each fallback as its own wire regardless of `transport`. |
+| `transport` | unless `link` is set | `ss` / `vless` (`ss` also accepts the deprecated `ws` / `websocket` aliases). Omit it next to a `link` — the URI scheme supplies it; a value that disagrees with the scheme is rejected at load. No uniqueness restriction — same-transport-as-parent and duplicate-transport entries are explicitly allowed. The most common cross-family shape is a VLESS primary on `xhttp_h*` with a VLESS fallback on `ws_h*` (same `transport = "vless"`, different carrier family, different dial URL); two VLESS fallbacks at distinct hosts also work. The dial loop and per-wire mode tracking treat each fallback as its own wire regardless of `transport`. |
 | `link` | — | Share-link URI for this wire (`vless://…` or `ss://…`), the same format section 5 and "Share-link URI (`ss://`)" describe. Expands into the wire fields of its transport plus the credentials it carries, so a link-configured fallback needs no other field. Mutually exclusive with the explicit wire fields (`tcp_*`, `udp_*`, `vless_*`, `ss_*`, `vless_id`; `method` / `password` conflict with an `ss://` link only). `#NAME` is ignored — identity belongs to the parent uplink. There is no single-URL form for the split `tcp_*` / `udp_*` SS layout; use the long form for it. |
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
-| `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws\_\* → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
+| `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws\_\* → `vless_ws_url`). `vless_id` is per-wire-credential and not inherited from the parent — different VLESS endpoints use different uuids by definition. |
 | `method`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. A wire configured by an `ss://` `link` takes them from the URI instead, and never falls back to the parent's. |
 | `fwmark`, `disable_udp_gso`, `ipv6_first`, `ipv4_only`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. When `ipv4_only = true`, IPv6 addresses are filtered out and `ipv6_first` is ignored. Inheritance is unaffected by `link` — these are dial properties, not wire shape. |
 
@@ -2168,7 +2188,7 @@ explicit secret. Everything that is *not* wire shape still comes from the
 parent: `fwmark`, `disable_udp_gso`, `ipv6_first`, `ipv4_only` and `fingerprint_profile` are inherited exactly
 as they are for a hand-written fallback.
 
-### Behaviour
+### Wire chain behaviour
 
 #### Which ingress walks the wire chain
 
@@ -2179,9 +2199,9 @@ recent. Until `[load_balancing] tun_wire_dial` existed, this chain was
 reachable only from the SOCKS ingress: a TUN flow always dialed the uplink's
 primary carrier (wire 0), full stop. A broken primary therefore cost the
 *whole uplink* on TUN — the state machine below existed and kept moving
-`active_wire`, but nothing on the TUN plane ever read it before dialing, so a
-config with three fallbacks and `shuffle_wires = true` read as configured
-redundancy while every TUN dial kept going to wire 0.
+`active_wire`, but nothing on the TUN plane read it before dialing, so with
+three fallbacks and `shuffle_wires = true` every TUN dial still went to
+wire 0.
 
 With `tun_wire_dial = true` the TUN ingress calls the same `dial_over_wires`
 loop the SOCKS ingress always has, on both the TCP and UDP planes: a fresh
@@ -2196,40 +2216,39 @@ resuming the old one.
 
 The flag is per group (`[[uplink_group]] tun_wire_dial = true`, or
 `[outline.load_balancing]` in the inline single-uplink shape) and defaults
-to `false` — roll it out one node at a time. Gate-off is byte-for-byte the
-pre-`tun_wire_dial` behaviour: every TUN dial asks for wire 0 and never
-touches the wire state machine, so a gate-off node cannot tell this feature
-shipped.
+to `false`; roll it out one node at a time. With the flag off every TUN dial
+asks for wire 0 and never touches the wire state machine, as before
+`tun_wire_dial` existed.
 
 #### Per-session dial loop
 
 - For each new session the dial loop iterates wires in
-  `wire_dial_order` — starting at the **active wire** (initially `0` =
+  `wire_dial_order` — starting at the active wire (initially `0` =
   primary; advanced by the sticky-fallback state machine described
   below) and wrapping through the rest of the chain so primary is
   still tried as a last resort even when active is pinned to a
   fallback. The first wire that successfully dials carries the session.
-- A successful dial is **invisible** to the load-balancer beyond an
-  `outline_uplink_selected` metric tick. The parent's
+- A successful dial is invisible to the load-balancer beyond an
+  `outline_ws_uplink_selected_total` metric tick. The parent's
   `report_runtime_failure` counter is only bumped when every wire on
   this uplink (primary + all fallbacks) has failed in the same
   session — so transient single-wire outages no longer demote the
   whole uplink as long as another wire works.
-- Runtime failures attributed to a **specific wire** (chunk-0 failures
+- Runtime failures attributed to a specific wire (chunk-0 failures
   carrying the failed wire's index, mid-session resets carrying the
   current relay wire's index) are gated on the same active-wire match
   the dial loop uses: a failure pinned to a wire that the manager has
   already moved away from is treated as session-local fallback churn,
   recorded only as a suppressed metric
   (`outline_ws_uplink_runtime_failures_suppressed_total`), and
-  does **not** stack onto the parent uplink's penalty / cooldown /
+  does not stack onto the parent uplink's penalty / cooldown /
   consecutive-runtime-failures streak. Single-wire uplinks (no
   fallbacks declared) behave exactly as before — no "non-active wire"
   to suppress against.
 
 #### Sticky fallback + auto-failback (active-wire state machine)
 
-- After **`probe.min_failures` consecutive dial failures** of the wire
+- After `probe.min_failures` consecutive dial failures of the wire
   that new sessions currently start with (`active_wire`), the dial
   loop advances `active_wire` to the next wire in the chain and pins
   it for `LoadBalancingConfig::mode_downgrade_duration` (one knob,
@@ -2242,8 +2261,8 @@ shipped.
   primary is still broken the failure streak rebuilds and we end up
   pinned to the same fallback again — the timer is the rate-limit on
   retry, not a one-shot.
-- **Early failback via probe recovery.** The probe (still primary-only
-  in this iteration) drives an immediate snap-back to primary as soon
+- Early failback via probe recovery. The primary probe drives an
+  immediate snap-back to primary as soon
   as it accumulates `probe.min_failures` consecutive successes — the
   pin timer is not a hard wait. So a primary that recovers within a
   few probe cycles (typically 2 × `probe.interval_secs`) returns
@@ -2251,15 +2270,15 @@ shipped.
   own. The same `min_failures` knob is the failure threshold and the
   success-stability threshold (one mental model: N consecutive probe
   outcomes flip the active wire in either direction).
-- State is **per-transport**: TCP and UDP advance independently
+- State is per-transport: TCP and UDP advance independently
   (`PerTransportStatus::active_wire` is split per transport).
   `outline_ws_uplink_active_wire_index{transport}` exposes the
   current wire to dashboards.
 
 #### Random forward-only rotation (`shuffle_wires = true`)
 
-Opt-in per-uplink toggle that replaces the operator-ordered, wrap-
-forever chain with a randomised, forward-only round:
+Per-uplink toggle (default `false`) that replaces the operator-ordered,
+wrap-forever chain with a randomised, forward-only round:
 
 ```toml
 [[outline.uplinks]]
@@ -2286,14 +2305,14 @@ shuffle_wires   = true
 
 Semantics:
 
-- **At config load**: the wire chain `[primary, fallbacks[0], …]` is
+- At config load: the wire chain `[primary, fallbacks[0], …]` is
   reshuffled once with `rand::thread_rng()`. Each process restart
   picks a different ordering — the operator-configured primary may
   land at any position. The shuffle preserves the wire-set exactly
   (no wires dropped, duplicated, or corrupted) and parent-level
   identity (`name`, `weight`, `group`, `fingerprint_profile`) stays
   with the uplink regardless of which wire ended up at slot 0.
-- **Collision-free per group**: when several uplinks in the same
+- Collision-free per group: when several uplinks in the same
   `group` opt into `shuffle_wires`, the loader assigns each of
   them a wire permutation that does NOT match any other already
   used in the group. With three 3-wire uplinks, naive independent
@@ -2308,14 +2327,15 @@ Semantics:
   are isolated — two uplinks in different groups may still
   coincidentally share a permutation, since the dedup is intended
   to spread *within* a group, not across the whole config.
-- **At runtime, all three failure sources drive forward-only wire
-  rotation** through the same `record_wire_outcome` state machine:
-  - **dial failures** (a fresh session can't connect on the active
+- At runtime, all three failure sources drive forward-only wire
+  rotation through the same `record_wire_outcome` state machine:
+
+  - dial failures (a fresh session can't connect on the active
     wire) — handled by the same dial-loop path as the legacy chain;
-  - **probe failures** (`process_probe_err` /
+  - probe failures (`process_probe_err` /
     `run_fallback_wire_probe`) — advance `active_wire` on the
     probe-driven path and bump the round counter;
-  - **runtime failures** (`report_runtime_failure*` — e.g.
+  - runtime failures (`report_runtime_failure*` — e.g.
     `ws upstream read idle for 300s on datagram channel`, mid-session
     transport resets, chunk-0 timeouts) — feed the per-wire streak
     so an established session repeatedly failing on the active wire
@@ -2326,7 +2346,7 @@ Semantics:
   `active_wire` and dashboards would show no rotation despite the
   wire being demonstrably broken.
 
-  **Payload-integrity errors are not one of these sources.** A
+  Payload-integrity errors are not one of these sources. A
   datagram the AEAD could not open, a truncated one, or an SS2022
   replay/reorder rejection describes the *bytes*, not the carrier
   that delivered them, so `report_runtime_failure*` routes it to
@@ -2336,22 +2356,22 @@ Semantics:
   streak, no wire-round tick, no carrier cap. Only the affected flow
   is torn down (`payload_error` on the TUN UDP path); the SOCKS5 UDP
   downlink drops the datagram and keeps its transport. The
-  motivating field case: a ~0.1% corrupt-datagram rate opened 682
+  field case behind this: a ~0.1% corrupt-datagram rate opened 682
   `xhttp_h3 → xhttp_h2` windows in 16 h on one node, holding it in
   UDP-over-TCP 69.6% of the time. This is the data-plane half of the
   same invariant the probe enforces with `carrier_ok` vs
   `transport_ok` — a carrier descends only on evidence about the
   carrier.
-- **Round counter**: a per-transport `wires_failed_in_round`
+- Round counter: a per-transport `wires_failed_in_round`
   increments each time the active wire advances, regardless of which
   failure source drove the advance. The moment it reaches
   `total_wires` (every wire has been the active wire of a failed
   round since the last success), the uplink is forcibly marked
   `healthy = Some(false)` and pushed onto `failure_cooldown` — the
   load balancer picks another uplink for new sessions.
-- **Round-gated healthy flip**: until the round counter reaches
+- Round-gated healthy flip: until the round counter reaches
   `total_wires`, the *uplink-level* `healthy = Some(false)` flip is
-  **gated off** on the same uplink — both on the probe-driven path
+  gated off on the same uplink — both on the probe-driven path
   (`record_transport_failure`) and the runtime-driven path
   (`report_runtime_failure_inner`). Per-wire failure counters
   (`consecutive_failures`, `consecutive_runtime_failures`) still
@@ -2359,9 +2379,9 @@ Semantics:
   prematurely — wire rotation gets a chance to traverse the chain
   before uplink-failover. Once the chain is exhausted, the gate
   releases and the flip lands.
-- **Vertical carrier cascade before wire-rotation**: for WS-family
+- Vertical carrier cascade before wire-rotation: for WS-family
   and VLESS-XHTTP wires the wire-advance step itself is also gated
-  on the **active wire's effective mode** having reached the floor
+  on the active wire's effective mode having reached the floor
   of its family. While the active wire is at `ws_h3` / `ws_h2` /
   `xhttp_h3` / `xhttp_h2`, runtime / probe / dial failures are
   funnelled into the existing `extend_mode_downgrade` machinery
@@ -2373,7 +2393,7 @@ Semantics:
   the operator's `min_failures × carrier_ranks` budget on each
   wire before rotating to the next one — matching the legacy
   `h3 → h2 → http1` descent contract on the active leg.
-  The cascade is **per-wire**: the cap for wire 0 lives in the
+  The cascade is per-wire: the cap for wire 0 lives in the
   primary's descent slot (read by `effective_tcp_mode`), the cap for
   a fallback wire in `fallback_mode_downgrades[wire - 1]` (read by
   `effective_tcp_mode_for_wire`). A failure on one wire never caps
@@ -2388,26 +2408,26 @@ Semantics:
   reclaimed one rank at a time by the walk-up, and the final hop back
   onto its configured carrier waits out the `mode_downgrade_secs`
   window.
-- **Recovery probe holds the cap**: with `shuffle_wires = true`, the
+- Recovery probe holds the cap: with `shuffle_wires = true`, the
   configured-carrier recovery probe in
-  [`UplinkManager::note_recovery_probe_success`] does **not** clear
+  [`UplinkManager::note_recovery_probe_success`] does not clear
   the mode-downgrade cap even after the
   `RECOVERY_SUCCESS_STREAK_THRESHOLD` (2 consecutive successes) is
   met. The cap can still expire naturally via its
-  `mode_downgrade_until` deadline (default 60 s). Rationale: a
+  `mode_downgrade_until` deadline (default 60 s). Reason: a
   handshake-only recovery probe on `xhttp_h3` routinely succeeds
   even when real data-plane traffic still fails (the production case
   in the original log this iteration was built for); clearing the
   cap on that signal yanks traffic back to the broken configured
   carrier and re-triggers the same descent on the next failure,
   looping at the upper rank instead of walking down to the floor.
-- **Reset on any-wire success**: a successful dial of *any* wire
+- Reset on any-wire success: a successful dial of *any* wire
   (primary or fallback) zeroes the round counter and stamps
   `last_any_wire_success`; a successful probe also zeroes it
   (`record_transport_success`). Traffic stabilising on one wire
   restarts the round; the next failure resumes forward rotation
   from the wire that just worked, not from a fixed slot zero.
-- **Per-wire failure budgets**: when active wire advances (via any
+- Per-wire failure budgets: when active wire advances (via any
   path — dial, probe, runtime), `consecutive_failures` and
   `consecutive_runtime_failures` are reset to `0` so the new wire
   gets its own `min_failures` budget before being judged broken.
@@ -2424,15 +2444,15 @@ When to use it:
   behaviour, so the load balancer reaches for the next uplink
   promptly when every wire of this uplink is degraded.
 
-When **not** to use it:
+When to leave it off:
 
 - You have a clearly-preferred primary (fast, cheap) with fallbacks
   that exist only as last-resort overflow. Leave `shuffle_wires`
   off so the operator-ordered chain is respected and `auto_failback`
   drives recovery back to the configured primary.
 
-The flag defaults to `false` — existing configs keep the legacy
-operator-ordered chain and wrap-forever state machine bit-for-bit.
+With the default `false`, the operator-ordered chain and the
+wrap-forever state machine are unchanged.
 
 #### Disabling the per-wire carrier cascade (`carrier_downgrade = false`)
 
@@ -2455,9 +2475,8 @@ carrier_downgrade = false
 With the flag off:
 
 - `extend_mode_downgrade` is a no-op for this uplink: no
-  `mode_downgrade_*` state ever installs, no `↘ ↘` carrier-downgrade
-  arrows on the dashboard, no `mode_downgrade_secs` window per
-  rank.
+  `mode_downgrade_*` state ever installs and there is no
+  `mode_downgrade_secs` window per rank.
 - `wire_is_at_carrier_floor` reports every wire as "at floor". Under
   `shuffle_wires = true` this collapses the per-wire cascade into a
   direct wire-to-wire rotation — failures move straight to the next
@@ -2474,12 +2493,10 @@ When to use it:
   doesn't advertise lower-rank carriers, the cap window adds pure
   latency before the inevitable wire rotation.
 - Combined with `shuffle_wires = true` and a few near-equivalent
-  fallback endpoints, this gives the operator a "skip h2/h1, just
-  try the next wire" failover policy that is cheaper to walk than
-  the full vertical cascade.
+  fallback endpoints, this gives a "skip h2/h1, try the next wire"
+  failover policy with fewer steps than the full vertical cascade.
 
-The flag defaults to `true` — existing configs keep the legacy
-descent contract bit-for-bit.
+The flag defaults to `true`, which keeps the vertical descent.
 
 #### Periodic active-wire reroll (`shuffle_timer`)
 
@@ -2497,8 +2514,8 @@ shuffle_timer = "1h"      # every hour
 
 Each tick, for TCP and UDP independently:
 
-* Picks a random wire from every wire **other than the one currently
-  active** on that transport, so a reroll always actually changes the
+* Picks a random wire from every wire other than the one currently
+  active on that transport, so a reroll always actually changes the
   wire — it never "rerolls" back onto the same one by chance. A wire
   whose liveness weight (the same decaying penalty
   `health_weighted_selection` scores wires by) has decayed all the way
@@ -2509,13 +2526,12 @@ Each tick, for TCP and UDP independently:
   draw is uniform among the same candidate set — either way the
   exclusion is identical, so whether a reroll changes the wire never
   depends on that flag.
-* **If a transport has no live alternative** (every other wire is
+* If a transport has no live alternative (every other wire is
   currently at the floor), that transport's active wire is left
-  **completely untouched** for this tick: no pin refresh, no
+  untouched for this tick: no pin refresh, no
   failure-accounting reset, nothing applied. The journal logs this
   case explicitly (`"no live TCP/UDP alternative ... active wire left
-  unchanged"`) so it reads as "found nothing to roll onto" rather than
-  silently doing nothing. TCP and UDP are independent: one transport
+  unchanged"`). TCP and UDP are independent: one transport
   having no live alternative never blocks the other from rerolling.
 * When a reroll *does* land on a new wire, it zeroes out
   `active_wire_streak`, `wires_failed_in_round`,
@@ -2538,16 +2554,13 @@ proven end-to-end delivery on it zeroes the penalty outright, and
 returns a complete permutation that includes floored wires — so a
 "floored" wire keeps carrying traffic inside a session and can become
 `active_wire` again via the ordinary dial / probe path, independently
-of `shuffle_timer`. The exclusion is a per-tick liveness filter, not a
-standing "never wire X" ban — it self-heals as soon as the wire proves
-itself again.
+of `shuffle_timer`. The exclusion applies to one tick only.
 
 When to use it:
 
-* Defence against time-based DPI heuristics: even an uplink that
-  has been working steadily on one wire for hours will pivot to a
-  fresh carrier shape on every tick, refusing to look like a
-  long-lived stable flow on a specific URL / mode.
+* Against time-based DPI heuristics: an uplink that has been working on
+  one wire for hours still moves to another wire on every tick, so it
+  does not stay a long-lived flow on one URL / mode.
 * Forced wire diversification at a known cadence (e.g. switch
   through three CDN edges every 30 minutes during peak hours).
 
@@ -2555,15 +2568,15 @@ Independent of `shuffle_wires` (which only controls the initial
 chain ordering at config load) — the two can be combined or set
 independently. No-op for uplinks without any fallbacks.
 
-The interval is surfaced on the JSON snapshot as
-`shuffle_timer_secs: Option<u64>` and a transport that actually
-rerolled (i.e. had a live alternative) records a metric
-`outline_ws_uplink_failover_total{transport="tcp_shuffle_timer"}`
+The interval is stored in the uplink snapshot (`UplinkSnapshot`) as
+`shuffle_timer_secs: Option<u64>`, and a transport that actually
+rerolled (i.e. had a live alternative) records
+`outline_ws_uplink_failovers_total{transport="tcp_shuffle_timer"}`
 (and the `udp_shuffle_timer` counterpart) — a tick that left a
 transport untouched for lack of a live alternative does not record
 that transport's metric.
 
-**Probe-driven early-failback is suppressed** while
+Probe-driven early failback is suppressed while
 `shuffle_timer = Some(_)` is in effect. The default behaviour of
 `record_transport_success` is to snap `active_wire` back to primary
 the moment a primary probe has succeeded `probe.min_failures` times
@@ -2580,9 +2593,9 @@ mode-downgrade cap) but no longer changes `active_wire`.
 
 - If a session's chunk-0 stalls (no first byte from upstream within
   `tcp_chunk0_failover_timeout`), the chunk-0 failover loop now first
-  tries every **other wire on the same uplink** (Phase A) before
+  tries every other wire on the same uplink (Phase A) before
   jumping to a different uplink (Phase B). The wire-handover dial is a
-  **fresh** dial: it presents no `X-Outline-Resume` token, so the new
+  fresh dial: it presents no `X-Outline-Resume` token, so the new
   wire opens a new upstream conversation (chunk-0 stall means no
   upstream bytes had arrived anyway). Wire-handover events surface on the
   failover counter as `transport="tcp_wire"`; cross-uplink failovers
@@ -2590,7 +2603,7 @@ mode-downgrade cap) but no longer changes `active_wire`.
 
 #### Resume across wire switches
 
-- Resume follows the **session**, not the wire. A session that is
+- Resume follows the session, not the wire. A session that is
   redialled mid-stream (mid-session retry, cluster soft-switch) presents
   the `X-Outline-Resume` token *it* was issued on the wire that just
   died — whichever wire it lands on next. So a session established on a
@@ -2598,7 +2611,7 @@ mode-downgrade cap) but no longer changes `active_wire`.
   re-attaches its parked upstream server-side. Works for any combination
   where both wires carry the WS-resume header (WS, VLESS-WS,
   VLESS-XHTTP).
-- What is **not** shared is the token itself: there is no per-uplink
+- What is not shared is the token itself: there is no per-uplink
   resume slot any more, so a dial can never present a token minted for a
   different session (which, on a hit, would have re-attached that
   session's upstream and silently connected this one to the wrong
@@ -2610,11 +2623,11 @@ mode-downgrade cap) but no longer changes `active_wire`.
   uplink out of selection (`selection_health` → `effective_health` →
   false) and the fallback wire would never get a chance. To prevent
   that, an uplink with at least one fallback configured is treated as
-  selectable when **any** wire — primary or fallback — has dialed
+  selectable when any wire — primary or fallback — has dialed
   successfully within `runtime_failure_window`. Single-wire uplinks
   keep their probe-only health gating intact (no false-positive
   liveness from stale primary successes).
-- **Bootstrap pass-through.** The recent-success override needs at
+- Bootstrap pass-through. The recent-success override needs at
   least one prior wire success to latch onto. When primary is
   probe-marked unhealthy from the very first probe (or comes up failing
   after a restart) and no wire has stamped `last_any_wire_success`
@@ -2623,52 +2636,50 @@ mode-downgrade cap) but no longer changes `active_wire`.
   the dial loop has a chance to attempt the fallback. Without this,
   the dial loop (which used to be the only path that could stamp
   `last_any_wire_success`) and candidate filtering deadlock each
-  other. Snapshot-side **effective health** does NOT use this
+  other. Snapshot-side effective health does NOT use this
   bootstrap pass-through: a fallback wire that has not yet succeeded
-  must not display as green. The dashboard goes green only after a
-  fallback dial actually lands or the per-wire probe walk (below)
-  validates it.
-- **Per-wire probe walks.** When the primary probe fails this cycle
+  does not count as healthy there until a fallback dial lands or the
+  per-wire probe walk (below) validates it.
+- Per-wire probe walks. When the primary probe fails this cycle
   AND the uplink has at least one fallback configured, the scheduler
   follows up with a probe targeted at the active fallback wire — wire
   index `max(active_wire, 1)` — using a synthetic per-wire view of the
   uplink (`UplinkConfig::wire_view`). On success, the fallback-wire
   probe stamps `last_any_wire_success` directly, so passive uplinks
   carrying no client traffic still get their fallback validated and
-  surface as `*_health_effective = true` on dashboards. Bypasses
-  warm-standby slots (those are keyed on the parent's primary wire)
-  and skips parent-level penalty / cooldown bookkeeping — that
+  surface as `*_health_effective = true`. Bypasses
+  warm-standby slots and skips parent-level penalty / cooldown bookkeeping — that
   scoring state is sized for primary's traffic patterns. The
   fallback-wire probe DOES feed its measured latency into the
   fallback wire's own per-wire EWMA slot, so cross-uplink scoring
   ranks this uplink by the wire actually carrying traffic instead of
   primary's (possibly stale) measurement.
-- The same any-wire signal also drives **effective health** on the
+- The same any-wire signal also drives effective health on the
   snapshot / Prometheus / dashboard. `UplinkSnapshot::tcp_health_effective`
   (and the corresponding `outline_ws_uplink_health_effective` gauge)
   reflects "is this uplink delivering traffic?": probe-confirmed OR
   any-wire-recent-success. The legacy `tcp_healthy` /
   `outline_ws_uplink_health` keeps the probe-only verdict for
-  dashboards that specifically care about the primary wire. The HTML
-  dashboard's row tone consults effective health, so an uplink whose
-  primary is probe-down but whose fallback is delivering traffic
-  renders green instead of red — visualization stays in sync with
-  routing.
+  dashboards that care about the primary wire. The `outline-ui`
+  row tone reads `*_health_effective`, so an uplink whose primary is
+  probe-down but whose fallback is delivering traffic is shown as
+  healthy.
 
 #### Bypass list
 
-- The fallback dial bypasses the standby pool — that pool today is
-  keyed on the parent's primary wire shape, and reusing it for a
-  fallback wire would hand out a socket of the wrong transport. A
-  per-wire warm-standby pool is the next step. The mode-downgrade
+- The warm-standby pool serves one wire per transport
+  (`StandbyCtx::wire`): the uplink's `active_wire` when `tun_wire_dial`
+  is on, otherwise always wire 0. A dial on any other wire bypasses the
+  pool, because a pooled carrier of another wire would have the wrong
+  transport or credentials. The mode-downgrade
   window, by contrast, is already per-wire (see
   `fallback_mode_downgrades` and `effective_*_mode_for_wire`), so a
   fallback wire that observes its own carrier downgrade caps only
   its own slot.
-- The DNS cache and the per-uplink fingerprint scope **are** preserved
+- The DNS cache and the per-uplink fingerprint scope are preserved
   across wire switches, and so is a redialling session's own resume
   token (it travels with the session, not with the wire).
-- The RTT EWMA is now **per-wire**. Primary's measurement lives in
+- The RTT EWMA is per-wire. Primary's measurement lives in
   the existing `rtt_ewma` slot on `PerTransportStatus`; each fallback
   wire has its own slot in `fallback_rtt_ewma` (lazy-extended on
   first write, indexed by `wire_index - 1`). The per-wire probe walk
@@ -2681,7 +2692,7 @@ mode-downgrade cap) but no longer changes `active_wire`.
   right after a wire flip — fallback slot still empty — falls back to
   primary's EWMA for one probe cycle until the per-wire probe stamps
   in.
-- Two Prometheus gauges now expose RTT EWMA at different semantic
+- Two Prometheus gauges expose RTT EWMA at different semantic
   layers. `outline_ws_uplink_rtt_ewma_seconds{transport,uplink}`
   keeps the legacy primary-only verdict — useful for seeing the
   carrier health of the configured primary regardless of which wire
@@ -2701,7 +2712,7 @@ mode-downgrade cap) but no longer changes `active_wire`.
 
 #### VLESS-fallback wire types
 
-- **Both wire shapes work as VLESS fallbacks**: `ws_h1` /
+- Both wire shapes work as VLESS fallbacks: `ws_h1` /
   `ws_h2` / `ws_h3` (WS family) and `xhttp_h1` / `xhttp_h2` / `xhttp_h3`
   (XHTTP family). Each fallback wire is tracked independently — its
   per-wire mode-downgrade slot is separate from primary's, so a
@@ -2711,7 +2722,7 @@ mode-downgrade cap) but no longer changes `active_wire`.
 ### Inline `[outline]` shorthand
 
 The single-uplink inline shape (`tcp_ws_url` etc. directly on
-`[outline]`) does **not** expose fallback configuration — declare an
+`[outline]`) does not expose fallback configuration — declare an
 explicit `[[outline.uplinks]]` array entry to use fallbacks.
 
 ## TLS certificate-expiry monitoring
@@ -2724,24 +2735,26 @@ deduplicated by `(host, port)` and dialed with the uplink's `fwmark` — and
 reads the leaf certificate's `notAfter`. The connection accepts the
 certificate regardless of validity (so an already-expired cert is still
 read) and is dropped immediately without exchanging any data. This is the
-**outer** certificate the uplink server itself presents — distinct from
+outer certificate the uplink server itself presents — distinct from
 the `[outline.probe.tls]` data-path probe, which validates an external
 SNI reached *through* the tunnel.
 
 The soonest `notAfter` across an uplink's endpoints is surfaced two ways:
 
-- **Prometheus**: `outline_ws_uplink_cert_expiry_timestamp_seconds{group,uplink}`
+- Prometheus: `outline_ws_uplink_cert_expiry_timestamp_seconds{group,uplink}`
   — the expiry as a Unix timestamp in seconds. Absent until the first
   check completes and for uplinks with no TLS endpoint. Alert with
   your own threshold, e.g.
   `outline_ws_uplink_cert_expiry_timestamp_seconds - time() < 14 * 86400`.
-- **Dashboard**: the uplink's Status cell shows an amber `⚠ cert Nd` chip
-  when the certificate expires within 14 days and a red `⚠ cert expired`
-  chip once it is past; a healthy certificate shows nothing.
+- Control API: `GET /control/topology` reports
+  `cert_not_after_unix_ms` (Unix milliseconds) per uplink; the field is
+  omitted until the first check completes and for uplinks with no TLS
+  endpoint.
 
-This is wired through the `metrics` and `dashboard` build features (via
-their `cert-check` sub-feature); stripped `router` builds omit the check
-and the X.509 parser entirely.
+The check is built with the `metrics` feature (it enables
+`outline-uplink/cert-check`, which pulls the X.509 parser through
+`outline-transport/cert-check`); a `--no-default-features` build without
+`metrics` omits the check and the parser.
 
 ## `/control/uplink_groups` (CRUD)
 

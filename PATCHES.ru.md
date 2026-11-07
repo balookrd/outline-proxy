@@ -3,21 +3,23 @@
 Единый источник истины по локальным патчам на vendored-крейты.
 *English version: [PATCHES.md](PATCHES.md).*
 
-Монорепо vendor'ит и патчит пять upstream-крейтов, чтобы HTTP/3 WebSocket-путь
-был практичен, а рукопожатия носителей походили на браузерные. Пропатченные копии
-лежат в `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`, `vendor/rustls` и
-`vendor/hyper`, подключены через `[patch.crates-io]` в корневом `Cargo.toml`. Файлы `.patch` в
-этом каталоге — review- и maintenance-артефакты; сами сборки используют
-vendored-копии.
+Монорепо vendor'ит и патчит пять upstream-крейтов: `h3` и `sockudo-ws` — ради
+WebSocket поверх HTTP/3 (RFC 9220) и фиксов записи / shutdown на H3, описанных
+ниже; `quinn-proto`, `rustls` и `hyper` — чтобы QUIC transport parameters, TLS
+ClientHello и регистр HTTP/1.1-заголовков клиента совпадали с браузерными.
+Пропатченные копии лежат в `vendor/h3`, `vendor/sockudo-ws`, `vendor/quinn-proto`,
+`vendor/rustls` и `vendor/hyper`, подключены через `[patch.crates-io]` в корневом
+`Cargo.toml`. Файлы `.patch` в корне репозитория — review- и
+maintenance-артефакты; сборки используют vendored-копии.
 
 Регенерированы против:
 
-- **h3** — crates.io `h3 0.0.8`.
-- **sockudo-ws** — GitHub-тег `v1.7.5` (коммит `7819745`), в raw
+- `h3` — crates.io `h3 0.0.8`.
+- `sockudo-ws` — GitHub-тег `v1.7.5` (коммит `7819745`), в raw
   upstream-форматировании git (см. примечание ниже).
-- **quinn-proto** — crates.io `quinn-proto 0.11.19`.
-- **rustls** — crates.io `rustls 0.23.46`.
-- **hyper** — crates.io `hyper 1.12.0`.
+- `quinn-proto` — crates.io `quinn-proto 0.11.19`.
+- `rustls` — crates.io `rustls 0.23.46`.
+- `hyper` — crates.io `hyper 1.12.0`.
 
 ## Артефакты-патчи
 
@@ -46,7 +48,8 @@ vendored-копии.
 - [`crates/outline-transport/src/quic/vendored.rs`](crates/outline-transport/src/quic/vendored.rs) — клиент, пропатченный
   `quinn-proto` (`TransportConfig::initial_stream_receive_window`, браузерные опции
   transport parameters, `TransportConfig::initial_crypto_layout`,
-  `MtuDiscoveryConfig::first_probe` и `PathStats::plpmtud_settled`).
+  `MtuDiscoveryConfig::first_probe` / `first_probe_caps` и
+  `PathStats::plpmtud_settled`).
 - [`crates/outline-transport/src/tls_vendored.rs`](crates/outline-transport/src/tls_vendored.rs) — клиент, пропатченный
   `rustls` (`ClientConfig::client_hello_shape` с `ClientHelloShape` /
   `ExtensionOrder`, `kx_group::SECP521R1` и `apply_tls_hello_profile`, который
@@ -57,52 +60,52 @@ vendored-копии.
   прикрепляет карту к запросу `xhttp_h1` — без профиля ничего не прикрепляет).
 
 Ребейз vendored-крейтов на новый upstream начинай (и в идеале заканчивай) в
-этих файлах-гейтах. CI следит, чтобы `sockudo_ws` упоминался только в
-модулях-гейтах, а пропатченный API quinn-proto
-(`initial_stream_receive_window`, `.initial_crypto_layout(`, `.first_probe(`, `plpmtud_settled` и т. д.) — только в
-`crates/outline-transport/src/quic/vendored.rs` (а `.first_probe(` — ещё и в серверном
-гейте `bins/outline-ss-rust/src/server/h3/vendored.rs`), а пропатченный API rustls
-(`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
-`kx_group::SECP521R1`) — только в `crates/outline-transport/src/tls_vendored.rs`
-(шаг «invariant — patched rustls API only behind the gate module» в
-`.github/workflows/ci.yml`), а пропатченный API hyper (`HeaderCaseMap`) — только в
-`crates/outline-transport/src/hyper_vendored.rs` (шаг «invariant — patched hyper
-API only behind the gate module»); тестовые модули — исключение: они намеренно
-изображают клиентскую сторону.
+этих файлах-гейтах. Job `feature matrix + monorepo invariants` в
+`.github/workflows/ci.yml` грепает `bins/*/src` и `crates/*/src` и падает, если
+пропатченный API встречается вне своего гейта. Пути с `/tests/` — исключение:
+тестовые модули намеренно изображают клиентскую сторону.
+
+| Шаг CI | Что ищется | Где разрешено |
+|---|---|---|
+| `invariant — vendored sockudo-ws API only behind gate modules` | `sockudo_ws` | `crates/outline-transport/src/h3/vendored.rs`, `bins/outline-ss-rust/src/server/h3/vendored.rs` |
+| `invariant — patched quinn-proto API only behind the gate module` | `initial_stream_receive_window`, браузерные сеттеры transport parameters (`.advertise_min_ack_delay(`, `.version_information(`, `.transport_parameter_order(`, …), `.initial_crypto_layout(`, `.first_probe(`, `.first_probe_caps(`, `plpmtud_settled` | `crates/outline-transport/src/quic/vendored.rs`, `bins/outline-ss-rust/src/server/h3/vendored.rs` |
+| `invariant — patched rustls API only behind the gate module` | `client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`, `kx_group::SECP521R1` | `crates/outline-transport/src/tls_vendored.rs` |
+| `invariant — patched hyper API only behind the gate module` | `HeaderCaseMap`, `hyper::ext::*` (сканирует ещё и `android/rust/src`) | `crates/outline-transport/src/hyper_vendored.rs` |
 
 ## h3 (0.0.8)
 
 Логические изменения в `h3-0.0.8.patch`:
 
-1. **RFC 9220 WebSocket** (`src/ext.rs`, `src/lib.rs`) — добавляет
+1. RFC 9220 WebSocket (`src/ext.rs`, `src/lib.rs`) — добавляет
    `Protocol::WEBSOCKET` и парсит/сериализует `:protocol = websocket`.
    Upstream `h3 0.0.8` его не распознаёт, а Extended CONNECT WebSocket поверх
    HTTP/3 требует этого значения псевдо-заголовка.
-2. **fix-h3-poll-write** (`src/connection.rs`, `src/client/stream.rs`,
+2. `fix-h3-poll-write` (`src/connection.rs`, `src/client/stream.rs`,
    `src/server/stream.rs`) — добавляет `queue_send` / `poll_drain` /
    `queue_grease` / `poll_quic_finish`, чтобы `AsyncWrite::poll_write` и
    `poll_shutdown` не пересоздавали `send_data`-future на каждый poll. Старый
    код делал двойную запись при заполненном QUIC send-буфере; h3-quinn
    репортит это как `H3_INTERNAL_ERROR`, что закрывает всё QUIC-соединение и
    рвёт все мультиплексированные сессии на нём.
-3. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies, чтобы
+3. Vendoring-trim (`Cargo.toml`) — убраны dev-dependencies, чтобы
    workspace их не тянул.
 
 ## sockudo-ws (1.7.5)
 
-> **Примечание — crate yanked.** `sockudo-ws 1.7.5` снят (yanked) с crates.io
+> Примечание: крейт снят (yanked). `sockudo-ws 1.7.5` снят (yanked) с crates.io
 > (скачивание возвращает `403 AccessDenied`), поэтому baseline — GitHub-тег
-> `v1.7.5`. Vendored `src/` хранится в **upstream-форматировании git** (не в
+> `v1.7.5`. Vendored `src/` хранится в upstream-форматировании git (не в
 > переформатировании crates.io-publish), поэтому `sockudo-ws-1.7.5.patch`
 > применяется напрямую к чистому `git clone` этого тега — без шага rustfmt.
 > Library-`Cargo.toml` отбрасывает upstream `[[bin]]` / bench-таргеты, как и
 > опубликованный library-крейт; это изменение `Cargo.toml` входит в патч, а
 > удаление ставшего ненужным `src/bin/` — нет.
 >
-> **От дрейфа форматирования ничто не защищает автоматически.** Ключ `ignore`
-> у rustfmt — nightly-only, поэтому строка `ignore = ["vendor"]` в
-> `rustfmt.toml` на стабильном тулчейне, под которым идёт гейт, не работает:
-> голый `cargo fmt --all` ПЕРЕФОРМАТИРУЕТ `vendor/` под проектный стиль и молча
+> **Внимание:** от дрейфа форматирования ничто не защищает автоматически. Ключ
+> `ignore` у rustfmt — nightly-only, поэтому `rustfmt.toml` не может исключить
+> `vendor/` на стабильном тулчейне, под которым идёт гейт (он лишь описывает
+> соглашение в комментарии). Голый `cargo fmt --all` переформатирует `vendor/`
+> под проектный стиль и молча
 > рассинхронизирует дерево с этим патчем (ровно так между 2026-07-11 и
 > 2026-08-08 уехал 21 файл). Гонять `cargo fmt` только по явному списку пакетов
 > из `AGENTS.md`, а format-only diff в `vendor/` откатывать. Проверка
@@ -113,26 +116,26 @@ API only behind the gate module»); тестовые модули — исклю
 
 Логические изменения в `sockudo-ws-1.7.5.patch`:
 
-1. **h3-noerror** (`src/server.rs`) — трактует `ApplicationClose: H3_NO_ERROR`
+1. `h3-noerror` (`src/server.rs`) — трактует `ApplicationClose: H3_NO_ERROR`
    как нормальное закрытие и подавляет ложные `eprintln!` `HTTP/3 accept
    error` / `HTTP/3 connection error` при чистом shutdown. Также
    восстанавливает `WebSocketServer::into_parts`, нужный серверному
    accept-циклу `outline-ss-rust`.
-2. **fix-h3-poll-write** (`src/stream/transport_stream.rs`) — sockudo-половина
-   poll-write-фикса, применённая к ЖИВОМУ H3 WebSocket-стриму `Stream<Http3>`
+2. `fix-h3-poll-write` (`src/stream/transport_stream.rs`) — sockudo-половина
+   poll-write-фикса, применённая к живому H3 WebSocket-стриму `Stream<Http3>`
    (`Http3StreamInner::{Server,Client}` — тип, получаемый через `from_h3_client`
    / `from_h3_server`): машины состояний `write_queued` / `shutdown_started`,
    дёргающие h3-методы `queue_send` / `poll_drain` / `queue_grease` /
    `poll_quic_finish` ровно один раз на логическую запись / shutdown.
    Дополнительно `poll_shutdown` дренирует незавершённую запись `poll_write`
-   (`write_queued.is_some()`) до конца ПЕРЕД вызовом `queue_grease`: иначе
+   (`write_queued.is_some()`) до конца перед вызовом `queue_grease`: иначе
    shutdown, гонящийся с недренированной downlink-записью (teardown релея под
    всплеском открытий/закрытий стримов), вызвал бы `send_data`, когда у
    send-стрима h3-quinn ещё `writing = Some(..)`, а h3-quinn эскалирует это в
-   connection-level `H3_INTERNAL_ERROR`, который роняет ВСЕ мультиплексированные
-   сессии на общей QUIC-несущей. Третий флаг состояния, `send_poisoned`,
+   connection-level `H3_INTERNAL_ERROR`, который роняет все мультиплексированные
+   сессии на общем QUIC-носителе. Третий флаг состояния, `send_poisoned`,
    закрывает оставшуюся дыру: `poll_ready` у h3-quinn очищает свой слот
-   `writing` **только на успешном пути**, поэтому упавший дренаж оставляет
+   `writing` только на успешном пути, поэтому упавший дренаж оставляет
    send-сторону занятой, тогда как наш `write_queued` уже сброшен — и следующий
    `queue_grease()` бьёт ровно в тот misuse-guard, ради обхода которого дренаж и
    делался. Теперь любой отказ send-стороны «отравляет» стрим, а
@@ -147,20 +150,20 @@ API only behind the gate module»); тестовые модули — исклю
    обёртки `Http3ServerStream` / `Http3ClientStream` в `src/http3/stream.rs`
    оставлены в upstream-vanilla — data plane их не инстанцирует, поэтому фикс
    живёт только в одном живом типе стрима.)
-3. **valid-close-codes-1012-1014** (`src/error.rs`) — `Error::is_valid_code`
+3. `valid-close-codes-1012-1014` (`src/error.rs`) — `Error::is_valid_code`
    принимал только `1000..=1003 | 1007..=1011 | 3000..=4999`, отвергая
    зарегистрированные IANA коды 1012 (Service Restart), 1013 (Try Again Later)
    и 1014 (Bad Gateway). Сервер шлёт штатный `Close 1013` («try again later»)
    на каждый недоступный upstream-таргет; на HTTP/3-пути это отвержение
-   превращало безобидный per-target close в фатальную read-ошибку несущей
+   превращало безобидный per-target close в фатальную read-ошибку носителя
    (`Invalid close code: 1013`), дёргая `ws_h3 -> ws_h2` и рвя потоки на wire.
    Диапазон расширен до `1007..=1014` (1015 не входит — TLS, на wire не
    передаётся).
-4. **h3-read-buf-capacity** (`src/stream/transport_stream.rs`) — начальная
+4. `h3-read-buf-capacity` (`src/stream/transport_stream.rs`) — начальная
    ёмкость `read_buf` у живых H3 WebSocket-стримов снижена с 64 KiB до 32 KiB в
    `from_h3_client` и `from_h3_server` (`Http3StreamInner::{Client,Server}` — те
    же два конструктора, что правит `fix-h3-poll-write`). Буфер аллоцируется
-   упреждающе (eagerly) на КАЖДЫЙ стрим, а каждый туннельный флоу несёт свой носитель, так
+   упреждающе (eagerly) на каждый стрим, а каждый туннельный флоу несёт свой носитель, так
    что резерв платился по разу на флоу; на `.104` под cgroup-лимитом 700 MiB это
    часть той памяти, из-за которой процесс убивал OOM. `BytesMut::with_capacity`
    задаёт начальную ёмкость, а не потолок, поэтому крупное сообщение по-прежнему
@@ -170,18 +173,18 @@ API only behind the gate module»); тестовые модули — исклю
    принцип, по которому `fix-h3-poll-write` живёт только в двух живых типах
    стрима.
 
-**`Cargo.toml`** (входит в патч):
+`Cargo.toml` (входит в патч):
 
-- **Провайдер aws-lc-rs** — зависимости rustls-стека запинены с
+- Провайдер aws-lc-rs — зависимости rustls-стека запинены с
   `default-features = false` и provider-фичей `aws_lc_rs`
   (`tokio-rustls = { features = ["aws_lc_rs", "tls12"] }`, `quinn` на
   `runtime-tokio` + `rustls-aws-lc-rs`, `rustls` на `aws_lc_rs` вместо `ring`),
   чтобы vendored-крейт оставался на том же крипто-провайдере, что и остальной
   workspace, и в графе был ровно один `CryptoProvider` (см. инвариант о
   единственном провайдере в корневом `AGENTS.md`).
-- **socket2 0.6** — `socket2 = "^0.5"` поднят до `"^0.6"`, той же версии, что у
+- socket2 0.6 — `socket2 = "^0.5"` поднят до `"^0.6"`, той же версии, что у
   остального workspace, чтобы в графе был один `socket2`.
-- **Vendoring-trim** — убраны таргеты `[[bin]]` (`sockudo-bench`,
+- Vendoring-trim — убраны таргеты `[[bin]]` (`sockudo-bench`,
   `autobahn-server`), `[[example]]` и `[[bench]]`, опциональная зависимость
   `criterion`, `[dev-dependencies]` и секции `[profile.*]` (в некорневом пакете
   они всё равно игнорируются).
@@ -191,7 +194,7 @@ API only behind the gate module»); тестовые модули — исклю
 Baseline — crates.io `quinn-proto 0.11.19`. Логические изменения в
 `quinn-proto-0.11.19.patch`:
 
-1. **advertised-stream-window** (`src/config/transport.rs`,
+1. `advertised-stream-window` (`src/config/transport.rs`,
    `src/transport_parameters.rs`, `src/connection/mod.rs`,
    `src/connection/streams/{state,mod,recv}.rs`) — новое
    `TransportConfig::initial_stream_receive_window(Option<VarInt>)`. Это значение
@@ -204,7 +207,7 @@ Baseline — crates.io `quinn-proto 0.11.19`. Логические измене�
    большим (последующие `MAX_STREAM_DATA` зашифрованы). `None` (дефолт) — поведение
    upstream; сервер патч не использует. `max_stream_data` считает разницу через
    `saturating_sub`, чтобы рабочее окно меньше объявленного не паниковало.
-2. **browser-shaped-transport-parameters** (`src/config/transport.rs`,
+2. `browser-shaped-transport-parameters` (`src/config/transport.rs`,
    `src/transport_parameters.rs`) — опции `TransportConfig`, нужные H3-клиенту,
    чтобы transport parameters в Initial совпадали с браузером:
    `advertise_min_ack_delay`, `send_grease_transport_parameter`,
@@ -224,7 +227,7 @@ Baseline — crates.io `quinn-proto 0.11.19`. Логические измене�
    расходуется в том же порядке, что и в upstream (extras и `version_information`
    обращаются к нему только когда заданы), поэтому сервер, не использующий эти
    опции, не затронут.
-3. **browser-order-and-firefox** (`src/config/transport.rs`,
+3. `browser-order-and-firefox` (`src/config/transport.rs`,
    `src/transport_parameters.rs`, `src/cid_queue.rs`, `src/connection/mod.rs`,
    `src/connection/streams/{state,mod,recv}.rs`, `src/lib.rs`) — опции для
    Safari- и Firefox-профилей:
@@ -237,7 +240,7 @@ Baseline — crates.io `quinn-proto 0.11.19`. Логические измене�
    `CONNECTION_ID_LIMIT_ERROR`) и `max_ack_delay_ms` (объявляется и задаёт
    локальный ACK-таймер). Все дефолты — upstream, rng в дефолтном режиме
    расходуется как в upstream, сервер опции не использует.
-4. **mtud-first-probe** (`src/config/transport.rs`, `src/connection/mtud.rs`,
+4. `mtud-first-probe` (`src/config/transport.rs`, `src/connection/mtud.rs`,
    `src/connection/stats.rs`, `src/connection/mod.rs`) — новый
    `MtuDiscoveryConfig::first_probe(Option<u16>)`: первый поиск сначала пробует этот размер.
    Если не задан `first_probe_caps(false)`, исход пробы ограничивает соединение: если проба
@@ -264,7 +267,7 @@ Baseline — crates.io `quinn-proto 0.11.19`. Логические измене�
    ограничивающую первую пробу, истёкшую (не старше 30 суток) как затравку, поэтому
    перепроверка находит прежний или выросший путь без лесенки; сервер — только
    `[server.h3].mtu_first_probe`, всегда с потолком.
-5. **initial-crypto-layout** (`src/config/{transport,mod}.rs`, `src/lib.rs`,
+5. `initial-crypto-layout` (`src/config/{transport,mod}.rs`, `src/lib.rs`,
    `src/connection/initial_crypto.rs`, `src/connection/mod.rs`) — новый
    `TransportConfig::initial_crypto_layout(InitialCryptoLayout)`: как клиент раскладывает
    ClientHello по CRYPTO-кадрам своих Initial. `Contiguous` (по умолчанию) — upstream.
@@ -285,7 +288,7 @@ Baseline — crates.io `quinn-proto 0.11.19`. Логические измене�
    `src/connection/tests/initial_crypto.rs` (планировщик, совпадает с захватом Firefox),
    `src/tests/initial_crypto.rs` (рукопожатие с Retry и без, повторная раскладка hello
    после Retry, размер Initial); им нужны dev-dependencies upstream (см. п. 7).
-6. **stream-chunk-limit** (`src/connection/assembler.rs`,
+6. `stream-chunk-limit` (`src/connection/assembler.rs`,
    `src/connection/streams/recv.rs`) — предел числа несмежных кусков, которые может
    держать принимающий поток, теперь зависит от кредита, открытого собеседнику (от
    offset чтения до последнего отправленного `MAX_STREAM_DATA`): один кусок на 1280 байт
@@ -302,7 +305,7 @@ Baseline — crates.io `quinn-proto 0.11.19`. Логические измене�
    `bounded_chunks_under_low_over_allocation_large_window`,
    `streams::recv::tests::gaps_are_bounded_by_the_open_window` (без патча падает с
    «too many gaps»); им нужны dev-dependencies upstream (см. п. 7).
-7. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
+7. Vendoring-trim (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
    дефолтным `ring` нарушил бы инвариант aws-lc-rs).
 
 Проверка соответствия: применить патч к чистой копии crates.io 0.11.19 и сравнить
@@ -321,22 +324,22 @@ Upstream за это время перешёл на `rand` 0.10, поэтому 
 
 `sockudo-ws` снят (yanked) с crates.io (скачивание возвращает `403`), а
 `v1.7.5` — последняя версия, на которую можно запиниться, поэтому
-vendored-копия трактуется как **де-факто наш собственный форк**, а не
+vendored-копия трактуется как де-факто наш собственный форк, а не
 временный pin в ожидании upstream-фикса. Практические следствия:
 
-- **Фиксы вносим здесь.** Баги и проблемы безопасности правим прямо в
+- Фиксы вносим здесь. Баги и проблемы безопасности правим прямо в
   `vendor/sockudo-ws/src`; то же изменение обновляет `sockudo-ws-1.7.5.patch`
   и обе `PATCHES*.md`. Не блокируем фикс в ожидании гипотетического
   upstream-релиза.
-- **Provenance пиним на коммит, не только на тег.** Baseline — GitHub-тег
+- Provenance пиним на коммит, не только на тег. Baseline — GitHub-тег
   `v1.7.5` на коммите `7819745`; фиксируй хэш коммита, чтобы vendored-дерево
   можно было перепроверить, даже если тег сдвинут или репозиторий пропал —
   этот тег теперь единственный публичный baseline, раз crates.io отдаёт
   `403`.
-- **Радиус поражения уже мал.** Production обращается к крейту только через
+- Радиус поражения уже мал. Production обращается к крейту только через
   модули-гейты выше, и CI это стережёт, поэтому при ребейзе или аудите
   достаточно понимать пропатченные файлы плюс модули-гейты — не весь крейт.
-- **Держим diff минимальным; неиспользуемые модули пока НЕ вырезаем.** Крейт
+- Держим diff минимальным; неиспользуемые модули пока не вырезаем. Крейт
   несёт код, который HTTP/3 WebSocket-путь никогда не задействует (`io_uring`,
   `compression` / `deflate`, `simd`, `multiplex`, большую часть `pubsub`).
   Удаление сократило бы аудит-поверхность, но раздуло бы diff против тега
@@ -345,8 +348,9 @@ vendored-копия трактуется как **де-факто наш соб�
   перестать отслеживать upstream (жёсткий форк + переименование); зафиксируй
   это решение здесь, если оно будет принято.
 
-**Триггеры пересмотра / ухода** — пересматривай зависимость по событию, не по
-расписанию:
+### Когда пересматривать зависимость
+
+Пересматривай её по событию, не по расписанию:
 
 - upstream `h3` обретает нативную поддержку RFC 9220 WebSocket-over-HTTP/3 —
   это выведет из игры WebSocket-stream-слой и часть патч-набора;
@@ -358,7 +362,7 @@ vendored-копия трактуется как **де-факто наш соб�
 
 Baseline — crates.io `rustls 0.23.46`. Изменения в `rustls-0.23.46.patch`:
 
-1. **client-hello-shape** (`src/client/client_conn.rs`, `src/client/builder.rs`,
+1. `client-hello-shape` (`src/client/client_conn.rs`, `src/client/builder.rs`,
    `src/client/hs.rs`, `src/client/common.rs`, `src/client/tls13.rs`,
    `src/client/ech.rs`, `src/msgs/handshake.rs`, `src/lib.rs`) — новое поле
    `ClientConfig::client_hello_shape: Option<Arc<ClientHelloShape>>` (по умолчанию
@@ -452,14 +456,14 @@ Baseline — crates.io `rustls 0.23.46`. Изменения в `rustls-0.23.46.p
    EncryptedExtensions и порядок расхода случайности побайтово как в upstream; сервер
    (`outline-ss-rust`) и mesh кластера опцию не выставляют; её выставляет каждый клиентский
    TLS-дозвон (TCP- и QUIC-носители, проверка сертификата, HTTPS-проба через туннель).
-2. **secp521r1** (`src/crypto/aws_lc_rs/mod.rs`, `src/crypto/ring/kx.rs`) — новая
+2. secp521r1 (`src/crypto/aws_lc_rs/mod.rs`, `src/crypto/ring/kx.rs`) — новая
    группа `rustls::crypto::aws_lc_rs::kx_group::SECP521R1` (ECDH P-521 через
    aws-lc-rs, её предлагают Safari и Firefox). Она живёт в маленьком модуле в
    `aws_lc_rs/mod.rs`, потому что `ring/kx.rs` общий с провайдером *ring*, у
    которого P-521 нет; в этом файле только `KxGroup`, его поля и
    `uncompressed_point` стали `pub(crate)`. Группы нет ни в `DEFAULT_KX_GROUPS`, ни
    в `ALL_KX_GROUPS` — дефолты не меняются.
-3. **Vendoring trim** (`Cargo.toml`) — убраны dev-dependencies вместе с
+3. Vendoring-trim (`Cargo.toml`) — убраны dev-dependencies вместе с
    целями `[[example]]` и `[[bench]]` (их исходники, `Cargo.lock`, README и
    `.clippy.toml` не vendor'ятся), так же как у `quinn-proto`. `build.rs` —
    побайтово upstream.
@@ -495,18 +499,18 @@ vendored-файлов) и сравнить `diff -r` — пусто.
 
 ## hyper (1.12.0)
 
-Базовая версия — crates.io `hyper 1.12.0`. Vendored-копия — upstream без изменений
-(`Cargo.toml`, `Cargo.toml.orig`, `LICENSE`, `src/`; без vendoring-обрезки:
+Baseline — crates.io `hyper 1.12.0`. Vendored-копия — upstream без изменений
+(`Cargo.toml`, `Cargo.toml.orig`, `LICENSE`, `src/`; без vendoring-trim:
 dev-зависимости hyper для path-крейта вне workspace не резолвятся). Изменения,
 которые несёт `hyper-1.12.0.patch`:
 
-1. **public-header-case-map** (`src/ext/mod.rs`) — только видимость:
+1. `public-header-case-map` (`src/ext/mod.rs`) — только видимость:
    `hyper::ext::HeaderCaseMap` становится `pub` (поле остаётся приватным), как и
    его существующие `default()` (пустая карта) и `append(name, orig: Bytes)`; оба
    получают doc-комментарии, которых требует `#![deny(missing_docs)]`. Поведение не
    меняется: HTTP/1.1-клиент hyper и так пишет имя каждого заголовка из
    request-extension `HeaderCaseMap`, если она есть (n-е написание имени — с его
-   n-м значением, имена без написания — как раньше), просто снаружи крейта её
+   n-м значением, имена без написания — как раньше), но снаружи крейта её
    нельзя было построить. `xhttp_h1` пользуется ею, чтобы писать имена заголовков в
    регистре браузера — у Chrome `sec-ch-ua*` строчными, остальные имена
    канонически, — чего не умеет единственная публичная опция hyper,
@@ -520,14 +524,14 @@ vendored-файлов) и сравнить `diff -r` — пусто.
 
 Чтобы пересобрать артефакты-патчи после правки vendored-исходников:
 
-- **h3** — сравнить vendored-копию с чистым upstream-checkout'ом: взять
+- `h3` — сравнить vendored-копию с чистым upstream-checkout'ом: взять
   свежий `h3 0.0.8` с crates.io (например через одноразовый git-baseline) и
   сделать `git diff vendor/h3` по изменённым файлам.
-- **sockudo-ws** — в чистом GitHub-checkout'е `v1.7.5` скопировать поверх дерева
+- `sockudo-ws` — в чистом GitHub-checkout'е `v1.7.5` скопировать поверх дерева
   `vendor/sockudo-ws/src` и `vendor/sockudo-ws/Cargo.toml` и взять
   `git diff -- Cargo.toml src` как патч (оба уже в raw upstream-форматировании);
   проверка — как выше.
-- **quinn-proto / rustls / hyper** — распаковать чистый крейт с crates.io в новый
+- `quinn-proto` / `rustls` / `hyper` — распаковать чистый крейт с crates.io в новый
   одноразовый git-репозиторий (оставив только vendored-набор файлов),
   закоммитить, скопировать поверх vendored-файлы и взять `git diff` как патч;
   проверка — применить его `patch -p1` к другой чистой копии и сравнить `diff -r`

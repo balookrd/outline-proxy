@@ -1,10 +1,10 @@
 # Architecture
 
-This document describes the runtime architecture of `outline-ss-rust` and how traffic flows through the server.
+This document describes the runtime architecture of `outline-ss-rust`: which listeners the server opens, how a request is routed to a user and a relay, and how traffic reaches the upstream network. It is written for operators and for developers changing the server data plane.
 
 *Русская версия: [ARCHITECTURE.ru.md](ARCHITECTURE.ru.md)*
 
-## Component Overview
+## Component diagram
 
 ```mermaid
 flowchart TD
@@ -18,8 +18,8 @@ flowchart TD
 
     subgraph CORE["outline-ss-rust"]
         SNID["L4: SNI Dispatch (optional)"]
-        ROUTER["L7: Path Router"]
-        FILTER["Per-path User Filter"]
+        ROUTER["L7: Path Router ([[endpoint]])"]
+        FILTER["Endpoint user pool (by kind)"]
         CRYPTO["Shadowsocks AEAD Decrypt / Encrypt"]
         VLESS["VLESS UUID Auth + mux.cool/XUDP"]
         TCPR["TCP Relay"]
@@ -71,89 +71,114 @@ flowchart TD
     UDPR --> METRICS
 ```
 
-## Listener Model
+## Listeners
 
-The server may run up to three listeners:
+| Listener | TOML key | CLI flag | Serves |
+|---|---|---|---|
+| Main TCP | `[server] listen` | `--listen` | HTTP/1.1 and HTTP/2 (ALPN): WebSocket and XHTTP endpoints, `/` auth-root, HTTP fallback. TLS is on when a cert is configured (`[server] cert_path`/`key_path`, `[[server.certs]]`, `--tls-cert-path`/`--tls-key-path`) |
+| QUIC | `[server.h3] listen` | `--h3-listen` | HTTP/3: WebSocket over RFC 9220, XHTTP, optional HTTP fallback (`apply_to_h3`) |
+| Metrics | `[metrics] listen`, `[metrics] path` | `--metrics-listen`, `--metrics-path` | Prometheus scrape endpoint, plain HTTP |
+| Control | `[control] listen` | `--control-listen` | Control API (`/control/*`), bearer token from `[control] token` / `token_file` |
+| Cluster mesh | `[cluster] mesh_listen` | — | QUIC mesh between cluster peers, see [`CLUSTER.md`](../../../docs/CLUSTER.md) |
 
-- Main TCP listener for HTTP/1.1 and HTTP/2
-- Optional TLS on the main TCP listener
-- Optional QUIC listener for HTTP/3
+The metrics and control listeners are separate sockets, so scrapes and control calls never go through the public WebSocket ingress path. Bind them to loopback or a private network.
 
-Prometheus metrics are served from a separate optional listener so that operational traffic does not share the WebSocket ingress path.
+## Camouflage layers
 
-## Camouflage Layers
-
-Independent knobs make the public listener look indistinguishable from a regular web frontend to passive scanners. Two are *fallback* knobs that protect the listener's unmatched surface (L4 SNI dispatch, L7 HTTP fallback); a third, *carrier padding*, hardens the wire shape of the matched proxy carriers themselves. All are off by default.
+Three independent sections change how the public listener answers traffic that is not a valid proxy session. Two are fallbacks for the unmatched surface (L4 SNI dispatch, L7 HTTP fallback); the third, carrier padding, changes the wire shape of the matched proxy carriers. All three are off by default.
 
 ### L4: SNI dispatch (`[sni_fallback]`)
 
-Active only when the main TCP listener terminates TLS. Before `tokio_rustls::TlsAcceptor::accept` runs, every incoming stream is peeked with a throw-away `rustls::server::Acceptor`:
+Active only when the main TCP listener terminates TLS; config validation rejects `[sni_fallback]` without TLS. Before `tokio_rustls::TlsAcceptor::accept` runs, every incoming stream is peeked with a throw-away `rustls::server::Acceptor`:
 
-1. Read into a small buffer until the Acceptor delivers a parsed ClientHello (or `max_client_hello_bytes` is exceeded — malformed handshakes are closed locally so they never reach the backend logs).
+1. Read into a buffer until the Acceptor delivers a parsed ClientHello. If `max_client_hello_bytes` (default 8192) is exceeded, the connection is treated as a malformed handshake and closed locally, so it never reaches the backend logs.
 2. The buffered bytes are kept verbatim and never re-read from the wire.
-3. The peeked SNI is resolved against a precomputed `SniLookup` table built once at startup from the config. The table has three layers, consulted in order: an exact-match `HashMap<String, SniRoute>` (every `Exact` entry from `match_sni` and from each backend's `match_sni`), a wildcard `Vec<(SniMatcher, SniRoute)>` (every `Wildcard { suffix }` entry, in priority order: local first, then backends in declaration order), and a `catch_all: Option<usize>` pointing at the catch-all backend. Lookup is exact → wildcard scan → catch-all. The `HashMap` collapses the two old O(N) passes (`sni_matches_ours` over `match_sni`, then `find_backend` over `backends`) into a single O(1) probe on the hot path; wildcards stay O(N) but only run on miss. Local entries are inserted before backends, so an SNI claimed by both lists wins for `Local`; among backends, declaration order wins. Net effect for operators: an exact entry anywhere in the config beats any wildcard, regardless of declaration order — making "wildcard apex stays local, this one host goes to a backend" a one-line carve-out instead of an ordering puzzle.
-4. If the route resolves to `Local`, captured bytes are replayed into the local TLS terminator via a `PrependStream` wrapper that drains the prefix on `poll_read` before falling through to the underlying socket. Handshake then continues normally and the dispatcher hands off to L7.
+3. The peeked SNI is resolved against the `SniLookup` table, built once at startup from the config. The table has three layers, consulted in order:
+   - exact-match `HashMap<String, SniRoute>`: every `Exact` entry from the section-level `match_sni` and from each backend's `match_sni`;
+   - wildcard `Vec<(SniMatcher, SniRoute)>`: every `Wildcard { suffix }` entry, local entries first, then backends in declaration order;
+   - `catch_all: Option<usize>`: index of the backend without `match_sni`.
+
+   Lookup is exact → wildcard scan → catch-all. The exact lookup is one hash probe; the wildcard scan is linear and runs only on a miss. Local entries are inserted before backend entries, so an SNI claimed by both lists resolves to `Local`; among backends, declaration order wins. An exact entry anywhere in the config beats any wildcard regardless of declaration order, so "the wildcard apex stays local, this one host goes to a backend" needs one exact entry, not a particular ordering. A connection without SNI is spliced to the backend unless `allow_no_sni = true`.
+4. If the route resolves to `Local`, the captured bytes are replayed into the local TLS terminator through a `PrependStream` wrapper that drains the prefix on `poll_read` before reading the socket. The handshake then continues normally and the dispatcher hands off to L7.
 5. If the route resolves to `Backend(idx)`, the dispatcher splices to `config.backends[idx]`. Two config modes are supported:
-   - **Single-backend** (`backend = "host:port"` at section level): the only backend is implicitly a catch-all, so every foreign SNI lands on it.
-   - **Multi-backend** (`[[sni_fallback.backends]]` array): each entry carries its own `backend`, an optional per-backend `match_sni` list, and an optional `proxy_protocol`. An entry with no (or empty) `match_sni` is the catch-all and must be the last entry; a connection that matches no backend is silently dropped. This lets operators route different domains to different upstreams (e.g. nginx on `:8443` for one domain, caddy on `:9443` for another) without running a separate haproxy in front.
+   - Single backend (`backend = "host:port"` at section level): the only backend is implicitly a catch-all, so every foreign SNI lands on it.
+   - Multiple backends (`[[sni_fallback.backends]]` array): each entry has its own `backend`, an optional `match_sni` list and an optional `proxy_protocol`. An entry with no (or empty) `match_sni` is the catch-all and must be the last entry; a connection that matches no backend is dropped. Use this to route different domains to different upstreams (for example nginx on `:8443` for one domain, caddy on `:9443` for another) without a separate haproxy in front.
 
-   In both modes a fresh TCP connection is opened to the selected upstream, an optional HAProxy PROXY-protocol v1/v2 header is prepended, the captured ClientHello is written, and `tokio::io::copy_bidirectional` runs until either side closes.
+   In both modes a new TCP connection is opened to the selected upstream, an optional HAProxy PROXY-protocol v1/v2 header is prepended, the captured ClientHello is written, and `tokio::io::copy_bidirectional` runs until either side closes.
 
-The HTTP/3 listener is unaffected — quinn parses SNI before our code sees the stream, and routing it would need separate plumbing.
+The HTTP/3 listener does not go through SNI dispatch: quinn parses SNI before our code sees the connection, and routing it would need a separate layer.
 
 ### L7: HTTP fallback (`[http_fallback]`)
 
-Active for every TLS-terminated (or plain) HTTP request that does not hit a configured WebSocket / XHTTP / metrics / control / dashboard route. Instead of returning `404`, the fallback adapter reverse-proxies the request to `backend`:
+Applies to every HTTP request on a fallback-enabled listener that matches neither a configured WebSocket / XHTTP endpoint nor the `/` auth-root. Instead of returning `404`, the fallback adapter reverse-proxies the request to `backend` (`http://host:port`):
 
-- Hop-by-hop headers (RFC 7230 §6.1 + anything listed in `Connection:`) are stripped on both directions.
-- `Host` is rewritten to the backend authority (mirrors nginx's `proxy_set_header Host $proxy_host;`).
+- Hop-by-hop headers (RFC 7230 §6.1 plus anything listed in `Connection:`) are stripped in both directions.
+- `Host` is rewritten to the backend authority (same as nginx `proxy_set_header Host $proxy_host;`).
 - The URI is rebuilt in origin-form so the backend parses it as a normal request, not a proxy CONNECT.
-- `X-Forwarded-{For,Proto,Host}` are appended/set per per-feature toggles. `X-Forwarded-Proto` reflects whether the inbound listener terminated TLS for the TCP path; the HTTP/3 path always reports `https` since QUIC is encrypted by spec.
-- Optional `proxy_protocol = "v1" | "v2"` prepends a HAProxy PROXY-protocol header to the upstream TCP connection so the backend logs the real client IP.
-- `backend_proto = "h1" | "h2"` selects the HTTP wire-version the listener uses to talk to the upstream, independent of the inbound version. `"h1"` (default) uses `hyper::client::conn::http1`; `"h2"` uses `hyper::client::conn::http2` in prior-knowledge mode (h2c, no ALPN) — useful for gRPC gateways or h2c-configured nginx upstreams.
+- `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` are appended/set by `add_x_forwarded_for`, `add_x_forwarded_proto` and `add_x_forwarded_host` (all default `true`). On the TCP path `X-Forwarded-Proto` reflects whether the inbound listener terminated TLS; the HTTP/3 path always reports `https`.
+- `proxy_protocol = "v1" | "v2"` prepends a HAProxy PROXY-protocol header to the upstream TCP connection so the backend logs the real client IP. Default: off.
+- `backend_proto = "h1" | "h2"` selects the HTTP version used towards the upstream, independent of the inbound version. `"h1"` (default) uses `hyper::client::conn::http1`; `"h2"` uses `hyper::client::conn::http2` in prior-knowledge mode (h2c, no ALPN), for gRPC gateways or nginx upstreams configured for h2c.
+- `request_timeout_secs` bounds connect plus response per request. Default: 30.
 
-Two independent toggles select which inbound listeners the fallback applies to:
+Two toggles select the inbound listeners the fallback applies to (at least one must be `true`):
 
-- `apply_to_h1 = true` (default) — wires the adapter into the axum router on the TCP listener as a 404-replacement handler that covers HTTP/1.1 and HTTP/2 (selected via ALPN).
-- `apply_to_h3 = false` (default; opt-in) — extends the fallback to the QUIC listener. The h3 dispatch in `server::h3::http::handle_h3_request` invokes the adapter for every non-CONNECT request that does not match an XHTTP base path or the `/` auth-root challenge. Auth-root (`http_root.auth = true` for `/`) keeps priority over the fallback, mirroring the axum router pinning `/` ahead of the wildcard fallback on the TCP path. Request body is buffered up-front before forwarding; response body is streamed chunk-by-chunk back over QUIC. Trailers are forwarded both directions when `backend_proto` carries them.
+| Key | Default | Listener | Behaviour |
+|---|---|---|---|
+| `apply_to_h1` | `true` | Main TCP (HTTP/1.1 and HTTP/2 via ALPN) | The adapter is the axum router fallback handler in place of `404` |
+| `apply_to_h3` | `false` | QUIC (HTTP/3), requires `[server.h3]` | `server::h3::http::handle_h3_request` calls the adapter for every non-CONNECT request that matches neither an XHTTP base path nor the `/` auth-root |
 
-PROXY-protocol headers emitted on the upstream TCP socket carry `Transport=STREAM` (`0x11` / `0x21`) for the h1/h2 inbound and `Transport=DGRAM` (`0x12` / `0x22`) for the h3 inbound, so the backend can tell the origin transport. v1 has no UDP form on the wire, so `proxy_protocol = "v1"` is rejected at config-load time when `apply_to_h3 = true` — use `"v2"` or disable PROXY-protocol.
+On both paths the auth-root (`[http_root] auth = true` for `/`) has priority over the fallback. On HTTP/3 the request body is buffered before forwarding, the response body is streamed back chunk by chunk over QUIC, and trailers are forwarded in both directions when `backend_proto` carries them. `apply_to_h3` defaults to `false` so that upgrading the binary does not start forwarding QUIC traffic to a backend that was set up for TCP only.
 
-Both fallbacks share `transport::proxy_protocol::encode_proxy_protocol` so v1/v2 wire form is identical between L4 splices and L7 connects. The destination address is the inbound listener's bind addr (TCP listener for `apply_to_h1`, h3 listener for `apply_to_h3`), degrading to UNKNOWN (v1) / UNSPEC (v2) when bound to `0.0.0.0` / `[::]`.
+PROXY-protocol headers on the upstream TCP socket carry `Transport=STREAM` (`0x11` / `0x21`) for h1/h2 inbound and `Transport=DGRAM` (`0x12` / `0x22`) for h3 inbound, so the backend can tell the origin transport. v1 has no UDP form, so `proxy_protocol = "v1"` is rejected at config load when `apply_to_h3 = true`; use `"v2"` or disable PROXY-protocol.
+
+Both fallbacks use `transport::proxy_protocol::encode_proxy_protocol`, so the v1/v2 wire form is identical between L4 splices and L7 connects. The destination address is the inbound listener's bind address (TCP listener for `apply_to_h1`, h3 listener for `apply_to_h3`), degrading to UNKNOWN (v1) / UNSPEC (v2) when bound to `0.0.0.0` / `[::]`.
 
 ### Wire shape: carrier padding (`[padding]`)
 
-Where the two fallback knobs protect the listener's *unmatched* surface, carrier padding hardens the *matched* carriers themselves. Each Shadowsocks chunk — or VLESS frame — on a padded WS / XHTTP path is wrapped in a `real_len | pad_len | real | pad` frame (codec in `crates/outline-wire/src/padding.rs`) before it reaches the outer TLS record layer, so the encrypted record size no longer tracks the proxied payload size — breaking the record-size correlation that "proxy-inside-TLS" (TLS-in-TLS) classifiers key on. The SS-TCP relay decodes inbound frames before the AEAD layer (`handle_tcp_binary_frame`) and frames the downlink in `ChannelSink`; the SS-UDP relay (`run_udp_relay`) and the VLESS relay (`run_vless_relay`) do the same per message — decoding each inbound datagram before parsing and routing each downlink message through `frame_downlink_message`. Per-endpoint (`[[endpoint]] padded = true`), config-synchronised with the client (no on-wire capability bit, off by default), with optional idle cover traffic on a quiet connection. It rides the `Message` layer shared by every WS / XHTTP carrier, so one mechanism covers SS- and VLESS-over-WS (h1/h2/h3) and -over-XHTTP alike, and UDP is padded per-datagram on every WS carrier — SS-UDP (split: set `padded = true` on its endpoint; combined: on the shared endpoint) and VLESS-UDP both. Full reference: [`../../../docs/PADDING.md`](../../../docs/PADDING.md).
+The two fallbacks handle the unmatched surface of the listener; carrier padding changes the matched carriers. Each Shadowsocks chunk or VLESS frame on a padded WS / XHTTP path is wrapped in a `real_len | pad_len | real | pad` frame (codec in `crates/outline-wire/src/padding.rs`) before it reaches the outer TLS record layer. The encrypted record size then no longer follows the proxied payload size, which is the correlation TLS-in-TLS classifiers key on.
 
-## Request Routing
+- SS-TCP relay: decodes inbound frames before the AEAD layer (`handle_tcp_binary_frame`) and frames the downlink in `ChannelSink`.
+- SS-UDP relay (`run_udp_relay`) and VLESS relay (`run_vless_relay`): decode each inbound message before parsing and pass each downlink message through `frame_downlink_message`.
 
-The server registers all configured TCP and UDP WebSocket paths from the effective user set.
+Padding is enabled per endpoint (`[[endpoint]] padded = true`) and must match the client config: there is no capability bit on the wire. Pad sizes and optional idle cover traffic are set in `[padding]` (`min_bytes`, `max_bytes`, `cover`, `cover_jitter_min_ms`, `cover_jitter_max_ms`). Padding works at the `Message` layer shared by all WS / XHTTP carriers, so it applies to SS and VLESS over WS (h1/h2/h3) and over XHTTP. UDP is padded per datagram on every WS carrier: SS-UDP (split: set `padded = true` on the UDP endpoint; combined: on the shared endpoint) and VLESS-UDP. Full reference: [`../../../docs/PADDING.md`](../../../docs/PADDING.md).
+
+## Request routing
+
+Paths come from the `[[endpoint]]` list. Each entry has a `path`, a `kind` and an optional `padded` flag; every endpoint must use a distinct path, otherwise config load fails.
+
+| `kind` | Carrier | Protocol |
+|---|---|---|
+| `ws_ss` | WebSocket | Shadowsocks, TCP and UDP on one path (combined) |
+| `ws_ss_tcp` / `ws_ss_udp` | WebSocket | Shadowsocks, separate TCP and UDP paths (split) |
+| `ws_vless` | WebSocket | VLESS |
+| `xhttp_ss` | XHTTP | Shadowsocks, combined |
+| `xhttp_ss_tcp` / `xhttp_ss_udp` | XHTTP | Shadowsocks, split |
+| `xhttp_vless` | XHTTP | VLESS |
+
+The HTTP version (h1/h2/h3) is chosen by the listener, not by the endpoint.
+
+Users (`[[users]]`) are credentials and are not bound to paths. The route for a Shadowsocks endpoint holds the pool of all Shadowsocks users; the route for a VLESS endpoint holds all VLESS users (entries with `vless_id`). The route table is built in `server/endpoint_routes.rs` at startup and rebuilt when the control API changes users.
 
 At request time:
 
-1. The incoming request path is matched against registered TCP or UDP WebSocket routes.
-2. The user list is filtered to only those users that are allowed on that path.
-3. Decryption tries only the remaining user candidates.
+1. The request path is matched against the registered endpoint routes.
+2. The route's user pool for that endpoint kind becomes the candidate set.
+3. Shadowsocks decryption or VLESS UUID matching tries only those candidates.
 
-This gives two useful properties:
+Users that share a path are told apart by key: each user may have its own password and its own cipher (`method`).
 
-- different users can be isolated on different URL paths
-- user identification remains automatic even when users share a path but use different keys or different ciphers
+## User identification
 
-## User Identification
-
-There is no explicit username inside the Shadowsocks payload.
-
-Instead, the server identifies the user by successfully decrypting:
+There is no username inside the Shadowsocks payload. The server identifies the user by successfully decrypting:
 
 - the first valid TCP stream chunk, or
-- the first valid UDP packet
+- the first valid UDP packet.
 
-Because users may have different ciphers, the decryptor iterates across the per-path candidate set and attempts the correct cipher for each user independently.
+Users may have different ciphers, so the decryptor iterates over the candidate set and tries each user's own cipher.
 
-To skip that O(N) AEAD probe at handshake time when the same client reconnects, each TCP/H3 route owns a bounded LRU mapping `peer_addr -> user_index`. The cache is populated only after a successful AEAD verification, so a spoofed source address cannot redirect another peer's hint, and a stale hint (cipher mismatch, user removed, list reorder) self-heals on the next full scan. The TLS path injects `ConnectInfo<SocketAddr>` per accepted connection so the upgrade handler keys the same cache.
+To skip the O(N) AEAD probe when the same client reconnects, each Shadowsocks route owns a bounded LRU `peer_addr -> user_index` (`PeerUserCache`, capacity `TCP_PEER_USER_CACHE_CAPACITY` = 4096). The cache is filled only after a successful AEAD verification, so a spoofed source address cannot redirect another peer's hint. A stale hint (cipher mismatch, user removed, list reordered) is corrected by the next full scan. The TLS path injects `ConnectInfo<SocketAddr>` per accepted connection so the upgrade handler keys the same cache.
 
-## TCP Data Path
+## TCP data path
 
 ```mermaid
 sequenceDiagram
@@ -172,14 +197,14 @@ sequenceDiagram
     S->>C: Encrypted WebSocket frames
 ```
 
-Important behaviors:
+Behaviour:
 
-- WebSocket message boundaries are ignored for TCP
-- the server buffers decrypted bytes until a full target address is available
-- once the target is known, the relay becomes a bidirectional stream bridge
-- per-user `fwmark` is applied before the outbound TCP connect when configured
+- WebSocket message boundaries are ignored for TCP.
+- The server buffers decrypted bytes until a full target address is available.
+- Once the target is known, the relay copies bytes in both directions.
+- The user's `fwmark`, if set, is applied before the outbound TCP connect.
 
-## UDP Data Path
+## UDP data path
 
 ```mermaid
 sequenceDiagram
@@ -196,16 +221,16 @@ sequenceDiagram
     S->>C: One encrypted WebSocket frame per response datagram
 ```
 
-Important behaviors:
+Behaviour:
 
-- each WebSocket binary frame is expected to contain exactly one Shadowsocks UDP packet
-- each upstream UDP response becomes its own encrypted WebSocket binary frame
-- per-user `fwmark` is applied to the outbound UDP socket when configured
-- Shadowsocks-2022 UDP traffic is protected by a sliding-window anti-replay filter keyed on the per-session `client_session_id`; duplicate `packet_id`s are dropped before the relay step, and idle sessions are reaped on the same cadence as NAT-entry eviction
+- Each WebSocket binary frame must contain exactly one Shadowsocks UDP packet.
+- Each upstream UDP response becomes its own encrypted WebSocket binary frame.
+- The user's `fwmark`, if set, is applied to the outbound UDP socket.
+- Shadowsocks-2022 UDP traffic passes a sliding-window anti-replay filter keyed on the per-session `client_session_id`; duplicate `packet_id`s are dropped before the relay step, and idle sessions are reaped on the same cadence as NAT-entry eviction.
 
-## VLESS Data Path
+## VLESS data path
 
-A `[[endpoint]]` with `kind = "ws_vless"` accepts VLESS streams on the main HTTP/1.1 or HTTP/2 listener, and on the QUIC HTTP/3 listener when `h3_listen` is configured. VLESS authentication is stateless UUID matching against every VLESS user configured on the server (any `[[users]]` entry with a `vless_id`); the protocol layer itself adds no encryption, so TLS on the main listener (or the QUIC HTTP/3 endpoint) is required for public deployments.
+An `[[endpoint]]` with `kind = "ws_vless"` accepts VLESS streams on the main HTTP/1.1 or HTTP/2 listener, and on the HTTP/3 listener when `[server.h3] listen` is set. VLESS authentication is stateless UUID matching against every enabled VLESS user (any `[[users]]` entry with a `vless_id`). The VLESS layer adds no encryption, so a public deployment needs TLS on the main listener or the HTTP/3 listener.
 
 ```mermaid
 sequenceDiagram
@@ -215,7 +240,7 @@ sequenceDiagram
 
     C->>S: WebSocket connect on VLESS path
     C->>S: VLESS header (version, UUID, command, target)
-    S->>S: Match UUID against per-path users
+    S->>S: Match UUID against endpoint VLESS users
     alt command == TCP CONNECT
         S->>U: TCP connect to target
         C->>S: Raw bytes
@@ -237,88 +262,78 @@ sequenceDiagram
     end
 ```
 
-Important behaviors:
+Behaviour:
 
-- UUID lookup is linear over the per-path candidate set; the request is rejected and logged when the UUID is unknown
-- for `COMMAND_UDP`, each client frame is length-prefixed (`u16` BE); each upstream response is re-framed the same way
-- for `COMMAND_MUX` (mux.cool / XUDP), a single VLESS stream multiplexes up to 8 concurrent sub-connections, each with its own session id; sub-connections can be TCP or UDP, and UDP Keep frames carry a per-packet destination (XUDP), with replies tagged by the upstream source address
-- the XUDP `GlobalID` on New frames is parsed and logged, but UDP sessions are not yet reused across WebSocket reconnects
-- per-user `fwmark` is applied to both TCP connects and UDP sockets opened for a VLESS session
+- UUID lookup is linear over the endpoint's VLESS user pool; an unknown UUID is rejected and logged.
+- For `COMMAND_UDP`, each client frame is length-prefixed (`u16` BE); each upstream response is framed the same way.
+- For `COMMAND_MUX` (mux.cool / XUDP), one VLESS stream multiplexes up to 8 concurrent sub-connections (`MAX_MUX_SUB_CONNS`), each with its own session id. Sub-connections can be TCP or UDP; UDP Keep frames carry a per-packet destination (XUDP), and replies are tagged with the upstream source address.
+- The XUDP `GlobalID` on New frames is parsed and logged, but UDP sessions are not reused across WebSocket reconnects.
+- The user's `fwmark` is applied to both TCP connects and UDP sockets opened for a VLESS session.
 
-## Transport Support
+## Transport requirements
 
 ### HTTP/1.1
 
-Uses the standard WebSocket upgrade flow and supports plain `ws://` or `wss://`.
+Standard WebSocket upgrade; `ws://` or `wss://`.
 
 ### HTTP/2
 
-Uses RFC 8441 Extended CONNECT. This requires:
+RFC 8441 Extended CONNECT. Requires:
 
-- server-side support for HTTP/2 CONNECT protocol enablement
-- a client that implements WebSocket over HTTP/2
-- any reverse proxy in front of the server to preserve Extended CONNECT rather than downgrading to HTTP/1.1
+- a client that implements WebSocket over HTTP/2;
+- any reverse proxy in front of the server to pass Extended CONNECT through instead of downgrading to HTTP/1.1.
 
 ### HTTP/3
 
-Uses RFC 9220 Extended CONNECT over QUIC. This requires:
+RFC 9220 Extended CONNECT over QUIC. Requires:
 
-- TLS
-- UDP reachability
-- HTTP/3-capable clients
+- a TLS certificate for the QUIC listener (`[server.h3]` cert or one inherited from `[server]`);
+- UDP reachability of `[server.h3] listen`;
+- an HTTP/3-capable client.
 
-The repository currently vendors and patches upstream crates to make this path practical. See [PATCHES.md](../../../PATCHES.md) ([Русский](../../../PATCHES.ru.md)).
+This path depends on patched vendored crates. See [PATCHES.md](../../../PATCHES.md) ([Русский](../../../PATCHES.ru.md)).
 
-## Observability Design
+## Metric labels
 
-Metrics are intentionally low-cardinality and focused on production operations.
+Labels are kept low-cardinality:
 
-Labels include:
+| Label | Values |
+|---|---|
+| `transport` | `tcp`, `udp` |
+| `protocol` | `http1`, `http2`, `http3`, `xhttp_h1`, `xhttp_h2`, `xhttp_h3`, `socket` [verify: no current code path constructs `Protocol::Socket`; it is only matched in `nat/reader.rs`] |
+| `app_protocol` | `shadowsocks`, `vless` |
+| `user` | user id (or IP alias from `[users.aliases]`) |
+| `result` | `success`, `error` (for example `outline_ss_tcp_upstream_connects_total`, `outline_ss_udp_requests_total`) |
+| `direction` | traffic direction for byte counters |
 
-- `transport`: `tcp` or `udp`
-- `protocol`: `http1`, `http2`, `http3`, `socket` (plain SS listeners)
-- `user`: user identifier
-- `result`: `success`, `timeout`, or `error` where applicable
-- `direction`: traffic direction for byte counters
+There are no labels for target hostname, target IP or per-connection id. Adding one would make the series count grow with the number of distinct targets or connections.
 
-Notably absent:
+## Failure domains
 
-- target hostname labels
-- target IP labels
-- per-connection identifiers
+The data plane has four layers:
 
-This keeps Prometheus cost predictable and avoids turning the metrics endpoint into an unbounded cardinality source.
+1. Ingress transport: HTTP/1.1, HTTP/2, HTTP/3, TLS, QUIC.
+2. User identification and decryption: endpoint user pool and AEAD session setup.
+3. Relay: TCP connect or UDP send/receive.
+4. Egress routing: DNS, outbound reachability, optional `fwmark`.
 
-## Failure Domains
+During incident response:
 
-The system can be thought of in four layers:
+- handshake failures belong to the ingress layer;
+- authentication mismatches belong to the decryption layer;
+- connection failures belong to the relay or egress layer;
+- throughput and latency are visible in Prometheus and Grafana.
 
-1. Ingress transport layer: HTTP/1.1, HTTP/2, HTTP/3, TLS, QUIC
-2. User identification and decryption layer: per-path filtering and AEAD session setup
-3. Relay layer: TCP connect or UDP send/receive
-4. Egress routing layer: DNS, outbound reachability, and optional `fwmark`
+## Security boundaries
 
-This separation is helpful during incident response:
+- TLS for HTTP/1.1 and HTTP/2 is terminated in-process when the main listener has a certificate.
+- QUIC for HTTP/3 is terminated in-process when `[server.h3]` is configured.
+- Users are separated by independent secrets (password or `vless_id`) and optionally by cipher (`method`). Paths do not separate users: every user works on every endpoint of its kind.
+- Outbound policy can be separated per user with `fwmark`.
 
-- handshake failures usually live in the ingress layer
-- authentication mismatches live in the decryptor layer
-- connection failures live in the relay or routing layer
-- throughput and latency issues can be seen directly in Prometheus and Grafana
+## Production setup
 
-## Security Boundaries
-
-- TLS termination for HTTP/1.1 and HTTP/2 can happen in-process
-- HTTP/3 QUIC termination also happens in-process when enabled
-- user isolation is based on independent secrets, optional independent ciphers, and optional independent paths
-- outbound policy isolation is optionally strengthened with per-user `fwmark`
-
-## Operational Guidance
-
-Recommended production pattern:
-
-1. Use built-in TLS for the main listener if you want direct `wss://` support.
-2. Use a dedicated `metrics_listen` bound to loopback or a private network.
-3. Keep TCP and UDP WebSocket paths distinct.
-4. Use separate per-user paths when you want cleaner traffic segmentation or staged rollouts.
-5. Reserve per-user cipher overrides for compatibility or migration scenarios rather than using them arbitrarily.
-6. For public deployments add the camouflage layers — `[sni_fallback]` to splice foreign SNIs to a real TLS frontend (e.g. a default haproxy / nginx server block), `[http_fallback]` to reverse-proxy unmatched HTTP paths to a regular origin. Both replace the default `404` / TLS-handshake-fail signal that probes use to fingerprint VPN listeners. PROXY-protocol v1/v2 is strongly recommended on `[sni_fallback]` so the backend still sees the real client IP.
+1. Configure a TLS certificate on the main listener if clients connect with `wss://` directly.
+2. Bind `[metrics] listen` and `[control] listen` to loopback or a private network.
+3. Use per-user cipher overrides (`method`) only for compatibility or migration.
+4. On public deployments enable the camouflage layers: `[sni_fallback]` splices foreign SNIs to a real TLS frontend (for example a default haproxy / nginx server block), `[http_fallback]` reverse-proxies unmatched HTTP paths to a regular origin. Without them a probe gets a `404` or a failed TLS handshake from the listener. Set `proxy_protocol` on `[sni_fallback]`; without it the backend logs the server's address instead of the client IP.
