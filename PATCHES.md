@@ -284,8 +284,25 @@ Baseline — crates.io `quinn-proto 0.11.19`. Logical changes carried by
    is planned afresh. Servers ignore the option. Tests:
    `src/connection/tests/initial_crypto.rs` (planner, matches the Firefox capture),
    `src/tests/initial_crypto.rs` (handshake with and without Retry, the hello laid out
-   again after a Retry, Initial size); they need the upstream dev-dependencies (see 6).
-6. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
+   again after a Retry, Initial size); they need the upstream dev-dependencies (see 7).
+6. **stream-chunk-limit** (`src/connection/assembler.rs`,
+   `src/connection/streams/recv.rs`) — the most distinct spans a receive stream may
+   buffer now follows the stream credit open to the peer (from the read offset to the
+   last `MAX_STREAM_DATA` sent): one span per 1280 bytes of that window, never fewer
+   than upstream's 1024. Upstream 0.11.19 closes the connection with `INTERNAL_ERROR` "too
+   many gaps in stream buffer" once more than 1024 spans survive compaction, a bound
+   sized for its default 1.25 MB window. The H3 client grants 8 MiB and the server's
+   `medium` / `large` profiles 4 / 16 MiB; while the read offset waits for a lost
+   packet, a lossy path fills such a window with more than 1024 gaps, and the receiver
+   killed the whole connection (on the fleet: `.104` from nuxt2, about three
+   connections a day, up to 184 streams each). The per-span overhead keeps the same
+   share of the window as upstream, the compaction trigger stays at twice the limit,
+   and CRYPTO streams keep 1024. Tests: `assembler::test::chunk_limit_scales_with_open_window`,
+   `gapped_stream_within_large_window_is_accepted`,
+   `bounded_chunks_under_low_over_allocation_large_window`,
+   `streams::recv::tests::gaps_are_bounded_by_the_open_window` (fails with "too many
+   gaps" without the patch); they need the upstream dev-dependencies (see 7).
+7. **Vendoring trim** (`Cargo.toml`) — dev-dependencies removed (upstream
    `rcgen` with default `ring` would violate the aws-lc-rs invariant).
 
 Conformance check: apply the patch to a clean copy of crates.io 0.11.19 and

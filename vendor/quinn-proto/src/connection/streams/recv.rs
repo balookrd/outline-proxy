@@ -6,7 +6,7 @@ use tracing::debug;
 
 use super::state::get_or_insert_recv;
 use super::{ClosedStream, Retransmits, ShouldTransmit, StreamId, StreamsState};
-use crate::connection::assembler::{Assembler, Chunk, IllegalOrderedRead};
+use crate::connection::assembler::{Assembler, Chunk, IllegalOrderedRead, chunk_limit};
 use crate::connection::streams::state::StreamRecv;
 use crate::{TransportError, VarInt, frame};
 
@@ -78,8 +78,17 @@ impl Recv {
         // Don't bother storing data or releasing stream-level flow control credit if the stream's
         // already stopped
         if !self.stopped {
+            // Data can only sit between the read offset and the credit last granted.
+            let open_window = self
+                .sent_max_stream_data
+                .saturating_sub(self.assembler.bytes_read());
             self.assembler
-                .insert(frame.offset, frame.data, payload_len)
+                .insert_bounded(
+                    frame.offset,
+                    frame.data,
+                    payload_len,
+                    chunk_limit(open_window),
+                )
                 .map_err(|_| TransportError::INTERNAL_ERROR("too many gaps in stream buffer"))?;
         }
 
@@ -541,5 +550,37 @@ mod tests {
             max_stream_data, RECV_WINDOW,
             "stream flow control credit isn't issued after stop"
         );
+    }
+
+    /// Ingest every other 1200-byte packet of `window` bytes, as a lossy path delivers
+    /// them while the read offset waits for the first retransmission.
+    fn ingest_alternate_packets(window: u64) -> Result<(), TransportError> {
+        let mut s = Recv::new(window);
+        let mut data_recvd = 0;
+        let mut offset = 1200;
+        while offset + 1200 <= window {
+            let (new_bytes, _) = s.ingest(
+                frame::Stream {
+                    id: StreamId::new(Side::Server, Dir::Bi, 0),
+                    offset,
+                    fin: false,
+                    data: Bytes::from(vec![0; 1200]),
+                },
+                1200,
+                data_recvd,
+                u64::MAX,
+            )?;
+            data_recvd += new_bytes;
+            offset += 2 * 1200;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gaps_are_bounded_by_the_open_window() {
+        // Upstream's default window: about 520 gaps, below the floor of 1024 spans.
+        ingest_alternate_packets(1_250_000).unwrap();
+        // 8 MiB window: about 3500 gaps, rejected by a fixed 1024-span limit.
+        ingest_alternate_packets(8 * 1024 * 1024).unwrap();
     }
 }
