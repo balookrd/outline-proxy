@@ -103,8 +103,13 @@ impl Assembler {
     /// This makes sure we're not unnecessarily holding on to many larger allocations.
     /// We merge contiguous chunks in the process of doing so.
     fn defragment(&mut self) {
+        self.defragment_to(MAX_CHUNKS);
+    }
+
+    /// [`Self::defragment`] for a stream allowed `max_chunks` spans
+    fn defragment_to(&mut self, max_chunks: usize) {
         // Chunks smaller than min_chunk_size are merged regardless of fragmentation
-        let min_chunk_size = max(self.buffered.div_ceil(MAX_CHUNKS), MIN_RETAINED_CHUNK_SIZE);
+        let min_chunk_size = max(self.buffered.div_ceil(max_chunks), MIN_RETAINED_CHUNK_SIZE);
         let new = BinaryHeap::with_capacity(self.data.len());
         let old = mem::replace(&mut self.data, new);
         let mut buffers = old.into_sorted_vec();
@@ -152,9 +157,20 @@ impl Assembler {
     // will be much higher because we are counting the same allocation multiple times.
     pub(super) fn insert(
         &mut self,
+        offset: u64,
+        bytes: Bytes,
+        allocation_size: usize,
+    ) -> Result<(), TooManyChunks> {
+        self.insert_bounded(offset, bytes, allocation_size, MAX_CHUNKS)
+    }
+
+    /// [`Self::insert`] for a stream allowed `max_chunks` distinct spans (see [`chunk_limit`])
+    pub(super) fn insert_bounded(
+        &mut self,
         mut offset: u64,
         mut bytes: Bytes,
         allocation_size: usize,
+        max_chunks: usize,
     ) -> Result<(), TooManyChunks> {
         debug_assert!(
             bytes.len() <= allocation_size,
@@ -212,10 +228,10 @@ impl Assembler {
         // balance between defragmentation overhead and over-allocation.
         let threshold = 32768.max(buffered * 3 / 2);
         // Small gapped frames hold over-allocation below the threshold, so bound the count too.
-        if over_allocation > threshold || self.data.len() > COMPACT_THRESHOLD {
-            self.defragment();
+        if over_allocation > threshold || self.data.len() > COMPACT_FACTOR * max_chunks {
+            self.defragment_to(max_chunks);
             // ngtcp2 uses a threshold of 4000 -- try to be a little more conservative?
-            if self.data.len() > MAX_CHUNKS {
+            if self.data.len() > max_chunks {
                 return Err(TooManyChunks);
             }
         }
@@ -360,17 +376,38 @@ pub(crate) struct TooManyChunks;
 /// if compaction cannot get the count back down to this.
 const MAX_CHUNKS: usize = 1024;
 
+/// Receive window per allowed span: upstream's `MAX_CHUNKS` over its default 1.25 MB
+/// stream receive window
+const WINDOW_BYTES_PER_CHUNK: u64 = 1280;
+
+/// Spans a stream may hold when `window` bytes above its read offset are open to the peer
+///
+/// `MAX_CHUNKS` alone assumes upstream's default window. An open window several times
+/// larger (the H3 client grants 8 MiB) lets ordinary loss leave more gaps than that while
+/// the read offset waits for the first retransmission, and the stream would be rejected.
+/// Never below `MAX_CHUNKS`; the per-span overhead stays the same share of the window.
+pub(super) fn chunk_limit(window: u64) -> usize {
+    usize::try_from(window / WINDOW_BYTES_PER_CHUNK)
+        .unwrap_or(usize::MAX)
+        .max(MAX_CHUNKS)
+}
+
 /// Minimum size of a defragmented chunk that is retained without coalescing.
 ///
 /// Chunks below this size will be copied on every compaction. 128 bytes balances
 /// being cheap to copy while reducing the overhead of many small buffer nodes.
 const MIN_RETAINED_CHUNK_SIZE: usize = 128;
 
-/// Chunk count past which `insert` compacts before deciding whether to reject
+/// Chunk count past which `insert` compacts before deciding whether to reject, at the
+/// default limit
 ///
 /// Above `MAX_CHUNKS` so a flood of mergeable frames cannot force a defragmentation
-/// per frame.
-const COMPACT_THRESHOLD: usize = 2 * MAX_CHUNKS;
+/// per frame. A stream with a larger [`chunk_limit`] compacts past twice that limit.
+#[cfg(test)]
+const COMPACT_THRESHOLD: usize = COMPACT_FACTOR * MAX_CHUNKS;
+
+/// Ratio of the compaction trigger to the span limit
+const COMPACT_FACTOR: usize = 2;
 
 #[cfg(test)]
 mod test {
@@ -783,6 +820,49 @@ mod test {
             max_len > MAX_CHUNKS,
             "buffer compacted on every frame (max observed len {max_len})"
         );
+    }
+
+    #[test]
+    fn chunk_limit_scales_with_open_window() {
+        assert_eq!(chunk_limit(0), MAX_CHUNKS);
+        assert_eq!(chunk_limit(1_250_000), MAX_CHUNKS);
+        assert_eq!(chunk_limit(8 * 1024 * 1024), 6553);
+        assert!(chunk_limit(u64::MAX) > chunk_limit(8 * 1024 * 1024));
+    }
+
+    #[test]
+    fn gapped_stream_within_large_window_is_accepted() {
+        // Every other 1200-byte packet of an 8 MiB window lost: about 3500 gaps,
+        // far past MAX_CHUNKS but within the window's own limit.
+        let limit = chunk_limit(8 * 1024 * 1024);
+        let mut x = Assembler::new();
+        let data = Bytes::from(vec![0; 1200]);
+        let mut offset = 1200u64;
+        while offset + 1200 <= 8 * 1024 * 1024 {
+            x.insert_bounded(offset, data.clone(), 1200, limit)
+                .expect("gaps within the open window must not be rejected");
+            offset += 2 * 1200;
+        }
+        assert!(x.data.len() > MAX_CHUNKS);
+        assert!(x.data.len() <= COMPACT_FACTOR * limit + 1);
+    }
+
+    #[test]
+    fn bounded_chunks_under_low_over_allocation_large_window() {
+        // The small-gapped flood stays bounded under a window-scaled limit.
+        let limit = chunk_limit(8 * 1024 * 1024);
+        let mut x = Assembler::new();
+        let mut offset = 1u64;
+        let mut result = Ok(());
+        for _ in 0..(limit * 8) {
+            result = x.insert_bounded(offset, Bytes::from_static(b"gap"), 3, limit);
+            if result.is_err() {
+                break;
+            }
+            offset += 3 + 1;
+        }
+        assert_matches!(result, Err(TooManyChunks));
+        assert!(x.data.len() <= COMPACT_FACTOR * limit + 1);
     }
 
     fn next_unordered(x: &mut Assembler) -> Chunk {

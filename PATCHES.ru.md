@@ -284,8 +284,25 @@ Baseline — crates.io `quinn-proto 0.11.19`. Логические измене�
    после Retry, раскладывается с нуля. Сервер опцию игнорирует. Тесты:
    `src/connection/tests/initial_crypto.rs` (планировщик, совпадает с захватом Firefox),
    `src/tests/initial_crypto.rs` (рукопожатие с Retry и без, повторная раскладка hello
-   после Retry, размер Initial); им нужны dev-dependencies upstream (см. п. 6).
-6. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
+   после Retry, размер Initial); им нужны dev-dependencies upstream (см. п. 7).
+6. **stream-chunk-limit** (`src/connection/assembler.rs`,
+   `src/connection/streams/recv.rs`) — предел числа несмежных кусков, которые может
+   держать принимающий поток, теперь зависит от кредита, открытого собеседнику (от
+   offset чтения до последнего отправленного `MAX_STREAM_DATA`): один кусок на 1280 байт
+   этого окна, но не меньше 1024, как в upstream. Upstream 0.11.19 закрывает соединение
+   с `INTERNAL_ERROR` «too many gaps in stream buffer», если после склейки остаётся
+   больше 1024 кусков; этот предел рассчитан на его окно по умолчанию 1,25 МБ. H3-клиент
+   выдаёт 8 МиБ, профили сервера `medium` / `large` — 4 / 16 МиБ. Пока offset чтения
+   ждёт потерянный пакет, на пути с потерями такое окно набирает больше 1024 дыр, и
+   приёмник рвал всё соединение (на парке: `.104` от nuxt2, около трёх соединений в
+   сутки, до 184 потоков в каждом). Накладные расходы на кусок занимают ту же долю
+   окна, что в upstream, склейка запускается при двойном пределе, CRYPTO-потоки
+   остаются с 1024. Тесты: `assembler::test::chunk_limit_scales_with_open_window`,
+   `gapped_stream_within_large_window_is_accepted`,
+   `bounded_chunks_under_low_over_allocation_large_window`,
+   `streams::recv::tests::gaps_are_bounded_by_the_open_window` (без патча падает с
+   «too many gaps»); им нужны dev-dependencies upstream (см. п. 7).
+7. **Vendoring-trim** (`Cargo.toml`) — убраны dev-dependencies (upstream `rcgen` с
    дефолтным `ring` нарушил бы инвариант aws-lc-rs).
 
 Проверка соответствия: применить патч к чистой копии crates.io 0.11.19 и сравнить
