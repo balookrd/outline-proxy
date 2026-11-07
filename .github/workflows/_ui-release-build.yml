@@ -107,11 +107,33 @@ jobs:
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
 
+      # The release binary must carry the Svelte SPA: without `embed-assets`
+      # it still proxies /ws and /ss API traffic but serves an "assets not
+      # embedded" stub at `/`. rust-embed walks `frontend/dist` at compile
+      # time, so the frontend is built first (same toolchain as the
+      # `frontend` job in ci.yml).
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: bins/outline-ui/frontend/pnpm-lock.yaml
+
+      - name: Build frontend
+        working-directory: bins/outline-ui/frontend
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm build
+
       # The `ui-release-musl-*` aliases build only `-p outline-ui` within the
       # workspace; outline-ui pulls in no in-workspace crates, so no sibling
       # checkout is needed.
       - name: Build release binary
-        run: cargo "${{ matrix.alias }}"
+        run: cargo "${{ matrix.alias }}" --features embed-assets
 
       - name: Package artifact
         env:
