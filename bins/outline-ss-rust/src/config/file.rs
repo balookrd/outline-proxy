@@ -66,7 +66,7 @@ pub(crate) struct ClusterSection {
     /// shard-obfuscation key and the mesh-auth keypair; never logged.
     #[serde(default)]
     pub cluster_psk: Option<String>,
-    /// `host:port` the mesh QUIC listener binds for inbound relays.
+    /// `IP:port` the mesh QUIC listener binds for inbound relays (no hostnames).
     #[serde(default)]
     pub mesh_listen: Option<String>,
     /// Progress budget in milliseconds: a relay stalled longer than this is
@@ -84,7 +84,7 @@ pub(crate) struct ClusterSection {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ClusterPeerSection {
     pub shard: u8,
-    /// `host:port` of the peer's mesh listener.
+    /// `IP:port` of the peer's mesh listener (no hostnames).
     pub addr: String,
 }
 

@@ -15,6 +15,7 @@ happ_url: https://keys.example.com/SECRET/vless-only.json
 ws_url: https://keys.example.com/SECRET/vless-only.toml
 warning: carrier migration is inert: the node has no [session_resumption] enabled, so a flow whose carrier dies is torn down instead of migrating
 warning: switching the active uplink will reset live sessions: the node has no [cluster] enabled, so the group cannot share a resumption id and the switch cannot be soft
+warning: carrier padding is on, so the plain fallbacks were dropped to keep the chain one padding class: excluded /GLOBAL/vless-plain, /GLOBAL/xhttp-plain
 
 user: both
 written_conf: ops/access-keys/golden/expected/both.conf
@@ -26,6 +27,7 @@ happ_url: https://keys.example.com/SECRET/both.json
 ws_url: https://keys.example.com/SECRET/both.toml
 warning: carrier migration is inert: the node has no [session_resumption] enabled, so a flow whose carrier dies is torn down instead of migrating
 warning: switching the active uplink will reset live sessions: the node has no [cluster] enabled, so the group cannot share a resumption id and the switch cannot be soft
+warning: carrier padding is on, so the plain fallbacks were dropped to keep the chain one padding class: excluded /GLOBAL/vless-plain, /GLOBAL/xhttp-plain
 
 user: own-method
 written_conf: ops/access-keys/golden/expected/own-method.conf
@@ -46,3 +48,4 @@ happ_url: https://keys.example.com/SECRET/needs_sanitising_1.json
 ws_url: https://keys.example.com/SECRET/needs_sanitising_1.toml
 warning: carrier migration is inert: the node has no [session_resumption] enabled, so a flow whose carrier dies is torn down instead of migrating
 warning: switching the active uplink will reset live sessions: the node has no [cluster] enabled, so the group cannot share a resumption id and the switch cannot be soft
+warning: carrier padding is on, so the plain fallbacks were dropped to keep the chain one padding class: excluded /GLOBAL/vless-plain, /GLOBAL/xhttp-plain

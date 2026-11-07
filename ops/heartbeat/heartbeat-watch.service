@@ -1,5 +1,5 @@
 [Unit]
-Description=Alert by mail when the Grafana heartbeat from .102 stops
+Description=Alert by mail when the home Grafana heartbeat stops
 Documentation=file:/usr/local/share/heartbeat-watch/README.md
 
 [Service]

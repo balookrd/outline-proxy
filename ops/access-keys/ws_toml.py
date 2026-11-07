@@ -42,9 +42,11 @@ SHUFFLE_WIRES = True
 # The one deliberate departure from cloud1 is the interval. The fleet probes
 # every 10 s from mains power over a fat pipe; a phone would pay for that in
 # battery and — on the edge-class cells this whole exercise is about — in the
-# very bandwidth the tunnel needs. 60 s is the floor ws-rust itself recommends
-# (below it, bursts of handshakes trip upstream rate limits), and it still finds
-# a recovered uplink inside a minute without any traffic to prompt it.
+# very bandwidth the tunnel needs. 300 s matches the floor the Android app
+# enforces on every profile (`MobilePowerConfig.kt`, 7f5dfbac): longer gaps let
+# the cellular modem drop into RRC Idle between probes. ws-rust warns below
+# 60 s (bursts of handshakes trip upstream rate limits); the cost of 300 s is
+# that a recovered uplink without traffic is noticed within five minutes.
 PROBE_INTERVAL_SECS = 300
 PROBE_TIMEOUT_SECS = 10
 # Two consecutive failures before a verdict: one probe cycle can lose to a

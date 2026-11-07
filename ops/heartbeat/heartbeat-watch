@@ -78,17 +78,17 @@ def send_mail(kind, age, now):
     msg["From"] = user
     msg["To"] = to
     if kind == "DOWN":
-        msg["Subject"] = f"[{observer}] outline: no heartbeat from .102"
+        msg["Subject"] = f"[{observer}] outline: no heartbeat from home Grafana"
         body = (
-            f"No heartbeat from the Grafana dead man's switch on .102.\n\n"
+            f"No heartbeat from the Grafana dead man's switch in the home k3s Grafana.\n\n"
             f"Observer:       {observer}\n"
             f"Last heartbeat: {'never' if age is None else str(int(age)) + ' seconds ago'}\n"
             f"Checked at:     {stamp}\n\n"
             f"Mail from only one observer usually means the path to that observer\n"
-            f"is broken. Mail from both cloud1 and cloud2 means .102 itself is down.\n"
+            f"is broken. Mail from both cloud1 and cloud2 means the home Grafana itself is down.\n"
         )
     else:
-        msg["Subject"] = f"[{observer}] outline: heartbeat from .102 resumed"
+        msg["Subject"] = f"[{observer}] outline: heartbeat from home Grafana resumed"
         body = f"Heartbeat resumed.\n\nObserver: {observer}\nAt:       {stamp}\n"
     msg.set_content(body)
 

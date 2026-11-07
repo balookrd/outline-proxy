@@ -1,5 +1,5 @@
 [Unit]
-Description=Check the .102 heartbeat every five minutes
+Description=Check the home Grafana heartbeat every five minutes
 
 [Timer]
 OnBootSec=5min

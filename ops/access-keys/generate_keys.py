@@ -131,8 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="extension for the Outline artifact; overrides [access_keys] "
         "file_extension. The nodes rely on this: their config.toml has no "
-        "file_extension and save-keys.sh passed the binary "
-        "--access-key-file-extension .conf",
+        "file_extension, and save-keys.sh passes --file-extension .conf",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="render everything but write nothing"

@@ -5,8 +5,8 @@ edition = "2024"
 
 # Feature flags
 # -------------
-# default: full VM/server build — H3/QUIC + Prometheus metrics + built-in
-# dashboard. Each feature below is opt-out via `--no-default-features` for
+# default: full VM/server build — H3/QUIC + Prometheus metrics + control API
+# (the dashboard UI lives in bins/outline-ui). Each feature below is opt-out via `--no-default-features` for
 # custom slim builds on memory-constrained devices.
 [lints]
 workspace = true

@@ -5,8 +5,9 @@
 #   ./deploy.sh          # legacy: copy to the docker Grafana on .102
 #   ./deploy.sh --k3s    # cluster: one Secret in the monitoring namespace
 #
-# Grafana re-reads provisioning files on its own, so this needs no restart —
-# which is the whole reason the rules live in files rather than in the UI.
+# Alerting provisioning is read once at Grafana startup, so either mode needs a
+# Grafana restart afterwards (the script prints the command; restarting is a
+# production action — ask the owner first).
 
 set -euo pipefail
 cd "$(dirname "$0")"

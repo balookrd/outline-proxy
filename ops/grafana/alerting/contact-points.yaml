@@ -1,7 +1,8 @@
 # Grafana contact points, provisioned from file.
 #
-# Deployed to /opt/grafana/provisioning/alerting/ by deploy.sh, which
-# substitutes __HEARTBEAT_TOKEN__, __TELEGRAM_BOT_TOKEN__ and
+# Deployed by deploy.sh — as the grafana-alerting Secret in the monitoring
+# namespace (--k3s) or, legacy, to /opt/grafana/provisioning/alerting/ on the
+# docker Grafana. deploy.sh substitutes __HEARTBEAT_TOKEN__, __TELEGRAM_BOT_TOKEN__ and
 # __TELEGRAM_CHAT_ID__ from host-local files, so no secret is in git. The SMTP
 # credentials are not here either: they are container environment
 # (see ../README.md).

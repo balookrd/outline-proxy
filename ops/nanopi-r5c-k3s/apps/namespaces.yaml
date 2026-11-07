@@ -11,6 +11,11 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: smarthome
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: outline
 ---
 apiVersion: v1

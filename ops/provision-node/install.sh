@@ -1752,7 +1752,7 @@ phase_verify() {
         dim "• peer nodes must know this node's uplink account (register-uplink-user.sh)"
     fi
     if [ ${#NGINX_LOCATIONS[@]} -gt 0 ]; then
-        dim "• nothing scrapes $HOST yet — add it to /opt/victoria-metrics/data/scrape.yaml on .102"
+        dim "• nothing scrapes $HOST yet — add it to ops/nanopi-r5c-k3s/apps/monitoring/scrape.yaml and the live copy in the VictoriaMetrics PVC"
         dim "  (one target block per job; see assets/victoria-metrics/ for the unbound-exporter one)"
     fi
     if [ -f /opt/ocserv/conf/ocpasswd ]; then
