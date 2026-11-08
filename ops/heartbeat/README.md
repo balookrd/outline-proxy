@@ -1,8 +1,8 @@
 # Heartbeat-приёмник для dead-man switch
 
-Внешний наблюдатель на `relay-a` и `relay-b`: присылает письмо, когда замолчал
-сам мониторинг. Каталог содержит watcher `heartbeat-watch` (python3, только
-stdlib), юниты `heartbeat-watch.service` / `heartbeat-watch.timer`,
+Внешний наблюдатель на `relay-a` и `relay-b`: присылает письмо и сообщение в
+Telegram, когда замолчал сам мониторинг. Каталог содержит watcher
+`heartbeat-watch` (python3, только stdlib; для Telegram — системный `curl`), юниты `heartbeat-watch.service` / `heartbeat-watch.timer`,
 nginx-сниппет `nginx-heartbeat.conf`, установщик `install.sh` и офлайновые
 тесты `test-heartbeat-watch.sh`.
 
@@ -30,8 +30,13 @@ Grafana (k3s)               relay-a / relay-b
                                   │
                                   │ heartbeat-watch (systemd timer, раз в 5 мин)
                                   │ последняя запись старше 15 мин?
-                                  └──► письмо через Gmail SMTP
+                                  ├──► письмо через Gmail SMTP
+                                  └──► Telegram через локальный SOCKS5 outline-ws-rust
 ```
+
+С 2026-11-08 тот же пульс параллельно шлёт Alertmanager в k3s (теневой режим
+переезда алертинга, `ops/alerting/`); наблюдателю всё равно, от кого пришла
+последняя запись.
 
 Условие правила `DeadMansSwitch` в
 [`ops/grafana/alerting/rules.yaml`](../grafana/alerting/rules.yaml) ходит в
@@ -63,6 +68,7 @@ Grafana (k3s)               relay-a / relay-b
 | `--repeat` | `21600` | интервал повторного письма `DOWN` в секундах, пока авария длится |
 | `--dry-run` | — | печатает решение, ничего не шлёт и не пишет (см. «Проверка») |
 | `--simulate` | — | как `--dry-run`, но сохраняет состояние; для тестов |
+| `--test` | — | шлёт пробное сообщение во все настроенные каналы, состояние не трогает |
 
 Юнит запускает watcher без флагов, то есть с этими значениями. Письмо `RESOLVED`
 уходит один раз при возврате пульса.
@@ -78,9 +84,29 @@ Grafana (k3s)               relay-a / relay-b
 - письмо от одного узла — скорее всего сломан путь до этого узла;
 - письма от обоих — действительно лежит мониторинг.
 
-Имя наблюдателя (`socket.gethostname()`) стоит в теме письма
-(`[relay-a] outline: no heartbeat from home Grafana`). При настоящей аварии приходит два
-письма вместо одного.
+Имя наблюдателя (`socket.gethostname()`) стоит в теме письма и в первой строке
+сообщения Telegram (`[relay-a] outline: no heartbeat from home monitoring`). При
+настоящей аварии приходит по два сообщения в каждый канал.
+
+## Каналы доставки
+
+| Канал | Когда включён | Путь |
+|-------|---------------|------|
+| почта | всегда | Gmail SMTP напрямую, `smtp.env` |
+| Telegram | есть `/etc/heartbeat-watch/telegram.env` | `curl` через SOCKS5 `outline-ws-rust` на этом же узле (`socks5h://[::1]:31080`) |
+
+`api.telegram.org` с cloud-узлов недоступен (таймаут соединения, проверено
+2026-11-08), поэтому Telegram идёт только через туннель. Если туннель узла упал
+одновременно с мониторингом, Telegram не придёт, а письмо придёт: почта от
+туннеля не зависит.
+
+Каналы независимы. Упал один — второй всё равно отправляет, ошибка пишется в
+журнал юнита, и юнит завершается с ошибкой (`systemctl status heartbeat-watch`
+показывает `failed`). Если не ушло ни в один канал, состояние не сохраняется и
+следующий запуск (через 5 минут) пробует снова.
+
+Токен бота и пароль SOCKS передаются `curl` через stdin (`curl -K -`), в
+командной строке и в `ps` их нет. Сообщение — простой текст, без `parse_mode`.
 
 ## Установка
 
@@ -120,6 +146,10 @@ sudo chmod 0600 /etc/heartbeat-watch/token
 |------|-------|------------|
 | `/etc/heartbeat-watch/token` | `0600 root` | общий токен heartbeat-URL |
 | `/etc/heartbeat-watch/smtp.env` | `0600 root` | `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_TO` |
+| `/etc/heartbeat-watch/telegram.env` | `0600 root`, необязателен | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_PROXY` (`socks5h://[::1]:31080`), `TELEGRAM_PROXY_USER` (`<пользователь>:<пароль>` из `[[socks5.users]]` клиента) |
+
+Бот и чат — те же, что у Alertmanager в k3s (`~/.config/outline/telegram-bot-token`
+и `telegram-chat-id` на машине разработчика).
 
 `SMTP_PASSWORD` — app-password Google (16 символов, требует включённой
 двухэтапной аутентификации), тот же, что у Grafana. `SMTP_HOST` задаётся как
@@ -134,6 +164,14 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://relay-a.fleet.example/hb/<то
 sudo tail -1 /var/log/nginx/heartbeat.log                                          # свежая строка
 sudo /usr/local/sbin/heartbeat-watch --dry-run                                     # state=up
 systemctl list-timers heartbeat-watch.timer --no-pager                             # NEXT в пределах 5 мин
+```
+
+Доставка по всем каналам (придут письмо и сообщение в Telegram с пометкой
+`test message`):
+
+```bash
+sudo bash -c 'set -a; . /etc/heartbeat-watch/smtp.env; [ -f /etc/heartbeat-watch/telegram.env ] && . /etc/heartbeat-watch/telegram.env; /usr/local/sbin/heartbeat-watch --test'
+# test: delivered to 2 of 2 channel(s)
 ```
 
 Таймер: `OnBootSec=5min`, `OnUnitActiveSec=5min`, `AccuracySec=30s`.

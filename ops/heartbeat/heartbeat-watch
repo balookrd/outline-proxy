@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 #
-# heartbeat-watch — mail the owner when the Grafana dead man's switch stops
+# heartbeat-watch — tell the owner when the home dead man's switch stops
 # reporting. Runs on cloud1/cloud2 from a systemd timer; deliberately uses
-# nothing but the standard library, because the whole point of this watcher is
-# to keep working when the monitoring host it watches is gone.
+# nothing but the standard library (plus the system curl for Telegram), because
+# the whole point of this watcher is to keep working when the monitoring it
+# watches is gone.
+#
+# Two channels: mail through Gmail SMTP, always; Telegram when
+# /etc/heartbeat-watch/telegram.env is present. api.telegram.org is blocked from
+# these hosts, so Telegram goes through the local outline-ws-rust SOCKS5 — if
+# that tunnel is down at the same time, mail still gets through.
 
 import argparse
 import email.message
@@ -13,6 +19,7 @@ import re
 import smtplib
 import socket
 import ssl
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -65,31 +72,42 @@ def save_state(path, state):
     os.replace(tmp, path)
 
 
+def compose(kind, age, now):
+    """Subject and body shared by every channel."""
+    observer = socket.gethostname()
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now))
+    if kind == "DOWN":
+        subject = f"[{observer}] outline: no heartbeat from home monitoring"
+        body = (
+            f"No heartbeat from the dead man's switch of the home monitoring (k3s).\n\n"
+            f"Observer:       {observer}\n"
+            f"Last heartbeat: {'never' if age is None else str(int(age)) + ' seconds ago'}\n"
+            f"Checked at:     {stamp}\n\n"
+            f"A message from only one observer usually means the path to that observer\n"
+            f"is broken. Messages from both cloud1 and cloud2 mean the home monitoring\n"
+            f"(VictoriaMetrics, alerting, or the home link) is down.\n"
+        )
+    elif kind == "TEST":
+        subject = f"[{observer}] outline: heartbeat-watch test message"
+        body = f"Delivery test, nothing is wrong.\n\nObserver: {observer}\nAt:       {stamp}\n"
+    else:
+        subject = f"[{observer}] outline: heartbeat from home monitoring resumed"
+        body = f"Heartbeat resumed.\n\nObserver: {observer}\nAt:       {stamp}\n"
+    return subject, body
+
+
 def send_mail(kind, age, now):
-    """Send through the same Gmail account Grafana uses. Raises on failure."""
+    """Send through the same Gmail account the home alerting uses. Raises on failure."""
     host = os.environ["SMTP_HOST"]
     user = os.environ["SMTP_USER"]
     password = os.environ["SMTP_PASSWORD"]
     to = os.environ["MAIL_TO"]
-    observer = socket.gethostname()
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now))
+    subject, body = compose(kind, age, now)
 
     msg = email.message.EmailMessage()
     msg["From"] = user
     msg["To"] = to
-    if kind == "DOWN":
-        msg["Subject"] = f"[{observer}] outline: no heartbeat from home Grafana"
-        body = (
-            f"No heartbeat from the Grafana dead man's switch in the home k3s Grafana.\n\n"
-            f"Observer:       {observer}\n"
-            f"Last heartbeat: {'never' if age is None else str(int(age)) + ' seconds ago'}\n"
-            f"Checked at:     {stamp}\n\n"
-            f"Mail from only one observer usually means the path to that observer\n"
-            f"is broken. Mail from both cloud1 and cloud2 means the home Grafana itself is down.\n"
-        )
-    else:
-        msg["Subject"] = f"[{observer}] outline: heartbeat from home Grafana resumed"
-        body = f"Heartbeat resumed.\n\nObserver: {observer}\nAt:       {stamp}\n"
+    msg["Subject"] = subject
     msg.set_content(body)
 
     hostname, _, port = host.partition(":")
@@ -97,6 +115,71 @@ def send_mail(kind, age, now):
         smtp.starttls(context=ssl.create_default_context())
         smtp.login(user, password)
         smtp.send_message(msg)
+
+
+def _curl_quote(value):
+    """A double-quoted curl config value: backslash, quote and newline escaped."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def telegram_curl_config(kind, age, now):
+    """curl config for one sendMessage call. Fed on stdin (curl -K -), so the
+    bot token and the proxy password never appear in argv or `ps`."""
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    subject, body = compose(kind, age, now)
+    lines = [
+        "silent",
+        "show-error",
+        "fail",
+        "max-time = 30",
+        'output = "/dev/null"',
+        f"url = {_curl_quote(f'https://api.telegram.org/bot{token}/sendMessage')}",
+        f"data-urlencode = {_curl_quote('chat_id=' + os.environ['TELEGRAM_CHAT_ID'])}",
+        f"data-urlencode = {_curl_quote('text=' + subject + chr(10) + chr(10) + body)}",
+    ]
+    proxy = os.environ.get("TELEGRAM_PROXY")
+    if proxy:
+        # socks5h: the proxy resolves api.telegram.org, local DNS never sees it.
+        lines.append(f"proxy = {_curl_quote(proxy)}")
+        if os.environ.get("TELEGRAM_PROXY_USER"):
+            lines.append(f"proxy-user = {_curl_quote(os.environ['TELEGRAM_PROXY_USER'])}")
+    return "\n".join(lines) + "\n"
+
+
+def send_telegram(kind, age, now):
+    """Plain-text message through the Bot API. Raises on failure."""
+    curl = os.environ.get("HEARTBEAT_CURL", "curl")
+    result = subprocess.run(
+        [curl, "-K", "-"],
+        input=telegram_curl_config(kind, age, now),
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"curl exit {result.returncode}: {result.stderr.strip()[:200]}")
+
+
+def channels():
+    """Delivery channels configured on this host: mail always, Telegram when set up."""
+    found = [("mail", send_mail)]
+    if os.environ.get("TELEGRAM_BOT_TOKEN"):
+        found.append(("telegram", send_telegram))
+    return found
+
+
+def deliver(chans, kind, age, now):
+    """Try every channel; one failing must not cost the others their message.
+    Returns (delivered count, [(channel, error), ...])."""
+    sent, errors = 0, []
+    for name, send in chans:
+        try:
+            send(kind, age, now)
+            sent += 1
+        except Exception as exc:  # any failure of one channel is reported, not fatal
+            errors.append((name, exc))
+    return sent, errors
 
 
 def main():
@@ -112,9 +195,18 @@ def main():
     # --simulate is for the tests: same printing, but state advances, so a
     # sequence of runs exercises the real transitions without sending mail.
     ap.add_argument("--simulate", action="store_true", help="like --dry-run but persist state")
+    # --test sends a clearly labelled message through every configured channel
+    # and touches no state: the way to check delivery after an install.
+    ap.add_argument("--test", action="store_true", help="send a test message to every channel")
     args = ap.parse_args()
 
     now = args.now if args.now is not None else int(time.time())
+    if args.test:
+        sent, errors = deliver(channels(), "TEST", None, now)
+        for name, exc in errors:
+            print(f"{name}: {exc}", file=sys.stderr)
+        print(f"test: delivered to {sent} of {sent + len(errors)} channel(s)")
+        return 1 if errors else 0
     last = last_heartbeat(args.log)
     state = load_state(args.state)
 
@@ -135,8 +227,17 @@ def main():
         label = "down" if down else "up"
         suffix = f" send={send or 'none'}" if (down or send) else ""
         print(f"state={label}{suffix}")
-    elif send:
-        send_mail(send, age, now)
+    failed = False
+    if send and not (args.dry_run or args.simulate):
+        sent, errors = deliver(channels(), send, age, now)
+        for name, exc in errors:
+            print(f"{name}: {exc}", file=sys.stderr)
+        failed = bool(errors)
+        # Nothing got out: keep the old state so the next run (5 min) retries,
+        # as it did when mail was the only channel. If at least one channel
+        # delivered, record the notification — retrying would spam that channel.
+        if sent == 0:
+            return 1
 
     if args.dry_run:
         return 0
@@ -148,7 +249,9 @@ def main():
     else:
         state = {"state": "up", "notified_at": 0}
     save_state(args.state, state)
-    return 0
+    # A partly failed delivery still exits non-zero, so the unit shows failed
+    # and the journal keeps the error.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

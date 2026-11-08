@@ -1,10 +1,12 @@
 [Unit]
-Description=Alert by mail when the home Grafana heartbeat stops
+Description=Alert by mail and Telegram when the home monitoring heartbeat stops
 Documentation=file:/usr/local/share/heartbeat-watch/README.md
 
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/heartbeat-watch/smtp.env
+# Optional ("-"): without it the watcher is mail-only.
+EnvironmentFile=-/etc/heartbeat-watch/telegram.env
 ExecStart=/usr/local/sbin/heartbeat-watch
 # The watcher reads an nginx log and writes one small state file. Nothing else
 # on this host is its business.

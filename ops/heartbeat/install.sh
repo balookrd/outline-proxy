@@ -86,4 +86,12 @@ cat <<'EOF'
 
   2. Activate the nginx include — this reloads production nginx:
          sudo systemctl reload nginx
+
+  Optional, for Telegram alongside mail: /etc/heartbeat-watch/telegram.env
+  (mode 0600, root). api.telegram.org is unreachable from these hosts, so it
+  goes through the local outline-ws-rust SOCKS5:
+         TELEGRAM_BOT_TOKEN=<bot token>
+         TELEGRAM_CHAT_ID=<chat id>
+         TELEGRAM_PROXY=socks5h://[::1]:31080
+         TELEGRAM_PROXY_USER=<socks user>:<socks password>
 EOF
