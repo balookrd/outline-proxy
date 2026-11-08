@@ -113,6 +113,7 @@ impl Metrics {
             h3_pool_carriers: t.h3_pool_carriers,
             h3_carriers_reaped_total: t.h3_carriers_reaped_total,
             h3_carriers_dialed_total: t.h3_carriers_dialed_total,
+            quic_dial_hedges_total: t.quic_dial_hedges_total,
             #[cfg(feature = "tun")]
             tun_packets_total: tun.tun_packets_total,
             #[cfg(feature = "tun")]

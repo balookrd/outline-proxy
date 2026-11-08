@@ -8,6 +8,8 @@
 
 #![cfg(feature = "quic")]
 
+#[cfg(feature = "h3")]
+pub(crate) mod dial_race;
 #[cfg(test)]
 #[path = "tests/loopback.rs"]
 mod loopback;

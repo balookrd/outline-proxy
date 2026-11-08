@@ -24,7 +24,7 @@ use crate::shared_cache::{
     CarrierIdleState, ConnLife, ConnLifeGuard, ConnLifeLevel, SharedConnectionRegistry,
     carriers_to_reap, classify_by_substrings,
 };
-use crate::{AbortOnDrop, DnsCache, TransportStream, bind_addr_for, bind_udp_socket};
+use crate::{AbortOnDrop, DnsCache, TransportStream, bind_udp_socket};
 
 use crate::resumption::NegotiatedResume;
 
@@ -784,41 +784,44 @@ async fn connect_h3_connection(
     disable_udp_gso: bool,
     cache_key: Option<H3ConnectionKey>,
 ) -> Result<SharedH3Connection> {
-    let bind_addr = bind_addr_for(server_addr);
     let pmtu_key = crate::quic::pmtu_cache::PmtuKey::for_dial(server_name, server_addr, fwmark);
     let first_probe = crate::quic::pmtu_cache::first_probe_for(&pmtu_key);
-    let client_config = crate::quic::h3_quic_client_config_with_first_probe(first_probe);
 
-    // Freshly-bound per-dial endpoint — see [`client_endpoint`] for why the
-    // source port must change between dials.
-    let endpoint =
-        client_endpoint(bind_addr, fwmark, disable_udp_gso, metrics::H3_ENDPOINT_KIND_WS)?;
-
-    let connecting = endpoint
-        .connect_with(client_config, server_addr, server_name)
-        .with_context(|| format!("failed to initiate QUIC connection to {server_addr}"))?;
-    // Read inside the dial scope, like the client config above: the dial's
-    // browser profile decides whether this connection can receive datagrams.
+    // Read inside the dial scope, like the client config of each attempt: the
+    // dial's browser profile decides whether this connection can receive
+    // datagrams.
     let offers_datagrams = crate::quic::h3_dial_offers_udp_datagrams();
-    let (connection_handle, mut driver, send_request) = timeout(fresh_connect_timeout(), async {
-        let connection = connecting
-            .await
-            .with_context(|| format!("QUIC handshake failed for {server_addr}"))?;
-        crate::quic::raise_h3_receive_window(&connection);
-        let connection_handle = connection.clone();
-        let (driver, send_request) = vendored::h3_client_builder(offers_datagrams)
-            .build(h3_quinn::Connection::new(connection))
-            .await
-            .context("HTTP/3 handshake failed")?;
-        Ok::<_, anyhow::Error>((connection_handle, driver, send_request))
-    })
-    .await
-    .map_err(|_| {
-        anyhow!(
-            "HTTP/3 fresh connect timed out after {}s to {server_addr}",
-            fresh_connect_timeout().as_secs()
-        )
-    })??;
+    let (endpoint, connection_handle, mut driver, send_request) =
+        timeout(fresh_connect_timeout(), async {
+            // Each attempt binds a fresh per-dial endpoint — see
+            // [`client_endpoint`] for why the source port must change between
+            // dials, and `quic::dial_race` for why a silent one is raced.
+            let (endpoint, connection) = crate::quic::dial_race::connect_hedged(
+                metrics::H3_ENDPOINT_KIND_WS,
+                "QUIC",
+                server_addr,
+                server_name,
+                fwmark,
+                disable_udp_gso,
+                first_probe,
+                cache_key.is_some(),
+            )
+            .await?;
+            crate::quic::raise_h3_receive_window(&connection);
+            let connection_handle = connection.clone();
+            let (driver, send_request) = vendored::h3_client_builder(offers_datagrams)
+                .build(h3_quinn::Connection::new(connection))
+                .await
+                .context("HTTP/3 handshake failed")?;
+            Ok::<_, anyhow::Error>((endpoint, connection_handle, driver, send_request))
+        })
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "HTTP/3 fresh connect timed out after {}s to {server_addr}",
+                fresh_connect_timeout().as_secs()
+            )
+        })??;
 
     // One demultiplexer per connection, and only where datagrams can flow both
     // ways: we receive them (`offers_datagrams`) and the peer announced a

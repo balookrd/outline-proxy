@@ -64,6 +64,7 @@ pub fn record_h3_endpoint_opened(_kind: &'static str) {}
 pub fn record_h3_endpoint_closed(_kind: &'static str) {}
 pub fn record_h3_carrier_reaped(_kind: &'static str) {}
 pub fn record_h3_carrier_dialed(_kind: &'static str) {}
+pub fn record_quic_dial_hedge(_kind: &'static str, _extra_won: bool) {}
 pub fn set_h3_pool_carriers(_kind: &'static str, _idle: usize, _busy: usize) {}
 pub fn record_upstream_transport(
     _source: &'static str,

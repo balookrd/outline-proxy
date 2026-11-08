@@ -66,15 +66,15 @@ pub use self::transport::{
     record_dropped_oversized_udp_packet, record_failover, record_h3_carrier_dialed,
     record_h3_carrier_reaped, record_h3_endpoint_closed, record_h3_endpoint_opened,
     record_loss_failover, record_metrics_http_request, record_mid_session_retry,
-    record_payload_integrity_error, record_probe, record_probe_wakeup, record_quic_path_sample,
-    record_request, record_resume_lookup, record_runtime_failure, record_runtime_failure_cause,
-    record_runtime_failure_other_detail, record_runtime_failure_signature,
-    record_runtime_failure_suppressed, record_socks_tcp_strict_abort, record_soft_switch,
-    record_transport_connect, record_udp_h3_datagram, record_udp_h3_datagram_dropped,
-    record_udp_h3_datagram_fallback, record_udp_h3_datagram_session,
-    record_uplink_connection_close, record_uplink_reselect, record_uplink_selected,
-    record_upstream_transport, record_warm_standby_acquire, record_warm_standby_refill,
-    set_h3_pool_carriers, udp_flow_counters,
+    record_payload_integrity_error, record_probe, record_probe_wakeup, record_quic_dial_hedge,
+    record_quic_path_sample, record_request, record_resume_lookup, record_runtime_failure,
+    record_runtime_failure_cause, record_runtime_failure_other_detail,
+    record_runtime_failure_signature, record_runtime_failure_suppressed,
+    record_socks_tcp_strict_abort, record_soft_switch, record_transport_connect,
+    record_udp_h3_datagram, record_udp_h3_datagram_dropped, record_udp_h3_datagram_fallback,
+    record_udp_h3_datagram_session, record_uplink_connection_close, record_uplink_reselect,
+    record_uplink_selected, record_upstream_transport, record_warm_standby_acquire,
+    record_warm_standby_refill, set_h3_pool_carriers, udp_flow_counters,
 };
 #[cfg(all(feature = "prometheus", feature = "tun"))]
 pub use self::tun::{
@@ -151,6 +151,7 @@ struct Metrics {
     h3_pool_carriers: IntGaugeVec,
     h3_carriers_reaped_total: IntCounterVec,
     h3_carriers_dialed_total: IntCounterVec,
+    quic_dial_hedges_total: IntCounterVec,
     #[cfg(feature = "tun")]
     tun_packets_total: IntCounterVec,
     #[cfg(feature = "tun")]
