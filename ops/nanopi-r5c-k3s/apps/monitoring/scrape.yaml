@@ -159,3 +159,12 @@ scrape_configs:
   relabel_configs:
     - source_labels: [hostname]
       target_label: instance
+- job_name: vmalert
+  static_configs:
+  - targets:
+    # ClusterIP, not ingress: same hairpin reason as the grafana job above.
+    - vmalert.monitoring:8880
+- job_name: alertmanager
+  static_configs:
+  - targets:
+    - alertmanager.monitoring:9093

@@ -1,0 +1,158 @@
+# vmalert-tool evaluates time() from 2000-01-01 (946684800), so values that are
+# absolute timestamps below are offsets from that epoch.
+rule_files: [../rules.yaml]
+evaluation_interval: 1m
+tests:
+  - name: TargetDown fires after 5m, holds 15m, ignores other jobs
+    interval: 1m
+    input_series:
+      - series: 'up{job="rust-ws-exporter",instance="ubuntu"}'
+        values: '1 0x6 1x30'
+      - series: 'up{job="unbound-exporter",instance="cloud1"}'
+        values: '0x40'
+      - series: 'up{job="node-exporter",instance="k3s-1"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 4m
+        groupname: uplink
+        alertname: TargetDown
+        exp_alerts: []
+      - eval_time: 7m
+        groupname: uplink
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels: {job: rust-ws-exporter, instance: ubuntu, severity: critical}
+            exp_annotations:
+              summary: 'ubuntu (rust-ws-exporter) stopped reporting'
+              description: 'No successful scrape for five minutes: the process or the path to it is gone.'
+          - exp_labels: {job: unbound-exporter, instance: cloud1, severity: critical}
+            exp_annotations:
+              summary: 'cloud1 (unbound-exporter) stopped reporting'
+              description: 'No successful scrape for five minutes: the process or the path to it is gone.'
+      - eval_time: 20m
+        groupname: uplink
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels: {job: rust-ws-exporter, instance: ubuntu, severity: critical}
+            exp_annotations:
+              summary: 'ubuntu (rust-ws-exporter) stopped reporting'
+              description: 'No successful scrape for five minutes: the process or the path to it is gone.'
+          - exp_labels: {job: unbound-exporter, instance: cloud1, severity: critical}
+            exp_annotations:
+              summary: 'cloud1 (unbound-exporter) stopped reporting'
+              description: 'No successful scrape for five minutes: the process or the path to it is gone.'
+      - eval_time: 30m
+        groupname: uplink
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels: {job: unbound-exporter, instance: cloud1, severity: critical}
+            exp_annotations:
+              summary: 'cloud1 (unbound-exporter) stopped reporting'
+              description: 'No successful scrape for five minutes: the process or the path to it is gone.'
+
+  - name: AllUplinksDown fires only when every leg of an instance is unhealthy
+    interval: 1m
+    input_series:
+      - series: 'outline_ws_uplink_health_effective{instance="ubuntu",uplink="a"}'
+        values: '0x10'
+      - series: 'outline_ws_uplink_health_effective{instance="ubuntu",uplink="b"}'
+        values: '0x10'
+      - series: 'outline_ws_uplink_health_effective{instance="debian",uplink="a"}'
+        values: '0x10'
+      - series: 'outline_ws_uplink_health_effective{instance="debian",uplink="b"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 2m
+        groupname: uplink
+        alertname: AllUplinksDown
+        exp_alerts: []
+      - eval_time: 4m
+        groupname: uplink
+        alertname: AllUplinksDown
+        exp_alerts:
+          - exp_labels: {instance: ubuntu, severity: critical}
+            exp_annotations:
+              summary: 'ubuntu has no healthy uplink at all'
+              description: 'Every leg on this client is unhealthy, so there is no tunnel.'
+
+  - name: UplinkCarrierLossHigh fires for the active uplink only
+    interval: 1m
+    input_series:
+      - series: 'outline_ws_uplink_carrier_loss_ratio{instance="ubuntu",uplink="a",transport="ws_h2"}'
+        values: '0.1x20'
+      - series: 'outline_ws_global_active_uplink_info{instance="ubuntu",uplink="a"}'
+        values: '1x20'
+      - series: 'outline_ws_uplink_carrier_loss_ratio{instance="ubuntu",uplink="b",transport="ws_h2"}'
+        values: '0.5x20'
+      - series: 'outline_ws_global_active_uplink_info{instance="ubuntu",uplink="b"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        groupname: uplink
+        alertname: UplinkCarrierLossHigh
+        exp_alerts: []
+      - eval_time: 11m
+        groupname: uplink
+        alertname: UplinkCarrierLossHigh
+        exp_alerts:
+          - exp_labels: {instance: ubuntu, uplink: a, transport: ws_h2, severity: warning}
+            exp_annotations:
+              summary: 'active uplink a/ws_h2 on ubuntu is losing packets'
+              description: 'Carrier loss above 5% for ten minutes on the uplink carrying traffic.'
+
+  - name: UplinkFailoverStorm ignores scheduled shuffle rotations
+    interval: 1m
+    input_series:
+      - series: 'outline_ws_uplink_failovers_total{job="rust-ws-exporter",instance="ubuntu",transport="ws_h2"}'
+        values: '0+2x30'
+      - series: 'outline_ws_uplink_failovers_total{job="rust-ws-exporter",instance="debian",transport="ws_h2_shuffle_timer"}'
+        values: '0+10x30'
+    alert_rule_test:
+      - eval_time: 16m
+        groupname: uplink
+        alertname: UplinkFailoverStorm
+        exp_alerts:
+          - exp_labels: {instance: ubuntu, severity: warning}
+            exp_annotations:
+              summary: 'ubuntu is churning through uplinks'
+              description: 'More than 20 non-scheduled failovers in 15 minutes; shuffle_timer rotations are excluded.'
+
+  - name: UplinkCertExpiringSoon fires under 14 days after 1h
+    interval: 5m
+    input_series:
+      - series: 'outline_ws_uplink_cert_expiry_timestamp_seconds{instance="ubuntu",uplink="near"}'
+        values: '947548800x30'
+      - series: 'outline_ws_uplink_cert_expiry_timestamp_seconds{instance="ubuntu",uplink="far"}'
+        values: '949684800x30'
+    alert_rule_test:
+      - eval_time: 30m
+        groupname: uplink
+        alertname: UplinkCertExpiringSoon
+        exp_alerts: []
+      - eval_time: 70m
+        groupname: uplink
+        alertname: UplinkCertExpiringSoon
+        exp_alerts:
+          - exp_labels: {instance: ubuntu, uplink: near, severity: info}
+            exp_annotations:
+              summary: 'certificate for near expires in under 14 days'
+              description: 'Seen from ubuntu.'
+
+  - name: ClientRestarted fires while the process is younger than 3 minutes
+    interval: 1m
+    input_series:
+      - series: 'outline_ws_start_time_seconds{instance="ubuntu"}'
+        values: '946684860x20'
+    alert_rule_test:
+      - eval_time: 2m
+        groupname: uplink
+        alertname: ClientRestarted
+        exp_alerts:
+          - exp_labels: {instance: ubuntu, severity: info}
+            exp_annotations:
+              summary: 'outline-ws-rust restarted on ubuntu'
+              description: 'The client process is younger than 3 minutes.'
+      - eval_time: 10m
+        groupname: uplink
+        alertname: ClientRestarted
+        exp_alerts: []

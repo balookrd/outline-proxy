@@ -1,0 +1,87 @@
+# Alertmanager config, migrated from ops/grafana/alerting/{policies,contact-points}.yaml
+# on 2026-11-08. Placeholders __HEARTBEAT_TOKEN__, __TELEGRAM_BOT_TOKEN__ and
+# __TELEGRAM_CHAT_ID__ are substituted by deploy.sh from host-local files; the
+# rendered file is applied as the Secret alertmanager-config, never committed.
+# The SMTP password is a mounted file (Secret alertmanager-smtp).
+global:
+  smtp_smarthost: smtp.gmail.com:587
+  smtp_from: 'Alertmanager - beerloga.su <balookrd@gmail.com>'
+  smtp_auth_username: balookrd@gmail.com
+  smtp_auth_password_file: /etc/alertmanager/secrets/smtp
+  smtp_require_tls: true
+
+route:
+  receiver: owner
+  group_by: [alertname, instance]
+  group_wait: 30s
+  group_interval: 5m
+  # Twelve hours: an ongoing problem is one mail a day, not a stream.
+  repeat_interval: 12h
+  routes:
+    # The pulse leaves the tree first, so it keeps flowing in shadow mode too.
+    - receiver: heartbeat-observers
+      matchers: ['alertname="DeadMansSwitch"']
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 5m
+
+    # Shadow mode: vmalert runs with -external.label=shadow=true while Grafana
+    # still owns notifications. Everything except the pulse is dropped here.
+    # Harmless once the label is gone; remove after the cut-over settles.
+    - receiver: blackhole
+      matchers: ['shadow="true"']
+
+    # Client restarts: ~13 per week per client. Event route, no resolved notice.
+    # Grouped by instance: with a 3m alert window shorter than group_interval,
+    # a shared group swallowed all but the first node of a rolling deploy.
+    - receiver: owner-events
+      matchers: ['alertname="ClientRestarted"']
+      group_by: [alertname, instance]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 24h
+
+    # Node reboots: grouped by alertname so all three nodes at once arrive as
+    # one mail, the signal of shared power. The 10m window outlasts group_interval.
+    - receiver: owner-events
+      matchers: ['alertname="NodeRebooted"']
+      group_by: [alertname]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 24h
+
+receivers:
+  - name: blackhole
+
+  # Telegram reaches a phone; mail is the fallback for the day Telegram is
+  # blocked or the bot token is revoked.
+  - name: owner
+    email_configs:
+      - to: balookrd@yandex.ru
+        send_resolved: true
+    telegram_configs:
+      - bot_token: '__TELEGRAM_BOT_TOKEN__'
+        chat_id: __TELEGRAM_CHAT_ID__
+        parse_mode: HTML
+        send_resolved: true
+
+  # Same channels minus the resolved notice: "recovered" for an event already
+  # over reads as a second incident.
+  - name: owner-events
+    email_configs:
+      - to: balookrd@yandex.ru
+        send_resolved: false
+    telegram_configs:
+      - bot_token: '__TELEGRAM_BOT_TOKEN__'
+        chat_id: __TELEGRAM_CHAT_ID__
+        parse_mode: HTML
+        send_resolved: false
+
+  # Two independent observers: one mailing means its own path is broken, both
+  # mailing means the alerting stack is down.
+  - name: heartbeat-observers
+    webhook_configs:
+      - url: 'https://cloud1.beerloga.su/hb/__HEARTBEAT_TOKEN__'
+        send_resolved: false
+      - url: 'https://cloud2.beerloga.su/hb/__HEARTBEAT_TOKEN__'
+        send_resolved: false

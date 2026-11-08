@@ -1,0 +1,127 @@
+# vmalert rules, migrated from ops/grafana/alerting/rules.yaml (Grafana unified
+# alerting) on 2026-11-08. Thresholds, `for` and `keep_firing_for` are unchanged;
+# the reasoning for each number is in
+# docs/superpowers/specs/2026-08-07-uplink-email-alerting-design.md and in the
+# comments below, which carry what used to be long `description` annotations.
+#
+# Grafana wrapped every query as `expr > bool X` plus a threshold above 0. In
+# vmalert an alerting rule fires for every series the expression returns, so the
+# `bool` is dropped and the comparison filters.
+#
+# No data means no alert, and a failed query means nothing is sent — the same
+# behaviour Grafana had with noDataState/execErrState OK. A dead VictoriaMetrics
+# is caught by DeadMansSwitch going silent, not by every rule firing at once.
+#
+# Annotations must not contain < > & : the Telegram receiver uses parse_mode
+# HTML and Alertmanager templates do not escape. test.sh enforces this.
+groups:
+  - name: uplink
+    interval: 1m
+    rules:
+      # Five minutes is above every ordinary scrape gap seen in a week (1-7
+      # minutes) and below the real outages. unbound-exporter is listed because
+      # its container on cloud1 once stayed down for three days unnoticed.
+      # keep_firing_for: a target on a lossy path flaps; 35 notifications in
+      # one night of 2026-08-09 from nuxt2 became one alert per outage.
+      - alert: TargetDown
+        expr: 'up{job=~"rust-ws-exporter|rust-ss-exporter|unbound-exporter"} < 1'
+        for: 5m
+        keep_firing_for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.instance }} ({{ $labels.job }}) stopped reporting'
+          description: 'No successful scrape for five minutes: the process or the path to it is gone.'
+
+      # Baseline is 12 healthy legs on cloud1/cloud2 and 4 on debian/ubuntu, so
+      # zero is unambiguous.
+      - alert: AllUplinksDown
+        expr: 'sum by (instance) (outline_ws_uplink_health_effective) < 1'
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.instance }} has no healthy uplink at all'
+          description: 'Every leg on this client is unhealthy, so there is no tunnel.'
+
+      # Restricted to the uplink carrying traffic: a lossy standby leg (senko at
+      # 44% on 2026-08-11) affects nobody and stays visible on the dashboard.
+      # This also drops disabled uplinks, whose loss ratio freezes at its last
+      # value. 5% matches the loss-failover threshold calibrated on .102/.104;
+      # the 10m sustain separates this from single-sample spikes of 42%.
+      # keep_firing_for 30m: nuxt2 crossed the threshold 59 times in one night.
+      - alert: UplinkCarrierLossHigh
+        expr: 'outline_ws_uplink_carrier_loss_ratio > 0.05 and on (instance, uplink) outline_ws_global_active_uplink_info == 1'
+        for: 10m
+        keep_firing_for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'active uplink {{ $labels.uplink }}/{{ $labels.transport }} on {{ $labels.instance }} is losing packets'
+          description: 'Carrier loss above 5% for ten minutes on the uplink carrying traffic.'
+
+      # Background shuffle_timer rotations are excluded so that only data-plane
+      # failovers and wire exhaustions count. Same flapping shape as the loss
+      # rule, hence the same 30m hold.
+      - alert: UplinkFailoverStorm
+        expr: 'sum by (instance) (increase(outline_ws_uplink_failovers_total{job="rust-ws-exporter",transport!~".*_shuffle_timer"}[15m])) > 20'
+        keep_firing_for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.instance }} is churning through uplinks'
+          description: 'More than 20 non-scheduled failovers in 15 minutes; shuffle_timer rotations are excluded.'
+
+      # The nearest expiry on 2026-08-07 was 49 days out.
+      - alert: UplinkCertExpiringSoon
+        expr: '(outline_ws_uplink_cert_expiry_timestamp_seconds - time()) / 86400 < 14'
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: 'certificate for {{ $labels.uplink }} expires in under 14 days'
+          description: 'Seen from {{ $labels.instance }}.'
+
+      # A restart is an event, not a condition. The window is sized by delivery:
+      # 1m evaluation plus 30s group_wait means the alert must outlive ~1.5m or
+      # the notification never leaves; 3m is that floor plus slack. min by
+      # (instance) so that the freshest start-time series decides. ~13 per week
+      # on ubuntu, so the route (owner-events) drops resolved notices.
+      - alert: ClientRestarted
+        expr: 'min by (instance) (time() - outline_ws_start_time_seconds) < 180'
+        labels:
+          severity: info
+        annotations:
+          summary: 'outline-ws-rust restarted on {{ $labels.instance }}'
+          description: 'The client process is younger than 3 minutes.'
+
+  - name: nodes
+    interval: 1m
+    rules:
+      # node-exporter starts scraping 30-90s into the boot, so the first sample
+      # already shows a minute or two of uptime; 10m leaves slack over the 1m
+      # evaluation plus 30s group_wait. All three nodes in one window group into
+      # one mail (route groups by alertname), which points at shared power.
+      - alert: NodeRebooted
+        expr: 'min by (instance) (time() - node_boot_time_seconds{instance=~"k3s-[0-9]+"}) < 600'
+        labels:
+          severity: warning
+        annotations:
+          summary: 'k3s node {{ $labels.instance }} rebooted'
+          description: 'The node kernel is younger than 10 minutes.'
+
+  - name: heartbeat
+    interval: 1m
+    rules:
+      # Always firing, by design: its notifications are the pulse cloud1 and
+      # cloud2 listen for; silence is the signal. The condition goes through
+      # the datasource: if VictoriaMetrics dies, the query fails, vmalert stops
+      # sending, Alertmanager resolves the alert at its endsAt (about four
+      # evaluation intervals, measured 2026-11-08), the pulse stops and both
+      # observers mail. vector(1) would keep pulsing over a dead database.
+      - alert: DeadMansSwitch
+        expr: 'count(up) >= 1'
+        labels:
+          severity: none
+        annotations:
+          summary: 'pulse from vmalert in k3s, always firing on purpose'

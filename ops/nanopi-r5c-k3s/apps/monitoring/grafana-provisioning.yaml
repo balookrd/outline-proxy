@@ -23,6 +23,14 @@ data:
         isDefault: true
         jsonData:
           timeInterval: 15s
+      - name: alertmanager
+        uid: alertmanager-k3s
+        type: alertmanager
+        access: proxy
+        url: http://alertmanager.monitoring:9093
+        jsonData:
+          implementation: prometheus
+          handleGrafanaManagedAlerts: false
 ---
 apiVersion: v1
 kind: ConfigMap

@@ -1,0 +1,20 @@
+rule_files: [../rules.yaml]
+evaluation_interval: 1m
+tests:
+  - name: DeadMansSwitch fires while any target reports, silent without data
+    interval: 1m
+    input_series:
+      - series: 'up{job="node-exporter",instance="k3s-1"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 2m
+        groupname: heartbeat
+        alertname: DeadMansSwitch
+        exp_alerts:
+          - exp_labels: {severity: none}
+            exp_annotations:
+              summary: 'pulse from vmalert in k3s, always firing on purpose'
+      - eval_time: 30m
+        groupname: heartbeat
+        alertname: DeadMansSwitch
+        exp_alerts: []

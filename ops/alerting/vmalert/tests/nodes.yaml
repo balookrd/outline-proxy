@@ -1,0 +1,25 @@
+# vmalert-tool evaluates time() from 2000-01-01 (946684800), so values that are
+# absolute timestamps below are offsets from that epoch.
+rule_files: [../rules.yaml]
+evaluation_interval: 1m
+tests:
+  - name: NodeRebooted covers k3s nodes only, for 10 minutes after boot
+    interval: 1m
+    input_series:
+      - series: 'node_boot_time_seconds{instance="k3s-2"}'
+        values: '946684860x30'
+      - series: 'node_boot_time_seconds{instance="ubuntu"}'
+        values: '946684860x30'
+    alert_rule_test:
+      - eval_time: 5m
+        groupname: nodes
+        alertname: NodeRebooted
+        exp_alerts:
+          - exp_labels: {instance: k3s-2, severity: warning}
+            exp_annotations:
+              summary: 'k3s node k3s-2 rebooted'
+              description: 'The node kernel is younger than 10 minutes.'
+      - eval_time: 15m
+        groupname: nodes
+        alertname: NodeRebooted
+        exp_alerts: []

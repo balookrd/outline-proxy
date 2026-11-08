@@ -1,0 +1,64 @@
+# vmalert: evaluates the alert rules (ops/alerting/vmalert/rules.yaml, applied
+# as the ConfigMap vmalert-rules by ops/alerting/deploy.sh) against
+# VictoriaMetrics and sends firing alerts to Alertmanager.
+#
+# No nodeSelector and no volume: it can run on any node, so a dead k3s-1 does
+# not take alerting down with VictoriaMetrics. State of `for` timers is restored
+# from VictoriaMetrics on start (-remoteRead.url), where vmalert also writes the
+# ALERTS series (-remoteWrite.url) that the alerting dashboard reads.
+#
+# -external.label=shadow=true is the shadow mode of the migration: Alertmanager
+# drops everything with that label except the pulse. Removing the flag is the
+# cut-over (plan 2026-11-08-alerting-vmalert-alertmanager, task 7).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmalert
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: vmalert }
+  template:
+    metadata:
+      labels: { app: vmalert }
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsNonRoot: true
+      containers:
+        - name: vmalert
+          image: victoriametrics/vmalert@sha256:3256cba5ddaca5974eae6141105cec4ce37871f1c213f0a5c267ec0111bc68e1 # v1.155.0
+          args:
+            - -rule=/etc/vmalert/rules/*.yaml
+            - -configCheckInterval=1m
+            - -evaluationInterval=1m
+            - -datasource.url=http://victoria-metrics.monitoring:8428
+            - -remoteRead.url=http://victoria-metrics.monitoring:8428
+            - -remoteWrite.url=http://victoria-metrics.monitoring:8428
+            - -notifier.url=http://alertmanager.monitoring:9093
+            - -external.label=shadow=true
+          ports:
+            - { containerPort: 8880, name: http }
+          volumeMounts:
+            - { name: rules, mountPath: /etc/vmalert/rules, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /health, port: 8880 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits:   { memory: 128Mi }
+      volumes:
+        - name: rules
+          configMap: { name: vmalert-rules }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vmalert
+  namespace: monitoring
+spec:
+  selector: { app: vmalert }
+  ports:
+    - { port: 8880, targetPort: 8880 }

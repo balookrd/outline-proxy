@@ -1,0 +1,65 @@
+# Alertmanager: groups, deduplicates and delivers alerts from vmalert — mail and
+# Telegram to the owner, the dead man's pulse to cloud1/cloud2. Config is the
+# Secret alertmanager-config rendered by ops/alerting/deploy.sh.
+#
+# Storage is emptyDir on purpose. It holds silences and the notification log;
+# losing them on a pod restart means at worst one repeated notification and
+# forgotten silences. A PVC would pin the pod to a node (local-path) or tie it
+# to the NAS (NFS) — exactly the failure domains this pod exists to sit outside.
+#
+# Single replica, gossip off (--cluster.listen-address=): there is no peer.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: alertmanager }
+  template:
+    metadata:
+      labels: { app: alertmanager }
+    spec:
+      securityContext:
+        runAsUser: 65534
+        runAsNonRoot: true
+        fsGroup: 65534
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b # v0.34.2
+          args:
+            - --config.file=/etc/alertmanager/conf/alertmanager.yml
+            - --storage.path=/alertmanager
+            - --cluster.listen-address=
+            - --web.listen-address=:9093
+          ports:
+            - { containerPort: 9093, name: http }
+          volumeMounts:
+            - { name: config, mountPath: /etc/alertmanager/conf, readOnly: true }
+            - { name: smtp, mountPath: /etc/alertmanager/secrets, readOnly: true }
+            - { name: data, mountPath: /alertmanager }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: 9093 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits:   { memory: 128Mi }
+      volumes:
+        - name: config
+          secret: { secretName: alertmanager-config }
+        - name: smtp
+          secret: { secretName: alertmanager-smtp }
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  selector: { app: alertmanager }
+  ports:
+    - { port: 9093, targetPort: 9093 }
