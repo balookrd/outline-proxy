@@ -71,7 +71,7 @@ CronJob `grafana-backup`
 по расписанию `30 3 * * *` [проверить: часовой пояс CronJob — `timeZone` в
 манифесте не задан] снимает консистентный снимок БД и кладёт
 `grafana-YYYYmmdd-HHMM.db.gz` на NAS
-(`198.51.100.125:/mnt/HD/HD_a2/k8s/backup/grafana`), хранит семь последних. Снимок
+(`198.51.100.105:/volume1/k8s/backup/grafana`), хранит семь последних. Снимок
 делается модулем `sqlite3` из образа `python:3.12-alpine` (backup API захватывает
 и WAL), а не утилитой `sqlite3`: под работает под uid 472, а `apk add` требует
 root.

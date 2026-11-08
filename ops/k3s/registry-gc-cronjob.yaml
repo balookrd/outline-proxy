@@ -18,7 +18,7 @@
 # for a small private registry this is an acceptable trade against the
 # complexity of toggling the Deployment read-only around the job.
 #
-# Storage backend: NFS 198.18.1.125:/mnt/HD/HD_a2/k8s/registry — keep this in
+# Storage backend: NFS 198.18.1.105:/volume1/k8s/registry — keep this in
 # sync with the registry Deployment's `data` volume if the export ever moves.
 apiVersion: batch/v1
 kind: CronJob
@@ -57,5 +57,5 @@ spec:
           volumes:
             - name: data
               nfs:
-                server: 198.18.1.125
-                path: /mnt/HD/HD_a2/k8s/registry
+                server: 198.18.1.105
+                path: /volume1/k8s/registry

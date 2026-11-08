@@ -44,7 +44,7 @@ kubectl apply -f humidity.yaml
 ## Данные
 
 `conf` каждого сервиса — каталог на NAS
-(`198.51.100.125:/mnt/HD/HD_a2/k8s/smarthome/<name>`), inline `nfs`-том, без PVC.
+(`198.51.100.105:/volume1/k8s/smarthome/<name>`), inline `nfs`-том, без PVC.
 Там лежит `devices.json` — состояние, которое сервис переписывает сам. NFS, а не
 local-path: писатель один, блокировок нет, зато под не привязан к ноде.
 

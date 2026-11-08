@@ -15,7 +15,7 @@
 | Хранилище | Где лежат данные | Кто использует |
 |---|---|---|
 | `local-path` (default, встроен в k3s) | локальный NVMe ноды | VictoriaMetrics, Grafana (под прибит к `k3s-1`) |
-| `nfs-client` | NAS `198.51.100.125:/mnt/HD/HD_a2/k8s/pvc` (NFSv3) | PVC `ocserv-passwd` |
+| `nfs-client` | NAS `198.51.100.105:/volume1/k8s/pvc` (NFSv3) | PVC `ocserv-passwd` |
 | inline `nfs:` без PVC | каталоги на том же NAS | zigbee2mqtt, mosquitto, сервисы `smarthome`, реестр |
 
 Синглтон нельзя запустить в двух репликах (z2m подерётся за координатор, VM — за
@@ -89,7 +89,7 @@ watchdog это стоило рестарта контейнера (31 штук�
 обрывало лог; с ним z2m переподключается внутри процесса через 2 с, а лог
 переживает переподключение.
 
-Данные z2m — NFS (`198.51.100.125:/mnt/HD/HD_a2/k8s/zigbee2mqtt-data`), inline
+Данные z2m — NFS (`198.51.100.105:/volume1/k8s/zigbee2mqtt-data`), inline
 `nfs`-том без PVC: `database.db` у z2m — JSON-lines, а не SQLite, поэтому
 блокировок нет и сетевая ФС безопасна, а под не привязан к ноде. Ночного
 бэкапа у z2m нет — снят сознательно, копия на `.102` в `/opt/zigbee2mqtt`
@@ -141,7 +141,9 @@ VictoriaMetrics перенесена с `198.51.100.102` 2026-08-09 — namespac
 
 ## Раскладка на NAS
 
-Данные лежат в корне экспорта `/mnt/HD/HD_a2/k8s` (`registry/`, `smarthome/`,
+NAS — UGREEN DXP4800 Plus `.105` (до 2026-11-08 — WD MyCloud `.125`, план
+переезда: `docs/superpowers/plans/2026-11-08-k3s-nfs-125-to-105.md`). Данные
+лежат в корне экспорта `/volume1/k8s` (`registry/`, `smarthome/`,
 `zigbee2mqtt-data/`, `mosquitto-data/`), бэкапы — в `backup/` (`backup/grafana/`,
 `backup/victoria-metrics/`), тома `nfs-client` — в `pvc/`.
 
@@ -154,12 +156,19 @@ Stateful-поды на `local-path` — VictoriaMetrics и Grafana — оба н
 `nfs-client` ставится чартом (`./deploy.sh storage`). Автосозданные тома идут в
 подкаталог `pvc/`, отдельно от каталогов, заведённых руками при переездах с
 `.102` (`zigbee2mqtt-data`, `mosquitto-data`, `registry`, `smarthome`) и от
-`backup/`. NAS отвечает только по NFSv3 — на `nfsvers=4.1` и `nfsvers=4`
-монтирование падает с «Protocol not supported»; эта ошибка про версию
-протокола, а не про путь. Тот же каталог доступен и по короткому алиасу
-`198.51.100.125:/nfs/k8s` (так его монтирует autofs на `.102`), хотя
-`showmount -e` показывает только канонический путь. Root не сквошится, поэтому
-провижнер может выставлять права на то, что создал.
+`backup/`.
+
+Свойства экспорта (настраиваются в UGOS, в правах NFS общей папки `k8s`):
+
+| Параметр | Значение | Что делает |
+|---|---|---|
+| Клиенты | `198.51.100.0/24` | маска `198.51.100.*` не годится: nfs-utils сравнивает её с именем из обратного DNS, а узлы разрешаются в `k3s-1..3` — монтирование падает с `access denied by server` |
+| Маппинг | «все пользователи → администратор» (`all_squash,anonuid=1000,anongid=10`) | любой uid клиента, включая root, пишет как `1000:10`; без этого ACL UGOS (`system.ugacl_self`) пускает на запись только root и uid 1000 независимо от POSIX-прав |
+| Версия | NFSv3 | v4 на `/volume1/k8s` сервер отклоняет (`No such file or directory`), inline-тома без `mountOptions` сами откатываются на v3 |
+
+Следствие маппинга: `chown` с клиента возвращает `EPERM`, а все файлы на
+экспорте принадлежат `1000:10`. Провижнер делает только `chmod`, ему этого
+хватает. Копировать данные на экспорт — `rsync -rlptH`, без `-o -g`.
 
 Тома z2m, mosquitto, smarthome и реестра подключены inline (`nfs:` в манифесте), а
 не через `nfs-client`: их данные перенесены руками и лежат в каталогах с

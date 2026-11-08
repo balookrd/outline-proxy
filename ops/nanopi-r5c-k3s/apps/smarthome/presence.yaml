@@ -34,7 +34,7 @@ spec:
           tolerationSeconds: 60
       containers:
         - name: presence
-          image: registry.k3s.beerloga.su/presence:c521877
+          image: registry.k3s.beerloga.su/presence:8680599
           imagePullPolicy: IfNotPresent
           args:
             - --path
@@ -65,5 +65,5 @@ spec:
       volumes:
         - name: conf
           nfs:
-            server: 198.18.1.125
-            path: /mnt/HD/HD_a2/k8s/smarthome/presence
+            server: 198.18.1.105
+            path: /volume1/k8s/smarthome/presence

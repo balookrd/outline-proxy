@@ -2,25 +2,26 @@
 # Install:
 #   helm install nfs-client \
 #     nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
-#     -n kube-system -f nfs-provisioner.values.yaml
+#     --version 4.0.18 -n kube-system -f nfs-provisioner.values.yaml
+#
+# The provisioner's own PV pins nfs.server/nfs.path and its spec is immutable,
+# so moving the export means `helm uninstall` + install, not `helm upgrade`.
 #
 # The provisioner creates one subdirectory per PVC on the NAS export and
 # chmods it 0777. The export must allow that — see the mount notes below.
 
 nfs:
-  server: 198.18.1.125
-  # /nfs/k8s is the same directory under a shorter alias the NAS also accepts
-  # (that is how .102 mounts its shares through autofs). showmount -e only
-  # advertises the canonical path, so that is what is spelled out here.
-  #
+  # UGREEN DXP4800 Plus; moved here from the WD MyCloud 198.18.1.125 on
+  # 2026-11-08 (docs/superpowers/plans/2026-11-08-k3s-nfs-125-to-105.md).
+  server: 198.18.1.105
   # Auto-provisioned volumes go into a pvc/ subdirectory rather than the export
   # root, which already holds hand-made directories (zigbee2mqtt-data, backup,
   # registry, smarthome). Machine-managed and hand-managed data stay separate.
-  path: /mnt/HD/HD_a2/k8s/pvc
-  # NFSv3 only: the NAS answers "Protocol not supported" to both nfsvers=4.1
-  # and nfsvers=4 (checked 2026-08-09 by mounting from k3s-1). That error is
-  # about the protocol version, not the path — do not read it as "no such
-  # export".
+  path: /volume1/k8s/pvc
+  # NFSv3: v4 mounts of /volume1/k8s fail with "reason given by server: No such
+  # file or directory" (the share is outside the NAS's v4 pseudo-root; checked
+  # 2026-11-08 from k3s-1). Inline nfs: volumes, which take no mount options,
+  # fall back to v3 on their own.
   mountOptions:
     - nfsvers=3
     - hard
@@ -44,11 +45,17 @@ resources:
     cpu: 10m
     memory: 32Mi
 
-# NAS export state (verified 2026-08-09, configured on the NAS itself):
-#   - export is world-accessible (`*`) and served over NFSv3 only;
-#   - no root squash: a directory created by root keeps root as its owner,
-#     so the provisioner can chmod what it creates;
-#   - the export root is 0777, and so is pvc/.
+# NAS export state (verified 2026-11-08, set in the UGOS NFS settings of the
+# k8s share):
+#   - clients 198.18.1.0/24. A `198.18.1.*` wildcard does NOT work: nfs-utils
+#     matches it against the reverse-DNS name, and the nodes resolve to
+#     k3s-1..3, so mounts fail with "access denied by server";
+#   - "map all users to admin" = all_squash,anonuid=1000,anongid=10. Every
+#     client uid, root included, writes as 1000:10 (sysadm). This is needed
+#     because the share carries a UGOS ACL (system.ugacl_self, ugacl_vfs) that
+#     lets only root and uid 1000 write, whatever the POSIX mode says;
+#   - consequence: chown from a client fails with EPERM; chmod works, which
+#     is all the provisioner does.
 #
 # Note that zigbee2mqtt and mosquitto do NOT use this storage class: they mount
 # their directories inline (`nfs:` volumes) because those were migrated by hand

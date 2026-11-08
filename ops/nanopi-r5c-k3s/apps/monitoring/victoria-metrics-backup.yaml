@@ -46,5 +46,5 @@ spec:
                 claimName: victoria-metrics-data
             - name: backup
               nfs:
-                server: 198.18.1.125
-                path: /mnt/HD/HD_a2/k8s/backup
+                server: 198.18.1.105
+                path: /volume1/k8s/backup

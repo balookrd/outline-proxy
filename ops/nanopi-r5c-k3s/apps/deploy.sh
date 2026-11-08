@@ -57,10 +57,10 @@ stage_repos() {
 }
 
 stage_storage() {
-  log "NFS provisioner (198.18.1.125:/mnt/HD/HD_a2/k8s/pvc, NFSv3)"
+  log "NFS provisioner (198.18.1.105:/volume1/k8s/pvc, NFSv3)"
   helm upgrade --install nfs-client \
     nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
-    -n kube-system -f storage/nfs-provisioner.values.yaml
+    --version 4.0.18 -n kube-system -f storage/nfs-provisioner.values.yaml
 }
 
 stage_metallb() {
