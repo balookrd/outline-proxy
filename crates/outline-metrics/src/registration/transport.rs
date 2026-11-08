@@ -12,6 +12,7 @@ pub(super) struct TransportFields {
     pub(super) h3_pool_carriers: IntGaugeVec,
     pub(super) h3_carriers_reaped_total: IntCounterVec,
     pub(super) h3_carriers_dialed_total: IntCounterVec,
+    pub(super) quic_dial_hedges_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> TransportFields {
@@ -110,6 +111,20 @@ pub(super) fn build(registry: &Registry) -> TransportFields {
         ["kind"]
     );
 
+    // A QUIC handshake silent past the first hedge point races further dials
+    // from fresh source ports (`outline-transport` `quic::dial_race`). `won`
+    // means a later attempt finished first: the path discarded the first
+    // flow, which a lone dial would have waited out to the carrier budget.
+    // `lost` means the first attempt won anyway, so the hedge only cost a
+    // spare handshake: a share that grows with RTT says the schedule is tight.
+    let quic_dial_hedges_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_quic_dial_hedges_total",
+        "QUIC dials that raced extra handshakes from fresh source ports, by dialer and by whether an extra attempt won.",
+        ["kind", "result"]
+    );
+
     TransportFields {
         transport_connects_total,
         transport_connects_active,
@@ -121,5 +136,6 @@ pub(super) fn build(registry: &Registry) -> TransportFields {
         h3_pool_carriers,
         h3_carriers_reaped_total,
         h3_carriers_dialed_total,
+        quic_dial_hedges_total,
     }
 }

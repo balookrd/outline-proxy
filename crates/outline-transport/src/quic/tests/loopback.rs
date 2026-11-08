@@ -159,3 +159,44 @@ pub(super) async fn narrow_uplink(
     });
     (addr, task)
 }
+
+/// UDP relay standing in for a path that discards whole flows: every datagram
+/// from the first client source port it sees is dropped, while clients on any
+/// other port are relayed both ways, each through its own upstream socket.
+pub(super) async fn drop_first_flow(
+    server: SocketAddr,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let front = Arc::new(tokio::net::UdpSocket::bind(loopback()).await.unwrap());
+    let addr = front.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let mut doomed = None;
+        let mut flows: std::collections::HashMap<SocketAddr, Arc<tokio::net::UdpSocket>> =
+            std::collections::HashMap::new();
+        let mut buf = vec![0u8; 65_536];
+        let mut downstream = tokio::task::JoinSet::new();
+        loop {
+            let Ok((n, from)) = front.recv_from(&mut buf).await else { return };
+            if *doomed.get_or_insert(from) == from {
+                continue;
+            }
+            let back = match flows.get(&from) {
+                Some(back) => Arc::clone(back),
+                None => {
+                    let back = Arc::new(tokio::net::UdpSocket::bind(loopback()).await.unwrap());
+                    back.connect(server).await.unwrap();
+                    let (reply, front) = (Arc::clone(&back), Arc::clone(&front));
+                    downstream.spawn(async move {
+                        let mut down = vec![0u8; 65_536];
+                        while let Ok(n) = reply.recv(&mut down).await {
+                            let _ = front.send_to(&down[..n], from).await;
+                        }
+                    });
+                    flows.insert(from, Arc::clone(&back));
+                    back
+                },
+            };
+            let _ = back.send(&buf[..n]).await;
+        }
+    });
+    (addr, task)
+}

@@ -38,8 +38,8 @@ use outline_wire::h3_datagram::{DatagramDemux, PathSample};
 use crate::AbortOnDrop;
 use crate::fingerprint_profile::TlsFingerprint;
 use crate::h3::{
-    H3ConnectionGuard, TrackedEndpoint, choose_slot, classify_h3_close, client_endpoint,
-    is_expected_h3_close, record_datagram_drop,
+    H3ConnectionGuard, TrackedEndpoint, choose_slot, classify_h3_close, is_expected_h3_close,
+    record_datagram_drop,
 };
 use crate::shared_cache::{
     CachedEntry, CarrierIdleState, ConnLife, ConnLifeGuard, ConnLifeLevel, ConnectionKey,
@@ -404,14 +404,6 @@ async fn dial(
     disable_udp_gso: bool,
     cache_key: XhttpH3Key,
 ) -> Result<SharedXhttpH3Connection> {
-    let endpoint = client_endpoint(
-        crate::bind_addr_for(server_addr),
-        fwmark,
-        disable_udp_gso,
-        metrics::H3_ENDPOINT_KIND_XHTTP,
-    )
-    .with_context(|| format!("failed to bind xhttp/h3 QUIC endpoint for {server_addr}"))?;
-
     let server_name = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         ServerName::IpAddress(ip.into())
     } else {
@@ -425,34 +417,38 @@ async fn dial(
 
     let pmtu_key = crate::quic::pmtu_cache::PmtuKey::for_dial(host, server_addr, fwmark);
     let first_probe = crate::quic::pmtu_cache::first_probe_for(&pmtu_key);
-    let connecting = endpoint
-        .connect_with(
-            crate::quic::h3_quic_client_config_with_first_probe(first_probe),
-            server_addr,
-            &server_name_str,
-        )
-        .with_context(|| format!("failed to initiate xhttp/h3 QUIC connection to {server_addr}"))?;
-    // Read inside the dial scope, like the client config above: the dial's
-    // browser profile decides whether this connection can receive datagrams.
+    // Read inside the dial scope, like the client config of each attempt: the
+    // dial's browser profile decides whether this connection can receive
+    // datagrams.
     let offers_datagrams = crate::quic::h3_dial_offers_udp_datagrams();
-    let (connection, mut driver, send_request) = timeout(fresh_connect_timeout(), async {
-        let connection = connecting
-            .await
-            .with_context(|| format!("xhttp/h3 QUIC handshake failed for {server_addr}"))?;
-        crate::quic::raise_h3_receive_window(&connection);
-        let (driver, send_request) = crate::h3::vendored::h3_client_builder(offers_datagrams)
-            .build(h3_quinn::Connection::new(connection.clone()))
-            .await
-            .context("xhttp/h3 HTTP/3 handshake failed")?;
-        Ok::<_, anyhow::Error>((connection, driver, send_request))
-    })
-    .await
-    .map_err(|_| {
-        anyhow!(
-            "xhttp/h3 fresh connect timed out after {}s to {server_addr}",
-            fresh_connect_timeout().as_secs()
-        )
-    })??;
+    let (endpoint, connection, mut driver, send_request) =
+        timeout(fresh_connect_timeout(), async {
+            // A silent handshake is raced from fresh source ports; see `quic::dial_race`.
+            let (endpoint, connection) = crate::quic::dial_race::connect_hedged(
+                metrics::H3_ENDPOINT_KIND_XHTTP,
+                "xhttp/h3 QUIC",
+                server_addr,
+                &server_name_str,
+                fwmark,
+                disable_udp_gso,
+                first_probe,
+                true,
+            )
+            .await?;
+            crate::quic::raise_h3_receive_window(&connection);
+            let (driver, send_request) = crate::h3::vendored::h3_client_builder(offers_datagrams)
+                .build(h3_quinn::Connection::new(connection.clone()))
+                .await
+                .context("xhttp/h3 HTTP/3 handshake failed")?;
+            Ok::<_, anyhow::Error>((endpoint, connection, driver, send_request))
+        })
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "xhttp/h3 fresh connect timed out after {}s to {server_addr}",
+                fresh_connect_timeout().as_secs()
+            )
+        })??;
 
     // One demultiplexer per connection, and only where datagrams can flow both
     // ways: we receive them (`offers_datagrams`) and the peer announced a

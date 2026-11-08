@@ -76,6 +76,16 @@ pub fn record_h3_carrier_dialed(kind: &'static str) {
     METRICS.h3_carriers_dialed_total.with_label_values(&[kind]).inc();
 }
 
+/// A QUIC dial started extra handshakes from fresh source ports; `extra_won`
+/// says whether one of them finished before the first attempt.
+pub fn record_quic_dial_hedge(kind: &'static str, extra_won: bool) {
+    let result = if extra_won { "won" } else { "lost" };
+    METRICS
+        .quic_dial_hedges_total
+        .with_label_values(&[kind, result])
+        .inc();
+}
+
 /// An idle pooled carrier was closed and its endpoint released.
 pub fn record_h3_carrier_reaped(kind: &'static str) {
     METRICS.h3_carriers_reaped_total.with_label_values(&[kind]).inc();
