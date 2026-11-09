@@ -25,7 +25,7 @@ hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", 
 http-body-util = "0.1"
 libc = "0.2"
 libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"], optional = true }
-lru = "0.18"
+lru = "0.19"
 mimalloc = { version = "0.1", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.7", default-features = false, features = ["background_threads", "stats", "unprefixed_malloc_on_supported_platforms"], optional = true }
 tikv-jemalloc-ctl = { version = "0.7", default-features = false, features = ["stats"], optional = true }

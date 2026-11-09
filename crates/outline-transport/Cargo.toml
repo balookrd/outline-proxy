@@ -39,7 +39,7 @@ bytes = "1.10"
 brotli-decompressor = "6.2"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-hashbrown = "0.14"
+hashbrown = "0.17"
 h3 = { version = "0.0.8", optional = true }
 h3-quinn = { version = "0.0.10", optional = true }
 http = "1.3"
