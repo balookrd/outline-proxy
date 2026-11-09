@@ -19,10 +19,13 @@ deployment:
   # node until the 300 s not-ready/unreachable toleration evicts the pod. With a
   # second replica elsewhere the dead endpoint is dropped once the node turns
   # NotReady (~40-50 s), and the other pod keeps serving meanwhile.
-  replicas: 2
+  # Three replicas = one per node: with externalTrafficPolicy Local (below)
+  # MetalLB can announce the VIP from any node, and draining one node still
+  # leaves two endpoints.
+  replicas: 3
 
-# Hard spread: never both replicas on one node, or a single node loss is back
-# to the old outage. Three nodes leave room for the rolling-update surge pod.
+# Hard spread: never two replicas on one node, or a single node loss takes out
+# two endpoints at once.
 affinity:
   podAntiAffinity:
     requiredDuringSchedulingIgnoredDuringExecution:
@@ -32,10 +35,19 @@ affinity:
             app.kubernetes.io/instance: traefik-traefik
         topologyKey: kubernetes.io/hostname
 
-# Keeps `kubectl drain` from evicting both replicas at once.
+# Keeps `kubectl drain` and the descheduler to one replica at a time.
 podDisruptionBudget:
   enabled: true
-  minAvailable: 1
+  maxUnavailable: 1
+
+# Replace in place, one pod at a time. With 3 replicas on 3 nodes and the
+# required anti-affinity above, the chart default (maxSurge 1, maxUnavailable 0)
+# would create a 4th pod that has no node to go to — the rollout would hang.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 1
 
 service:
   type: LoadBalancer
