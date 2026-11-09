@@ -35,6 +35,47 @@
 
 Уменьшать задержку дальше не стоит: на флапах сети ложные переезды обходятся дороже.
 
+## Выравнивание подов по узлам
+
+Новый под планировщик ставит на узел с наименьшими requests, но работающие поды
+сам не двигает. После поочерёдных перезагрузок (drain k3s-3 → k3s-1 → k3s-2)
+последний узел остаётся пустым: 2026-11-09 было 8 / 0 / 10 рабочих подов.
+`topologySpreadConstraints` тут не помогают: constraint считает поды только своего
+namespace, а синглтоны разбросаны по шести namespace.
+
+Выравнивает descheduler (чарт `descheduler/descheduler` 0.36.0, CronJob в
+`kube-system`, стадия `./deploy.sh descheduler`). Политика —
+[`descheduler/descheduler.values.yaml`](descheduler/descheduler.values.yaml), в шапке
+файла обоснование порогов.
+
+| Параметр | Значение | Что делает |
+|---|---|---|
+| `schedule` / `timeZone` | `15 4 * * *`, `Europe/Moscow` | один прогон за ночь; дефолт чарта — каждые 2 мин |
+| `LowNodeUtilization.useDeviationThresholds` | `true` | пороги считаются от среднего по кластеру |
+| `thresholds` / `targetThresholds` `pods` | `1` | источник — узел выше среднего больше чем на 1 п.п. подов (≈1,1 пода), приёмник — ниже на столько же |
+| `thresholds` / `targetThresholds` `memory` | `3` | то же по memory requests, 3 п.п. ≈ 120 МиБ |
+| `maxNoOfPodsToEvictTotal` | `2` | не больше двух выселений за прогон |
+| `DefaultEvictor` | защита local storage и PVC | поды с `emptyDir` (Alertmanager) и с PVC не трогаются; Alertmanager и Traefik и так стоят по одной реплике на узел |
+
+Выселенный под рестартует (у синглтонов `Recreate`): zigbee2mqtt и другие
+сервисы `smarthome` в 04:15 могут быть недоступны ~30 с. Внутри полосы ничего не
+двигается; одно выселение меняет загрузку узла на 0,9 п.п. по подам, а ширина
+полосы 2 п.п., поэтому приёмник не становится источником и поды не ходят туда-обратно.
+
+Ручной прогон с той же политикой:
+
+```bash
+kubectl -n kube-system create job --from=cronjob/descheduler descheduler-manual-$(date +%s)
+kubectl -n kube-system logs job/<имя job> | grep -E 'classified|Evicted pod|nothing to do'
+```
+
+`--dry-run` в v0.36.0 непригоден: его кешированный клиент не видит подов и
+сообщает «All nodes are underutilized». Для безопасного предпросмотра
+поставьте во временных values в `DefaultEvictor.args` `labelSelector`, который не
+совпадает ни с одним подом (например, `matchLabels: {descheduler-probe:
+never-matches}`), и запустите job: в логе будет классификация узлов, выселений
+не будет. После проверки верните обычные values через `./deploy.sh descheduler`.
+
 ## Порядок применения
 
 Всё раскатывает [`deploy.sh`](deploy.sh), идемпотентно (`helm upgrade --install`,
@@ -43,12 +84,12 @@
 ```bash
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 ./deploy.sh              # все стадии по порядку
-./deploy.sh metallb      # одна стадия: repos|storage|metallb|traefik|apps|ingress
+./deploy.sh metallb      # одна стадия: repos|storage|metallb|traefik|apps|ingress|descheduler
 ```
 
 Стадии: NFS-провижнер → MetalLB (+ пул, с ожиданием webhook) → Traefik (+ ожидание VIP)
 → namespaces + нагрузка (`monitoring`, `home`, `smarthome`, `outline`, `vpn`) →
-HTTP-роуты. Требует `kubectl` и `helm` в PATH. Каталог `registry/` скрипт не
+HTTP-роуты → descheduler. Требует `kubectl` и `helm` в PATH. Каталог `registry/` скрипт не
 применяет — `kubectl apply -f registry/registry.yaml` отдельно.
 
 Скрипт не применяет `*.example.yaml` (шаблоны секретов) и любой манифест с

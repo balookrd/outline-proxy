@@ -1,0 +1,101 @@
+# Descheduler: slow nightly rebalancing of pods across k3s-1..3.
+#
+# Why it exists: the scheduler already places NEW pods on the least-requested
+# node (NodeResourcesFit/LeastAllocated), but nothing ever moves a running pod
+# back. After rolling reboots (drain k3s-3 -> k3s-1 -> k3s-2) the last drained
+# node stays empty: on 2026-11-09 the split was 8 / 0 / 10 workload pods and
+# 416 / 32 / 518 MiB of memory requests.
+#
+# topologySpreadConstraints cannot fix it: a constraint only counts pods in the
+# pod's own namespace, and the workloads are ~16 singletons spread over six
+# namespaces.
+#
+# Anti-churn design (the goal is "even, but no constant reshuffling"):
+#   - one run per night, not the chart's default */2 minutes;
+#   - LowNodeUtilization with deviation thresholds: a node is a source only if it
+#     is above the cluster mean by more than the band, a target only if below it
+#     by more than the band (underutilized needs ALL resources below, overutilized
+#     ANY above). Inside the band nothing moves, so a balanced cluster stays put;
+#   - band width is chosen so one move cannot flip a target into a source:
+#     pods +-1 point (~1.1 pods; one pod = 0.9 point < 2-point band), memory +-3 points
+#     (~120 MiB; the heaviest request, zigbee2mqtt 128 MiB = 3.3 points, still
+#     lands below mean + 3);
+#   - at most 2 evictions per run, so a large skew is fixed over 1-2 nights;
+#   - every other default plugin of the chart is off.
+#
+# Units: memory = percent of allocatable (3916 MiB per node); pods = percent of
+# the 110-pod limit (DaemonSet pods count, equally on every node).
+# Measured 2026-11-09 from 8 / 0 / 10 workload pods: a +-3 point pod band
+# stopped at 8 / 1 / 9, +-2 points at 6 / 2 / 8, +-1 point at 6 / 4 / 7
+# (memory requests 416 / 192 / 358 MiB) — there the memory band holds k3s-2
+# out of the "underutilized" class and runs end with no evictions.
+# The descheduler's own pod (1 pod, 64 MiB request) counts on the node it runs
+# on; the scheduler puts it on the least-loaded node, which only makes that
+# node look slightly fuller — it biases toward fewer moves, not more.
+#
+# Do not trust --dry-run on v0.36.0: its cached client saw zero pods on every
+# node ("All nodes are underutilized"). To preview safely, run the real mode
+# with a DefaultEvictor labelSelector that matches nothing — it logs the node
+# classification and evicts nobody (see apps/README.md).
+#
+# Not evicted:
+#   - pods with local storage (emptyDir) — Alertmanager. Its three replicas
+#     sit one per node under required anti-affinity, so a move has nowhere to
+#     go anyway; the protection just skips a pointless eviction;
+#   - pods with a PVC (nfs-client provisioner, grafana/VM if scaled back up);
+#   - system-cluster-critical pods (coredns), DaemonSets, bare pods;
+#   - Traefik: three replicas pinned one per node by the same kind of
+#     anti-affinity, plus its PodDisruptionBudget (maxUnavailable: 1).
+#
+# Manual run (same policy, outside the schedule):
+#   kubectl -n kube-system create job --from=cronjob/descheduler descheduler-manual-$(date +%s)
+
+kind: CronJob
+schedule: "15 4 * * *"
+timeZone: Europe/Moscow
+startingDeadlineSeconds: 3600
+successfulJobsHistoryLimit: 3
+failedJobsHistoryLimit: 3
+ttlSecondsAfterFinished: 604800
+
+# The job lives for seconds once a day; the chart default (500m / 256Mi,
+# guaranteed) would reserve an eighth of a node's CPU for nothing.
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+
+cmdOptions:
+  v: 3
+
+deschedulerPolicy:
+  maxNoOfPodsToEvictTotal: 2
+  maxNoOfPodsToEvictPerNode: 2
+  profiles:
+    - name: balance
+      pluginConfig:
+        - name: DefaultEvictor
+          args:
+            podProtections:
+              extraEnabled:
+                - PodsWithPVC
+            # Evict only a pod that fits on some other node (selectors,
+            # taints, affinity incl. inter-pod anti-affinity, requests).
+            # Without it a Traefik replica, pinned one per node, would be
+            # evicted, land back on the same node and repeat every night.
+            nodeFit: true
+        - name: LowNodeUtilization
+          args:
+            useDeviationThresholds: true
+            thresholds:
+              memory: 3
+              pods: 1
+            targetThresholds:
+              memory: 3
+              pods: 1
+      plugins:
+        balance:
+          enabled:
+            - LowNodeUtilization

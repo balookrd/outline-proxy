@@ -9,7 +9,7 @@
 #
 # Usage:
 #   ./deploy.sh                # run every stage in order
-#   ./deploy.sh metallb        # one stage: repos|storage|metallb|traefik|apps|ingress
+#   ./deploy.sh metallb        # one stage: repos|storage|metallb|traefik|apps|ingress|descheduler
 #   ./deploy.sh edge           # ingress layer only: MetalLB + Traefik + routes,
 #                              # without touching workloads
 #
@@ -53,6 +53,7 @@ stage_repos() {
     https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/ >/dev/null 2>&1 || true
   helm repo add metallb https://metallb.github.io/metallb >/dev/null 2>&1 || true
   helm repo add traefik https://traefik.github.io/charts   >/dev/null 2>&1 || true
+  helm repo add descheduler https://kubernetes-sigs.github.io/descheduler/ >/dev/null 2>&1 || true
   helm repo update >/dev/null
 }
 
@@ -121,6 +122,15 @@ stage_ingress() {
   apply_file ingress/ingress-routes.yaml
 }
 
+# Nightly rebalancing of pods across nodes (CronJob, 04:15 Europe/Moscow).
+# Chart minor tracks the Kubernetes minor (0.36 <-> k8s 1.36): bump it together
+# with k3s. Policy and the anti-churn reasoning live in the values file.
+stage_descheduler() {
+  log "descheduler (nightly rebalance)"
+  helm upgrade --install descheduler descheduler/descheduler --version 0.36.0 \
+    -n kube-system -f descheduler/descheduler.values.yaml
+}
+
 main() {
   need kubectl
   need helm
@@ -132,9 +142,10 @@ main() {
     traefik) stage_repos; stage_traefik ;;
     apps)    stage_apps ;;
     ingress) stage_ingress ;;
+    descheduler) stage_repos; stage_descheduler ;;
     edge)    stage_repos; stage_metallb; stage_traefik; stage_namespaces; stage_ingress ;;
-    all)     stage_repos; stage_storage; stage_metallb; stage_traefik; stage_apps; stage_ingress ;;
-    *)       die "unknown stage '$stage' (repos|storage|metallb|traefik|apps|ingress|edge|all)" ;;
+    all)     stage_repos; stage_storage; stage_metallb; stage_traefik; stage_apps; stage_ingress; stage_descheduler ;;
+    *)       die "unknown stage '$stage' (repos|storage|metallb|traefik|apps|ingress|descheduler|edge|all)" ;;
   esac
   log "done: $stage"
 }
