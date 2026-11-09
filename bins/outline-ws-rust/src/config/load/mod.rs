@@ -138,6 +138,14 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .fingerprint_profile
         .or_else(|| file.as_ref().and_then(|f| f.fingerprint_profile))
         .unwrap_or_default();
+    // Resolved here, not in bootstrap, so a typo or a foreign-OS profile
+    // fails the config load with the list of selectable names.
+    let fingerprint_profile_pin = file
+        .as_ref()
+        .and_then(|f| f.fingerprint_profile_pin.as_deref())
+        .map(outline_transport::resolve_fingerprint_profile_pin)
+        .transpose()
+        .context("invalid fingerprint_profile_pin")?;
 
     // State file path priority: CLI flag > config key > default (config
     // path with extension replaced by ".state.toml"). Relative paths in
@@ -176,6 +184,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         tcp_timeouts,
         dial_timeout,
         fingerprint_profile,
+        fingerprint_profile_pin,
         padding,
     })
 }

@@ -21,6 +21,20 @@ use outline_uplink::{UplinkRegistry, log_registry_summary};
 #[cfg(feature = "socks5")]
 mod listener;
 mod state_store;
+#[cfg(test)]
+mod tests;
+
+/// True when at least one dial scope (an uplink or one of its fallbacks)
+/// resolves to `ProcessStable`: its own override, else the global strategy.
+fn any_process_stable(
+    global: outline_transport::FingerprintProfileStrategy,
+    overrides: impl IntoIterator<Item = Option<outline_transport::FingerprintProfileStrategy>>,
+) -> bool {
+    use outline_transport::FingerprintProfileStrategy as Fp;
+    overrides
+        .into_iter()
+        .any(|o| o.unwrap_or(global) == Fp::ProcessStable)
+}
 
 pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd>) -> Result<()> {
     // `tun_fd` is only read by the ingresses that can act on it (TUN itself,
@@ -127,6 +141,21 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd
     // `None`, so the call is a no-op for deployments that did not opt
     // in via the top-level `fingerprint_profile` config key.
     outline_transport::init_fingerprint_profile_strategy(config.fingerprint_profile);
+    if let Some(profile) = config.fingerprint_profile_pin {
+        outline_transport::init_fingerprint_profile_pin(profile);
+        let overrides = config.groups.iter().flat_map(|g| &g.uplinks).flat_map(|u| {
+            std::iter::once(u.fingerprint_profile)
+                .chain(u.fallbacks.iter().map(|f| f.fingerprint_profile))
+        });
+        if any_process_stable(config.fingerprint_profile, overrides) {
+            tracing::info!(profile = profile.name, "fingerprint profile pinned for process_stable");
+        } else {
+            tracing::warn!(
+                profile = profile.name,
+                "fingerprint_profile_pin is set but no uplink uses process_stable; the pin has no effect"
+            );
+        }
+    }
 
     // Wire the carrier-padding parameters + global default (anti TLS-in-TLS
     // record-size correlation). The scheme params are built from the range

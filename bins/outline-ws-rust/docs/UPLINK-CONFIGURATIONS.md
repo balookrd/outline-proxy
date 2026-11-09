@@ -1984,6 +1984,35 @@ use outline_transport::{
 init_fingerprint_profile_strategy(FingerprintProfileStrategy::ProcessStable);
 ```
 
+### Weighted pick and pinning
+
+The profile is drawn from the pool of the OS the client runs on with
+per-browser weights chosen by the operator as an approximation of browser
+shares, set in the `PROFILES` table: Linux — Chrome 70,
+Firefox 30; macOS — Chrome 60, Safari 30, Firefox 10; Android — Chrome.
+The seed (hostname for `process_stable`, `host:port` for `per_host_stable`)
+goes through FNV-1a + splitmix64, so the choice does not change across Rust
+toolchain upgrades.
+
+Weights describe the odds of one node, not the split of a small fleet: four
+Linux nodes all land on Chrome with probability ≈ 0.24. To fix a node's
+identity, pin the browser:
+
+```toml
+fingerprint_profile = "stable"   # alias of process_stable
+fingerprint_profile_pin = "chrome"   # chrome | firefox | safari
+```
+
+The value is a browser without a version: the client uses that browser's
+current profile from its OS pool (on Linux today `chrome-157-linux`), so a
+profile refresh in a new release does not touch the config. Versioned names
+(`chrome-157-linux`) are rejected. The pin applies wherever the effective
+strategy is `process_stable`; other strategies ignore it. A browser missing
+from the OS pool (`safari` on Linux, `firefox` on Android) or an unknown value
+fails the config load. Older binaries reject the key
+(`deny_unknown_fields`): deploy the binary first, then add the key. The key
+is read at startup; a change takes effect after the client restarts.
+
 ### Fingerprint logs and metrics
 
 `tracing::info!` logs each `(host, port, profile)` triple the first

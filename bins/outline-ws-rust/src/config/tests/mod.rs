@@ -1721,6 +1721,76 @@ async fn load_config_defaults_fingerprint_profile_to_none_when_missing() {
     assert_eq!(config.fingerprint_profile, Fp::None);
 }
 
+async fn load_with_top_level(extra: &str) -> anyhow::Result<super::AppConfig> {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        format!(
+            r#"
+            tcp_ws_url = "wss://example.com/secret/tcp"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+            fingerprint_profile = "stable"
+            {extra}
+
+            [socks5]
+            listen = "127.0.0.1:1080"
+            "#
+        ),
+    )
+    .unwrap();
+    let args = super::Args::parse_from(["test"]);
+    load_config(&path, &args).await
+}
+
+#[tokio::test]
+async fn load_config_resolves_fingerprint_profile_pin_for_the_host_os() {
+    // Chrome is in every OS pool, so this holds on macOS and Linux runners.
+    let config = load_with_top_level("fingerprint_profile_pin = \"chrome\"")
+        .await
+        .unwrap();
+    let pin = config.fingerprint_profile_pin.expect("pin resolved");
+    assert_eq!(pin.tls, outline_transport::fingerprint_profile::TlsFingerprint::Chromium);
+    assert_eq!(pin.os, outline_transport::fingerprint_profile::host_os());
+}
+
+#[tokio::test]
+async fn load_config_rejects_a_versioned_fingerprint_profile_pin() {
+    // Versioned names would break at the next profile refresh; only the browser is accepted.
+    let err = load_with_top_level("fingerprint_profile_pin = \"chrome-157-linux\"")
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("chrome, firefox or safari"), "{err:#}");
+}
+
+#[tokio::test]
+async fn load_config_leaves_fingerprint_profile_pin_unset_by_default() {
+    let config = load_with_top_level("").await.unwrap();
+    assert!(config.fingerprint_profile_pin.is_none());
+}
+
+#[tokio::test]
+async fn load_config_rejects_unknown_fingerprint_profile_pin() {
+    let err = load_with_top_level("fingerprint_profile_pin = \"edge\"")
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("fingerprint_profile_pin"), "{msg}");
+    assert!(msg.contains("chrome, firefox or safari"), "{msg}");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn load_config_rejects_a_browser_missing_from_the_linux_pool() {
+    let err = load_with_top_level("fingerprint_profile_pin = \"safari\"")
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("fingerprint_profile_pin"), "{msg}");
+    assert!(msg.contains("this OS offers"), "{msg}");
+}
+
 #[tokio::test]
 async fn load_config_threads_per_uplink_fingerprint_profile_override() {
     use outline_transport::FingerprintProfileStrategy as Fp;
