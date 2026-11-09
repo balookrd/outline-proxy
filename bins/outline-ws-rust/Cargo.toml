@@ -74,7 +74,7 @@ outline-transport = { path = "../../crates/outline-transport" }
 outline-tun = { path = "../../crates/outline-tun", default-features = false, optional = true }
 outline-uplink = { path = "../../crates/outline-uplink", default-features = false }
 outline-wire = { path = "../../crates/outline-wire" }
-parking_lot = "0.12"
+parking_lot = "0.13"
 rand = "0.10"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 serde = { version = "1.0", features = ["derive"] }

@@ -34,7 +34,7 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-util = { version = "0.20", default-features = false, features = ["recency"] }
 outline-net = { path = "../../crates/outline-net" }
 outline-wire = { path = "../../crates/outline-wire", features = ["clap", "h3-datagram"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
 rand = "0.10"
 # rcgen on the aws_lc_rs backend, matching the workspace-wide single rustls

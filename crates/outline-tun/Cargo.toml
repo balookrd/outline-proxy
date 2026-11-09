@@ -31,7 +31,7 @@ outline-net = { path = "../outline-net" }
 outline-routing = { path = "../outline-routing" }
 outline-transport = { path = "../outline-transport" }
 outline-uplink = { path = "../outline-uplink", default-features = false }
-parking_lot = "0.12"
+parking_lot = "0.13"
 rand = "0.10"
 sha2 = "0.11"
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }

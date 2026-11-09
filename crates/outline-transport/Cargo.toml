@@ -60,7 +60,7 @@ once_cell = { version = "1.21", optional = true }
 outline-metrics = { path = "../outline-metrics", default-features = false }
 outline-net = { path = "../outline-net" }
 outline-wire = { path = "../outline-wire" }
-parking_lot = "0.12"
+parking_lot = "0.13"
 pin-project-lite = "0.2"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
 # Patched-API types (transport-parameter order, version_information) and
