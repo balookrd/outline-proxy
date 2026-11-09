@@ -41,6 +41,15 @@ service:
   type: LoadBalancer
   annotations:
     metallb.universe.tf/loadBalancerIPs: 198.18.1.200
+  # Local: MetalLB (L2) announces the VIP only from a node running a ready
+  # Traefik pod, and kube-proxy delivers to that local pod only. With Cluster,
+  # any node could hold the VIP and kube-proxy spread connections across both
+  # pods, so after a node loss about half of new connections were DNATed to the
+  # dead pod until the node turned NotReady (~40-50 s). With Local the only
+  # outage is the VIP failover when the announcing node itself dies. Side
+  # effect: Traefik sees real client IPs instead of SNATed node addresses.
+  spec:
+    externalTrafficPolicy: Local
 
 ports:
   web:
