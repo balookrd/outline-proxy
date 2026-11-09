@@ -1,0 +1,58 @@
+#!/usr/sbin/nft -f
+#
+# Per-host byte/packet accounting for LAN clients that Keenetic sends to this
+# node over the GRE tunnel (gre1). Counts only; never drops or rewrites.
+#
+# Each dynamic set keeps one element per LAN address with its own counter.
+# Elements have no timeout, so counters only grow until the table is reloaded.
+#
+# gre1 is enslaved to the vrf-proxy VRF. In the forward hook the input
+# interface of such packets is reported as "vrf-proxy", not "gre1", so the
+# upstream direction is counted in prerouting (which still sees the real
+# input device). The downstream direction is counted in forward, where the
+# output device is the real gre1.
+
+table inet hostacct
+delete table inet hostacct
+
+table inet hostacct {
+	# client -> internet (bytes received from the client on gre1)
+	set up4 {
+		type ipv4_addr
+		flags dynamic
+		size 512
+		counter
+	}
+	set up6 {
+		type ipv6_addr
+		flags dynamic
+		size 512
+		counter
+	}
+
+	# internet -> client (bytes sent to the client on gre1)
+	set down4 {
+		type ipv4_addr
+		flags dynamic
+		size 512
+		counter
+	}
+	set down6 {
+		type ipv6_addr
+		flags dynamic
+		size 512
+		counter
+	}
+
+	chain pre {
+		type filter hook prerouting priority filter; policy accept;
+		iifname "gre1" update @up4 { ip saddr }
+		iifname "gre1" update @up6 { ip6 saddr }
+	}
+
+	chain acct {
+		type filter hook forward priority filter; policy accept;
+		oifname "gre1" update @down4 { ip daddr }
+		oifname "gre1" update @down6 { ip6 daddr }
+	}
+}

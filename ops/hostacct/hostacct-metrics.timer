@@ -1,0 +1,10 @@
+[Unit]
+Description=Export per-host GRE counters every 15 seconds
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=15s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

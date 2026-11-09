@@ -1,0 +1,8 @@
+[Unit]
+Description=Export per-host GRE counters for node_exporter textfile collector
+After=hostacct.service
+Requires=hostacct.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hostacct-metrics

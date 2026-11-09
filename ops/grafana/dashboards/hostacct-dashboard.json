@@ -1,0 +1,690 @@
+{
+  "uid": "hostacct-gre",
+  "title": "GRE hosts",
+  "tags": [
+    "network",
+    "gre",
+    "hostacct"
+  ],
+  "description": "Per-host traffic through the Keenetic GRE tunnel (gre1) on .102 (ubuntu) and .104 (debian). Source: ops/hostacct.",
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "version": 1,
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "timepicker": {},
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "label": "Node",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "adnsc1wi03doga"
+        },
+        "definition": "label_values(hostacct_bytes_total, instance)",
+        "query": {
+          "query": "label_values(hostacct_bytes_total, instance)",
+          "refId": "node"
+        },
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "sort": 1,
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "id": 1,
+      "title": "Down now (to clients)",
+      "description": "Sum over hosts, internet -> LAN clients via gre1.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50000000.0
+              },
+              {
+                "color": "red",
+                "value": 100000000.0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"down\"}[$__rate_interval])) * 8",
+          "legendFormat": "{{instance}}",
+          "refId": "A",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 2,
+      "title": "Up now (from clients)",
+      "description": "Sum over hosts, LAN clients -> internet via gre1.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50000000.0
+              },
+              {
+                "color": "red",
+                "value": 100000000.0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"up\"}[$__rate_interval])) * 8",
+          "legendFormat": "{{instance}}",
+          "refId": "A",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 3,
+      "title": "Coverage: hosts / gre1 tx",
+      "description": "Sum of per-host down counters divided by gre1 tx bytes. Near 100% under real load. Packets the node itself sends into gre1 (VRF processes resolving via 198.18.1.1, tunnel keepalives) are not forwarded and not counted, so with almost no traffic the ratio sits lower. A drop under load means the nftables table was flushed or the 512-element set is full.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50000000.0
+              },
+              {
+                "color": "red",
+                "value": 100000000.0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (increase(hostacct_bytes_total{instance=~\"$node\", dir=\"down\"}[15m])) / sum by (instance) (increase(node_network_transmit_bytes_total{instance=~\"$node\", device=\"gre1\"}[15m]))",
+          "legendFormat": "{{instance}}",
+          "refId": "A",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 4,
+      "title": "Hosts seen",
+      "description": "LAN addresses with traffic over the selected range.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 50000000.0
+              },
+              {
+                "color": "red",
+                "value": 100000000.0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "count by (instance) (sum by (instance, addr) (increase(hostacct_bytes_total{instance=~\"$node\"}[$__range])) > 0)",
+          "legendFormat": "{{instance}}",
+          "refId": "A",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "Down by host (internet -> client)",
+      "description": "Per LAN host, counted by the nftables table `inet hostacct` on the node (ops/hostacct). Covers only traffic Keenetic sends through the GRE tunnel gre1; 198.18.250.2 / 198.18.251.2 are Keenetic's own tunnel addresses.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "max",
+            "mean",
+            "lastNotNull"
+          ],
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance, addr, name) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"down\"}[$__rate_interval])) * 8",
+          "legendFormat": "{{name}} {{addr}} · {{instance}}",
+          "refId": "A",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "Up by host (client -> internet)",
+      "description": "Per LAN host, counted by the nftables table `inet hostacct` on the node (ops/hostacct). Covers only traffic Keenetic sends through the GRE tunnel gre1; 198.18.250.2 / 198.18.251.2 are Keenetic's own tunnel addresses.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "max",
+            "mean",
+            "lastNotNull"
+          ],
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance, addr, name) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"up\"}[$__rate_interval])) * 8",
+          "legendFormat": "{{name}} {{addr}} · {{instance}}",
+          "refId": "A",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "id": 7,
+      "title": "Top hosts by volume, down (selected range)",
+      "description": "increase() over the dashboard time range.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 12,
+        "h": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "min": 0,
+          "color": {
+            "mode": "continuous-BlYlRd"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "namePlacement": "left",
+        "sizing": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "topk(15, sum by (instance, addr, name) (increase(hostacct_bytes_total{instance=~\"$node\", dir=\"down\"}[$__range])))",
+          "legendFormat": "{{name}} {{addr}} · {{instance}}",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "id": 8,
+      "title": "Top hosts by volume, up (selected range)",
+      "description": "increase() over the dashboard time range.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 23,
+        "w": 12,
+        "h": 10
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "min": 0,
+          "color": {
+            "mode": "continuous-BlYlRd"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "valueMode": "color",
+        "namePlacement": "left",
+        "sizing": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "legend": {
+          "showLegend": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "topk(15, sum by (instance, addr, name) (increase(hostacct_bytes_total{instance=~\"$node\", dir=\"up\"}[$__range])))",
+          "legendFormat": "{{name}} {{addr}} · {{instance}}",
+          "refId": "A",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "Sanity: per-host sum vs gre1 interface",
+      "description": "Solid: sum of hostacct counters. gre1: node_exporter interface counters. Lines should overlap.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "min": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "max",
+            "mean",
+            "lastNotNull"
+          ],
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"down\"}[$__rate_interval])) * 8",
+          "legendFormat": "hosts down · {{instance}}",
+          "refId": "A",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "rate(node_network_transmit_bytes_total{instance=~\"$node\", device=\"gre1\"}[$__rate_interval]) * 8",
+          "legendFormat": "gre1 tx · {{instance}}",
+          "refId": "B",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"up\"}[$__rate_interval])) * 8",
+          "legendFormat": "hosts up · {{instance}}",
+          "refId": "C",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "adnsc1wi03doga"
+          },
+          "editorMode": "code",
+          "expr": "rate(node_network_receive_bytes_total{instance=~\"$node\", device=\"gre1\"}[$__rate_interval]) * 8",
+          "legendFormat": "gre1 rx · {{instance}}",
+          "refId": "D",
+          "range": true
+        }
+      ]
+    }
+  ]
+}

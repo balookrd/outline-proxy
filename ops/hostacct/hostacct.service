@@ -1,0 +1,13 @@
+[Unit]
+Description=Load per-host GRE accounting table (nftables inet hostacct)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/hostacct.nft
+ExecStop=/usr/sbin/nft delete table inet hostacct
+
+[Install]
+WantedBy=multi-user.target
