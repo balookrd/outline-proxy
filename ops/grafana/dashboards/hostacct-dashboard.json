@@ -38,17 +38,12 @@
           "refId": "node"
         },
         "refresh": 2,
-        "multi": true,
-        "includeAll": true,
-        "allValue": ".*",
+        "multi": false,
+        "includeAll": false,
         "current": {
           "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
+          "text": "debian",
+          "value": "debian"
         },
         "options": [],
         "sort": 1,
@@ -119,7 +114,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"down\"}[$__rate_interval])) * 8",
+          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=\"$node\", dir=\"down\"}[$__rate_interval])) * 8",
           "legendFormat": "{{instance}}",
           "refId": "A",
           "range": true
@@ -188,7 +183,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"up\"}[$__rate_interval])) * 8",
+          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=\"$node\", dir=\"up\"}[$__rate_interval])) * 8",
           "legendFormat": "{{instance}}",
           "refId": "A",
           "range": true
@@ -257,7 +252,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (increase(hostacct_bytes_total{instance=~\"$node\", dir=\"down\"}[15m])) / sum by (instance) (increase(node_network_transmit_bytes_total{instance=~\"$node\", device=\"gre1\"}[15m]))",
+          "expr": "sum by (instance) (increase(hostacct_bytes_total{instance=\"$node\", dir=\"down\"}[15m])) / sum by (instance) (increase(node_network_transmit_bytes_total{instance=\"$node\", device=\"gre1\"}[15m]))",
           "legendFormat": "{{instance}}",
           "refId": "A",
           "range": true
@@ -326,7 +321,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "count by (instance) (sum by (instance, addr) (increase(hostacct_bytes_total{instance=~\"$node\"}[$__range])) > 0)",
+          "expr": "count by (instance) (sum by (instance, addr) (increase(hostacct_bytes_total{instance=\"$node\"}[$__range])) > 0)",
           "legendFormat": "{{instance}}",
           "refId": "A",
           "range": true
@@ -394,7 +389,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "sum by (instance, addr, name) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"down\"}[$__rate_interval])) * 8",
+          "expr": "sum by (instance, addr, name) (rate(hostacct_bytes_total{instance=\"$node\", dir=\"down\"}[$__rate_interval])) * 8",
           "legendFormat": "{{name}} {{addr}} · {{instance}}",
           "refId": "A",
           "range": true
@@ -462,7 +457,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "sum by (instance, addr, name) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"up\"}[$__rate_interval])) * 8",
+          "expr": "sum by (instance, addr, name) (rate(hostacct_bytes_total{instance=\"$node\", dir=\"up\"}[$__rate_interval])) * 8",
           "legendFormat": "{{name}} {{addr}} · {{instance}}",
           "refId": "A",
           "range": true
@@ -519,7 +514,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "topk(15, sum by (instance, addr, name) (increase(hostacct_bytes_total{instance=~\"$node\", dir=\"down\"}[$__range])))",
+          "expr": "topk(15, sum by (instance, addr, name) (increase(hostacct_bytes_total{instance=\"$node\", dir=\"down\"}[$__range])))",
           "legendFormat": "{{name}} {{addr}} · {{instance}}",
           "refId": "A",
           "range": false,
@@ -577,7 +572,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "topk(15, sum by (instance, addr, name) (increase(hostacct_bytes_total{instance=~\"$node\", dir=\"up\"}[$__range])))",
+          "expr": "topk(15, sum by (instance, addr, name) (increase(hostacct_bytes_total{instance=\"$node\", dir=\"up\"}[$__range])))",
           "legendFormat": "{{name}} {{addr}} · {{instance}}",
           "refId": "A",
           "range": false,
@@ -646,7 +641,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"down\"}[$__rate_interval])) * 8",
+          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=\"$node\", dir=\"down\"}[$__rate_interval])) * 8",
           "legendFormat": "hosts down · {{instance}}",
           "refId": "A",
           "range": true
@@ -657,7 +652,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "rate(node_network_transmit_bytes_total{instance=~\"$node\", device=\"gre1\"}[$__rate_interval]) * 8",
+          "expr": "rate(node_network_transmit_bytes_total{instance=\"$node\", device=\"gre1\"}[$__rate_interval]) * 8",
           "legendFormat": "gre1 tx · {{instance}}",
           "refId": "B",
           "range": true
@@ -668,7 +663,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=~\"$node\", dir=\"up\"}[$__rate_interval])) * 8",
+          "expr": "sum by (instance) (rate(hostacct_bytes_total{instance=\"$node\", dir=\"up\"}[$__rate_interval])) * 8",
           "legendFormat": "hosts up · {{instance}}",
           "refId": "C",
           "range": true
@@ -679,7 +674,7 @@
             "uid": "adnsc1wi03doga"
           },
           "editorMode": "code",
-          "expr": "rate(node_network_receive_bytes_total{instance=~\"$node\", device=\"gre1\"}[$__rate_interval]) * 8",
+          "expr": "rate(node_network_receive_bytes_total{instance=\"$node\", device=\"gre1\"}[$__rate_interval]) * 8",
           "legendFormat": "gre1 rx · {{instance}}",
           "refId": "D",
           "range": true
