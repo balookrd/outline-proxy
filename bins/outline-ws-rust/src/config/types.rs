@@ -60,6 +60,9 @@ pub struct AppConfig {
     /// config key applies per-host-stable or random browser headers
     /// to WS / XHTTP dials. See `docs/UPLINK-CONFIGURATIONS.md`.
     pub fingerprint_profile: outline_transport::FingerprintProfileStrategy,
+    /// Operator-pinned `process_stable` profile (`fingerprint_profile_pin`),
+    /// already resolved against the host OS at load time.
+    pub fingerprint_profile_pin: Option<&'static outline_transport::fingerprint_profile::Profile>,
     /// Adaptive carrier-padding knobs applied to WS / XHTTP dials. Default
     /// disabled (wire unchanged); opt in via the `[padding]` config block.
     /// Config-synchronised with the server.

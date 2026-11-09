@@ -7,16 +7,19 @@
 //! from real browser traffic. A profile mixes in the headers its
 //! browser sends for the request the carrier really makes (a `fetch()`
 //! GET / POST for xhttp, a WebSocket for ws; laid out by
-//! `crate::request_headers`), and a per-host-stable selector makes the choice deterministic per
-//! `(host, port)` so a single observer sees a single identity per
-//! peer instead of a per-dial reshuffle (which is itself a signal).
+//! `crate::request_headers`), and a per-host-stable selector makes the
+//! choice deterministic per `(host, port)` so a single observer sees a
+//! single identity per peer instead of a per-dial reshuffle (which is
+//! itself a signal).
 //!
-//! Profiles are picked only from the sub-pool matching the OS the client
-//! really runs on ([`host_os`], see [`pool_for`]): macOS = Chrome / Firefox /
-//! Safari, Linux = Chrome / Firefox, Android = Chrome. The TLS family does not vary by OS: Chrome on Android
-//! sends the desktop Chromium ClientHello (confirmed 2026-10-30: Chrome
-//! Android 156.0.8078.73 on Android 17 matches desktop Chrome 156 byte for
-//! byte, trust anchors included). 0-RTT is not aligned with the browsers yet.
+//! Profiles are picked by their `weight` (an approximation of per-OS
+//! browser shares) only from the sub-pool matching the OS the client
+//! really runs on ([`host_os`], see [`pool_for`]): macOS = Chrome /
+//! Firefox / Safari, Linux = Chrome / Firefox, Android = Chrome. The TLS
+//! family does not vary by OS: Chrome on Android sends the desktop
+//! Chromium ClientHello (confirmed 2026-10-30: Chrome Android
+//! 156.0.8078.73 on Android 17 matches desktop Chrome 156 byte for byte,
+//! trust anchors included). 0-RTT is not aligned with the browsers yet.
 //!
 //! The pool is process-wide and opt-in: callers wire a `Strategy`
 //! at startup via [`init_strategy`]. The default is [`Strategy::None`]
@@ -39,8 +42,6 @@
 //!   parameters are shaped by `crate::quic`.
 
 use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::{OnceLock, RwLock};
 
 use anyhow::{Result, bail};
@@ -190,6 +191,11 @@ pub struct Profile {
     pub name: &'static str,
     /// OS this identity claims; selection is restricted to [`host_os`].
     pub os: ProfileOs,
+    /// Relative share of this identity inside its OS pool ([`pool_for`]).
+    /// Weights are chosen by the operator as an approximation of browser
+    /// shares and set in the [`PROFILES`] table, so a large fleet looks
+    /// like a plausible browser mix. Must be > 0.
+    pub weight: u32,
     pub user_agent: &'static str,
     pub accept_language: &'static str,
     pub accept_encoding: &'static str,
@@ -228,12 +234,14 @@ pub const REFRESH_PERIOD_SECS: u64 = 180 * 24 * 60 * 60;
 
 /// Catalog of representative browser identities, one per (browser, OS)
 /// pair a real client of that OS can plausibly be: Chrome on all three
-/// OSes, Firefox on macOS / Linux, Safari on macOS. Only the sub-pool of the host OS is ever selected (see
-/// [`pool_for`]); the other entries stay for tests and snapshots.
+/// OSes, Firefox on macOS / Linux, Safari on macOS. Only the sub-pool of
+/// the host OS is ever selected (see [`pool_for`]); the other entries stay
+/// for tests and snapshots. Selection is weighted by [`Profile::weight`].
 pub const PROFILES: &[Profile] = &[
     Profile {
         name: "chrome-157-macos",
         os: ProfileOs::MacOs,
+        weight: 60,
         tls: TlsFingerprint::Chromium,
         // Chrome on macOS still pins `10_15_7` (Catalina) in the UA
         // string — Google froze that in 2021 to stop User-Agent
@@ -254,6 +262,7 @@ pub const PROFILES: &[Profile] = &[
     Profile {
         name: "chrome-157-linux",
         os: ProfileOs::Linux,
+        weight: 70,
         tls: TlsFingerprint::Chromium,
         // Chrome on Linux reports `x86_64` even on aarch64 hosts (UA
         // Reduction), so one string covers every Linux client.
@@ -269,6 +278,7 @@ pub const PROFILES: &[Profile] = &[
     Profile {
         name: "chrome-157-android",
         os: ProfileOs::Android,
+        weight: 100,
         tls: TlsFingerprint::Chromium,
         // UA Reduction freezes Android Chrome at `Android 10; K` and a
         // `Mobile Safari` tail. The TLS family stays Chromium: measured
@@ -288,6 +298,7 @@ pub const PROFILES: &[Profile] = &[
     Profile {
         name: "firefox-159-macos",
         os: ProfileOs::MacOs,
+        weight: 10,
         tls: TlsFingerprint::Firefox,
         // Firefox caps the reported macOS version at `10.15` in its UA
         // (Bugzilla 1679929, shipped in Firefox 87) — exactly like
@@ -307,6 +318,7 @@ pub const PROFILES: &[Profile] = &[
     Profile {
         name: "firefox-159-linux",
         os: ProfileOs::Linux,
+        weight: 30,
         tls: TlsFingerprint::Firefox,
         // Header values measured on macOS Firefox 159 and extrapolated to
         // Linux (only the UA platform token differs).
@@ -325,6 +337,7 @@ pub const PROFILES: &[Profile] = &[
         // release (major.minor).
         name: "safari-27-macos",
         os: ProfileOs::MacOs,
+        weight: 30,
         tls: TlsFingerprint::Safari,
         user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0.1 Safari/605.1.15",
         accept_language: "en-US,en;q=0.9",
@@ -358,6 +371,49 @@ pub fn init_strategy(strategy: Strategy) {
 /// the right value to show on the dashboard.
 pub fn current_strategy() -> Strategy {
     STRATEGY.get().copied().unwrap_or_default()
+}
+
+static PINNED: OnceLock<&'static Profile> = OnceLock::new();
+
+/// Pin the profile [`Strategy::ProcessStable`] returns, instead of the
+/// hostname-seeded weighted pick. First call wins, like [`init_strategy`].
+/// Resolve the name with [`resolve_pin`] first.
+pub fn init_pinned_profile(profile: &'static Profile) {
+    let _ = PINNED.set(profile);
+}
+
+/// Config spelling of a browser family in `fingerprint_profile_pin`.
+const fn browser_label(tls: TlsFingerprint) -> &'static str {
+    match tls {
+        TlsFingerprint::Chromium => "chrome",
+        TlsFingerprint::Firefox => "firefox",
+        TlsFingerprint::Safari => "safari",
+    }
+}
+
+/// Resolves the `fingerprint_profile_pin` value, a browser without a version
+/// (`chrome` / `firefox` / `safari`), to that browser's profile in the pool
+/// of the OS this binary runs on. Versionless on purpose: profile names carry
+/// the browser major and change at every `PROFILES` refresh, and a pin that
+/// stops resolving would keep the client from starting after an upgrade.
+pub fn resolve_pin(browser: &str) -> Result<&'static Profile> {
+    resolve_pin_for_os(browser, host_os())
+}
+
+/// [`resolve_pin`] for an explicit OS (tests cover every pool from one host).
+pub fn resolve_pin_for_os(browser: &str, os: ProfileOs) -> Result<&'static Profile> {
+    let wanted = browser.trim().to_ascii_lowercase();
+    let tls = match wanted.as_str() {
+        "chrome" => TlsFingerprint::Chromium,
+        "firefox" => TlsFingerprint::Firefox,
+        "safari" => TlsFingerprint::Safari,
+        _ => bail!("unknown browser {wanted:?}; expected chrome, firefox or safari (no version)"),
+    };
+    let Some(profile) = pool_for(os).find(|p| p.tls == tls) else {
+        let offered: Vec<_> = pool_for(os).map(|p| browser_label(p.tls)).collect();
+        bail!("no {wanted} profile for {os:?}; this OS offers: {}", offered.join(", "));
+    };
+    Ok(profile)
 }
 
 tokio::task_local! {
@@ -554,17 +610,21 @@ pub(crate) fn pool_for(os: ProfileOs) -> impl Iterator<Item = &'static Profile> 
     PROFILES.iter().filter(move |p| p.os == os)
 }
 
-fn pick(os: ProfileOs, seed: usize) -> &'static Profile {
-    // One pass over `PROFILES` into a stack buffer (no allocation on the
-    // dial path), then index it.
-    let mut pool = [&PROFILES[0]; PROFILES.len()];
-    let mut len = 0;
+/// Weighted pick from the `os` pool. The seed is mapped onto `[0, total)` by
+/// multiply-shift (it reads the seed's high bits and has no modulo bias),
+/// then walks the cumulative weights.
+pub(crate) fn pick(os: ProfileOs, seed: u64) -> &'static Profile {
+    let total: u64 = pool_for(os).map(|p| u64::from(p.weight)).sum();
+    assert!(total > 0, "every OS has a non-empty, positively weighted pool");
+    let mut x = ((u128::from(seed) * u128::from(total)) >> 64) as u64;
     for profile in pool_for(os) {
-        pool[len] = profile;
-        len += 1;
+        let w = u64::from(profile.weight);
+        if x < w {
+            return profile;
+        }
+        x -= w;
     }
-    assert!(len > 0, "every OS has a non-empty pool");
-    pool[seed % len]
+    unreachable!("x < total by construction")
 }
 
 /// Variant of [`select`] that ignores the process-wide
@@ -582,26 +642,66 @@ pub fn select_with_strategy_for_os(
     strategy: Strategy,
     os: ProfileOs,
 ) -> Option<&'static Profile> {
+    select_pinned_for_os(url, strategy, os, PINNED.get().copied())
+}
+
+/// [`select_with_strategy_for_os`] with an explicit pin, so tests do not have
+/// to set the process-wide `OnceLock`. A pin of another OS is ignored: the
+/// per-OS rule beats the operator's override.
+pub fn select_pinned_for_os(
+    url: &Url,
+    strategy: Strategy,
+    os: ProfileOs,
+    pin: Option<&'static Profile>,
+) -> Option<&'static Profile> {
     match strategy {
         Strategy::None => None,
-        Strategy::PerHostStable => Some(pick(os, host_index(url))),
-        Strategy::ProcessStable => Some(pick(os, process_index())),
-        Strategy::Random => Some(pick(os, rand::random_range(0..usize::MAX))),
+        Strategy::PerHostStable => Some(pick(os, host_seed(url))),
+        Strategy::ProcessStable => Some(match pin {
+            Some(p) if p.os == os => p,
+            _ => pick(os, process_seed()),
+        }),
+        Strategy::Random => Some(pick(os, rand::random::<u64>())),
     }
 }
 
-/// Stable hash of `(host, port)`; reduced modulo the sub-pool size by [`pick`].
-fn host_index(url: &Url) -> usize {
-    let host = url.host_str().unwrap_or_default();
-    let port = url.port_or_known_default().unwrap_or(0);
-    let mut hasher = DefaultHasher::new();
-    host.hash(&mut hasher);
-    port.hash(&mut hasher);
-    hasher.finish() as usize
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// FNV-1a 64 over `bytes`, continuing from `state` (pass [`FNV_OFFSET`] to
+/// start). Unlike `DefaultHasher`, its output is fixed by definition, so a
+/// toolchain upgrade cannot re-roll a deployed client's browser identity.
+pub(crate) fn fnv1a64(bytes: &[u8], mut state: u64) -> u64 {
+    for &b in bytes {
+        state ^= u64::from(b);
+        state = state.wrapping_mul(FNV_PRIME);
+    }
+    state
 }
 
-/// Process-wide profile seed (reduced modulo the sub-pool size by [`pick`])
-/// used by [`Strategy::ProcessStable`].
+/// splitmix64 finaliser: FNV-1a leaves the high bits of short inputs poorly
+/// mixed, and [`pick`] reads exactly the high bits.
+fn splitmix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// Toolchain-independent 64-bit seed for profile selection.
+pub(crate) fn stable_seed(bytes: &[u8]) -> u64 {
+    splitmix64(fnv1a64(bytes, FNV_OFFSET))
+}
+
+/// Stable seed of `(host, port)`; path and query do not take part. [`pick`]
+/// reduces it to a pool entry.
+pub(crate) fn host_seed(url: &Url) -> u64 {
+    let host = url.host_str().unwrap_or_default();
+    let port = url.port_or_known_default().unwrap_or(0);
+    splitmix64(fnv1a64(&port.to_be_bytes(), fnv1a64(host.as_bytes(), FNV_OFFSET)))
+}
+
+/// Process-wide stable seed used by [`Strategy::ProcessStable`]; [`pick`]
+/// reduces it to a pool entry.
 ///
 /// Seeded from the OS-level hostname when available — that keeps
 /// identity stable across restarts on the same machine, which
@@ -623,15 +723,11 @@ fn host_index(url: &Url) -> usize {
 /// restarts". So we call `gethostname(2)` directly. Windows is
 /// different: `%COMPUTERNAME%` IS set on every process by the OS,
 /// so reading env there is correct.
-fn process_index() -> usize {
-    static IDX: OnceLock<usize> = OnceLock::new();
-    *IDX.get_or_init(|| match read_hostname() {
-        Some(name) => {
-            let mut hasher = DefaultHasher::new();
-            name.hash(&mut hasher);
-            hasher.finish() as usize
-        },
-        None => rand::random_range(0..usize::MAX),
+fn process_seed() -> u64 {
+    static SEED: OnceLock<u64> = OnceLock::new();
+    *SEED.get_or_init(|| match read_hostname() {
+        Some(name) => stable_seed(name.as_bytes()),
+        None => rand::random::<u64>(),
     })
 }
 

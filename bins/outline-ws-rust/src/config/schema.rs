@@ -100,12 +100,20 @@ pub(crate) struct ConfigFile {
     /// cannot finish inside it (2G/EDGE).
     pub(super) dial: Option<DialSection>,
     /// Browser fingerprint diversification strategy applied to WS / XHTTP
-    /// dials. Accepts `"off"` / `"none"` / `"disabled"` (default — wire
-    /// shape unchanged), `"stable"` / `"per_host_stable"` /
-    /// `"per-host-stable"` / `"per-host"` (one identity per
-    /// `(host, port)` for the lifetime of the process), or `"random"`
-    /// (fresh profile per dial). See docs for the trade-offs.
+    /// dials. Accepts `"off"` / `"none"` / `"disabled"` / `""` (default —
+    /// wire shape unchanged), `"stable"` / `"process"` / `"process_stable"` /
+    /// `"process-stable"` (one identity for the whole process),
+    /// `"per_host_stable"` / `"per-host-stable"` / `"per-host"` /
+    /// `"per_host"` (one identity per `(host, port)` for the lifetime of the
+    /// process), or `"random"` (fresh profile per dial). See docs for the
+    /// trade-offs.
     pub(super) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
+    /// Browser `process_stable` must use on this node instead of the
+    /// hostname-seeded weighted pick: `"chrome"`, `"firefox"` or `"safari"`,
+    /// without a version, so a profile refresh never invalidates the config.
+    /// The browser must be in the pool of the OS the client runs on.
+    /// Ignored by other strategies.
+    pub(super) fingerprint_profile_pin: Option<String>,
     /// Adaptive carrier padding applied to WS / XHTTP dials (record-size
     /// obfuscation + optional cover traffic). Absent / `enabled = false`
     /// keeps the wire byte-identical. Config-synchronised: the server must

@@ -332,7 +332,9 @@ pub async fn xhttp_stream_one_block_remaining(url: &url::Url) -> Option<std::tim
 pub use fingerprint_profile::{
     Strategy as FingerprintProfileStrategy,
     current_strategy as current_fingerprint_profile_strategy,
+    init_pinned_profile as init_fingerprint_profile_pin,
     init_strategy as init_fingerprint_profile_strategy,
+    resolve_pin as resolve_fingerprint_profile_pin,
 };
 
 // Carrier padding: application-layer record-size obfuscation on the WS / XHTTP

@@ -10,8 +10,8 @@ use std::str::FromStr;
 use url::Url;
 
 use crate::fingerprint_profile::{
-    PROFILES, Profile, ProfileOs, Strategy, TlsFingerprint, host_os, pool_for,
-    select_with_strategy, select_with_strategy_for_os,
+    PROFILES, Profile, ProfileOs, Strategy, TlsFingerprint, host_os, pool_for, resolve_pin_for_os,
+    select_pinned_for_os, select_with_strategy, select_with_strategy_for_os, stable_seed,
 };
 
 #[test]
@@ -655,4 +655,160 @@ fn safari_27_values() {
     );
     assert_eq!(p.accept_encoding, "gzip, deflate, br, zstd");
     assert_eq!(p.tls, TlsFingerprint::Safari);
+}
+
+#[test]
+fn fnv1a_matches_the_reference_vector() {
+    // FNV-1a 64 reference values (draft-eastlake-fnv): "" -> offset basis,
+    // "a" -> 0xaf63dc4c8601ec8c. Checked before the splitmix finaliser.
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    assert_eq!(crate::fingerprint_profile::fnv1a64(b"", OFFSET), OFFSET);
+    assert_eq!(crate::fingerprint_profile::fnv1a64(b"a", OFFSET), 0xaf63_dc4c_8601_ec8c);
+}
+
+#[test]
+fn stable_seed_is_pinned_across_toolchains() {
+    // Golden values: a change here silently re-rolls the browser identity of
+    // every deployed client on upgrade. Update only on a deliberate re-roll.
+    assert_eq!(stable_seed(b"Beelink-T4-Pro"), 0xbbd5_4375_c5c6_d5d6);
+    assert_eq!(stable_seed(b"cloud1.beerloga.su"), 0x8c15_c197_ba6e_7107);
+}
+
+#[test]
+fn per_host_seed_is_pinned_across_toolchains() {
+    let url = Url::parse("wss://example.com/path?q=1").unwrap();
+    assert_eq!(crate::fingerprint_profile::host_seed(&url), 0xa88b_026a_c3b1_2678);
+}
+
+#[test]
+fn profile_weights_match_the_decided_shares() {
+    let w = |n| by_name(n).weight;
+    assert_eq!((w("chrome-157-linux"), w("firefox-159-linux")), (70, 30));
+    assert_eq!(
+        (w("chrome-157-macos"), w("safari-27-macos"), w("firefox-159-macos")),
+        (60, 30, 10)
+    );
+    assert_eq!(w("chrome-157-android"), 100);
+    assert!(PROFILES.iter().all(|p| p.weight > 0), "a zero weight is a dead profile");
+}
+
+#[test]
+fn weighted_pick_tracks_the_weights() {
+    // 100k synthetic hostnames through the real seed: each share must land
+    // within 1.5 points of its weight.
+    for os in ALL_OS {
+        let total: u32 = pool_for(os).map(|p| p.weight).sum();
+        let mut hits = std::collections::HashMap::<&str, u32>::new();
+        const N: u32 = 100_000;
+        for i in 0..N {
+            let seed = stable_seed(format!("host-{i}").as_bytes());
+            *hits
+                .entry(crate::fingerprint_profile::pick(os, seed).name)
+                .or_default() += 1;
+        }
+        for p in pool_for(os) {
+            let got = f64::from(*hits.get(p.name).unwrap_or(&0)) / f64::from(N);
+            let want = f64::from(p.weight) / f64::from(total);
+            assert!((got - want).abs() < 0.015, "{}: got {got:.3}, want {want:.3}", p.name);
+        }
+    }
+}
+
+#[test]
+fn weighted_pick_maps_seed_edges_to_pool_edges() {
+    use crate::fingerprint_profile::pick;
+    assert_eq!(pick(ProfileOs::Linux, 0).name, "chrome-157-linux");
+    assert_eq!(pick(ProfileOs::Linux, u64::MAX).name, "firefox-159-linux");
+    // 0.70 * 2^64 is the Chrome/Firefox boundary on Linux.
+    let boundary = (u128::from(u64::MAX) * 70 / 100) as u64;
+    assert_eq!(pick(ProfileOs::Linux, boundary - (1 << 20)).name, "chrome-157-linux");
+    assert_eq!(pick(ProfileOs::Linux, boundary + (1 << 20)).name, "firefox-159-linux");
+}
+
+#[test]
+fn current_fleet_hostnames_split_between_chrome_and_firefox() {
+    // Recorded rollout expectation (plan 2026-11-04): changing seed or weights
+    // re-rolls the fleet; update together with the plan's table.
+    use crate::fingerprint_profile::pick;
+    let at = |h: &str| pick(ProfileOs::Linux, stable_seed(h.as_bytes())).name;
+    assert_eq!(at("NanoPi-NEO3-Plus"), "firefox-159-linux");
+    assert_eq!(at("Beelink-T4-Pro"), "firefox-159-linux");
+    assert_eq!(at("cloud1.beerloga.su"), "chrome-157-linux");
+    assert_eq!(at("cloud2.beerloga.su"), "chrome-157-linux");
+}
+
+#[test]
+fn resolve_pin_maps_a_browser_to_its_profile_in_the_os_pool() {
+    let linux = |b| resolve_pin_for_os(b, ProfileOs::Linux).unwrap().name;
+    assert_eq!(linux("firefox"), "firefox-159-linux");
+    // Case and surrounding whitespace are tolerated, like the strategy key.
+    assert_eq!(linux(" Chrome "), "chrome-157-linux");
+    assert_eq!(resolve_pin_for_os("safari", ProfileOs::MacOs).unwrap().name, "safari-27-macos");
+    assert_eq!(
+        resolve_pin_for_os("chrome", ProfileOs::Android).unwrap().name,
+        "chrome-157-android"
+    );
+}
+
+#[test]
+fn resolve_pin_rejects_versioned_names_unknown_browsers_and_foreign_os() {
+    // A versioned name would stop resolving at the next PROFILES refresh.
+    let err = resolve_pin_for_os("chrome-157-linux", ProfileOs::Linux)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("chrome, firefox or safari"), "{err}");
+    let err = resolve_pin_for_os("edge", ProfileOs::Linux).unwrap_err().to_string();
+    assert!(err.contains("chrome, firefox or safari"), "{err}");
+    let err = resolve_pin_for_os("safari", ProfileOs::Linux)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("chrome") && err.contains("firefox"),
+        "lists what Linux offers: {err}"
+    );
+    assert!(resolve_pin_for_os("firefox", ProfileOs::Android).is_err());
+}
+
+#[test]
+fn each_os_pool_has_at_most_one_profile_per_browser() {
+    // Pinning by browser relies on this: two Chrome profiles in one pool
+    // would make `fingerprint_profile_pin = "chrome"` ambiguous.
+    for os in ALL_OS {
+        let mut seen = std::collections::HashSet::new();
+        for p in pool_for(os) {
+            assert!(seen.insert(p.tls), "{os:?}: second {:?} profile {}", p.tls, p.name);
+        }
+    }
+}
+
+#[test]
+fn pin_overrides_only_process_stable() {
+    let pin = by_name("chrome-157-linux");
+    let url = Url::parse("wss://pinned.test/").unwrap();
+    let os = ProfileOs::Linux;
+    assert_eq!(
+        select_pinned_for_os(&url, Strategy::ProcessStable, os, Some(pin))
+            .unwrap()
+            .name,
+        pin.name
+    );
+    assert!(select_pinned_for_os(&url, Strategy::None, os, Some(pin)).is_none());
+    // per_host_stable keeps hashing the host, whatever the pin says.
+    assert_eq!(
+        select_pinned_for_os(&url, Strategy::PerHostStable, os, Some(pin))
+            .unwrap()
+            .name,
+        select_with_strategy_for_os(&url, Strategy::PerHostStable, os)
+            .unwrap()
+            .name,
+    );
+}
+
+#[test]
+fn pin_of_another_os_is_ignored() {
+    let pin = by_name("safari-27-macos");
+    let url = Url::parse("wss://pinned.test/").unwrap();
+    let p =
+        select_pinned_for_os(&url, Strategy::ProcessStable, ProfileOs::Linux, Some(pin)).unwrap();
+    assert_eq!(p.os, ProfileOs::Linux);
 }
