@@ -121,19 +121,21 @@ VictoriaMetrics ──запрос раз в 1 мин──► vmalert ──а�
    ./ops/alerting/deploy.sh
    ```
 
-4. Если менялся `alertmanager.yml`, через ~90 секунд перечитайте конфиг без рестарта пода:
+4. Если менялся `alertmanager.yml`, через ~90 секунд перечитайте конфиг в каждой из трёх реплик, без рестарта подов:
 
    ```bash
-   kubectl -n monitoring exec deploy/alertmanager -- \
-     wget -qO- --post-data='' http://127.0.0.1:9093/-/reload
+   for i in 0 1 2; do
+     kubectl -n monitoring exec alertmanager-$i -- \
+       wget -qO- --post-data='' http://127.0.0.1:9093/-/reload
+   done
    ```
 
-   busybox `wget` в образе `prom/alertmanager` с пустым `--post-data` шлёт POST, проверено на живом поде 2026-11-09. `kubectl -n monitoring rollout restart deploy/alertmanager` тоже перечитывает конфиг, но стирает заглушки и журнал отправок, см. «Известные проблемы».
+   busybox `wget` в образе `prom/alertmanager` с пустым `--post-data` шлёт POST, проверено на живом поде 2026-11-09. Конфиг перечитывают все реплики: реплика со старым конфигом продолжит слать уведомления по старым маршрутам. `kubectl -n monitoring rollout restart statefulset/alertmanager` тоже перечитывает конфиг и перезапускает поды по одному; заглушки и журнал отправок при этом сохраняются у соседних реплик.
 
-   Результат в логе:
+   Результат в логе каждой реплики:
 
    ```bash
-   kubectl -n monitoring logs deploy/alertmanager --since=2m | grep -i "completed loading"
+   for i in 0 1 2; do kubectl -n monitoring logs alertmanager-$i --since=2m | grep -i "completed loading"; done
    ```
 
 5. Для правил проверьте через 2–3 минуты, что vmalert загрузил новую версию (см. «Проверка»).
@@ -146,7 +148,7 @@ VictoriaMetrics ──запрос раз в 1 мин──► vmalert ──а�
 
 ```bash
 export KUBECONFIG=~/.kube/k3s-home.yaml
-kubectl -n monitoring exec deploy/alertmanager -- amtool alert query --alertmanager.url=http://127.0.0.1:9093
+kubectl -n monitoring exec alertmanager-0 -- amtool alert query --alertmanager.url=http://127.0.0.1:9093
 ```
 
 Ошибки vmalert и состояние перезагрузки правил:
@@ -167,7 +169,7 @@ ssh <relay-b> 'sudo tail -n 5 /var/log/nginx/heartbeat.log'
 Проверка доставки почты и Telegram искусственным алертом (уведомление придёт владельцу; маршрут — корневой `owner`, поэтому отправка идёт и по почте, и в Telegram):
 
 ```bash
-kubectl -n monitoring exec deploy/alertmanager -- amtool alert add alertname=AlertingSelfTest \
+kubectl -n monitoring exec alertmanager-0 -- amtool alert add alertname=AlertingSelfTest \
   instance=selftest severity=info \
   --annotation=summary='Alertmanager self-test, ignore' \
   --alertmanager.url=http://127.0.0.1:9093
@@ -176,7 +178,7 @@ kubectl -n monitoring exec deploy/alertmanager -- amtool alert add alertname=Ale
 Снять алерт:
 
 ```bash
-kubectl -n monitoring exec deploy/alertmanager -- amtool alert add alertname=AlertingSelfTest \
+kubectl -n monitoring exec alertmanager-0 -- amtool alert add alertname=AlertingSelfTest \
   instance=selftest severity=info --end="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --alertmanager.url=http://127.0.0.1:9093
 ```
@@ -185,11 +187,13 @@ kubectl -n monitoring exec deploy/alertmanager -- amtool alert add alertname=Ale
 
 ## Известные проблемы
 
-- Хранилище Alertmanager — `emptyDir`. При пересоздании пода теряются заглушки (silences) и журнал уведомлений; последствие — возможное одно повторное уведомление по уже горящему алерту и забытые заглушки. PVC не используется намеренно: `local-path` привязал бы под к узлу, NFS — к NAS, то есть к тем доменам отказа, вне которых под должен стоять.
+- Alertmanager — три реплики (StatefulSet, по одной на узел), объединённые в gossip-кластер; хранилище каждой — `emptyDir`. Заглушки (silences) и журнал уведомлений реплицируются между репликами, поэтому пересозданный под получает их от соседей (проверено 2026-11-09: заглушка пережила удаление пода). Теряются они, только если одновременно пропадут все три пода. PVC не используется намеренно: `local-path` привязал бы под к узлу, NFS — к NAS, то есть к тем доменам отказа, вне которых под должен стоять.
+- vmalert шлёт каждый алерт во все три реплики (`-notifier.url` на каждый под). Уведомление отправляет одна реплика, остальные видят его в общем журнале и молчат: на 2026-11-09 пульс шёл только из `alertmanager-2`, у двух других `alertmanager_notifications_total{integration="webhook"}` = 0.
+- Искусственный алерт из раздела «Проверка» (`amtool alert add` в `alertmanager-0`) попадает только в эту реплику; отправит его она же.
 - После отказа VictoriaMetrics пульс прекращается не сразу. vmalert перестаёт отправлять алерт (в логе `failed to execute query`), а Alertmanager закрывает его по `endsAt`, примерно через четыре интервала вычисления, то есть через ~4 минуты (измерено 2026-11-08 при интервале 10 с; при 1m значение выведено расчётом, а не замерено). Наблюдатели пишут через 15 минут без записей.
 - Метрики самого vmalert лежат в VictoriaMetrics. Панель «Ошибок вычисления за 24ч» при её отказе пуста; этот случай ловит только пульс.
 - Временные метки в тестах `vmalert-tool unittest` смещены на 946684800 секунд из-за эпохи 2000-01-01 (см. «Офлайн-проверки»). Тест без сдвига для выражения с `time()` даст ложное падение или ложное прохождение.
-- Проверка исходящего доступа к SMTP и Telegram с пода подтверждает только узел, на котором он стоит: у пода нет `nodeSelector`. Если маршрутизация наружу на узлах k3s различается, после переезда пода повторите самопроверку из раздела «Проверка».
+- Проверка исходящего доступа к SMTP и Telegram с пода подтверждает только узел, на котором он стоит. Реплики стоят на всех трёх узлах, и уведомление может отправить любая из них; если маршрутизация наружу на узлах k3s различается, повторите самопроверку из каждой реплики (`alertmanager-0`, `-1`, `-2`).
 
 ## Откат
 

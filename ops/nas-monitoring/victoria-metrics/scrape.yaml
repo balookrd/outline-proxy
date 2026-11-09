@@ -169,10 +169,20 @@ scrape_configs:
     # history does not split into two series at the move.
     - target_label: instance
       replacement: vmalert.monitoring:8880
+# Alertmanager runs as three gossip peers (StatefulSet). Each replica has its
+# own /metrics name (ingress alertmanager-replicas): the load-balanced
+# alertmanager.k3s would land on a random peer per scrape and counters would
+# jump between pods under one series. instance = pod name. Series from before
+# 2026-11-09 carry instance="alertmanager.monitoring:9093"; dashboards sum by
+# integration, so the split does not show there.
 - job_name: alertmanager
   static_configs:
   - targets:
-    - https://alertmanager.k3s.beerloga.su/metrics
+    - https://alertmanager-0.k3s.beerloga.su/metrics
+    - https://alertmanager-1.k3s.beerloga.su/metrics
+    - https://alertmanager-2.k3s.beerloga.su/metrics
   relabel_configs:
-    - target_label: instance
-      replacement: alertmanager.monitoring:9093
+    - source_labels: [__address__]
+      regex: (?:https://)?(alertmanager-[0-9]+)\..*
+      target_label: instance
+      replacement: $1

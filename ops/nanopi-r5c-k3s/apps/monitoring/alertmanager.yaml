@@ -2,19 +2,37 @@
 # Telegram to the owner, the dead man's pulse to cloud1/cloud2. Config is the
 # Secret alertmanager-config rendered by ops/alerting/deploy.sh.
 #
-# Storage is emptyDir on purpose. It holds silences and the notification log;
-# losing them on a pod restart means at worst one repeated notification and
-# forgotten silences. A PVC would pin the pod to a node (local-path) or tie it
-# to the NAS (NFS) — exactly the failure domains this pod exists to sit outside.
+# Three replicas, one per node, joined into a gossip cluster (port 9094).
+# Storage stays emptyDir: silences and the notification log are replicated
+# between the peers in memory, so a pod that is drained, evicted by the
+# descheduler or lost with its node gets the state back from the other two when
+# it starts. A PVC is still avoided on purpose — local-path would pin a pod to a
+# node, NFS would tie alerting to the NAS, the failure domains this service
+# exists to sit outside. State is lost only if all three pods die together
+# (whole cluster down); the external dead man on cloud1/cloud2 covers that.
 #
-# Single replica, gossip off (--cluster.listen-address=): there is no peer.
+# Delivery without duplicates: vmalert sends every alert to EACH replica
+# (-notifier.url per pod, see vmalert.yaml), as the Alertmanager docs require —
+# a load-balanced Service would hand an alert to one peer only. Peers order
+# themselves by position; peer N waits N x --cluster.peer-timeout (15 s) and
+# skips a notification the notification log already shows as sent.
+#
+# StatefulSet for the stable names alertmanager-{0,1,2}.alertmanager-peers that
+# --cluster.peer and vmalert point at. podManagementPolicy: Parallel starts all
+# three at once, so no peer waits for another to become Ready first.
+#
+# Required anti-affinity: never two replicas on one node. While a node is
+# drained its replica stays Pending — two peers keep serving. The PDB lets only
+# one pod go at a time.
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: alertmanager
   namespace: monitoring
 spec:
-  replicas: 1
+  replicas: 3
+  serviceName: alertmanager-peers
+  podManagementPolicy: Parallel
   selector:
     matchLabels: { app: alertmanager }
   template:
@@ -25,16 +43,32 @@ spec:
         runAsUser: 65534
         runAsNonRoot: true
         fsGroup: 65534
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: { app: alertmanager }
+              topologyKey: kubernetes.io/hostname
       containers:
         - name: alertmanager
           image: prom/alertmanager@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b # v0.34.2
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef: { fieldPath: status.podIP }
           args:
             - --config.file=/etc/alertmanager/conf/alertmanager.yml
             - --storage.path=/alertmanager
-            - --cluster.listen-address=
             - --web.listen-address=:9093
+            - --cluster.listen-address=0.0.0.0:9094
+            - --cluster.advertise-address=$(POD_IP):9094
+            - --cluster.peer=alertmanager-0.alertmanager-peers.monitoring.svc:9094
+            - --cluster.peer=alertmanager-1.alertmanager-peers.monitoring.svc:9094
+            - --cluster.peer=alertmanager-2.alertmanager-peers.monitoring.svc:9094
           ports:
             - { containerPort: 9093, name: http }
+            - { containerPort: 9094, name: mesh-tcp, protocol: TCP }
+            - { containerPort: 9094, name: mesh-udp, protocol: UDP }
           volumeMounts:
             - { name: config, mountPath: /etc/alertmanager/conf, readOnly: true }
             - { name: smtp, mountPath: /etc/alertmanager/secrets, readOnly: true }
@@ -54,6 +88,24 @@ spec:
         - name: data
           emptyDir: {}
 ---
+# Headless: per-pod DNS for gossip and for vmalert. publishNotReadyAddresses
+# so peers can find each other before any of them passes the readiness probe.
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-peers
+  namespace: monitoring
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: alertmanager }
+  ports:
+    - { name: http, port: 9093, targetPort: 9093 }
+    - { name: mesh-tcp, port: 9094, targetPort: 9094, protocol: TCP }
+    - { name: mesh-udp, port: 9094, targetPort: 9094, protocol: UDP }
+---
+# Any replica: UI and API through the Ingress, the Grafana datasource on the
+# NAS. A silence created through one peer reaches the others by gossip.
 apiVersion: v1
 kind: Service
 metadata:
@@ -63,3 +115,46 @@ spec:
   selector: { app: alertmanager }
   ports:
     - { port: 9093, targetPort: 9093 }
+---
+# One Service per replica, for the NAS scrape: through the load-balanced
+# Service every scrape would land on a random peer and counters such as
+# alertmanager_notifications_total would jump between pods under one series.
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-0
+  namespace: monitoring
+spec:
+  selector: { statefulset.kubernetes.io/pod-name: alertmanager-0 }
+  ports:
+    - { port: 9093, targetPort: 9093 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-1
+  namespace: monitoring
+spec:
+  selector: { statefulset.kubernetes.io/pod-name: alertmanager-1 }
+  ports:
+    - { port: 9093, targetPort: 9093 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-2
+  namespace: monitoring
+spec:
+  selector: { statefulset.kubernetes.io/pod-name: alertmanager-2 }
+  ports:
+    - { port: 9093, targetPort: 9093 }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app: alertmanager }

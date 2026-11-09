@@ -37,7 +37,12 @@ spec:
             - -datasource.url=http://victoria-metrics.monitoring:8428
             - -remoteRead.url=http://victoria-metrics.monitoring:8428
             - -remoteWrite.url=http://victoria-metrics.monitoring:8428
-            - -notifier.url=http://alertmanager.monitoring:9093
+            # Every Alertmanager replica, not the load-balanced Service: the
+            # peers deduplicate through gossip, but only alerts each of them
+            # received (alertmanager.yaml).
+            - -notifier.url=http://alertmanager-0.alertmanager-peers.monitoring.svc:9093
+            - -notifier.url=http://alertmanager-1.alertmanager-peers.monitoring.svc:9093
+            - -notifier.url=http://alertmanager-2.alertmanager-peers.monitoring.svc:9093
           ports:
             - { containerPort: 8880, name: http }
           volumeMounts:

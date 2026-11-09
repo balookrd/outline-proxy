@@ -69,12 +69,12 @@ cat <<'EOF'
     vmalert re-reads its rules by itself (-configCheckInterval=1m) once the
     kubelet syncs the ConfigMap into the pod, ~1-2 minutes.
     Alertmanager reads its config only on start or on /-/reload. After ~90 s
-    (Secret sync) reload it — no restart, notification state is kept:
+    (Secret sync) reload EVERY replica — no restart, notification state is kept:
 
-    kubectl -n monitoring exec deploy/alertmanager -- \
-      wget -qO- --post-data='' http://127.0.0.1:9093/-/reload
+    for i in 0 1 2; do kubectl -n monitoring exec alertmanager-$i -- \
+      wget -qO- --post-data='' http://127.0.0.1:9093/-/reload; done
 
     and confirm:
 
-    kubectl -n monitoring logs deploy/alertmanager --since=2m | grep -i "completed loading"
+    for i in 0 1 2; do kubectl -n monitoring logs alertmanager-$i --since=2m | grep -i "completed loading"; done
 EOF

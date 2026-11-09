@@ -96,3 +96,48 @@ spec:
                 name: alertmanager
                 port:
                   number: 9093
+---
+# Per-replica /metrics for the NAS scrape (ops/nas-monitoring scrape.yaml, job
+# alertmanager): the load-balanced name above would hit a random peer on every
+# scrape. Only /metrics is routed — the API and UI stay on alertmanager.k3s.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: alertmanager-replicas
+  namespace: monitoring
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: alertmanager-0.k3s.beerloga.su
+      http:
+        paths:
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: alertmanager-0
+                port:
+                  number: 9093
+    - host: alertmanager-1.k3s.beerloga.su
+      http:
+        paths:
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: alertmanager-1
+                port:
+                  number: 9093
+    - host: alertmanager-2.k3s.beerloga.su
+      http:
+        paths:
+          - path: /metrics
+            pathType: Exact
+            backend:
+              service:
+                name: alertmanager-2
+                port:
+                  number: 9093
