@@ -8,21 +8,22 @@ nginx-сниппет `nginx-heartbeat.conf`, установщик `install.sh` �
 
 Реальные имена узлов, домены и адреса парка в этом документе заменены условными: `fleet.example` — домен парка; `relay-a`…`relay-d` — промежуточные cloud-узлы; `exit-a`…`exit-e` — выходные узлы. Соответствие — в локальном некоммитируемом `FLEET.local.md`.
 
-## Что не может сообщить Grafana
+## Что не может сообщить сам алертинг
 
-Grafana (в k3s, `monitoring/grafana`, до 2026-08-09 — docker на `.102`) шлёт
-алерты о деградации аплинков. О собственной смерти она сообщить не может: если
-упадут под Grafana, VictoriaMetrics, кластер k3s или домашний канал, не будет ни
-алертов, ни признака, что алертов больше нет. Тишина в почте неотличима от «всё
-хорошо».
+Алерты о деградации аплинков считает vmalert и рассылает Alertmanager (оба в
+k3s, namespace `monitoring`; до 2026-11-09 это делала Grafana, см.
+[`ops/alerting/README.md`](../alerting/README.md)). О собственной смерти они
+сообщить не могут: если упадут поды vmalert или Alertmanager, VictoriaMetrics,
+кластер k3s или домашний канал, не будет ни алертов, ни признака, что алертов
+больше нет. Тишина в почте неотличима от «всё хорошо».
 
-Поэтому цепочка развёрнута наоборот: Grafana постоянно шлёт пульс наружу, а
+Поэтому цепочка развёрнута наоборот: Alertmanager постоянно шлёт пульс наружу, а
 снаружи за ним следят. Пропал пульс — пришло письмо.
 
 ## Как работает
 
 ```
-Grafana (k3s)               relay-a / relay-b
+vmalert → Alertmanager (k3s)     relay-a / relay-b
    │                              │
    │ правило DeadMansSwitch       │
    │ (firing всегда, repeat 5m)   │
@@ -34,20 +35,24 @@ Grafana (k3s)               relay-a / relay-b
                                   └──► Telegram через локальный SOCKS5 outline-ws-rust
 ```
 
-С 2026-11-08 тот же пульс параллельно шлёт Alertmanager в k3s (теневой режим
-переезда алертинга, `ops/alerting/`); наблюдателю всё равно, от кого пришла
-последняя запись.
+С 2026-11-08 17:31 UTC пульс параллельно с Grafana слал Alertmanager в k3s
+(теневой режим переезда алертинга). С 2026-11-09 пульс идёт только от
+Alertmanager: алертинг Grafana выключен и ничего не отправляет. Наблюдателю всё
+равно, кто прислал последнюю запись; в `heartbeat.log` источник виден по
+User-Agent (`Alertmanager/<версия>`).
 
 Условие правила `DeadMansSwitch` в
-[`ops/grafana/alerting/rules.yaml`](../grafana/alerting/rules.yaml) ходит в
-датасорс: это `count(up) >= bool 1`, а не константа `vector(1)`. Если VictoriaMetrics умрёт, запрос перестанет
-отвечать, правило перестанет срабатывать, пульс прекратится и наблюдатели
-пришлют письмо. Константа в этом случае продолжила бы бодро пульсировать поверх
-мёртвой базы.
+[`ops/alerting/vmalert/rules.yaml`](../alerting/vmalert/rules.yaml) ходит в
+датасорс: это `count(up) >= 1`, а не константа `vector(1)`. Если VictoriaMetrics
+умрёт, запрос перестанет отвечать, vmalert перестанет отправлять алерт,
+Alertmanager закроет его по `endsAt` (около четырёх интервалов вычисления,
+~4 минуты при интервале 1m), пульс прекратится, и через 15 минут тишины
+наблюдатели пришлют письмо. Константа в этом случае продолжила бы пульсировать
+поверх мёртвой базы.
 
-Маршрут пульса — правило в
-[`ops/grafana/alerting/policies.yaml`](../grafana/alerting/policies.yaml):
-`DeadMansSwitch` уходит в contact point `heartbeat-observers` (два webhook'а,
+Маршрут пульса — первый в дереве
+[`ops/alerting/alertmanager/alertmanager.yml`](../alerting/alertmanager/alertmanager.yml):
+`DeadMansSwitch` уходит в receiver `heartbeat-observers` (два webhook'а,
 `https://relay-a.fleet.example/hb/<токен>` и `https://relay-b.fleet.example/hb/<токен>`)
 с `group_wait: 0s`, `group_interval: 1m`, `repeat_interval: 5m`.
 
@@ -132,13 +137,15 @@ printf '%s' '<токен>' | sudo tee /etc/heartbeat-watch/token >/dev/null
 sudo chmod 0600 /etc/heartbeat-watch/token
 ```
 
-Токен — общий секрет для обоих узлов и для URL webhook'а в Grafana; генерируется
-один раз (`openssl rand -base64 24 | tr -d '=+/'`). В репозитории его нет: в
-`nginx-heartbeat.conf` и в
-[`ops/grafana/alerting/contact-points.yaml`](../grafana/alerting/contact-points.yaml)
-стоит плейсхолдер `__HEARTBEAT_TOKEN__`. На узле его подставляет `install.sh`,
-в Grafana — `ops/grafana/alerting/deploy.sh` из
-`~/.config/outline/heartbeat-token` на машине разработчика.
+Токен — общий секрет для обоих узлов и для URL webhook'а в Alertmanager;
+генерируется один раз (`openssl rand -base64 24 | tr -d '=+/'`). В репозитории
+его нет: в `nginx-heartbeat.conf` и в
+[`alertmanager.yml`](../alerting/alertmanager/alertmanager.yml) стоит
+плейсхолдер `__HEARTBEAT_TOKEN__`. На узле его подставляет `install.sh`, в
+конфиг Alertmanager (Secret `alertmanager-config`) — `ops/alerting/deploy.sh` из
+`~/.config/outline/heartbeat-token` на машине разработчика. Смена токена
+требует обеих сторон: `install.sh` на узлах и `./ops/alerting/deploy.sh` плюс
+reload Alertmanager.
 
 ## Секреты
 
@@ -152,9 +159,9 @@ sudo chmod 0600 /etc/heartbeat-watch/token
 и `telegram-chat-id` на машине разработчика).
 
 `SMTP_PASSWORD` — app-password Google (16 символов, требует включённой
-двухэтапной аутентификации), тот же, что у Grafana. `SMTP_HOST` задаётся как
+двухэтапной аутентификации), тот же, что у Alertmanager (и у Grafana: пароль берётся из Secret `grafana-smtp`). `SMTP_HOST` задаётся как
 `host:port`, без порта используется 587 (STARTTLS). Наблюдатели шлют почту
-сами, не через Grafana: путь доставки не должен зависеть от того, за чем
+сами, не через Alertmanager: путь доставки не должен зависеть от того, за чем
 следим.
 
 ## Проверка

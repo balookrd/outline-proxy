@@ -1,7 +1,7 @@
 {
   "uid": "outline-alerting",
   "title": "outline alerting",
-  "description": "История и здоровье алертинга. Верхний ряд — состояние самого механизма; ниже — по одной панели на правило: метрика и пороговая линия, по которой видно, когда условие было истинным. Глубина — 90 дней ретенции VictoriaMetrics, поэтому видно и то, как правило вело бы себя до того, как его завели.",
+  "description": "История и здоровье алертинга. Правила считает vmalert, уведомления шлёт Alertmanager (оба в k3s, ops/alerting/; Grafana-алертинг выключен 2026-11-09). Верхний ряд — состояние самого механизма; ниже — по одной панели на правило: метрика и пороговая линия, по которой видно, когда условие было истинным. Глубина — 90 дней ретенции VictoriaMetrics.",
   "tags": [
     "outline",
     "alerting"
@@ -48,7 +48,7 @@
       "type": "stat",
       "id": 1,
       "title": "Активных алертов",
-      "description": "Единица здесь — норма: это DeadMansSwitch, который firing всегда, потому что он пульс, а не тревога. Два и больше — что-то действительно сработало.",
+      "description": "Сколько алертов горит сейчас, без DeadMansSwitch: он firing всегда, потому что он пульс, а не тревога. Ноль — норма.",
       "datasource": {
         "type": "prometheus",
         "uid": "adnsc1wi03doga"
@@ -62,8 +62,9 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "grafana_alerting_alerts{state=\"alerting\"}",
-          "legendFormat": "alerting"
+          "expr": "count(ALERTS{alertstate=\"firing\",alertname!=\"DeadMansSwitch\"}) or vector(0)",
+          "legendFormat": "firing",
+          "instant": true
         }
       ],
       "fieldConfig": {
@@ -77,7 +78,7 @@
               },
               {
                 "color": "orange",
-                "value": 2
+                "value": 1
               }
             ]
           }
@@ -98,7 +99,7 @@
       "type": "stat",
       "id": 2,
       "title": "Правил в работе",
-      "description": "Сколько правил взял планировщик. Расхождение с семью означает, что провижининг не применился — файлы читаются только при старте Grafana.",
+      "description": "Сколько алертинговых правил загрузил vmalert (по одной серии vmalert_alerts_firing на правило). Меньше восьми — rules.yaml в ConfigMap vmalert-rules не тот или не перечитался: vmalert_config_last_reload_successful, лог пода vmalert.",
       "datasource": {
         "type": "prometheus",
         "uid": "adnsc1wi03doga"
@@ -112,8 +113,9 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "grafana_alerting_schedule_alert_rules",
-          "legendFormat": "правил"
+          "expr": "count(vmalert_alerts_firing)",
+          "legendFormat": "правил",
+          "instant": true
         }
       ],
       "fieldConfig": {
@@ -127,7 +129,7 @@
               },
               {
                 "color": "green",
-                "value": 7
+                "value": 8
               }
             ]
           }
@@ -148,7 +150,7 @@
       "type": "stat",
       "id": 3,
       "title": "Ошибок вычисления за 24ч",
-      "description": "Правило, которое не может вычислиться, не сработает никогда — молчание такого правила неотличимо от тишины исправного. Ноль обязателен.",
+      "description": "Ошибки выполнения запросов правил в vmalert за сутки. Правило, которое не может вычислиться, не сработает никогда — его молчание неотличимо от тишины исправного. Ноль обязателен. Если VictoriaMetrics недоступна, сюда ничего не попадёт: метрики vmalert лежат в ней же — этот случай ловит пульс dead-man.",
       "datasource": {
         "type": "prometheus",
         "uid": "adnsc1wi03doga"
@@ -162,8 +164,9 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "increase(grafana_alerting_rule_evaluation_failures_total[24h])",
-          "legendFormat": "ошибок"
+          "expr": "sum(increase(vmalert_alerting_rules_errors_total[24h])) or vector(0)",
+          "legendFormat": "ошибок",
+          "instant": true
         }
       ],
       "fieldConfig": {
@@ -198,8 +201,8 @@
     {
       "type": "stat",
       "id": 4,
-      "title": "Отставание планировщика",
-      "description": "Насколько поздно планировщик начинает такт. Секунды означают, что вычисление правил не успевает за интервалом, и алерт придёт с задержкой.",
+      "title": "Пропущенных тактов за час",
+      "description": "Такты оценки групп правил, которые vmalert пропустил, потому что предыдущий не успел закончиться. Ненулевое значение значит, что алерт придёт с задержкой.",
       "datasource": {
         "type": "prometheus",
         "uid": "adnsc1wi03doga"
@@ -213,13 +216,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "grafana_alerting_scheduler_behind_seconds",
-          "legendFormat": "отставание"
+          "expr": "sum(increase(vmalert_iteration_missed_total[1h])) or vector(0)",
+          "legendFormat": "пропущено",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -230,13 +233,10 @@
               {
                 "color": "orange",
                 "value": 1
-              },
-              {
-                "color": "red",
-                "value": 10
               }
             ]
-          }
+          },
+          "decimals": 0
         },
         "overrides": []
       },
@@ -254,7 +254,7 @@
       "type": "timeseries",
       "id": 5,
       "title": "Уведомления по каналам (за час)",
-      "description": "webhook — это пульс dead-man, он и должен идти постоянно (примерно 60 в час). email и telegram растут только на настоящих срабатываниях. Пустой webhook при живой Grafana означает, что наблюдатели вот-вот начнут писать.",
+      "description": "Отправки Alertmanager. webhook — пульс dead-man на два наблюдателя, он идёт постоянно (около 20 в час: по одной отправке на наблюдателя раз в ~6 минут). email и telegram растут только на настоящих срабатываниях. Линии failed должны быть нулевыми; пустой webhook означает, что наблюдатели вот-вот начнут писать.",
       "datasource": {
         "type": "prometheus",
         "uid": "adnsc1wi03doga"
@@ -268,8 +268,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "increase(grafana_alerting_notifications_total[1h])",
+          "expr": "sum by (integration) (increase(alertmanager_notifications_total{integration=~\"email|telegram|webhook\"}[1h]))",
           "legendFormat": "{{integration}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (integration) (increase(alertmanager_notifications_failed_total{integration=~\"email|telegram|webhook\"}[1h]))",
+          "legendFormat": "{{integration}} failed"
         }
       ],
       "fieldConfig": {
@@ -299,8 +304,8 @@
     {
       "type": "timeseries",
       "id": 6,
-      "title": "Переходы состояний (за час)",
-      "description": "Сколько раз правила меняли состояние. Ровный ненулевой фон — признак флапающего правила: его порог стоит пересмотреть, иначе оно приучит игнорировать себя.",
+      "title": "Горящие алерты по правилам",
+      "description": "Сколько экземпляров каждого правила горело в каждый момент (серия ALERTS, которую vmalert пишет в VictoriaMetrics). Частая гребёнка вместо сплошных блоков — признак флапающего правила: его порог стоит пересмотреть, иначе оно приучит игнорировать себя.",
       "datasource": {
         "type": "prometheus",
         "uid": "adnsc1wi03doga"
@@ -314,8 +319,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "increase(grafana_alerting_state_history_transitions_total[1h])",
-          "legendFormat": "переходов"
+          "expr": "count by (alertname) (ALERTS{alertstate=\"firing\",alertname!=\"DeadMansSwitch\"})",
+          "legendFormat": "{{alertname}}"
         }
       ],
       "fieldConfig": {
@@ -334,41 +339,55 @@
         "legend": {
           "displayMode": "list",
           "placement": "bottom",
-          "showLegend": false
+          "showLegend": true
         },
         "tooltip": {
-          "mode": "single"
+          "mode": "multi"
         }
       }
     },
     {
-      "type": "alertlist",
+      "type": "table",
       "id": 7,
-      "title": "Состояние правил",
-      "description": "Текущее состояние каждого правила. Историю срабатываний здесь показать нельзя: панель Annotations list запрашивает только обычные аннотации (type=\"annotation\"), а история алертов пишется с alert_id != 0 и в выборку не попадает — проверено по коду annoListPanel в Grafana 13.0.2. Полная история — на странице Alerting → History, динамика в целом — на панели «Переходы состояний» выше.",
+      "title": "Горящие сейчас",
+      "description": "Алерты, которые горят прямо сейчас, с метками (серия ALERTS, без DeadMansSwitch). Историю смотрите на панели «Горящие алерты по правилам» или запросом ALERTS в Explore; заглушки и группировка — в Alertmanager (датасорс alertmanager).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
       "gridPos": {
         "h": 9,
         "w": 24,
         "x": 0,
         "y": 13
       },
-      "options": {
-        "viewMode": "list",
-        "groupMode": "default",
-        "maxItems": 20,
-        "sortOrder": 3,
-        "dashboardAlerts": false,
-        "alertName": "",
-        "showInactiveAlerts": true,
-        "alertInstanceLabelFilter": "",
-        "folder": "",
-        "stateFilter": {
-          "firing": true,
-          "pending": true,
-          "noData": true,
-          "normal": true,
-          "error": true
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ALERTS{alertstate=\"firing\",alertname!=\"DeadMansSwitch\"}",
+          "instant": true,
+          "format": "table"
         }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "alertstate": true
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
       }
     },
     {
