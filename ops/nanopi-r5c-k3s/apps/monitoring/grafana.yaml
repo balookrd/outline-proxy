@@ -59,6 +59,10 @@ spec:
             # reinstall the bundled elasticsearch plugin and failing on
             # permissions, which pollutes the log with level=error.
             - { name: GF_PLUGINS_PREINSTALL_DISABLED, value: "true" }
+            # Alerting moved to vmalert + Alertmanager (ops/alerting/) on
+            # 2026-11-09. Off rather than just unprovisioned: provisioned rules
+            # stay in grafana.db and would keep evaluating and mailing.
+            - { name: GF_UNIFIED_ALERTING_ENABLED, value: "false" }
             - { name: GF_SMTP_ENABLED, value: "true" }
             - { name: GF_SMTP_HOST, value: "smtp.gmail.com:587" }
             - { name: GF_SMTP_USER, value: balookrd@gmail.com }
@@ -75,7 +79,6 @@ spec:
             - { name: data, mountPath: /var/lib/grafana }
             - { name: datasources, mountPath: /etc/grafana/provisioning/datasources }
             - { name: dashboard-provider, mountPath: /etc/grafana/provisioning/dashboards }
-            - { name: alerting, mountPath: /etc/grafana/provisioning/alerting }
             - { name: dashboards, mountPath: /etc/grafana/dashboards }
             - { name: smtp, mountPath: /etc/grafana/secrets }
           readinessProbe:
@@ -93,8 +96,6 @@ spec:
           configMap: { name: grafana-datasources }
         - name: dashboard-provider
           configMap: { name: grafana-dashboard-provider }
-        - name: alerting
-          secret: { secretName: grafana-alerting }
         - name: smtp
           secret: { secretName: grafana-smtp }
         # One ConfigMap per dashboard (the 1 MiB object limit rules out a single
