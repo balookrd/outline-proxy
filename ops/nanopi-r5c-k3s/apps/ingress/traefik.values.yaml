@@ -13,9 +13,29 @@
 # adding anything here.
 
 deployment:
-  # Single replica is fine for a home LAN; MetalLB moves the VIP on node loss,
-  # and Traefik reschedules. Bump to 2 if you want zero-blip ingress.
-  replicas: 1
+  # Two replicas on different nodes. With one replica, losing its node (k3s-2
+  # loses power now and then) took every *.k3s name down for ~6 minutes: MetalLB
+  # moves the VIP in seconds, but the only Traefik endpoint sits on the dead
+  # node until the 300 s not-ready/unreachable toleration evicts the pod. With a
+  # second replica elsewhere the dead endpoint is dropped once the node turns
+  # NotReady (~40-50 s), and the other pod keeps serving meanwhile.
+  replicas: 2
+
+# Hard spread: never both replicas on one node, or a single node loss is back
+# to the old outage. Three nodes leave room for the rolling-update surge pod.
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: traefik
+            app.kubernetes.io/instance: traefik-traefik
+        topologyKey: kubernetes.io/hostname
+
+# Keeps `kubectl drain` from evicting both replicas at once.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
 
 service:
   type: LoadBalancer

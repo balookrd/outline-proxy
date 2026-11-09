@@ -82,7 +82,9 @@ stage_metallb() {
 
 stage_traefik() {
   log "Traefik (VIP 198.18.1.200)"
-  helm upgrade --install traefik traefik/traefik \
+  # Pinned: an unpinned upgrade jumps to whatever chart major is current, and
+  # the values file is validated against that chart's JSON schema.
+  helm upgrade --install traefik traefik/traefik --version 41.2.0 \
     -n traefik --create-namespace -f ingress/traefik.values.yaml
   log "waiting for Traefik EXTERNAL-IP from MetalLB"
   local i ip=""
