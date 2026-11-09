@@ -35,6 +35,7 @@ MQTT идёт мимо Traefik, чтобы рестарт ingress не рвал 
 | `ui.k3s.fleet.example` | `monitoring/outline-ui` | `ingress-routes.yaml` |
 | `vm.k3s.fleet.example` | `monitoring/victoria-metrics` | `../monitoring/victoria-metrics.yaml` |
 | `registry.k3s.fleet.example` | `registry/registry` (basic-auth) | `../registry/registry.yaml` |
+| `jellyfin.k3s.fleet.example` | `home/jellyfin` → Jellyfin на NAS (`:8899`), EndpointSlice вручную | `../home/jellyfin.yaml` |
 
 Внутри кластера к VictoriaMetrics и Grafana обращаться по ClusterIP
 (`victoria-metrics.monitoring:8428`, `grafana.monitoring:3000`), а не через эти
