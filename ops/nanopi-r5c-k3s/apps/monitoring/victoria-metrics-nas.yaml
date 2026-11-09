@@ -1,0 +1,54 @@
+# VictoriaMetrics runs in docker on the NAS 198.18.1.105 (ops/nas-monitoring)
+# since 2026-11-xx. The Service keeps its name, so vmalert, smarthome/power,
+# smarthome/humidity and vm.k3s.beerloga.su keep working unchanged.
+#
+# Service without a selector + a hand-written EndpointSlice: Kubernetes does not
+# manage the slice. If the NAS address or port changes, edit it here. The label
+# kubernetes.io/service-name ties the slice to the Service; the port carries no
+# name because the Service port has none.
+apiVersion: v1
+kind: Service
+metadata:
+  name: victoria-metrics
+  namespace: monitoring
+spec:
+  ports:
+    - { port: 8428, targetPort: 8428, protocol: TCP }
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: victoria-metrics-nas
+  namespace: monitoring
+  labels:
+    kubernetes.io/service-name: victoria-metrics
+    endpointslice.kubernetes.io/managed-by: manual
+addressType: IPv4
+ports:
+  - { port: 8428, protocol: TCP }
+endpoints:
+  - addresses: [198.18.1.105]
+    conditions: { ready: true }
+---
+# Browser and debugging access. In-cluster clients use the ClusterIP name.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: victoria-metrics
+  namespace: monitoring
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: vm.k3s.beerloga.su
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: victoria-metrics
+                port:
+                  number: 8428

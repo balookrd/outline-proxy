@@ -1,0 +1,48 @@
+# Grafana runs in docker on the NAS 198.18.1.105 (ops/nas-monitoring) since
+# 2026-11-xx. Same pattern as victoria-metrics-nas.yaml: the Service keeps its
+# name and points at the NAS through a hand-written EndpointSlice.
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  ports:
+    - { port: 3000, targetPort: 3000, protocol: TCP }
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: grafana-nas
+  namespace: monitoring
+  labels:
+    kubernetes.io/service-name: grafana
+    endpointslice.kubernetes.io/managed-by: manual
+addressType: IPv4
+ports:
+  - { port: 3000, protocol: TCP }
+endpoints:
+  - addresses: [198.18.1.105]
+    conditions: { ready: true }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: grafana.k3s.beerloga.su
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000

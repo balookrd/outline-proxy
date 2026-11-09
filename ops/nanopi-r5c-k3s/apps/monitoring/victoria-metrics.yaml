@@ -14,7 +14,7 @@ metadata:
   name: victoria-metrics
   namespace: monitoring
 spec:
-  replicas: 1
+  replicas: 0             # VM runs on the NAS (victoria-metrics-nas.yaml); kept as rollback point
   strategy:
     type: Recreate            # singleton over a RWO volume
   selector:
@@ -73,38 +73,3 @@ spec:
   resources:
     requests:
       storage: 20Gi           # 1.4 GB in use at 90 days retention
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: victoria-metrics
-  namespace: monitoring
-spec:
-  selector: { app: victoria-metrics }
-  ports:
-    - { port: 8428, targetPort: 8428 }
----
-# External access for a browser and for debugging. In-cluster clients (power,
-# humidity, Grafana) use the ClusterIP name instead — there is no reason to
-# leave the cluster and come back through the ingress.
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: victoria-metrics
-  namespace: monitoring
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    traefik.ingress.kubernetes.io/router.tls: "true"
-spec:
-  ingressClassName: traefik
-  rules:
-    - host: vm.k3s.beerloga.su
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: victoria-metrics
-                port:
-                  number: 8428

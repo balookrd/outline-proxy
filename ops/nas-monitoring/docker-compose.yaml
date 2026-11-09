@@ -1,0 +1,107 @@
+# VictoriaMetrics + Grafana on the UGREEN NAS 198.18.1.105, moved out of k3s
+# (see README.md). k3s keeps the names: the Services victoria-metrics and
+# grafana in namespace monitoring point here through hand-written
+# EndpointSlices.
+#
+# UIDs: the shared folders are governed by the UGOS ACL (system.ugacl_self),
+# not by mode bits. uid 1000 (sysadm) may write, the Grafana image's own uid
+# 472 may not, hence user: "1000:0" for Grafana.
+name: monitoring
+
+services:
+  victoria-metrics:
+    image: victoriametrics/victoria-metrics@sha256:f60dc268b54ecf87f6e09d740c2b732838aa9193090cc741417c9f6386a130df # v1.155.0
+    container_name: victoria-metrics
+    user: "1000:1000"
+    command:
+      - -storageDataPath=/victoria-metrics-data
+      - -retentionPeriod=90d
+      - -inmemoryDataFlushInterval=60s
+      # Measured 2026-08-11: all caches hold 182Mi at 28k active series, so
+      # 320MB is about double the working set. See the k3s manifest history.
+      - -memory.allowedBytes=320MB
+      # Directory mount, not a file mount: a replaced file would stay invisible
+      # behind the old inode.
+      - -promscrape.config=/etc/victoria-metrics/scrape.yaml
+      - -promscrape.configCheckInterval=1m
+    ports:
+      - "8428:8428"
+    volumes:
+      - /volume2/victoria-metrics:/victoria-metrics-data
+      - ./victoria-metrics:/etc/victoria-metrics:ro
+    mem_limit: 1g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8428/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
+  grafana:
+    image: grafana/grafana@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205 # v13.3.0
+    container_name: grafana
+    user: "1000:0"
+    environment:
+      TZ: Europe/Moscow
+      # Soft heap ceiling: without it the idle RSS sat at ~600Mi (measured
+      # 2026-08-11, live heap 341Mi, next_gc 595Mi).
+      GOMEMLIMIT: 512MiB
+      GF_DATABASE_WAL: "true"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      # Alerting lives in vmalert + Alertmanager in k3s since 2026-11-09.
+      GF_UNIFIED_ALERTING_ENABLED: "false"
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: smtp.gmail.com:587
+      GF_SMTP_USER: balookrd@gmail.com
+      GF_SMTP_PASSWORD__FILE: /run/secrets/smtp/smtp
+      GF_SMTP_FROM_ADDRESS: balookrd@gmail.com
+      GF_SMTP_FROM_NAME: "Grafana - beerloga.su"
+      # The admin password is NOT set here on purpose: it lives in the migrated
+      # grafana.db, and GF_SECURITY_ADMIN_PASSWORD would reset it on every start.
+    ports:
+      - "3000:3000"
+    volumes:
+      - /volume2/grafana:/var/lib/grafana
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/dashboards-provider:/etc/grafana/provisioning/dashboards:ro
+      - ./secrets:/run/secrets/smtp:ro
+    mem_limit: 768m
+    restart: unless-stopped
+    depends_on:
+      victoria-metrics:
+        condition: service_healthy
+
+  vmbackup:
+    image: victoriametrics/vmbackup@sha256:26af85b273442e15e5172769979998ad98486706051acbe7826cd3a8c5d83bca # v1.155.0
+    container_name: vmbackup
+    init: true
+    user: "1000:1000"
+    entrypoint: ["/bin/sh", "/opt/backup/vmbackup-loop.sh"]
+    environment:
+      RUN_AT_UTC: "01:15"     # 04:15 MSK
+    volumes:
+      - /volume2/victoria-metrics:/victoria-metrics-data
+      # HDD, not the NVMe the data lives on: a dead SSD must not take the
+      # backup with it. Same directory the k3s CronJob wrote, so vmbackup stays
+      # incremental across the move.
+      - /volume1/k8s/backup:/backup
+      - ./backup:/opt/backup:ro
+    restart: unless-stopped
+    depends_on:
+      victoria-metrics:
+        condition: service_healthy
+
+  grafana-backup:
+    image: python@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df # 3.12-alpine
+    container_name: grafana-backup
+    init: true
+    user: "1000:0"
+    command: ["python3", "/opt/backup/grafana-backup.py"]
+    environment:
+      RUN_AT_UTC: "00:30"     # 03:30 MSK
+    volumes:
+      - /volume2/grafana:/data
+      - /volume1/k8s/backup:/backup
+      - ./backup:/opt/backup:ro
+    restart: unless-stopped

@@ -1,0 +1,16 @@
+# Dashboards come from /var/lib/grafana/dashboards, i.e. the dashboards/
+# subdirectory of the /volume2/grafana shared folder. ops/grafana/dashboards/
+# deploy.sh --nas copies them there. Provisioning runs only at startup, so the
+# container has to be restarted after a copy.
+apiVersion: 1
+providers:
+  - name: outline
+    orgId: 1
+    type: file
+    # A deleted file removes the dashboard: the directory is the single source
+    # of truth. Hand-made dashboards live in the database and are untouched.
+    disableDeletion: false
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

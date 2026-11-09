@@ -23,6 +23,7 @@ metadata:
   name: grafana-backup
   namespace: monitoring
 spec:
+  suspend: true            # Grafana runs on the NAS; its own backup container replaces this job
   schedule: "30 3 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3

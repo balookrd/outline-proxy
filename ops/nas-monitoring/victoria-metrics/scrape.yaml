@@ -2,9 +2,8 @@ scrape_configs:
 - job_name: grafana
   static_configs:
   - targets:
-    # ClusterIP, не ingress: обращение из пода на MetalLB-VIP своего же
-    # кластера уходит наружу и возвращается (hairpin), и Traefik отвечает 5xx.
-    - grafana.monitoring:3000
+    # Same compose project on the NAS: plain service name, no ingress.
+    - grafana:3000
     labels:
       hostname: 'ubuntu'
   relabel_configs:
@@ -162,9 +161,18 @@ scrape_configs:
 - job_name: vmalert
   static_configs:
   - targets:
-    # ClusterIP, not ingress: same hairpin reason as the grafana job above.
-    - vmalert.monitoring:8880
+    # vmalert stays in k3s; the NAS reaches it through Traefik. No hairpin
+    # here: the NAS is outside the cluster.
+    - https://vmalert.k3s.beerloga.su/metrics
+  relabel_configs:
+    # Keep the instance value the series had while scraped by ClusterIP, so
+    # history does not split into two series at the move.
+    - target_label: instance
+      replacement: vmalert.monitoring:8880
 - job_name: alertmanager
   static_configs:
   - targets:
-    - alertmanager.monitoring:9093
+    - https://alertmanager.k3s.beerloga.su/metrics
+  relabel_configs:
+    - target_label: instance
+      replacement: alertmanager.monitoring:9093

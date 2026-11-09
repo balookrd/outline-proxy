@@ -18,7 +18,9 @@ metadata:
   name: grafana
   namespace: monitoring
 spec:
-  replicas: 1
+  # Grafana runs on the NAS (ops/nas-monitoring) since 2026-11; this Deployment
+  # and its PVC stay at 0 replicas as the rollback point until the PVC is retired.
+  replicas: 0
   strategy:
     type: Recreate            # SQLite tolerates exactly one writer
   selector:
@@ -122,13 +124,3 @@ spec:
   resources:
     requests:
       storage: 2Gi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: grafana
-  namespace: monitoring
-spec:
-  selector: { app: grafana }
-  ports:
-    - { port: 3000, targetPort: 3000 }

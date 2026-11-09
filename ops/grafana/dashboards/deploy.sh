@@ -4,6 +4,7 @@
 # Run from the development machine:
 #   ./deploy.sh [file.json ...]         # legacy: copy to the docker Grafana on .102
 #   ./deploy.sh --k3s [file.json ...]   # cluster: one ConfigMap per dashboard
+#   ./deploy.sh --nas [file.json ...]   # NAS: copy into /volume2/grafana/dashboards
 #
 # With no file arguments every *.json in this directory is used. Copying alone
 # changes nothing on screen: Grafana provisions dashboards once at startup, so a
@@ -17,17 +18,18 @@ host=${GRAFANA_HOST:-mmv@198.18.1.102}
 dest=/opt/grafana/data/dashboards
 
 k3s=0
-if [ "${1:-}" = "--k3s" ]; then
-	k3s=1
-	shift
-fi
+nas=0
+case "${1:-}" in
+--k3s) k3s=1; shift ;;
+--nas) nas=1; shift ;;
+esac
 
 files=("$@")
 if [ ${#files[@]} -eq 0 ]; then
 	# A bare glob would pass the literal "*.json" through on an empty directory.
 	shopt -s nullglob
 	files=(*.json)
-	if [ "$k3s" = 1 ]; then
+	if [ "$k3s" = 1 ] || [ "$nas" = 1 ]; then
 		# Binary-specific dashboards live next to their binaries, and in the
 		# cluster they must all be deployed together: the provider runs with
 		# disableDeletion=false, so a dashboard missing from the mounted
@@ -76,6 +78,28 @@ $(for f in "${files[@]}"; do echo "      - configMap: { name: grafana-dashboard-
     changes (a production action — ask the owner first):
 
     kubectl -n monitoring rollout restart deploy/grafana
+EOF
+	exit 0
+fi
+
+if [ "$nas" = 1 ]; then
+	# NAS Grafana (ops/nas-monitoring): dashboards live in the dashboards/
+	# subdirectory of the /volume2/grafana shared folder, which the container
+	# sees as /var/lib/grafana/dashboards. sysadm (uid 1000) may write there
+	# under the UGOS ACL, so no sudo and no chown.
+	nas_host=${NAS_HOST:-sysadm@198.18.1.105}
+	nas_dest=/volume2/grafana/dashboards
+	ssh "$nas_host" "mkdir -p $nas_dest"
+	# -O: the NAS sftp-server rejects scp's default SFTP mode ("dest open: No
+	# such file"); the legacy protocol works.
+	scp -O -q "${files[@]}" "$nas_host:$nas_dest/"
+	cat <<EOF
+
+==> copied to $nas_host:$nas_dest. Grafana provisions dashboards at startup,
+    so restart it (a production action — ask the owner first):
+
+    ssh $nas_host 'docker restart grafana'
+    ssh $nas_host 'docker logs --since 2m grafana 2>&1 | grep "provision dashboards"'
 EOF
 	exit 0
 fi

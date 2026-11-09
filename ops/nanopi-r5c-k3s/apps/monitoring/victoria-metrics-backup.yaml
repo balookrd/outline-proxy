@@ -15,6 +15,7 @@ metadata:
   name: vmbackup
   namespace: monitoring
 spec:
+  suspend: true               # backup now runs from the NAS compose project
   schedule: "15 4 * * *"      # after grafana-backup at 03:30
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3

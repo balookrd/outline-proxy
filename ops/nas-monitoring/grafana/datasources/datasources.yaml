@@ -1,0 +1,25 @@
+# Datasources for the NAS Grafana.
+#
+# The datasource UID is not cosmetic: dashboards reference datasources by UID,
+# and the migrated ones all point at adnsc1wi03doga. Change it and every panel
+# comes up empty.
+apiVersion: 1
+datasources:
+  - name: prometheus
+    uid: adnsc1wi03doga
+    type: prometheus
+    access: proxy
+    # Same compose project: service name, no ingress.
+    url: http://victoria-metrics:8428
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+  - name: alertmanager
+    uid: alertmanager-k3s
+    type: alertmanager
+    access: proxy
+    # Alertmanager stays in k3s and is reached through Traefik.
+    url: https://alertmanager.k3s.beerloga.su
+    jsonData:
+      implementation: prometheus
+      handleGrafanaManagedAlerts: false
