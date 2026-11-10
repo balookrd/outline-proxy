@@ -85,9 +85,20 @@ def _transport_parameters(browser, tps):
         [tp for tp in out if tp[0] == GREASE]
 
 
+def _initial_dcid_len(browser, length):
+    # neqo draws the length per connection: max(8, 5 + (v & (v >> 4))) for a
+    # random byte v, so any value in 8..20 is the same behaviour. Chrome's is
+    # a constant.
+    if browser == "firefox" and 8 <= length <= 20:
+        return "8..20"
+    return length
+
+
 def normalize_hello(browser, transport, record):
     h = dict(record["hello"])
     h["ja4_ab"] = record["ja4"].rsplit("_", 1)[0]
+    if "dcid_len" in record:
+        h["initial_dcid_len"] = _initial_dcid_len(browser, record["dcid_len"])
     if (browser, f"{transport}_extensions") not in ORDERED:
         h["extensions"] = _as_set(h["extensions"])
     if h["transport_parameters"] is not None:

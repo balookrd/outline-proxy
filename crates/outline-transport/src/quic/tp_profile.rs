@@ -8,6 +8,7 @@
 //! Network.framework on macOS 27 and Firefox 159, 2026-10-29), parameter order
 //! included.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::vendored::{BrowserTpOptions, HelloLayout, TpOrder, VersionInfo, VersionSlot};
@@ -58,10 +59,41 @@ pub(crate) struct QuicTpProfile {
     pub(crate) source_cid_len: usize,
     /// `grease_quic_bit` (0x2ab2) - neither browser sends it.
     pub(crate) grease_quic_bit: bool,
+    /// Length of the destination CID in the first Initial. It sits in the
+    /// clear in the long header, so it is visible without decrypting anything.
+    pub(crate) initial_dcid_len: InitialDcidLen,
+    /// Whether 1-RTT packets carry a working latency spin bit (quinn's
+    /// default: on for 7 connections of 8). `false` puts an independent random
+    /// bit in every packet instead. The bit is outside header protection.
+    pub(crate) spin_bit: bool,
     /// Parameter-set shaping done by the vendored quinn-proto patch: which
     /// parameters are sent at all, `version_information`, datagram size and
     /// the browser's private extras.
     pub(crate) options: BrowserTpOptions,
+}
+
+/// Longest connection ID QUIC v1 allows (RFC 9000, section 17.2).
+const MAX_CID_LEN: usize = 20;
+
+/// How a client picks the length of the destination CID of its first Initial.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InitialDcidLen {
+    /// Always this many bytes.
+    Fixed(usize),
+    /// neqo (Firefox), `ConnectionId::generate_initial`:
+    /// `max(8, 5 + (v & (v >> 4)))` for one random byte `v` — 8..=20 bytes,
+    /// 8 more often than not.
+    Neqo,
+}
+
+impl InitialDcidLen {
+    /// The length for one connection; `v` is a fresh random byte.
+    pub(crate) fn draw(self, v: u8) -> usize {
+        match self {
+            Self::Fixed(len) => len,
+            Self::Neqo => usize::from(8.max(5 + (v & (v >> 4)))),
+        }
+    }
 }
 
 /// Chrome 156 (Edge and other Blink clients share the stack). The full
@@ -77,6 +109,11 @@ pub(crate) const CHROMIUM: QuicTpProfile = QuicTpProfile {
     max_uni_streams: 103,
     source_cid_len: 0,
     grease_quic_bit: false,
+    // Measured: 8 bytes on all three connections of the Chrome capture
+    // (scripts/fingerprint-drift/tests/data/chrome/quic.pcap).
+    initial_dcid_len: InitialDcidLen::Fixed(8),
+    // Not measured: the capture holds Initials only. Left at quinn's default.
+    spin_bit: true,
     options: BrowserTpOptions {
         advertise_min_ack_delay: false,
         grease_parameter: true,
@@ -112,6 +149,9 @@ pub(crate) const SAFARI: QuicTpProfile = QuicTpProfile {
     max_uni_streams: 8,
     source_cid_len: 0,
     grease_quic_bit: false,
+    // Not measured for Safari; both left at quinn's defaults.
+    initial_dcid_len: InitialDcidLen::Fixed(MAX_CID_LEN),
+    spin_bit: true,
     options: BrowserTpOptions {
         advertise_min_ack_delay: false,
         grease_parameter: false,
@@ -149,6 +189,11 @@ pub(crate) const FIREFOX: QuicTpProfile = QuicTpProfile {
     max_uni_streams: 100,
     source_cid_len: 3,
     grease_quic_bit: false,
+    // neqo's own rule; the Firefox capture (13 bytes, one connection) fits it.
+    initial_dcid_len: InitialDcidLen::Neqo,
+    // neqo does not implement the spin bit: `Builder::scramble` XORs a random
+    // bit into every short header.
+    spin_bit: false,
     options: BrowserTpOptions {
         advertise_min_ack_delay: false,
         grease_parameter: false,
@@ -197,6 +242,19 @@ pub(crate) fn for_fingerprint(fp: Option<TlsFingerprint>) -> &'static QuicTpProf
 }
 
 impl QuicTpProfile {
+    /// Generator for the destination CID of a connection's first Initial:
+    /// random bytes of the browser's length, drawn anew per connection.
+    pub(crate) fn initial_dst_cid_provider(
+        &self,
+    ) -> Arc<dyn Fn() -> quinn_proto::ConnectionId + Send + Sync> {
+        let len = self.initial_dcid_len;
+        Arc::new(move || {
+            let mut bytes = [0u8; MAX_CID_LEN];
+            rand::fill(&mut bytes);
+            quinn_proto::ConnectionId::new(&bytes[..len.draw(rand::random())])
+        })
+    }
+
     pub(crate) fn endpoint_config(&self) -> quinn::EndpointConfig {
         let mut config = quinn::EndpointConfig::default();
         config.grease_quic_bit(self.grease_quic_bit);
