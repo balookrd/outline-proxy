@@ -9,7 +9,7 @@
 //! endpoint. Runtime receive windows, keep-alive and BBR are applied here too.
 
 use std::sync::{Arc, Once, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use hashbrown::HashMap;
 use parking_lot::Mutex;
@@ -247,14 +247,16 @@ fn apply_quic_carrier_tuning(
     transport.mtu_discovery_config(Some(mtu));
 }
 
-/// Cache of the H3 QUIC client config, keyed by dial fingerprint with a build
-/// timestamp — shared by the WS-over-H3 and XHTTP-over-H3 carriers (both dial
-/// `h3` under `dial_plan`'s fingerprint scope). Keyed on the fingerprint so the
-/// browser family reaches the H3 ClientHello and the first dial's choice does
-/// not stick, and rebuilt on the [`crate::tls::SESSION_TICKET_ROTATION_INTERVAL`]
-/// cadence to rotate the session-ticket store.
+/// Cache of the H3 QUIC client config, keyed by dial fingerprint — shared by
+/// the WS-over-H3 and XHTTP-over-H3 carriers (both dial `h3` under
+/// `dial_plan`'s fingerprint scope). Keyed on the fingerprint so the browser
+/// family reaches the H3 ClientHello and the first dial's choice does not
+/// stick. An entry lives for the whole process, like the TLS configs it wraps
+/// (see `CLIENT_CONFIG_CACHE` in `crate::tls`): rebuilding it would drop the
+/// session tickets and the address-validation tokens (`NEW_TOKEN`) quinn keeps
+/// in the config.
 static H3_QUIC_CLIENT_CONFIGS: OnceLock<
-    Mutex<HashMap<Option<TlsFingerprint>, (quinn::ClientConfig, Instant)>>,
+    Mutex<HashMap<Option<TlsFingerprint>, quinn::ClientConfig>>,
 > = OnceLock::new();
 
 /// QUIC client config for the H3 carrier (`h3` ALPN). Transport parameters
@@ -268,9 +270,7 @@ pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
     let fp = crate::fingerprint_profile::current_dial_fingerprint();
     let cache = H3_QUIC_CLIENT_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = cache.lock();
-    if let Some((existing, created_at)) = guard.get(&fp)
-        && created_at.elapsed() < crate::tls::SESSION_TICKET_ROTATION_INTERVAL
-    {
+    if let Some(existing) = guard.get(&fp) {
         return existing.clone();
     }
     let tls = crate::tls::build_quic_client_config(fp, &[super::ALPN_H3]);
@@ -285,7 +285,7 @@ pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
         warn_if_keepalive_not_below_idle(keepalive, idle);
     }
     config.transport_config(Arc::new(transport));
-    guard.insert(fp, (config.clone(), Instant::now()));
+    guard.insert(fp, config.clone());
     config
 }
 
