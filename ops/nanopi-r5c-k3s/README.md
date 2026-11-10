@@ -777,7 +777,7 @@ systemctl restart k3s
 
 `metrics-server` выключен намеренно: он опрашивает kubelet всех нод каждые 15 секунд и
 на этом железе стоил ~6% ядра плюс 70 МБ RSS, а нужен только для `kubectl top` и HPA.
-Метрики в этом парке собирает VictoriaMetrics (шаг 13), которая скрейпит kubelet напрямую
+Метрики в этом парке собирает VictoriaMetrics (шаг 13), которая (с 2026-11-09 на NAS, в docker) скрейпит kubelet напрямую
 и в metrics-server не нуждается. Если `kubectl top` понадобится — убрать строку и
 перезапустить, k3s поставит его обратно.
 
@@ -859,8 +859,8 @@ find /var/lib/rancher/k3s -type f -size 0 -printf '%s\t%p\n'   # только .l
 Кластер поднят, но пустой. Дальше — отдельное дерево [`apps/`](apps/README.md):
 storage (NFS-провижнер + local-path), вход трафика (MetalLB, пул `198.51.100.200–210`,
 и Traefik на VIP `.200`) и сама нагрузка (каталоги `monitoring`, `home`, `smarthome`,
-`outline`, `vpn`: VictoriaMetrics, Grafana, outline-ui, mosquitto, zigbee2mqtt, сервисы
-умного дома, outline, ocserv). Всё это раскатывает идемпотентный
+`outline`, `vpn`: outline-ui, mosquitto, zigbee2mqtt, сервисы
+умного дома, outline, ocserv; VictoriaMetrics и Grafana работают на NAS, в `monitoring` от них остались Service с EndpointSlice, см. [`ops/nas-monitoring/`](../nas-monitoring/README.md)). Всё это раскатывает идемпотентный
 [`apps/deploy.sh`](apps/deploy.sh); реестр образов (`apps/registry/`) он не применяет:
 
 ```bash

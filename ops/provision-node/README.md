@@ -382,17 +382,15 @@ What still has no automatic answer is anything the *peers* hold: `shard_id`,
 - Restarting peers. `register-uplink-user.sh` uses the control API, which
   applies users live.
 - Scraping the new node. The exporters answer, nginx serves them and nothing
-  collects them: the scrape config belongs to VictoriaMetrics in k3s
-  (namespace `monitoring`), not to the host being installed. Its source is
-  [`ops/nanopi-r5c-k3s/apps/monitoring/scrape.yaml`](../nanopi-r5c-k3s/apps/monitoring/scrape.yaml);
-  VictoriaMetrics reads the live copy from its PVC
-  (`-promscrape.config=/victoria-metrics-data/scrape.yaml`). Add a target block
-  per job — `assets/victoria-metrics/scrape-unbound-exporter.yaml` shows the
-  `unbound-exporter` one — then reload rather than restart (`POST /-/reload` on
-  port 8428) [verify: how to update the file in the PVC and call the reload in
-  k3s]. Until 2026-08-09 the file was `/opt/victoria-metrics/data/scrape.yaml`
-  on `.102`; the reminder the `verify` phase prints at the end of a run, and the
-  header of the asset, still name that path. A node missing from the scrape
+  collects them: the scrape config belongs to VictoriaMetrics on the NAS
+  (`ops/nas-monitoring`), not to the host being installed. Its source is
+  [`ops/nas-monitoring/victoria-metrics/scrape.yaml`](../nas-monitoring/victoria-metrics/scrape.yaml).
+  Add a target block per job — `assets/victoria-metrics/scrape-unbound-exporter.yaml`
+  shows the `unbound-exporter` one — and run `./ops/nas-monitoring/deploy.sh`:
+  it copies the file to the NAS, and VictoriaMetrics re-reads it within a minute
+  (`-promscrape.configCheckInterval=1m`), no restart needed. Until 2026-11-09
+  the file lived in the k3s PVC `victoria-metrics-data`, and until 2026-08-09 in
+  `/opt/victoria-metrics/data/scrape.yaml` on `.102`. A node missing from the scrape
   config is not broken in any way it can detect: it never appears in Grafana.
 - Announcing the node to the mesh. `/opt/network/iptables-update.sh` holds
   the peer allow-list for the QUIC mesh port (9443) as literal addresses, and

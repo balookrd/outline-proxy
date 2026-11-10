@@ -30,10 +30,10 @@ MQTT идёт мимо Traefik, чтобы рестарт ingress не рвал 
 
 | Имя | Namespace / Service | Где объявлен Ingress |
 |---|---|---|
-| `grafana.k3s.fleet.example` | `monitoring/grafana` | `ingress-routes.yaml` |
+| `grafana.k3s.fleet.example` | `monitoring/grafana` → Grafana на NAS (`:3000`), EndpointSlice вручную | `../monitoring/grafana-nas.yaml` |
 | `z2m.k3s.fleet.example` | `home/zigbee2mqtt` | `ingress-routes.yaml` |
 | `ui.k3s.fleet.example` | `monitoring/outline-ui` | `ingress-routes.yaml` |
-| `vm.k3s.fleet.example` | `monitoring/victoria-metrics` | `../monitoring/victoria-metrics.yaml` |
+| `vm.k3s.fleet.example` | `monitoring/victoria-metrics` → VictoriaMetrics на NAS (`:8428`), EndpointSlice вручную | `../monitoring/victoria-metrics-nas.yaml` |
 | `registry.k3s.fleet.example` | `registry/registry` (basic-auth) | `../registry/registry.yaml` |
 | `vmalert.k3s.fleet.example` | `monitoring/vmalert` | `ingress-routes.yaml` |
 | `alertmanager.k3s.fleet.example` | `monitoring/alertmanager` (без авторизации), любая из трёх реплик | `ingress-routes.yaml` |

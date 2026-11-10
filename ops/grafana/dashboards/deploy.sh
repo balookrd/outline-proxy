@@ -3,7 +3,6 @@
 # deploy.sh — push the dashboards to Grafana.
 # Run from the development machine:
 #   ./deploy.sh [file.json ...]         # legacy: copy to the docker Grafana on .102
-#   ./deploy.sh --k3s [file.json ...]   # cluster: one ConfigMap per dashboard
 #   ./deploy.sh --nas [file.json ...]   # NAS: copy into /volume2/grafana/dashboards
 #
 # With no file arguments every *.json in this directory is used. Copying alone
@@ -17,10 +16,8 @@ cd "$(dirname "$0")"
 host=${GRAFANA_HOST:-mmv@198.18.1.102}
 dest=/opt/grafana/data/dashboards
 
-k3s=0
 nas=0
 case "${1:-}" in
---k3s) k3s=1; shift ;;
 --nas) nas=1; shift ;;
 esac
 
@@ -29,9 +26,9 @@ if [ ${#files[@]} -eq 0 ]; then
 	# A bare glob would pass the literal "*.json" through on an empty directory.
 	shopt -s nullglob
 	files=(*.json)
-	if [ "$k3s" = 1 ] || [ "$nas" = 1 ]; then
-		# Binary-specific dashboards live next to their binaries, and in the
-		# cluster they must all be deployed together: the provider runs with
+	if [ "$nas" = 1 ]; then
+		# Binary-specific dashboards live next to their binaries, and on the
+		# NAS they must all be deployed together: the provider runs with
 		# disableDeletion=false, so a dashboard missing from the mounted
 		# directory gets DELETED from the database on the next start.
 		files+=(../../../bins/outline-ss-rust/grafana/*.json)
@@ -48,39 +45,6 @@ for f in "${files[@]}"; do
 		{ echo "$f is not valid JSON — refusing to deploy" >&2; exit 1; }
 done
 echo "==> json ok: ${files[*]}"
-
-if [ "$k3s" = 1 ]; then
-	# Cluster mode: each dashboard becomes its own ConfigMap, because a single
-	# one would run into the 1 MiB object limit. The manifests are generated
-	# rather than committed — otherwise the same JSON would live twice in the
-	# repository and the copies would drift.
-	command -v kubectl >/dev/null || { echo "kubectl not in PATH" >&2; exit 1; }
-	: "${KUBECONFIG:?set KUBECONFIG (e.g. ~/.kube/k3s-home.yaml)}"
-	for f in "${files[@]}"; do
-		name="grafana-dashboard-$(basename "$f" .json)"
-		# --server-side is not optional here: a client-side apply stores the
-		# whole object in the last-applied-configuration annotation, and
-		# annotations cap at 256 KB. outline-ws-rust-dashboard.json is 252 KB,
-		# so it fits the 1 MiB ConfigMap but blows the annotation limit.
-		kubectl create configmap "$name" -n monitoring --from-file="$f" \
-			--dry-run=client -o yaml |
-			kubectl apply --server-side --force-conflicts -f -
-	done
-	cat <<EOF
-
-==> ConfigMaps applied. If you ADDED a dashboard, its ConfigMap is not mounted
-    yet — add a source to the projected volume in
-    apps/monitoring/grafana.yaml and re-apply the Deployment:
-
-$(for f in "${files[@]}"; do echo "      - configMap: { name: grafana-dashboard-$(basename "$f" .json) }"; done)
-
-    Grafana provisions dashboards at startup, so restart the pod to pick up
-    changes (a production action — ask the owner first):
-
-    kubectl -n monitoring rollout restart deploy/grafana
-EOF
-	exit 0
-fi
 
 if [ "$nas" = 1 ]; then
 	# NAS Grafana (ops/nas-monitoring): dashboards live in the dashboards/

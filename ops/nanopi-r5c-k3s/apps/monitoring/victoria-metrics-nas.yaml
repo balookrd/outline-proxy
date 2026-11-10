@@ -1,5 +1,5 @@
 # VictoriaMetrics runs in docker on the NAS 198.18.1.105 (ops/nas-monitoring)
-# since 2026-11-xx. The Service keeps its name, so vmalert, smarthome/power,
+# since 2026-11-09. The Service keeps its name, so vmalert, smarthome/power,
 # smarthome/humidity and vm.k3s.beerloga.su keep working unchanged.
 #
 # Service without a selector + a hand-written EndpointSlice: Kubernetes does not

@@ -1,5 +1,5 @@
 # Grafana runs in docker on the NAS 198.18.1.105 (ops/nas-monitoring) since
-# 2026-11-xx. Same pattern as victoria-metrics-nas.yaml: the Service keeps its
+# 2026-11-09. Same pattern as victoria-metrics-nas.yaml: the Service keeps its
 # name and points at the NAS through a hand-written EndpointSlice.
 apiVersion: v1
 kind: Service

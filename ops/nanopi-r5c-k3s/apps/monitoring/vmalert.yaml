@@ -8,7 +8,8 @@
 # ALERTS series (-remoteWrite.url) that the alerting dashboard reads.
 #
 # Sole alert evaluator since 2026-11-09: Grafana alerting is disabled
-# (grafana.yaml, GF_UNIFIED_ALERTING_ENABLED=false). The shadow-mode flag
+# (GF_UNIFIED_ALERTING_ENABLED=false in the Grafana container on the NAS,
+# ops/nas-monitoring/docker-compose.yaml). The shadow-mode flag
 # -external.label=shadow=true was removed at that cut-over; 16 hours of shadow
 # run matched Grafana alert for alert.
 apiVersion: apps/v1

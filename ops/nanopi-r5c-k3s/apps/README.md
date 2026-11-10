@@ -14,14 +14,15 @@
 
 | Хранилище | Где лежат данные | Кто использует |
 |---|---|---|
-| `local-path` (default, встроен в k3s) | локальный NVMe ноды | VictoriaMetrics, Grafana (под прибит к `k3s-1`) |
+| `local-path` (default, встроен в k3s) | локальный NVMe ноды | пока никто (VictoriaMetrics и Grafana с 2026-11-09 на NAS, см. «Перенесённые сервисы») |
 | `nfs-client` | NAS `198.51.100.105:/volume1/k8s/pvc` (NFSv3) | PVC `ocserv-passwd` |
 | inline `nfs:` без PVC | каталоги на том же NAS | zigbee2mqtt, mosquitto, сервисы `smarthome`, реестр |
 
 Синглтон нельзя запустить в двух репликах (z2m подерётся за координатор, VM — за
 базу), поэтому схема такая: один под, том, видимый со всех нод (NFS), и
-`strategy: Recreate`. Исключения — VictoriaMetrics и Grafana: запись TSDB и SQLite
-нельзя гнать по 2.5GbE на NAS, поэтому они на NVMe `k3s-1` и спасаются бэкапом.
+`strategy: Recreate`. VictoriaMetrics и Grafana в эту схему не входят: они работают
+в docker на NAS (запись TSDB и SQLite идёт на локальный NVMe самого NAS, а не по
+сети), данные и бэкапы описаны в [`ops/nas-monitoring/README.md`](../../nas-monitoring/README.md).
 Подробности — в шапке каждого манифеста.
 
 Время переезда пода с упавшей ноды:
@@ -30,8 +31,8 @@
   (mosquitto, zigbee2mqtt, сервисы `smarthome`, реестр, outline-ui) — около 1.7 мин
   (≈40 с до `NotReady` плюс 60 с, по комментарию в манифестах);
 - остальные — по дефолту k3s, около 5 мин;
-- VictoriaMetrics и Grafana не переезжают: `nodeSelector` на `k3s-1` и PV
-  `local-path` с node-affinity.
+- VictoriaMetrics и Grafana в k3s не запускаются: Service в кластере указывают на
+  NAS, поэтому падение узла k3s на них не влияет.
 
 Уменьшать задержку дальше не стоит: на флапах сети ложные переезды обходятся дороже.
 
@@ -102,19 +103,28 @@ Namespace `monitoring`, `home`, `smarthome`, `outline` и `vpn` создаёт
 
 Секреты создаются до раскатки, вне git. `grafana-alerting` создаёт
 [`ops/grafana/alerting/deploy.sh`](../../grafana/alerting/deploy.sh); `grafana-smtp`
-монтируется в `monitoring/grafana.yaml` [проверить: чем создаётся Secret
-`grafana-smtp` — в `ops/grafana/` описан только docker-вариант на `.102`]. Пароля
-администратора среди секретов нет намеренно: он живёт в перенесённой БД, а
-`GF_SECURITY_ADMIN_PASSWORD` сбрасывал бы его при каждом старте пода. Остальное —
-из шаблонов `*.secret.example.yaml` (`ocserv-certs`, когда дойдёт до ocserv).
+остался в `monitoring` как источник пароля SMTP: `ops/alerting/deploy.sh` копирует
+его в Secret `alertmanager-smtp`, а файл для Grafana на NAS создаётся из него по
+[`ops/nas-monitoring/README.md`](../../nas-monitoring/README.md#секрет-smtp)
+[проверить: чем создаётся сам Secret `grafana-smtp` — в `ops/grafana/` описан только
+docker-вариант на `.102`]. Пароля администратора среди секретов нет намеренно: он живёт
+в БД Grafana. Остальное — из шаблонов `*.secret.example.yaml` (`ocserv-certs`, когда
+дойдёт до ocserv).
 
 ## Перенесённые сервисы
 
-Grafana перенесена с `198.51.100.102` 2026-08-09: данные — SQLite на
-`local-path` (PV несёт node-affinity, поэтому под приколочен к своей ноде),
-конфигурация — ConfigMap `grafana-datasources` и `grafana-dashboard-provider`,
-дашборды — по ConfigMap на файл, алертинг — Secret `grafana-alerting`. Ночной
-бэкап на NAS — CronJob `grafana-backup` (расписание `30 3 * * *`).
+VictoriaMetrics и Grafana работают в docker на NAS `198.51.100.105` (compose-проект
+[`ops/nas-monitoring/`](../../nas-monitoring/README.md)), данные — на NVMe NAS
+(`/volume2/victoria-metrics`, `/volume2/grafana`), бэкапы — на HDD
+(`/volume1/k8s/backup/{victoria-metrics,grafana}`). Grafana переехала с
+`198.51.100.102` в k3s 2026-08-09, а из k3s на NAS — 2026-11-09. В кластере от них
+остались Service `victoria-metrics` (`:8428`) и `grafana` (`:3000`) без selector'а,
+EndpointSlice `victoria-metrics-nas` и `grafana-nas` с адресом NAS и Ingress
+(`victoria-metrics-nas.yaml`, `grafana-nas.yaml` в `monitoring/`). Адреса
+`victoria-metrics.monitoring:8428` и `grafana.monitoring:3000` для клиентов в
+кластере не изменились. Адрес NAS меняется правкой EndpointSlice. Deployment'ы, CronJob'ы
+бэкапа, ConfigMap'ы и PVC `victoria-metrics-data` и `grafana-data` удалены 2026-11-10;
+откат описан в разделе «Откат в k3s» файла `ops/nas-monitoring/README.md`.
 
 zigbee2mqtt перенесён с `198.51.100.102` 2026-08-09. Координатор сетевой
 (`tcp://198.51.100.106:8888`), поэтому под не привязан к железу. Настройки — в
@@ -161,20 +171,22 @@ NFS (`mosquitto-data`), образ `eclipse-mosquitto:2.1.2-alpine` (тега б
 `198.51.100.102`, просыпается редко и перенастройке не поддаётся. Всё, что идёт
 через них, брокер видит как `.102`.
 
-VictoriaMetrics перенесена с `198.51.100.102` 2026-08-09 — namespace
-`monitoring`, под прибит к `k3s-1`, данные на `local-path` (NVMe), retention 90
-дней, PVC 20 ГиБ. NFS здесь не используется: у TSDB поток мелких записей с fsync,
-сетевая ФС для этого не годится — в отличие от z2m и smarthome.
+VictoriaMetrics перенесена с `198.51.100.102` в k3s 2026-08-09, а 2026-11-09 — из
+k3s на NAS (см. «Перенесённые сервисы»). Retention 90 дней. NFS для TSDB не
+используется: у неё поток мелких записей с fsync, сетевая ФС для этого не годится —
+в отличие от z2m и smarthome; на NAS данные лежат на локальном NVMe.
 
 В кластере обращаться по `http://victoria-metrics.monitoring:8428`, снаружи —
-`https://vm.k3s.fleet.example`. Ночной бэкап — CronJob `vmbackup` (расписание `15 4 * * *`, снапшот
-через API, инкрементально).
+`https://vm.k3s.fleet.example`. Ночной бэкап — контейнер `vmbackup` на NAS
+(`01:15` UTC, снапшот через API, инкрементально, одна копия в
+`/volume1/k8s/backup/victoria-metrics`), CronJob в k3s удалён.
 
 Скрейпить сервисы кластера надо по ClusterIP, а не через ingress. Запрос из
 пода на MetalLB-VIP собственного кластера уходит наружу и возвращается; Traefik
 на таком hairpin отвечает `5xx`, при этом снаружи тот же URL даёт `200`. На этом
-отвалился скрейп Grafana сразу после переезда — цель переведена на
-`grafana.monitoring:3000`.
+отвалился скрейп Grafana сразу после переезда в k3s. После переезда на NAS VictoriaMetrics
+скрейпит Grafana внутри compose-сети по `grafana:3000`
+(`ops/nas-monitoring/victoria-metrics/scrape.yaml`, job `grafana`), через k3s запрос не идёт.
 
 Метрики самих нод собирает DaemonSet `node-exporter` (версия 1.11.1, как на
 парке; `hostNetwork` + `hostPID`, иначе отдавал бы метрики контейнера). Цели
@@ -188,8 +200,9 @@ NAS — UGREEN DXP4800 Plus `.105` (до 2026-11-08 — WD MyCloud `.125`, пл�
 `zigbee2mqtt-data/`, `mosquitto-data/`), бэкапы — в `backup/` (`backup/grafana/`,
 `backup/victoria-metrics/`), тома `nfs-client` — в `pvc/`.
 
-Stateful-поды на `local-path` — VictoriaMetrics и Grafana — оба на `k3s-1`.
-Данные и восстановление в одном месте; потеря `k3s-1` останавливает оба сервиса.
+Stateful-подов на `local-path` в кластере нет: VictoriaMetrics и Grafana на NAS,
+их данные лежат в `/volume2/{victoria-metrics,grafana}`, бэкапы — в
+`backup/{victoria-metrics,grafana}` корня экспорта.
 
 `local-path` встроен в k3s и смотрит в `/var/lib/rancher/k3s/storage` — то есть в
 смонтированный NVMe (шаг 8 runbook). Отдельно ставить нечего.
@@ -280,8 +293,8 @@ Ingress-объекты, не трогая workloads. Пока приложени
 
 | Сервис | Данные | Хранилище |
 |---|---|---|
-| VictoriaMetrics | TSDB | `local-path` NVMe, pinned `k3s-1` |
-| Grafana | SQLite | `local-path` NVMe, pinned `k3s-1` |
+| VictoriaMetrics | TSDB | NVMe NAS `/volume2/victoria-metrics`, docker ([`ops/nas-monitoring/`](../../nas-monitoring/README.md)) |
+| Grafana | SQLite | NVMe NAS `/volume2/grafana`, docker (там же) |
 | mosquitto, zigbee2mqtt, сервисы `smarthome`, реестр | стейт | inline NFS-том |
 | ocserv | `ocpasswd` | PVC `nfs-client` (мелкий) |
 | outline-ss/ws, ocserv | сертификаты/конфиг | Secret/ConfigMap, без PVC |

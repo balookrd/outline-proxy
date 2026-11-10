@@ -383,18 +383,15 @@ ACME-материал, пароли ocserv). Не коммитьте его.
 - Рестарты соседей. `register-uplink-user.sh` пишет через control API,
   который применяет юзеров на лету.
 - Скрейп нового узла. Экспортеры отвечают, nginx их отдаёт — и никто их не
-  собирает: scrape-конфиг принадлежит VictoriaMetrics в k3s (namespace
-  `monitoring`), а не устанавливаемому хосту. Его источник —
-  [`ops/nanopi-r5c-k3s/apps/monitoring/scrape.yaml`](../nanopi-r5c-k3s/apps/monitoring/scrape.yaml);
-  живую копию VictoriaMetrics читает из своего PVC
-  (`-promscrape.config=/victoria-metrics-data/scrape.yaml`). Добавьте блок цели
-  в каждый job — `assets/victoria-metrics/scrape-unbound-exporter.yaml`
-  показывает job `unbound-exporter`, — затем перечитайте конфиг, а не
-  перезапускайте сервис (`POST /-/reload` на порт 8428) [проверить: как в k3s
-  обновить файл в PVC и вызвать reload]. До 2026-08-09 файл лежал в
-  `/opt/victoria-metrics/data/scrape.yaml` на `.102`; напоминание, которое фаза
-  `verify` печатает в конце прогона, и заголовок ассета всё ещё называют этот
-  путь. Узел, которого нет в scrape-конфиге, не сломан никак, что он мог бы
+  собирает: scrape-конфиг принадлежит VictoriaMetrics на NAS
+  (`ops/nas-monitoring`), а не устанавливаемому хосту. Его источник —
+  [`ops/nas-monitoring/victoria-metrics/scrape.yaml`](../nas-monitoring/victoria-metrics/scrape.yaml).
+  Добавьте блок цели в каждый job — `assets/victoria-metrics/scrape-unbound-exporter.yaml`
+  показывает job `unbound-exporter`, — и выполните `./ops/nas-monitoring/deploy.sh`:
+  он копирует файл на NAS, а VictoriaMetrics перечитывает его в течение минуты
+  (`-promscrape.configCheckInterval=1m`), рестарт не нужен. До 2026-11-09 файл
+  лежал в PVC `victoria-metrics-data` в k3s, до 2026-08-09 — в
+  `/opt/victoria-metrics/data/scrape.yaml` на `.102`. Узел, которого нет в scrape-конфиге, не сломан никак, что он мог бы
   заметить сам: он не появляется в Grafana.
 - Объявление узла в mesh. В `/opt/network/iptables-update.sh` список
   разрешённых пиров для QUIC-порта mesh (9443) записан литеральными адресами, и

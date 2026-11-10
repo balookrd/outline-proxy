@@ -13,11 +13,11 @@
 # adding anything here.
 
 deployment:
-  # Two replicas on different nodes. With one replica, losing its node (k3s-2
+  # Replicas on different nodes. With one replica, losing its node (k3s-2
   # loses power now and then) took every *.k3s name down for ~6 minutes: MetalLB
   # moves the VIP in seconds, but the only Traefik endpoint sits on the dead
   # node until the 300 s not-ready/unreachable toleration evicts the pod. With a
-  # second replica elsewhere the dead endpoint is dropped once the node turns
+  # replica elsewhere the dead endpoint is dropped once the node turns
   # NotReady (~40-50 s), and the other pod keeps serving meanwhile.
   # Three replicas = one per node: with externalTrafficPolicy Local (below)
   # MetalLB can announce the VIP from any node, and draining one node still

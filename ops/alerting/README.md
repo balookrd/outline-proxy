@@ -183,7 +183,7 @@ kubectl -n monitoring exec alertmanager-0 -- amtool alert add alertname=Alerting
   --alertmanager.url=http://127.0.0.1:9093
 ```
 
-Дашборд `outline alerting` в Grafana (`https://grafana.k3s.fleet.example`): верхний ряд показывает число горящих алертов, число загруженных правил, ошибки вычисления, пропущенные такты vmalert и отправки Alertmanager по каналам; описание панелей — в [`ops/grafana/README.md`](../grafana/README.md). Датасорс Alertmanager в Grafana: `alertmanager-k3s`, `http://alertmanager.monitoring:9093`.
+Дашборд `outline alerting` в Grafana (`https://grafana.k3s.fleet.example`): верхний ряд показывает число горящих алертов, число загруженных правил, ошибки вычисления, пропущенные такты vmalert и отправки Alertmanager по каналам; описание панелей — в [`ops/grafana/README.md`](../grafana/README.md). Датасорс Alertmanager в Grafana: `alertmanager-k3s`, `https://alertmanager.k3s.fleet.example`.
 
 ## Известные проблемы
 
@@ -199,7 +199,7 @@ kubectl -n monitoring exec alertmanager-0 -- amtool alert add alertname=Alerting
 
 Условие: вернуть алертинг в Grafana, пока `ops/grafana/alerting/` не удалён из репозитория (удаление — не раньше 2026-11-22). Каждый шаг — действие на проде, только с согласия владельца.
 
-1. Верните `ops/nanopi-r5c-k3s/apps/monitoring/grafana.yaml` к версии до переключения: уберите `GF_UNIFIED_ALERTING_ENABLED=false` и верните том `alerting` из Secret `grafana-alerting` с его `volumeMounts`. Версию возьмите из коммита переключения `008e27a2`, его родителя: `git show 008e27a2^:ops/nanopi-r5c-k3s/apps/monitoring/grafana.yaml` (проверено: в этой версии том `grafana-alerting` на месте).
+1. Манифеста `grafana.yaml` в дереве больше нет (Grafana работает на NAS, см. [`ops/nas-monitoring/README.md`](../nas-monitoring/README.md)). Верните Grafana в k3s по разделу «Откат в k3s» того README: он берёт манифест из `a6aa553f~1`, последней версии перед удалением, и в ней алертинг Grafana выключен (`GF_UNIFIED_ALERTING_ENABLED=false`, тома `grafana-alerting` нет; проверено). Для отката алертинга возьмите вместо неё версию до переключения: `git show 008e27a2^:ops/nanopi-r5c-k3s/apps/monitoring/grafana.yaml` (проверено: том `grafana-alerting` на месте; между `008e27a2` и `a6aa553f` файл менялся только удалением) и положите её в `/tmp/rollback/grafana.yaml` после шага 3 отката в k3s (выгрузка манифестов), до шага 5 (применение с `replicas: 0`). Либо оставьте версию `a6aa553f~1`, уберите в ней `GF_UNIFIED_ALERTING_ENABLED=false` и верните том `alerting` из Secret `grafana-alerting` с его `volumeMounts`.
 2. Пересоздайте Secret `grafana-alerting`, он был удалён при переключении:
 
    ```bash
@@ -210,7 +210,7 @@ kubectl -n monitoring exec alertmanager-0 -- amtool alert add alertname=Alerting
 3. Примените Deployment и перезапустите Grafana (провижининг алертинга читается только при старте):
 
    ```bash
-   kubectl apply -f ops/nanopi-r5c-k3s/apps/monitoring/grafana.yaml
+   kubectl apply -f /tmp/rollback/grafana.yaml   # манифест из шага 1 и отката в k3s
    kubectl -n monitoring rollout restart deploy/grafana
    ```
 
@@ -228,6 +228,6 @@ kubectl -n monitoring exec alertmanager-0 -- amtool alert add alertname=Alerting
 
 Снятие метки меняет набор меток алертов, поэтому таймеры `for` не восстанавливаются из серий, записанных в теневом режиме: по уже горящим проблемам правила с `for` проходят `pending` заново.
 
-## Следующий шаг: перенос VictoriaMetrics на NAS
+## VictoriaMetrics и Grafana на NAS
 
-Когда VictoriaMetrics переедет на NAS `198.51.100.105`, у vmalert меняются три аргумента в `vmalert.yaml`: `-datasource.url`, `-remoteRead.url`, `-remoteWrite.url`. Адрес указывайте по IP (`http://198.51.100.105:8428`), а не по имени ingress: запрос из пода на MetalLB VIP своего же кластера уходит наружу и возвращается (hairpin), Traefik отвечает 5xx. Датасорс `alertmanager-k3s` в Grafana на NAS должен указывать на адрес Alertmanager, доступный из домашней сети; сейчас это ClusterIP-сервис, снаружи кластера он недоступен [проверить: способ публикации — Service типа LoadBalancer или Ingress].
+С 2026-11-09 VictoriaMetrics и Grafana работают в docker на NAS `198.51.100.105` ([`ops/nas-monitoring`](../nas-monitoring/README.md)). Аргументы vmalert не менялись: `victoria-metrics.monitoring:8428` остался в кластере как Service без селектора, его EndpointSlice `victoria-metrics-nas` указывает на `198.51.100.105:8428`. Датасорс `alertmanager-k3s` в Grafana на NAS ходит на `https://alertmanager.k3s.fleet.example` через Ingress.
