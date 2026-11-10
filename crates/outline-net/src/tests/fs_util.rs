@@ -5,14 +5,13 @@ use super::atomic_write;
 /// Per-test scratch directory under the system temp dir. Unique per test name
 /// and process so parallel test threads don't collide.
 fn scratch(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("outline-ws-fs-util-{}-{}", name, std::process::id()));
+    let dir = std::env::temp_dir().join(format!("outline-fs-util-{}-{}", name, std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-/// `config.toml` holds the SOCKS5/per-user passwords, uplink PSK and the
-/// control/dashboard tokens, so an admin-set restrictive mode must survive
+/// `config.toml` holds user and uplink passwords, the cluster PSK and the
+/// control tokens, so an admin-set restrictive mode must survive
 /// every control-plane mutation rather than decay to the ambient umask.
 #[cfg(unix)]
 #[test]

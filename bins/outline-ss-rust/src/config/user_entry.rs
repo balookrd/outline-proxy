@@ -32,7 +32,8 @@ impl OneOrManyCidr {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+// `Debug` is hand-written below: `password` and `vless_id` are credentials.
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserEntry {
     pub id: String,
@@ -57,6 +58,21 @@ pub struct UserEntry {
     /// applies on direct connections — see README.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aliases: Option<BTreeMap<String, OneOrManyCidr>>,
+}
+
+impl std::fmt::Debug for UserEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted = |secret: &Option<String>| secret.as_ref().map(|_| "<redacted>");
+        f.debug_struct("UserEntry")
+            .field("id", &self.id)
+            .field("password", &redacted(&self.password))
+            .field("fwmark", &self.fwmark)
+            .field("method", &self.method)
+            .field("vless_id", &redacted(&self.vless_id))
+            .field("enabled", &self.enabled)
+            .field("aliases", &self.aliases)
+            .finish()
+    }
 }
 
 impl UserEntry {
@@ -124,3 +140,7 @@ pub fn validate_ip_aliases<'a>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/user_entry.rs"]
+mod tests;

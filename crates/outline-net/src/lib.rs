@@ -8,6 +8,7 @@
 //! `anyhow::Error`.
 
 pub mod dns_cache;
+pub mod fs_util;
 pub mod ip_alias;
 pub mod relay_buf;
 

@@ -1,4 +1,4 @@
-//! Small filesystem helpers shared across modules.
+//! Atomic config-file write, shared by the server and client control planes.
 
 use std::{
     fs,
@@ -15,11 +15,13 @@ use tracing::warn;
 /// untouched.
 ///
 /// The temp file inherits the target's mode and, where the process is allowed
-/// to, its owner: `config.toml` is read by the service user at startup, so a
-/// mutation that changed either would leave a config the server can no longer
-/// load. Contents are fsynced before the rename and the parent directory after
-/// it, so the swap also survives a power loss rather than only a process kill.
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+/// to, its owner: a `config.toml` holds user and uplink passwords, the cluster
+/// PSK, VLESS ids and the control tokens, so a mutation that widened its mode
+/// would expose every credential to any local user, and one that changed the
+/// owner would leave a config the service user can no longer load. Contents are fsynced
+/// before the rename and the parent directory after it, so the swap also
+/// survives a power loss rather than only a process kill.
+pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp: PathBuf = {
         let mut t = path.to_path_buf();
         let fname = path
@@ -48,7 +50,7 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Write the payload to `tmp`, created private (0600) rather than at the
-/// ambient umask: it briefly holds the same passwords and cluster PSK as the
+/// ambient umask: it briefly holds the same passwords, PSK and tokens as the
 /// target, and its mode is only relaxed to the target's afterwards.
 fn write_temp(tmp: &Path, bytes: &[u8]) -> Result<()> {
     let mut opts = fs::OpenOptions::new();
@@ -69,10 +71,11 @@ fn write_temp(tmp: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Copy the target's mode and owner onto the temp file. The rename replaces
-/// the target *including* both, so without this an admin-set `640
-/// outline-ss-rust:outline-ss-rust` would decay to the writer's identity at
-/// the ambient umask. A missing target (first write) keeps the private mode
-/// from [`write_temp`].
+/// the target *including* both, so without this an admin-set `600
+/// outline-ws-rust:outline-ws-rust` (or `640 outline-ss-rust:outline-ss-rust`
+/// on the server) would decay to the writer's identity at
+/// the ambient umask (typically world-readable 0644). A missing target (first
+/// write) keeps the private mode from [`write_temp`].
 #[cfg(unix)]
 fn carry_target_metadata(target: &Path, tmp: &Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt;

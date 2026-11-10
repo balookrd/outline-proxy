@@ -22,7 +22,7 @@ use anyhow::{Context, Result, bail};
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
 use crate::config::UserEntry;
-use crate::fs_util::atomic_write;
+use outline_net::fs_util::atomic_write;
 
 /// One control-plane change to the on-disk user list. Deliberately narrow:
 /// there is no "replace the whole list" variant, because that is the operation

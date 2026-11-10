@@ -169,7 +169,7 @@ pub struct MetricsConfig {
 
 /// Control-plane HTTP listener. Serves mutating endpoints gated by a
 /// mandatory bearer token. Always bound on a separate socket from metrics.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ControlConfig {
     pub listen: SocketAddr,
     pub token: String,
@@ -178,6 +178,17 @@ pub struct ControlConfig {
     /// `None` when the binary was launched without a config file (e.g. pure
     /// CLI overrides), in which case CRUD endpoints return 409 Conflict.
     pub config_path: Option<PathBuf>,
+}
+
+// Hand-written so a `{:?}` of the config can never put the token in a log.
+impl std::fmt::Debug for ControlConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ControlConfig")
+            .field("listen", &self.listen)
+            .field("token", &"<redacted>")
+            .field("config_path", &self.config_path)
+            .finish()
+    }
 }
 
 /// TCP session timeouts (previously compile-time constants).
@@ -225,3 +236,7 @@ impl Default for TcpTimeouts {
         Self::DEFAULT
     }
 }
+
+#[cfg(test)]
+#[path = "tests/types.rs"]
+mod tests;

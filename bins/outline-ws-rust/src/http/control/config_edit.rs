@@ -45,9 +45,11 @@ pub(crate) fn json_error_owned(status: StatusCode, message: String) -> ControlRe
 pub(crate) async fn write_document_atomic(path: &Path, doc: &DocumentMut) -> anyhow::Result<()> {
     let contents = doc.to_string();
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || crate::fs_util::atomic_write(&path, contents.as_bytes()))
-        .await
-        .context("config write task panicked")?
+    tokio::task::spawn_blocking(move || {
+        outline_net::fs_util::atomic_write(&path, contents.as_bytes())
+    })
+    .await
+    .context("config write task panicked")?
 }
 
 /// Render a standalone `Table` to TOML text with nested `ArrayOfTables`

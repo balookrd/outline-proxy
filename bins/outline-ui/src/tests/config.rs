@@ -94,3 +94,24 @@ fn token_file_trailing_newline_is_trimmed() {
 
     assert_eq!(config.token, "s3cr3t");
 }
+
+#[test]
+fn debug_output_hides_every_token() {
+    let config = UiConfig {
+        listen: "127.0.0.1:8080".parse().unwrap(),
+        token: "s3cr3t-ui-token".to_owned(),
+        request_timeout_secs: 10,
+        refresh_interval_secs: 5,
+        allowed_hosts: vec!["ui.example".to_owned()],
+        ws: vec![InstanceConfig {
+            name: "node-a".to_owned(),
+            control_url: "http://10.0.0.1:9191".to_owned(),
+            token: "s3cr3t-instance-token".to_owned(),
+        }],
+        ss: Vec::new(),
+    };
+    let rendered = format!("{config:?}");
+    assert!(!rendered.contains("s3cr3t-ui-token"), "listener token leaked: {rendered}");
+    assert!(!rendered.contains("s3cr3t-instance-token"), "instance token leaked: {rendered}");
+    assert!(rendered.contains("node-a"), "instance name missing: {rendered}");
+}

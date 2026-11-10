@@ -17,7 +17,7 @@ const DEFAULT_REFRESH_INTERVAL_SECS: u64 = 5;
 /// Default per-request timeout when talking to an instance control API.
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 10;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct UiConfig {
     pub listen: SocketAddr,
     /// Guards the listener itself. Mandatory: see `tests/config.rs`.
@@ -29,11 +29,37 @@ pub struct UiConfig {
     pub ss: Vec<InstanceConfig>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct InstanceConfig {
     pub name: String,
     pub control_url: String,
     pub token: String,
+}
+
+// Both `Debug` impls are hand-written so a `{:?}` of the config can never put
+// a token in a log.
+impl std::fmt::Debug for UiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UiConfig")
+            .field("listen", &self.listen)
+            .field("token", &"<redacted>")
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("refresh_interval_secs", &self.refresh_interval_secs)
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("ws", &self.ws)
+            .field("ss", &self.ss)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for InstanceConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InstanceConfig")
+            .field("name", &self.name)
+            .field("control_url", &self.control_url)
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]

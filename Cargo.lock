@@ -1801,6 +1801,7 @@ dependencies = [
  "rand 0.10.3",
  "socket2 0.6.5",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
