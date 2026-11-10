@@ -1,7 +1,26 @@
 //! Edge side of the mesh relay: open a relay towards the home that owns a
 //! session and present it to the accept path as an upstream.
 
-use super::*;
+use super::OPEN_ACK_WAIT;
+use crate::metrics::Metrics;
+use crate::server::cluster::ClusterCtx;
+use crate::server::cluster::mesh::MeshFraming;
+use crate::server::cluster::mesh::MeshProtocol;
+use crate::server::cluster::mesh::MeshShape;
+use crate::server::cluster::mesh::OpenHeader;
+use crate::server::cluster::mesh::PooledRelay;
+use crate::server::resumption::OrphanRegistry;
+use crate::server::resumption::SessionId;
+use crate::server::transport::resume_headers::EdgeResumeAdvert;
+use crate::server::transport::resume_headers::ResumeContext;
+use crate::server::transport::resume_headers::ResumeResponseEcho;
+use crate::server::transport::upstream_source::MeshUpstreamSetup;
+use crate::server::transport::upstream_source::UpstreamSource;
+use outline_wire::cluster::ShardId;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::debug;
 
 /// The deadline for an OPEN ack: [`OPEN_ACK_WAIT`], never longer than the
 /// relay's own progress budget.

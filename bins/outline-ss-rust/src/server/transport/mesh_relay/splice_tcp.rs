@@ -1,6 +1,28 @@
 //! Plaintext TCP splice between a relayed stream and a parked upstream.
 
-use super::*;
+use super::close::{
+    DownlinkEnd, SpliceEnd, SpliceFault, SpliceOutcome, StreamClose, resolve_close_intent,
+    splice_end, write_uplink_chunk,
+};
+use super::{CLOSE_NONE, MESH_HOME_SPLICE_CHUNK};
+use crate::server::cluster::ClusterCtx;
+use crate::server::cluster::mesh::CloseIntent;
+use crate::server::cluster::mesh::MeshStream;
+use crate::server::cluster::mesh::OpenHeader;
+use crate::server::cluster::mesh::UpstreamAckFrame;
+use crate::server::resumption::OrphanRegistry;
+use crate::server::resumption::Parked;
+use crate::server::resumption::ParkedTcp;
+use crate::server::resumption::SessionId;
+use crate::server::resumption::downlink_ring::ReplayOutcome;
+use crate::server::transport::tcp_linger::linger_until_delivered;
+use anyhow::Context;
+use anyhow::Result;
+use quinn::VarInt;
+use std::sync::atomic::Ordering;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Notify;
+use tracing::debug;
 
 /// Splices a relayed plaintext stream onto a parked TCP upstream.
 ///

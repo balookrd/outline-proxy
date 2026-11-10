@@ -14,10 +14,11 @@ use tokio::time::Instant;
 
 use outline_wire::CipherKind;
 
-use super::{
-    DownlinkEnd, SpliceEnd, SpliceFault, StreamClose, handle_mesh_connection, needs_stopped_poll,
-    splice_end, write_uplink_chunk,
+use super::close::{
+    DownlinkEnd, SpliceEnd, SpliceFault, StreamClose, needs_stopped_poll, splice_end,
+    write_uplink_chunk,
 };
+use super::home::handle_mesh_connection;
 use crate::crypto::UserKey;
 use crate::metrics::{AppProtocol, Metrics, Protocol};
 use crate::protocol::TargetAddr;
