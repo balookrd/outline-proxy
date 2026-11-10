@@ -23,7 +23,20 @@ Compose-проект с VictoriaMetrics, Grafana и двумя контейне�
 
 `vmbackup` держит в `-dst` одну инкрементальную копию: части, которых нет в новом снапшоте, он удаляет. Повреждённые или ошибочно удалённые данные попадают в бэкап в течение суток, и предыдущего состояния уже нет. Семь суточных файлов хранит только `grafana-backup`.
 
-Время запуска бэкапов задано в UTC (`RUN_AT_UTC`): в busybox этих образов нет tzdata, имя пояса в `TZ` игнорировалось бы молча. `00:30` UTC — это 03:30 MSK, `01:15` UTC — 04:15 MSK.
+Время запуска бэкапов задано в UTC (`RUN_AT_UTC`): в busybox этих образов нет tzdata, имя пояса в `TZ` игнорировалось бы молча. `00:30` UTC — это 03:30 MSK, `01:15` UTC — 04:15 MSK. Значение проверяется при старте: всё, кроме `HH:MM` (00–23, 00–59), останавливает контейнер с сообщением `RUN_AT_UTC must be HH:MM in UTC, got '...'` в `docker logs`, и docker перезапускает его с нарастающей задержкой.
+
+### Сигнал об успехе бэкапа
+
+После успешного прогона оба контейнера пишут в VictoriaMetrics ряд `nas_backup_last_success_timestamp_seconds{backup="vmbackup"}` и `{backup="grafana"}` со временем успеха (Unix-секунды). Адрес задаёт переменная `PUSH_URL`, по умолчанию `http://victoria-metrics:8428/api/v1/import/prometheus`. Если записать не удалось, в лог идёт `could not report success to ...`, а сам бэкап считается успешным.
+
+По этому ряду vmalert в k3s поднимает `BackupStale` (больше 26 часов без успеха) и `BackupMissing` (ни одной записи за 8 дней), см. [`ops/alerting/README.md`](../alerting/README.md#правила). Последний успех каждого бэкапа:
+
+```bash
+curl -s http://198.51.100.105:8428/api/v1/query \
+  --data-urlencode 'query=time() - last_over_time(nas_backup_last_success_timestamp_seconds[8d])'
+```
+
+Значение — секунды с последнего успеха; в норме не больше 86400 плюс длительность прогона.
 
 Образы закреплены по digest в `docker-compose.yaml` (VictoriaMetrics и vmbackup v1.155.0, Grafana v13.3.0, бэкап Grafana — `python:3.12-alpine`).
 

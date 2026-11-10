@@ -39,7 +39,7 @@ VictoriaMetrics ──запрос раз в 1 мин──► vmalert ──а�
 
 ## Правила
 
-Файл [`vmalert/rules.yaml`](vmalert/rules.yaml), три группы (`uplink`, `nodes`, `heartbeat`), интервал вычисления у каждой `1m`. Пороги, `for` и `keep_firing_for` перенесены из Grafana без изменений. Обоснование каждого числа — в комментариях над правилами и в
+Файл [`vmalert/rules.yaml`](vmalert/rules.yaml), четыре группы (`uplink`, `nodes`, `backups`, `heartbeat`), интервал вычисления `1m`, у `backups` — `5m`. Пороги, `for` и `keep_firing_for` перенесены из Grafana без изменений. Обоснование каждого числа — в комментариях над правилами и в
 [спеке](../../docs/superpowers/specs/2026-08-07-uplink-email-alerting-design.md); здесь оно не дублируется.
 
 | Алерт | Выражение (сокращённо) | `for` | `keep_firing_for` | `severity` | Получатель |
@@ -51,7 +51,11 @@ VictoriaMetrics ──запрос раз в 1 мин──► vmalert ──а�
 | `UplinkCertExpiringSoon` | до истечения сертификата меньше 14 дней | 1h | — | info | `owner` |
 | `ClientRestarted` | `min by (instance) (time() - outline_ws_start_time_seconds) < 180` | 0s | — | info | `owner-events` |
 | `NodeRebooted` | `min by (instance) (time() - node_boot_time_seconds{instance=~"k3s-[0-9]+"}) < 600` | 0s | — | warning | `owner-events` |
+| `BackupStale` | `time() - max by (backup) (last_over_time(nas_backup_last_success_timestamp_seconds[8d])) > 26 * 3600` | 10m | — | warning | `owner` |
+| `BackupMissing` | `absent_over_time(nas_backup_last_success_timestamp_seconds{backup="…"}[8d])` для `vmbackup`, `grafana`, `jellyfin` | 10m | — | warning | `owner` |
 | `DeadMansSwitch` | `count(up) >= 1` | 0s | — | none | `heartbeat-observers` |
+
+Ряд `nas_backup_last_success_timestamp_seconds{backup}` пишут сами контейнеры бэкапа на NAS после успешного прогона, раз в сутки, через `/api/v1/import/prometheus` VictoriaMetrics: `vmbackup` и `grafana-backup` из [`ops/nas-monitoring`](../nas-monitoring/README.md), `jellyfin-backup` из [`ops/nas-jellyfin-backup`](../nas-jellyfin-backup/README.md). Значение — Unix-время успеха. Ряд редкий, поэтому в выражении `last_over_time`: без него ряд выпадает из запроса через 5 минут после записи. Новый бэкап добавляется в `BackupMissing` отдельным селектором, `absent_over_time` не знает имён, которых не видел.
 
 Аннотации `summary` и `description` не должны содержать `<`, `>`, `&`: получатель Telegram работает с `parse_mode: HTML`, а шаблоны Alertmanager символы не экранируют. Это проверяет `test.sh`.
 
@@ -89,14 +93,14 @@ VictoriaMetrics ──запрос раз в 1 мин──► vmalert ──а�
 | Шаг | Что проверяет |
 |-----|---------------|
 | аннотации | в `summary` и `description` нет `<`, `>`, `&` |
-| `vmalert-tool unittest` | `vmalert/tests/{uplink,nodes,heartbeat}.yaml`: срабатывание, `for`, `keep_firing_for`, точное совпадение меток и аннотаций |
+| `vmalert-tool unittest` | `vmalert/tests/{uplink,nodes,backups,heartbeat}.yaml`: срабатывание, `for`, `keep_firing_for`, точное совпадение меток и аннотаций |
 | рендер | `deploy.sh --render` подставляет фиктивные секреты, плейсхолдеров не остаётся |
 | `amtool check-config` | синтаксис и ссылки на получателей в `alertmanager.yml` |
 | `amtool config routes test` | каждый алерт попадает к ожидаемому получателю (включая `DeadMansSwitch` с меткой `shadow=true` и произвольный `AlertingSelfTest`) |
 
 Печать `==> all checks passed` в конце означает успех; любой шаг при ошибке завершает скрипт с ненулевым кодом.
 
-Особенность `vmalert-tool unittest`: он считает `time()` от 2000-01-01, поэтому в тестах, где выражение зависит от `time()` (`UplinkCertExpiringSoon`, `ClientRestarted`, `NodeRebooted`), временные метки во входных рядах сдвинуты на 946684800 секунд. Новый тест на `time()` пишите с тем же сдвигом.
+Особенность `vmalert-tool unittest`: он считает `time()` от 2000-01-01, поэтому в тестах, где выражение зависит от `time()` (`UplinkCertExpiringSoon`, `ClientRestarted`, `NodeRebooted`, `BackupStale`), временные метки во входных рядах сдвинуты на 946684800 секунд. Новый тест на `time()` пишите с тем же сдвигом.
 
 ## Изменение и раскатка
 

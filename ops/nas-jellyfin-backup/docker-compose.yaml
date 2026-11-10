@@ -1,0 +1,34 @@
+# Nightly backup of the Jellyfin app data (UGOS app com.ugreen.docker.jellyfin
+# on the NVMe /volume2) to the HDD /volume1/k8s/backup/jellyfin.
+# See README.md for what is in the archive and how to restore.
+name: jellyfin-backup
+
+services:
+  jellyfin-backup:
+    image: python@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df # 3.12-alpine
+    container_name: jellyfin-backup
+    init: true
+    # root: the Jellyfin files belong to root, and SQLite writes jellyfin.db-shm
+    # even for a read. The script hands its output to OWNER_UID:OWNER_GID.
+    user: "0:0"
+    command: ["python3", "/opt/backup/jellyfin-backup.py"]
+    environment:
+      RUN_AT_UTC: "01:45"     # 04:45 MSK, after grafana (03:30) and vmbackup (04:15)
+      KEEP: "14"
+      OWNER_UID: "1000"
+      OWNER_GID: "0"
+      # The host address, not victoria-metrics: that name lives in the
+      # monitoring compose network, which this project is not part of.
+      PUSH_URL: "http://198.18.1.105:8428/api/v1/import/prometheus"
+    volumes:
+      # Read-write on purpose, see above. The script only reads from it.
+      - /volume2/@appstore/com.ugreen.docker.jellyfin/config:/src/config
+      - /volume2/jellyfin/plugins:/src/plugins:ro
+      # HDD, not the NVMe the data lives on: a dead SSD must not take the
+      # backup with it.
+      - /volume1/k8s/backup:/backup
+      # Directory mount, not a file mount: an edited script replaced via a
+      # new inode would stay invisible behind the old one.
+      - .:/opt/backup:ro
+    mem_limit: 256m
+    restart: unless-stopped

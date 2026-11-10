@@ -1,0 +1,51 @@
+# vmalert-tool evaluates time() from 2000-01-01 (946684800), so the pushed
+# timestamps below are offsets from that epoch. One sample a day, as the
+# backup scripts push it.
+rule_files: [../rules.yaml]
+evaluation_interval: 5m
+tests:
+  - name: BackupStale fires after 26 hours without a success, per backup
+    interval: 1h
+    input_series:
+      # vmbackup succeeded at 0h and never again.
+      - series: 'nas_backup_last_success_timestamp_seconds{backup="vmbackup"}'
+        values: '946684800 _x30'
+      # grafana succeeded at 0h and again at 24h.
+      - series: 'nas_backup_last_success_timestamp_seconds{backup="grafana"}'
+        values: '946684800 _x23 946771200 _x6'
+      - series: 'nas_backup_last_success_timestamp_seconds{backup="jellyfin"}'
+        values: '946684800 _x23 946771200 _x6'
+    alert_rule_test:
+      - eval_time: 25h
+        groupname: backups
+        alertname: BackupStale
+        exp_alerts: []
+      - eval_time: 27h
+        groupname: backups
+        alertname: BackupStale
+        exp_alerts:
+          - exp_labels: {backup: vmbackup, severity: warning}
+            exp_annotations:
+              summary: 'NAS backup vmbackup has not succeeded for over 26 hours'
+              description: 'The nightly run failed or did not start; docker logs on the NAS shows why.'
+      - eval_time: 27h
+        groupname: backups
+        alertname: BackupMissing
+        exp_alerts: []
+
+  - name: BackupMissing fires for a backup that never reported
+    interval: 1h
+    input_series:
+      - series: 'nas_backup_last_success_timestamp_seconds{backup="vmbackup"}'
+        values: '946684800 _x2'
+      - series: 'nas_backup_last_success_timestamp_seconds{backup="grafana"}'
+        values: '946684800 _x2'
+    alert_rule_test:
+      - eval_time: 1h
+        groupname: backups
+        alertname: BackupMissing
+        exp_alerts:
+          - exp_labels: {backup: jellyfin, severity: warning}
+            exp_annotations:
+              summary: 'NAS backup jellyfin has not reported for 8 days'
+              description: 'No success sample at all: check that the container runs and its PUSH_URL.'

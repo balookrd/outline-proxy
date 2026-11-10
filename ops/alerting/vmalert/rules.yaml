@@ -110,6 +110,38 @@ groups:
           summary: 'k3s node {{ $labels.instance }} rebooted'
           description: 'The node kernel is younger than 10 minutes.'
 
+  - name: backups
+    interval: 5m
+    rules:
+      # The three nightly backups on the NAS (vmbackup 01:15, grafana-backup
+      # 00:30, jellyfin-backup 01:45 UTC) push the time of their last success
+      # once a day, so the series is sparse: last_over_time looks back past
+      # the 5-minute staleness. 26 h = one missed night plus two hours of
+      # slack for a slow run. The scripts are in ops/nas-monitoring/backup and
+      # ops/nas-jellyfin-backup; docker logs <container> on the NAS shows why
+      # a run failed.
+      - alert: BackupStale
+        expr: 'time() - max by (backup) (last_over_time(nas_backup_last_success_timestamp_seconds[8d])) > 26 * 3600'
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'NAS backup {{ $labels.backup }} has not succeeded for over 26 hours'
+          description: 'The nightly run failed or did not start; docker logs on the NAS shows why.'
+
+      # A backup that never reported in the last 8 days: the container is gone,
+      # the push URL is wrong, or the series aged out of the BackupStale window.
+      # One selector per backup, because absent_over_time cannot know names it
+      # has never seen.
+      - alert: BackupMissing
+        expr: 'absent_over_time(nas_backup_last_success_timestamp_seconds{backup="vmbackup"}[8d]) or absent_over_time(nas_backup_last_success_timestamp_seconds{backup="grafana"}[8d]) or absent_over_time(nas_backup_last_success_timestamp_seconds{backup="jellyfin"}[8d])'
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'NAS backup {{ $labels.backup }} has not reported for 8 days'
+          description: 'No success sample at all: check that the container runs and its PUSH_URL.'
+
   - name: heartbeat
     interval: 1m
     rules:
