@@ -147,12 +147,8 @@ async fn session_with_one_pending_post(server: &mut SilentServer) -> XhttpStream
         &url,
         TransportMode::XhttpH2,
         DialNetworkOptions::default(),
+        super::SessionOpen::default(),
         None,
-        false,
-        false,
-        0,
-        None,
-        false,
         false,
     )
     .await

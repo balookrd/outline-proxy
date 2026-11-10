@@ -42,9 +42,9 @@ use super::window::UplinkWindow;
 use crate::request_headers::{HttpVersion, RequestKind};
 
 use super::{
-    InboundSender, OutboundReceiver, SESSION_RESPONSE_HEADER, SessionRequest, SsPathKind,
-    XhttpStream, XhttpSubmode, XhttpTarget, build_session_request_headers, generate_session_id,
-    inbound_channel, outbound_channel,
+    InboundSender, OutboundReceiver, SESSION_RESPONSE_HEADER, SessionOpen, SessionRequest,
+    SsPathKind, XhttpStream, XhttpSubmode, XhttpTarget, build_session_request_headers,
+    generate_session_id, inbound_channel, outbound_channel,
 };
 
 /// Same dial budget the h2 path uses — keeps fallback windows
@@ -91,18 +91,13 @@ struct OpenedSession {
     datagram: Option<H3DatagramBinding>,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn connect_xhttp_h3(
     cache: &DnsCache,
     url: &Url,
     submode: XhttpSubmode,
     network: crate::dial_plan::DialNetworkOptions,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
+    open: SessionOpen,
     combined_ss_kind: Option<SsPathKind>,
-    datagram_records: bool,
     udp_datagram: bool,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     let host = url
@@ -161,25 +156,16 @@ pub(super) async fn connect_xhttp_h3(
 
             let (opened, driver, active_submode) = match submode {
                 XhttpSubmode::PacketUp => {
-                    let (opened, request_stream) = open_h3_get(
-                        send_request.clone(),
-                        &target,
-                        resume_request,
-                        ack_prefix_requested,
-                        symmetric_replay_requested,
-                        client_acked_offset,
-                        datagram_records,
-                        datagram_offer,
-                        profile,
-                    )
-                    .await?;
+                    let (opened, request_stream) =
+                        open_h3_get(send_request.clone(), &target, open, datagram_offer, profile)
+                            .await?;
                     let driver = tokio::spawn(driver_loop_h3(
                         send_request,
                         target.clone(),
                         in_tx,
                         out_rx,
                         request_stream,
-                        datagram_records,
+                        open.datagram_records,
                         opened.datagram.is_some(),
                         profile,
                     ));
@@ -205,11 +191,7 @@ pub(super) async fn connect_xhttp_h3(
                     match open_h3_stream_one(
                         send_request.clone(),
                         &target,
-                        resume_request,
-                        ack_prefix_requested,
-                        symmetric_replay_requested,
-                        client_acked_offset,
-                        datagram_records,
+                        open,
                         datagram_offer,
                         profile,
                     )
@@ -243,11 +225,7 @@ pub(super) async fn connect_xhttp_h3(
                             let (opened, request_stream) = open_h3_get(
                                 send_request.clone(),
                                 &target,
-                                resume_request,
-                                ack_prefix_requested,
-                                symmetric_replay_requested,
-                                client_acked_offset,
-                                datagram_records,
+                                open,
                                 datagram_offer,
                                 profile,
                             )
@@ -258,7 +236,7 @@ pub(super) async fn connect_xhttp_h3(
                                 in_tx,
                                 out_rx,
                                 request_stream,
-                                datagram_records,
+                                open.datagram_records,
                                 opened.datagram.is_some(),
                                 profile,
                             ));
@@ -278,7 +256,7 @@ pub(super) async fn connect_xhttp_h3(
             } = opened;
             debug!(
                 %url, %session_id, mode = "xhttp_h3", ?submode, ?active_submode,
-                ?issued_session_id, ?resume_request, ack_prefix_requested, ack_prefix_echo,
+                ?issued_session_id, ?open.resume_request, open.ack_prefix_requested, ack_prefix_echo,
                 udp_datagram = datagram.is_some(),
                 "xhttp h3 session opened"
             );
@@ -384,15 +362,10 @@ pub(super) async fn connect_xhttp_h3(
 /// headers, and surfaces the optional `X-Outline-Session` token.
 /// The returned `RequestStream` is used by the driver task for body
 /// draining. Mirrors `open_h2_get` in the parent module.
-#[allow(clippy::too_many_arguments)]
 async fn open_h3_get(
     mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
     target: &XhttpTarget,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
-    datagram_records: bool,
+    open: SessionOpen,
     datagram_offer: Option<DatagramOffer<'_>>,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(OpenedSession, H3RequestStreamHandle)> {
@@ -411,11 +384,7 @@ async fn open_h3_get(
             origin: &origin,
             host: None,
         },
-        resume_request,
-        ack_prefix_requested,
-        symmetric_replay_requested,
-        client_acked_offset,
-        datagram_records,
+        open,
         datagram_offer.is_some(),
     )?;
     let mut stream = send
@@ -439,9 +408,9 @@ async fn open_h3_get(
     }
     let opened = OpenedSession::negotiated(
         resp.headers(),
-        ack_prefix_requested,
-        symmetric_replay_requested,
-        datagram_records,
+        open.ack_prefix_requested,
+        open.symmetric_replay_requested,
+        open.datagram_records,
         registration,
     );
     Ok((opened, stream))
@@ -654,15 +623,10 @@ pub(super) fn build_post_headers(
 /// Open synchronously, await response headers, then hand the
 /// stream to the driver task which splits it into send/recv halves
 /// running concurrently.
-#[allow(clippy::too_many_arguments)]
 async fn open_h3_stream_one(
     mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
     target: &XhttpTarget,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
-    datagram_records: bool,
+    open: SessionOpen,
     datagram_offer: Option<DatagramOffer<'_>>,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(OpenedSession, H3RequestStreamHandle)> {
@@ -683,11 +647,7 @@ async fn open_h3_stream_one(
             origin: &origin,
             host: None,
         },
-        resume_request,
-        ack_prefix_requested,
-        symmetric_replay_requested,
-        client_acked_offset,
-        datagram_records,
+        open,
         datagram_offer.is_some(),
     )?;
     let mut stream = send
@@ -708,9 +668,9 @@ async fn open_h3_stream_one(
     }
     let opened = OpenedSession::negotiated(
         resp.headers(),
-        ack_prefix_requested,
-        symmetric_replay_requested,
-        datagram_records,
+        open.ack_prefix_requested,
+        open.symmetric_replay_requested,
+        open.datagram_records,
         registration,
     );
     Ok((opened, stream))

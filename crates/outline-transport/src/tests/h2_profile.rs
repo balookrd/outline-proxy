@@ -434,11 +434,13 @@ async fn xhttp_h2_session_requests_send_the_browser_fetch_request() {
                     origin: crate::tests::MEASURED_ORIGIN,
                     host: None,
                 },
-                r.resume_request,
-                r.ack_prefix_requested,
-                r.symmetric_replay_requested,
-                r.client_acked_offset,
-                true,
+                crate::xhttp::SessionOpen {
+                    resume_request: r.resume_request,
+                    ack_prefix_requested: r.ack_prefix_requested,
+                    symmetric_replay_requested: r.symmetric_replay_requested,
+                    client_acked_offset: r.client_acked_offset,
+                    datagram_records: true,
+                },
                 false,
             )
             .unwrap();

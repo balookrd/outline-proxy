@@ -91,12 +91,8 @@ async fn xhttp_client_round_trip_through_mock_server() -> Result<()> {
         &base_url,
         TransportMode::XhttpH2,
         DialNetworkOptions::default(),
+        super::SessionOpen::default(),
         None,
-        false,
-        false,
-        0,
-        None,
-        false,
         false,
     )
     .await?;
@@ -170,12 +166,8 @@ async fn packet_up_h2_cuts_a_large_first_post_into_data_frames() -> Result<()> {
         &base_url,
         TransportMode::XhttpH2,
         DialNetworkOptions::default(),
+        super::SessionOpen::default(),
         None,
-        false,
-        false,
-        0,
-        None,
-        false,
         false,
     )
     .await?;
@@ -248,12 +240,8 @@ async fn xhttp_client_stream_one_round_trip_through_mock_server() -> Result<()> 
         &base_url,
         TransportMode::XhttpH2,
         DialNetworkOptions::default(),
+        super::SessionOpen::default(),
         None,
-        false,
-        false,
-        0,
-        None,
-        false,
         false,
     )
     .await?;
@@ -556,12 +544,8 @@ async fn packet_up_h2_stays_within_the_reorder_window_behind_a_stalled_post() ->
         &base_url,
         TransportMode::XhttpH2,
         DialNetworkOptions::default(),
+        super::SessionOpen::default(),
         None,
-        false,
-        false,
-        0,
-        None,
-        false,
         false,
     )
     .await?;
@@ -653,12 +637,8 @@ async fn packet_up_h2_resends_a_post_the_server_refused_as_busy() -> Result<()> 
         &base_url,
         TransportMode::XhttpH2,
         DialNetworkOptions::default(),
+        super::SessionOpen::default(),
         None,
-        false,
-        false,
-        0,
-        None,
-        false,
         false,
     )
     .await?;

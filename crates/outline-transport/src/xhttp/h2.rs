@@ -42,8 +42,8 @@ use super::window::UplinkWindow;
 use crate::request_headers::{HttpVersion, RequestKind};
 
 use super::{
-    InboundSender, OutboundReceiver, RequestBody, SessionRequest, SsPathKind, XhttpStream,
-    XhttpSubmode, XhttpTarget, build_session_request_headers, empty_request_body,
+    InboundSender, OutboundReceiver, RequestBody, SessionOpen, SessionRequest, SsPathKind,
+    XhttpStream, XhttpSubmode, XhttpTarget, build_session_request_headers, empty_request_body,
     full_request_body, generate_session_id, inbound_channel, outbound_channel,
     parse_ack_prefix_echo, parse_session_response, resolve_effective_submode,
 };
@@ -78,18 +78,13 @@ fn h2_tls_config() -> Arc<rustls::ClientConfig> {
     crate::tls::build_client_config(&[b"h2", b"http/1.1"])
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn connect_xhttp_h2(
     cache: &DnsCache,
     url: &Url,
     mode: TransportMode,
     network: crate::dial_plan::DialNetworkOptions,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
+    open: SessionOpen,
     combined_ss_kind: Option<SsPathKind>,
-    datagram_records: bool,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     let submode = resolve_effective_submode(url, mode).await;
     let host = url
@@ -151,24 +146,15 @@ pub(super) async fn connect_xhttp_h2(
                 // round-trip completes before we hand the stream to
                 // the caller. The body drain is spawned as a
                 // sub-task; POSTs are pipelined per `start_send`.
-                let (issued, echo, sym_echo, records, body) = open_h2_get(
-                    send_request.clone(),
-                    &target,
-                    resume_request,
-                    ack_prefix_requested,
-                    symmetric_replay_requested,
-                    client_acked_offset,
-                    datagram_records,
-                    profile,
-                )
-                .await?;
+                let (issued, echo, sym_echo, records, body) =
+                    open_h2_get(send_request.clone(), &target, open, profile).await?;
                 let driver = tokio::spawn(driver_loop_h2(
                     send_request,
                     target.clone(),
                     in_tx,
                     out_rx,
                     body,
-                    datagram_records,
+                    open.datagram_records,
                     profile,
                 ));
                 (issued, echo, sym_echo, records, driver, XhttpSubmode::PacketUp)
@@ -184,18 +170,7 @@ pub(super) async fn connect_xhttp_h2(
                 // forward the streaming request body), so trying
                 // the simpler carrier on the surviving connection
                 // recovers without burning a fresh handshake.
-                match open_h2_stream_one(
-                    send_request.clone(),
-                    &target,
-                    resume_request,
-                    ack_prefix_requested,
-                    symmetric_replay_requested,
-                    client_acked_offset,
-                    datagram_records,
-                    profile,
-                )
-                .await
-                {
+                match open_h2_stream_one(send_request.clone(), &target, open, profile).await {
                     Ok((issued, echo, sym_echo, records, body, frame_tx)) => {
                         let driver =
                             tokio::spawn(driver_loop_h2_stream_one(in_tx, out_rx, body, frame_tx));
@@ -211,24 +186,15 @@ pub(super) async fn connect_xhttp_h2(
                         );
                         crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
                             .await;
-                        let (issued, echo, sym_echo, records, body) = open_h2_get(
-                            send_request.clone(),
-                            &target,
-                            resume_request,
-                            ack_prefix_requested,
-                            symmetric_replay_requested,
-                            client_acked_offset,
-                            datagram_records,
-                            profile,
-                        )
-                        .await?;
+                        let (issued, echo, sym_echo, records, body) =
+                            open_h2_get(send_request.clone(), &target, open, profile).await?;
                         let driver = tokio::spawn(driver_loop_h2(
                             send_request,
                             target.clone(),
                             in_tx,
                             out_rx,
                             body,
-                            datagram_records,
+                            open.datagram_records,
                             profile,
                         ));
                         (issued, echo, sym_echo, records, driver, XhttpSubmode::PacketUp)
@@ -239,7 +205,7 @@ pub(super) async fn connect_xhttp_h2(
 
         debug!(
             %url, %session_id, mode = "xhttp_h2", ?submode, ?active_submode,
-            ?issued_session_id, ?resume_request, ack_prefix_requested, ack_prefix_echo,
+            ?issued_session_id, ?open.resume_request, open.ack_prefix_requested, ack_prefix_echo,
             "xhttp session opened"
         );
         Ok::<_, anyhow::Error>((
@@ -277,15 +243,10 @@ pub(super) async fn connect_xhttp_h2(
 /// the issued id synchronously (rather than via a side channel) is
 /// what lets the dial path stash the token in the resume cache
 /// before any data flows.
-#[allow(clippy::too_many_arguments)]
 async fn open_h2_get(
     mut send: http2::SendRequest<RequestBody>,
     target: &XhttpTarget,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
-    datagram_records: bool,
+    open: SessionOpen,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(Option<SessionId>, bool, bool, bool, hyper::body::Incoming)> {
     let mut req = Request::builder()
@@ -303,11 +264,7 @@ async fn open_h2_get(
             origin: &origin,
             host: None,
         },
-        resume_request,
-        ack_prefix_requested,
-        symmetric_replay_requested,
-        client_acked_offset,
-        datagram_records,
+        open,
         // UDP over HTTP/3 datagrams is an h3-only offer.
         false,
     )?;
@@ -322,11 +279,12 @@ async fn open_h2_get(
     let issued = parse_session_response(resp.headers());
     // Echo gating: same shape as the WS H1/H2/H3 paths — only report
     // a positive negotiation when we asked AND the server echoed.
-    let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
+    let echo = open.ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
     // v2 echo: requires v1 echo (per spec, v2 without v1 is undefined).
-    let sym_echo =
-        symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
-    let udp_records = super::parse_udp_records_echo(datagram_records, resp.headers());
+    let sym_echo = open.symmetric_replay_requested
+        && echo
+        && super::parse_symmetric_replay_echo(resp.headers());
+    let udp_records = super::parse_udp_records_echo(open.datagram_records, resp.headers());
     Ok((issued, echo, sym_echo, udp_records, resp.into_body()))
 }
 
@@ -335,15 +293,10 @@ async fn open_h2_get(
 /// downlink. The synchronously-built `frame_tx` lets the driver
 /// task feed body chunks into the request stream, while the
 /// returned `Incoming` is consumed by the downlink drain.
-#[allow(clippy::too_many_arguments)]
 async fn open_h2_stream_one(
     mut send: http2::SendRequest<RequestBody>,
     target: &XhttpTarget,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
-    datagram_records: bool,
+    open: SessionOpen,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(
     Option<SessionId>,
@@ -386,11 +339,7 @@ async fn open_h2_stream_one(
             origin: &origin,
             host: None,
         },
-        resume_request,
-        ack_prefix_requested,
-        symmetric_replay_requested,
-        client_acked_offset,
-        datagram_records,
+        open,
         // UDP over HTTP/3 datagrams is an h3-only offer.
         false,
     )?;
@@ -403,10 +352,11 @@ async fn open_h2_stream_one(
         bail!("xhttp stream-one returned {}", resp.status());
     }
     let issued = parse_session_response(resp.headers());
-    let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
-    let sym_echo =
-        symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
-    let udp_records = super::parse_udp_records_echo(datagram_records, resp.headers());
+    let echo = open.ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
+    let sym_echo = open.symmetric_replay_requested
+        && echo
+        && super::parse_symmetric_replay_echo(resp.headers());
+    let udp_records = super::parse_udp_records_echo(open.datagram_records, resp.headers());
     Ok((issued, echo, sym_echo, udp_records, resp.into_body(), frame_tx))
 }
 
