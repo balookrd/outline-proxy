@@ -22,7 +22,7 @@ import urllib.request
 DST = "/backup/grafana"
 KEEP = 7
 RUN_AT_UTC = os.environ.get("RUN_AT_UTC", "00:30")
-PUSH_URL = os.environ.get("PUSH_URL", "http://victoria-metrics:8428/api/v1/import/prometheus")
+PUSH_URL = os.environ.get("PUSH_URL", "http://198.18.1.105:8428/api/v1/import/prometheus")
 
 
 if not re.fullmatch(r"([01][0-9]|2[0-3]):[0-5][0-9]", RUN_AT_UTC):

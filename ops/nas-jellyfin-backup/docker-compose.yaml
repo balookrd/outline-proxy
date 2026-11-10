@@ -17,8 +17,9 @@ services:
       KEEP: "14"
       OWNER_UID: "1000"
       OWNER_GID: "0"
-      # The host address, not victoria-metrics: that name lives in the
-      # monitoring compose network, which this project is not part of.
+      # The NAS address: victoria-metrics resolves only inside the monitoring
+      # compose network, and a DNS name (router record or vm.k3s through
+      # Traefik) would add a dependency the push does not need.
       PUSH_URL: "http://198.18.1.105:8428/api/v1/import/prometheus"
     volumes:
       # Read-write on purpose, see above. The script only reads from it.

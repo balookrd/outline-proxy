@@ -14,7 +14,7 @@
 # vmalert's BackupStale / BackupMissing alert on it.
 set -u
 RUN_AT_UTC=${RUN_AT_UTC:-01:15}
-PUSH_URL=${PUSH_URL:-http://victoria-metrics:8428/api/v1/import/prometheus}
+PUSH_URL=${PUSH_URL:-http://198.18.1.105:8428/api/v1/import/prometheus}
 
 # A malformed value used to make busybox date print nothing, sleep got a
 # negative number and returned at once, and vmbackup ran back to back. Refuse

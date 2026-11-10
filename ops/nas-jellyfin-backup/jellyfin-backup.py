@@ -40,7 +40,7 @@ KEEP = int(os.environ.get("KEEP", "14"))
 RUN_AT_UTC = os.environ.get("RUN_AT_UTC", "01:45")
 # Another compose project: the monitoring network and the name
 # victoria-metrics are not reachable from here, so docker-compose.yaml passes
-# the host address.
+# the NAS address.
 PUSH_URL = os.environ["PUSH_URL"]
 OWNER = (int(os.environ.get("OWNER_UID", "1000")), int(os.environ.get("OWNER_GID", "0")))
 

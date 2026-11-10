@@ -27,7 +27,7 @@ Compose-проект с VictoriaMetrics, Grafana и двумя контейне�
 
 ### Сигнал об успехе бэкапа
 
-После успешного прогона оба контейнера пишут в VictoriaMetrics ряд `nas_backup_last_success_timestamp_seconds{backup="vmbackup"}` и `{backup="grafana"}` со временем успеха (Unix-секунды). Адрес задаёт переменная `PUSH_URL`, по умолчанию `http://victoria-metrics:8428/api/v1/import/prometheus`. Если записать не удалось, в лог идёт `could not report success to ...`, а сам бэкап считается успешным.
+После успешного прогона оба контейнера пишут в VictoriaMetrics ряд `nas_backup_last_success_timestamp_seconds{backup="vmbackup"}` и `{backup="grafana"}` со временем успеха (Unix-секунды). Адрес задаёт переменная `PUSH_URL`, по умолчанию `http://198.51.100.105:8428/api/v1/import/prometheus`, по IP самого NAS — тот же адрес, что у `jellyfin-backup` из другого compose-проекта. Ни DNS, ни k3s для записи не нужны. Если записать не удалось, в лог идёт `could not report success to ...`, а сам бэкап считается успешным.
 
 По этому ряду vmalert в k3s поднимает `BackupStale` (больше 26 часов без успеха) и `BackupMissing` (ни одной записи за 8 дней), см. [`ops/alerting/README.md`](../alerting/README.md#правила). Последний успех каждого бэкапа:
 

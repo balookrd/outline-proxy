@@ -4,7 +4,7 @@
 `com.ugreen.docker.jellyfin` с NVMe (`/volume2`) на HDD (`/volume1`). Узел:
 UGREEN DXP4800 Plus `198.51.100.105`, Jellyfin 12.2.0 (образ `ugreen/jellyfin:12.2`).
 
-Реальные адреса парка в этом документе заменены условными: `198.51.100.0/24` — домашняя сеть (`.105` — последний октет). Соответствие — в локальном некоммитируемом `FLEET.local.md`. В `docker-compose.yaml` и `deploy.sh` адреса настоящие.
+Реальные адреса парка в этом документе заменены условными: `198.51.100.0/24` — домашняя сеть (`.105` — последний октет). Соответствие — в локальном некоммитируемом `FLEET.local.md`. `fleet.example` — домен парка. В `docker-compose.yaml` и `deploy.sh` адреса и имена настоящие.
 
 Исходники — в этом каталоге репозитория; на NAS их копирует `deploy.sh` в `/volume1/docker/jellyfin-backup`. Файлы на NAS руками не правьте: следующая выкладка их перезапишет.
 
@@ -58,7 +58,7 @@ docker logs --tail 20 jellyfin-backup
 `metadata mirror: X copied, Y removed`. При ошибке: `jellyfin backup failed: ...`,
 цикл при этом продолжает работать и повторит попытку на следующие сутки.
 
-После успешного прогона скрипт пишет в VictoriaMetrics ряд `nas_backup_last_success_timestamp_seconds{backup="jellyfin"}` со временем успеха. Адрес — переменная `PUSH_URL` в `docker-compose.yaml`: `http://198.51.100.105:8428/api/v1/import/prometheus`, по IP хоста, потому что имя `victoria-metrics` есть только в docker-сети проекта `monitoring`. Без `PUSH_URL` скрипт не стартует (`KeyError: 'PUSH_URL'`). Если записать не удалось, в логе `could not report success to ...`, бэкап при этом считается успешным. Алерты по этому ряду (`BackupStale` через 26 часов без успеха, `BackupMissing` через 8 дней без записей) описаны в [`ops/alerting/README.md`](../alerting/README.md#правила).
+После успешного прогона скрипт пишет в VictoriaMetrics ряд `nas_backup_last_success_timestamp_seconds{backup="jellyfin"}` со временем успеха. Адрес — переменная `PUSH_URL` в `docker-compose.yaml`: `http://198.51.100.105:8428/api/v1/import/prometheus`, по IP самого NAS: имя `victoria-metrics` есть только в docker-сети проекта `monitoring`, а имя через DNS роутера или `vm.k3s.fleet.example` (через Traefik k3s) добавило бы зависимость, которая записи не нужна. Без `PUSH_URL` скрипт не стартует (`KeyError: 'PUSH_URL'`). Если записать не удалось, в логе `could not report success to ...`, бэкап при этом считается успешным. Алерты по этому ряду (`BackupStale` через 26 часов без успеха, `BackupMissing` через 8 дней без записей) описаны в [`ops/alerting/README.md`](../alerting/README.md#правила).
 
 `RUN_AT_UTC` проверяется при старте: значение не в формате `HH:MM` останавливает контейнер с сообщением `RUN_AT_UTC must be HH:MM in UTC, got '...'`.
 
