@@ -962,6 +962,487 @@ where
     Ok(())
 }
 
+/// Anti-replay for the Shadowsocks handshake, run once per session as soon as
+/// the request salt is known. See the comment inside for why authentication
+/// alone does not cover it.
+fn check_salt_replay(
+    state: &mut WsTcpRelayState,
+    decryptor: &AeadStreamDecryptor,
+    server: &WsTcpServerCtx,
+    route: &WsTcpRouteCtx,
+) -> Result<(), FrameError> {
+    // Anti-replay: a captured Shadowsocks handshake re-sent verbatim derives the
+    // same session key and re-opens under AEAD, so authentication alone does not
+    // stop it. Reject a request salt we have already seen before any upstream is
+    // dialled, so the replayed request is never re-executed. Runs once per
+    // session — the salt is fixed for the connection's lifetime.
+    if !state.salt_replay_checked
+        && let Some(salt) = decryptor.request_salt()
+    {
+        state.salt_replay_checked = true;
+        match server.salt_replay_store.check_and_mark(Arc::clone(salt)) {
+            SaltReplayCheck::Fresh => {},
+            SaltReplayCheck::Replay => {
+                let user_id = decryptor
+                    .user()
+                    .map(UserKey::id_arc)
+                    .unwrap_or_else(|| Arc::from("unknown"));
+                server
+                    .metrics
+                    .record_tcp_handshake_replay_dropped(user_id, route.protocol);
+                warn!(path = %route.path, "rejecting replayed shadowsocks tcp handshake");
+                return Err(FrameError::Fatal(anyhow!(
+                    "replayed shadowsocks tcp handshake on path {}",
+                    route.path,
+                )));
+            },
+            SaltReplayCheck::StoreFull => {
+                // Fail-open: allow the handshake through but surface the capacity
+                // pressure the decision hides.
+                let user_id = decryptor
+                    .user()
+                    .map(UserKey::id_arc)
+                    .unwrap_or_else(|| Arc::from("unknown"));
+                server
+                    .metrics
+                    .record_tcp_handshake_replay_store_full(user_id, route.protocol);
+                warn!(
+                    path = %route.path,
+                    "shadowsocks tcp handshake salt not recorded: replay store at capacity"
+                );
+            },
+        }
+    }
+    Ok(())
+}
+
+/// Re-attaches a parked upstream to this carrier on a resume hit: emits the
+/// resume control frames, restores the session's downlink ring and counters,
+/// and restarts the upstream→client relay on the parked socket.
+#[allow(clippy::too_many_arguments)]
+async fn resume_parked_upstream<Msg>(
+    state: &mut WsTcpRelayState,
+    parked: ParkedTcp,
+    user: UserKey,
+    user_id: &Arc<str>,
+    decryptor: &AeadStreamDecryptor,
+    server: &WsTcpServerCtx,
+    route: &WsTcpRouteCtx,
+    outbound: &WsTcpFrameOutput<'_, Msg>,
+) -> Result<(), FrameError>
+where
+    Msg: Send + 'static,
+{
+    // A park minted under VLESS is served here unchanged: nothing in a
+    // byte-stream park belongs to the protocol that made it, and the
+    // owner check inside `take_for_resume` has already bound the id to
+    // this account. See `docs/SESSION-RESUMPTION.md` § Cross-protocol
+    // resume.
+    if parked.protocol != ParkedProtocol::Ss {
+        server
+            .metrics
+            .record_orphan_resume_cross_protocol(parked.protocol.label(), "ss");
+    }
+    debug!(
+        user = user.id(),
+        path = %route.path,
+        target = %parked.target_display,
+        parked_protocol = parked.protocol.label(),
+        "tcp upstream resumed from orphan registry"
+    );
+    // Sealed under the key *this* stream authenticated with, not one
+    // carried over from the park. The two are the same account — one
+    // `[[users]]` entry, one owner label — but only this one is the key
+    // the client just dialled with, so it stays right across a protocol
+    // reroll and across a password rotation mid-park alike. Same call
+    // the fresh-connect path below makes.
+    let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())
+        .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+
+    if state.ack_prefix_requested {
+        send_ack_prefix_frame(
+            &mut encryptor,
+            parked.upstream_bytes_acked.load(Ordering::Relaxed),
+            &user,
+            route,
+            outbound,
+        )
+        .await?;
+    }
+    if state.symmetric_replay_requested {
+        send_downlink_replay_frame(
+            &mut encryptor,
+            parked.downlink_ring.as_ref(),
+            state.client_acked_offset_request,
+            &user,
+            server,
+            route,
+            outbound,
+        )
+        .await?;
+    }
+
+    // Restore the parked downlink ring onto the new relay
+    // state so subsequent upstream→client bytes continue
+    // accumulating into the same buffer; survives any
+    // future park.
+    //
+    // Taken back **unconditionally**, not only when this carrier
+    // negotiated v2: the ring belongs to the session, not to the carrier
+    // currently attached to it. Not every redial asks for replay — the
+    // wire-handover redial deliberately does not — and dropping the ring
+    // on such a hop loses it silently and for good, so the next carrier
+    // that *does* ask is answered `no_ring` for a session that had one
+    // all along.
+    state.downlink_ring = parked.downlink_ring.clone().or_else(|| {
+        // Parked ring was absent (mid-deployment v2 enable, or a session
+        // whose first carrier never asked). Allocate a fresh empty one
+        // when this carrier engages v2, so subsequent captures are
+        // retained for the next resume hit.
+        let cap = server.orphan_registry.downlink_buffer_bytes();
+        if state.symmetric_replay_requested && cap > 0 {
+            Some(Arc::new(parking_lot::Mutex::new(
+                crate::server::resumption::downlink_ring::DownlinkRing::new(cap),
+            )))
+        } else {
+            None
+        }
+    });
+    spawn_downlink_relay(
+        state,
+        parked.upstream_reader,
+        encryptor,
+        user_id,
+        server,
+        route,
+        outbound,
+    );
+    state.user_counters = Some(parked.user_counters);
+    // This stream's own key, for the same reason the encryptor above
+    // uses it: if this session parks again it must park under the
+    // credential its current carrier authenticated with.
+    state.authenticated_user = Some(user);
+    state.upstream_writer = Some(UpstreamWriter::Tcp(parked.upstream_writer));
+    state.upstream_guard = Some(parked.upstream_guard);
+    state.upstream_target_display = Some(parked.target_display);
+    // Move the parked counter back into the relay state so the
+    // monotonic upstream-acked count survives this reattach.
+    // Subsequent `forward_plaintext_to_writer` increments will
+    // continue from the value the previous incarnation left
+    // off at — exactly what the Ack-Prefix Protocol contract
+    // requires of `up_acked`.
+    state.upstream_bytes_acked = parked.upstream_bytes_acked;
+    Ok(())
+}
+
+/// Ack-Prefix Protocol v1: when the client advertised the
+/// capability we emit a 14-byte plaintext control frame here,
+/// ahead of any upstream relay bytes, so the client can
+/// replay only the bytes the upstream `TcpStream` has not
+/// yet acked. The frame goes through the same AEAD
+/// encryptor and the same carrier padding as a normal data
+/// chunk — the relay's chunks are padded by `ChannelSink`,
+/// which this send bypasses, and on a padded path an unpadded
+/// message desynchronises the client's padding decoder rather
+/// than merely arriving unwrapped. Its FIFO ordering on
+/// `outbound.data_tx` guarantees it lands at the client before
+/// whatever the spawned relay task produces. See
+/// `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
+async fn send_ack_prefix_frame<Msg>(
+    encryptor: &mut AeadStreamEncryptor,
+    up_acked: u64,
+    user: &UserKey,
+    route: &WsTcpRouteCtx,
+    outbound: &WsTcpFrameOutput<'_, Msg>,
+) -> Result<(), FrameError>
+where
+    Msg: Send + 'static,
+{
+    let payload = build_v1_payload(up_acked);
+    let mut out = bytes::BytesMut::new();
+    encryptor
+        .encrypt_chunk(&payload, &mut out)
+        .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+    let ciphertext = carrier_padding::frame_downlink_message(route.padding, out.split().freeze());
+    let make_binary = outbound.make_binary;
+    outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
+        FrameError::Fatal(anyhow!("ack-prefix control frame send failed: WS data channel closed"))
+    })?;
+    debug!(
+        user = user.id(),
+        path = %route.path,
+        up_acked = up_acked,
+        "emitted ack-prefix control frame on resume hit",
+    );
+    Ok(())
+}
+
+/// v2 Symmetric Downlink Replay: emit the "ORDR" frame
+/// immediately after the v1 frame when the protocol is
+/// engaged. Replay payload is the contiguous suffix
+/// `[client_acked_offset_request, total_sent_downlink)` from
+/// the parked ring; missing-ring or eviction-rolled-past
+/// surfaces as REPLAY_TRUNCATED + replay_len = 0. The frame
+/// goes through the same AEAD encryptor + WS sink, in serial
+/// order with the v1 frame.
+/// See `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
+async fn send_downlink_replay_frame<Msg>(
+    encryptor: &mut AeadStreamEncryptor,
+    ring: Option<&Arc<parking_lot::Mutex<crate::server::resumption::downlink_ring::DownlinkRing>>>,
+    client_offset: u64,
+    user: &UserKey,
+    server: &WsTcpServerCtx,
+    route: &WsTcpRouteCtx,
+    outbound: &WsTcpFrameOutput<'_, Msg>,
+) -> Result<(), FrameError>
+where
+    Msg: Send + 'static,
+{
+    use crate::server::resumption::downlink_ring::ReplayOutcome;
+    use outline_wire::resume::downlink_replay;
+    let (flags, payload, ring_diag, truncate_reason) = match ring {
+        None => {
+            // The session was parked from a path that did
+            // not run the v2 ring (e.g. operator enabled
+            // v2 mid-session or the prior carrier did not
+            // capture). Honest answer is TRUNCATED.
+            (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), None, "no_ring")
+        },
+        Some(ring) => {
+            let guard = ring.lock();
+            let diag = (guard.oldest_offset(), guard.total_sent());
+            let outcome = guard.replay_from(client_offset);
+            drop(guard);
+            match outcome {
+                ReplayOutcome::Available(bytes) => {
+                    (downlink_replay::FLAGS_NONE, bytes, Some(diag), "")
+                },
+                ReplayOutcome::Truncated => {
+                    (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), Some(diag), "evicted")
+                },
+                ReplayOutcome::OffsetAhead => {
+                    warn!(
+                        user = user.id(),
+                        path = %route.path,
+                        client_offset = client_offset,
+                        "v2 client claims more downstream bytes than server emitted; \
+                         treating as truncated"
+                    );
+                    (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), Some(diag), "client_ahead")
+                },
+            }
+        },
+    };
+    let payload_len = payload.len() as u64;
+    let truncated = (flags & downlink_replay::FLAG_REPLAY_TRUNCATED) != 0;
+    server.metrics.record_orphan_downlink_replay_bytes("tcp", payload_len);
+    if truncated {
+        server
+            .metrics
+            .record_orphan_downlink_replay_truncated("tcp", truncate_reason, "direct");
+    }
+    let mut frame = Vec::with_capacity(downlink_replay::FRAME_HEADER_LEN_V1 + payload.len());
+    frame.extend_from_slice(&downlink_replay::build_v1_header(flags, payload_len));
+    frame.extend_from_slice(&payload);
+    // Padded for the same reason as the v1 frame above: this send
+    // bypasses `ChannelSink`, and an unpadded message on a padded
+    // path corrupts the stream rather than arriving unwrapped. On
+    // h2 the frame is cut like the relay's reads (the client
+    // accumulates AEAD chunks until the whole frame is in).
+    let messages = encrypt_downlink_messages(
+        encryptor,
+        &frame,
+        carrier_padding::h2_plaintext_cap(route.protocol, route.padding, SS_CHUNK_OVERHEAD),
+        route.padding,
+    )
+    .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+    let make_binary = outbound.make_binary;
+    for ciphertext in messages {
+        outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
+            FrameError::Fatal(anyhow!(
+                "v2 downlink replay frame send failed: WS data channel closed"
+            ))
+        })?;
+    }
+    let (ring_oldest, ring_total) = ring_diag.unwrap_or((0, 0));
+    debug!(
+        user = user.id(),
+        path = %route.path,
+        client_offset = client_offset,
+        replay_len = payload_len,
+        truncated,
+        ring_oldest_offset = ring_oldest,
+        ring_total_sent = ring_total,
+        "emitted v2 downlink replay frame on resume hit",
+    );
+    Ok(())
+}
+
+/// Starts the upstream→client relay of a session on `upstream_reader` and
+/// records its cancel handle on `state`. The same for a resumed socket and a
+/// freshly dialled one: only where the reader and the encryptor came from
+/// differs.
+fn spawn_downlink_relay<Msg>(
+    state: &mut WsTcpRelayState,
+    upstream_reader: tokio::net::tcp::OwnedReadHalf,
+    mut encryptor: AeadStreamEncryptor,
+    user_id: &Arc<str>,
+    server: &WsTcpServerCtx,
+    route: &WsTcpRouteCtx,
+    outbound: &WsTcpFrameOutput<'_, Msg>,
+) where
+    Msg: Send + 'static,
+{
+    let ring_for_task = state.downlink_ring.clone();
+    let monitor_for_sink = state.throttle_monitor.clone();
+    let monitor_for_relay = state.throttle_monitor.clone();
+    let tx = outbound.data_tx.clone();
+    let make_binary = outbound.make_binary;
+    let make_close = outbound.make_close;
+    let relay_metrics = Arc::clone(&server.metrics);
+    let sink_metrics = Arc::clone(&server.metrics);
+    let relay_user_id = Arc::clone(user_id);
+    let protocol = route.protocol;
+    let sink_padding = route.padding;
+    // Cancel-notify is registered unconditionally so park-on-drop
+    // can harvest the reader. When resumption is disabled the
+    // notify is simply never fired and the relay loop runs in its
+    // legacy single-arm mode.
+    let cancel = Arc::new(Notify::new());
+    let cancel_for_task = Arc::clone(&cancel);
+    state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
+        harvest_tcp(
+            super::super::relay::relay_upstream_to_client(
+                upstream_reader,
+                ChannelSink {
+                    tx,
+                    make_binary,
+                    make_close,
+                    metrics: sink_metrics,
+                    padding: sink_padding,
+                    monitor: monitor_for_sink,
+                    shaper: carrier_padding::new_server_shaper(protocol),
+                    plaintext_cap: carrier_padding::h2_plaintext_cap(
+                        protocol,
+                        sink_padding,
+                        SS_CHUNK_OVERHEAD,
+                    ),
+                },
+                &mut encryptor,
+                relay_metrics,
+                protocol,
+                AppProtocol::Shadowsocks,
+                relay_user_id,
+                Some(cancel_for_task),
+                ring_for_task,
+                monitor_for_relay,
+            )
+            .await,
+        )
+    })));
+    state.relay_cancel = Some(cancel);
+}
+
+/// Dials the target for a session that resumes nothing, and starts the
+/// upstream→client relay on the fresh socket.
+#[allow(clippy::too_many_arguments)]
+async fn connect_fresh_upstream<Msg>(
+    state: &mut WsTcpRelayState,
+    target: &crate::protocol::TargetAddr,
+    target_display: Arc<str>,
+    user: UserKey,
+    user_id: &Arc<str>,
+    decryptor: &AeadStreamDecryptor,
+    server: &WsTcpServerCtx,
+    route: &WsTcpRouteCtx,
+    outbound: &WsTcpFrameOutput<'_, Msg>,
+) -> Result<(), FrameError>
+where
+    Msg: Send + 'static,
+{
+    let connect_started = std::time::Instant::now();
+    let stream = match connect_tcp_target(
+        server.dns_cache.as_ref(),
+        target,
+        user.fwmark(),
+        server.prefer_ipv4_upstream,
+        server.outbound_ipv6.as_deref(),
+    )
+    .await
+    {
+        Ok(stream) => {
+            server.metrics.record_tcp_connect(
+                Arc::clone(user_id),
+                route.protocol,
+                AppProtocol::Shadowsocks,
+                "success",
+                connect_started.elapsed().as_secs_f64(),
+            );
+            stream
+        },
+        Err(error) => {
+            server.metrics.record_tcp_connect(
+                Arc::clone(user_id),
+                route.protocol,
+                AppProtocol::Shadowsocks,
+                "error",
+                connect_started.elapsed().as_secs_f64(),
+            );
+            warn!(
+                user = user.id(),
+                protocol = ?route.protocol,
+                path = %route.path,
+                target = %target_display,
+                error = %error,
+                "websocket tcp upstream connect failed; sending try-again close to client"
+            );
+            let connect_err = anyhow::Error::msg(format!("{error:#}"))
+                .context(format!("failed to connect to {target_display}"))
+                .context("upstream tcp connect failed");
+            return Err(FrameError::UpstreamConnectFailed(connect_err));
+        },
+    };
+    debug!(
+        user = user.id(),
+        fwmark = ?user.fwmark(),
+        path = %route.path,
+        target = %target_display,
+        "tcp upstream connected"
+    );
+
+    let (upstream_reader, writer) = stream.into_split();
+    let encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())
+        .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+    // v2 ring allocation at fresh-dial time. The capability bit on
+    // `state.symmetric_replay_requested` is already gated at parse
+    // time on (a) v1 also requested and (b) registry has v2
+    // capacity > 0, so a `true` flag here is safe to honour.
+    if state.symmetric_replay_requested && state.downlink_ring.is_none() {
+        let cap = server.orphan_registry.downlink_buffer_bytes();
+        if cap > 0 {
+            state.downlink_ring = Some(Arc::new(parking_lot::Mutex::new(
+                crate::server::resumption::downlink_ring::DownlinkRing::new(cap),
+            )));
+        }
+    }
+    spawn_downlink_relay(state, upstream_reader, encryptor, user_id, server, route, outbound);
+    server.metrics.record_tcp_authenticated_session(
+        Arc::clone(user_id),
+        route.protocol,
+        AppProtocol::Shadowsocks,
+    );
+    state.upstream_guard = Some(server.metrics.open_tcp_upstream_connection(
+        Arc::clone(user_id),
+        route.protocol,
+        AppProtocol::Shadowsocks,
+    ));
+    state.user_counters = Some(server.metrics.user_counters(user_id));
+    state.authenticated_user = Some(user);
+    state.upstream_writer = Some(UpstreamWriter::Tcp(writer));
+    state.upstream_target_display = Some(target_display);
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_tcp_binary_frame<Msg>(
     state: &mut WsTcpRelayState,
@@ -1029,48 +1510,7 @@ where
         state.peer_user_cache_recorded = true;
     }
 
-    // Anti-replay: a captured Shadowsocks handshake re-sent verbatim derives the
-    // same session key and re-opens under AEAD, so authentication alone does not
-    // stop it. Reject a request salt we have already seen before any upstream is
-    // dialled, so the replayed request is never re-executed. Runs once per
-    // session — the salt is fixed for the connection's lifetime.
-    if !state.salt_replay_checked
-        && let Some(salt) = decryptor.request_salt()
-    {
-        state.salt_replay_checked = true;
-        match server.salt_replay_store.check_and_mark(Arc::clone(salt)) {
-            SaltReplayCheck::Fresh => {},
-            SaltReplayCheck::Replay => {
-                let user_id = decryptor
-                    .user()
-                    .map(UserKey::id_arc)
-                    .unwrap_or_else(|| Arc::from("unknown"));
-                server
-                    .metrics
-                    .record_tcp_handshake_replay_dropped(user_id, route.protocol);
-                warn!(path = %route.path, "rejecting replayed shadowsocks tcp handshake");
-                return Err(FrameError::Fatal(anyhow!(
-                    "replayed shadowsocks tcp handshake on path {}",
-                    route.path,
-                )));
-            },
-            SaltReplayCheck::StoreFull => {
-                // Fail-open: allow the handshake through but surface the capacity
-                // pressure the decision hides.
-                let user_id = decryptor
-                    .user()
-                    .map(UserKey::id_arc)
-                    .unwrap_or_else(|| Arc::from("unknown"));
-                server
-                    .metrics
-                    .record_tcp_handshake_replay_store_full(user_id, route.protocol);
-                warn!(
-                    path = %route.path,
-                    "shadowsocks tcp handshake salt not recorded: replay store at capacity"
-                );
-            },
-        }
-    }
+    check_salt_replay(state, decryptor, server, route)?;
 
     if state.upstream_writer.is_none() {
         let Some((target, consumed)) =
@@ -1131,260 +1571,10 @@ where
             && let ResumeOutcome::Hit(Parked::Tcp(parked)) =
                 server.orphan_registry.take_for_resume(resume_id, &user_id).await
         {
-            // A park minted under VLESS is served here unchanged: nothing in a
-            // byte-stream park belongs to the protocol that made it, and the
-            // owner check inside `take_for_resume` has already bound the id to
-            // this account. See `docs/SESSION-RESUMPTION.md` § Cross-protocol
-            // resume.
-            if parked.protocol != ParkedProtocol::Ss {
-                server
-                    .metrics
-                    .record_orphan_resume_cross_protocol(parked.protocol.label(), "ss");
-            }
-            debug!(
-                user = user.id(),
-                path = %route.path,
-                target = %parked.target_display,
-                parked_protocol = parked.protocol.label(),
-                "tcp upstream resumed from orphan registry"
-            );
-            // Sealed under the key *this* stream authenticated with, not one
-            // carried over from the park. The two are the same account — one
-            // `[[users]]` entry, one owner label — but only this one is the key
-            // the client just dialled with, so it stays right across a protocol
-            // reroll and across a password rotation mid-park alike. Same call
-            // the fresh-connect path below makes.
-            let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())
-                .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
-
-            // Ack-Prefix Protocol v1: when the client advertised the
-            // capability we emit a 14-byte plaintext control frame here,
-            // ahead of any upstream relay bytes, so the client can
-            // replay only the bytes the upstream `TcpStream` has not
-            // yet acked. The frame goes through the same AEAD
-            // encryptor and the same carrier padding as a normal data
-            // chunk — the relay's chunks are padded by `ChannelSink`,
-            // which this send bypasses, and on a padded path an unpadded
-            // message desynchronises the client's padding decoder rather
-            // than merely arriving unwrapped. Its FIFO ordering on
-            // `outbound.data_tx` guarantees it lands at the client before
-            // whatever the spawned relay task produces. See
-            // `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
-            if state.ack_prefix_requested {
-                let payload = build_v1_payload(parked.upstream_bytes_acked.load(Ordering::Relaxed));
-                let mut out = bytes::BytesMut::new();
-                encryptor
-                    .encrypt_chunk(&payload, &mut out)
-                    .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
-                let ciphertext =
-                    carrier_padding::frame_downlink_message(route.padding, out.split().freeze());
-                let make_binary = outbound.make_binary;
-                outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
-                    FrameError::Fatal(anyhow!(
-                        "ack-prefix control frame send failed: WS data channel closed"
-                    ))
-                })?;
-                debug!(
-                    user = user.id(),
-                    path = %route.path,
-                    up_acked = parked.upstream_bytes_acked.load(Ordering::Relaxed),
-                    "emitted ack-prefix control frame on resume hit",
-                );
-            }
-
-            // v2 Symmetric Downlink Replay: emit the "ORDR" frame
-            // immediately after the v1 frame when the protocol is
-            // engaged. Replay payload is the contiguous suffix
-            // `[client_acked_offset_request, total_sent_downlink)` from
-            // the parked ring; missing-ring or eviction-rolled-past
-            // surfaces as REPLAY_TRUNCATED + replay_len = 0. The frame
-            // goes through the same AEAD encryptor + WS sink, in serial
-            // order with the v1 frame.
-            // See `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
-            if state.symmetric_replay_requested {
-                use crate::server::resumption::downlink_ring::ReplayOutcome;
-                use outline_wire::resume::downlink_replay;
-                let (flags, payload, ring_diag, truncate_reason) = match parked
-                    .downlink_ring
-                    .as_ref()
-                {
-                    None => {
-                        // The session was parked from a path that did
-                        // not run the v2 ring (e.g. operator enabled
-                        // v2 mid-session or the prior carrier did not
-                        // capture). Honest answer is TRUNCATED.
-                        (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), None, "no_ring")
-                    },
-                    Some(ring) => {
-                        let guard = ring.lock();
-                        let diag = (guard.oldest_offset(), guard.total_sent());
-                        let outcome = guard.replay_from(state.client_acked_offset_request);
-                        drop(guard);
-                        match outcome {
-                            ReplayOutcome::Available(bytes) => {
-                                (downlink_replay::FLAGS_NONE, bytes, Some(diag), "")
-                            },
-                            ReplayOutcome::Truncated => (
-                                downlink_replay::FLAG_REPLAY_TRUNCATED,
-                                Vec::new(),
-                                Some(diag),
-                                "evicted",
-                            ),
-                            ReplayOutcome::OffsetAhead => {
-                                warn!(
-                                    user = user.id(),
-                                    path = %route.path,
-                                    client_offset = state.client_acked_offset_request,
-                                    "v2 client claims more downstream bytes than server emitted; \
-                                     treating as truncated"
-                                );
-                                (
-                                    downlink_replay::FLAG_REPLAY_TRUNCATED,
-                                    Vec::new(),
-                                    Some(diag),
-                                    "client_ahead",
-                                )
-                            },
-                        }
-                    },
-                };
-                let payload_len = payload.len() as u64;
-                let truncated = (flags & downlink_replay::FLAG_REPLAY_TRUNCATED) != 0;
-                server.metrics.record_orphan_downlink_replay_bytes("tcp", payload_len);
-                if truncated {
-                    server.metrics.record_orphan_downlink_replay_truncated(
-                        "tcp",
-                        truncate_reason,
-                        "direct",
-                    );
-                }
-                let mut frame =
-                    Vec::with_capacity(downlink_replay::FRAME_HEADER_LEN_V1 + payload.len());
-                frame.extend_from_slice(&downlink_replay::build_v1_header(flags, payload_len));
-                frame.extend_from_slice(&payload);
-                // Padded for the same reason as the v1 frame above: this send
-                // bypasses `ChannelSink`, and an unpadded message on a padded
-                // path corrupts the stream rather than arriving unwrapped. On
-                // h2 the frame is cut like the relay's reads (the client
-                // accumulates AEAD chunks until the whole frame is in).
-                let messages = encrypt_downlink_messages(
-                    &mut encryptor,
-                    &frame,
-                    carrier_padding::h2_plaintext_cap(
-                        route.protocol,
-                        route.padding,
-                        SS_CHUNK_OVERHEAD,
-                    ),
-                    route.padding,
-                )
-                .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
-                let make_binary = outbound.make_binary;
-                for ciphertext in messages {
-                    outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
-                        FrameError::Fatal(anyhow!(
-                            "v2 downlink replay frame send failed: WS data channel closed"
-                        ))
-                    })?;
-                }
-                let (ring_oldest, ring_total) = ring_diag.unwrap_or((0, 0));
-                debug!(
-                    user = user.id(),
-                    path = %route.path,
-                    client_offset = state.client_acked_offset_request,
-                    replay_len = payload_len,
-                    truncated,
-                    ring_oldest_offset = ring_oldest,
-                    ring_total_sent = ring_total,
-                    "emitted v2 downlink replay frame on resume hit",
-                );
-            }
-
-            // Restore the parked downlink ring onto the new relay
-            // state so subsequent upstream→client bytes continue
-            // accumulating into the same buffer; survives any
-            // future park.
-            //
-            // Taken back **unconditionally**, not only when this carrier
-            // negotiated v2: the ring belongs to the session, not to the carrier
-            // currently attached to it. Not every redial asks for replay — the
-            // wire-handover redial deliberately does not — and dropping the ring
-            // on such a hop loses it silently and for good, so the next carrier
-            // that *does* ask is answered `no_ring` for a session that had one
-            // all along.
-            state.downlink_ring = parked.downlink_ring.clone().or_else(|| {
-                // Parked ring was absent (mid-deployment v2 enable, or a session
-                // whose first carrier never asked). Allocate a fresh empty one
-                // when this carrier engages v2, so subsequent captures are
-                // retained for the next resume hit.
-                let cap = server.orphan_registry.downlink_buffer_bytes();
-                if state.symmetric_replay_requested && cap > 0 {
-                    Some(Arc::new(parking_lot::Mutex::new(
-                        crate::server::resumption::downlink_ring::DownlinkRing::new(cap),
-                    )))
-                } else {
-                    None
-                }
-            });
-            let ring_for_task = state.downlink_ring.clone();
-            let monitor_for_sink = state.throttle_monitor.clone();
-            let monitor_for_relay = state.throttle_monitor.clone();
-            let tx = outbound.data_tx.clone();
-            let make_binary = outbound.make_binary;
-            let make_close = outbound.make_close;
-            let relay_metrics = Arc::clone(&server.metrics);
-            let sink_metrics = Arc::clone(&server.metrics);
-            let relay_user_id = Arc::clone(&user_id);
-            let protocol = route.protocol;
-            let sink_padding = route.padding;
-            let cancel = Arc::new(Notify::new());
-            let cancel_for_task = Arc::clone(&cancel);
-            let parked_reader = parked.upstream_reader;
-            state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
-                harvest_tcp(
-                    super::super::relay::relay_upstream_to_client(
-                        parked_reader,
-                        ChannelSink {
-                            tx,
-                            make_binary,
-                            make_close,
-                            metrics: sink_metrics,
-                            padding: sink_padding,
-                            monitor: monitor_for_sink,
-                            shaper: carrier_padding::new_server_shaper(protocol),
-                            plaintext_cap: carrier_padding::h2_plaintext_cap(
-                                protocol,
-                                sink_padding,
-                                SS_CHUNK_OVERHEAD,
-                            ),
-                        },
-                        &mut encryptor,
-                        relay_metrics,
-                        protocol,
-                        AppProtocol::Shadowsocks,
-                        relay_user_id,
-                        Some(cancel_for_task),
-                        ring_for_task,
-                        monitor_for_relay,
-                    )
-                    .await,
-                )
-            })));
-            state.relay_cancel = Some(cancel);
-            state.user_counters = Some(parked.user_counters);
-            // This stream's own key, for the same reason the encryptor above
-            // uses it: if this session parks again it must park under the
-            // credential its current carrier authenticated with.
-            state.authenticated_user = Some(user);
-            state.upstream_writer = Some(UpstreamWriter::Tcp(parked.upstream_writer));
-            state.upstream_guard = Some(parked.upstream_guard);
-            state.upstream_target_display = Some(parked.target_display);
-            // Move the parked counter back into the relay state so the
-            // monotonic upstream-acked count survives this reattach.
-            // Subsequent `forward_plaintext_to_writer` increments will
-            // continue from the value the previous incarnation left
-            // off at — exactly what the Ack-Prefix Protocol contract
-            // requires of `up_acked`.
-            state.upstream_bytes_acked = parked.upstream_bytes_acked;
+            resume_parked_upstream(
+                state, parked, user, &user_id, decryptor, server, route, &outbound,
+            )
+            .await?;
             plaintext_buffer.drain(..consumed);
             // Subsequent payload bytes (if any) are forwarded by the
             // generic write branch below.
@@ -1394,133 +1584,18 @@ where
         // missed (unknown / owner-mismatch / disabled). The miss is
         // already counted by `take_for_resume`.
 
-        let connect_started = std::time::Instant::now();
-        let stream = match connect_tcp_target(
-            server.dns_cache.as_ref(),
+        connect_fresh_upstream(
+            state,
             &target,
-            user.fwmark(),
-            server.prefer_ipv4_upstream,
-            server.outbound_ipv6.as_deref(),
+            target_display,
+            user,
+            &user_id,
+            decryptor,
+            server,
+            route,
+            &outbound,
         )
-        .await
-        {
-            Ok(stream) => {
-                server.metrics.record_tcp_connect(
-                    Arc::clone(&user_id),
-                    route.protocol,
-                    AppProtocol::Shadowsocks,
-                    "success",
-                    connect_started.elapsed().as_secs_f64(),
-                );
-                stream
-            },
-            Err(error) => {
-                server.metrics.record_tcp_connect(
-                    Arc::clone(&user_id),
-                    route.protocol,
-                    AppProtocol::Shadowsocks,
-                    "error",
-                    connect_started.elapsed().as_secs_f64(),
-                );
-                warn!(
-                    user = user.id(),
-                    protocol = ?route.protocol,
-                    path = %route.path,
-                    target = %target_display,
-                    error = %error,
-                    "websocket tcp upstream connect failed; sending try-again close to client"
-                );
-                let connect_err = anyhow::Error::msg(format!("{error:#}"))
-                    .context(format!("failed to connect to {target_display}"))
-                    .context("upstream tcp connect failed");
-                return Err(FrameError::UpstreamConnectFailed(connect_err));
-            },
-        };
-        debug!(
-            user = user.id(),
-            fwmark = ?user.fwmark(),
-            path = %route.path,
-            target = %target_display,
-            "tcp upstream connected"
-        );
-
-        let (upstream_reader, writer) = stream.into_split();
-        let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())
-            .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
-        let tx = outbound.data_tx.clone();
-        let make_binary = outbound.make_binary;
-        let make_close = outbound.make_close;
-        let relay_metrics = Arc::clone(&server.metrics);
-        let sink_metrics = Arc::clone(&server.metrics);
-        let relay_user_id = Arc::clone(&user_id);
-        let protocol = route.protocol;
-        let sink_padding = route.padding;
-        // Cancel-notify is registered unconditionally so park-on-drop
-        // can harvest the reader. When resumption is disabled the
-        // notify is simply never fired and the relay loop runs in its
-        // legacy single-arm mode.
-        let cancel = Arc::new(Notify::new());
-        let cancel_for_task = Arc::clone(&cancel);
-        // v2 ring allocation at fresh-dial time. The capability bit on
-        // `state.symmetric_replay_requested` is already gated at parse
-        // time on (a) v1 also requested and (b) registry has v2
-        // capacity > 0, so a `true` flag here is safe to honour.
-        if state.symmetric_replay_requested && state.downlink_ring.is_none() {
-            let cap = server.orphan_registry.downlink_buffer_bytes();
-            if cap > 0 {
-                state.downlink_ring = Some(Arc::new(parking_lot::Mutex::new(
-                    crate::server::resumption::downlink_ring::DownlinkRing::new(cap),
-                )));
-            }
-        }
-        let ring_for_task = state.downlink_ring.clone();
-        let monitor_for_sink = state.throttle_monitor.clone();
-        let monitor_for_relay = state.throttle_monitor.clone();
-        state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
-            harvest_tcp(
-                super::super::relay::relay_upstream_to_client(
-                    upstream_reader,
-                    ChannelSink {
-                        tx,
-                        make_binary,
-                        make_close,
-                        metrics: sink_metrics,
-                        padding: sink_padding,
-                        monitor: monitor_for_sink,
-                        shaper: carrier_padding::new_server_shaper(protocol),
-                        plaintext_cap: carrier_padding::h2_plaintext_cap(
-                            protocol,
-                            sink_padding,
-                            SS_CHUNK_OVERHEAD,
-                        ),
-                    },
-                    &mut encryptor,
-                    relay_metrics,
-                    protocol,
-                    AppProtocol::Shadowsocks,
-                    relay_user_id,
-                    Some(cancel_for_task),
-                    ring_for_task,
-                    monitor_for_relay,
-                )
-                .await,
-            )
-        })));
-        state.relay_cancel = Some(cancel);
-        server.metrics.record_tcp_authenticated_session(
-            Arc::clone(&user_id),
-            route.protocol,
-            AppProtocol::Shadowsocks,
-        );
-        state.upstream_guard = Some(server.metrics.open_tcp_upstream_connection(
-            Arc::clone(&user_id),
-            route.protocol,
-            AppProtocol::Shadowsocks,
-        ));
-        state.user_counters = Some(server.metrics.user_counters(&user_id));
-        state.authenticated_user = Some(user);
-        state.upstream_writer = Some(UpstreamWriter::Tcp(writer));
-        state.upstream_target_display = Some(target_display);
+        .await?;
         plaintext_buffer.drain(..consumed);
     }
 
