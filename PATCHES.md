@@ -47,8 +47,8 @@ modules (client h3, server h3, client QUIC, client rustls, client hyper):
 - [`crates/outline-transport/src/quic/vendored.rs`](crates/outline-transport/src/quic/vendored.rs) — client, patched
   `quinn-proto` (`TransportConfig::initial_stream_receive_window`, the browser-shaped
   transport-parameter options, `TransportConfig::initial_crypto_layout`,
-  `MtuDiscoveryConfig::first_probe` / `first_probe_caps` and
-  `PathStats::plpmtud_settled`).
+  `TransportConfig::fixed_spin_bit`, `MtuDiscoveryConfig::first_probe` /
+  `first_probe_caps` and `PathStats::plpmtud_settled`).
 - [`crates/outline-transport/src/tls_vendored.rs`](crates/outline-transport/src/tls_vendored.rs) — client, patched
   `rustls` (`ClientConfig::client_hello_shape` with `ClientHelloShape` /
   `ExtensionOrder`, `kx_group::SECP521R1`, and `apply_tls_hello_profile`, which
@@ -68,7 +68,7 @@ test modules impersonate the client side on purpose.
 | CI step | Matched names | Allowed only in |
 |---|---|---|
 | `invariant — vendored sockudo-ws API only behind gate modules` | `sockudo_ws` | `crates/outline-transport/src/h3/vendored.rs`, `bins/outline-ss-rust/src/server/h3/vendored.rs` |
-| `invariant — patched quinn-proto API only behind the gate module` | `initial_stream_receive_window`, the browser-shaped transport-parameter setters (`.advertise_min_ack_delay(`, `.version_information(`, `.transport_parameter_order(`, …), `.initial_crypto_layout(`, `.first_probe(`, `.first_probe_caps(`, `plpmtud_settled` | `crates/outline-transport/src/quic/vendored.rs`, `bins/outline-ss-rust/src/server/h3/vendored.rs` |
+| `invariant — patched quinn-proto API only behind the gate module` | `initial_stream_receive_window`, the browser-shaped transport-parameter setters (`.advertise_min_ack_delay(`, `.version_information(`, `.transport_parameter_order(`, …), `.initial_crypto_layout(`, `.fixed_spin_bit(`, `.first_probe(`, `.first_probe_caps(`, `plpmtud_settled` | `crates/outline-transport/src/quic/vendored.rs`, `bins/outline-ss-rust/src/server/h3/vendored.rs` |
 | `invariant — patched rustls API only behind the gate module` | `client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`, `kx_group::SECP521R1` | `crates/outline-transport/src/tls_vendored.rs` |
 | `invariant — patched hyper API only behind the gate module` | `HeaderCaseMap`, `hyper::ext::*` (also scans `android/rust/src`) | `crates/outline-transport/src/hyper_vendored.rs` |
 
@@ -286,7 +286,7 @@ Baseline — crates.io `quinn-proto 0.11.19`. Logical changes carried by
    is planned afresh. Servers ignore the option. Tests:
    `src/connection/tests/initial_crypto.rs` (planner, matches the Firefox capture),
    `src/tests/initial_crypto.rs` (handshake with and without Retry, the hello laid out
-   again after a Retry, Initial size); they need the upstream dev-dependencies (see 7).
+   again after a Retry, Initial size); they need the upstream dev-dependencies (see 8).
 6. `stream-chunk-limit` (`src/connection/assembler.rs`,
    `src/connection/streams/recv.rs`) — the most distinct spans a receive stream may
    buffer now follows the stream credit open to the peer (from the read offset to the
@@ -303,8 +303,23 @@ Baseline — crates.io `quinn-proto 0.11.19`. Logical changes carried by
    `gapped_stream_within_large_window_is_accepted`,
    `bounded_chunks_under_low_over_allocation_large_window`,
    `streams::recv::tests::gaps_are_bounded_by_the_open_window` (fails with "too many
-   gaps" without the patch); they need the upstream dev-dependencies (see 7).
-7. Vendoring trim (`Cargo.toml`) — dev-dependencies removed (upstream
+   gaps" without the patch); they need the upstream dev-dependencies (see 8).
+7. `fixed-spin-bit` (`src/config/transport.rs`,
+   `src/connection/packet_builder.rs`) — new
+   `TransportConfig::fixed_spin_bit(Option<bool>)`. With `Some(v)` every short-header
+   packet carries `v` in the spin bit; `None` (the default) keeps upstream behaviour.
+   Upstream offers two modes: a working latency spin bit on 7 connections of 8
+   (`allow_spin(true)`), or an independent random bit per packet (`allow_spin(false)`).
+   Chromium does neither: quiche sends `spin_bit_enabled_ && next_spin_bit`, the bit is
+   enabled only by `QuicConfig::set_enable_spin_bit` together with the
+   `quic_enable_spin_bit` flag, both default to off and Chromium sets neither, so its
+   spin bit is always 0. The bit sits outside header protection and is visible to every
+   on-path observer, so the H3 client's Chromium profile needs the constant. The spin
+   state is still tracked from incoming packets; only the value written is overridden,
+   and the random draw is skipped. Test (in `outline-transport`, through a UDP relay that
+   records the first byte of each client datagram):
+   `quic::tp_profile::tests::chromium_profile_sends_a_zero_spin_bit`.
+8. Vendoring trim (`Cargo.toml`) — dev-dependencies removed (upstream
    `rcgen` with default `ring` would violate the aws-lc-rs invariant).
 
 Conformance check: apply the patch to a clean copy of crates.io 0.11.19 and

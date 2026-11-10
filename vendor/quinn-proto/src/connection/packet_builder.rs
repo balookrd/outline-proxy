@@ -91,10 +91,10 @@ impl PacketBuilder {
             SpaceId::Data if space.crypto.is_some() => Header::Short {
                 dst_cid,
                 number,
-                spin: if conn.spin_enabled {
-                    conn.spin
-                } else {
-                    conn.rng.random()
+                spin: match conn.config.fixed_spin_bit {
+                    Some(value) => value,
+                    None if conn.spin_enabled => conn.spin,
+                    None => conn.rng.random(),
                 },
                 key_phase: conn.key_phase,
             },

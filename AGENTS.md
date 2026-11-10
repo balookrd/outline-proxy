@@ -159,9 +159,10 @@ lock-файлов вместе с vendored-крейтами, которые об
   (провайдер aws-lc-rs, `socket2` 0.6, vendoring-trim). Остальные файлы
   `vendor/sockudo-ws` обязаны быть побайтово равны upstream — сверка описана в
   [`PATCHES.ru.md`](PATCHES.ru.md). Не плоди вторые копии vendored и не поднимай
-  версии без явной причины. `vendor/quinn-proto` = upstream 0.11.19 + пять
+  версии без явной причины. `vendor/quinn-proto` = upstream 0.11.19 + семь
   логических патчей (advertised-stream-window, browser-shaped-transport-parameters,
-  browser-order-and-firefox, mtud-first-probe, initial-crypto-layout) и vendoring-trim,
+  browser-order-and-firefox, mtud-first-probe, initial-crypto-layout,
+  stream-chunk-limit, fixed-spin-bit) и vendoring-trim,
   описано в `PATCHES*.md`.
   `vendor/rustls` = upstream 0.23.46 + два логических патча (client-hello-shape:
   `ClientConfig::client_hello_shape` для браузерного ClientHello H3- и
@@ -319,7 +320,8 @@ Production-код не обращается к `h3`-патч-API и `sockudo_ws`
 `advertise_max_udp_payload_size`, `advertised_max_datagram_frame_size`,
 `version_information`, `extra_transport_parameters`, `transport_parameter_order`,
 `advertised_active_connection_id_limit`, `max_ack_delay_ms`,
-`initial_stream_receive_windows`, `initial_crypto_layout`, `MtuDiscoveryConfig::first_probe`,
+`initial_stream_receive_windows`, `initial_crypto_layout`, `fixed_spin_bit`,
+`MtuDiscoveryConfig::first_probe`,
 `MtuDiscoveryConfig::first_probe_caps`, `PathStats::plpmtud_settled`) — только через
 `crates/outline-transport/src/quic/vendored.rs` (клиент; `first_probe` для
 `[server.h3].mtu_first_probe` — ещё и через серверный гейт

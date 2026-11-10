@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::vendored::{BrowserTpOptions, HelloLayout, TpOrder, VersionInfo, VersionSlot};
+use super::vendored::{BrowserTpOptions, HelloLayout, SpinBit, TpOrder, VersionInfo, VersionSlot};
 use crate::fingerprint_profile::TlsFingerprint;
 
 /// `initial_max_stream_data_{bidi_local,bidi_remote,uni}` (0x05-0x07).
@@ -62,10 +62,9 @@ pub(crate) struct QuicTpProfile {
     /// Length of the destination CID in the first Initial. It sits in the
     /// clear in the long header, so it is visible without decrypting anything.
     pub(crate) initial_dcid_len: InitialDcidLen,
-    /// Whether 1-RTT packets carry a working latency spin bit (quinn's
-    /// default: on for 7 connections of 8). `false` puts an independent random
-    /// bit in every packet instead. The bit is outside header protection.
-    pub(crate) spin_bit: bool,
+    /// What 1-RTT packets carry in the spin bit, which sits outside header
+    /// protection.
+    pub(crate) spin_bit: SpinBit,
     /// Parameter-set shaping done by the vendored quinn-proto patch: which
     /// parameters are sent at all, `version_information`, datagram size and
     /// the browser's private extras.
@@ -112,8 +111,11 @@ pub(crate) const CHROMIUM: QuicTpProfile = QuicTpProfile {
     // Measured: 8 bytes on all three connections of the Chrome capture
     // (scripts/fingerprint-drift/tests/data/chrome/quic.pcap).
     initial_dcid_len: InitialDcidLen::Fixed(8),
-    // Not measured: the capture holds Initials only. Left at quinn's default.
-    spin_bit: true,
+    // Chromium never enables the spin bit: quiche sends
+    // `spin_bit_enabled_ && next_spin_bit`, and the bit is enabled only by
+    // `QuicConfig::set_enable_spin_bit` plus the `quic_enable_spin_bit` flag.
+    // Both default to off and Chromium sets neither, so the bit is always 0.
+    spin_bit: SpinBit::Zero,
     options: BrowserTpOptions {
         advertise_min_ack_delay: false,
         grease_parameter: true,
@@ -151,7 +153,7 @@ pub(crate) const SAFARI: QuicTpProfile = QuicTpProfile {
     grease_quic_bit: false,
     // Not measured for Safari; both left at quinn's defaults.
     initial_dcid_len: InitialDcidLen::Fixed(MAX_CID_LEN),
-    spin_bit: true,
+    spin_bit: SpinBit::Spinning,
     options: BrowserTpOptions {
         advertise_min_ack_delay: false,
         grease_parameter: false,
@@ -193,7 +195,7 @@ pub(crate) const FIREFOX: QuicTpProfile = QuicTpProfile {
     initial_dcid_len: InitialDcidLen::Neqo,
     // neqo does not implement the spin bit: `Builder::scramble` XORs a random
     // bit into every short header.
-    spin_bit: false,
+    spin_bit: SpinBit::Random,
     options: BrowserTpOptions {
         advertise_min_ack_delay: false,
         grease_parameter: false,

@@ -123,3 +123,75 @@ fn initial_dcid_provider_yields_the_profile_length() {
     // Two draws of random bytes differ.
     assert_ne!(chromium(), chromium());
 }
+
+/// Spin bits (`0x20` of the first byte) of the short-header packets a client
+/// with profile `tp` sends over a few round trips, as an on-path observer
+/// reads them.
+async fn observed_spin_bits(tp: &'static QuicTpProfile) -> Vec<bool> {
+    let lb = loopback::Loopback::new();
+    let server = lb.server.clone();
+    let echo = tokio::spawn(async move {
+        let conn = server.accept().await.unwrap().await.unwrap();
+        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+            let msg = recv.read_to_end(64).await.unwrap();
+            send.write_all(&msg).await.unwrap();
+            send.finish().unwrap();
+        }
+    });
+    let (relay, first_bytes, tap) = loopback::tap_uplink(lb.addr).await;
+
+    let transport = super::super::tls_config::build_h3_transport(
+        tp,
+        super::super::tls_config::RuntimeWindows::current(tp),
+    );
+    let (_client, conn) = lb.connect_via(relay, tp.endpoint_config(), transport).await;
+    // Sequential round trips: each makes the client send short-header packets
+    // after it has seen fresh ones from the server, which is what would flip a
+    // working spin bit.
+    for round in 0u8..24 {
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        send.write_all(&[round]).await.unwrap();
+        send.finish().unwrap();
+        assert_eq!(recv.read_to_end(64).await.unwrap(), [round]);
+    }
+    conn.close(0u32.into(), b"done");
+    echo.abort();
+    tap.abort();
+
+    // Long-header packets (Initial, Handshake) have the top bit set and carry
+    // no spin bit.
+    let bits: Vec<bool> = first_bytes
+        .lock()
+        .iter()
+        .filter(|byte| **byte & 0x80 == 0)
+        .map(|byte| byte & 0x20 != 0)
+        .collect();
+    assert!(bits.len() >= 24, "only {} short-header packets observed", bits.len());
+    bits
+}
+
+/// Chromium never spins: every short-header packet carries a zero spin bit.
+/// With quinn's default the bit would either flip once per round trip or be
+/// drawn at random per packet, so two dozen zeros in a row do not happen by
+/// chance.
+#[tokio::test]
+async fn chromium_profile_sends_a_zero_spin_bit() {
+    let bits = observed_spin_bits(&CHROMIUM).await;
+    assert!(bits.iter().all(|bit| !bit), "spin bit set in {bits:?}");
+}
+
+/// Firefox (neqo) puts a random bit in every packet: both values show up.
+#[tokio::test]
+async fn firefox_profile_sends_a_random_spin_bit() {
+    let bits = observed_spin_bits(&FIREFOX).await;
+    assert!(bits.iter().any(|bit| *bit), "spin bit never set in {} packets", bits.len());
+    assert!(bits.iter().any(|bit| !bit), "spin bit always set in {} packets", bits.len());
+}
+
+#[test]
+fn profiles_carry_the_measured_spin_bit_behaviour() {
+    use super::super::vendored::SpinBit;
+    assert_eq!(CHROMIUM.spin_bit, SpinBit::Zero);
+    assert_eq!(FIREFOX.spin_bit, SpinBit::Random);
+    assert_eq!(SAFARI.spin_bit, SpinBit::Spinning);
+}
