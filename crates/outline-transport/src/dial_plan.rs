@@ -103,6 +103,18 @@ pub struct TransportDialOptions<'a> {
 }
 
 impl<'a> TransportDialOptions<'a> {
+    /// The resume and framing requests of this dial, as the XHTTP carriers
+    /// take them.
+    fn xhttp_session_open(&self) -> crate::xhttp::SessionOpen {
+        crate::xhttp::SessionOpen {
+            resume_request: self.resume.resume_request,
+            ack_prefix_requested: self.resume.ack_prefix_requested,
+            symmetric_replay_requested: self.resume.symmetric_replay_requested,
+            client_acked_offset: self.resume.client_acked_offset,
+            datagram_records: self.datagram_records,
+        }
+    }
+
     pub fn new(
         cache: &'a DnsCache,
         url: &'a Url,
@@ -384,12 +396,8 @@ impl DialPlan {
             options.url,
             self.selected,
             options.network,
-            options.resume.resume_request,
-            options.resume.ack_prefix_requested,
-            options.resume.symmetric_replay_requested,
-            options.resume.client_acked_offset,
+            options.xhttp_session_open(),
             options.combined_ss_kind,
-            options.datagram_records,
             options.resume.udp_datagram_requested,
         )
         .await
@@ -425,12 +433,8 @@ impl DialPlan {
             options.url,
             TransportMode::XhttpH2,
             options.network,
-            options.resume.resume_request,
-            options.resume.ack_prefix_requested,
-            options.resume.symmetric_replay_requested,
-            options.resume.client_acked_offset,
+            options.xhttp_session_open(),
             options.combined_ss_kind,
-            options.datagram_records,
             false,
         )
         .await
@@ -466,12 +470,8 @@ impl DialPlan {
                         options.url,
                         TransportMode::XhttpH1,
                         options.network,
-                        options.resume.resume_request,
-                        options.resume.ack_prefix_requested,
-                        options.resume.symmetric_replay_requested,
-                        options.resume.client_acked_offset,
+                        options.xhttp_session_open(),
                         options.combined_ss_kind,
-                        options.datagram_records,
                         false,
                     )
                     .await?;
@@ -497,12 +497,8 @@ impl DialPlan {
                 options.url,
                 self.selected,
                 options.network,
-                options.resume.resume_request,
-                options.resume.ack_prefix_requested,
-                options.resume.symmetric_replay_requested,
-                options.resume.client_acked_offset,
+                options.xhttp_session_open(),
                 options.combined_ss_kind,
-                options.datagram_records,
                 false,
             )
             .await?;

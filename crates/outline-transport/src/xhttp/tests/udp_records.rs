@@ -149,8 +149,13 @@ async fn passes_control_frames_through_unframed() {
 fn udp_datagram_offer_and_echo() {
     use crate::request_headers::{HttpVersion, RequestKind};
     use crate::xhttp::{
-        SessionRequest, UDP_DATAGRAM_HEADER, UDP_RECORDS_HEADER, build_session_request_headers,
-        parse_udp_datagram_echo,
+        SessionOpen, SessionRequest, UDP_DATAGRAM_HEADER, UDP_RECORDS_HEADER,
+        build_session_request_headers, parse_udp_datagram_echo,
+    };
+
+    let records_only = || SessionOpen {
+        datagram_records: true,
+        ..SessionOpen::default()
     };
 
     let request = SessionRequest {
@@ -160,12 +165,10 @@ fn udp_datagram_offer_and_echo() {
         origin: "https://example.com",
         host: None,
     };
-    let offered =
-        build_session_request_headers(request, None, false, false, 0, true, true).expect("headers");
+    let offered = build_session_request_headers(request, records_only(), true).expect("headers");
     assert_eq!(offered.get(UDP_DATAGRAM_HEADER).map(|v| v.as_bytes()), Some(&b"1"[..]));
     assert_eq!(offered.get(UDP_RECORDS_HEADER).map(|v| v.as_bytes()), Some(&b"1"[..]));
-    let plain = build_session_request_headers(request, None, false, false, 0, true, false)
-        .expect("headers");
+    let plain = build_session_request_headers(request, records_only(), false).expect("headers");
     assert!(plain.get(UDP_DATAGRAM_HEADER).is_none(), "no offer unless asked");
     let mut without_offer = offered.clone();
     without_offer.remove(UDP_DATAGRAM_HEADER);

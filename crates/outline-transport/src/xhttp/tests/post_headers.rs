@@ -289,8 +289,17 @@ async fn xhttp_h1_get_is_the_browser_fetch_get() {
     ];
     for profile in profile_cases() {
         // What `open_h1_get` sends.
-        let request =
-            super::h1::get_request(&target, Some(id), true, false, 0, true, profile).unwrap();
+        let request = super::h1::get_request(
+            &target,
+            super::SessionOpen {
+                resume_request: Some(id),
+                ack_prefix_requested: true,
+                datagram_records: true,
+                ..super::SessionOpen::default()
+            },
+            profile,
+        )
+        .unwrap();
         let head = h1_wire_head(profile, request).await;
         let line = "GET /xh/abcDEF123456 HTTP/1.1";
         let expected = match profile {

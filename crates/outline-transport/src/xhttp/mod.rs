@@ -305,6 +305,25 @@ pub(super) fn message_bytes(msg: &Message) -> usize {
     }
 }
 
+/// What the client asks of the server when it opens or resumes an XHTTP
+/// session. One value instead of five positional arguments, three of them
+/// `bool`: every carrier (h1 / h2 / h3) threads the same set down to
+/// [`build_session_request_headers`], and a swapped pair of flags used to
+/// compile and silently break resume negotiation.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SessionOpen {
+    /// Session to resume; `None` opens a fresh one.
+    pub(crate) resume_request: Option<SessionId>,
+    /// Ask for the Ack-Prefix capability (`X-Outline-Resume-Ack-Prefix`).
+    pub(crate) ack_prefix_requested: bool,
+    /// Ask for symmetric downlink replay; only honoured with Ack-Prefix.
+    pub(crate) symmetric_replay_requested: bool,
+    /// Downlink bytes the client already holds, for a symmetric-replay resume.
+    pub(crate) client_acked_offset: u64,
+    /// Ask for length-prefixed UDP records on the stream.
+    pub(crate) datagram_records: bool,
+}
+
 /// Dials an XHTTP session against `url`. The host and port come from
 /// `url`; the **path component** of `url` is the XHTTP base — the
 /// server registers `<base>/<id>` and we generate `<id>` randomly.
@@ -314,69 +333,28 @@ pub(super) fn message_bytes(msg: &Message) -> usize {
 /// `udp_datagram` offers this session's UDP as HTTP/3 datagrams. Only the h3
 /// carrier reads it (and only on a connection that can carry them); the h2 /
 /// h1 carriers ignore it, so their wire is unchanged.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_xhttp(
     cache: &DnsCache,
     url: &Url,
     mode: TransportMode,
     network: crate::dial_plan::DialNetworkOptions,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
+    open: SessionOpen,
     combined_ss_kind: Option<SsPathKind>,
-    datagram_records: bool,
     #[cfg_attr(not(feature = "h3"), allow(unused_variables))] udp_datagram: bool,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     match mode {
         TransportMode::XhttpH2 => {
-            h2::connect_xhttp_h2(
-                cache,
-                url,
-                mode,
-                network,
-                resume_request,
-                ack_prefix_requested,
-                symmetric_replay_requested,
-                client_acked_offset,
-                combined_ss_kind,
-                datagram_records,
-            )
-            .await
+            h2::connect_xhttp_h2(cache, url, mode, network, open, combined_ss_kind).await
         },
         TransportMode::XhttpH1 => {
             let submode = resolve_effective_submode(url, mode).await;
-            h1::connect_xhttp_h1(
-                cache,
-                url,
-                submode,
-                network,
-                resume_request,
-                ack_prefix_requested,
-                symmetric_replay_requested,
-                client_acked_offset,
-                combined_ss_kind,
-                datagram_records,
-            )
-            .await
+            h1::connect_xhttp_h1(cache, url, submode, network, open, combined_ss_kind).await
         },
         #[cfg(feature = "h3")]
         TransportMode::XhttpH3 => {
             let submode = resolve_effective_submode(url, mode).await;
-            h3::connect_xhttp_h3(
-                cache,
-                url,
-                submode,
-                network,
-                resume_request,
-                ack_prefix_requested,
-                symmetric_replay_requested,
-                client_acked_offset,
-                combined_ss_kind,
-                datagram_records,
-                udp_datagram,
-            )
-            .await
+            h3::connect_xhttp_h3(cache, url, submode, network, open, combined_ss_kind, udp_datagram)
+                .await
         },
         #[cfg(not(feature = "h3"))]
         TransportMode::XhttpH3 => {
@@ -424,14 +402,9 @@ pub(crate) struct SessionRequest<'a> {
 /// `udp_datagram` offers UDP over HTTP/3 datagrams; only the h3 carrier sets
 /// it, and only on the anchor request (the GET of packet-up, the POST of
 /// stream-one), never on the uplink POSTs.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_session_request_headers(
     request: SessionRequest<'_>,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
-    datagram_records: bool,
+    open: SessionOpen,
     udp_datagram: bool,
 ) -> Result<HeaderMap> {
     let host =
@@ -452,23 +425,25 @@ pub(crate) fn build_session_request_headers(
         &mut headers,
     );
     headers.insert(RESUME_CAPABLE_HEADER, HeaderValue::from_static("1"));
-    if let Some(id) = resume_request {
+    if let Some(id) = open.resume_request {
         headers.insert(
             RESUME_REQUEST_HEADER,
             HeaderValue::try_from(id.to_hex()).expect("hex Session ID is a valid header value"),
         );
     }
-    if ack_prefix_requested {
+    if open.ack_prefix_requested {
         headers.insert(ACK_PREFIX_HEADER, HeaderValue::from_static("1"));
     }
-    if symmetric_replay_requested {
+    if open.symmetric_replay_requested {
         headers.insert(crate::resumption::SYMMETRIC_REPLAY_HEADER, HeaderValue::from_static("1"));
     }
-    if symmetric_replay_requested && client_acked_offset > 0 {
-        headers
-            .insert(crate::resumption::DOWN_ACKED_HEADER, HeaderValue::from(client_acked_offset));
+    if open.symmetric_replay_requested && open.client_acked_offset > 0 {
+        headers.insert(
+            crate::resumption::DOWN_ACKED_HEADER,
+            HeaderValue::from(open.client_acked_offset),
+        );
     }
-    if datagram_records {
+    if open.datagram_records {
         headers.insert(
             http::HeaderName::from_static(UDP_RECORDS_HEADER),
             HeaderValue::from_static(UDP_RECORDS_ENABLED),
