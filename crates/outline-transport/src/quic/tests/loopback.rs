@@ -160,6 +160,42 @@ pub(super) async fn narrow_uplink(
     (addr, task)
 }
 
+/// UDP relay that forwards everything both ways and records the first byte of
+/// every client→server datagram: the unprotected part of a QUIC header, which
+/// is all an on-path observer can read without keys.
+pub(super) async fn tap_uplink(
+    server: SocketAddr,
+) -> (SocketAddr, Arc<parking_lot::Mutex<Vec<u8>>>, tokio::task::JoinHandle<()>) {
+    let front = tokio::net::UdpSocket::bind(loopback()).await.unwrap();
+    let back = tokio::net::UdpSocket::bind(loopback()).await.unwrap();
+    back.connect(server).await.unwrap();
+    let addr = front.local_addr().unwrap();
+    let first_bytes = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let seen = Arc::clone(&first_bytes);
+    let task = tokio::spawn(async move {
+        let mut client = None;
+        let mut up = vec![0u8; 65_536];
+        let mut down = vec![0u8; 65_536];
+        loop {
+            tokio::select! {
+                Ok((n, from)) = front.recv_from(&mut up) => {
+                    client = Some(from);
+                    if n > 0 {
+                        seen.lock().push(up[0]);
+                    }
+                    let _ = back.send(&up[..n]).await;
+                }
+                Ok(n) = back.recv(&mut down) => {
+                    if let Some(to) = client {
+                        let _ = front.send_to(&down[..n], to).await;
+                    }
+                }
+            }
+        }
+    });
+    (addr, first_bytes, task)
+}
+
 /// UDP relay standing in for a path that discards whole flows: every datagram
 /// from the first client source port it sees is dropped, while clients on any
 /// other port are relayed both ways, each through its own upstream socket.

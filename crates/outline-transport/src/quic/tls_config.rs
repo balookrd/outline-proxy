@@ -199,7 +199,7 @@ pub(crate) fn build_h3_transport_with_first_probe(
     transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(tp.max_bidi_streams));
     transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(tp.max_uni_streams));
     apply_quic_carrier_tuning(&mut transport, first_probe);
-    transport.allow_spin(tp.spin_bit);
+    super::vendored::set_spin_bit(&mut transport, tp.spin_bit);
     super::vendored::apply_browser_tp_options(&mut transport, &tp.options);
     transport
 }

@@ -264,7 +264,7 @@ index 0a299d0..808fcf8 100644
  /// Global configuration for the endpoint, affecting all connections
  ///
 diff --git a/src/config/transport.rs b/src/config/transport.rs
-index ba00695..a4f1d90 100644
+index ba00695..e305aab 100644
 --- a/src/config/transport.rs
 +++ b/src/config/transport.rs
 @@ -8,8 +8,11 @@ use qlog::streamer::QlogStreamer;
@@ -300,7 +300,15 @@ index ba00695..a4f1d90 100644
      pub(crate) receive_window: VarInt,
      pub(crate) send_window: u64,
      pub(crate) send_fairness: bool,
-@@ -116,6 +132,196 @@ impl TransportConfig {
+@@ -46,6 +62,7 @@ pub struct TransportConfig {
+     pub(crate) keep_alive_interval: Option<Duration>,
+     pub(crate) crypto_buffer_size: usize,
+     pub(crate) allow_spin: bool,
++    pub(crate) fixed_spin_bit: Option<bool>,
+     pub(crate) datagram_receive_buffer_size: Option<usize>,
+     pub(crate) datagram_send_buffer_size: usize,
+     #[cfg(test)]
+@@ -116,6 +133,196 @@ impl TransportConfig {
          self
      }
  
@@ -497,7 +505,26 @@ index ba00695..a4f1d90 100644
      /// Maximum number of bytes the peer may transmit across all streams of a connection before
      /// becoming blocked.
      ///
-@@ -361,6 +567,76 @@ impl TransportConfig {
+@@ -283,6 +490,18 @@ impl TransportConfig {
+         self
+     }
+ 
++    /// Constant value for the spin bit of every short-header packet. `Some` overrides
++    /// [`allow_spin`](Self::allow_spin): the bit neither spins nor is drawn at random.
++    /// `None` (the default) keeps upstream behaviour.
++    ///
++    /// RFC 9000 section 17.4 asks an endpoint that does not spin to use a random value;
++    /// implementations that never implemented the bit send a constant zero instead, and
++    /// this makes the connection look like one of them.
++    pub fn fixed_spin_bit(&mut self, value: Option<bool>) -> &mut Self {
++        self.fixed_spin_bit = value;
++        self
++    }
++
+     /// Maximum number of incoming application datagram bytes to buffer, or None to disable
+     /// incoming datagrams
+     ///
+@@ -361,6 +580,76 @@ impl TransportConfig {
      }
  }
  
@@ -574,7 +601,7 @@ index ba00695..a4f1d90 100644
  impl Default for TransportConfig {
      fn default() -> Self {
          const EXPECTED_RTT: u32 = 100; // ms
-@@ -375,6 +651,19 @@ impl Default for TransportConfig {
+@@ -375,6 +664,19 @@ impl Default for TransportConfig {
              // 30 second default recommended by RFC 9308 § 3.2
              max_idle_timeout: Some(VarInt(30_000)),
              stream_receive_window: STREAM_RWND.into(),
@@ -594,7 +621,15 @@ index ba00695..a4f1d90 100644
              receive_window: VarInt::MAX,
              send_window: (8 * STREAM_RWND).into(),
              send_fairness: true,
-@@ -413,6 +702,19 @@ impl fmt::Debug for TransportConfig {
+@@ -392,6 +694,7 @@ impl Default for TransportConfig {
+             keep_alive_interval: None,
+             crypto_buffer_size: 16 * 1024,
+             allow_spin: true,
++            fixed_spin_bit: None,
+             datagram_receive_buffer_size: Some(STREAM_RWND as usize),
+             datagram_send_buffer_size: 1024 * 1024,
+             #[cfg(test)]
+@@ -413,6 +716,19 @@ impl fmt::Debug for TransportConfig {
              max_concurrent_uni_streams,
              max_idle_timeout,
              stream_receive_window,
@@ -614,7 +649,15 @@ index ba00695..a4f1d90 100644
              receive_window,
              send_window,
              send_fairness,
-@@ -442,6 +744,22 @@ impl fmt::Debug for TransportConfig {
+@@ -428,6 +744,7 @@ impl fmt::Debug for TransportConfig {
+             keep_alive_interval,
+             crypto_buffer_size,
+             allow_spin,
++            fixed_spin_bit,
+             datagram_receive_buffer_size,
+             datagram_send_buffer_size,
+             #[cfg(test)]
+@@ -442,6 +759,22 @@ impl fmt::Debug for TransportConfig {
              .field("max_concurrent_uni_streams", max_concurrent_uni_streams)
              .field("max_idle_timeout", max_idle_timeout)
              .field("stream_receive_window", stream_receive_window)
@@ -637,7 +680,15 @@ index ba00695..a4f1d90 100644
              .field("receive_window", receive_window)
              .field("send_window", send_window)
              .field("send_fairness", send_fairness)
-@@ -699,6 +1017,8 @@ pub struct MtuDiscoveryConfig {
+@@ -460,6 +793,7 @@ impl fmt::Debug for TransportConfig {
+             .field("keep_alive_interval", keep_alive_interval)
+             .field("crypto_buffer_size", crypto_buffer_size)
+             .field("allow_spin", allow_spin)
++            .field("fixed_spin_bit", fixed_spin_bit)
+             .field("datagram_receive_buffer_size", datagram_receive_buffer_size)
+             .field("datagram_send_buffer_size", datagram_send_buffer_size)
+             // congestion_controller_factory not debug
+@@ -699,6 +1033,8 @@ pub struct MtuDiscoveryConfig {
      pub(crate) interval: Duration,
      pub(crate) upper_bound: u16,
      pub(crate) minimum_change: u16,
@@ -646,7 +697,7 @@ index ba00695..a4f1d90 100644
      pub(crate) black_hole_cooldown: Duration,
  }
  
-@@ -741,6 +1061,44 @@ impl MtuDiscoveryConfig {
+@@ -741,6 +1077,44 @@ impl MtuDiscoveryConfig {
          self.minimum_change = value;
          self
      }
@@ -691,7 +742,7 @@ index ba00695..a4f1d90 100644
  }
  
  impl Default for MtuDiscoveryConfig {
-@@ -750,6 +1108,8 @@ impl Default for MtuDiscoveryConfig {
+@@ -750,6 +1124,8 @@ impl Default for MtuDiscoveryConfig {
              upper_bound: 1452,
              black_hole_cooldown: Duration::from_secs(60),
              minimum_change: 20,
@@ -1837,6 +1888,25 @@ index 0893b29..ab43c2a 100644
 +        assert_eq!(mtud.poll_transmit(Instant::now(), 1), Some(1_448));
 +    }
  }
+diff --git a/src/connection/packet_builder.rs b/src/connection/packet_builder.rs
+index d67c85a..ec1b9d0 100644
+--- a/src/connection/packet_builder.rs
++++ b/src/connection/packet_builder.rs
+@@ -91,10 +91,10 @@ impl PacketBuilder {
+             SpaceId::Data if space.crypto.is_some() => Header::Short {
+                 dst_cid,
+                 number,
+-                spin: if conn.spin_enabled {
+-                    conn.spin
+-                } else {
+-                    conn.rng.random()
++                spin: match conn.config.fixed_spin_bit {
++                    Some(value) => value,
++                    None if conn.spin_enabled => conn.spin,
++                    None => conn.rng.random(),
+                 },
+                 key_phase: conn.key_phase,
+             },
 diff --git a/src/connection/stats.rs b/src/connection/stats.rs
 index 8df96ef..842e8e9 100644
 --- a/src/connection/stats.rs

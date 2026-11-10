@@ -62,6 +62,7 @@ pub struct TransportConfig {
     pub(crate) keep_alive_interval: Option<Duration>,
     pub(crate) crypto_buffer_size: usize,
     pub(crate) allow_spin: bool,
+    pub(crate) fixed_spin_bit: Option<bool>,
     pub(crate) datagram_receive_buffer_size: Option<usize>,
     pub(crate) datagram_send_buffer_size: usize,
     #[cfg(test)]
@@ -489,6 +490,18 @@ impl TransportConfig {
         self
     }
 
+    /// Constant value for the spin bit of every short-header packet. `Some` overrides
+    /// [`allow_spin`](Self::allow_spin): the bit neither spins nor is drawn at random.
+    /// `None` (the default) keeps upstream behaviour.
+    ///
+    /// RFC 9000 section 17.4 asks an endpoint that does not spin to use a random value;
+    /// implementations that never implemented the bit send a constant zero instead, and
+    /// this makes the connection look like one of them.
+    pub fn fixed_spin_bit(&mut self, value: Option<bool>) -> &mut Self {
+        self.fixed_spin_bit = value;
+        self
+    }
+
     /// Maximum number of incoming application datagram bytes to buffer, or None to disable
     /// incoming datagrams
     ///
@@ -681,6 +694,7 @@ impl Default for TransportConfig {
             keep_alive_interval: None,
             crypto_buffer_size: 16 * 1024,
             allow_spin: true,
+            fixed_spin_bit: None,
             datagram_receive_buffer_size: Some(STREAM_RWND as usize),
             datagram_send_buffer_size: 1024 * 1024,
             #[cfg(test)]
@@ -730,6 +744,7 @@ impl fmt::Debug for TransportConfig {
             keep_alive_interval,
             crypto_buffer_size,
             allow_spin,
+            fixed_spin_bit,
             datagram_receive_buffer_size,
             datagram_send_buffer_size,
             #[cfg(test)]
@@ -778,6 +793,7 @@ impl fmt::Debug for TransportConfig {
             .field("keep_alive_interval", keep_alive_interval)
             .field("crypto_buffer_size", crypto_buffer_size)
             .field("allow_spin", allow_spin)
+            .field("fixed_spin_bit", fixed_spin_bit)
             .field("datagram_receive_buffer_size", datagram_receive_buffer_size)
             .field("datagram_send_buffer_size", datagram_send_buffer_size)
             // congestion_controller_factory not debug

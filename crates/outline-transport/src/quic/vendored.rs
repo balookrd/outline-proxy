@@ -3,6 +3,33 @@
 
 pub(crate) use quinn_proto::VersionSlot;
 
+/// What a connection puts in the spin bit of its short-header packets. The bit is
+/// outside header protection, so every on-path observer reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpinBit {
+    /// quinn's default: a working latency spin bit on 7 connections of 8, an
+    /// independent random bit per packet on the rest.
+    Spinning,
+    /// An independent random bit in every packet.
+    Random,
+    /// Always zero — what an implementation that never spins sends (patched
+    /// `TransportConfig::fixed_spin_bit`).
+    Zero,
+}
+
+/// Applies `spin` to a transport config.
+pub(crate) fn set_spin_bit(transport: &mut quinn::TransportConfig, spin: SpinBit) {
+    match spin {
+        SpinBit::Spinning => {},
+        SpinBit::Random => {
+            transport.allow_spin(false);
+        },
+        SpinBit::Zero => {
+            transport.fixed_spin_bit(Some(false));
+        },
+    }
+}
+
 /// Advertise `advertised` bytes of per-stream credit in the transport parameters while
 /// `TransportConfig::stream_receive_window` stays the window granted when the application first
 /// polls a receive stream.
