@@ -365,3 +365,52 @@ async fn xhttp_h1_post_is_the_browser_fetch_post() {
         assert_browser_case(&head, profile);
     }
 }
+
+/// The echo rules in one place: a capability is confirmed only when it was
+/// asked for and echoed, and symmetric replay needs the Ack-Prefix echo too.
+#[test]
+fn session_echo_confirms_only_what_was_asked_and_echoed() {
+    use super::{SessionEcho, SessionOpen};
+
+    let mut all = http::HeaderMap::new();
+    all.insert("x-outline-session", "00112233445566778899aabbccddeeff".parse().unwrap());
+    all.insert("x-outline-resume-ack-prefix", "1".parse().unwrap());
+    all.insert("x-outline-resume-symmetric-replay", "1".parse().unwrap());
+    all.insert("x-outline-udp-records", "1".parse().unwrap());
+    let asked = SessionOpen {
+        ack_prefix_requested: true,
+        symmetric_replay_requested: true,
+        datagram_records: true,
+        ..SessionOpen::default()
+    };
+
+    let echo = SessionEcho::from_response(&asked, &all);
+    assert!(echo.issued.is_some());
+    assert!(echo.ack_prefix && echo.symmetric_replay && echo.udp_records, "{echo:?}");
+
+    // Echoed but never requested: nothing is confirmed.
+    let unasked = SessionEcho::from_response(&SessionOpen::default(), &all);
+    assert!(
+        !unasked.ack_prefix && !unasked.symmetric_replay && !unasked.udp_records,
+        "{unasked:?}"
+    );
+    assert!(unasked.issued.is_some(), "the session id does not depend on what was asked");
+
+    // Requested but not echoed.
+    let silent = SessionEcho::from_response(&asked, &http::HeaderMap::new());
+    assert_eq!(
+        silent,
+        SessionEcho {
+            issued: None,
+            ack_prefix: false,
+            symmetric_replay: false,
+            udp_records: false
+        }
+    );
+
+    // Symmetric replay without the Ack-Prefix echo is undefined, so it is dropped.
+    let mut no_ack = all.clone();
+    no_ack.remove("x-outline-resume-ack-prefix");
+    let echo = SessionEcho::from_response(&asked, &no_ack);
+    assert!(!echo.ack_prefix && !echo.symmetric_replay, "{echo:?}");
+}

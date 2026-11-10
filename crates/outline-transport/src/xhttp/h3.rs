@@ -34,7 +34,6 @@ use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
 use crate::h3::H3DatagramBinding;
 use crate::h3::vendored::{H3RequestStreamHandle, request_quarter_stream_id};
-use crate::resumption::SessionId;
 
 use super::post_status::{BusyRetry, check_post_status};
 use super::stream::io_ws_err;
@@ -42,7 +41,7 @@ use super::window::UplinkWindow;
 use crate::request_headers::{HttpVersion, RequestKind};
 
 use super::{
-    InboundSender, OutboundReceiver, SESSION_RESPONSE_HEADER, SessionOpen, SessionRequest,
+    ConnectedXhttp, InboundSender, OutboundReceiver, SessionEcho, SessionOpen, SessionRequest,
     SsPathKind, XhttpStream, XhttpSubmode, XhttpTarget, build_session_request_headers,
     generate_session_id, inbound_channel, outbound_channel,
 };
@@ -82,10 +81,7 @@ type DatagramOffer<'a> = (&'a quinn::Connection, &'a Arc<DatagramDemux>);
 /// What a session-opening request (the packet-up GET, or the stream-one POST)
 /// negotiated. Returned next to the request stream, which goes to the driver.
 struct OpenedSession {
-    issued: Option<SessionId>,
-    ack_prefix_echo: bool,
-    symmetric_replay_echo: bool,
-    udp_records: bool,
+    echo: SessionEcho,
     /// `Some` when the server accepted UDP over HTTP/3 datagrams on this
     /// request's stream.
     datagram: Option<H3DatagramBinding>,
@@ -99,7 +95,7 @@ pub(super) async fn connect_xhttp_h3(
     open: SessionOpen,
     combined_ss_kind: Option<SsPathKind>,
     udp_datagram: bool,
-) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
+) -> Result<ConnectedXhttp> {
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("xhttp/h3 url missing host: {url}"))?
@@ -246,36 +242,30 @@ pub(super) async fn connect_xhttp_h3(
                 },
             };
 
-            let OpenedSession {
-                issued: issued_session_id,
-                ack_prefix_echo,
-                symmetric_replay_echo,
-                udp_records,
-                datagram,
-                ..
-            } = opened;
+            let OpenedSession { echo, datagram } = opened;
             debug!(
                 %url, %session_id, mode = "xhttp_h3", ?submode, ?active_submode,
-                ?issued_session_id, ?open.resume_request, open.ack_prefix_requested, ack_prefix_echo,
+                issued_session_id = ?echo.issued, ?open.resume_request,
+                open.ack_prefix_requested, ack_prefix_echo = echo.ack_prefix,
                 udp_datagram = datagram.is_some(),
                 "xhttp h3 session opened"
             );
-            Ok::<_, anyhow::Error>((
-                XhttpStream::from_channels(
+            Ok::<_, anyhow::Error>(ConnectedXhttp {
+                stream: XhttpStream::from_channels(
                     in_rx,
                     out_tx,
                     AbortOnDrop::new(driver),
                     active_submode,
                     true,
-                    udp_records,
+                    echo.udp_records,
                     loss_probe,
                     quic_carrier,
                 )
                 .with_h3_datagram(datagram),
-                issued_session_id,
-                ack_prefix_echo,
-                symmetric_replay_echo,
-            ))
+                issued: echo.issued,
+                ack_prefix_echo: echo.ack_prefix,
+                symmetric_replay_echo: echo.symmetric_replay,
+            })
         }
     };
 
@@ -406,13 +396,7 @@ async fn open_h3_get(
     if !resp.status().is_success() {
         bail!("xhttp/h3 GET returned {}", resp.status());
     }
-    let opened = OpenedSession::negotiated(
-        resp.headers(),
-        open.ack_prefix_requested,
-        open.symmetric_replay_requested,
-        open.datagram_records,
-        registration,
-    );
+    let opened = OpenedSession::negotiated(resp.headers(), &open, registration);
     Ok((opened, stream))
 }
 
@@ -440,20 +424,10 @@ impl OpenedSession {
     /// server accepted, and dropped (unregistered) otherwise.
     fn negotiated(
         headers: &HeaderMap,
-        ack_prefix_requested: bool,
-        symmetric_replay_requested: bool,
-        datagram_records: bool,
+        open: &SessionOpen,
         registration: Option<H3DatagramBinding>,
     ) -> Self {
-        let issued = headers
-            .get(SESSION_RESPONSE_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(SessionId::parse_hex);
-        let ack_prefix_echo = ack_prefix_requested && super::parse_ack_prefix_echo(headers);
-        let symmetric_replay_echo = symmetric_replay_requested
-            && ack_prefix_echo
-            && super::parse_symmetric_replay_echo(headers);
-        let udp_records = super::parse_udp_records_echo(datagram_records, headers);
+        let echo = SessionEcho::from_response(open, headers);
         let offered = registration.is_some();
         let accepted = super::parse_udp_datagram_echo(offered, headers);
         if offered {
@@ -461,10 +435,7 @@ impl OpenedSession {
             metrics::record_udp_h3_datagram_session("xhttp_h3", state);
         }
         Self {
-            issued,
-            ack_prefix_echo,
-            symmetric_replay_echo,
-            udp_records,
+            echo,
             datagram: registration.filter(|_| accepted),
         }
     }
@@ -666,13 +637,7 @@ async fn open_h3_stream_one(
     if !resp.status().is_success() {
         bail!("xhttp/h3 stream-one returned {}", resp.status());
     }
-    let opened = OpenedSession::negotiated(
-        resp.headers(),
-        open.ack_prefix_requested,
-        open.symmetric_replay_requested,
-        open.datagram_records,
-        registration,
-    );
+    let opened = OpenedSession::negotiated(resp.headers(), &open, registration);
     Ok((opened, stream))
 }
 

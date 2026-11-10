@@ -402,7 +402,12 @@ impl DialPlan {
         )
         .await
         {
-            Ok((stream, issued, ack_prefix_advertised, symmetric_replay_advertised)) => {
+            Ok(crate::xhttp::ConnectedXhttp {
+                stream,
+                issued,
+                ack_prefix_echo: ack_prefix_advertised,
+                symmetric_replay_echo: symmetric_replay_advertised,
+            }) => {
                 debug!(url = %options.url, selected_mode = "xhttp_h3", ?issued, "xhttp h3 connected");
                 xhttp_mode_cache::record_success(options.url, self.selected).await;
                 Ok(TransportStream::new_xhttp(stream, issued)
@@ -439,7 +444,12 @@ impl DialPlan {
         )
         .await
         {
-            Ok((stream, issued, ack_prefix_advertised, symmetric_replay_advertised)) => {
+            Ok(crate::xhttp::ConnectedXhttp {
+                stream,
+                issued,
+                ack_prefix_echo: ack_prefix_advertised,
+                symmetric_replay_echo: symmetric_replay_advertised,
+            }) => {
                 debug!(
                     url = %options.url,
                     selected_mode = "xhttp_h2",
@@ -464,17 +474,21 @@ impl DialPlan {
                     "xhttp h2 dial failed, falling back"
                 );
                 xhttp_mode_cache::record_failure(options.url, TransportMode::XhttpH2).await;
-                let (stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-                    crate::xhttp::connect_xhttp(
-                        options.cache,
-                        options.url,
-                        TransportMode::XhttpH1,
-                        options.network,
-                        options.xhttp_session_open(),
-                        options.combined_ss_kind,
-                        false,
-                    )
-                    .await?;
+                let crate::xhttp::ConnectedXhttp {
+                    stream,
+                    issued,
+                    ack_prefix_echo: ack_prefix_advertised,
+                    symmetric_replay_echo: symmetric_replay_advertised,
+                } = crate::xhttp::connect_xhttp(
+                    options.cache,
+                    options.url,
+                    TransportMode::XhttpH1,
+                    options.network,
+                    options.xhttp_session_open(),
+                    options.combined_ss_kind,
+                    false,
+                )
+                .await?;
                 debug!(
                     url = %options.url,
                     selected_mode = "xhttp_h1",
@@ -491,17 +505,21 @@ impl DialPlan {
     }
 
     async fn connect_xhttp_h1(self, options: TransportDialOptions<'_>) -> Result<TransportStream> {
-        let (stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-            crate::xhttp::connect_xhttp(
-                options.cache,
-                options.url,
-                self.selected,
-                options.network,
-                options.xhttp_session_open(),
-                options.combined_ss_kind,
-                false,
-            )
-            .await?;
+        let crate::xhttp::ConnectedXhttp {
+            stream,
+            issued,
+            ack_prefix_echo: ack_prefix_advertised,
+            symmetric_replay_echo: symmetric_replay_advertised,
+        } = crate::xhttp::connect_xhttp(
+            options.cache,
+            options.url,
+            self.selected,
+            options.network,
+            options.xhttp_session_open(),
+            options.combined_ss_kind,
+            false,
+        )
+        .await?;
         debug!(url = %options.url, selected_mode = "xhttp_h1", ?issued, "xhttp h1 connected");
         xhttp_mode_cache::record_success(options.url, self.selected).await;
         Ok(TransportStream::new_xhttp(stream, issued)

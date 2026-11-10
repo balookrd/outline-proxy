@@ -305,6 +305,45 @@ pub(super) fn message_bytes(msg: &Message) -> usize {
     }
 }
 
+/// What the server confirmed in its reply to a session-opening request (the
+/// packet-up GET or the stream-one POST). A capability counts as confirmed
+/// only when the client asked for it *and* the server echoed it; symmetric
+/// replay additionally needs the Ack-Prefix confirmation, without which it is
+/// undefined.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SessionEcho {
+    /// Session id the server issued or confirmed (`X-Outline-Session`).
+    pub(crate) issued: Option<SessionId>,
+    pub(crate) ack_prefix: bool,
+    pub(crate) symmetric_replay: bool,
+    /// Length-prefixed UDP records are in effect on the stream.
+    pub(crate) udp_records: bool,
+}
+
+impl SessionEcho {
+    /// Reads the echoes off the response `headers` to the request `open`.
+    pub(crate) fn from_response(open: &SessionOpen, headers: &http::HeaderMap) -> Self {
+        let ack_prefix = open.ack_prefix_requested && parse_ack_prefix_echo(headers);
+        Self {
+            issued: parse_session_response(headers),
+            ack_prefix,
+            symmetric_replay: open.symmetric_replay_requested
+                && ack_prefix
+                && parse_symmetric_replay_echo(headers),
+            udp_records: parse_udp_records_echo(open.datagram_records, headers),
+        }
+    }
+}
+
+/// A connected XHTTP session and what was negotiated for it.
+pub(crate) struct ConnectedXhttp {
+    pub(crate) stream: XhttpStream,
+    /// Session id to resume this session under, if the server issued one.
+    pub(crate) issued: Option<SessionId>,
+    pub(crate) ack_prefix_echo: bool,
+    pub(crate) symmetric_replay_echo: bool,
+}
+
 /// What the client asks of the server when it opens or resumes an XHTTP
 /// session. One value instead of five positional arguments, three of them
 /// `bool`: every carrier (h1 / h2 / h3) threads the same set down to
@@ -341,7 +380,7 @@ pub(crate) async fn connect_xhttp(
     open: SessionOpen,
     combined_ss_kind: Option<SsPathKind>,
     #[cfg_attr(not(feature = "h3"), allow(unused_variables))] udp_datagram: bool,
-) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
+) -> Result<ConnectedXhttp> {
     match mode {
         TransportMode::XhttpH2 => {
             h2::connect_xhttp_h2(cache, url, mode, network, open, combined_ss_kind).await

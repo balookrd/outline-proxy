@@ -58,7 +58,7 @@ async fn xhttp_h1_client_round_trip_through_mock_server() -> Result<()> {
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
 
-    let (mut stream, issued, _ack_prefix_echo, _symmetric_replay_echo) = super::connect_xhttp(
+    let super::ConnectedXhttp { mut stream, issued, .. } = super::connect_xhttp(
         &cache,
         &base_url,
         TransportMode::XhttpH1,
@@ -118,7 +118,7 @@ async fn xhttp_h1_close_sends_fin_post_after_the_uplink() -> Result<()> {
 
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
-    let (mut stream, _issued, _ack_prefix_echo, _symmetric_replay_echo) = super::connect_xhttp(
+    let super::ConnectedXhttp { mut stream, .. } = super::connect_xhttp(
         &cache,
         &base_url,
         TransportMode::XhttpH1,

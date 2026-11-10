@@ -86,7 +86,7 @@ async fn xhttp_client_round_trip_through_mock_server() -> Result<()> {
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
 
-    let (mut stream, issued, _ack_prefix_echo, _symmetric_replay_echo) = super::connect_xhttp(
+    let super::ConnectedXhttp { mut stream, issued, .. } = super::connect_xhttp(
         &cache,
         &base_url,
         TransportMode::XhttpH2,
@@ -161,7 +161,7 @@ async fn packet_up_h2_cuts_a_large_first_post_into_data_frames() -> Result<()> {
     });
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
-    let (mut stream, ..) = super::connect_xhttp(
+    let super::ConnectedXhttp { mut stream, .. } = super::connect_xhttp(
         &cache,
         &base_url,
         TransportMode::XhttpH2,
@@ -235,7 +235,7 @@ async fn xhttp_client_stream_one_round_trip_through_mock_server() -> Result<()> 
     // parameter to `connect_xhttp`.
     let base_url: Url = format!("http://{listen_addr}/xh?mode=stream-one").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
-    let (mut stream, issued, _ack_prefix_echo, _symmetric_replay_echo) = super::connect_xhttp(
+    let super::ConnectedXhttp { mut stream, issued, .. } = super::connect_xhttp(
         &cache,
         &base_url,
         TransportMode::XhttpH2,
@@ -539,7 +539,7 @@ async fn packet_up_h2_stays_within_the_reorder_window_behind_a_stalled_post() ->
     });
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
-    let (mut stream, ..) = super::connect_xhttp(
+    let super::ConnectedXhttp { mut stream, .. } = super::connect_xhttp(
         &cache,
         &base_url,
         TransportMode::XhttpH2,
@@ -632,7 +632,7 @@ async fn packet_up_h2_resends_a_post_the_server_refused_as_busy() -> Result<()> 
     });
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
-    let (mut stream, ..) = super::connect_xhttp(
+    let super::ConnectedXhttp { mut stream, .. } = super::connect_xhttp(
         &cache,
         &base_url,
         TransportMode::XhttpH2,
