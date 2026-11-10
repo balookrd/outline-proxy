@@ -54,11 +54,11 @@ pub struct AppConfig {
     /// Carrier-dial budget from `[dial] timeout_secs`. `None` keeps
     /// the transport crate's default.
     pub dial_timeout: Option<std::time::Duration>,
-    /// Browser fingerprint diversification strategy. Default
-    /// [`outline_transport::FingerprintProfileStrategy::None`] leaves
-    /// the wire shape unchanged; opt-in via the `fingerprint_profile`
-    /// config key applies per-host-stable or random browser headers
-    /// to WS / XHTTP dials. See `docs/UPLINK-CONFIGURATIONS.md`.
+    /// Browser fingerprint strategy for WS / XHTTP dials. A config that does
+    /// not set `fingerprint_profile` gets
+    /// [`outline_transport::FingerprintProfileStrategy::ProcessStable`]: one
+    /// browser identity (headers, TLS, HTTP/2, QUIC) for the whole process.
+    /// `"off"` turns the headers off. See `docs/UPLINK-CONFIGURATIONS.md`.
     pub fingerprint_profile: outline_transport::FingerprintProfileStrategy,
     /// Operator-pinned `process_stable` profile (`fingerprint_profile_pin`),
     /// already resolved against the host OS at load time.

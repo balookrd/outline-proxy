@@ -137,9 +137,8 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd
         outline_transport::init_health_weighting(true, floor, halflife, scale);
     }
 
-    // Wire the browser fingerprint profile strategy. Default is
-    // `None`, so the call is a no-op for deployments that did not opt
-    // in via the top-level `fingerprint_profile` config key.
+    // Wire the browser fingerprint profile strategy: the config's
+    // `fingerprint_profile`, or `process_stable` when it sets none.
     outline_transport::init_fingerprint_profile_strategy(config.fingerprint_profile);
     if let Some(profile) = config.fingerprint_profile_pin {
         outline_transport::init_fingerprint_profile_pin(profile);

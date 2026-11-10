@@ -679,7 +679,7 @@ via = "main"
 | `--worker-threads` | `WORKER_THREADS` | число worker-потоков Tokio (по умолчанию — число CPU) |
 | `--thread-stack-size-kb` | `THREAD_STACK_SIZE_KB` | стек потока Tokio в КиБ (по умолчанию `2048`) |
 | `--state-path` | `STATE_PATH` | файл состояния активного аплинка |
-| `--fingerprint-profile` | `OUTLINE_FINGERPRINT_PROFILE` | стратегия браузерного отпечатка: `off`, `stable`, `per_host_stable`, `random` |
+| `--fingerprint-profile` | `OUTLINE_FINGERPRINT_PROFILE` | стратегия браузерного отпечатка: `off`, `stable` (по умолчанию), `per_host_stable`, `random` |
 
 ## Policy routing
 

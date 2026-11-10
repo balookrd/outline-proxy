@@ -37,6 +37,17 @@ const DIRECT_TARGET: &str = "direct";
 const DROP_TARGET: &str = "drop";
 const DEFAULT_GROUP: &str = "default";
 
+/// Strategy used when neither the config, `--fingerprint-profile` nor
+/// `OUTLINE_FINGERPRINT_PROFILE` names one. Every TLS dial sends a browser
+/// ClientHello whatever the strategy, so with no profile the request behind
+/// it would carry no `User-Agent` at all — a Chromium handshake followed by a
+/// request no browser sends, visible to whatever terminates TLS (a CDN, a
+/// reverse proxy). `process_stable` keeps every layer on one browser identity
+/// for the whole process. The transport crate's own default stays `None`;
+/// this one applies to configs loaded by the client.
+const DEFAULT_FINGERPRINT_PROFILE: outline_transport::FingerprintProfileStrategy =
+    outline_transport::FingerprintProfileStrategy::ProcessStable;
+
 pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let raw = if path.exists() {
         Some(
@@ -144,10 +155,10 @@ pub(crate) async fn load_config_from_raw(
     let direct_fwmark = file.as_ref().and_then(|f| f.direct_fwmark);
     let direct_ipv6_prefix_interface =
         file.as_ref().and_then(|f| f.direct_ipv6_prefix_interface.clone());
-    // Default = `Strategy::None`, which keeps WS / XHTTP wire shape
-    // byte-identical to pre-knob builds. Opt-in via `fingerprint_profile`
-    // in the top-level config; serde already turns the string aliases
-    // ("stable", "random", "off", …) into the right enum variant.
+    // Absent everywhere → `DEFAULT_FINGERPRINT_PROFILE`. The top-level
+    // `fingerprint_profile` key overrides it (`"off"` restores the bare wire);
+    // serde already turns the string aliases ("stable", "random", "off", …)
+    // into the right enum variant.
     // CLI / env (`--fingerprint-profile` / `OUTLINE_FINGERPRINT_PROFILE`)
     // wins over the TOML key, mirroring how `--listen` / `--metrics-listen`
     // shadow their `[socks5]` / `[metrics]` siblings. Per-uplink
@@ -156,7 +167,7 @@ pub(crate) async fn load_config_from_raw(
     let fingerprint_profile = args
         .fingerprint_profile
         .or_else(|| file.as_ref().and_then(|f| f.fingerprint_profile))
-        .unwrap_or_default();
+        .unwrap_or(DEFAULT_FINGERPRINT_PROFILE);
     // Resolved here, not in bootstrap, so a typo or a foreign-OS profile
     // fails the config load with the list of selectable names.
     let fingerprint_profile_pin = file

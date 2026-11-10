@@ -1698,7 +1698,7 @@ async fn load_config_threads_fingerprint_profile_into_app_config() {
 }
 
 #[tokio::test]
-async fn load_config_defaults_fingerprint_profile_to_none_when_missing() {
+async fn load_config_defaults_fingerprint_profile_to_process_stable_when_missing() {
     use outline_transport::FingerprintProfileStrategy as Fp;
 
     let tmp = TempDir::new().unwrap();
@@ -1718,6 +1718,31 @@ async fn load_config_defaults_fingerprint_profile_to_none_when_missing() {
 
     let args = super::Args::parse_from(["test"]);
     let config = load_config(&path, &args).await.unwrap();
+    assert_eq!(config.fingerprint_profile, Fp::ProcessStable);
+}
+
+/// `"off"` is how a config opts out of the default.
+#[tokio::test]
+async fn load_config_fingerprint_profile_off_overrides_the_default() {
+    use outline_transport::FingerprintProfileStrategy as Fp;
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        fingerprint_profile = "off"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+        "#,
+    )
+    .unwrap();
+
+    let config = load_config(&path, &super::Args::parse_from(["test"])).await.unwrap();
     assert_eq!(config.fingerprint_profile, Fp::None);
 }
 
