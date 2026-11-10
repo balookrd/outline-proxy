@@ -1,7 +1,7 @@
 use super::*;
 
-use outline_wire::early_shape::ShapeDirection;
-use outline_wire::padding::PaddingDecoder;
+use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
+use outline_wire::padding::{MAX_PADDING_SEGMENT, PaddingDecoder};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 

@@ -21,10 +21,16 @@ use std::time::Duration;
 use bytes::Bytes;
 use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
 use outline_wire::padding::{
-    MAX_PADDING_SEGMENT, PADDING_FRAME_HEADER_LEN, PaddingScheme, datagram_pad_budget,
-    encode_frame_into,
+    PADDING_FRAME_HEADER_LEN, PaddingScheme, datagram_pad_budget, encode_frame_into,
 };
 use rand::{Rng, RngExt};
+
+// Frame construction is shared with the client (`outline_wire::padding_frames`)
+// so the uplink and the downlink of one connection are sized by the same code.
+pub(in crate::server) use outline_wire::padding_frames::{
+    H2_DATA_PAYLOAD_MAX, draw_in, even_piece_lens, frame_payload_into,
+};
+use outline_wire::padding_frames::{MIN_H2_PLAINTEXT_CAP, draw_jitter};
 
 use super::throughput_monitor::ThrottleDetectParams;
 use crate::config::PaddingConfig;
@@ -109,45 +115,6 @@ pub(in crate::server) fn throttle_params_for_path(path: &str) -> Option<Throttle
     })
 }
 
-/// Uniform random gap in `[min_ms, max_ms]` (inclusive). `max < min` collapses
-/// to `min` (the `+ 1` keeps the upper bound reachable).
-fn draw_jitter(min_ms: u64, max_ms: u64) -> Duration {
-    let span = max_ms.saturating_sub(min_ms).saturating_add(1);
-    Duration::from_millis(min_ms + rand::rng().random::<u64>() % span)
-}
-
-/// Frames `data` into `out` as one or more padding frames, drawing pad from
-/// `rng`. `data` is split to the `u16` segment ceiling first; only the final
-/// frame carries pad, so one downlink write produces one random-sized tail
-/// regardless of how many segments it took. An empty `data` still emits a
-/// single pad-only frame (the cover-frame shape).
-///
-/// Mirrors the client's `outline_transport::carrier_padding::frame_payload_into`
-/// — the two sides must agree on the framing or the round-trip breaks. Caller
-/// must have checked [`PaddingScheme::is_enabled`].
-pub(in crate::server) fn frame_payload_into<R: Rng>(
-    scheme: PaddingScheme,
-    data: &[u8],
-    rng: &mut R,
-    out: &mut Vec<u8>,
-) {
-    debug_assert!(scheme.is_enabled(), "frame_payload_into called with a disabled scheme");
-    let mut chunks = data.chunks(MAX_PADDING_SEGMENT).peekable();
-    if chunks.peek().is_none() {
-        let pad = draw_pad(scheme, rng);
-        encode_frame_into(out, &[], &pad).expect("empty real + bounded pad cannot overflow u16");
-        return;
-    }
-    while let Some(chunk) = chunks.next() {
-        let pad = if chunks.peek().is_none() {
-            draw_pad(scheme, rng)
-        } else {
-            Vec::new()
-        };
-        encode_frame_into(out, chunk, &pad).expect("bounded segments cannot overflow u16");
-    }
-}
-
 /// Frames one discrete downlink message for `scheme`, or returns it unchanged
 /// when padding is disabled. Used by the message-oriented downlink paths where
 /// each buffer is framed individually rather than streamed through one
@@ -194,23 +161,10 @@ pub(in crate::server) fn frame_datagram_message(
     Some(out.into())
 }
 
-/// Largest h2 DATA payload that leaves the server in one TLS record together
-/// with its 9-byte frame header: a 16384-byte record minus that header. The
-/// peer's `SETTINGS_MAX_FRAME_SIZE` (16384 for browsers and our client) lets h2
-/// cut a bigger chunk into 16384-byte frames, and each such frame (16393 B with
-/// its header) leaves as a full 16384 record plus a 9-byte one — the 16401 + 26
-/// wire pair real servers almost never produce.
-pub(in crate::server) const H2_DATA_PAYLOAD_MAX: usize = 16384 - 9;
-
 /// WebSocket header in front of a server→client binary message of 126..=65535
 /// bytes (no mask on this direction). Budgeted for XHTTP bodies too, which carry
 /// no such header: 4 B of slack there is cheaper than a second constant.
 pub(in crate::server) const H2_WS_HEADER_LEN: usize = 4;
-
-/// Below this many data bytes per message the cap is not worth applying (a huge
-/// configured pad range would otherwise shrink every message to a few bytes).
-/// `h2_plaintext_cap` returns `None` then and the old sizing stays.
-const MIN_H2_PLAINTEXT_CAP: usize = 1024;
 
 /// How many data bytes one downlink message may carry on `protocol` so the
 /// whole message — WS header, padding framing at the scheme's largest pad, the
@@ -236,19 +190,6 @@ pub(in crate::server) fn h2_plaintext_cap(
     H2_DATA_PAYLOAD_MAX
         .checked_sub(H2_WS_HEADER_LEN + padding + inner_overhead)
         .filter(|cap| *cap >= MIN_H2_PLAINTEXT_CAP)
-}
-
-/// Piece lengths that cut `len` bytes into the fewest pieces of at most `cap`
-/// bytes, as even as possible (they differ by at most one byte). Unlike a greedy
-/// `cap, cap, …, rest` cut there is no small remainder piece: every piece is
-/// over `cap / 2` once `len > cap`. A small message ahead of a full DATA frame
-/// is what h2 coalesces into one write that spills a full TLS record plus a
-/// small one. `len == 0` yields one empty piece.
-pub(in crate::server) fn even_piece_lens(len: usize, cap: usize) -> impl Iterator<Item = usize> {
-    let cap = cap.max(1);
-    let n = len.div_ceil(cap).max(1);
-    let (base, extra) = (len / n, len % n);
-    (0..n).map(move |i| base + usize::from(i < extra))
 }
 
 /// One discrete downlink message (a resume control / replay frame) as the
@@ -288,56 +229,17 @@ pub(in crate::server) fn new_server_shaper(protocol: Protocol) -> Option<EarlySh
     })
 }
 
-/// Adapts `rng` to the `draw(lo, hi)` callback the early-shape planner takes
-/// (uniform in `lo..=hi`).
-pub(in crate::server) fn draw_in(rng: &mut impl RngExt) -> impl FnMut(usize, usize) -> usize + '_ {
-    move |lo, hi| rng.random_range(lo..=hi)
-}
-
 /// Cuts one downlink buffer into the messages the early-shape plan asks for:
 /// lead-in pad-only cover frames first (none for `ServerToClient`), then one
-/// padded message per piece. Mirrors the client's
-/// `outline_transport::carrier_padding::shaped_messages`. Past the shaping
-/// window (or for a small buffer) this is a single ordinary padded message.
-/// With a disabled scheme the pieces are plain slices (no framing).
+/// padded message per piece. The h2 cap is applied by the callers on this
+/// side, so the shared planner runs without one.
 pub(in crate::server) fn shaped_messages<R: Rng>(
     scheme: PaddingScheme,
     shaper: &mut EarlyShaper,
     data: &[u8],
     rng: &mut R,
 ) -> Vec<Vec<u8>> {
-    let plan = shaper.plan(data.len(), &mut draw_in(rng));
-    let mut msgs = Vec::with_capacity(plan.covers.len() + plan.pieces.len());
-    for pad_len in plan.covers {
-        let mut pad = vec![0u8; pad_len.min(usize::from(u16::MAX))];
-        rng.fill_bytes(&mut pad);
-        let mut out = Vec::with_capacity(pad.len() + 4);
-        encode_frame_into(&mut out, &[], &pad).expect("bounded cover pad cannot overflow u16");
-        msgs.push(out);
-    }
-    let mut offset = 0;
-    for len in plan.pieces {
-        let piece = &data[offset..offset + len];
-        offset += len;
-        if scheme.is_enabled() {
-            let mut out = Vec::with_capacity(len + 8);
-            frame_payload_into(scheme, piece, rng, &mut out);
-            msgs.push(out);
-        } else {
-            // Unpadded path: plain slices of the stream, no framing.
-            msgs.push(piece.to_vec());
-        }
-    }
-    msgs
-}
-
-/// Draws a fresh pad buffer of random length in the scheme's range. Contents
-/// are random bytes (never inspected on decode); only the length matters.
-fn draw_pad<R: Rng>(scheme: PaddingScheme, rng: &mut R) -> Vec<u8> {
-    let n = scheme.pad_len(rng.random::<u16>()) as usize;
-    let mut pad = vec![0u8; n];
-    rng.fill_bytes(&mut pad);
-    pad
+    outline_wire::padding_frames::shaped_messages(scheme, shaper, data, None, rng)
 }
 
 #[cfg(test)]

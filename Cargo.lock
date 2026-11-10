@@ -2025,6 +2025,7 @@ dependencies = [
  "md5",
  "proptest",
  "quinn",
+ "rand 0.10.3",
  "rcgen",
  "serde",
  "serde_json",

@@ -1490,6 +1490,7 @@ dependencies = [
  "bytes",
  "md5",
  "quinn",
+ "rand 0.10.3",
  "serde",
  "thiserror",
  "tokio",
