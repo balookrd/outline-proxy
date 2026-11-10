@@ -619,6 +619,8 @@ password = "Secret0"
 | `reselect_interval`                  | не задано (выкл.)  | duration | эквивалент `reselect_at` фиксированным периодом (`"90m"`, `"1h30m"`; целое число читается как секунды, поэтому пишите суффикс единицы); минимум `60s`; взаимоисключимо с `reselect_at` |
 | `reselect_sync`                      | `false`            | bool  | выводить порядок планового перевыбора детерминированно из имени группы, имён аплинков, локального дня и индекса слота — чтобы независимые узлы с одинаковым конфигом группы выбирали один и тот же аплинк без всякой координации. Требует `reselect_at`. См. «Синхронный перевыбор» ниже |
 
+Периоды keepalive выше (`warm_probe_keepalive_secs`, `udp_ws_keepalive_secs`, `tcp_ws_keepalive_secs`, `tcp_ws_standby_keepalive_secs`, `tcp_active_keepalive_secs`) — верхние границы: каждый промежуток выбирается заново в пределах 70–100 % заданного значения, поэтому keepalive на простаивающем соединении не идут с постоянным периодом. То же относится к циклу проб (`[probe] interval_secs`).
+
 Источник дефолтов:
 [`src/config/load/balancing.rs`](../src/config/load/balancing.rs); дефолты
 `vless_udp_*` — `VlessUdpMuxLimits::default()` в

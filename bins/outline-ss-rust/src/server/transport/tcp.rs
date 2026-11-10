@@ -51,6 +51,7 @@ use super::super::constants::{
 use super::super::dns_cache::DnsCache;
 use super::super::relay::UpstreamRelayOutcome;
 use super::super::salt_replay::{SaltReplayCheck, SaltReplayStore};
+use super::jittered_ticker::JitteredTicker;
 use outline_wire::resume::build_v1_payload;
 
 use super::super::resumption::{
@@ -472,9 +473,7 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     // frame also resets the idle timeout.
     let ping_interval = ws_keepalive_interval();
     let pong_deadline = ping_interval * WS_PONG_DEADLINE_MULTIPLIER;
-    let mut keepalive = tokio::time::interval(ping_interval);
-    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    keepalive.tick().await; // skip the first immediate tick
+    let mut keepalive = JitteredTicker::new(ping_interval);
     let mut last_inbound = std::time::Instant::now();
 
     loop {

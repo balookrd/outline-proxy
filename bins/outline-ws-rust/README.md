@@ -919,7 +919,7 @@ Probe settings (`[outline.probe]`):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `interval_secs` | `120` | probe cycle period |
+| `interval_secs` | `120` | probe cycle period; an upper bound — each cycle waits 70–100 % of it |
 | `timeout_secs` | `10` | per-probe timeout |
 | `max_concurrent` | `4` | concurrent probe tasks |
 | `max_dials` | `2` | concurrent probe dials |

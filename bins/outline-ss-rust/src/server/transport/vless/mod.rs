@@ -23,6 +23,7 @@ use super::h3_datagram::{
     DatagramAnchor, DatagramDownlink, DatagramLink, DatagramTarget, H3DatagramRoute, LinkPolicy,
     VLESS_PROTO_LABEL, next_link_datagram,
 };
+use super::jittered_ticker::JitteredTicker;
 use super::resume_headers::ResumeContext;
 use super::sink;
 use super::throughput_monitor;
@@ -133,9 +134,7 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
 
     let ping_interval = ws_keepalive_interval();
     let pong_deadline = ping_interval * WS_PONG_DEADLINE_MULTIPLIER;
-    let mut keepalive = tokio::time::interval(ping_interval);
-    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    keepalive.tick().await;
+    let mut keepalive = JitteredTicker::new(ping_interval);
 
     let mut state = VlessRelayState::new(resume, throttle_monitor, upstream);
     let mut client_closed = false;

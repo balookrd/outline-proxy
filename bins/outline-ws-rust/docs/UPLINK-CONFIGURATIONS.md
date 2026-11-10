@@ -618,6 +618,8 @@ fields are optional; omitted fields fall back to the defaults below.
 | `reselect_interval`                  | unset (disabled)   | duration | fixed-period equivalent of `reselect_at` (`"90m"`, `"1h30m"`; a bare integer is read as seconds, so write the unit suffix); minimum `60s`; mutually exclusive with `reselect_at`         |
 | `reselect_sync`                      | `false`            | bool  | derive the scheduled re-selection order deterministically from group name, uplink names, local day and slot index, so that independent nodes sharing this group config pick the same uplink without coordinating. Requires `reselect_at`. See "Synchronized re-selection" below |
 
+The keepalive periods above (`warm_probe_keepalive_secs`, `udp_ws_keepalive_secs`, `tcp_ws_keepalive_secs`, `tcp_ws_standby_keepalive_secs`, `tcp_active_keepalive_secs`) are upper bounds: each gap is drawn anew as 70–100 % of the configured value, so keepalives on an idle connection do not arrive at a constant period. The same applies to the probe cycle (`[probe] interval_secs`).
+
 Source of defaults:
 [`src/config/load/balancing.rs`](../src/config/load/balancing.rs); the
 `vless_udp_*` defaults come from `VlessUdpMuxLimits::default()` in

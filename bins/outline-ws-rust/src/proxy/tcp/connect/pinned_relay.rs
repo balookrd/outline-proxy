@@ -46,7 +46,7 @@ async fn await_readable_or_keepalive(
                 ready.map_err(ClientIo::ReadFailed)?;
                 Ok(UplinkIo::Readable)
             }
-            _ = tokio::time::sleep(interval) => {
+            _ = tokio::time::sleep(outline_transport::jittered(interval)) => {
                 writer
                     .send_keepalive()
                     .await

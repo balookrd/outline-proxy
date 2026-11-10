@@ -615,7 +615,10 @@ async fn connect_h2_connection(
             // hev-socks5-tunnel loses the TCP mapping) is detected within ~20s
             // instead of ~40s, bounding how long new SOCKS sessions stall on
             // the dead cache entry before failover can pick a fresh uplink.
-            .keep_alive_interval(Some(h2_keepalive_interval()))
+            // Drawn per connection: hyper keeps one interval for the life of
+            // a connection, so this at least stops every connection of every
+            // client from sharing the same PING period.
+            .keep_alive_interval(Some(crate::jittered(h2_keepalive_interval())))
             .keep_alive_timeout(h2_keepalive_timeout())
             .handshake::<_, Empty<Bytes>>(TokioIo::new(io))
             .await

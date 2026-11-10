@@ -69,7 +69,7 @@ impl UplinkManager {
                 tokio::select! {
                     biased;
                     _ = shutdown.changed() => break,
-                    _ = sleep(interval) => {}
+                    _ = sleep(outline_transport::jittered(interval)) => {}
                 }
                 manager.tick_warm_probe_keepalive(&probe).await;
             }

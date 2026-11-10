@@ -987,7 +987,7 @@ impl UplinkManager {
                 tokio::select! {
                     biased;
                     _ = shutdown.changed() => break,
-                    _ = sleep(interval) => {}
+                    _ = sleep(outline_transport::jittered(interval)) => {}
                 }
                 for index in 0..manager.inner.uplinks.len() {
                     if !manager.inner.admin_enabled(index) {
