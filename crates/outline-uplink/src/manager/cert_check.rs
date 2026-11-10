@@ -51,7 +51,7 @@ impl UplinkManager {
                 tokio::select! {
                     biased;
                     _ = shutdown.changed() => break,
-                    _ = sleep(CERT_CHECK_INTERVAL) => {}
+                    _ = sleep(outline_transport::jittered(CERT_CHECK_INTERVAL)) => {}
                 }
                 manager.check_all_certs().await;
             }

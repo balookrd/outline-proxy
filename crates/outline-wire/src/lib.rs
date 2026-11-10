@@ -16,6 +16,7 @@ pub mod cipher;
 pub mod cluster;
 pub mod early_shape;
 pub mod h3_datagram;
+pub mod jitter;
 pub mod padding;
 pub mod resume;
 pub mod ss2022;

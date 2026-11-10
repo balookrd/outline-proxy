@@ -756,7 +756,13 @@ fn build_http_server_builder(
         .initial_stream_window_size(Some(profile.h2_stream_window_bytes))
         .initial_connection_window_size(Some(profile.h2_connection_window_bytes))
         .max_send_buf_size(profile.h2_max_send_buf_size)
-        .keep_alive_interval(Some(Duration::from_secs(H2_KEEPALIVE_INTERVAL_SECS)))
+        // The builder is made per connection, so the draw is per connection:
+        // hyper keeps one PING period for a connection's lifetime, and this
+        // stops all of them from sharing the same one.
+        .keep_alive_interval(Some(outline_wire::jitter::jitter_down(
+            Duration::from_secs(H2_KEEPALIVE_INTERVAL_SECS),
+            rand::random(),
+        )))
         .keep_alive_timeout(Duration::from_secs(H2_KEEPALIVE_TIMEOUT_SECS));
     builder
 }

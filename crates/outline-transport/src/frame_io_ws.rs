@@ -251,10 +251,9 @@ async fn send_cover(
 
 fn spawn_keepalive(ctrl_tx: mpsc::Sender<Message>, interval: Duration) -> AbortOnDrop {
     AbortOnDrop::new(tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        ticker.tick().await; // skip the immediate tick
         loop {
-            ticker.tick().await;
+            // A fresh draw per Ping: a fixed period is a timing signature.
+            tokio::time::sleep(crate::jittered(interval)).await;
             if ctrl_tx.send(Message::Ping(vec![].into())).await.is_err() {
                 break;
             }

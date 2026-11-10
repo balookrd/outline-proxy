@@ -1051,7 +1051,7 @@ Use `debug` only while troubleshooting: it logs every WebSocket connection lifec
 - WebSocket over HTTP/3 uses RFC 9220.
 - The workspace vendors and patches `h3`, `sockudo-ws`, `quinn-proto`, `rustls` and `hyper`. The inventory is the root [PATCHES.md](../../PATCHES.md).
 - The vendored `sockudo-ws` sends a QUIC FIN (`poll_shutdown` in `src/stream/transport_stream.rs`) after the WebSocket Close frame. Without it, dropping the `SendStream` sends `RESET_STREAM`, which some H3 clients and intermediaries treat as a connection error and answer with `H3_INTERNAL_ERROR`, closing the whole QUIC connection.
-- QUIC idle timeout is 120 s and the QUIC keep-alive PING interval is 10 s. On HTTP/3 the server sends no WebSocket Ping; liveness relies on QUIC keep-alive. On WebSocket over TCP (h1/h2) the server sends a WebSocket Ping every 60 s on TCP relay sessions (`WS_TCP_KEEPALIVE_PING_INTERVAL_SECS`) and closes a session that has received no frame for 3 × 60 s.
+- QUIC idle timeout is 120 s and the QUIC keep-alive PING interval is 10 s. On HTTP/3 the server sends no WebSocket Ping; liveness relies on QUIC keep-alive. On WebSocket over TCP (h1/h2) the server sends a WebSocket Ping every 42–60 s on TCP relay sessions (`WS_TCP_KEEPALIVE_PING_INTERVAL_SECS` = 60 s, each gap shortened by a random share of up to 30 %) and closes a session that has received no frame for 3 × 60 s.
 - These connection closes are not counted as errors (`classify_*` in `src/server/transport/mod.rs`): `ApplicationClose: H3_NO_ERROR`, `ApplicationClose: 0x0` or application close code 0, QUIC idle timeout, locally closed or reset QUIC connections, cancelled or closed hyper connections, and a TLS peer that closed without `close_notify`.
 
 ## Limitations

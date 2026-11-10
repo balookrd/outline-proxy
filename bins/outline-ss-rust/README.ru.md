@@ -1053,7 +1053,7 @@ RUST_LOG=outline_ss_rust=info,tower_http=info
 - WebSocket поверх HTTP/3 использует RFC 9220.
 - Workspace вендорит и патчит `h3`, `sockudo-ws`, `quinn-proto`, `rustls` и `hyper`. Реестр — корневой [PATCHES.ru.md](../../PATCHES.ru.md).
 - Вендоренный `sockudo-ws` отправляет QUIC FIN (`poll_shutdown` в `src/stream/transport_stream.rs`) после WebSocket Close-фрейма. Без этого дроп `SendStream` отправляет `RESET_STREAM`, который часть H3-клиентов и промежуточных узлов считает ошибкой соединения и отвечает `H3_INTERNAL_ERROR`, закрывая всё QUIC-соединение.
-- QUIC idle timeout — 120 с, интервал QUIC keep-alive PING — 10 с. На HTTP/3 сервер не шлёт WebSocket Ping; живость держит QUIC keep-alive. На WebSocket поверх TCP (h1/h2) сервер шлёт WebSocket Ping раз в 60 с на TCP-relay-сессиях (`WS_TCP_KEEPALIVE_PING_INTERVAL_SECS`) и закрывает сессию, от которой 3 × 60 с не пришло ни одного фрейма.
+- QUIC idle timeout — 120 с, интервал QUIC keep-alive PING — 10 с. На HTTP/3 сервер не шлёт WebSocket Ping; живость держит QUIC keep-alive. На WebSocket поверх TCP (h1/h2) сервер шлёт WebSocket Ping раз в 42–60 с на TCP-relay-сессиях (`WS_TCP_KEEPALIVE_PING_INTERVAL_SECS` = 60 с, каждый промежуток укорачивается на случайную долю до 30 %) и закрывает сессию, от которой 3 × 60 с не пришло ни одного фрейма.
 - Эти закрытия соединений не считаются ошибками (`classify_*` в `src/server/transport/mod.rs`): `ApplicationClose: H3_NO_ERROR`, `ApplicationClose: 0x0` или application close с кодом 0, QUIC idle timeout, локально закрытые или сброшенные QUIC-соединения, отменённые или закрытые соединения hyper и TLS-пир, закрывший соединение без `close_notify`.
 
 ## Ограничения

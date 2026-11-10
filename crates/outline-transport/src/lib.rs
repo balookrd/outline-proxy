@@ -415,3 +415,11 @@ pub async fn gc_shared_connections() {
 
 #[cfg(test)]
 mod tests;
+
+/// `interval` shortened by a fresh random share of up to 30 % (see
+/// [`outline_wire::jitter::jitter_down`]). Every loop that puts something on
+/// the wire on a timer — keepalive pings, probes — sleeps for this instead of
+/// the bare interval, so the gaps between its packets are not constant.
+pub fn jittered(interval: std::time::Duration) -> std::time::Duration {
+    outline_wire::jitter::jitter_down(interval, rand::random())
+}

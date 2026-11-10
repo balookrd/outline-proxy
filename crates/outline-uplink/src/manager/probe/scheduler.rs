@@ -230,7 +230,7 @@ impl UplinkManager {
                 tokio::select! {
                     biased;
                     _ = shutdown.changed() => break,
-                    _ = sleep(manager.inner.probe.interval) => {}
+                    _ = sleep(outline_transport::jittered(manager.inner.probe.interval)) => {}
                     _ = manager.inner.probe_wakeup.notified() => {}
                 }
                 manager.probe_all().await;
