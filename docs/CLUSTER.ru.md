@@ -639,7 +639,7 @@ mesh-объекта есть лимит:
 | --- | --- | --- |
 | Исходящие relay-стримы (edge) | 4096 на узел по всем пирам (`MESH_MAX_RELAY_STREAMS`); сверх лимита открытие не удаётся, клиент получает локальную сессию | `server/cluster/mod.rs`, `mesh/peer_pool.rs` |
 | Входящие релеимые сессии (home) | 4096 на узел по всем пирам (`MESH_MAX_RELAYED_SESSIONS`); сверх лимита стрим сбрасывается с `Capacity` | `server/cluster/mod.rs` |
-| Ожидание кадра `USER` после ack | 5 с (`USER_FRAME_WAIT`) | `server/transport/mesh_relay.rs` |
+| Ожидание кадра `USER` после ack | 5 с (`USER_FRAME_WAIT`) | `server/transport/mesh_relay/home.rs` |
 | Простаивающее mesh-соединение | QUIC idle-timeout 30 с, keep-alive 10 с | `server/cluster/mesh/tls.rs` |
 | Запаркованная сессия | TTL и лимиты `[session_resumption]` на home | `[session_resumption]` |
 | Зависший релей | `mesh_relay_budget_ms` | `[cluster]` |
