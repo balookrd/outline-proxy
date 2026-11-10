@@ -9,7 +9,7 @@ use std::{net::SocketAddr, sync::Arc};
 use axum::{
     body::Body,
     extract::{
-        ConnectInfo, OriginalUri, Path, State,
+        ConnectInfo, OriginalUri, Path, Request, State,
         ws::{WebSocketUpgrade, rejection::WebSocketUpgradeRejection},
     },
     http::{HeaderMap, Method, StatusCode, Version},
@@ -48,7 +48,7 @@ mod ws_writer;
 mod xhttp;
 
 pub(in crate::server) use fallback::{
-    HttpFallbackContext, h3_fallback_handle, http_fallback_handler,
+    HttpFallbackContext, h3_fallback_handle, http_fallback_handler, unmatched_route_response,
 };
 pub(in crate::server) use h3_datagram::{
     H3DatagramRoute, WS_H3_CARRIER, apply_udp_datagram_echo, offers_udp_datagrams,
@@ -60,8 +60,8 @@ pub(in crate::server) use upstream_source::UpstreamSource;
 pub(in crate::server) use vless::{VlessWsRouteCtx, VlessWsServerCtx, handle_vless_h3_connection};
 pub(in crate::server) use xhttp::{
     XhttpAppProtocol, XhttpAxumState, XhttpH3Ctx, XhttpRegistry, XhttpRegistryLimits, XhttpRoute,
-    generate_anonymous_xhttp_session_id, handle_xhttp_h3_request, xhttp_handler,
-    xhttp_handler_no_session, xhttp_handler_with_path_seq,
+    generate_anonymous_xhttp_session_id, handle_xhttp_h3_request, is_malformed_xhttp_request,
+    xhttp_handler, xhttp_handler_no_session, xhttp_handler_with_path_seq,
 };
 // Only the integration test in `server/tests/xhttp.rs` names this enum by path;
 // production handlers reach it directly through the `xhttp` module.
@@ -99,6 +99,7 @@ fn apply_ws_limits(ws: WebSocketUpgrade) -> WebSocketUpgrade {
         .max_frame_size(WS_MAX_MESSAGE_SIZE)
 }
 
+#[allow(clippy::too_many_arguments)] // axum extractors
 pub(super) async fn tcp_websocket_upgrade(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     State(state): State<AppState>,
@@ -107,10 +108,11 @@ pub(super) async fn tcp_websocket_upgrade(
     version: Version,
     headers: HeaderMap,
     connect_info: ConnectInfo<SocketAddr>,
+    request: Request,
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
-        Err(_) => return build_not_found_response(Body::empty()),
+        Err(_) => return unmatched_route_response(&state, connect_info.0, uri, request).await,
     };
     let ConnectInfo(peer_addr) = connect_info;
     tcp_upgrade_for_path(ws, state, Arc::from(uri.path()), method, version, headers, peer_addr)
@@ -216,6 +218,7 @@ async fn tcp_upgrade_for_path(
     response
 }
 
+#[allow(clippy::too_many_arguments)] // axum extractors
 pub(super) async fn vless_websocket_upgrade(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     State(state): State<AppState>,
@@ -224,10 +227,11 @@ pub(super) async fn vless_websocket_upgrade(
     version: Version,
     headers: HeaderMap,
     connect_info: ConnectInfo<SocketAddr>,
+    request: Request,
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
-        Err(_) => return build_not_found_response(Body::empty()),
+        Err(_) => return unmatched_route_response(&state, connect_info.0, uri, request).await,
     };
     let ConnectInfo(peer_addr) = connect_info;
     let protocol = protocol_from_http_version(version);
@@ -308,11 +312,14 @@ pub(super) async fn vless_websocket_upgrade(
 
 pub(super) async fn root_http_auth_handler(
     State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
     method: Method,
     headers: HeaderMap,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    request: Request,
 ) -> Response {
     if !state.auth.http_root_auth || !matches!(method, Method::GET | Method::HEAD) {
-        return build_not_found_response(Body::empty());
+        return unmatched_route_response(&state, peer_addr, uri, request).await;
     }
 
     let failed_attempts = parse_failed_root_auth_attempts(&headers);
@@ -357,6 +364,7 @@ pub(super) async fn metrics_handler(State(metrics): State<Arc<Metrics>>) -> impl
     )
 }
 
+#[allow(clippy::too_many_arguments)] // axum extractors
 pub(super) async fn udp_websocket_upgrade(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     State(state): State<AppState>,
@@ -365,10 +373,11 @@ pub(super) async fn udp_websocket_upgrade(
     version: Version,
     headers: HeaderMap,
     connect_info: ConnectInfo<SocketAddr>,
+    request: Request,
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
-        Err(_) => return build_not_found_response(Body::empty()),
+        Err(_) => return unmatched_route_response(&state, connect_info.0, uri, request).await,
     };
     let ConnectInfo(peer_addr) = connect_info;
     udp_upgrade_for_path(ws, state, Arc::from(uri.path()), method, version, headers, peer_addr)
@@ -482,10 +491,11 @@ pub(super) async fn combined_websocket_upgrade(
     version: Version,
     headers: HeaderMap,
     connect_info: ConnectInfo<SocketAddr>,
+    request: Request,
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
-        Err(_) => return build_not_found_response(Body::empty()),
+        Err(_) => return unmatched_route_response(&state, connect_info.0, uri, request).await,
     };
     let base_path: Arc<str> = Arc::from(combined_base_path(uri.path(), &token));
     let ConnectInfo(peer_addr) = connect_info;

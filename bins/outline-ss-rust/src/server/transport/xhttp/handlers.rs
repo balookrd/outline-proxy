@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use axum::{
     body::Body,
-    extract::{ConnectInfo, OriginalUri, Path, State},
+    extract::{ConnectInfo, OriginalUri, Path, Request, State},
     http::{HeaderMap, Method, StatusCode, Uri, Version},
     response::{IntoResponse, Response},
 };
@@ -36,7 +36,7 @@ use super::super::tcp::{WsTcpRouteCtx, run_tcp_relay};
 use super::super::udp::{UdpRouteCtx, run_udp_relay};
 use super::super::upstream_source::UpstreamSource;
 use super::super::vless::{VlessWsRouteCtx, run_vless_relay};
-use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
+use super::super::{finish_ws_session, is_normal_h3_shutdown, sink, unmatched_route_response};
 use super::padding::post_response_headers;
 use super::{
     AttachOutcome, FIN_HEADER, RelayPermit, SEQ_HEADER, SessionSlot, UDP_RECORDS_ENABLED,
@@ -122,6 +122,18 @@ struct XhttpHttpRequest {
     body: Body,
 }
 
+impl XhttpHttpRequest {
+    fn is_malformed(&self, session_id: Option<&str>, path_seq: Option<u64>) -> bool {
+        is_malformed_xhttp_request(
+            session_id,
+            path_seq,
+            &self.method,
+            self.uri.query(),
+            &self.headers,
+        )
+    }
+}
+
 /// ANY-method handler for the `<base>/<session-id>` route shape.
 /// Used by every XHTTP request that does not carry an upload-side
 /// sequence number in the URL path — that is: every GET, every
@@ -168,13 +180,6 @@ pub(in crate::server) async fn xhttp_handler_no_session(
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     body: Body,
 ) -> Response {
-    // Only POST makes sense on this shape — GET against `<base>` is
-    // a misrouted client (the carrier needs an id to attach the
-    // downlink slot to anything reusable).
-    if method != Method::POST {
-        return short_status(StatusCode::METHOD_NOT_ALLOWED);
-    }
-    let session_id = generate_anonymous_session_id();
     let request = XhttpHttpRequest {
         uri,
         method,
@@ -183,6 +188,13 @@ pub(in crate::server) async fn xhttp_handler_no_session(
         peer_addr,
         body,
     };
+    // Only POST makes sense on this shape — GET against `<base>` is
+    // a misrouted client (the carrier needs an id to attach the
+    // downlink slot to anything reusable).
+    if request.is_malformed(None, None) {
+        return unmatched_xhttp_response(&state, request).await;
+    }
+    let session_id = generate_anonymous_session_id();
     dispatch_xhttp(state, session_id, None, request).await
 }
 
@@ -213,12 +225,36 @@ pub(in crate::server) async fn xhttp_handler_with_path_seq(
     dispatch_xhttp(state, session_id, Some(seq), request).await
 }
 
-async fn dispatch_xhttp(
-    state: XhttpAxumState,
-    session_id: String,
+/// Whether a request on an XHTTP route has a shape no XHTTP client produces:
+/// a bad session id, a method other than GET/POST, a GET on the sessionless
+/// `<base>` form (`session_id = None`), on the uplink-only `<base>/<id>/<seq>`
+/// form or with `?mode=stream-one`, an explicit stream-one POST that also
+/// carries a seq. Shared by the axum and HTTP/3 dispatchers so both answer
+/// such a request like one for an unknown path.
+pub(in crate::server) fn is_malformed_xhttp_request(
+    session_id: Option<&str>,
     path_seq: Option<u64>,
-    request: XhttpHttpRequest,
-) -> Response {
+    method: &Method,
+    query: Option<&str>,
+    headers: &HeaderMap,
+) -> bool {
+    if session_id.is_some_and(|id| !is_valid_session_id(id)) {
+        return true;
+    }
+    let stream_one = matches!(XhttpSubmode::parse_query(query), XhttpSubmode::StreamOne);
+    match *method {
+        // The sessionless form has no slot a downlink GET could attach to.
+        Method::GET => session_id.is_none() || path_seq.is_some() || stream_one,
+        Method::POST => stream_one && (path_seq.is_some() || parse_seq(headers).is_some()),
+        _ => true,
+    }
+}
+
+/// Malformed requests on an XHTTP route are answered like a request for an
+/// unknown path (see [`unmatched_route_response`]). A dedicated 400/405 with an
+/// `X-Padding` header would confirm the base path to anyone probing with a
+/// plain `GET`.
+async fn unmatched_xhttp_response(state: &XhttpAxumState, request: XhttpHttpRequest) -> Response {
     let XhttpHttpRequest {
         uri,
         method,
@@ -227,9 +263,31 @@ async fn dispatch_xhttp(
         peer_addr,
         body,
     } = request;
-    if !is_valid_session_id(&session_id) {
-        return short_status(StatusCode::BAD_REQUEST);
+    let mut rebuilt = Request::new(body);
+    *rebuilt.method_mut() = method;
+    *rebuilt.uri_mut() = uri.clone();
+    *rebuilt.version_mut() = version;
+    *rebuilt.headers_mut() = headers;
+    unmatched_route_response(&state.parent, peer_addr, uri, rebuilt).await
+}
+
+async fn dispatch_xhttp(
+    state: XhttpAxumState,
+    session_id: String,
+    path_seq: Option<u64>,
+    request: XhttpHttpRequest,
+) -> Response {
+    if request.is_malformed(Some(&session_id), path_seq) {
+        return unmatched_xhttp_response(&state, request).await;
     }
+    let XhttpHttpRequest {
+        uri,
+        method,
+        version,
+        headers,
+        peer_addr,
+        body,
+    } = request;
     // The `?mode=` query selector is our access-key generator's own
     // hint — xray / sing-box clients do not echo it on the wire.
     // The wire-format that xray emits is fully implicit: POST with a
@@ -241,50 +299,21 @@ async fn dispatch_xhttp(
     // carrier" rule — that is what every xray-family client actually
     // produces.
     let submode = XhttpSubmode::parse_query(uri.query());
-    match method {
-        Method::GET => {
-            // `<base>/<id>/<seq>` is uplink-only; a GET on this
-            // shape means the client wired the route wrong.
-            if path_seq.is_some() {
-                return short_status(StatusCode::BAD_REQUEST);
-            }
-            match submode {
-                XhttpSubmode::PacketUp => {
-                    xhttp_get(state, session_id, version, peer_addr, &headers).await
-                },
-                // GET on `?mode=stream-one` is malformed — the
-                // carrier is a single bidirectional POST, not a GET.
-                XhttpSubmode::StreamOne => short_status(StatusCode::BAD_REQUEST),
-            }
+    if method == Method::GET {
+        return xhttp_get(state, session_id, version, peer_addr, &headers).await;
+    }
+    // POST: `is_malformed_xhttp_request` left only GET and POST.
+    match (submode, path_seq.or_else(|| parse_seq(&headers))) {
+        (XhttpSubmode::PacketUp, Some(_)) => {
+            xhttp_post(state, session_id, path_seq, version, peer_addr, headers, body).await
         },
-        Method::POST => {
-            let seq = path_seq.or_else(|| parse_seq(&headers));
-            match submode {
-                XhttpSubmode::StreamOne => {
-                    // Explicit stream-one MUST NOT carry a seq —
-                    // mismatch is a client bug, not silent fallback.
-                    if seq.is_some() {
-                        return short_status(StatusCode::BAD_REQUEST);
-                    }
-                    xhttp_stream_one(state, session_id, version, peer_addr, headers, body).await
-                },
-                XhttpSubmode::PacketUp => match seq {
-                    Some(_) => {
-                        xhttp_post(state, session_id, path_seq, version, peer_addr, headers, body)
-                            .await
-                    },
-                    // No seq, no `?mode=` — the xray default for
-                    // stream-one / stream-up. Our stream-one handler
-                    // accepts both shapes (it drains the request
-                    // body chunk-by-chunk), so `stream-up` mode
-                    // clients land here too without extra wiring.
-                    None => {
-                        xhttp_stream_one(state, session_id, version, peer_addr, headers, body).await
-                    },
-                },
-            }
+        // Explicit stream-one, or no seq and no `?mode=` — the xray default
+        // for stream-one / stream-up. Our stream-one handler accepts both
+        // shapes (it drains the request body chunk-by-chunk), so `stream-up`
+        // mode clients land here too without extra wiring.
+        (XhttpSubmode::StreamOne, _) | (XhttpSubmode::PacketUp, None) => {
+            xhttp_stream_one(state, session_id, version, peer_addr, headers, body).await
         },
-        _ => short_status(StatusCode::METHOD_NOT_ALLOWED),
     }
 }
 

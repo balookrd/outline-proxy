@@ -60,7 +60,7 @@ async fn root_http_auth_challenges_allows_password_and_hides_other_paths() -> Re
             .contains("Max-Age=300")
     );
     let challenge_cookie = set_cookie_pair(&response)?;
-    assert_eq!(challenge_cookie, "outline_ss_root_auth=0");
+    assert_eq!(challenge_cookie, "auth_attempts=0");
 
     let response = client
         .request(
@@ -167,7 +167,7 @@ async fn root_http_auth_returns_403_after_three_failed_password_attempts() -> Re
                 .contains("Max-Age=300")
         );
         cookie = set_cookie_pair(&response)?;
-        assert_eq!(cookie, format!("outline_ss_root_auth={attempt}"));
+        assert_eq!(cookie, format!("auth_attempts={attempt}"));
     }
 
     server.abort();

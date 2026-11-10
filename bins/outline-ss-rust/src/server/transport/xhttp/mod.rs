@@ -54,8 +54,8 @@ pub(in crate::server) use duplex::XhttpDuplex;
 pub(in crate::server) use generate_anonymous_session_id as generate_anonymous_xhttp_session_id;
 pub(in crate::server) use h3::{XhttpH3Ctx, handle_xhttp_h3_request};
 pub(in crate::server) use handlers::{
-    XhttpAppProtocol, XhttpAxumState, XhttpRoute, xhttp_handler, xhttp_handler_no_session,
-    xhttp_handler_with_path_seq,
+    XhttpAppProtocol, XhttpAxumState, XhttpRoute, is_malformed_xhttp_request, xhttp_handler,
+    xhttp_handler_no_session, xhttp_handler_with_path_seq,
 };
 pub(in crate::server) use padding::{generate_padding_header, masquerade_response_headers};
 

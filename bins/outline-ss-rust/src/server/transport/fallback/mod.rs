@@ -19,6 +19,6 @@ mod h1_axum;
 mod h3_stream;
 mod shared;
 
-pub(in crate::server) use h1_axum::http_fallback_handler;
+pub(in crate::server) use h1_axum::{http_fallback_handler, unmatched_route_response};
 pub(in crate::server) use h3_stream::h3_fallback_handle;
 pub(in crate::server) use shared::HttpFallbackContext;

@@ -3,7 +3,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use crate::crypto::UserKey;
 
-pub(super) const ROOT_HTTP_AUTH_COOKIE_NAME: &str = "outline_ss_root_auth";
+/// Carries the failed-attempt count between root-auth requests. The name is
+/// visible to anyone who requests `/`, so it must not name the product.
+pub(super) const ROOT_HTTP_AUTH_COOKIE_NAME: &str = "auth_attempts";
 pub(super) const ROOT_HTTP_AUTH_MAX_FAILURES: u8 = 3;
 pub(super) const ROOT_HTTP_AUTH_COOKIE_TTL_SECS: u32 = 300;
 

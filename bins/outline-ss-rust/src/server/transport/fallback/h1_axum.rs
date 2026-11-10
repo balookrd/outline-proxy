@@ -77,6 +77,26 @@ pub(in crate::server) async fn http_fallback_handler(
     }
 }
 
+/// Answers a request that reached a tunnel route without being a tunnel
+/// request: a plain `GET` on a WebSocket path, a non-`GET` on the root-auth
+/// `/`, a structurally wrong XHTTP request. It gets exactly what a request
+/// for an unknown path gets — the cover site when the h1/h2 fallback is
+/// active, the bare 404 otherwise — so the response does not tell a prober
+/// which paths are registered.
+pub(in crate::server) async fn unmatched_route_response(
+    state: &AppState,
+    peer_addr: SocketAddr,
+    uri: Uri,
+    request: Request,
+) -> Response {
+    let fallback_active = state.http_fallback.as_ref().is_some_and(|fb| fb.config.apply_to_h1);
+    if !fallback_active {
+        return build_not_found_response(Body::empty());
+    }
+    http_fallback_handler(State(state.clone()), ConnectInfo(peer_addr), OriginalUri(uri), request)
+        .await
+}
+
 async fn proxy_to_backend(
     ctx: Arc<HttpFallbackContext>,
     peer_addr: SocketAddr,

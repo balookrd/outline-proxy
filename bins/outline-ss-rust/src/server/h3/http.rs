@@ -25,7 +25,7 @@ use super::super::{
         WS_H3_CARRIER, WsTcpRouteCtx, XhttpH3Ctx, XhttpRoute, apply_udp_datagram_echo, edge_route,
         finish_ws_session, generate_anonymous_xhttp_session_id, h3_fallback_handle,
         handle_tcp_h3_connection, handle_udp_h3_connection, handle_vless_h3_connection,
-        handle_xhttp_h3_request, is_normal_h3_shutdown,
+        handle_xhttp_h3_request, is_malformed_xhttp_request, is_normal_h3_shutdown,
         mesh_relay::{edge_echo, edge_udp_echo, edge_upstream, open_edge_relay},
         offers_udp_datagrams,
     },
@@ -158,6 +158,16 @@ async fn handle_h3_request(
         // clients or eat xhttp upgrade requests.
         if let Some((base, session_id, path_seq)) =
             match_xhttp_path(&path, ctx.xhttp_paths.as_ref())
+            // A request no XHTTP client produces is not handed to the XHTTP
+            // handler: it falls through and is answered like any other miss,
+            // so the response does not confirm the base path.
+            && !is_malformed_xhttp_request(
+                session_id.as_deref(),
+                path_seq,
+                request.method(),
+                request.uri().query(),
+                request.headers(),
+            )
             && let Some(route) =
                 resolve_xhttp_h3_route(&ctx.routes, base.as_ref(), session_id.as_deref())
         {
@@ -187,7 +197,11 @@ async fn handle_h3_request(
         // applies on the TCP listener: `router.route("/", ...)` is
         // pinned ahead of the wildcard fallback. Without this, an
         // active `[http_fallback]` would swallow auth challenges.
-        let is_root_auth = path == "/" && ctx.auth.http_root_auth;
+        // Only GET/HEAD reach the challenge; any other method on `/` is an
+        // ordinary miss and goes to the fallback like on the TCP listener.
+        let is_root_auth = path == "/"
+            && ctx.auth.http_root_auth
+            && matches!(*request.method(), Method::GET | Method::HEAD);
         if !is_root_auth
             && let Some(fb) = ctx.http_fallback.as_ref()
             && fb.config.apply_to_h3
@@ -242,7 +256,9 @@ async fn handle_h3_request(
 
     if !path_is_tcp && !path_is_udp && !path_is_vless {
         stream
-            .send_response(build_extended_connect_error(StatusCode::NOT_FOUND, Some("Not Found")))
+            // No reason: it would be sent as an `x-error-reason` header, which
+            // no ordinary web server emits.
+            .send_response(build_extended_connect_error(StatusCode::NOT_FOUND, None))
             .await
             .context("failed to send HTTP/3 not found response")?;
         return Ok(());
