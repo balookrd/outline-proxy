@@ -218,3 +218,22 @@ fn sni_with_ip_literal_is_not_matched() {
 fn empty_buffer_is_incomplete() {
     assert_eq!(sniff_host(&[]), SniffOutcome::Incomplete);
 }
+
+proptest::proptest! {
+    #![proptest_config(crate::wire::test_utils::parser_fuzz_config())]
+
+    #[test]
+    fn sniff_host_never_panics_on_random_bytes(data: Vec<u8>) {
+        let _ = sniff_host(&data);
+        let _ = super::parse_client_hello(&data);
+    }
+
+    #[test]
+    fn sniff_host_never_panics_on_mutated_client_hello(
+        data in crate::wire::test_utils::mutated(tls_client_hello("example.com")),
+    ) {
+        let _ = sniff_host(&data);
+        // The handshake body starts behind the 5-byte record header.
+        let _ = super::parse_client_hello(data.get(5..).unwrap_or(&[]));
+    }
+}

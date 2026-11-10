@@ -98,3 +98,14 @@ fn buffers_at_most_one_incomplete_record() {
     assert!(decoder.next_record().is_none());
     assert!(decoder.buffered_len() <= MAX_UDP_RECORD_PAYLOAD + UDP_RECORD_HEADER_LEN);
 }
+
+proptest::proptest! {
+    #[test]
+    fn decoder_never_panics(chunks in proptest::collection::vec(proptest::prelude::any::<Vec<u8>>(), 0..8)) {
+        let mut decoder = UdpRecordDecoder::new();
+        for chunk in &chunks {
+            decoder.push(chunk);
+            while decoder.next_record().is_some() {}
+        }
+    }
+}

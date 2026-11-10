@@ -49,3 +49,20 @@ fn ipv6_extension_header_with_full_udp_is_parsed() {
     assert_eq!(parsed.destination_port, 53);
     assert_eq!(parsed.payload, b"abc");
 }
+
+proptest::proptest! {
+    #![proptest_config(crate::wire::test_utils::parser_fuzz_config())]
+
+    #[test]
+    fn parse_udp_packet_never_panics(packet in crate::wire::test_utils::ip_like_packet()) {
+        let _ = parse_udp_packet(&packet);
+    }
+
+    #[test]
+    fn resegment_udp_gso_never_panics(
+        packet in crate::wire::test_utils::ip_like_packet(),
+        gso_size: u16,
+    ) {
+        let _ = resegment_udp_gso(&packet, gso_size);
+    }
+}

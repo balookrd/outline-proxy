@@ -1944,6 +1944,7 @@ dependencies = [
  "outline-uplink",
  "outline-wire",
  "parking_lot 0.13.0",
+ "proptest",
  "rand 0.10.3",
  "sha2",
  "shadowsocks-crypto",
@@ -2961,6 +2962,7 @@ name = "socks5-proto"
 version = "0.1.0"
 dependencies = [
  "outline-wire",
+ "proptest",
  "thiserror 2.0.21",
  "tokio",
 ]

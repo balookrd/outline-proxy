@@ -203,3 +203,30 @@ fn encode_parse_roundtrip_max_length_domain() {
     assert_eq!(parsed.data, Some(b".".as_ref()));
     assert_eq!(parsed.consumed, out.len());
 }
+
+proptest::proptest! {
+    #[test]
+    fn parse_frame_never_panics(input: Vec<u8>) {
+        let _ = parse_frame(&input);
+    }
+
+    // A length-consistent metadata block with an in-range status byte, so
+    // `parse_meta` and the target parser run on the random remainder.
+    #[test]
+    fn parse_frame_never_panics_on_plausible_meta(
+        session_id: u16,
+        status in 0u8..6,
+        option: u8,
+        meta_rest in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..40),
+        tail: Vec<u8>,
+    ) {
+        let mut meta = session_id.to_be_bytes().to_vec();
+        meta.push(status);
+        meta.push(option);
+        meta.extend_from_slice(&meta_rest);
+        let mut input = (meta.len() as u16).to_be_bytes().to_vec();
+        input.extend_from_slice(&meta);
+        input.extend_from_slice(&tail);
+        let _ = parse_frame(&input);
+    }
+}

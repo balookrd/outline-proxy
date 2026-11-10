@@ -40,6 +40,7 @@ tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt", 
 tracing = "0.1"
 
 [dev-dependencies]
+proptest = "1.5"
 outline-uplink = { path = "../outline-uplink", default-features = false, features = ["test-helpers"] }
 # Resume wire vocabulary (the `ORSM` / `ORDR` control frames), so the carrier-
 # migration tests can drive a mock server that emits exactly what the real one

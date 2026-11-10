@@ -262,3 +262,26 @@ fn session_subkey_matches_one_shot_derive_key() {
     ss2022_session_subkey_into(&master_key, &salt, &mut sixteen);
     assert_eq!(sixteen, one_shot[..16]);
 }
+
+proptest::proptest! {
+    #[test]
+    fn parsers_never_panic(
+        body: Vec<u8>,
+        salt: Vec<u8>,
+        session in proptest::option::of(proptest::prelude::any::<[u8; 8]>()),
+        now: u64,
+    ) {
+        let _ = parse_request_variable_header(&body);
+        let _ = parse_udp_request_body(&body, now);
+        let _ = parse_chacha_udp_request_body(&body, now);
+        let _ = parse_udp_response_body(&body, session.as_ref(), now);
+        let _ = parse_chacha_udp_response_body(&body, session.as_ref(), now);
+        for cipher in [
+            CipherKind::Aes128Gcm2022,
+            CipherKind::Aes256Gcm2022,
+            CipherKind::Chacha20Poly13052022,
+        ] {
+            let _ = parse_response_header(cipher, &salt, &body, now);
+        }
+    }
+}

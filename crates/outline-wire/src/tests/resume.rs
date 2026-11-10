@@ -204,3 +204,11 @@ mod downlink_replay {
         assert_ne!(MAGIC, crate::resume::MAGIC, "ORSM and ORDR frames must be distinguishable");
     }
 }
+
+proptest::proptest! {
+    #[test]
+    fn control_frame_parsers_never_panic(buf: Vec<u8>) {
+        let _ = parse_v1(&buf);
+        let _ = super::downlink_replay::parse_v1(&buf);
+    }
+}
