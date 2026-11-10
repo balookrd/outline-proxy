@@ -8,9 +8,9 @@ workspace = true
 
 [dependencies]
 outline-wire = { path = "../outline-wire" }
-thiserror = "2.0"
-tokio = { version = "1.44", features = ["io-util", "net"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
 
 [dev-dependencies]
-proptest = "1.5"
-tokio = { version = "1.44", features = ["io-util", "macros", "net", "rt", "rt-multi-thread"] }
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread"] }

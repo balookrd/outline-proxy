@@ -7,60 +7,60 @@ edition = "2024"
 workspace = true
 
 [dependencies]
-aes = "0.9"
-anyhow = "1.0"
-arc-swap = "1.7"
-axum = { version = "0.8", features = ["ws", "http2"] }
-base64 = { version = "0.23", default-features = false, features = ["std"] }
-blake3 = "1.8"
-bytes = "1.10"
-chacha20poly1305 = "0.11"
-clap = { version = "4.5", features = ["derive", "env"] }
-dashmap = "6"
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-h3 = "0.0.8"
-h3-quinn = "0.0.10"
-hyper = { version = "1.8", features = ["client", "http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "server", "server-auto", "service", "tokio"] }
-http-body-util = "0.1"
-libc = "0.2"
-libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"], optional = true }
-lru = "0.19"
-mimalloc = { version = "0.1", default-features = false, optional = true }
-tikv-jemallocator = { version = "0.7", default-features = false, features = ["background_threads", "stats", "unprefixed_malloc_on_supported_platforms"], optional = true }
-tikv-jemalloc-ctl = { version = "0.7", default-features = false, features = ["stats"], optional = true }
+aes = { workspace = true }
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+axum = { workspace = true, features = ["ws", "http2"] }
+base64 = { workspace = true, features = ["std"] }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+chacha20poly1305 = { workspace = true }
+clap = { workspace = true, default-features = true, features = ["derive", "env"] }
+dashmap = { workspace = true }
+futures-util = { workspace = true, features = ["sink", "std"] }
+h3 = { workspace = true }
+h3-quinn = { workspace = true }
+hyper = { workspace = true, features = ["client", "http1", "http2", "server"] }
+hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2", "server", "server-auto", "service", "tokio"] }
+http-body-util = { workspace = true }
+libc = { workspace = true, default-features = true }
+libmimalloc-sys = { workspace = true, features = ["extended"], optional = true }
+lru = { workspace = true, default-features = true }
+mimalloc = { workspace = true, optional = true }
+tikv-jemallocator = { workspace = true, features = ["background_threads", "stats", "unprefixed_malloc_on_supported_platforms"], optional = true }
+tikv-jemalloc-ctl = { workspace = true, features = ["stats"], optional = true }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-util = { version = "0.20", default-features = false, features = ["recency"] }
 outline-net = { path = "../../crates/outline-net" }
 outline-wire = { path = "../../crates/outline-wire", features = ["clap", "h3-datagram"] }
-parking_lot = "0.13"
-quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
-rand = "0.10"
+parking_lot = { workspace = true }
+quinn = { workspace = true, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
+rand = { workspace = true }
 # rcgen on the aws_lc_rs backend, matching the workspace-wide single rustls
 # CryptoProvider (aws-lc-rs). Used both in tests and, in production, by the
 # cluster mesh to build its PSK-derived self-signed interconnect certificate.
-rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
+rcgen = { workspace = true, features = ["pem", "aws_lc_rs"] }
 # ring stays for the Shadowsocks AEAD / SHA-256 paths in `src/crypto/*`; it is
 # NOT the rustls CryptoProvider (that is aws-lc-rs, see `rustls` below).
-ring = "0.17"
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-socket2 = "0.6"
+ring = { workspace = true }
+rustls = { workspace = true, features = ["aws_lc_rs", "std"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+socket2 = { workspace = true }
 sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio", "http3", "fastrand"] }
 subtle = "2.6"
-thiserror = "2.0"
-tokio = { version = "1.48", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "aws_lc_rs"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
+tokio-rustls = { workspace = true, features = ["logging", "tls12", "aws_lc_rs"] }
 tungstenite = { version = "0.29", default-features = false }
-toml = "1"
-toml_edit = { version = "0.25", features = ["serde"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "tracing-log"] }
-webpki-roots = "1.0"
+toml = { workspace = true }
+toml_edit = { workspace = true, features = ["serde"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "tracing-log"] }
+webpki-roots = { workspace = true }
 x509-parser = "0.18"
-zeroize = "1.8"
+zeroize = { workspace = true }
 
 [features]
 default = ["control", "jemalloc"]
@@ -78,20 +78,20 @@ mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 test-hooks = []
 
 [dev-dependencies]
-proptest = "1.5"
+proptest = { workspace = true }
 # `test-util` enables tokio's paused virtual clock so timer-driven paths
 # (e.g. the WebSocket writer's control-flush cadence) can be tested without
 # real-time sleeps.
-tokio = { version = "1.48", features = ["test-util"] }
-tokio-tungstenite = "0.29"
+tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite = { workspace = true }
 # Drives axum routers directly in control-plane tests via `ServiceExt::oneshot`,
 # without binding a real listener. The "util" feature is already pulled in
 # transitively by axum's own `tower` dependency; no explicit features needed.
-tower = "0.5"
+tower = { workspace = true }
 # End-to-end tests dial the outline-ws-rust client transport against this
 # server. Now an in-workspace path dependency (previously cross-repo).
 # `metrics` turns the client's counters on, so the HTTP/3 datagram e2e tests
 # can read both sides' counters (`outline-metrics` renders the client's).
 outline-transport = { path = "../../crates/outline-transport", features = ["h3", "metrics", "test-tls"] }
 outline-metrics = { path = "../../crates/outline-metrics" }
-url = "2.5"
+url = { workspace = true }

@@ -7,14 +7,14 @@ edition = "2024"
 workspace = true
 
 [dependencies]
-anyhow = "1.0"
-hashbrown = "0.17"
-libc = "0.2"
-parking_lot = "0.13"
-rand = "0.10"
-socket2 = "0.6"
-tokio = { version = "1.44", features = ["net", "rt", "time"] }
-tracing = "0.1"
+anyhow = { workspace = true }
+hashbrown = { workspace = true }
+libc = { workspace = true, default-features = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+socket2 = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1.44", features = ["io-util", "macros", "net", "rt", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
