@@ -43,6 +43,8 @@ pub(super) const HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 pub(super) const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
 pub(super) const H3_QUIC_PING_INTERVAL_SECS: u64 = 10;
 pub(super) const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_452;
+/// QUIC version 1 (RFC 9000) — the only version the H3 listener offers.
+pub(super) const QUIC_VERSION_1: u32 = 0x0000_0001;
 /// QUIC datagram send and receive buffer (bytes) for HTTP/3 DATAGRAM relay.
 pub(super) const H3_DATAGRAM_BUFFER_BYTES: usize = 1 << 20;
 /// Initial server→client QUIC datagram size on a host that does not pin one.

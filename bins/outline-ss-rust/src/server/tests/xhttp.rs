@@ -352,10 +352,11 @@ async fn xhttp_path_based_seq_overrides_header_seq() -> Result<()> {
 }
 
 #[tokio::test]
-async fn xhttp_path_based_get_returns_bad_request() -> Result<()> {
+async fn xhttp_path_based_get_is_answered_like_an_unknown_path() -> Result<()> {
     // `<base>/<id>/<seq>` is uplink-only — a GET on this shape is a
-    // misrouted client. The handler must reject it with 400 instead
-    // of accidentally creating a session through the GET branch.
+    // misrouted client. The handler must not create a session through
+    // the GET branch, and must answer exactly like an unknown path so
+    // the response does not confirm the base path to a prober.
     let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
     let client = http_client();
     let url = format!("http://{listen_addr}/xh/some-session-000/0");
@@ -365,7 +366,8 @@ async fn xhttp_path_based_get_returns_bad_request() -> Result<()> {
         .uri(&url)
         .body(Full::new(Bytes::new()))?;
     let resp = client.request(req).await?;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(resp.headers().get("x-padding").is_none(), "padding header marks an XHTTP route");
 
     server.abort();
     Ok(())
@@ -774,7 +776,7 @@ async fn xhttp_stream_one_xray_sessionless_round_trip() -> Result<()> {
 }
 
 #[tokio::test]
-async fn xhttp_sessionless_get_returns_method_not_allowed() -> Result<()> {
+async fn xhttp_sessionless_get_is_answered_like_an_unknown_path() -> Result<()> {
     // Only POST makes sense on the bare-`<base>` shape — a GET on
     // it would have to invent a session id with no companion
     // request to attach against, which isn't a real client flow.
@@ -789,9 +791,10 @@ async fn xhttp_sessionless_get_returns_method_not_allowed() -> Result<()> {
         let resp = client.request(req).await?;
         assert_eq!(
             resp.status(),
-            StatusCode::METHOD_NOT_ALLOWED,
-            "GET on sessionless XHTTP route must be 405",
+            StatusCode::NOT_FOUND,
+            "GET on sessionless XHTTP route must look like an unknown path",
         );
+        assert!(resp.headers().get("x-padding").is_none(), "padding header marks an XHTTP route");
     }
 
     server.abort();

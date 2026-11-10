@@ -15,7 +15,7 @@ use super::{
         CERT_RELOAD_POLL_INTERVAL_SECS, H3_DATAGRAM_BUFFER_BYTES, H3_DEFAULT_INITIAL_MTU,
         H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE,
         H3_MTU_DISCOVERY_MINIMUM_CHANGE, H3_MTU_DISCOVERY_UPPER_BOUND, H3_QUIC_IDLE_TIMEOUT_SECS,
-        H3_QUIC_PING_INTERVAL_SECS,
+        H3_QUIC_PING_INTERVAL_SECS, QUIC_VERSION_1,
     },
     state::{AuthPolicy, RoutesSnapshot, Services},
     transport::{
@@ -47,6 +47,11 @@ pub(in crate::server) async fn build_h3_server(
     endpoint_config
         .max_udp_payload_size(H3_MAX_UDP_PAYLOAD_SIZE)
         .context("invalid H3 max UDP payload size")?;
+    // quinn's default list also names draft-29..34. A Version Negotiation
+    // packet is sent to anyone who probes with an unknown version, before any
+    // authentication, and that list identifies the QUIC stack. Every client we
+    // serve speaks v1.
+    endpoint_config.supported_versions(vec![QUIC_VERSION_1]);
     let endpoint = quinn::Endpoint::new(
         endpoint_config,
         Some(server_config),

@@ -36,8 +36,10 @@ use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
 use super::super::transport::HttpFallbackContext;
 use super::super::{DnsCache, H3ServeCtx, build_app, serve_h3_server};
-use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
-use crate::config::{BackendProto, H3Alpn, HttpFallbackConfig, ProxyProtocolVersion};
+use super::{
+    build_test_state, sample_config, test_endpoint, test_h3_client_config, test_h3_server_tls,
+};
+use crate::config::{BackendProto, EndpointKind, H3Alpn, HttpFallbackConfig, ProxyProtocolVersion};
 use crate::metrics::Metrics;
 
 /// Snapshot of one upstream request, captured by the echo handler so
@@ -275,6 +277,114 @@ async fn http_fallback_disabled_returns_404_for_unknown_path() -> Result<()> {
         )
         .await?;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}
+
+/// Status, headers (minus `date`) and body of a response — everything a
+/// prober can compare between two paths.
+async fn observable_response(
+    client: &Client<hyper_util::client::legacy::connect::HttpConnector, Empty<Bytes>>,
+    method: Method,
+    url: String,
+) -> Result<(StatusCode, Vec<(String, Vec<u8>)>, Bytes)> {
+    let response = client
+        .request(
+            axum::http::Request::builder()
+                .method(method)
+                .uri(url)
+                .body(Empty::new())?,
+        )
+        .await?;
+    let status = response.status();
+    let mut headers: Vec<(String, Vec<u8>)> = response
+        .headers()
+        .iter()
+        .filter(|(name, _)| *name != header::DATE)
+        .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
+        .collect();
+    headers.sort();
+    let body = response.into_body().collect().await?.to_bytes();
+    Ok((status, headers, body))
+}
+
+/// Requests that reach a registered tunnel route without being tunnel
+/// requests: a plain GET on the WebSocket paths, a non-GET on the root-auth `/`.
+fn tunnel_route_misses(addr: SocketAddr) -> Vec<(Method, String)> {
+    vec![
+        (Method::GET, format!("http://{addr}/tcp")),
+        (Method::GET, format!("http://{addr}/udp")),
+        (Method::POST, format!("http://{addr}/")),
+    ]
+}
+
+#[tokio::test]
+async fn tunnel_routes_answer_plain_requests_with_the_cover_site() -> Result<()> {
+    let (upstream_addr, _rx) = spawn_echo_upstream(
+        StatusCode::NOT_FOUND,
+        vec![("content-type", "text/html"), ("server", "nginx")],
+        "<html>404 Not Found</html>",
+    )
+    .await?;
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    let config = sample_config(addr);
+    let (routes, services, auth) = build_test_state(
+        &config,
+        Metrics::new(&config),
+        NatTable::new(std::time::Duration::from_secs(300)),
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        true,
+        config.http_root_realm.clone(),
+    );
+    let fallback = fallback_ctx_for(upstream_addr, addr, None);
+    let app = build_app(routes, services, auth, Some(fallback), None);
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+
+    let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
+    let unknown =
+        observable_response(&client, Method::GET, format!("http://{addr}/no-such-path")).await?;
+    assert_eq!(unknown.0, StatusCode::NOT_FOUND);
+    assert_eq!(unknown.2.as_ref(), b"<html>404 Not Found</html>");
+    for (method, url) in tunnel_route_misses(addr) {
+        let miss = observable_response(&client, method.clone(), url.clone()).await?;
+        assert_eq!(miss, unknown, "{method} {url} differs from an unknown path");
+    }
+
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tunnel_routes_answer_plain_requests_like_unknown_paths_without_fallback() -> Result<()> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    let config = sample_config(addr);
+    let (routes, services, auth) = build_test_state(
+        &config,
+        Metrics::new(&config),
+        NatTable::new(std::time::Duration::from_secs(300)),
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        true,
+        config.http_root_realm.clone(),
+    );
+    let app = build_app(routes, services, auth, None, None);
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+
+    let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
+    let unknown =
+        observable_response(&client, Method::GET, format!("http://{addr}/no-such-path")).await?;
+    assert_eq!(unknown.0, StatusCode::NOT_FOUND);
+    for (method, url) in tunnel_route_misses(addr) {
+        let miss = observable_response(&client, method.clone(), url.clone()).await?;
+        assert_eq!(miss, unknown, "{method} {url} differs from an unknown path");
+    }
 
     server.abort();
     let _ = server.await;
@@ -702,6 +812,128 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
     server_task.abort();
     let _ = driver_task.await;
     let _ = server_task.await;
+    Ok(())
+}
+
+/// Status, the upstream marker header and the body of one HTTP/3 response.
+async fn h3_observable_response(
+    send_request: &mut h3::client::SendRequest<h3_quinn::OpenStreams, Bytes>,
+    method: Method,
+    url: String,
+) -> Result<(StatusCode, Option<Vec<u8>>, bool, Vec<u8>)> {
+    let request = axum::http::Request::builder()
+        .method(method)
+        .uri(url)
+        .version(axum::http::Version::HTTP_3)
+        .body(())?;
+    let mut stream = send_request.send_request(request).await?;
+    stream.finish().await?;
+    let response = stream.recv_response().await?;
+    let marker = response
+        .headers()
+        .get("x-upstream-marker")
+        .map(|v| v.as_bytes().to_vec());
+    let padded = response.headers().contains_key("x-padding");
+    let mut body = Vec::new();
+    while let Some(mut chunk) = stream.recv_data().await? {
+        while chunk.has_remaining() {
+            let slice = chunk.chunk();
+            body.extend_from_slice(slice);
+            let len = slice.len();
+            chunk.advance(len);
+        }
+    }
+    Ok((response.status(), marker, padded, body))
+}
+
+/// A request on an XHTTP base path that no XHTTP client produces must be
+/// answered over HTTP/3 exactly like a request for an unknown path — here, by
+/// the cover site — instead of a 400/405 carrying `X-Padding`.
+#[tokio::test]
+async fn h3_malformed_xhttp_requests_are_answered_like_unknown_paths() -> Result<()> {
+    use sockudo_ws::{
+        Config as H3WsConfig, Http3 as H3Transport, WebSocketServer as H3WebSocketServer,
+    };
+
+    let (upstream_addr, _rx) = spawn_h2c_echo_upstream(
+        StatusCode::NOT_FOUND,
+        vec![("content-type", "text/html"), ("x-upstream-marker", "cover-site")],
+        "<html>404 Not Found</html>",
+    )
+    .await?;
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let mut config = sample_config(addr);
+    config.endpoints.push(test_endpoint("/xh", EndpointKind::XhttpSsTcp));
+    let (routes, services, auth) = build_test_state(
+        &config,
+        Metrics::new(&config),
+        NatTable::new(std::time::Duration::from_secs(300)),
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        config.http_root_realm.clone(),
+    );
+
+    let h3_fallback = fallback_ctx_for_h3(upstream_addr, addr, BackendProto::H2);
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            H3ServeCtx {
+                udp_datagrams: true,
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+                http_fallback: Some(h3_fallback),
+                cluster: None,
+            },
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let base = format!("https://localhost:{}", addr.port());
+    let session = "0123456789abcdef0123456789abcdef";
+    let unknown =
+        h3_observable_response(&mut send_request, Method::GET, format!("{base}/no-such-path"))
+            .await?;
+    assert_eq!(unknown.0, StatusCode::NOT_FOUND);
+    assert_eq!(unknown.1.as_deref(), Some(b"cover-site".as_slice()));
+
+    let misses = [
+        // Sessionless form is POST-only.
+        (Method::GET, format!("{base}/xh")),
+        // `<base>/<id>/<seq>` is uplink-only.
+        (Method::GET, format!("{base}/xh/{session}/0")),
+        // GET cannot open a stream-one carrier.
+        (Method::GET, format!("{base}/xh/{session}?mode=stream-one")),
+        // Neither GET nor POST.
+        (Method::PUT, format!("{base}/xh/{session}")),
+        // Not a session id.
+        (Method::GET, format!("{base}/xh/not%20an%20id")),
+    ];
+    for (method, url) in misses {
+        let miss = h3_observable_response(&mut send_request, method.clone(), url.clone()).await?;
+        assert_eq!(miss, unknown, "{method} {url} differs from an unknown path");
+    }
+
+    drop(send_request);
+    driver_task.abort();
+    server_task.abort();
     Ok(())
 }
 

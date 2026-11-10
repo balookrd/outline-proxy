@@ -32,7 +32,7 @@ use super::handlers::{
 use super::padding::post_response_headers;
 use super::{
     AttachOutcome, FIN_HEADER, SEQ_HEADER, SessionSlot, UPLINK_ROOM_PATIENCE, UplinkIngestError,
-    XhttpRegistry, XhttpSession, XhttpSubmode, generate_padding_header, is_valid_session_id,
+    XhttpRegistry, XhttpSession, XhttpSubmode, generate_padding_header,
     masquerade_response_headers,
 };
 
@@ -122,11 +122,9 @@ pub(in crate::server) async fn handle_xhttp_h3_request(
     path_seq: Option<u64>,
     peer_addr: SocketAddr,
 ) -> Result<()> {
-    if !is_valid_session_id(&session_id) {
-        return finish_with_status(stream, StatusCode::BAD_REQUEST).await;
-    }
-
-    let method = request.method().clone();
+    // The caller only routes here what `is_malformed_xhttp_request` let
+    // through, so the method is GET or POST and the shape is one a client
+    // produces; anything else was already answered like an unknown path.
     let headers = request.headers().clone();
     let version = request.version();
     // Mirror the axum dispatch logic in `handlers::dispatch_xhttp` —
@@ -135,44 +133,16 @@ pub(in crate::server) async fn handle_xhttp_h3_request(
     // picks the carrier for xray-style clients.
     let submode = XhttpSubmode::parse_query(request.uri().query());
 
-    match method {
-        Method::GET => {
-            if path_seq.is_some() {
-                return finish_with_status(stream, StatusCode::BAD_REQUEST).await;
-            }
-            match submode {
-                XhttpSubmode::PacketUp => {
-                    xhttp_h3_get(stream, &ctx, session_id, version, peer_addr, headers).await
-                },
-                XhttpSubmode::StreamOne => {
-                    finish_with_status(stream, StatusCode::BAD_REQUEST).await
-                },
-            }
+    if request.method() == Method::GET {
+        return xhttp_h3_get(stream, &ctx, session_id, version, peer_addr, headers).await;
+    }
+    match (submode, path_seq.or_else(|| parse_seq(&headers))) {
+        (XhttpSubmode::PacketUp, Some(_)) => {
+            xhttp_h3_post(stream, headers, &ctx, session_id, path_seq, version, peer_addr).await
         },
-        Method::POST => {
-            let seq = path_seq.or_else(|| parse_seq(&headers));
-            match submode {
-                XhttpSubmode::StreamOne => {
-                    if seq.is_some() {
-                        return finish_with_status(stream, StatusCode::BAD_REQUEST).await;
-                    }
-                    xhttp_h3_stream_one(stream, headers, &ctx, session_id, version, peer_addr).await
-                },
-                XhttpSubmode::PacketUp => match seq {
-                    Some(_) => {
-                        xhttp_h3_post(
-                            stream, headers, &ctx, session_id, path_seq, version, peer_addr,
-                        )
-                        .await
-                    },
-                    None => {
-                        xhttp_h3_stream_one(stream, headers, &ctx, session_id, version, peer_addr)
-                            .await
-                    },
-                },
-            }
+        (XhttpSubmode::StreamOne, _) | (XhttpSubmode::PacketUp, None) => {
+            xhttp_h3_stream_one(stream, headers, &ctx, session_id, version, peer_addr).await
         },
-        _ => finish_with_status(stream, StatusCode::METHOD_NOT_ALLOWED).await,
     }
 }
 
