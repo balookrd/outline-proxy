@@ -21,9 +21,12 @@
 //! 156.0.8078.73 on Android 17 matches desktop Chrome 156 byte for byte,
 //! trust anchors included). 0-RTT is not aligned with the browsers yet.
 //!
-//! The pool is process-wide and opt-in: callers wire a `Strategy`
-//! at startup via [`init_strategy`]. The default is [`Strategy::None`]
-//! — no headers are added (TLS dials still send the Chromium ClientHello).
+//! The pool is process-wide: callers wire a `Strategy` at startup via
+//! [`init_strategy`]. Until they do, this crate's default is
+//! [`Strategy::None`] — no headers are added (TLS dials still send the
+//! Chromium ClientHello). The client binary does not rely on that: its config
+//! loader falls back to [`Strategy::ProcessStable`] when a config names no
+//! strategy.
 //! Cross-transport session-resumption headers
 //! (`X-Outline-Resume*`) are inserted by the dial sites independently
 //! of this module; they ride on top of whatever profile is active.
@@ -52,7 +55,9 @@ use url::Url;
 pub enum Strategy {
     /// No profile applied: no `User-Agent` / `Accept-Language` /
     /// `Sec-Fetch-*` headers are added. TLS dials (TCP and QUIC) still
-    /// send the Chromium ClientHello. Default.
+    /// send the Chromium ClientHello. This crate's default when no strategy
+    /// was wired; the client's config loader defaults to
+    /// [`Self::ProcessStable`] instead.
     #[default]
     None,
     /// Same profile for the same `(host, port)` for the lifetime
@@ -74,9 +79,8 @@ pub enum Strategy {
     /// the same machine; in container / sandbox environments where
     /// no hostname is set, the seed falls back to a fresh random
     /// pick at process start (identity rotates on restart, but
-    /// remains stable for the duration of the process). This is
-    /// the recommended default whenever the operator has no
-    /// specific reason to prefer a per-peer split.
+    /// remains stable for the duration of the process). The client
+    /// uses this when its config names no strategy.
     ProcessStable,
     /// Fresh random profile on every dial. Useful when probing or
     /// when a peer-stable identity is undesirable (testing).

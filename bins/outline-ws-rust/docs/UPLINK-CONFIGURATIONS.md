@@ -1936,10 +1936,9 @@ same source IP shouldn't produce four browser identities in 30
 seconds against four different hosts. Prefer `process_stable`
 unless you have a specific reason.
 
-The knob is opt-in. By default no browser headers are added beyond
-`X-Outline-Resume-*`; TLS dials still send the Chromium ClientHello
-(`Strategy::None` in `fingerprint_profile.rs`). Enable it via the top-level `fingerprint_profile`
-key in `config.toml`:
+The default is `process_stable`: a config that does not set the key gets one
+browser identity for the whole process. Set the top-level `fingerprint_profile`
+key in `config.toml` to choose another strategy or to turn the headers off:
 
 ```toml
 # top-level — sibling of [socks5], [metrics], [outline], [[uplink_group]]
@@ -1948,9 +1947,13 @@ fingerprint_profile = "stable"   # alias for `process_stable` — recommended
 
 Accepted values:
 
-- `"off"` / `"none"` / `"disabled"` / omitted — default, no headers added.
-- `"stable"` / `"process"` / `"process_stable"` / `"process-stable"` —
-  recommended. One identity for the entire process.
+- `"off"` / `"none"` / `"disabled"` — no browser headers beyond
+  `X-Outline-Resume-*`. TLS dials still send the Chromium ClientHello, so the
+  request behind it has no `User-Agent`; whatever terminates TLS (a CDN, a
+  reverse proxy) sees a browser handshake followed by a request no browser
+  sends.
+- `"stable"` / `"process"` / `"process_stable"` / `"process-stable"` / omitted —
+  default. One identity for the entire process.
 - `"per_host_stable"` / `"per-host-stable"` / `"per-host"` — legacy
   per-peer split; see caveat above.
 - `"random"` — fresh profile on every dial: for testing, or

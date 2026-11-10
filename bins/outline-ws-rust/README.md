@@ -677,7 +677,7 @@ via = "main"
 | `--worker-threads` | `WORKER_THREADS` | Tokio worker threads (default: CPU count) |
 | `--thread-stack-size-kb` | `THREAD_STACK_SIZE_KB` | stack per Tokio thread in KiB (default `2048`) |
 | `--state-path` | `STATE_PATH` | active-uplink state file |
-| `--fingerprint-profile` | `OUTLINE_FINGERPRINT_PROFILE` | browser fingerprint strategy: `off`, `stable`, `per_host_stable`, `random` |
+| `--fingerprint-profile` | `OUTLINE_FINGERPRINT_PROFILE` | browser fingerprint strategy: `off`, `stable` (default), `per_host_stable`, `random` |
 
 ## Policy routing
 
