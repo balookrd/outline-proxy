@@ -90,3 +90,43 @@ fn hex(s: &str) -> Vec<u8> {
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
         .collect()
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config {
+        cases: 512,
+        ..crate::wire::test_utils::parser_fuzz_config()
+    })]
+
+    #[test]
+    fn sniff_quic_sni_never_panics_on_random_bytes(datagram: Vec<u8>) {
+        let _ = sniff_quic_sni(&datagram);
+    }
+
+    // A correctly protected Initial around arbitrary frame bytes: decryption
+    // succeeds, so the frame walker and CRYPTO reassembly see the random input.
+    #[test]
+    fn sniff_quic_sni_never_panics_on_random_frames(
+        frames in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..300),
+        dcid in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..21),
+    ) {
+        let _ = sniff_quic_sni(&super::test_vectors::build_initial_from_frames(1, &dcid, &frames));
+    }
+
+    #[test]
+    fn sniff_quic_sni_never_panics_on_mutated_client_hello(
+        hello in crate::wire::test_utils::mutated(super::test_vectors::client_hello("example.com")),
+    ) {
+        let _ = sniff_quic_sni(&super::test_vectors::build_initial(1, &[7; 8], &hello));
+    }
+
+    #[test]
+    fn sniff_quic_sni_never_panics_on_mutated_initial(
+        datagram in crate::wire::test_utils::mutated(super::test_vectors::build_initial(
+            1,
+            &[7; 8],
+            &super::test_vectors::client_hello("example.com"),
+        )),
+    ) {
+        let _ = sniff_quic_sni(&datagram);
+    }
+}

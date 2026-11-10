@@ -301,3 +301,18 @@ fn gso_partial_ipv6_checksum_finalizes_to_full() {
         "kernel-finalised partial checksum must equal the full checksum (v6)"
     );
 }
+
+proptest::proptest! {
+    #![proptest_config(crate::wire::test_utils::parser_fuzz_config())]
+
+    #[test]
+    fn parse_tcp_packet_never_panics(packet in crate::wire::test_utils::ip_like_packet()) {
+        let _ = parse_tcp_packet(&packet, crate::wire::L4Checksum::Unverified);
+        let _ = parse_tcp_packet_unverified(&packet);
+        // `Recomputed` is a promise that the checksum was just rewritten over
+        // these bytes, so reach it the way the read loop does.
+        let mut recomputed = packet.clone();
+        let checksum = crate::wire::recompute_transport_checksum(&mut recomputed);
+        let _ = parse_tcp_packet(&recomputed, checksum);
+    }
+}

@@ -557,3 +557,10 @@ mod demux {
         assert_eq!(base, (3760, 9));
     }
 }
+
+proptest::proptest! {
+    #[test]
+    fn decode_datagram_never_panics(datagram: Vec<u8>) {
+        let _ = decode_datagram(Bytes::from(datagram));
+    }
+}

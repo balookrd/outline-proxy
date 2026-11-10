@@ -318,3 +318,15 @@ fn max_pad_reports_the_upper_bound_and_zero_when_disabled() {
     // A max below min is clamped up, and `max_pad` reports the clamped bound.
     assert_eq!(PaddingScheme::new(40, 10).max_pad(), 40);
 }
+
+proptest::proptest! {
+    #[test]
+    fn decoder_never_panics(chunks in proptest::collection::vec(proptest::prelude::any::<Vec<u8>>(), 0..8)) {
+        let mut decoder = PaddingDecoder::new();
+        let mut out = Vec::new();
+        for chunk in &chunks {
+            decoder.push(chunk, &mut out);
+            let _ = decoder.take_control();
+        }
+    }
+}

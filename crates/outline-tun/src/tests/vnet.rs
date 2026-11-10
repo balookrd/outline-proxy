@@ -46,3 +46,10 @@ fn tcpv6_gso_type_is_recognised_as_gso() {
     };
     assert!(header.is_gso());
 }
+
+proptest::proptest! {
+    #[test]
+    fn virtio_net_hdr_decode_never_panics(bytes: Vec<u8>) {
+        let _ = VirtioNetHdr::decode(&bytes);
+    }
+}

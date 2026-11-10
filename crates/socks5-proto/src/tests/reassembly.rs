@@ -106,3 +106,26 @@ fn udp_fragment_reassembly_resets_on_lower_fragment_number() {
 
     assert_eq!(&reassembled.payload[reassembled.addr_len..], b"fresh");
 }
+
+proptest::proptest! {
+    // Whatever sequence of datagrams the parser accepts, feeding it to the
+    // reassembler must not panic (fragment numbers, end markers and targets
+    // arrive in any order).
+    #[test]
+    fn push_fragment_never_panics(
+        datagrams in proptest::collection::vec(
+            (proptest::prelude::any::<u8>(), proptest::collection::vec(proptest::prelude::any::<u8>(), 0..40)),
+            1..12,
+        ),
+    ) {
+        let mut reassembler = UdpFragmentReassembler::default();
+        for (fragment, payload) in &datagrams {
+            // IPv4 target 1.2.3.4:53, so only the fragment byte and payload vary.
+            let mut packet = vec![0, 0, *fragment, 1, 1, 2, 3, 4, 0, 53];
+            packet.extend_from_slice(payload);
+            if let Ok(parsed) = crate::udp::parse_udp_request(&packet) {
+                let _ = reassembler.push_fragment(parsed);
+            }
+        }
+    }
+}

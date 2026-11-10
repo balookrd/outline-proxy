@@ -269,3 +269,30 @@ fn build_ipv6_icmp_echo_request_with_extension_header(
     packet[icmp_offset + 2..icmp_offset + 4].copy_from_slice(&checksum.to_be_bytes());
     packet
 }
+
+proptest::proptest! {
+    #![proptest_config(crate::wire::test_utils::parser_fuzz_config())]
+
+    // Everything the read loop runs on a packet before it knows the packet is
+    // well-formed: classification, checksum recompute, ICMP reply building.
+    #[test]
+    fn tun_ingress_never_panics(packet in crate::wire::test_utils::ip_like_packet()) {
+        let _ = classify_packet(&packet);
+        let _ = crate::icmp::icmp_echo_destination(&packet);
+        let _ = build_icmp_echo_reply(&packet);
+        let _ = build_icmp_echo_reply_packets(&packet);
+        let _ = crate::wire::locate_ipv6_payload(&packet);
+        let mut scratch = packet.clone();
+        let _ = crate::wire::recompute_transport_checksum(&mut scratch);
+    }
+
+    #[test]
+    fn defragmenter_never_panics(
+        packets in proptest::collection::vec(crate::wire::test_utils::ip_like_packet(), 1..6),
+    ) {
+        let mut defragmenter = TunDefragmenter::default();
+        for packet in &packets {
+            let _ = defragmenter.push(packet);
+        }
+    }
+}

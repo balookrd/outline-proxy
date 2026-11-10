@@ -246,3 +246,30 @@ fn mask_uuid_keeps_first_four_bytes() {
     let id = parse_uuid(UUID).unwrap();
     assert_eq!(mask_uuid(&id), "550e8400-...");
 }
+
+proptest::proptest! {
+    #[test]
+    fn parse_request_never_panics(input: Vec<u8>) {
+        let _ = parse_request(&input);
+        let _ = parse_response_addons_session_id(&input);
+    }
+
+    // version | uuid | addons | command | port | atyp with plausible values,
+    // so the addons walker and the address parser are reached.
+    #[test]
+    fn parse_request_never_panics_on_plausible_header(
+        uuid: [u8; 16],
+        addons in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..24),
+        declared_addons_len in proptest::option::of(proptest::prelude::any::<u8>()),
+        command in 0u8..5,
+        rest: Vec<u8>,
+    ) {
+        let mut input = vec![VERSION];
+        input.extend_from_slice(&uuid);
+        input.push(declared_addons_len.unwrap_or(addons.len() as u8));
+        input.extend_from_slice(&addons);
+        input.push(command);
+        input.extend_from_slice(&rest);
+        let _ = parse_request(&input);
+    }
+}

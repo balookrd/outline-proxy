@@ -33,3 +33,22 @@ async fn socks5_udp_in_tcp_packet_round_trip() {
     assert_eq!(&packet.body[packet.addr_len..], b"hello");
     assert_eq!(&packet.body[..packet.addr_len], &packet.target.to_wire_bytes().unwrap()[..]);
 }
+
+proptest::proptest! {
+    #[test]
+    fn parse_udp_request_never_panics(packet: Vec<u8>) {
+        let _ = parse_udp_request(&packet);
+    }
+
+    // RSV(2) | FRAG | ATYP in range, so the address parser is actually reached.
+    #[test]
+    fn parse_udp_request_never_panics_on_plausible_header(
+        fragment: u8,
+        atyp in 0u8..6,
+        rest: Vec<u8>,
+    ) {
+        let mut packet = vec![0, 0, fragment, atyp];
+        packet.extend_from_slice(&rest);
+        let _ = parse_udp_request(&packet);
+    }
+}

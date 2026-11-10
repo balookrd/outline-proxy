@@ -108,3 +108,92 @@ pub(crate) fn corrupt_udp_length_field(packet: &[u8]) -> Vec<u8> {
     mutated[offset + 4..offset + 6].copy_from_slice(&7u16.to_be_bytes());
     mutated
 }
+
+/// Case count for the "parser never panics" property tests. The parsers are
+/// microsecond-cheap, so a few thousand cases cost nothing; regression files
+/// are disabled because a failure is turned into a named unit test instead.
+pub(crate) fn parser_fuzz_config() -> proptest::test_runner::Config {
+    proptest::test_runner::Config {
+        cases: 4096,
+        failure_persistence: None,
+        ..proptest::test_runner::Config::default()
+    }
+}
+
+/// Byte strings shaped like IP packets: the version nibble, the L4 selector,
+/// the length fields and a chain of IPv6 extension headers are steered towards
+/// plausible values so the parsers get past their first checks, while every
+/// other byte — and, half the time, the length fields too — stays random.
+/// Plain random bytes almost never reach the L4 code paths.
+pub(crate) fn ip_like_packet() -> impl proptest::strategy::Strategy<Value = Vec<u8>> {
+    use proptest::prelude::*;
+
+    const SELECTORS: [u8; 11] = [0, 1, 6, 17, 43, 44, 50, 51, 58, 59, 60];
+    let selector = || proptest::sample::select(SELECTORS.to_vec());
+    (
+        proptest::collection::vec(any::<u8>(), 0..160),
+        0u8..5,
+        proptest::collection::vec((selector(), 0u8..3), 4),
+        any::<bool>(),
+        any::<bool>(),
+    )
+        .prop_map(|(mut bytes, shape, chain, consistent_len, clear_fragment)| {
+            let len = bytes.len();
+            match shape {
+                // IPv4 with a 20-byte header, then with a random IHL.
+                0 | 1 if len > 9 => {
+                    bytes[0] = if shape == 0 { 0x45 } else { 0x40 | (bytes[0] & 0x0f) };
+                    bytes[9] = chain[0].0;
+                    if consistent_len {
+                        bytes[2..4].copy_from_slice(&(len as u16).to_be_bytes());
+                    }
+                    if clear_fragment {
+                        bytes[6] = 0;
+                        bytes[7] = 0;
+                    }
+                },
+                // IPv6 with up to three chained extension headers.
+                2 | 3 if len > 7 => {
+                    bytes[0] = 0x60 | (bytes[0] & 0x0f);
+                    if consistent_len {
+                        let payload = len.saturating_sub(40) as u16;
+                        bytes[4..6].copy_from_slice(&payload.to_be_bytes());
+                    }
+                    bytes[6] = chain[0].0;
+                    let mut offset = 40usize;
+                    for (next_header, ext_len) in &chain[1..] {
+                        if offset + 2 > len {
+                            break;
+                        }
+                        bytes[offset] = *next_header;
+                        bytes[offset + 1] = *ext_len;
+                        offset += (usize::from(*ext_len) + 1) * 8;
+                    }
+                },
+                _ => {},
+            }
+            bytes
+        })
+}
+
+/// A valid message with a random suffix cut off and a few bytes overwritten:
+/// keeps most of the structure a parser checks first, breaks the rest.
+pub(crate) fn mutated(base: Vec<u8>) -> impl proptest::strategy::Strategy<Value = Vec<u8>> {
+    use proptest::prelude::*;
+
+    let len = base.len();
+    (
+        0..=len,
+        proptest::collection::vec((any::<proptest::sample::Index>(), any::<u8>()), 0..6),
+    )
+        .prop_map(move |(keep, edits)| {
+            let mut bytes = base[..keep].to_vec();
+            for (index, value) in edits {
+                if !bytes.is_empty() {
+                    let at = index.index(bytes.len());
+                    bytes[at] = value;
+                }
+            }
+            bytes
+        })
+}
