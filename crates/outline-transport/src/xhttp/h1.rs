@@ -43,17 +43,16 @@ use crate::connect_tcp_socket;
 use crate::dns::resolve_host_with_preference;
 use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
-use crate::resumption::SessionId;
 
 use super::post_status::{BusyRetry, check_post_status};
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
 use crate::request_headers::{HttpVersion, RequestKind};
 
 use super::{
-    InboundSender, OutboundReceiver, RequestBody, SessionOpen, SessionRequest, SsPathKind,
-    XhttpStream, XhttpSubmode, XhttpTarget, build_session_request_headers, empty_request_body,
-    full_request_body, generate_session_id, inbound_channel, outbound_channel,
-    parse_ack_prefix_echo, parse_session_response,
+    ConnectedXhttp, InboundSender, OutboundReceiver, RequestBody, SessionEcho, SessionOpen,
+    SessionRequest, SsPathKind, XhttpStream, XhttpSubmode, XhttpTarget,
+    build_session_request_headers, empty_request_body, full_request_body, generate_session_id,
+    inbound_channel, outbound_channel,
 };
 
 /// Same dial budget as the h2/h3 paths — keeps fallback windows
@@ -73,7 +72,7 @@ pub(super) async fn connect_xhttp_h1(
     network: crate::dial_plan::DialNetworkOptions,
     open: SessionOpen,
     combined_ss_kind: Option<SsPathKind>,
-) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
+) -> Result<ConnectedXhttp> {
     if !matches!(submode, XhttpSubmode::PacketUp) {
         bail!("xhttp/h1 carrier supports packet-up only (got submode {submode:?})");
     }
@@ -137,8 +136,7 @@ pub(super) async fn connect_xhttp_h1(
         // Open the GET synchronously so the resume-id round-trip
         // completes before we hand the stream to the caller. Mirrors
         // the h2/h3 packet-up dial shape.
-        let (issued_session_id, ack_prefix_echo, symmetric_replay_echo, udp_records, body) =
-            open_h1_get(down_send, &target, open, profile).await?;
+        let (echo, body) = open_h1_get(down_send, &target, open, profile).await?;
         let driver = tokio::spawn(driver_loop_h1(
             up_send,
             target.clone(),
@@ -151,17 +149,18 @@ pub(super) async fn connect_xhttp_h1(
 
         debug!(
             %url, %session_id, mode = "xhttp_h1",
-            ?issued_session_id, ?open.resume_request, open.ack_prefix_requested, ack_prefix_echo,
+            issued_session_id = ?echo.issued, ?open.resume_request,
+            open.ack_prefix_requested, ack_prefix_echo = echo.ack_prefix,
             "xhttp h1 session opened"
         );
-        Ok::<_, anyhow::Error>((
-            XhttpStream::from_channels(
+        Ok::<_, anyhow::Error>(ConnectedXhttp {
+            stream: XhttpStream::from_channels(
                 in_rx,
                 out_tx,
                 AbortOnDrop::new(driver),
                 XhttpSubmode::PacketUp,
                 false,
-                udp_records,
+                echo.udp_records,
                 // h1 dials two plain sockets (downlink GET, uplink POSTs) with
                 // no single carrier connection to attribute a probe to; this
                 // last-resort fallback carrier is out of scope for loss
@@ -170,10 +169,10 @@ pub(super) async fn connect_xhttp_h1(
                 // No owned QUIC carrier either — h1 is TCP-only.
                 None,
             ),
-            issued_session_id,
-            ack_prefix_echo,
-            symmetric_replay_echo,
-        ))
+            issued: echo.issued,
+            ack_prefix_echo: echo.ack_prefix,
+            symmetric_replay_echo: echo.symmetric_replay,
+        })
     };
 
     // The dial-scoped TLS fingerprint is set once by `DialPlan::connect`;
@@ -244,7 +243,7 @@ async fn open_h1_get(
     target: &XhttpTarget,
     open: SessionOpen,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(Option<SessionId>, bool, bool, bool, hyper::body::Incoming)> {
+) -> Result<(SessionEcho, hyper::body::Incoming)> {
     let req = get_request(target, open, profile)?;
     send.ready().await.context("xhttp h1 not ready for GET")?;
     let resp = send
@@ -254,13 +253,7 @@ async fn open_h1_get(
     if !resp.status().is_success() {
         bail!("xhttp/h1 GET returned {}", resp.status());
     }
-    let issued = parse_session_response(resp.headers());
-    let echo = open.ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
-    let sym_echo = open.symmetric_replay_requested
-        && echo
-        && super::parse_symmetric_replay_echo(resp.headers());
-    let udp_records = super::parse_udp_records_echo(open.datagram_records, resp.headers());
-    Ok((issued, echo, sym_echo, udp_records, resp.into_body()))
+    Ok((SessionEcho::from_response(&open, resp.headers()), resp.into_body()))
 }
 
 /// The session's downlink GET, header case included.

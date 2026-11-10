@@ -33,7 +33,6 @@ use crate::config::TransportMode;
 use crate::dns::resolve_host_with_preference;
 use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
-use crate::resumption::SessionId;
 use crate::{TransportOperation, connect_tcp_socket};
 
 use super::post_status::{BusyRetry, check_post_status};
@@ -42,10 +41,10 @@ use super::window::UplinkWindow;
 use crate::request_headers::{HttpVersion, RequestKind};
 
 use super::{
-    InboundSender, OutboundReceiver, RequestBody, SessionOpen, SessionRequest, SsPathKind,
-    XhttpStream, XhttpSubmode, XhttpTarget, build_session_request_headers, empty_request_body,
-    full_request_body, generate_session_id, inbound_channel, outbound_channel,
-    parse_ack_prefix_echo, parse_session_response, resolve_effective_submode,
+    ConnectedXhttp, InboundSender, OutboundReceiver, RequestBody, SessionEcho, SessionOpen,
+    SessionRequest, SsPathKind, XhttpStream, XhttpSubmode, XhttpTarget,
+    build_session_request_headers, empty_request_body, full_request_body, generate_session_id,
+    inbound_channel, outbound_channel, resolve_effective_submode,
 };
 
 /// Time budget for the initial dial: TCP + TLS + h2 handshake +
@@ -85,7 +84,7 @@ pub(super) async fn connect_xhttp_h2(
     network: crate::dial_plan::DialNetworkOptions,
     open: SessionOpen,
     combined_ss_kind: Option<SsPathKind>,
-) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
+) -> Result<ConnectedXhttp> {
     let submode = resolve_effective_submode(url, mode).await;
     let host = url
         .host_str()
@@ -133,20 +132,13 @@ pub(super) async fn connect_xhttp_h2(
             session_id: session_id.clone(),
         });
 
-        let (
-            issued_session_id,
-            ack_prefix_echo,
-            symmetric_replay_echo,
-            udp_records,
-            driver,
-            active_submode,
-        ) = match submode {
+        let (echo, driver, active_submode) = match submode {
             XhttpSubmode::PacketUp => {
                 // Open the GET synchronously so the resume-id
                 // round-trip completes before we hand the stream to
                 // the caller. The body drain is spawned as a
                 // sub-task; POSTs are pipelined per `start_send`.
-                let (issued, echo, sym_echo, records, body) =
+                let (echo, body) =
                     open_h2_get(send_request.clone(), &target, open, profile).await?;
                 let driver = tokio::spawn(driver_loop_h2(
                     send_request,
@@ -157,7 +149,7 @@ pub(super) async fn connect_xhttp_h2(
                     open.datagram_records,
                     profile,
                 ));
-                (issued, echo, sym_echo, records, driver, XhttpSubmode::PacketUp)
+                (echo, driver, XhttpSubmode::PacketUp)
             },
             XhttpSubmode::StreamOne => {
                 // Stream-one is a single bidirectional POST: open
@@ -171,12 +163,12 @@ pub(super) async fn connect_xhttp_h2(
                 // the simpler carrier on the surviving connection
                 // recovers without burning a fresh handshake.
                 match open_h2_stream_one(send_request.clone(), &target, open, profile).await {
-                    Ok((issued, echo, sym_echo, records, body, frame_tx)) => {
+                    Ok((echo, body, frame_tx)) => {
                         let driver =
                             tokio::spawn(driver_loop_h2_stream_one(in_tx, out_rx, body, frame_tx));
                         crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
                             .await;
-                        (issued, echo, sym_echo, records, driver, XhttpSubmode::StreamOne)
+                        (echo, driver, XhttpSubmode::StreamOne)
                     },
                     Err(stream_err) => {
                         warn!(
@@ -186,7 +178,7 @@ pub(super) async fn connect_xhttp_h2(
                         );
                         crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
                             .await;
-                        let (issued, echo, sym_echo, records, body) =
+                        let (echo, body) =
                             open_h2_get(send_request.clone(), &target, open, profile).await?;
                         let driver = tokio::spawn(driver_loop_h2(
                             send_request,
@@ -197,7 +189,7 @@ pub(super) async fn connect_xhttp_h2(
                             open.datagram_records,
                             profile,
                         ));
-                        (issued, echo, sym_echo, records, driver, XhttpSubmode::PacketUp)
+                        (echo, driver, XhttpSubmode::PacketUp)
                     },
                 }
             },
@@ -205,17 +197,18 @@ pub(super) async fn connect_xhttp_h2(
 
         debug!(
             %url, %session_id, mode = "xhttp_h2", ?submode, ?active_submode,
-            ?issued_session_id, ?open.resume_request, open.ack_prefix_requested, ack_prefix_echo,
+            issued_session_id = ?echo.issued, ?open.resume_request,
+            open.ack_prefix_requested, ack_prefix_echo = echo.ack_prefix,
             "xhttp session opened"
         );
-        Ok::<_, anyhow::Error>((
-            XhttpStream::from_channels(
+        Ok::<_, anyhow::Error>(ConnectedXhttp {
+            stream: XhttpStream::from_channels(
                 in_rx,
                 out_tx,
                 AbortOnDrop::new(driver),
                 active_submode,
                 false,
-                udp_records,
+                echo.udp_records,
                 loss_probe,
                 // No owned QUIC carrier — h2's loss probe duplicates a TCP fd
                 // instead (see `CarrierLossProbe::Tcp`), which needs no
@@ -223,10 +216,10 @@ pub(super) async fn connect_xhttp_h2(
                 None,
             )
             .with_h2_carrier(),
-            issued_session_id,
-            ack_prefix_echo,
-            symmetric_replay_echo,
-        ))
+            issued: echo.issued,
+            ack_prefix_echo: echo.ack_prefix,
+            symmetric_replay_echo: echo.symmetric_replay,
+        })
     };
 
     // The dial-scoped TLS fingerprint is set once by `DialPlan::connect`;
@@ -248,7 +241,7 @@ async fn open_h2_get(
     target: &XhttpTarget,
     open: SessionOpen,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(Option<SessionId>, bool, bool, bool, hyper::body::Incoming)> {
+) -> Result<(SessionEcho, hyper::body::Incoming)> {
     let mut req = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
@@ -276,16 +269,7 @@ async fn open_h2_get(
     if !resp.status().is_success() {
         bail!("xhttp GET returned {}", resp.status());
     }
-    let issued = parse_session_response(resp.headers());
-    // Echo gating: same shape as the WS H1/H2/H3 paths — only report
-    // a positive negotiation when we asked AND the server echoed.
-    let echo = open.ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
-    // v2 echo: requires v1 echo (per spec, v2 without v1 is undefined).
-    let sym_echo = open.symmetric_replay_requested
-        && echo
-        && super::parse_symmetric_replay_echo(resp.headers());
-    let udp_records = super::parse_udp_records_echo(open.datagram_records, resp.headers());
-    Ok((issued, echo, sym_echo, udp_records, resp.into_body()))
+    Ok((SessionEcho::from_response(&open, resp.headers()), resp.into_body()))
 }
 
 /// Stream-one carrier on h2: a single bidirectional POST whose
@@ -299,10 +283,7 @@ async fn open_h2_stream_one(
     open: SessionOpen,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(
-    Option<SessionId>,
-    bool,
-    bool,
-    bool,
+    SessionEcho,
     hyper::body::Incoming,
     mpsc::Sender<Queued<hyper::body::Frame<Bytes>>>,
 )> {
@@ -351,13 +332,7 @@ async fn open_h2_stream_one(
     if !resp.status().is_success() {
         bail!("xhttp stream-one returned {}", resp.status());
     }
-    let issued = parse_session_response(resp.headers());
-    let echo = open.ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
-    let sym_echo = open.symmetric_replay_requested
-        && echo
-        && super::parse_symmetric_replay_echo(resp.headers());
-    let udp_records = super::parse_udp_records_echo(open.datagram_records, resp.headers());
-    Ok((issued, echo, sym_echo, udp_records, resp.into_body(), frame_tx))
+    Ok((SessionEcho::from_response(&open, resp.headers()), resp.into_body(), frame_tx))
 }
 
 async fn driver_loop_h2_stream_one(

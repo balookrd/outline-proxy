@@ -31,7 +31,7 @@ use crate::DnsCache;
 use crate::config::TransportMode;
 use crate::dial_plan::DialNetworkOptions;
 use crate::guards::AbortOnDrop;
-use crate::xhttp::{XhttpStream, connect_xhttp};
+use crate::xhttp::{ConnectedXhttp, XhttpStream, connect_xhttp};
 
 /// Signals when the server-side POST handler is dropped, which is what
 /// happens when the client resets the request stream.
@@ -142,7 +142,7 @@ fn never_ending_chunks(
 async fn session_with_one_pending_post(server: &mut SilentServer) -> XhttpStream {
     let url: Url = format!("http://{}/xh", server.addr).parse().expect("mock url parses");
     let cache = DnsCache::new(Duration::from_secs(30));
-    let (mut stream, _issued, _ack_echo, _sym_echo) = connect_xhttp(
+    let ConnectedXhttp { mut stream, .. } = connect_xhttp(
         &cache,
         &url,
         TransportMode::XhttpH2,
