@@ -87,6 +87,11 @@ fn parse_ipv6_udp_packet(packet: &[u8]) -> Result<ParsedUdpPacket> {
     let mut dst = [0u8; 16];
     dst.copy_from_slice(&packet[24..40]);
     let udp = &packet[udp_offset..total_len];
+    // Extension headers can consume the whole payload: the buffer-length check
+    // above does not bound the UDP slice itself.
+    if udp.len() < UDP_HEADER_LEN {
+        bail!("truncated IPv6 UDP header");
+    }
     let udp_len = usize::from(u16::from_be_bytes([udp[4], udp[5]]));
     if udp_len < UDP_HEADER_LEN || udp.len() < udp_len {
         bail!("truncated IPv6 UDP payload");
@@ -429,3 +434,7 @@ fn ipv6_udp_partial_checksum(source: Ipv6Addr, destination: Ipv6Addr, udp_len: u
     let next_header = [0u8, 0, 0, IPV6_NEXT_HEADER_UDP];
     !checksum16_parts(&[&source[..], &destination[..], &length[..], &next_header[..]])
 }
+
+#[cfg(test)]
+#[path = "tests/wire.rs"]
+mod tests;
