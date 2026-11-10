@@ -851,16 +851,25 @@ impl Metrics {
     /// opposite fixes and were indistinguishable on one series: a production run
     /// that raised the ring 16x and moved nothing could not say whether the size
     /// was irrelevant or the ring was absent all along.
+    ///
+    /// `path` says who the replay was for: `direct` — the client resumed on
+    /// this node and was sent `REPLAY_TRUNCATED`; `mesh` — this node is the
+    /// home of a session relayed from an edge, which gets no such flag to pass
+    /// on, so the client runs on with the gap unannounced. Kept apart because
+    /// only the second case argues for carrying the flag across the mesh, and
+    /// one series could not say how often it happens.
     pub fn record_orphan_downlink_replay_truncated(
         &self,
         transport: &'static str,
         reason: &'static str,
+        path: &'static str,
     ) {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_orphan_downlink_replay_truncated_total",
                 "transport" => transport,
                 "reason" => reason,
+                "path" => path,
             )
             .increment(1);
         });

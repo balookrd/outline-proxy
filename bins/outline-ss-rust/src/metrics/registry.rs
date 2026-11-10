@@ -412,7 +412,10 @@ pub(super) fn register_descriptions() {
          is too small for how far that session fell behind; client_ahead = the \
          client claims bytes the server never emitted. The three call for \
          opposite fixes — allocate, resize, investigate — and were \
-         indistinguishable while they shared one series."
+         indistinguishable while they shared one series. path = direct when \
+         the client resumed on this node and was sent the flag, mesh when this \
+         node is the home of a session relayed from an edge, which has no flag \
+         to pass on, so the client continues with the gap unannounced."
     );
     describe_gauge!(
         "outline_ss_orphan_downlink_buf_bytes",
