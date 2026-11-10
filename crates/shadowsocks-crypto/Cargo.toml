@@ -7,16 +7,16 @@ edition = "2024"
 workspace = true
 
 [dependencies]
-aes = "0.9"
-aes-gcm = "0.11"
-base64 = { version = "0.23", default-features = false, features = ["std"] }
-blake3 = "1.8"
-chacha20poly1305 = "0.11"
-hkdf = "0.13"
-md5 = "0.8"
+aes = { workspace = true }
+aes-gcm = { workspace = true }
+base64 = { workspace = true, features = ["std"] }
+blake3 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+hkdf = { workspace = true }
+md5 = { workspace = true }
 outline-wire = { path = "../outline-wire" }
-rand = "0.10"
-serde = { version = "1.0", features = ["derive"] }
+rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 sha1 = "0.11"
-thiserror = "2.0"
-zeroize = "1.8"
+thiserror = { workspace = true }
+zeroize = { workspace = true }
