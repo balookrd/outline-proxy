@@ -718,46 +718,30 @@ fn extract_tcp_timeouts(doc: &DocumentMut) -> Option<TcpTimeoutsConfigView> {
     })
 }
 
-async fn handle_patch_config(
-    request: Request<Incoming>,
-    state: Arc<ControlState>,
-) -> ControlResponse {
-    let Some(path) = state.config_path.clone() else {
-        return json_error(
-            StatusCode::CONFLICT,
-            "config file path unknown; control endpoints need on-disk config",
-        );
-    };
-
-    let patch: WsConfigPatch = match read_json(request, LABEL).await {
-        Ok(v) => v,
-        Err(err) => return err,
-    };
-
-    // 1. Validation
+/// Field-level checks that need only the patch itself. They exist for their
+/// specific error messages; whether the patched file as a whole still loads is
+/// decided by [`validate_patched_config`].
+fn validate_patch_fields(patch: &WsConfigPatch) -> Result<(), String> {
     if let Some(probe) = &patch.probe {
         if let Some(i) = probe.interval_secs
             && i == 0
         {
-            return json_error(StatusCode::BAD_REQUEST, "probe.interval_secs must be > 0");
+            return Err("probe.interval_secs must be > 0".to_owned());
         }
         if let Some(t) = probe.timeout_secs
             && t == 0
         {
-            return json_error(StatusCode::BAD_REQUEST, "probe.timeout_secs must be > 0");
+            return Err("probe.timeout_secs must be > 0".to_owned());
         }
         if let Some(mf) = probe.min_failures
             && mf == 0
         {
-            return json_error(StatusCode::BAD_REQUEST, "probe.min_failures must be > 0");
+            return Err("probe.min_failures must be > 0".to_owned());
         }
         if let Some(urls) = &probe.http_urls {
             for u in urls {
                 if url::Url::parse(u).is_err() {
-                    return json_error_owned(
-                        StatusCode::BAD_REQUEST,
-                        format!("invalid probe HTTP url: {u}"),
-                    );
+                    return Err(format!("invalid probe HTTP url: {u}"));
                 }
             }
         }
@@ -768,30 +752,21 @@ async fn handle_patch_config(
             && !listen.trim().is_empty()
             && listen.trim().parse::<SocketAddr>().is_err()
         {
-            return json_error(StatusCode::BAD_REQUEST, "invalid socks5.listen socket address");
+            return Err("invalid socks5.listen socket address".to_owned());
         }
         if let Some(users) = &s5.users {
             for u in users {
                 let uname = u.username.trim();
                 if uname.is_empty() {
-                    return json_error(
-                        StatusCode::BAD_REQUEST,
-                        "socks5 user username cannot be empty",
-                    );
+                    return Err("socks5 user username cannot be empty".to_owned());
                 }
                 if uname.len() > 255 {
-                    return json_error(
-                        StatusCode::BAD_REQUEST,
-                        "socks5 username is too long (max 255 bytes)",
-                    );
+                    return Err("socks5 username is too long (max 255 bytes)".to_owned());
                 }
                 if let Some(pass) = &u.password
                     && pass.len() > 255
                 {
-                    return json_error(
-                        StatusCode::BAD_REQUEST,
-                        "socks5 password is too long (max 255 bytes)",
-                    );
+                    return Err("socks5 password is too long (max 255 bytes)".to_owned());
                 }
             }
         }
@@ -801,18 +776,12 @@ async fn handle_patch_config(
         if let (Some(min), Some(max)) = (padding.min_bytes, padding.max_bytes)
             && min > max
         {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                "padding min_bytes cannot exceed max_bytes",
-            );
+            return Err("padding min_bytes cannot exceed max_bytes".to_owned());
         }
         if let (Some(min), Some(max)) = (padding.cover_jitter_min_ms, padding.cover_jitter_max_ms)
             && min > max
         {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                "padding cover_jitter_min_ms cannot exceed max_ms",
-            );
+            return Err("padding cover_jitter_min_ms cannot exceed max_ms".to_owned());
         }
     }
 
@@ -825,58 +794,38 @@ async fn handle_patch_config(
             && p != "random"
             && p != "per-host"
         {
-            return json_error(
-                StatusCode::BAD_REQUEST,
-                "invalid fingerprint_profile (accepted: off, stable, random)",
-            );
+            return Err("invalid fingerprint_profile (accepted: off, stable, random)".to_owned());
         }
     }
 
-    let _guard = state.config_write_lock.lock().await;
-    let raw = match fs::read_to_string(&path).await {
-        Ok(s) => s,
-        Err(err) => {
-            return json_error_owned(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to read config: {err}"),
-            );
-        },
-    };
+    Ok(())
+}
 
-    let mut doc = match raw.parse::<DocumentMut>() {
-        Ok(d) => d,
-        Err(err) => {
-            return json_error_owned(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("config is not valid TOML: {err}"),
-            );
-        },
-    };
-
-    // Apply patches
+/// Writes every field `patch` carries into `doc`.
+fn apply_config_patch(doc: &mut DocumentMut, patch: &WsConfigPatch) {
     if let Some(probe) = &patch.probe {
-        apply_probe_patch(&mut doc, probe);
+        apply_probe_patch(doc, probe);
     }
     if let Some(s5) = &patch.socks5 {
-        apply_socks5_patch(&mut doc, s5);
+        apply_socks5_patch(doc, s5);
     }
     if let Some(tun) = &patch.tun {
-        apply_tun_patch(&mut doc, tun);
+        apply_tun_patch(doc, tun);
     }
     if let Some(dial) = &patch.dial {
-        apply_dial_patch(&mut doc, dial);
+        apply_dial_patch(doc, dial);
     }
     if let Some(pad) = &patch.padding {
-        apply_padding_patch(&mut doc, pad);
+        apply_padding_patch(doc, pad);
     }
     if let Some(quic) = &patch.quic {
-        apply_quic_patch(&mut doc, quic);
+        apply_quic_patch(doc, quic);
     }
     if let Some(h2) = &patch.h2 {
-        apply_h2_patch(&mut doc, h2);
+        apply_h2_patch(doc, h2);
     }
     if let Some(timeouts) = &patch.tcp_timeouts {
-        apply_tcp_timeouts_patch(&mut doc, timeouts);
+        apply_tcp_timeouts_patch(doc, timeouts);
     }
     if let Some(fp) = &patch.fingerprint_profile {
         doc.insert("fingerprint_profile", value(fp.trim()));
@@ -916,6 +865,94 @@ async fn handle_patch_config(
     if let Some(buf) = patch.udp_send_buf_bytes {
         doc.insert("udp_send_buf_bytes", value(buf as i64));
     }
+}
+
+/// Runs the startup loader over the patched config text. A patch is checked
+/// field by field against itself, but a field can also be wrong only together
+/// with what is already on disk — `tun.mtu` below the floor, `socks5.users`
+/// next to an existing single `username`/`password`. Such a file would be
+/// written successfully and then refuse to load on the next restart, taking
+/// the node down long after the edit that broke it.
+async fn validate_patched_config(
+    rendered: &str,
+    path: &std::path::Path,
+    args: &crate::config::Args,
+) -> Result<(), String> {
+    crate::config::load_config_from_raw(Some(rendered), path, args)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("patched config would not load, nothing was written: {error:#}"))
+}
+
+/// Why [`patched_config`] produced no document.
+#[derive(Debug)]
+enum PatchRejection {
+    /// The patch is wrong, alone or together with the config on disk (400).
+    Invalid(String),
+    /// The config on disk is not TOML, so there is nothing to patch (500).
+    UnreadableConfig(String),
+}
+
+/// The whole edit short of the write: checks `patch`, applies it to the
+/// config text `raw` and, when the launch `args` are known, confirms the
+/// result still loads. `path` is where the text lives; it is not read here.
+async fn patched_config(
+    raw: &str,
+    patch: &WsConfigPatch,
+    path: &std::path::Path,
+    args: Option<&crate::config::Args>,
+) -> Result<DocumentMut, PatchRejection> {
+    validate_patch_fields(patch).map_err(PatchRejection::Invalid)?;
+    let mut doc = raw.parse::<DocumentMut>().map_err(|err| {
+        PatchRejection::UnreadableConfig(format!("config is not valid TOML: {err}"))
+    })?;
+    apply_config_patch(&mut doc, patch);
+    if let Some(args) = args {
+        validate_patched_config(&doc.to_string(), path, args)
+            .await
+            .map_err(PatchRejection::Invalid)?;
+    }
+    Ok(doc)
+}
+
+async fn handle_patch_config(
+    request: Request<Incoming>,
+    state: Arc<ControlState>,
+) -> ControlResponse {
+    let Some(path) = state.config_path.clone() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            "config file path unknown; control endpoints need on-disk config",
+        );
+    };
+
+    let patch: WsConfigPatch = match read_json(request, LABEL).await {
+        Ok(v) => v,
+        Err(err) => return err,
+    };
+
+    let _guard = state.config_write_lock.lock().await;
+    let raw = match fs::read_to_string(&path).await {
+        Ok(s) => s,
+        Err(err) => {
+            return json_error_owned(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read config: {err}"),
+            );
+        },
+    };
+    // Without an apply handle (test-only states) there are no launch args to
+    // load against, and nothing restarts from this file either.
+    let args = state.apply.as_ref().map(|apply| &apply.args);
+    let doc = match patched_config(&raw, &patch, &path, args).await {
+        Ok(doc) => doc,
+        Err(PatchRejection::Invalid(message)) => {
+            return json_error_owned(StatusCode::BAD_REQUEST, message);
+        },
+        Err(PatchRejection::UnreadableConfig(message)) => {
+            return json_error_owned(StatusCode::INTERNAL_SERVER_ERROR, message);
+        },
+    };
 
     if let Err(err) = write_document_atomic(&path, &doc).await {
         return json_error_owned(
@@ -1338,3 +1375,7 @@ fn apply_tcp_timeouts_patch(doc: &mut DocumentMut, patch: &TcpTimeoutsConfigPatc
         tbl.insert("direct_idle_secs", value(v as i64));
     }
 }
+
+#[cfg(test)]
+#[path = "tests/config_crud.rs"]
+mod tests;

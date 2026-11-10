@@ -16,6 +16,8 @@ pub(crate) use load::load_balancing_config;
 pub(crate) use schema::ConfigFile;
 
 #[cfg(feature = "control")]
+pub(crate) use load::load_config_from_raw;
+#[cfg(feature = "control")]
 pub(crate) use load::validate_uplink_section;
 #[cfg(feature = "control")]
 pub(crate) use schema::UplinkSection;

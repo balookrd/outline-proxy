@@ -38,16 +38,35 @@ const DROP_TARGET: &str = "drop";
 const DEFAULT_GROUP: &str = "default";
 
 pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
-    let file = if path.exists() {
-        let raw = fs::read_to_string(path)
-            .await
-            .with_context(|| format!("failed to read {}", path.display()))?;
+    let raw = if path.exists() {
         Some(
-            toml::from_str::<ConfigFile>(&raw)
-                .with_context(|| format!("failed to parse {}", path.display()))?,
+            fs::read_to_string(path)
+                .await
+                .with_context(|| format!("failed to read {}", path.display()))?,
         )
     } else {
         None
+    };
+    load_config_from_raw(raw.as_deref(), path, args).await
+}
+
+/// [`load_config`] over config text the caller already holds: `raw` is the
+/// TOML that is (or is about to be) at `path`, `None` when there is no file.
+/// `path` only anchors relative references (rule files, the control token
+/// file) and names the file in errors. The control API runs this on an edited
+/// config before writing it, so it never puts on disk a file the next start
+/// would refuse.
+pub(crate) async fn load_config_from_raw(
+    raw: Option<&str>,
+    path: &Path,
+    args: &Args,
+) -> Result<AppConfig> {
+    let file = match raw {
+        Some(raw) => Some(
+            toml::from_str::<ConfigFile>(raw)
+                .with_context(|| format!("failed to parse {}", path.display()))?,
+        ),
+        None => None,
     };
 
     let socks5 = file.as_ref().and_then(|f| f.socks5.as_ref());
