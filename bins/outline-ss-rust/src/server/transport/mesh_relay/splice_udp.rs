@@ -1,7 +1,51 @@
 //! Plaintext Shadowsocks-UDP splice, and the response sender that routes a
 //! relayed session's NAT replies back over the mesh.
 
-use super::*;
+use super::CLOSE_NONE;
+use super::close::{
+    DownlinkEnd, SpliceEnd, SpliceFault, SpliceOutcome, StreamClose, resolve_close_intent,
+    splice_end,
+};
+use super::home::refuse_relay;
+use crate::metrics::AppProtocol;
+use crate::metrics::Protocol;
+use crate::metrics::Transport;
+use crate::server::cluster::ClusterCtx;
+use crate::server::cluster::mesh::CloseIntent;
+use crate::server::cluster::mesh::CloseReason;
+use crate::server::cluster::mesh::MeshStream;
+use crate::server::cluster::mesh::OpenHeader;
+use crate::server::cluster::mesh::UpstreamAckFrame;
+use crate::server::cluster::mesh::read_datagram;
+use crate::server::cluster::mesh::write_datagram;
+use crate::server::constants::UDP_MAX_CONCURRENT_RELAY_TASKS;
+use crate::server::nat::NatKey;
+use crate::server::nat::ResponseSender;
+use crate::server::nat::UdpResponseCoding;
+use crate::server::nat::UdpResponseSender;
+use crate::server::resumption::Parked;
+use crate::server::resumption::ParkedSsUdpStream;
+use crate::server::resumption::SessionId;
+use crate::server::state::Services;
+use crate::server::transport::udp::StreamNatKeys;
+use crate::server::transport::udp::UdpDatagramCtx;
+use crate::server::transport::udp::UdpServerCtx;
+use crate::server::transport::udp::detach_stream_nat_keys;
+use crate::server::transport::udp::next_ss_udp_stream_id;
+use crate::server::transport::udp::reattach_parked_nat_keys;
+use crate::server::transport::udp::relay_socks5_datagram;
+use anyhow::Context;
+use anyhow::Result;
+use bytes::Bytes;
+use futures_util::future::BoxFuture;
+use futures_util::stream::FuturesUnordered;
+use futures_util::{FutureExt, StreamExt};
+use quinn::VarInt;
+use std::sync::Arc;
+use tokio::sync::Notify;
+use tokio::sync::mpsc;
+use tracing::debug;
+use tracing::warn;
 
 /// The identity every NAT key of a relayed SS-UDP session is built from, taken
 /// from the park and cross-checked against the user the edge attested.

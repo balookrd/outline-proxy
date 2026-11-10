@@ -1,6 +1,37 @@
 //! Plaintext VLESS mux splice.
 
-use super::*;
+use super::close::{
+    DownlinkEnd, SpliceEnd, SpliceFault, SpliceOutcome, StreamClose, resolve_close_intent,
+    splice_end,
+};
+use super::home::refuse_relay;
+use super::splice_udp::RELAYED_PATH;
+use super::{CLOSE_NONE, MESH_HOME_SPLICE_CHUNK};
+use crate::metrics::Protocol;
+use crate::server::cluster::ClusterCtx;
+use crate::server::cluster::mesh::CloseIntent;
+use crate::server::cluster::mesh::CloseReason;
+use crate::server::cluster::mesh::MeshStream;
+use crate::server::cluster::mesh::OpenHeader;
+use crate::server::cluster::mesh::UpstreamAckFrame;
+use crate::server::resumption::Parked;
+use crate::server::resumption::ParkedVlessMux;
+use crate::server::resumption::SessionId;
+use crate::server::state::Services;
+use crate::server::transport::vless_mux;
+use crate::server::transport::vless_mux::MuxAccounting;
+use crate::server::transport::vless_mux::MuxRouteCtx;
+use crate::server::transport::vless_mux::MuxServerCtx;
+use anyhow::Context;
+use anyhow::Result;
+use bytes::Bytes;
+use outline_wire::padding::PaddingScheme;
+use quinn::VarInt;
+use std::sync::Arc;
+use tokio::sync::Notify;
+use tokio::sync::mpsc;
+use tracing::debug;
+use tracing::warn;
 
 /// Splices a relayed plaintext VLESS-mux session onto the bundle of
 /// sub-connections it parked.

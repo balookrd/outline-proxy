@@ -1,6 +1,28 @@
 //! Plaintext VLESS-UDP splice.
 
-use super::*;
+use super::CLOSE_NONE;
+use super::close::{
+    DownlinkEnd, SpliceEnd, SpliceFault, SpliceOutcome, StreamClose, resolve_close_intent,
+    splice_end,
+};
+use crate::server::cluster::ClusterCtx;
+use crate::server::cluster::mesh::CloseIntent;
+use crate::server::cluster::mesh::MeshStream;
+use crate::server::cluster::mesh::OpenHeader;
+use crate::server::cluster::mesh::UpstreamAckFrame;
+use crate::server::cluster::mesh::read_datagram;
+use crate::server::cluster::mesh::write_datagram;
+use crate::server::resumption::OrphanRegistry;
+use crate::server::resumption::Parked;
+use crate::server::resumption::ParkedVlessUdpSingle;
+use crate::server::resumption::SessionId;
+use crate::server::scratch::UdpRecvBuf;
+use anyhow::Context;
+use anyhow::Result;
+use quinn::VarInt;
+use tokio::sync::Notify;
+use tracing::debug;
+use tracing::warn;
 
 /// Splices a relayed plaintext VLESS-UDP session onto the single connected
 /// `UdpSocket` it parked.
