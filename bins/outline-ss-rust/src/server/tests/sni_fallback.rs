@@ -30,7 +30,7 @@ use tokio_rustls::TlsConnector;
 /// ephemeral port pool, parallel runs surface as `Connection refused`
 /// flakes. Serialise the suite — three tests, ~3 s total, not worth a
 /// `serial_test` dep just for this.
-fn test_lock() -> &'static AsyncMutex<()> {
+pub(super) fn test_lock() -> &'static AsyncMutex<()> {
     static LOCK: std::sync::OnceLock<AsyncMutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| AsyncMutex::new(()))
 }
@@ -139,7 +139,7 @@ impl ServerCertVerifier for AcceptAnyServer {
     }
 }
 
-fn permissive_client_config() -> ClientConfig {
+pub(super) fn permissive_client_config() -> ClientConfig {
     super::super::ensure_rustls_provider_installed();
     ClientConfig::builder()
         .dangerous()
@@ -159,7 +159,7 @@ fn write_temp_pem(prefix: &str, contents: &str) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-fn make_sample_config_with_tls(
+pub(super) fn make_sample_config_with_tls(
     listen: SocketAddr,
 ) -> Result<(Config, std::path::PathBuf, std::path::PathBuf)> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
