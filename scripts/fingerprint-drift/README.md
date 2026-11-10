@@ -51,6 +51,11 @@ Linux. The sink issues no TLS session tickets (`num_tickets = 0` in
 `tls_sink.py`), so later connections are not resumed: a resumed hello adds
 `pre_shared_key`.
 
+The destination connection ID length of the QUIC Initial (`initial_dcid_len`)
+is compared as is for Chrome, where it is a constant. Firefox draws it per
+connection in the range 8..20, so any length in that range is recorded as
+`"8..20"` and only a length outside it shows up as drift.
+
 ## Running locally
 
 Linux (or Docker) with the browsers installed:

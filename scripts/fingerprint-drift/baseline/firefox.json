@@ -565,6 +565,7 @@
       24,
       25
     ],
+    "initial_dcid_len": "8..20",
     "ja4_ab": "q13d0315h3_55b375c5d22e",
     "key_share": [
       4588,

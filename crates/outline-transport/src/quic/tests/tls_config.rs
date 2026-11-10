@@ -312,6 +312,57 @@ fn capture_clienthello(
     clienthello
 }
 
+/// First datagram a client built from `config` puts on the wire.
+fn first_initial_datagram(
+    config: quinn::ClientConfig,
+    endpoint_config: quinn::EndpointConfig,
+) -> Vec<u8> {
+    let mut endpoint = quinn_proto::Endpoint::new(Arc::new(endpoint_config), None, false, None);
+    let now = Instant::now();
+    let remote = "203.0.113.1:443".parse().unwrap();
+    let (_handle, mut conn) = endpoint
+        .connect(now, config, remote, "www.example.com")
+        .expect("sans-IO connect");
+    let mut buf = Vec::new();
+    let transmit = conn.poll_transmit(now, 1, &mut buf).expect("client sends an Initial");
+    buf.truncate(transmit.size);
+    buf
+}
+
+/// The destination CID length is in the clear in the long header
+/// (`flags | version(4) | dcid_len | dcid | scid_len | scid`). It must be the
+/// browser's: 8 bytes for Chrome (measured), 8..=20 for Firefox (neqo's rule),
+/// not quinn's constant 20.
+#[tokio::test]
+async fn h3_initial_dcid_length_follows_the_browser() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+
+    let dcid_and_scid_len = |dgram: &[u8]| {
+        assert_eq!(dgram[0] & 0xf0, 0xc0, "first packet is an Initial");
+        let dcid_len = usize::from(dgram[5]);
+        (dcid_len, usize::from(dgram[6 + dcid_len]))
+    };
+
+    let chromium = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
+        first_initial_datagram(super::h3_quic_client_config(), super::h3_endpoint_config())
+    })
+    .await;
+    assert_eq!(dcid_and_scid_len(&chromium), (8, 0), "Chrome: 8-byte DCID, empty SCID");
+
+    let mut firefox_lens = std::collections::BTreeSet::new();
+    for _ in 0..64 {
+        let firefox = with_dial_fingerprint(Some(TlsFingerprint::Firefox), async {
+            first_initial_datagram(super::h3_quic_client_config(), super::h3_endpoint_config())
+        })
+        .await;
+        let (dcid_len, scid_len) = dcid_and_scid_len(&firefox);
+        assert!((8..=20).contains(&dcid_len), "Firefox DCID length {dcid_len}");
+        assert_eq!(scid_len, 3, "Firefox: 3-byte SCID");
+        firefox_lens.insert(dcid_len);
+    }
+    assert!(firefox_lens.len() > 1, "Firefox DCID length never varied: {firefox_lens:?}");
+}
+
 /// Regression for the H3 carrier config. The H3 QUIC config picks up the dial
 /// fingerprint (PQ key share on the wire); the Safari profile leaves QUIC datagrams off
 /// like Apple does, so `max_datagram_frame_size` (0x20) is absent.

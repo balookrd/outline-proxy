@@ -199,6 +199,7 @@ pub(crate) fn build_h3_transport_with_first_probe(
     transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(tp.max_bidi_streams));
     transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(tp.max_uni_streams));
     apply_quic_carrier_tuning(&mut transport, first_probe);
+    transport.allow_spin(tp.spin_bit);
     super::vendored::apply_browser_tp_options(&mut transport, &tp.options);
     transport
 }
@@ -277,6 +278,7 @@ pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
         .expect("h3 rustls config is always QUIC-compatible");
     let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));
     let tp = super::tp_profile::for_fingerprint(fp);
+    config.initial_dst_cid_provider(tp.initial_dst_cid_provider());
     let transport = build_h3_transport(tp, RuntimeWindows::current(tp));
     if let Some(keepalive) = QUIC_CUSTOM_KEEPALIVE.get().copied() {
         let idle = QUIC_CUSTOM_IDLE_TIMEOUT.get().copied().unwrap_or(tp.idle_timeout);

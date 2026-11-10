@@ -4,8 +4,9 @@ import unittest
 
 from common import BASELINE, DATA, needs_tshark
 from hello import GREASE
-from normalize import (_as_set, _transport_parameters, _version_information, check_ua_major,
-                       major, normalize_headers, normalize_hello, snapshot)
+from normalize import (_as_set, _initial_dcid_len, _transport_parameters,
+                       _version_information, check_ua_major, major, normalize_headers,
+                       normalize_hello, snapshot)
 
 
 class RulesTest(unittest.TestCase):
@@ -23,6 +24,16 @@ class RulesTest(unittest.TestCase):
             snap["major"] += 1
             with self.assertRaisesRegex(ValueError, "disagrees with versions.json"):
                 check_ua_major(snap)
+
+    def test_initial_dcid_len(self):
+        # Chrome's length is a constant: every change is drift.
+        self.assertEqual(_initial_dcid_len("chrome", 8), 8)
+        self.assertEqual(_initial_dcid_len("chrome", 13), 13)
+        # Firefox draws 8..20 per connection; only leaving the range is drift.
+        for length in (8, 13, 20):
+            self.assertEqual(_initial_dcid_len("firefox", length), "8..20")
+        self.assertEqual(_initial_dcid_len("firefox", 7), 7)
+        self.assertEqual(_initial_dcid_len("firefox", 0), 0)
 
     def test_set_keeps_grease_count(self):
         self.assertEqual(_as_set([GREASE, 16, 0, GREASE, 5]), [0, 5, 16, GREASE, GREASE])

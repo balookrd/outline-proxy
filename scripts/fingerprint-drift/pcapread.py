@@ -90,11 +90,15 @@ def client_hellos(pcap):
         if hello is None:
             continue  # only a fragment of a split hello: skip, not abort
         ja4 = _first(layers, "tls.handshake.ja4")
-        out.append({
+        record = {
             "port": int(_first(layers, "tcp.srcport", "udp.srcport")),
             "ja4": _quic_ja4(ja4) if quic else ja4,
             "hello": parse_client_hello(hello),
-        })
+        }
+        if quic:
+            # Destination CID length of the Initial: cleartext in the long header.
+            record["dcid_len"] = int(_first(layers, "quic.dcil"))
+        out.append(record)
     return out
 
 
