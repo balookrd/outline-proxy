@@ -37,3 +37,6 @@ webpki-roots = "1.0"
 [dev-dependencies]
 tempfile = "3"
 tower = "0.5"
+
+[lints]
+workspace = true

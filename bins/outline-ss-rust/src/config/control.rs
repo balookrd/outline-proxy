@@ -4,11 +4,21 @@ use anyhow::Result;
 
 use super::{cli::ConfigArgs, file::FileConfig};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[cfg_attr(not(feature = "control"), allow(dead_code))]
 pub struct ControlConfig {
     pub listen: SocketAddr,
     pub token: String,
+}
+
+// Hand-written so a `{:?}` of the config can never put the token in a log.
+impl std::fmt::Debug for ControlConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ControlConfig")
+            .field("listen", &self.listen)
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 pub(super) fn resolve_control_config(
@@ -53,3 +63,7 @@ pub(super) fn resolve_control_config(
         (None, Some(_)) => anyhow::bail!("control.token requires control.listen"),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/control.rs"]
+mod tests;
