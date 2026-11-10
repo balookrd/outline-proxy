@@ -12,7 +12,7 @@ use tracing::{debug, warn};
 
 use outline_metrics as metrics;
 use outline_net::{RelayReadBuf, STREAM_INITIAL_READ_CAPACITY};
-use outline_transport::TcpWriter;
+use outline_transport::{TcpReader, TcpWriter};
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 
 use outline_uplink::{OverflowPolicy, TransportKind, UplinkManager, UplinkTransport};
@@ -57,6 +57,246 @@ async fn await_readable_or_keepalive(
     } else {
         client_read.readable().await.map_err(ClientIo::ReadFailed)?;
         Ok(UplinkIo::Readable)
+    }
+}
+
+/// Client→upstream half of one relay leg: reads the SOCKS client, records
+/// every chunk in the mid-session retry ring (when the session is eligible)
+/// and sends it upstream, emitting keepalives while the client stays quiet.
+struct UplinkPump {
+    uplinks: UplinkManager,
+    name: Arc<str>,
+    client_read: Arc<Mutex<OwnedReadHalf>>,
+    ring: Option<Arc<Mutex<ClientUpstreamRingBuffer>>>,
+    writer: TcpWriter,
+    activity: tokio::sync::mpsc::UnboundedSender<()>,
+    keepalive_interval: Option<Duration>,
+    overflow_policy: OverflowPolicy,
+    buffer_cap: usize,
+}
+
+impl UplinkPump {
+    async fn run(mut self) -> Result<UplinkOutcome> {
+        let mut chunks_sent: u64 = 0;
+        // The pinned relay keeps a fixed uplink for the whole leg, so
+        // resolve the uplink byte counter once instead of per chunk.
+        let up_bytes =
+            metrics::flow_bytes_counter("tcp", "up", self.uplinks.group_name(), &self.name);
+        // One read buffer for the whole leg, reused across chunks. Stream
+        // reads are never truncated by a short buffer, so the window starts
+        // at 16 KiB and doubles (up to the SS max-payload chunk ceiling)
+        // only once a read saturates it — a small request no longer sizes
+        // its read at 64 KiB, a bulk upload still gets there. `park`
+        // releases the allocation while the client half stays quiet.
+        let mut read_buf =
+            RelayReadBuf::adaptive(STREAM_INITIAL_READ_CAPACITY, SHADOWSOCKS_MAX_PAYLOAD);
+        loop {
+            let read = {
+                // INVARIANT: this task is the only holder of the read
+                // guard, which is why keeping it across the readiness wait
+                // is safe — `await_readable_or_keepalive` parks for as long
+                // as the client stays quiet (unbounded), and on the
+                // keepalive arm it also awaits an upstream write. Under a
+                // second reader that hold would become a latency mine, so
+                // adding one means parking readiness outside the lock and
+                // taking the guard only for `try_read_buf`.
+                let cr_guard = self.client_read.lock().await;
+                match read_buf
+                    .park(await_readable_or_keepalive(
+                        &cr_guard,
+                        self.keepalive_interval,
+                        &mut self.writer,
+                    ))
+                    .await?
+                {
+                    UplinkIo::Readable => {},
+                    UplinkIo::KeepaliveSent => continue,
+                }
+                match cr_guard.try_read_buf(read_buf.ready()) {
+                    Ok(read) => read,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        continue;
+                    },
+                    Err(error) => return Err(ClientIo::ReadFailed(error).into()),
+                }
+            };
+            if read == 0 {
+                // Client-side EOF. Signal upstream half-close (Close
+                // frame for WS, half-close FIN for sockets) and
+                // exit the uplink task. Downlink is NOT aborted —
+                // a server may still have in-flight bytes (SSH
+                // banner, HTTP response after request body) and
+                // tearing the upstream down eagerly would truncate
+                // them.
+                debug!(
+                    uplink = %self.name,
+                    transport_supports_tcp_half_close = self.writer.supports_half_close(),
+                    "client closed SOCKS TCP session; initiating upstream half-close and awaiting downlink"
+                );
+                self.writer.close().await?;
+                break;
+            }
+            up_bytes.add(read);
+            // Push BEFORE send so the buffer's `total_sent` matches
+            // the bytes the server will see if the send succeeds.
+            // Order matters for the Ack-Prefix offset semantics:
+            // server reports bytes it ACKED, so anything we pushed
+            // but failed to send is still counted in our buffer and
+            // a future replay will re-emit it.
+            if let Some(r) = &self.ring {
+                let mut r_guard = r.lock().await;
+                if let Err(push_err) = r_guard.push(read_buf.filled()) {
+                    // Single-chunk overflow: replay can never
+                    // reconstruct this byte range. The configured
+                    // policy decides whether the active session
+                    // limps on (Soft — surfaces `failed_replay` on
+                    // any future retry) or dies on the spot (Hard
+                    // — guarantees retry-correctness for the rest
+                    // of the deployment).
+                    metrics::record_mid_session_retry(
+                        "tcp",
+                        self.uplinks.group_name(),
+                        &self.name,
+                        "buffer_overflow",
+                    );
+                    match self.overflow_policy {
+                        outline_uplink::OverflowPolicy::Soft => {
+                            debug!(
+                                uplink = %self.name,
+                                error = ?push_err,
+                                policy = "soft",
+                                "uplink chunk exceeds mid-session retry buffer cap; \
+                                 letting the chunk through, future retries will surface \
+                                 failed_replay"
+                            );
+                        },
+                        outline_uplink::OverflowPolicy::Hard => {
+                            debug!(
+                                uplink = %self.name,
+                                error = ?push_err,
+                                policy = "hard",
+                                "uplink chunk exceeds mid-session retry buffer cap; \
+                                 dropping session per overflow policy"
+                            );
+                            drop(r_guard);
+                            return Err(anyhow::anyhow!(
+                                "mid-session retry buffer overflow on uplink {} \
+                                 (chunk_len={}, cap={}); session dropped per \
+                                 tcp_mid_session_retry_overflow_policy = \"hard\"",
+                                self.name,
+                                read,
+                                self.buffer_cap,
+                            ));
+                        },
+                    }
+                }
+            }
+            self.writer.send_chunk(read_buf.filled()).await?;
+            let _ = self.activity.send(());
+            chunks_sent += 1;
+            if chunks_sent == 1 {
+                debug!(uplink = %self.name, "first chunk sent to upstream");
+            }
+            // NOTE: do NOT call `report_active_traffic` here. Sending a
+            // chunk to the upstream only proves we wrote bytes into the
+            // tunnel — it is NOT proof the data path delivers. A degraded
+            // server accepts the bytes and then closes the data path
+            // (`Close 1013`), so stamping liveness on send let a
+            // handshake-alive / data-dead uplink clear its data-plane
+            // death streak on every flow and keep the strict-global active
+            // slot forever. Liveness is reported only on the *downlink*
+            // path below (bytes actually received from upstream and
+            // delivered to the client = proven delivery).
+        }
+        Ok(UplinkOutcome::Finished)
+    }
+}
+
+/// Upstream→client half of one relay leg: flushes `first_chunk` (the bytes
+/// chunk-0 failover already received, or a v2 downlink replay suffix after a
+/// redial), then forwards upstream chunks to the SOCKS client, advancing
+/// `client_acked_offset` only after each write lands.
+struct DownlinkPump {
+    uplinks: UplinkManager,
+    name: Arc<str>,
+    active_index: usize,
+    client_write: Arc<Mutex<OwnedWriteHalf>>,
+    client_acked_offset: Arc<std::sync::atomic::AtomicU64>,
+    reader: TcpReader,
+    first_chunk: Option<Vec<u8>>,
+    activity: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+impl DownlinkPump {
+    async fn run(mut self) -> Result<()> {
+        // The pinned relay keeps a fixed uplink for the whole leg, so
+        // resolve the downlink byte counter once and reuse it for the
+        // first chunk and every subsequent chunk.
+        let down_bytes =
+            metrics::flow_bytes_counter("tcp", "down", self.uplinks.group_name(), &self.name);
+        let already_forwarded = if let Some(fc) = self.first_chunk {
+            if !fc.is_empty() {
+                down_bytes.add(fc.len());
+                let mut cw_guard = self.client_write.lock().await;
+                cw_guard.write_all(&fc).await.map_err(ClientIo::WriteFailed)?;
+                drop(cw_guard);
+                // Increment AFTER the write succeeds — the v2
+                // counter is the offset of bytes that have actually
+                // reached the SOCKS5 client. A failed write is
+                // accounted for via session teardown, not by
+                // bumping the counter.
+                self.client_acked_offset
+                    .fetch_add(fc.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                let _ = self.activity.send(());
+                self.uplinks
+                    .report_active_traffic(self.active_index, TransportKind::Tcp)
+                    .await;
+                1u64
+            } else {
+                0u64
+            }
+        } else {
+            0u64
+        };
+
+        let mut chunks_forwarded: u64 = already_forwarded;
+        loop {
+            let chunk = match self.reader.read_chunk().await {
+                Ok(chunk) => chunk,
+                Err(_err) if self.reader.closed_cleanly() => {
+                    if chunks_forwarded == 0 {
+                        debug!(
+                            uplink = %self.name,
+                            "upstream closed before sending any data"
+                        );
+                    }
+                    break;
+                },
+                Err(err) => return Err(err),
+            };
+            if chunk.is_empty() {
+                // An empty decrypted payload is not valid in SS;
+                // treat it as EOF rather than busy-looping.
+                break;
+            }
+            chunks_forwarded += 1;
+            down_bytes.add(chunk.len());
+            let mut cw_guard = self.client_write.lock().await;
+            cw_guard.write_all(&chunk).await.map_err(ClientIo::WriteFailed)?;
+            drop(cw_guard);
+            // v2 downlink counter: bump after the write completes
+            // so the reported offset only ever reflects bytes the
+            // SOCKS5 client has observed.
+            self.client_acked_offset
+                .fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            let _ = self.activity.send(());
+            self.uplinks
+                .report_active_traffic(self.active_index, TransportKind::Tcp)
+                .await;
+        }
+        let mut cw_guard = self.client_write.lock().await;
+        cw_guard.shutdown().await.context("client shutdown failed")?;
+        Ok(())
     }
 }
 
@@ -221,230 +461,30 @@ pub(super) async fn run_relay(
         let activity_for_downlink = activity_tx.clone();
         drop(activity_tx);
 
-        let name_for_uplink = Arc::clone(&active_name);
-        let manager_for_uplink = uplinks.clone();
-        let cr_for_uplink = Arc::clone(&client_read);
-        let ring_for_uplink = ring.clone();
-        let mut uplink_writer = writer;
-        let uplink = async move {
-            let mut chunks_sent: u64 = 0;
-            // The pinned relay keeps a fixed uplink for the whole leg, so
-            // resolve the uplink byte counter once instead of per chunk.
-            let up_bytes = metrics::flow_bytes_counter(
-                "tcp",
-                "up",
-                manager_for_uplink.group_name(),
-                &name_for_uplink,
-            );
-            // One read buffer for the whole leg, reused across chunks. Stream
-            // reads are never truncated by a short buffer, so the window starts
-            // at 16 KiB and doubles (up to the SS max-payload chunk ceiling)
-            // only once a read saturates it — a small request no longer sizes
-            // its read at 64 KiB, a bulk upload still gets there. `park`
-            // releases the allocation while the client half stays quiet.
-            let mut read_buf =
-                RelayReadBuf::adaptive(STREAM_INITIAL_READ_CAPACITY, SHADOWSOCKS_MAX_PAYLOAD);
-            loop {
-                let read = {
-                    // INVARIANT: this task is the only holder of the read
-                    // guard, which is why keeping it across the readiness wait
-                    // is safe — `await_readable_or_keepalive` parks for as long
-                    // as the client stays quiet (unbounded), and on the
-                    // keepalive arm it also awaits an upstream write. Under a
-                    // second reader that hold would become a latency mine, so
-                    // adding one means parking readiness outside the lock and
-                    // taking the guard only for `try_read_buf`.
-                    let cr_guard = cr_for_uplink.lock().await;
-                    match read_buf
-                        .park(await_readable_or_keepalive(
-                            &cr_guard,
-                            keepalive_interval,
-                            &mut uplink_writer,
-                        ))
-                        .await?
-                    {
-                        UplinkIo::Readable => {},
-                        UplinkIo::KeepaliveSent => continue,
-                    }
-                    match cr_guard.try_read_buf(read_buf.ready()) {
-                        Ok(read) => read,
-                        Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            continue;
-                        },
-                        Err(error) => return Err(ClientIo::ReadFailed(error).into()),
-                    }
-                };
-                if read == 0 {
-                    // Client-side EOF. Signal upstream half-close (Close
-                    // frame for WS, half-close FIN for sockets) and
-                    // exit the uplink task. Downlink is NOT aborted —
-                    // a server may still have in-flight bytes (SSH
-                    // banner, HTTP response after request body) and
-                    // tearing the upstream down eagerly would truncate
-                    // them.
-                    debug!(
-                        uplink = %name_for_uplink,
-                        transport_supports_tcp_half_close = uplink_writer.supports_half_close(),
-                        "client closed SOCKS TCP session; initiating upstream half-close and awaiting downlink"
-                    );
-                    uplink_writer.close().await?;
-                    break;
-                }
-                up_bytes.add(read);
-                // Push BEFORE send so the buffer's `total_sent` matches
-                // the bytes the server will see if the send succeeds.
-                // Order matters for the Ack-Prefix offset semantics:
-                // server reports bytes it ACKED, so anything we pushed
-                // but failed to send is still counted in our buffer and
-                // a future replay will re-emit it.
-                if let Some(r) = &ring_for_uplink {
-                    let mut r_guard = r.lock().await;
-                    if let Err(push_err) = r_guard.push(read_buf.filled()) {
-                        // Single-chunk overflow: replay can never
-                        // reconstruct this byte range. The configured
-                        // policy decides whether the active session
-                        // limps on (Soft — surfaces `failed_replay` on
-                        // any future retry) or dies on the spot (Hard
-                        // — guarantees retry-correctness for the rest
-                        // of the deployment).
-                        metrics::record_mid_session_retry(
-                            "tcp",
-                            manager_for_uplink.group_name(),
-                            &name_for_uplink,
-                            "buffer_overflow",
-                        );
-                        match overflow_policy {
-                            outline_uplink::OverflowPolicy::Soft => {
-                                debug!(
-                                    uplink = %name_for_uplink,
-                                    error = ?push_err,
-                                    policy = "soft",
-                                    "uplink chunk exceeds mid-session retry buffer cap; \
-                                     letting the chunk through, future retries will surface \
-                                     failed_replay"
-                                );
-                            },
-                            outline_uplink::OverflowPolicy::Hard => {
-                                debug!(
-                                    uplink = %name_for_uplink,
-                                    error = ?push_err,
-                                    policy = "hard",
-                                    "uplink chunk exceeds mid-session retry buffer cap; \
-                                     dropping session per overflow policy"
-                                );
-                                drop(r_guard);
-                                return Err(anyhow::anyhow!(
-                                    "mid-session retry buffer overflow on uplink {} \
-                                     (chunk_len={}, cap={}); session dropped per \
-                                     tcp_mid_session_retry_overflow_policy = \"hard\"",
-                                    name_for_uplink,
-                                    read,
-                                    buffer_cap,
-                                ));
-                            },
-                        }
-                    }
-                }
-                uplink_writer.send_chunk(read_buf.filled()).await?;
-                let _ = activity_for_uplink.send(());
-                chunks_sent += 1;
-                if chunks_sent == 1 {
-                    debug!(uplink = %name_for_uplink, "first chunk sent to upstream");
-                }
-                // NOTE: do NOT call `report_active_traffic` here. Sending a
-                // chunk to the upstream only proves we wrote bytes into the
-                // tunnel — it is NOT proof the data path delivers. A degraded
-                // server accepts the bytes and then closes the data path
-                // (`Close 1013`), so stamping liveness on send let a
-                // handshake-alive / data-dead uplink clear its data-plane
-                // death streak on every flow and keep the strict-global active
-                // slot forever. Liveness is reported only on the *downlink*
-                // path below (bytes actually received from upstream and
-                // delivered to the client = proven delivery).
-            }
-            Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished)
-        };
+        let uplink = UplinkPump {
+            uplinks: uplinks.clone(),
+            name: Arc::clone(&active_name),
+            client_read: Arc::clone(&client_read),
+            ring: ring.clone(),
+            writer,
+            activity: activity_for_uplink,
+            keepalive_interval,
+            overflow_policy,
+            buffer_cap,
+        }
+        .run();
 
-        let name_for_downlink = Arc::clone(&active_name);
-        let manager_for_downlink = uplinks.clone();
-        let cw_for_downlink = Arc::clone(&client_write);
-        let acked_for_downlink = Arc::clone(&client_acked_offset);
-        let mut downlink_reader = reader;
-        let downlink_first_chunk = first_chunk_for_iter.take();
-        let downlink = async move {
-            // The pinned relay keeps a fixed uplink for the whole leg, so
-            // resolve the downlink byte counter once and reuse it for the
-            // first chunk and every subsequent chunk.
-            let down_bytes = metrics::flow_bytes_counter(
-                "tcp",
-                "down",
-                manager_for_downlink.group_name(),
-                &name_for_downlink,
-            );
-            let already_forwarded = if let Some(fc) = downlink_first_chunk {
-                if !fc.is_empty() {
-                    down_bytes.add(fc.len());
-                    let mut cw_guard = cw_for_downlink.lock().await;
-                    cw_guard.write_all(&fc).await.map_err(ClientIo::WriteFailed)?;
-                    drop(cw_guard);
-                    // Increment AFTER the write succeeds — the v2
-                    // counter is the offset of bytes that have actually
-                    // reached the SOCKS5 client. A failed write is
-                    // accounted for via session teardown, not by
-                    // bumping the counter.
-                    acked_for_downlink
-                        .fetch_add(fc.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                    let _ = activity_for_downlink.send(());
-                    manager_for_downlink
-                        .report_active_traffic(active_index, TransportKind::Tcp)
-                        .await;
-                    1u64
-                } else {
-                    0u64
-                }
-            } else {
-                0u64
-            };
-
-            let mut chunks_forwarded: u64 = already_forwarded;
-            loop {
-                let chunk = match downlink_reader.read_chunk().await {
-                    Ok(chunk) => chunk,
-                    Err(_err) if downlink_reader.closed_cleanly() => {
-                        if chunks_forwarded == 0 {
-                            debug!(
-                                uplink = %name_for_downlink,
-                                "upstream closed before sending any data"
-                            );
-                        }
-                        break;
-                    },
-                    Err(err) => return Err(err),
-                };
-                if chunk.is_empty() {
-                    // An empty decrypted payload is not valid in SS;
-                    // treat it as EOF rather than busy-looping.
-                    break;
-                }
-                chunks_forwarded += 1;
-                down_bytes.add(chunk.len());
-                let mut cw_guard = cw_for_downlink.lock().await;
-                cw_guard.write_all(&chunk).await.map_err(ClientIo::WriteFailed)?;
-                drop(cw_guard);
-                // v2 downlink counter: bump after the write completes
-                // so the reported offset only ever reflects bytes the
-                // SOCKS5 client has observed.
-                acked_for_downlink
-                    .fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                let _ = activity_for_downlink.send(());
-                manager_for_downlink
-                    .report_active_traffic(active_index, TransportKind::Tcp)
-                    .await;
-            }
-            let mut cw_guard = cw_for_downlink.lock().await;
-            cw_guard.shutdown().await.context("client shutdown failed")?;
-            Ok::<(), anyhow::Error>(())
-        };
+        let downlink = DownlinkPump {
+            uplinks: uplinks.clone(),
+            name: Arc::clone(&active_name),
+            active_index,
+            client_write: Arc::clone(&client_write),
+            client_acked_offset: Arc::clone(&client_acked_offset),
+            reader,
+            first_chunk: first_chunk_for_iter.take(),
+            activity: activity_for_downlink,
+        }
+        .run();
 
         let cancel: Pin<Box<dyn Future<Output = &'static str> + Send>> = if strict_active {
             // In strict `active_passive` mode, watch the manager's active
@@ -472,7 +512,7 @@ pub(super) async fn run_relay(
         // have either completed or been aborted; their captured locals
         // (writer, reader) are dropped. To restart the relay we need
         // a fresh transport from `redial_for_mid_session_retry`.
-        match result {
+        let (connected, downlink_replay) = match result {
             Ok(DriveExit::Normal) => {
                 final_result = Ok(());
                 break;
@@ -516,34 +556,19 @@ pub(super) async fn run_relay(
                     active_index = new_candidate.index;
                     active_name = Arc::from(new_candidate.uplink.name.as_str());
                     candidate = new_candidate;
-                    let ConnectedTcpUplink {
-                        writer: new_writer,
-                        reader: new_reader,
-                        wire_index: new_wire_index,
-                        session_id: new_session_id,
-                        ..
-                    } = connected;
-                    writer = new_writer;
-                    reader = new_reader;
-                    current_wire_index = new_wire_index;
-                    // The new edge minted a fresh id for this session; a further
-                    // redial must present *that* one, not the retired one.
-                    session_id = new_session_id;
-                    // Flush the v2 downlink replay suffix (if any) to the client
-                    // before the next iteration reads fresh upstream bytes.
-                    first_chunk_for_iter = downlink_replay;
-                    continue;
+                    (connected, downlink_replay)
+                } else {
+                    // Hard switch, non-cluster group, or the migration redial
+                    // failed: fall back to the original strict teardown. Skip
+                    // mid-session retry (the point is to free the client to
+                    // reconnect through the new active uplink) and signal the
+                    // post-loop tail to force-close the client socket with RST.
+                    force_rst_reason = Some(reason);
+                    final_result = Err(anyhow!(
+                        "SOCKS TCP session aborted: active uplink switched away from {active_name} ({reason})"
+                    ));
+                    break;
                 }
-                // Hard switch, non-cluster group, or the migration redial
-                // failed: fall back to the original strict teardown. Skip
-                // mid-session retry (the point is to free the client to
-                // reconnect through the new active uplink) and signal the
-                // post-loop tail to force-close the client socket with RST.
-                force_rst_reason = Some(reason);
-                final_result = Err(anyhow!(
-                    "SOCKS TCP session aborted: active uplink switched away from {active_name} ({reason})"
-                ));
-                break;
             },
             Err(err) => {
                 let retriable = budget > 0
@@ -610,28 +635,31 @@ pub(super) async fn run_relay(
                     v2_replay_bytes = downlink_replay.as_ref().map(Vec::len),
                     "mid-session retry succeeded; resuming relay on fresh transport"
                 );
-                let ConnectedTcpUplink {
-                    writer: new_writer,
-                    reader: new_reader,
-                    wire_index: new_wire_index,
-                    session_id: new_session_id,
-                    ..
-                } = connected;
-                writer = new_writer;
-                reader = new_reader;
-                current_wire_index = new_wire_index;
-                // The redial (resume hit or fresh session) minted a new id for
-                // this session; the next retry must present *that* one.
-                session_id = new_session_id;
-                // v2 replay payload (when the server emitted one)
-                // becomes the next iteration's `first_chunk_for_iter`
-                // so the downlink task flushes it to the SOCKS5
-                // client BEFORE pulling fresh upstream bytes — this
-                // is what closes the downstream byte-loss gap.
-                first_chunk_for_iter = downlink_replay;
-                continue;
+                (connected, downlink_replay)
             },
-        }
+        };
+
+        // Both redial paths (soft-switch migration and mid-session retry) end
+        // here: the relay continues on the fresh transport.
+        let ConnectedTcpUplink {
+            writer: new_writer,
+            reader: new_reader,
+            wire_index: new_wire_index,
+            session_id: new_session_id,
+            ..
+        } = connected;
+        writer = new_writer;
+        reader = new_reader;
+        current_wire_index = new_wire_index;
+        // The redial (resume hit, fresh session, or the new edge after a soft
+        // switch) minted a new id for this session; a further redial must
+        // present *that* one, not the retired one.
+        session_id = new_session_id;
+        // v2 replay payload (when the server emitted one) becomes the next
+        // iteration's `first_chunk_for_iter` so the downlink task flushes it
+        // to the SOCKS5 client BEFORE pulling fresh upstream bytes — this is
+        // what closes the downstream byte-loss gap.
+        first_chunk_for_iter = downlink_replay;
     }
 
     // Strict `active_passive` torn the session down because the active
@@ -651,30 +679,35 @@ pub(super) async fn run_relay(
         return final_result;
     }
 
-    // Mirror the original tail behaviour: surface mid-stream upstream
-    // transport failures so broken transports (e.g. H3 APPLICATION_CLOSE
-    // received after session establishment) trigger the H3→H2 downgrade
-    // and flush stale warm-standby connections immediately.
     if let Err(ref err) = final_result {
-        if crate::error_class::is_upstream_runtime_failure(err) {
-            uplinks
-                .report_runtime_failure_for_wire(
-                    active_index,
-                    TransportKind::Tcp,
-                    current_wire_index,
-                    err,
-                )
-                .await;
-        } else if crate::error_class::is_ws_closed(err) {
-            // Server-initiated WS close mid-stream. We do not set a
-            // full runtime-failure cooldown to avoid penalising the
-            // uplink for normal per-connection lifetime limits, but we
-            // clear the activity timestamp so the probe is not skipped
-            // on the next cycle.
-            uplinks.report_upstream_close(active_index, TransportKind::Tcp).await;
-        }
+        report_relay_failure(&uplinks, active_index, current_wire_index, err).await;
     }
     final_result
+}
+
+/// Surfaces a mid-stream upstream transport failure to the uplink manager so
+/// broken transports (e.g. H3 APPLICATION_CLOSE received after session
+/// establishment) trigger the H3→H2 downgrade and flush stale warm-standby
+/// connections immediately. `wire_index` is the wire that was live when the
+/// session died.
+async fn report_relay_failure(
+    uplinks: &UplinkManager,
+    active_index: usize,
+    wire_index: u8,
+    err: &anyhow::Error,
+) {
+    if crate::error_class::is_upstream_runtime_failure(err) {
+        uplinks
+            .report_runtime_failure_for_wire(active_index, TransportKind::Tcp, wire_index, err)
+            .await;
+    } else if crate::error_class::is_ws_closed(err) {
+        // Server-initiated WS close mid-stream. We do not set a
+        // full runtime-failure cooldown to avoid penalising the
+        // uplink for normal per-connection lifetime limits, but we
+        // clear the activity timestamp so the probe is not skipped
+        // on the next cycle.
+        uplinks.report_upstream_close(active_index, TransportKind::Tcp).await;
+    }
 }
 
 /// Watches the manager's active-uplink pointer and resolves with the abort
