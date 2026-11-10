@@ -1252,9 +1252,11 @@ where
                 let truncated = (flags & downlink_replay::FLAG_REPLAY_TRUNCATED) != 0;
                 server.metrics.record_orphan_downlink_replay_bytes("tcp", payload_len);
                 if truncated {
-                    server
-                        .metrics
-                        .record_orphan_downlink_replay_truncated("tcp", truncate_reason);
+                    server.metrics.record_orphan_downlink_replay_truncated(
+                        "tcp",
+                        truncate_reason,
+                        "direct",
+                    );
                 }
                 let mut frame =
                     Vec::with_capacity(downlink_replay::FRAME_HEADER_LEN_V1 + payload.len());

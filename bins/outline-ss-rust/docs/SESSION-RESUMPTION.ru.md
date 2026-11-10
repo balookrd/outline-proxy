@@ -528,7 +528,7 @@ downlink_buffer_bytes = 0
 | `outline_ss_orphan_evicted_total` | counter | `kind`, `reason` | Вытеснения: `per_user_cap`, `global_cap`, `ttl_expired` |
 | `outline_ss_orphan_current` | gauge | `kind` | Запаркованных записей по видам |
 | `outline_ss_orphan_downlink_replay_bytes_total` | counter | `transport` | Байт, повторённых в downstream при попаданиях resume с v2 |
-| `outline_ss_orphan_downlink_replay_truncated_total` | counter | `transport`, `reason` | Попадания resume с v2, на которые ответ — `REPLAY_TRUNCATED`: `no_ring`, `evicted`, `client_ahead` |
+| `outline_ss_orphan_downlink_replay_truncated_total` | counter | `transport`, `reason`, `path` | Downlink-replay v2, который сервер не смог отдать, по `reason`: `no_ring`, `evicted`, `client_ahead`. `path="direct"`: клиент возобновил сессию на этом узле и получил `REPLAY_TRUNCATED`. `path="mesh"`: этот узел — home сессии, перенесённой с edge кластера; у edge нет такого флага, чтобы передать его клиенту, поэтому клиент продолжает с дырой без уведомления |
 | `outline_ss_orphan_downlink_buf_bytes` | gauge | — | Байт, занятых сейчас в кольцах v2 запаркованных TCP-сессий |
 
 Значения `kind`: `tcp`, `vless_udp_single`, `vless_mux`, `ss_udp_stream`. `transport` у обеих метрик v2 — `tcp`.

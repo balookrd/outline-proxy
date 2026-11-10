@@ -528,7 +528,7 @@ All metrics are exported through the server's Prometheus endpoint.
 | `outline_ss_orphan_evicted_total` | counter | `kind`, `reason` | Evictions: `per_user_cap`, `global_cap`, `ttl_expired` |
 | `outline_ss_orphan_current` | gauge | `kind` | Parked entries by kind |
 | `outline_ss_orphan_downlink_replay_bytes_total` | counter | `transport` | Bytes replayed downstream on v2 resume hits |
-| `outline_ss_orphan_downlink_replay_truncated_total` | counter | `transport`, `reason` | v2 resume hits answered with `REPLAY_TRUNCATED`: `no_ring`, `evicted`, `client_ahead` |
+| `outline_ss_orphan_downlink_replay_truncated_total` | counter | `transport`, `reason`, `path` | v2 downlink replays the server could not serve, by `reason`: `no_ring`, `evicted`, `client_ahead`. `path="direct"`: the client resumed on this node and was sent `REPLAY_TRUNCATED`. `path="mesh"`: this node is the home of a session relayed from a cluster edge; the edge has no such flag to pass on, so the client continues with the gap unannounced |
 | `outline_ss_orphan_downlink_buf_bytes` | gauge | — | Bytes currently held in the v2 rings of parked TCP sessions |
 
 `kind` values: `tcp`, `vless_udp_single`, `vless_mux`, `ss_udp_stream`. `transport` is `tcp` for both v2 metrics.

@@ -338,9 +338,11 @@ where
             let truncated = (flags & downlink_replay::FLAG_REPLAY_TRUNCATED) != 0;
             server.metrics.record_orphan_downlink_replay_bytes("tcp", payload_len);
             if truncated {
-                server
-                    .metrics
-                    .record_orphan_downlink_replay_truncated("tcp", truncate_reason);
+                server.metrics.record_orphan_downlink_replay_truncated(
+                    "tcp",
+                    truncate_reason,
+                    "direct",
+                );
             }
             controls.extend_from_slice(&downlink_replay::build_v1_header(flags, payload_len));
             controls.extend_from_slice(&payload);

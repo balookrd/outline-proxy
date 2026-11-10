@@ -129,8 +129,8 @@ pub(super) async fn splice_plaintext_tcp(
             // direct path (which sets REPLAY_TRUNCATED in its "ORDR" frame) the
             // home cannot yet tell the edge to fail the client fast, as
             // `docs/SESSION-RESUMPTION.md` requires. Until that protocol field
-            // exists the condition is at least observable on the same counter
-            // the direct path feeds.
+            // exists the condition is at least observable on the counter the
+            // direct path feeds, under its own `path="mesh"` label.
             other => {
                 // `replay_from` only ever answers `Truncated` or `OffsetAhead`
                 // here — a park with no ring never produced a `replay` at all
@@ -140,7 +140,9 @@ pub(super) async fn splice_plaintext_tcp(
                     ReplayOutcome::OffsetAhead => "client_ahead",
                     _ => "evicted",
                 };
-                cluster.metrics.record_orphan_downlink_replay_truncated("tcp", reason);
+                cluster
+                    .metrics
+                    .record_orphan_downlink_replay_truncated("tcp", reason, "mesh");
                 debug!(
                     ?other,
                     target = %parked.target_display,
