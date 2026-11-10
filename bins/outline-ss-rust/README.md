@@ -721,6 +721,8 @@ Failed peeks. A stream that never yields a ClientHello is counted in `outline_ss
 
 Pre-auth handshake timeout. Every accepted TLS connection takes one of `TLS_MAX_CONCURRENT_CONNECTIONS` (4096) permits as soon as it is accepted. A peer that connects and stays silent, or sends one byte at a time (slowloris), would otherwise hold a permit forever, and 4096 such connections would stall the accept loop. The whole unauthenticated phase, the optional SNI peek plus the rustls handshake, shares one 10 s deadline (`TLS_HANDSHAKE_TIMEOUT_SECS`). On expiry the connection is dropped and the permit freed; the timeout is counted as `outline_ss_sni_peek_failed_total{reason="timeout"}` when it fires during the peek and as `outline_ss_tls_handshake_failed_total{reason="timeout"}` during the handshake.
 
+First-request timeout. A completed handshake proves only that the peer speaks TLS, and it still holds its permit. The first request must start within 60 s (`TLS_FIRST_REQUEST_TIMEOUT_SECS`, the default of nginx's `client_header_timeout`): the first byte on an `http/1.1` connection or one without ALPN, the full 24-byte client preface on an `h2` connection. Otherwise the connection is closed and the permit freed. HTTP/1 request headers must then arrive within the same 60 s. An HTTP/2 connection that has sent its preface is not closed for being idle: liveness there is the h2 keep-alive PING.
+
 Limitations:
 
 - TLS only. A plain (non-TLS) `[server].listen` has no SNI to dispatch on; validation rejects this configuration.

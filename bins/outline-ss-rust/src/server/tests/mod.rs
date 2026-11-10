@@ -29,6 +29,7 @@ mod nat;
 mod relay;
 mod resumption;
 mod sni_fallback;
+mod tls_first_request;
 pub(in crate::server::tests) mod vless;
 mod websocket;
 mod xhttp;

@@ -93,6 +93,16 @@ pub(super) const SS_TCP_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 // one bounds the post-TLS Shadowsocks AEAD handshake, a different and later
 // phase, whereas this bounds unauthenticated work that must not linger.
 pub(super) const TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+// Wall-clock budget for the first request after the TLS handshake. The
+// handshake proves a peer speaks TLS and nothing more; it still holds its
+// `TLS_MAX_CONCURRENT_CONNECTIONS` permit, and hyper waits for the HTTP/2
+// client preface (and for the h1/h2 sniff of a connection without ALPN) with no
+// limit of its own. A peer that handshakes and then goes silent would keep the
+// permit for good, so `TLS_HANDSHAKE_TIMEOUT_SECS` alone only moves the
+// slowloris one step later. Sixty seconds is nginx's `client_header_timeout`
+// default: a prober that completes TLS and waits sees the connection close
+// when an ordinary web server would close it, not never.
+pub(super) const TLS_FIRST_REQUEST_TIMEOUT_SECS: u64 = 60;
 // Interval at which the server sends WebSocket Ping frames to clients on active
 // TCP relay sessions.  The client's WsReadTransport resets its WS_READ_IDLE_TIMEOUT
 // on every received frame, including Ping.  Without these Pings the client times

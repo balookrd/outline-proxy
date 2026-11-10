@@ -1,8 +1,11 @@
 mod axum;
 mod cert_pin;
 mod cert_reload;
+mod first_bytes_deadline;
 mod tls;
 
+#[cfg(test)]
+pub(in crate::server) use axum::TestTlsFirstRequestTimeout;
 #[cfg(test)]
 pub(in crate::server) use axum::TestTlsHandshakeTimeout;
 // Only the control/dashboard listeners reach `serve_plain_listener` through

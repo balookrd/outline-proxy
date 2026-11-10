@@ -28,8 +28,8 @@ use super::super::{
     constants::{
         CERT_RELOAD_POLL_INTERVAL_SECS, H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS,
         HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS, PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS,
-        PLAIN_HTTP_MAX_CONCURRENT_CONNECTIONS, TLS_HANDSHAKE_TIMEOUT_SECS,
-        TLS_MAX_CONCURRENT_CONNECTIONS,
+        PLAIN_HTTP_MAX_CONCURRENT_CONNECTIONS, TLS_FIRST_REQUEST_TIMEOUT_SECS,
+        TLS_HANDSHAKE_TIMEOUT_SECS, TLS_MAX_CONCURRENT_CONNECTIONS,
     },
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
@@ -41,6 +41,7 @@ use super::super::{
     },
 };
 use super::cert_reload::{spawn_cert_reloader, tcp_cert_paths};
+use super::first_bytes_deadline::FirstBytesDeadline;
 use super::tls::build_tcp_tls_acceptor;
 use sni_fallback::SniFallbackContext;
 
@@ -446,6 +447,90 @@ impl Drop for TestTlsHandshakeTimeout {
     }
 }
 
+/// What a TLS connection will speak, as far as its ALPN says, and so what
+/// bounds the wait for its first request:
+///
+/// - `http/1.1`: the first byte must arrive in time ([`FirstBytesDeadline`]) —
+///   hyper's HTTP/1 `header_read_timeout` does not fire on a connection that
+///   has sent nothing, as `a_silent_peer_is_dropped_after_the_handshake_…`
+///   shows. Once bytes flow, `header_read_timeout` bounds the rest of the
+///   header.
+/// - `h2`: hyper has no timeout for the client preface, so the stream itself
+///   must deliver those 24 bytes in time. After the preface the h2 keep-alive
+///   PING takes over.
+/// - no ALPN: the protocol is sniffed from the first bytes, and the sniff has
+///   no timeout either. As for `http/1.1`: first byte in time, then
+///   `header_read_timeout`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PostHandshakeProtocol {
+    Http1,
+    Http2,
+    Unknown,
+}
+
+impl PostHandshakeProtocol {
+    /// Length of the HTTP/2 client connection preface (RFC 9113, section 3.4).
+    const H2_PREFACE_LEN: usize = 24;
+
+    fn from_alpn(alpn: Option<&[u8]>) -> Self {
+        match alpn {
+            Some(b"h2") => Self::Http2,
+            Some(b"http/1.1") => Self::Http1,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Bytes the stream must deliver before the first-request deadline.
+    fn required_first_bytes(self) -> usize {
+        match self {
+            Self::Http1 | Self::Unknown => 1,
+            Self::Http2 => Self::H2_PREFACE_LEN,
+        }
+    }
+}
+
+/// Test-only override for the post-handshake first-request timeout, in
+/// milliseconds. `0` means "use the production default".
+#[cfg(test)]
+static TEST_TLS_FIRST_REQUEST_TIMEOUT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Acquire-and-set guard for the first-request-timeout override. Mirrors
+/// [`TestTlsHandshakeTimeout`].
+#[cfg(test)]
+pub(in crate::server) struct TestTlsFirstRequestTimeout {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl TestTlsFirstRequestTimeout {
+    pub(in crate::server) fn set(d: Duration) -> Self {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let lock = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+        TEST_TLS_FIRST_REQUEST_TIMEOUT_MS.store(d.as_millis() as u64, Ordering::Relaxed);
+        Self { _lock: lock }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestTlsFirstRequestTimeout {
+    fn drop(&mut self) {
+        TEST_TLS_FIRST_REQUEST_TIMEOUT_MS.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Wall-clock budget for the first request after the TLS handshake. See
+/// [`TLS_FIRST_REQUEST_TIMEOUT_SECS`] for the rationale.
+fn tls_first_request_timeout() -> Duration {
+    #[cfg(test)]
+    {
+        let ms = TEST_TLS_FIRST_REQUEST_TIMEOUT_MS.load(Ordering::Relaxed);
+        if ms > 0 {
+            return Duration::from_millis(ms);
+        }
+    }
+    Duration::from_secs(TLS_FIRST_REQUEST_TIMEOUT_SECS)
+}
+
 /// Wall-clock budget for the unauthenticated pre-handshake phase of a TLS
 /// connection. See [`TLS_HANDSHAKE_TIMEOUT_SECS`] for the rationale.
 fn tls_handshake_timeout() -> Duration {
@@ -691,13 +776,27 @@ async fn serve_tls_listener(
                 },
             };
 
-            let io = TokioIo::new(tls_stream);
+            // The handshake is done, but nothing has been asked for yet, and
+            // the permit is still held: bound the wait for the first request.
+            // What bounds it depends on the negotiated protocol.
+            let first_request_timeout = tls_first_request_timeout();
+            let alpn = PostHandshakeProtocol::from_alpn(tls_stream.get_ref().1.alpn_protocol());
+            let io = TokioIo::new(FirstBytesDeadline::new(
+                tls_stream,
+                alpn.required_first_bytes(),
+                first_request_timeout,
+            ));
             // Inject `ConnectInfo<SocketAddr>` so the TCP-WS upgrade
             // handler can key the per-route peer-user hint cache the
             // same way the plain (non-TLS) path does.
             let app_with_addr = app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
             let service = TowerToHyperService::new(app_with_addr);
-            let builder = build_http_server_builder(&profile, None);
+            let builder = build_http_server_builder(&profile, Some(first_request_timeout));
+            let builder = match alpn {
+                PostHandshakeProtocol::Http1 => builder.http1_only(),
+                PostHandshakeProtocol::Http2 => builder.http2_only(),
+                PostHandshakeProtocol::Unknown => builder,
+            };
             let conn = builder.serve_connection_with_upgrades(io, service);
             tokio::pin!(conn);
 
