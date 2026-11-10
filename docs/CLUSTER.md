@@ -649,7 +649,7 @@ has a limit:
 | --- | --- | --- |
 | Outbound relay streams (edge) | 4096 per node across all peers (`MESH_MAX_RELAY_STREAMS`); over the cap the open fails and the client gets a local session | `server/cluster/mod.rs`, `mesh/peer_pool.rs` |
 | Inbound relayed sessions (home) | 4096 per node across all peers (`MESH_MAX_RELAYED_SESSIONS`); over the cap the stream is reset with `Capacity` | `server/cluster/mod.rs` |
-| Wait for the `USER` frame after the ack | 5 s (`USER_FRAME_WAIT`) | `server/transport/mesh_relay.rs` |
+| Wait for the `USER` frame after the ack | 5 s (`USER_FRAME_WAIT`) | `server/transport/mesh_relay/home.rs` |
 | Idle mesh connection | QUIC idle timeout 30 s, keep-alive 10 s | `server/cluster/mesh/tls.rs` |
 | Parked session | the home's `[session_resumption]` TTL and caps | `[session_resumption]` |
 | Stalled relay | `mesh_relay_budget_ms` | `[cluster]` |
