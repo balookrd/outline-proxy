@@ -16,18 +16,18 @@ use std::time::{Duration, Instant};
 type BoxError = Box<dyn std::error::Error>;
 
 /// Cargo does not export `CARGO_BIN_EXE_*` for a *different* workspace member,
-/// so locate the server binary next to the running test binary
-/// (`target/<profile>/outline-ss-rust`) and build it once on first use. The
-/// build is a fast no-op when already up to date.
+/// but it does export it for the client binary (`CARGO_BIN_EXE_outline-ws-rust`),
+/// which sits directly in the target profile directory (`target/<profile>/`).
+/// Locate the server binary in that same directory and build it once on first use.
+/// The build is a fast no-op when already up to date.
 fn server_binary_path() -> Result<PathBuf, BoxError> {
     static BUILT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
     BUILT
         .get_or_init(|| {
-            let mut dir = std::env::current_exe().map_err(|e| e.to_string())?;
-            dir.pop(); // drop the test binary file name
-            if dir.ends_with("deps") {
-                dir.pop(); // deps/ → target/<profile>/
-            }
+            let client_bin = Path::new(env!("CARGO_BIN_EXE_outline-ws-rust"));
+            let dir = client_bin.parent().ok_or_else(|| {
+                "CARGO_BIN_EXE_outline-ws-rust has no parent directory".to_string()
+            })?;
             let bin = dir.join(format!("outline-ss-rust{}", std::env::consts::EXE_SUFFIX));
 
             let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
@@ -44,6 +44,12 @@ fn server_binary_path() -> Result<PathBuf, BoxError> {
                 return Err(
                     "`cargo build -p outline-ss-rust --features test-hooks` failed".to_string()
                 );
+            }
+            if !bin.exists() {
+                return Err(format!(
+                    "server binary not found at {} after cargo build",
+                    bin.display()
+                ));
             }
             Ok(bin)
         })
