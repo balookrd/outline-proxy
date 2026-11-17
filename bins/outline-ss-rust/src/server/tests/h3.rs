@@ -122,10 +122,11 @@ async fn http3_datagram_client_sees_max_datagram_size_and_connect_works() -> Res
     // Build the endpoint with the production QUIC server config, so the
     // datagram buffers under test are the ones the real listener uses.
     let probe_config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
-    let server_config = build_h3_quinn_server_config(tls_config, &probe_config.tuning, None, None)?;
+    let server_config =
+        build_h3_quinn_server_config(tls_config, &probe_config.tuning, None, None, true)?;
     let socket = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
     let endpoint = quinn::Endpoint::new(
-        quinn::EndpointConfig::default(),
+        super::super::h3::build_h3_endpoint_config()?,
         Some(server_config),
         socket,
         Arc::new(quinn::TokioRuntime),
@@ -1496,7 +1497,8 @@ async fn mtu_discovery_gets_within_a_few_bytes_of_a_narrow_path() -> Result<()> 
     const PATH_LIMIT: u16 = 1448;
     let (tls_config, cert_der) = test_h3_server_tls()?;
     let probe_config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
-    let server_config = build_h3_quinn_server_config(tls_config, &probe_config.tuning, None, None)?;
+    let server_config =
+        build_h3_quinn_server_config(tls_config, &probe_config.tuning, None, None, true)?;
     let mut endpoint_config = quinn::EndpointConfig::default();
     endpoint_config.max_udp_payload_size(super::super::constants::H3_MAX_UDP_PAYLOAD_SIZE)?;
     let socket = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -1545,7 +1547,7 @@ async fn mtu_first_probe_on_a_wide_path_is_the_only_probe() -> Result<()> {
     let (tls_config, cert_der) = test_h3_server_tls()?;
     let probe_config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
     let server_config =
-        build_h3_quinn_server_config(tls_config, &probe_config.tuning, None, Some(1452))?;
+        build_h3_quinn_server_config(tls_config, &probe_config.tuning, None, Some(1452), true)?;
     let mut endpoint_config = quinn::EndpointConfig::default();
     endpoint_config.max_udp_payload_size(super::super::constants::H3_MAX_UDP_PAYLOAD_SIZE)?;
     let socket = std::net::UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;

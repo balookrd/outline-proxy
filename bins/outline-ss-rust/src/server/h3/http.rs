@@ -52,7 +52,7 @@ pub(super) async fn handle_h3_connection(
     // be agreed at all; dropped with the connection loop and the last stream.
     let datagrams = h3_connection_datagrams(&connection, &ctx);
     let mut h3_conn: H3Connection<h3_quinn::Connection, Bytes> =
-        super::vendored::h3_server_builder()
+        super::vendored::h3_server_builder(ctx.udp_datagrams)
             .build(h3_quinn::Connection::new(connection))
             .await
             .context("failed to initialize HTTP/3 connection")?;
