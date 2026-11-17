@@ -53,7 +53,7 @@ install_deps() {
   printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' \
     | $sudo tee /etc/apt/preferences.d/mozilla >/dev/null
   $sudo apt-get update -qq
-  $sudo apt-get install -y -qq google-chrome-stable firefox >/dev/null
+  $sudo apt-get install -y --allow-downgrades -qq google-chrome-stable firefox >/dev/null
 }
 
 [ $install = 1 ] && install_deps
