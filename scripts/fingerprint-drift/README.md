@@ -5,7 +5,7 @@ Russian version: [README.ru.md](README.ru.md).
 `outline-ws-rust` imitates browsers on every layer a DPI box can see: the TCP
 and QUIC ClientHello, QUIC transport parameters, the HTTP/2 preface and the
 request headers. The profiles (`crates/outline-transport/src/fingerprint_profile.rs`
-and the tables next to it) were tuned against Chrome 157 and Firefox 159
+and the tables next to it) were tuned against Chrome 157 and Firefox 160
 (`tests/data/versions.json`). `cargo test` catches regressions of our code
 against those captures, but not browsers moving on. This monitor covers that:
 `.github/workflows/fingerprint-drift.yml` (Mondays at 06:00 UTC and on manual

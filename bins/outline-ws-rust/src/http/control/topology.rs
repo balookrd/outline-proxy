@@ -235,7 +235,7 @@ struct ControlUplinkTopology {
     /// they had before this field landed.
     #[serde(skip_serializing_if = "is_none_strategy")]
     fingerprint_profile_strategy: String,
-    /// Active profile name (`chrome-157-macos`, `firefox-159-linux`,
+    /// Active profile name (`chrome-157-macos`, `firefox-160-linux`,
     /// `safari-27-macos`, `chrome-157-android`, …) for the uplink's
     /// primary dial URL under the effective strategy. The dashboard
     /// renders this directly inside the FP chip so the operator sees
