@@ -8,7 +8,7 @@
       ],
       [
         "User-Agent",
-        "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/159.0"
+        "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/160.0"
       ],
       [
         "Accept",
@@ -54,7 +54,7 @@
       ],
       [
         "User-Agent",
-        "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/159.0"
+        "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/160.0"
       ],
       [
         "Accept",
@@ -112,7 +112,7 @@
       ],
       [
         "User-Agent",
-        "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/159.0"
+        "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/160.0"
       ],
       [
         "Accept",
@@ -162,7 +162,7 @@
       ],
       [
         "User-Agent",
-        "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/159.0"
+        "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/160.0"
       ],
       [
         "Accept",
@@ -243,7 +243,7 @@
         ],
         [
           "user-agent",
-          "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/159.0"
+          "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/160.0"
         ],
         [
           "accept",
@@ -301,7 +301,7 @@
         ],
         [
           "user-agent",
-          "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/159.0"
+          "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/160.0"
         ],
         [
           "accept",
@@ -371,7 +371,7 @@
         ],
         [
           "user-agent",
-          "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/159.0"
+          "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/160.0"
         ],
         [
           "accept",
@@ -437,7 +437,7 @@
         ],
         [
           "user-agent",
-          "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/159.0"
+          "Mozilla/5.0 (<platform>) Gecko/20100101 Firefox/160.0"
         ],
         [
           "accept",
@@ -524,7 +524,7 @@
     "stream_window_update": 12451840,
     "window_update": 12517377
   },
-  "major": 159,
+  "major": 160,
   "quic": {
     "alpn": [
       "h3"

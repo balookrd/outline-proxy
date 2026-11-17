@@ -5,7 +5,7 @@ English version: [README.md](README.md).
 `outline-ws-rust` выдаёт себя за браузер на всех слоях, которые видит DPI:
 ClientHello по TCP и QUIC, transport parameters QUIC, преамбула HTTP/2 и
 заголовки запросов. Профили (`crates/outline-transport/src/fingerprint_profile.rs`
-и таблицы рядом) подогнаны под Chrome 157 и Firefox 159
+и таблицы рядом) подогнаны под Chrome 157 и Firefox 160
 (`tests/data/versions.json`). `cargo test` ловит регрессии нашего кода
 относительно этих захватов, но не замечает, что браузеры ушли вперёд. Это
 делает монитор: `.github/workflows/fingerprint-drift.yml` (по понедельникам в

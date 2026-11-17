@@ -520,9 +520,9 @@ fn by_name(name: &str) -> &'static Profile {
 fn per_os_pools_have_the_decided_members() {
     assert_eq!(
         names(ProfileOs::MacOs),
-        ["chrome-157-macos", "firefox-159-macos", "safari-27-macos"]
+        ["chrome-157-macos", "firefox-160-macos", "safari-27-macos"]
     );
-    assert_eq!(names(ProfileOs::Linux), ["chrome-157-linux", "firefox-159-linux"]);
+    assert_eq!(names(ProfileOs::Linux), ["chrome-157-linux", "firefox-160-linux"]);
     assert_eq!(names(ProfileOs::Android), ["chrome-157-android"]);
 }
 
@@ -626,15 +626,15 @@ fn chrome_157_values_match_the_measurement() {
 }
 
 #[test]
-fn firefox_159_values_match_the_measurement() {
+fn firefox_160_values_match_the_measurement() {
     for (name, ua) in [
         (
-            "firefox-159-macos",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:159.0) Gecko/20100101 Firefox/159.0",
+            "firefox-160-macos",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0",
         ),
         (
-            "firefox-159-linux",
-            "Mozilla/5.0 (X11; Linux x86_64; rv:159.0) Gecko/20100101 Firefox/159.0",
+            "firefox-160-linux",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:160.0) Gecko/20100101 Firefox/160.0",
         ),
     ] {
         let p = by_name(name);
@@ -683,9 +683,9 @@ fn per_host_seed_is_pinned_across_toolchains() {
 #[test]
 fn profile_weights_match_the_decided_shares() {
     let w = |n| by_name(n).weight;
-    assert_eq!((w("chrome-157-linux"), w("firefox-159-linux")), (70, 30));
+    assert_eq!((w("chrome-157-linux"), w("firefox-160-linux")), (70, 30));
     assert_eq!(
-        (w("chrome-157-macos"), w("safari-27-macos"), w("firefox-159-macos")),
+        (w("chrome-157-macos"), w("safari-27-macos"), w("firefox-160-macos")),
         (60, 30, 10)
     );
     assert_eq!(w("chrome-157-android"), 100);
@@ -718,11 +718,11 @@ fn weighted_pick_tracks_the_weights() {
 fn weighted_pick_maps_seed_edges_to_pool_edges() {
     use crate::fingerprint_profile::pick;
     assert_eq!(pick(ProfileOs::Linux, 0).name, "chrome-157-linux");
-    assert_eq!(pick(ProfileOs::Linux, u64::MAX).name, "firefox-159-linux");
+    assert_eq!(pick(ProfileOs::Linux, u64::MAX).name, "firefox-160-linux");
     // 0.70 * 2^64 is the Chrome/Firefox boundary on Linux.
     let boundary = (u128::from(u64::MAX) * 70 / 100) as u64;
     assert_eq!(pick(ProfileOs::Linux, boundary - (1 << 20)).name, "chrome-157-linux");
-    assert_eq!(pick(ProfileOs::Linux, boundary + (1 << 20)).name, "firefox-159-linux");
+    assert_eq!(pick(ProfileOs::Linux, boundary + (1 << 20)).name, "firefox-160-linux");
 }
 
 #[test]
@@ -731,8 +731,8 @@ fn current_fleet_hostnames_split_between_chrome_and_firefox() {
     // re-rolls the fleet; update together with the plan's table.
     use crate::fingerprint_profile::pick;
     let at = |h: &str| pick(ProfileOs::Linux, stable_seed(h.as_bytes())).name;
-    assert_eq!(at("NanoPi-NEO3-Plus"), "firefox-159-linux");
-    assert_eq!(at("Beelink-T4-Pro"), "firefox-159-linux");
+    assert_eq!(at("NanoPi-NEO3-Plus"), "firefox-160-linux");
+    assert_eq!(at("Beelink-T4-Pro"), "firefox-160-linux");
     assert_eq!(at("cloud1.fleet.example"), "chrome-157-linux");
     assert_eq!(at("cloud2.fleet.example"), "chrome-157-linux");
 }
@@ -740,7 +740,7 @@ fn current_fleet_hostnames_split_between_chrome_and_firefox() {
 #[test]
 fn resolve_pin_maps_a_browser_to_its_profile_in_the_os_pool() {
     let linux = |b| resolve_pin_for_os(b, ProfileOs::Linux).unwrap().name;
-    assert_eq!(linux("firefox"), "firefox-159-linux");
+    assert_eq!(linux("firefox"), "firefox-160-linux");
     // Case and surrounding whitespace are tolerated, like the strategy key.
     assert_eq!(linux(" Chrome "), "chrome-157-linux");
     assert_eq!(resolve_pin_for_os("safari", ProfileOs::MacOs).unwrap().name, "safari-27-macos");

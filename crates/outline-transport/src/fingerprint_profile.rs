@@ -228,7 +228,7 @@ pub struct Profile {
 /// `scripts/fingerprint-drift/baseline/*.json` from the new captures
 /// (`scripts/fingerprint-drift/README.md`; a test ties the baseline
 /// majors to this table), then re-run the suite.
-pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_793_771_140; // 2026-11-04 UTC
+pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_794_925_289; // 2026-11-17 UTC
 
 /// Maximum tolerated age of [`PROFILES`] before the staleness test
 /// fails. Six months is short enough to keep up with browser-major
@@ -300,7 +300,7 @@ pub const PROFILES: &[Profile] = &[
         sec_ch_ua_platform: Some("\"Android\""),
     },
     Profile {
-        name: "firefox-159-macos",
+        name: "firefox-160-macos",
         os: ProfileOs::MacOs,
         weight: 10,
         tls: TlsFingerprint::Firefox,
@@ -312,7 +312,7 @@ pub const PROFILES: &[Profile] = &[
         // the actual major would itself be the fingerprint. Apple-
         // silicon machines still surface as `Intel Mac OS X` here —
         // Firefox has no separate ARM string in the UA.
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:159.0) Gecko/20100101 Firefox/159.0",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: None,
@@ -320,13 +320,14 @@ pub const PROFILES: &[Profile] = &[
         sec_ch_ua_platform: None,
     },
     Profile {
-        name: "firefox-159-linux",
+        name: "firefox-160-linux",
         os: ProfileOs::Linux,
         weight: 30,
         tls: TlsFingerprint::Firefox,
         // Header values measured on macOS Firefox 159 and extrapolated to
-        // Linux (only the UA platform token differs).
-        user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:159.0) Gecko/20100101 Firefox/159.0",
+        // Linux (only the UA platform token differs). Firefox 160 (drift run
+        // 2026-11-17, Linux desktop) changed only the UA major.
+        user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:160.0) Gecko/20100101 Firefox/160.0",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: None,

@@ -38,7 +38,7 @@ class ReportTest(unittest.TestCase):
         snap["major"] += 1
         code, lines = report_browser("firefox", load("firefox"), snap)
         self.assertEqual(code, DRIFT)
-        self.assertTrue(any("firefox 159 → 160" in ln for ln in lines), lines)
+        self.assertTrue(any("firefox 160 → 161" in ln for ln in lines), lines)
 
     def test_list_change_names_added_and_removed(self):
         snap = load("chrome")
