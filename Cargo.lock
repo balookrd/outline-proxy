@@ -1849,6 +1849,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "proptest",
  "quinn",
+ "quinn-proto",
  "rand 0.10.3",
  "rcgen",
  "ring",

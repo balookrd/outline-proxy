@@ -15,7 +15,7 @@ use super::{
         CERT_RELOAD_POLL_INTERVAL_SECS, H3_DATAGRAM_BUFFER_BYTES, H3_DEFAULT_INITIAL_MTU,
         H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE,
         H3_MTU_DISCOVERY_MINIMUM_CHANGE, H3_MTU_DISCOVERY_UPPER_BOUND, H3_QUIC_IDLE_TIMEOUT_SECS,
-        H3_QUIC_PING_INTERVAL_SECS, QUIC_VERSION_1,
+        H3_QUIC_PING_INTERVAL_SECS, H3_SERVER_CID_LEN, QUIC_VERSION_1,
     },
     state::{AuthPolicy, RoutesSnapshot, Services},
     transport::{
@@ -26,6 +26,9 @@ use super::{
 
 mod http;
 pub(in crate::server) mod vendored;
+
+#[cfg(test)]
+mod tests;
 
 pub(in crate::server) async fn build_h3_server(
     config: &Config,
@@ -41,19 +44,11 @@ pub(in crate::server) async fn build_h3_server(
         profile,
         config.h3_initial_mtu,
         config.h3_mtu_first_probe,
+        config.h3_udp_datagrams,
     )?;
     let socket = bind_h3_udp_socket(listen, profile)?;
-    let mut endpoint_config = quinn::EndpointConfig::default();
-    endpoint_config
-        .max_udp_payload_size(H3_MAX_UDP_PAYLOAD_SIZE)
-        .context("invalid H3 max UDP payload size")?;
-    // quinn's default list also names draft-29..34. A Version Negotiation
-    // packet is sent to anyone who probes with an unknown version, before any
-    // authentication, and that list identifies the QUIC stack. Every client we
-    // serve speaks v1.
-    endpoint_config.supported_versions(vec![QUIC_VERSION_1]);
     let endpoint = quinn::Endpoint::new(
-        endpoint_config,
+        build_h3_endpoint_config()?,
         Some(server_config),
         socket,
         Arc::new(quinn::TokioRuntime),
@@ -64,6 +59,32 @@ pub(in crate::server) async fn build_h3_server(
     // the server keeps the other clone.
     let server = vendored::h3_ws_server_from_endpoint(endpoint.clone(), ws_config);
     Ok((server, endpoint))
+}
+
+/// Endpoint-wide QUIC settings of the public HTTP/3 listener. The mesh cluster
+/// builds its own endpoint and is not affected.
+pub(in crate::server) fn build_h3_endpoint_config() -> Result<quinn::EndpointConfig> {
+    let mut endpoint_config = quinn::EndpointConfig::default();
+    endpoint_config
+        .max_udp_payload_size(H3_MAX_UDP_PAYLOAD_SIZE)
+        .context("invalid H3 max UDP payload size")?;
+    // quinn's default list also names draft-29..34. A Version Negotiation
+    // packet is sent to anyone who probes with an unknown version, before any
+    // authentication, and that list identifies the QUIC stack. Every client we
+    // serve speaks v1.
+    endpoint_config.supported_versions(vec![QUIC_VERSION_1]);
+    // A quic-go (Caddy) server neither advertises `grease_quic_bit` nor greases
+    // the fixed bit. quinn greases its own packets only when the peer
+    // advertised the parameter, so this changes the transport parameters only.
+    endpoint_config.grease_quic_bit(false);
+    // quic-go's `DefaultConnectionIDLength`. The server CID shows in the clear
+    // in every long header it sends and in every client packet, so quinn's 8
+    // bytes stand out. Nothing routes on the CID here (one endpoint, one
+    // socket); the client's datagram room grows by the 4 bytes saved.
+    endpoint_config.cid_generator(|| {
+        Box::new(quinn_proto::RandomConnectionIdGenerator::new(H3_SERVER_CID_LEN))
+    });
+    Ok(endpoint_config)
 }
 
 /// Watches the HTTP/3 listener's cert/key files and installs a freshly
@@ -88,6 +109,7 @@ pub(in crate::server) fn spawn_h3_cert_reloader(
                 &config.tuning,
                 config.h3_initial_mtu,
                 config.h3_mtu_first_probe,
+                config.h3_udp_datagrams,
             )?;
             endpoint.set_server_config(Some(server_config));
             Ok(())
@@ -120,6 +142,7 @@ pub(in crate::server) fn build_h3_quinn_server_config(
     profile: &TuningProfile,
     pinned_initial_mtu: Option<u16>,
     mtu_first_probe: Option<u16>,
+    udp_datagrams: bool,
 ) -> Result<quinn::ServerConfig> {
     let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
         .map_err(|_| anyhow!("invalid HTTP/3 TLS config"))?;
@@ -128,6 +151,7 @@ pub(in crate::server) fn build_h3_quinn_server_config(
         profile,
         pinned_initial_mtu,
         mtu_first_probe,
+        udp_datagrams,
     )?));
     Ok(server_config)
 }
@@ -136,6 +160,7 @@ fn build_h3_transport_config(
     profile: &TuningProfile,
     pinned_initial_mtu: Option<u16>,
     mtu_first_probe: Option<u16>,
+    udp_datagrams: bool,
 ) -> Result<quinn::TransportConfig> {
     let mut transport = quinn::TransportConfig::default();
     transport
@@ -162,9 +187,12 @@ fn build_h3_transport_config(
             u32::try_from(profile.h3_connection_window_bytes)
                 .expect("h3_connection_window_bytes exceeds u32"),
         ))
-        .send_window(profile.h3_connection_window_bytes)
-        .datagram_receive_buffer_size(Some(H3_DATAGRAM_BUFFER_BYTES))
-        .datagram_send_buffer_size(H3_DATAGRAM_BUFFER_BYTES);
+        .send_window(profile.h3_connection_window_bytes);
+    vendored::apply_quic_go_transport_parameters(
+        &mut transport,
+        udp_datagrams,
+        H3_DATAGRAM_BUFFER_BYTES,
+    );
     // The default initial_mtu of 1200 caps the server→client QUIC
     // payload for the first few RTTs of every connection while
     // DPLPMTUD probes upward — long enough to hurt real traffic on a

@@ -36,6 +36,10 @@ outline-net = { path = "../../crates/outline-net" }
 outline-wire = { path = "../../crates/outline-wire", features = ["clap", "h3-datagram"] }
 parking_lot = { workspace = true }
 quinn = { workspace = true, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
+# The patched transport-parameter options (`TransportParameterOrder`), reached
+# only through `src/server/h3/vendored.rs`. `default-features = false` +
+# `rustls-aws-lc-rs` keeps the single-CryptoProvider invariant (no rustls-ring).
+quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"] }
 rand = { workspace = true }
 # rcgen on the aws_lc_rs backend, matching the workspace-wide single rustls
 # CryptoProvider (aws-lc-rs). Used both in tests and, in production, by the

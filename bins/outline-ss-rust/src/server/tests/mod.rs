@@ -38,7 +38,7 @@ mod xhttp;
 /// `config.endpoints` exactly as `services::build` does — the SS/VLESS pools
 /// are path-independent, and the endpoint list decides which route maps a user
 /// lands in.
-fn build_test_state(
+pub(in crate::server) fn build_test_state(
     config: &Config,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,

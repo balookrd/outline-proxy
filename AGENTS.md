@@ -324,7 +324,7 @@ Production-код не обращается к `h3`-патч-API и `sockudo_ws`
 `MtuDiscoveryConfig::first_probe`,
 `MtuDiscoveryConfig::first_probe_caps`, `PathStats::plpmtud_settled`) — только через
 `crates/outline-transport/src/quic/vendored.rs` (клиент; `first_probe` для
-`[server.h3].mtu_first_probe` — ещё и через серверный гейт
+`[server.h3].mtu_first_probe` и TP-опции маскировки Caddy — ещё и через серверный гейт
 `bins/outline-ss-rust/src/server/h3/vendored.rs`); патч `rustls`
 (`client_hello_shape`, `ClientHelloShape`, `ExtensionOrder`,
 `kx_group::SECP521R1`) — только через `crates/outline-transport/src/tls_vendored.rs`

@@ -17,6 +17,10 @@
 //     driven by sockudo's `write_queued`/`shutdown_started` state machines).
 //   - `MtuDiscoveryConfig::first_probe` — added by the mtud-first-probe part
 //     of `quinn-proto-0.11.19.patch` for `[server.h3].mtu_first_probe`.
+//   - the transport-parameter options of `quinn-proto-0.11.19.patch`
+//     (`transport_parameter_order`, `advertise_min_ack_delay`, `max_ack_delay_ms`,
+//     `advertised_active_connection_id_limit`, `advertised_max_datagram_frame_size`)
+//     that give the listener the transport parameters of a quic-go (Caddy) server.
 //
 // The type re-exports below are plain upstream API, funneled anyway so the
 // rest of the server never names the vendored crates directly (CI-enforced
@@ -33,12 +37,67 @@ pub(in crate::server) use sockudo_ws::{
     error::CloseReason as H3CloseReason,
 };
 
-/// Server h3 builder: HTTP/3 DATAGRAM (RFC 9297) and Extended CONNECT
-/// (RFC 9220) announced in SETTINGS.
-pub(super) fn h3_server_builder() -> h3::server::Builder {
+/// Server h3 builder: Extended CONNECT (RFC 9220) announced in SETTINGS, and
+/// HTTP/3 DATAGRAM (RFC 9297) only when `udp_datagrams` is on, as quic-go's
+/// `http3.Server` does with `EnableDatagrams`.
+pub(super) fn h3_server_builder(udp_datagrams: bool) -> h3::server::Builder {
     let mut builder = h3::server::builder();
-    builder.enable_datagram(true).enable_extended_connect(true);
+    builder.enable_datagram(udp_datagrams).enable_extended_connect(true);
     builder
+}
+
+/// The write order of a quic-go server's transport parameters (`Marshal` in
+/// `internal/wire/transport_parameters.go`). `0x1b` is the slot of the GREASE
+/// parameter in the patched quinn-proto; quic-go writes its GREASE first.
+pub(super) const QUIC_GO_TP_ORDER: [u64; 18] = [
+    0x1b, 0x05, 0x06, 0x07, 0x04, 0x08, 0x09, 0x01, 0x03, 0x0b, 0x0a, 0x0c, 0x02, 0x00, 0x0e, 0x0f,
+    0x10, 0x20,
+];
+
+/// quic-go `ackhandler.MaxAckDelay` (25 ms) plus its 1 ms timer granularity.
+pub(super) const QUIC_GO_MAX_ACK_DELAY_MS: u32 = 26;
+
+/// quic-go `protocol.MaxActiveConnectionIDs`.
+pub(super) const QUIC_GO_ACTIVE_CONNECTION_ID_LIMIT: u32 = 4;
+
+/// quic-go `wire.MaxDatagramSize`: its `max_datagram_frame_size` when
+/// datagrams are on.
+pub(super) const QUIC_GO_MAX_DATAGRAM_FRAME_SIZE: u32 = 16_383;
+
+/// Transport parameters of the public HTTP/3 listener shaped like a quic-go
+/// (Caddy) server: quic-go's order, no `min_ack_delay`, `max_ack_delay` 26 ms,
+/// `active_connection_id_limit` 4, and `max_datagram_frame_size` 16383 only
+/// with `udp_datagrams` (without it the peer may not send datagrams at all).
+/// The GREASE parameter stays on: quic-go sends one too. `grease_quic_bit` is
+/// an `EndpointConfig` option and is turned off where the endpoint is built.
+pub(super) fn apply_quic_go_transport_parameters(
+    transport: &mut quinn::TransportConfig,
+    udp_datagrams: bool,
+    datagram_buffer_bytes: usize,
+) {
+    let order = QUIC_GO_TP_ORDER
+        .iter()
+        .map(|id| quinn::VarInt::from_u64(*id).expect("TP id fits a varint"))
+        .collect();
+    transport
+        .transport_parameter_order(quinn_proto::TransportParameterOrder::Fixed(order))
+        .advertise_min_ack_delay(false)
+        .max_ack_delay_ms(QUIC_GO_MAX_ACK_DELAY_MS)
+        .advertised_active_connection_id_limit(Some(quinn::VarInt::from_u32(
+            QUIC_GO_ACTIVE_CONNECTION_ID_LIMIT,
+        )));
+    if udp_datagrams {
+        transport
+            // Local only: room for datagrams the demultiplexer has not read
+            // yet. The peer sees `advertised_max_datagram_frame_size`.
+            .datagram_receive_buffer_size(Some(datagram_buffer_bytes))
+            .datagram_send_buffer_size(datagram_buffer_bytes)
+            .advertised_max_datagram_frame_size(Some(quinn::VarInt::from_u32(
+                QUIC_GO_MAX_DATAGRAM_FRAME_SIZE,
+            )));
+    } else {
+        transport.datagram_receive_buffer_size(None);
+    }
 }
 
 /// First DPLPMTUD probe size after the handshake (patched quinn-proto);

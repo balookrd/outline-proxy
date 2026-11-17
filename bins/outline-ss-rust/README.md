@@ -259,7 +259,7 @@ Keys are given as `[table].key`. CLI flags and environment variables for the key
 | `[server.h3].alpn` | `["h3"]` | ALPN protocols advertised on the QUIC endpoint. Only `"h3"` (HTTP/3 and WebSocket over HTTP/3) is supported; an empty list is rejected |
 | `[server.h3].initial_mtu` | unset (start at 1400) | Largest QUIC datagram the server starts with, as a UDP payload size (path MTU minus 28 for IPv4, 48 for IPv6). Range 1200–1452. Set it only on a host whose path is below 1500: unset, the server starts at 1400, the kernel rejects each datagram with `EMSGSIZE`, and quinn falls back to the 1200-byte QUIC minimum instead of the largest size that fits, losing about 12% of every packet plus retries on each handshake. A pinned host does not probe above the pinned value |
 | `[server.h3].mtu_first_probe` | unset | First path MTU discovery probe, as a UDP payload size (1200–1452). Set it when the clients' paths are known to carry that size: discovery confirms it with one probe instead of the 1426 → 1439 → 1445 → 1452 ladder. A path that does not carry it costs one rejected size before the regular search, so do not set 1452 where clients sit behind a narrower tunnel (for example 1448). A confirmed first probe caps every connection at that value, so do not set it below the real path MTU either: 1448 on a 1452 path caps all connections at 1448. Without a pinned `initial_mtu` the start is 1400, so values of 1400 or less have no effect. Ignored when `initial_mtu` is set |
-| `[server.h3].udp_datagrams` | `true` | Agree to UDP over HTTP/3 datagrams (RFC 9297) on `ws_h3` / `xhttp_h3`. The client offers them with the request header `x-outline-udp-datagram: 1`; the server echoes it only when this is on and the connection has a datagram size. `false` keeps UDP on the stream. Read at startup; a change needs a restart. See [UDP over HTTP/3 datagrams](#udp-over-http3-datagrams) |
+| `[server.h3].udp_datagrams` | `true` | Agree to UDP over HTTP/3 datagrams (RFC 9297) on `ws_h3` / `xhttp_h3`. The client offers them with the request header `x-outline-udp-datagram: 1`; the server echoes it only when this is on and the connection has a datagram size. `false` keeps UDP on the stream, and the server then announces no datagram support (no `max_datagram_frame_size`, SETTINGS `H3_DATAGRAM=0`). Read at startup; a change needs a restart. See [UDP over HTTP/3 datagrams](#udp-over-http3-datagrams) |
 | `[metrics].listen` | none | Prometheus listener. No metrics listener without it |
 | `[metrics].path` | `/metrics` | Prometheus endpoint path |
 | `[outbound].prefer_ipv4` | `false` | Prefer IPv4 for upstream DNS resolution and connects. Set when the host's IPv6 path is broken |
@@ -867,7 +867,7 @@ On `ws_h3` and `xhttp_h3` the server can carry client UDP (Shadowsocks / SS2022 
 # udp_datagrams = true
 ```
 
-- Agreement. The client sends `x-outline-udp-datagram: 1`; the server echoes it when `udp_datagrams` is on and `max_datagram_size()` is available. SETTINGS also carry `H3_DATAGRAM=1` and `ENABLE_CONNECT_PROTOCOL=1`. Without agreement the wire is unchanged.
+- Agreement. The client sends `x-outline-udp-datagram: 1`; the server echoes it when `udp_datagrams` is on and `max_datagram_size()` is available. SETTINGS carry `ENABLE_CONNECT_PROTOCOL=1` always and `H3_DATAGRAM=1` only with `udp_datagrams` on; the transport parameter `max_datagram_frame_size` (16383) likewise. Without agreement the wire is unchanged.
 - Sizes. Maximum UDP payload 1452, starting MTU 1400 (`[server.h3].initial_mtu` overrides it; pinning 1200 when the path does not need it sends about 10% of packets at 1200). A packet larger than the current `max_datagram_size()` goes over the stream. Datagram buffers are 1 MiB. Browser QUIC inside the tunnel uses about 1250-byte packets, which fit the downlink after PMTUD; before that, large packets use the stream. Path MTU discovery probes up to 1452 in steps down to 4 bytes, so a narrower path (a provider tunnel) is found to within a few bytes rather than up to 20 short.
 - VLESS. Plain UDP only (mux / XUDP are declined). Downlink datagrams start after the first uplink datagram, so none arrives before the VLESS response header.
 - Padding. The writer holds back cover frames while datagrams flow; cover is never sent as a datagram.
@@ -876,6 +876,24 @@ On `ws_h3` and `xhttp_h3` the server can carry client UDP (Shadowsocks / SS2022 
 Metrics: `outline_ss_udp_h3_datagrams_total{direction,transport,proto}` (`up` received, `down` handed to QUIC; `transport` is the carrier, `ws_h3` / `xhttp_h3`), `outline_ss_udp_h3_datagram_fallback_total{direction,transport,proto,reason}` (packets sent over the stream on an agreed session; `reason` for `down`: `too_large`, `send_failed`, `unarmed` (VLESS before the client's first uplink datagram); for `up`: `stream`), `outline_ss_udp_h3_datagram_dropped_total{reason}` (`unknown_stream`, `closed_stream` (the stream closed less than 10 s ago), `malformed`, `queue_full` (a burst overflowed the stream's receive queue), `queue_stalled` (it overflowed while its consumer had not read for 50 ms)) and `outline_ss_udp_h3_datagram_sessions_total{transport,state}` (`negotiated` / `declined`). During a rollout watch `sessions_total{state="negotiated"}` per node.
 
 Path MTU of the QUIC connections that may carry datagrams is sampled every 10 s. Counters are also flushed on close, the MTU is not, so a connection shorter than 10 s adds no histogram point. These metrics have no labels because one connection can carry both carriers: `outline_ss_quic_path_mtu_bytes` (histogram; 1200 is the QUIC minimum quinn falls back to after a black hole, at which point downlink packets of about 1100 bytes and more become `too_large` and go over the stream), `outline_ss_quic_black_holes_total` (samples in which a connection detected an MTU black hole, each detection dropping the path MTU to 1200; at most one per sample, because a dying connection re-fires the detector thousands of times a minute) and `outline_ss_quic_mtu_probes_lost_total` (lost DPLPMTUD probes).
+
+## HTTP/3 QUIC transport parameters
+
+The public HTTP/3 listener presents the QUIC transport parameters and connection ID length of a quic-go server (Caddy). The handshake shape is fixed in code and has no config keys. The mesh cluster listener (`[cluster]`) is a separate QUIC endpoint and keeps quinn's defaults.
+
+| What | Value | quinn default it replaces |
+|---|---|---|
+| Server connection ID length | 4 bytes | 8 |
+| Transport parameter order | GREASE, then `0x05 0x06 0x07 0x04 0x08 0x09 0x01 0x03 0x0b 0x0a 0x0c 0x02 0x00 0x0e 0x0f 0x10 0x20` (absent ones skipped) | random per connection |
+| `min_ack_delay` (`0xff04de1b`), `grease_quic_bit` (`0x2ab2`) | not sent | sent |
+| `max_ack_delay` | 26 ms (also the server's delayed-ACK timer) | 25 ms |
+| `active_connection_id_limit` | 4 | 5 |
+| `max_datagram_frame_size` | 16383 with `udp_datagrams = true`, absent otherwise | 65535, always |
+| SETTINGS `H3_DATAGRAM` | 1 with `udp_datagrams = true`, 0 otherwise | 1, always |
+
+Window sizes, stream limits, idle timeout and MTU stay as before. Still different from quic-go: the GREASE parameter id (quinn draws a 62-bit value, quic-go one byte), Version Negotiation (quinn lists a reserved version first, quic-go also lists v2), and HTTP/3 SETTINGS (the h3 crate adds GREASE and zero WebTransport settings and writes `H3_DATAGRAM = 0` instead of leaving it out). Those need patches to the vendored `quinn-proto` and `h3`.
+
+The shorter connection ID leaves 4 more bytes for client datagrams on the uplink. Clients do not depend on the length of the server's connection ID, so old clients keep working.
 
 ## HTTP/3 UDP socket buffers
 
