@@ -125,6 +125,7 @@ fn resolve(args: ConfigArgs, file: FileConfig, config_path: Option<PathBuf>) -> 
         tls_cert_path,
         tls_key_path,
         tls_certs,
+        max_connections_per_ip: server.max_connections_per_ip,
         h3_listen: args.h3_listen.or(server_h3.listen),
         h3_cert_path,
         h3_key_path,

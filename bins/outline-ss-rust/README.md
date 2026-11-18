@@ -252,6 +252,7 @@ Keys are given as `[table].key`. CLI flags and environment variables for the key
 | --- | --- | --- |
 | `[server].listen` | none | Main TCP listener for HTTP/1.1 and HTTP/2 |
 | `[server].cert_path` / `[server].key_path` | none | Built-in TLS for the main listener; this pair is the default certificate when no SNI matches. Legacy names `tls_cert_path` / `tls_key_path` are accepted as aliases |
+| `[server].max_connections_per_ip` | none (unlimited) | Optional limit on concurrent active TCP connections from a single IP address on the TLS listener. Disabled by default (0 or unset); set when direct access protection is needed |
 | `[[server.certs]]` | none | Additional cert/key pairs selected by SNI on the main listener. Each entry: `cert_path`, `key_path`, optional `sni = [...]`. Without `sni`, names come from the certificate's SAN (Subject CN only if there is no DNS SAN). Wildcard SAN entries are skipped because the resolver matches SNI exactly; list each hostname explicitly |
 | `[server.h3].listen` | none | QUIC listener address for HTTP/3. HTTP/3 is off unless this is set |
 | `[server.h3].cert_path` / `[server.h3].key_path` | inherited from `[server]` | Default certificate for the QUIC listener |
@@ -889,9 +890,11 @@ The public HTTP/3 listener presents the QUIC transport parameters and connection
 | `max_ack_delay` | 26 ms (also the server's delayed-ACK timer) | 25 ms |
 | `active_connection_id_limit` | 4 | 5 |
 | `max_datagram_frame_size` | 16383 with `udp_datagrams = true`, absent otherwise | 65535, always |
-| SETTINGS `H3_DATAGRAM` | 1 with `udp_datagrams = true`, 0 otherwise | 1, always |
+| GREASE TP id | fits in 1–2 bytes varint ($N \in 0..=255$) | 8 bytes varint ($N \in 0..2^{62}$) |
+| SETTINGS `H3_DATAGRAM` | 1 with `udp_datagrams = true`, absent otherwise | 1, always |
+| SETTINGS `MAX_FIELD_SECTION_SIZE` | 16384 | $2^{62}-1$ |
 
-Window sizes, stream limits, idle timeout and MTU stay as before. Still different from quic-go: the GREASE parameter id (quinn draws a 62-bit value, quic-go one byte), Version Negotiation (quinn lists a reserved version first, quic-go also lists v2), and HTTP/3 SETTINGS (the h3 crate adds GREASE and zero WebTransport settings and writes `H3_DATAGRAM = 0` instead of leaving it out). Those need patches to the vendored `quinn-proto` and `h3`.
+Window sizes, stream limits, idle timeout and MTU stay as before. HTTP/3 SETTINGS order (`0x06` -> `0x33` -> `0x08`), omitted empty WebTransport settings, and the GREASE parameter ID range match Caddy (quic-go) via vendored patches.
 
 The shorter connection ID leaves 4 more bytes for client datagrams on the uplink. Clients do not depend on the length of the server's connection ID, so old clients keep working.
 

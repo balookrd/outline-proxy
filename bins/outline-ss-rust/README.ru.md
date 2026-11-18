@@ -252,6 +252,7 @@ cargo ss-release-musl-armv7
 | --- | --- | --- |
 | `[server].listen` | нет | Основной TCP-слушатель для HTTP/1.1 и HTTP/2 |
 | `[server].cert_path` / `[server].key_path` | нет | Встроенный TLS основного слушателя; эта пара — сертификат по умолчанию, когда SNI ни с чем не совпал. Старые имена `tls_cert_path` / `tls_key_path` принимаются как алиасы |
+| `[server].max_connections_per_ip` | нет (без лимита) | Ограничение одновременных активных TCP-соединений с одного IP-адреса на TLS-слушателе. По умолчанию выключено (0 или отсутствует); настраивать при необходимости защиты от прямых атак |
 | `[[server.certs]]` | нет | Дополнительные пары cert/key, выбираемые по SNI на основном слушателе. Запись: `cert_path`, `key_path`, опционально `sni = [...]`. Без `sni` имена берутся из SAN сертификата (Subject CN — только если DNS SAN нет). Wildcard SAN-записи пропускаются, потому что резолвер сравнивает SNI точно; перечисляйте имена явно |
 | `[server.h3].listen` | нет | Адрес QUIC-слушателя HTTP/3. Без него HTTP/3 выключен |
 | `[server.h3].cert_path` / `[server.h3].key_path` | наследуются из `[server]` | Сертификат по умолчанию для QUIC-слушателя |
@@ -891,9 +892,11 @@ MTU пути у QUIC-соединений, которые могут нести 
 | `max_ack_delay` | 26 мс (это же таймер отложенного ACK сервера) | 25 мс |
 | `active_connection_id_limit` | 4 | 5 |
 | `max_datagram_frame_size` | 16383 при `udp_datagrams = true`, иначе не шлётся | 65535, всегда |
-| SETTINGS `H3_DATAGRAM` | 1 при `udp_datagrams = true`, иначе 0 | 1, всегда |
+| ID GREASE-параметра | 1–2 байта varint ($N \in 0..=255$) | 8 байт varint ($N \in 0..2^{62}$) |
+| SETTINGS `H3_DATAGRAM` | 1 при `udp_datagrams = true`, иначе не шлётся | 1, всегда |
+| SETTINGS `MAX_FIELD_SECTION_SIZE` | 16384 | $2^{62}-1$ |
 
-Окна, лимиты потоков, idle-таймаут и MTU не менялись. От quic-go пока отличаются: id GREASE-параметра (quinn берёт 62-битное значение, quic-go — один байт), Version Negotiation (quinn ставит reserved-версию первой, quic-go объявляет ещё и v2) и SETTINGS HTTP/3 (крейт h3 добавляет GREASE и нулевые параметры WebTransport и пишет `H3_DATAGRAM = 0` вместо того, чтобы его не слать). Для них нужны патчи vendored `quinn-proto` и `h3`.
+Окна, лимиты потоков, idle-таймаут и MTU не менялись. Порядок SETTINGS HTTP/3 (`0x06` -> `0x33` -> `0x08`), исключение пустых параметров WebTransport и диапазон ID GREASE-параметра соответствуют Caddy (quic-go) благодаря локальным патчам.
 
 Короткий connection ID оставляет клиентским датаграммам на uplink на 4 байта больше места. Клиенты от длины connection ID сервера не зависят, старые клиенты работают как раньше.
 

@@ -57,6 +57,9 @@ pub struct Config {
     /// Additional cert/key pairs for the TCP listener, dispatched by
     /// SNI at handshake time. Empty means "single-cert mode".
     pub tls_certs: Vec<TlsCertEntry>,
+    /// Optional limit on concurrent TCP connections per IP on the TLS listener.
+    /// Default `None` (no per-IP cap).
+    pub max_connections_per_ip: Option<usize>,
     pub h3_listen: Option<SocketAddr>,
     /// Default TLS cert/key for the QUIC listener; analogous to
     /// [`Self::tls_cert_path`]. When unset, the resolver inherits from

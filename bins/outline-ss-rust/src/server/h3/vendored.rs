@@ -37,12 +37,21 @@ pub(in crate::server) use sockudo_ws::{
     error::CloseReason as H3CloseReason,
 };
 
-/// Server h3 builder: Extended CONNECT (RFC 9220) announced in SETTINGS, and
-/// HTTP/3 DATAGRAM (RFC 9297) only when `udp_datagrams` is on, as quic-go's
-/// `http3.Server` does with `EnableDatagrams`.
-pub(super) fn h3_server_builder(udp_datagrams: bool) -> h3::server::Builder {
+/// quic-go `http3.Server` default `MaxHeaderBytes` (16 KiB = 16384).
+pub(super) const QUIC_GO_H3_MAX_FIELD_SECTION_SIZE: u64 = 16_384;
+
+/// Server h3 builder shaped like a Caddy (quic-go) server:
+/// - No GREASE settings parameter (quic-go sends none)
+/// - `MAX_FIELD_SECTION_SIZE = 16384` (0x06)
+/// - `H3_DATAGRAM = 1` (0x33) only when `udp_datagrams` is on
+/// - `ENABLE_CONNECT_PROTOCOL = 1` (0x08) for RFC 9220 Extended CONNECT
+pub(in crate::server) fn h3_server_builder(udp_datagrams: bool) -> h3::server::Builder {
     let mut builder = h3::server::builder();
-    builder.enable_datagram(udp_datagrams).enable_extended_connect(true);
+    builder
+        .send_grease(false)
+        .max_field_section_size(QUIC_GO_H3_MAX_FIELD_SECTION_SIZE)
+        .enable_datagram(udp_datagrams)
+        .enable_extended_connect(true);
     builder
 }
 

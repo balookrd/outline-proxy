@@ -89,6 +89,11 @@ Logical changes carried by `h3-0.0.8.patch`:
    connection and kills every multiplexed session on it.
 3. Vendoring trim (`Cargo.toml`) — dev-dependencies removed so the
    workspace does not pull them.
+4. `caddy-settings` (`src/config.rs`, `src/proto/frame.rs`, `src/server/builder.rs`) —
+   emulates HTTP/3 SETTINGS of Caddy (quic-go): omits empty WebTransport parameters
+   (0x2b, 0x2c) and `H3_DATAGRAM` (0x33) when datagrams are disabled, orders parameters as
+   `0x06 (MAX_FIELD_SECTION_SIZE)` -> `0x33 (H3_DATAGRAM)` -> `0x08 (ENABLE_CONNECT_PROTOCOL)`,
+   and adds `build_settings_entries` for inspection.
 
 ## sockudo-ws (1.7.5)
 
@@ -321,6 +326,10 @@ Baseline — crates.io `quinn-proto 0.11.19`. Logical changes carried by
    `quic::tp_profile::tests::chromium_profile_sends_a_zero_spin_bit`.
 8. Vendoring trim (`Cargo.toml`) — dev-dependencies removed (upstream
    `rcgen` with default `ring` would violate the aws-lc-rs invariant).
+9. `caddy-grease-id` (`src/transport_parameters.rs`) — in `generate_reserved_id`, random
+   value $N$ for the GREASE parameter ID (`31 * N + 27`) is drawn from a single random byte
+   `0..=255`, exactly matching quic-go (Caddy). Consequently, the varint ID fits in 1 or 2
+   bytes (`27..=7932`) instead of 8 bytes in upstream quinn-proto.
 
 Conformance check: apply the patch to a clean copy of crates.io 0.11.19 and
 compare `diff -r src/` — byte-identical.
