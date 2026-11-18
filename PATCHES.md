@@ -484,6 +484,22 @@ Baseline — crates.io `rustls 0.23.46`. Changes carried by
    the `[[example]]` and `[[bench]]` targets (their sources, `Cargo.lock`,
    README and `.clippy.toml` are not vendored), the same way as for
    `quinn-proto`. `build.rs` is verbatim upstream.
+4. caddy-server-emulation (`src/msgs/handshake.rs`, `src/server/tls13.rs`,
+   `src/server/server_conn.rs`, `src/server/builder.rs`, `src/common_state.rs`,
+   `src/msgs/fragmenter.rs`) — Caddy server emulation (Go 1.26 `crypto/tls`):
+   - TLS 1.3 ServerHello and HelloRetryRequest extensions order:
+     `supported_versions` (0x002b) -> `key_share` (0x0033) -> `pre_shared_key` (0x0029).
+     Upstream rustls encoded `key_share` before `supported_versions`;
+   - TLS 1.3 NewSessionTicket: emit exactly 1 ticket (`send_tls13_tickets = 1`
+     by default instead of 2), empty `ticket_nonce` (0 bytes instead of 32 random bytes,
+     matching Go single-ticket), and ticket lifetime `stateful_lifetime = 604800`
+     seconds (7 days, matching Go `ticketLifetime`);
+   - Dynamic record sizing: for `Side::Server` (`ServerConfig::dynamic_record_sizing = true`
+     by default), application data records are limited to 1186 plaintext bytes (~1208
+     wire bytes including TLS record header and AEAD tag, fitting within TCP MSS for
+     IPv6 MTU 1280) for the first 128 KiB of data sent over the connection, after which
+     record size scales up to 16 KiB (matching Go `crypto/tls` `maxPayloadSizeForWrite`
+     and `recordSizeBoostThreshold`).
 
 The rustls `brotli` / `zlib` features stay off: with them the server, which shares
 the vendored crate, would gain certificate compressors and start compressing its

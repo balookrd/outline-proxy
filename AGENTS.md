@@ -164,10 +164,12 @@ lock-файлов вместе с vendored-крейтами, которые об
   browser-order-and-firefox, mtud-first-probe, initial-crypto-layout,
   stream-chunk-limit, fixed-spin-bit) и vendoring-trim,
   описано в `PATCHES*.md`.
-  `vendor/rustls` = upstream 0.23.46 + два логических патча (client-hello-shape:
+  `vendor/rustls` = upstream 0.23.46 + три логических патча (client-hello-shape:
   `ClientConfig::client_hello_shape` для браузерного ClientHello H3- и
   TCP-носителей, `cert_check` и HTTPS-пробы;
-  secp521r1: `kx_group::SECP521R1`) и vendoring-trim, описано в `PATCHES*.md`.
+  secp521r1: `kx_group::SECP521R1`;
+  caddy-server-emulation: порядок расширений ServerHello, 1 NewSessionTicket на 7 суток
+  с пустым nonce, dynamic record sizing для сервера) и vendoring-trim, описано в `PATCHES*.md`.
   Фичи rustls `brotli`/`zlib` НЕ включать: rustls вендорится один на весь
   workspace, и сервер получил бы компрессоры и начал бы сжимать свой сертификат
   (смена серверного поведения). Декомпрессоры сертификата клиента живут в

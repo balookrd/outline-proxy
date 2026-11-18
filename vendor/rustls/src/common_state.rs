@@ -61,6 +61,8 @@ pub struct CommonState {
     pub(crate) refresh_traffic_keys_pending: bool,
     pub(crate) fips: bool,
     pub(crate) tls13_tickets_received: u32,
+    pub(crate) dynamic_record_sizing: bool,
+    pub(crate) appdata_bytes_sent: usize,
 }
 
 impl CommonState {
@@ -94,6 +96,8 @@ impl CommonState {
             refresh_traffic_keys_pending: false,
             fips: false,
             tls13_tickets_received: 0,
+            dynamic_record_sizing: side == Side::Server,
+            appdata_bytes_sent: 0,
         }
     }
 
@@ -240,10 +244,10 @@ impl CommonState {
     pub(crate) fn request_key_update_for(&mut self, payload: OutboundChunks<'_>) {
         let records = self
             .message_fragmenter
-            .fragment_payload(
-                ContentType::ApplicationData,
-                ProtocolVersion::TLSv1_2,
+            .fragment_appdata_payload(
                 payload,
+                self.dynamic_record_sizing,
+                self.appdata_bytes_sent,
             )
             .len();
 
@@ -271,10 +275,10 @@ impl CommonState {
 
         let fragments = self
             .message_fragmenter
-            .fragment_payload(
-                ContentType::ApplicationData,
-                ProtocolVersion::TLSv1_2,
+            .fragment_appdata_payload(
                 payload.clone(),
+                self.dynamic_record_sizing,
+                self.appdata_bytes_sent,
             );
 
         for f in 0..fragments.len() {
@@ -308,13 +312,15 @@ impl CommonState {
 
         let fragments = self
             .message_fragmenter
-            .fragment_payload(
-                ContentType::ApplicationData,
-                ProtocolVersion::TLSv1_2,
+            .fragment_appdata_payload(
                 payload,
+                self.dynamic_record_sizing,
+                self.appdata_bytes_sent,
             );
 
-        Ok(self.write_fragments(outgoing_tls, fragments))
+        let total_written = self.write_fragments(outgoing_tls, fragments);
+        self.appdata_bytes_sent = self.appdata_bytes_sent.saturating_add(total_written);
+        Ok(total_written)
     }
 
     // Changing the keys must not span any fragmented handshake
@@ -369,10 +375,10 @@ impl CommonState {
 
         let iter = self
             .message_fragmenter
-            .fragment_payload(
-                ContentType::ApplicationData,
-                ProtocolVersion::TLSv1_2,
+            .fragment_appdata_payload(
                 payload.split_at(len).0,
+                self.dynamic_record_sizing,
+                self.appdata_bytes_sent,
             );
 
         // Check the record limit for the last fragment before encrypting any of them, so
@@ -398,6 +404,7 @@ impl CommonState {
             }
 
             sent += m.payload.len();
+            self.appdata_bytes_sent = self.appdata_bytes_sent.saturating_add(m.payload.len());
             self.send_single_fragment(m);
         }
 

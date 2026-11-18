@@ -1333,7 +1333,7 @@ impl ExpectFinished {
         config: &ServerConfig,
     ) -> Result<(), Error> {
         let secure_random = config.provider.secure_random;
-        let nonce = rand::random_vec(secure_random, 32)?;
+        let nonce = Vec::new(); // empty nonce (0 bytes) matches Go crypto/tls single ticket
         let age_add = rand::random_u32(secure_random)?;
 
         let now = config.current_time()?;
@@ -1356,7 +1356,7 @@ impl ExpectFinished {
                 trace!("resumption not available; not issuing ticket");
                 return Ok(());
             }
-            let stateful_lifetime = 24 * 60 * 60; // this is a bit of a punt
+            let stateful_lifetime = 7 * 24 * 60 * 60; // 7 days (604800s), matches Go ticketLifetime
             (id, stateful_lifetime)
         };
 

@@ -482,6 +482,23 @@ Baseline — crates.io `rustls 0.23.46`. Изменения в `rustls-0.23.46.p
    целями `[[example]]` и `[[bench]]` (их исходники, `Cargo.lock`, README и
    `.clippy.toml` не vendor'ятся), так же как у `quinn-proto`. `build.rs` —
    побайтово upstream.
+4. caddy-server-emulation (`src/msgs/handshake.rs`, `src/server/tls13.rs`,
+   `src/server/server_conn.rs`, `src/server/builder.rs`, `src/common_state.rs`,
+   `src/msgs/fragmenter.rs`) — эмуляция сервера Caddy (Go 1.26 `crypto/tls`):
+   - Порядок расширений ServerHello и HelloRetryRequest в TLS 1.3:
+     `supported_versions` (0x002b) -> `key_share` (0x0033) -> `pre_shared_key` (0x0029).
+     Upstream rustls кодировал `key_share` перед `supported_versions`;
+   - NewSessionTicket в TLS 1.3: отправка ровно 1 тикета (`send_tls13_tickets = 1`
+     по умолчанию вместо 2), пустой `ticket_nonce` (0 байт вместо 32 случайных байт,
+     в точности как в Go single-ticket), время жизни тикета `stateful_lifetime = 604800`
+     секунд (7 суток, в точности как `ticketLifetime` в Go);
+   - Динамический размер записей (dynamic record sizing): для `Side::Server`
+     (`ServerConfig::dynamic_record_sizing = true` по умолчанию) размер записей
+     application data ограничивается 1186 байтами открытого текста (~1208 байт на
+     проводе вместе с TLS-заголовком и AEAD-тегом, что укладывается в TCP MSS при
+     IPv6 MTU 1280) на первых 128 КиБ потока данных соединения, после чего
+     увеличивается до максимальных 16 КиБ (в точности повторяя алгоритм
+     `maxPayloadSizeForWrite` / `recordSizeBoostThreshold` из Go `crypto/tls`).
 
 Фичи rustls `brotli` / `zlib` остаются выключенными: с ними сервер, который делит
 vendored-крейт с клиентом, получил бы компрессоры и начал бы сжимать свой

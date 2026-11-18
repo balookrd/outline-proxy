@@ -120,8 +120,9 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
             enable_secret_extraction: false,
             max_early_data_size: 0,
             send_half_rtt_data: false,
-            send_tls13_tickets: 2,
+            send_tls13_tickets: 1,
             max_tls13_tickets: 0,
+            dynamic_record_sizing: true,
             #[cfg(feature = "tls12")]
             require_ems,
             time_provider: self.time_provider,
