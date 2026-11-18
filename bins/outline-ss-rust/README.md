@@ -57,7 +57,7 @@ This document describes the server binary: transports, the configuration file, t
 | VLESS over XHTTP packet-up | Supported | Long-lived GET plus sequenced POSTs on one HTTP/2 (or HTTP/3) connection; a reorder buffer accepts out-of-order POSTs; the downlink ring survives a GET dropped mid-flight (CDNs cut long requests at about 100 s); `X-Padding` and SSE-style headers (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
 | VLESS over XHTTP stream-one | Supported | One bidirectional request: request body is the uplink, response body is the downlink. Selected by `?mode=stream-one` on the same base path. Requires h2 or h3 (h1 returns 505); on h3 the bidi stream is split with `RequestStream::split` and each half runs in its own task |
 | XHTTP cross-transport session resumption | Supported | The server issues `X-Outline-Session` on first contact, parks the VLESS upstream when the carrier drops and re-attaches it on the next request carrying `X-Outline-Resume`, also across a carrier switch (client failed h3, re-dialled h2 with the same token) |
-| HTTP fallback (camouflage) | Supported | Reverse-proxies unmatched HTTP/1.1 and HTTP/2 requests (and HTTP/3 with `apply_to_h3`) to a backend (haproxy, nginx, caddy) instead of returning 404. Optional HAProxy PROXY protocol v1/v2 header passes the client IP to the backend |
+| HTTP fallback (camouflage) | Supported | Reverse-proxies unmatched HTTP/1.1 and HTTP/2 requests (and HTTP/3 with `apply_to_h3`) to a backend (haproxy, nginx, caddy) instead of returning Caddy's empty 200 OK. Optional HAProxy PROXY protocol v1/v2 header passes the client IP to the backend |
 | SNI fallback (L4 camouflage) | Supported | Peeks the ClientHello on the TLS listener and splices connections with a foreign SNI (raw TCP, including the captured ClientHello) to a backend that holds its own certificate. nginx-style wildcards in `match_sni`; without PROXY protocol v1/v2 the backend sees `127.0.0.1` as the peer |
 | VLESS REALITY / XTLS / Vision | Not supported | Out of scope |
 | Outline management API | Not supported | Data plane only |
@@ -894,6 +894,18 @@ The public HTTP/3 listener presents the QUIC transport parameters and connection
 Window sizes, stream limits, idle timeout and MTU stay as before. Still different from quic-go: the GREASE parameter id (quinn draws a 62-bit value, quic-go one byte), Version Negotiation (quinn lists a reserved version first, quic-go also lists v2), and HTTP/3 SETTINGS (the h3 crate adds GREASE and zero WebTransport settings and writes `H3_DATAGRAM = 0` instead of leaving it out). Those need patches to the vendored `quinn-proto` and `h3`.
 
 The shorter connection ID leaves 4 more bytes for client datagrams on the uplink. Clients do not depend on the length of the server's connection ID, so old clients keep working.
+
+## TCP and HTTP Masking as Caddy (Go)
+
+The server's behavior on TCP (HTTP/1.1 and HTTP/2) and HTTP/3 matches the Caddy web server baseline (Go 1.26 `net/http` + `golang.org/x/net/http2`):
+
+- **`Server: Caddy` header**: emitted on all HTTP responses across TCP and H3 listeners.
+- **`Alt-Svc: h3=":<port>"; ma=2592000` header**: emitted on all HTTP/1.1 and HTTP/2 responses when HTTP/3 is active (omitted on H3 responses, matching Caddy).
+- **HTTP on HTTPS port**: plaintext HTTP requests on the TLS port are intercepted prior to the TLS handshake and immediately answered with Go's verbatim raw response:
+  `HTTP/1.0 400 Bad Request\r\n\r\nClient sent an HTTP request to an HTTPS server.\n`
+  followed by connection close (metric `outline_ss_tls_handshake_failed_total{reason="http_on_https"}`).
+- **Default response for unmatched routes**: when `[http_fallback]` is omitted, the server returns an empty `200 OK` with `Content-Length: 0` (Caddy's `emptyHandler`), avoiding 404 prober signals.
+- **HTTP/2 SETTINGS parameters**: `MAX_CONCURRENT_STREAMS = 250`, `MAX_FRAME_SIZE = 1048576` (1 MiB), `MAX_HEADER_LIST_SIZE = 16704` (16 KiB + 320), and server keep-alive PINGs are disabled (Go default).
 
 ## HTTP/3 UDP socket buffers
 

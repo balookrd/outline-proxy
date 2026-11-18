@@ -9,6 +9,7 @@ use hyper_util::{
     service::TowerToHyperService,
 };
 use tokio::{
+    io::AsyncWriteExt,
     net::TcpListener,
     sync::Semaphore,
     task::JoinSet,
@@ -26,10 +27,10 @@ use super::super::{
     cluster::ClusterCtx,
     connect::configure_tcp_stream,
     constants::{
-        CERT_RELOAD_POLL_INTERVAL_SECS, H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS,
-        HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS, PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS,
-        PLAIN_HTTP_MAX_CONCURRENT_CONNECTIONS, TLS_FIRST_REQUEST_TIMEOUT_SECS,
-        TLS_HANDSHAKE_TIMEOUT_SECS, TLS_MAX_CONCURRENT_CONNECTIONS,
+        CERT_RELOAD_POLL_INTERVAL_SECS, H2_CADDY_MAX_CONCURRENT_STREAMS, H2_CADDY_MAX_FRAME_SIZE,
+        H2_CADDY_MAX_HEADER_LIST_SIZE, HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
+        PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS, PLAIN_HTTP_MAX_CONCURRENT_CONNECTIONS,
+        TLS_FIRST_REQUEST_TIMEOUT_SECS, TLS_HANDSHAKE_TIMEOUT_SECS, TLS_MAX_CONCURRENT_CONNECTIONS,
     },
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
@@ -180,7 +181,17 @@ pub(in crate::server) fn build_app(
             .with_state(xhttp_state);
         app = app.merge(xhttp_router);
     }
-    app
+    app.layer(axum::middleware::map_response(apply_caddy_server_header))
+}
+
+async fn apply_caddy_server_header(
+    mut response: axum::response::Response,
+) -> axum::response::Response {
+    let headers = response.headers_mut();
+    if !headers.contains_key(axum::http::header::SERVER) {
+        headers.insert(axum::http::header::SERVER, axum::http::HeaderValue::from_static("Caddy"));
+    }
+    response
 }
 
 pub(in crate::server) fn build_metrics_app(metrics: Arc<Metrics>, metrics_path: String) -> Router {
@@ -197,6 +208,25 @@ pub(in crate::server) async fn serve_tcp_listener(
     metrics: Arc<Metrics>,
     shutdown: ShutdownSignal,
 ) -> Result<()> {
+    let app = if config.h3_enabled() {
+        let h3_port = config.effective_h3_listen().map(|addr| addr.port()).unwrap_or(443);
+        let alt_svc_val =
+            axum::http::HeaderValue::from_str(&format!("h3=\":{h3_port}\"; ma=2592000"))
+                .expect("valid alt-svc header value");
+        app.layer(axum::middleware::map_response(move |mut res: axum::response::Response| {
+            let val = alt_svc_val.clone();
+            async move {
+                let headers = res.headers_mut();
+                if !headers.contains_key(axum::http::header::ALT_SVC) {
+                    headers.insert(axum::http::header::ALT_SVC, val);
+                }
+                res
+            }
+        }))
+    } else {
+        app
+    };
+
     if config.tcp_tls_enabled() {
         let acceptor = Arc::new(ArcSwap::from_pointee(build_tcp_tls_acceptor(config.as_ref())?));
         spawn_tcp_cert_reloader(Arc::clone(&acceptor), Arc::clone(&config), shutdown.clone());
@@ -647,6 +677,7 @@ async fn serve_tls_listener(
 
         tasks.spawn(async move {
             let _permit = permit;
+            let mut stream = stream;
 
             // A single deadline covers the whole unauthenticated pre-handshake
             // phase — the optional SNI peek *and* the rustls handshake. Sharing
@@ -657,6 +688,53 @@ async fn serve_tls_listener(
             // `TLS_MAX_CONCURRENT_CONNECTIONS` semaphore from being pinned by
             // peers that never finish authenticating.
             let preauth_deadline = Instant::now() + tls_handshake_timeout();
+
+            // Peek for plain HTTP sent to the HTTPS port before starting the TLS
+            // handshake or SNI dispatch. Go's net/http server detects this and
+            // replies with a plaintext 400 Bad Request rather than a TLS alert.
+            let mut probe = [0u8; 8];
+            let peeked = tokio::select! {
+                biased;
+                _ = task_shutdown.cancelled() => {
+                    debug!(%peer_addr, "aborting TLS handshake on shutdown");
+                    return;
+                }
+                res = timeout_at(preauth_deadline, stream.peek(&mut probe)) => res,
+            };
+            let n = match peeked {
+                Ok(Ok(n)) => n,
+                Ok(Err(error)) => {
+                    debug!(%peer_addr, ?error, "tcp peek failed");
+                    return;
+                }
+                Err(_elapsed) => {
+                    if sni_fallback.is_some() {
+                        metrics.record_sni_peek_failed("timeout");
+                    } else {
+                        metrics.record_tls_handshake_failed("timeout");
+                    }
+                    return;
+                }
+            };
+            if n > 0 && is_plain_http_request(&probe[..n]) {
+                // Drain any already-received bytes from the socket so the OS
+                // does not send a TCP RST on close (BSD/macOS/Linux emit RST if
+                // unread inbound bytes remain when a socket is closed).
+                let mut drain = [0u8; 1024];
+                while let Ok(read_n) = stream.try_read(&mut drain) {
+                    if read_n == 0 {
+                        break;
+                    }
+                }
+                const GO_HTTP_ON_HTTPS_RESP: &[u8] =
+                    b"HTTP/1.0 400 Bad Request\r\n\r\nClient sent an HTTP request to an HTTPS server.\n";
+                let _ = timeout_at(preauth_deadline, stream.write_all(GO_HTTP_ON_HTTPS_RESP)).await;
+                let _ = stream.flush().await;
+                let _ = stream.shutdown().await;
+                metrics.record_tls_handshake_failed("http_on_https");
+                debug!(%peer_addr, "plain HTTP request sent to HTTPS listener; sent Go 400 response");
+                return;
+            }
 
             // SNI dispatch: when [sni_fallback] is configured, peek
             // the ClientHello before handshake. Foreign SNIs (or no
@@ -852,18 +930,36 @@ fn build_http_server_builder(
         .http2()
         .timer(TokioTimer::new())
         .enable_connect_protocol()
+        .max_concurrent_streams(H2_CADDY_MAX_CONCURRENT_STREAMS)
+        .max_frame_size(H2_CADDY_MAX_FRAME_SIZE)
+        .max_header_list_size(H2_CADDY_MAX_HEADER_LIST_SIZE)
         .initial_stream_window_size(Some(profile.h2_stream_window_bytes))
         .initial_connection_window_size(Some(profile.h2_connection_window_bytes))
-        .max_send_buf_size(profile.h2_max_send_buf_size)
-        // The builder is made per connection, so the draw is per connection:
-        // hyper keeps one PING period for a connection's lifetime, and this
-        // stops all of them from sharing the same one.
-        .keep_alive_interval(Some(outline_wire::jitter::jitter_down(
-            Duration::from_secs(H2_KEEPALIVE_INTERVAL_SECS),
-            rand::random(),
-        )))
-        .keep_alive_timeout(Duration::from_secs(H2_KEEPALIVE_TIMEOUT_SECS));
+        .max_send_buf_size(profile.h2_max_send_buf_size);
     builder
+}
+
+/// Checks whether peeked initial socket bytes look like a plaintext HTTP request method
+/// (matching Go's `tlsRecordHeaderLooksLikeHTTP`).
+pub(super) fn is_plain_http_request(peeked: &[u8]) -> bool {
+    let methods: &[&[u8]] = &[
+        b"GET ",
+        b"HEAD ",
+        b"POST ",
+        b"PUT ",
+        b"OPTIONS ",
+        b"DELETE ",
+        b"PATCH ",
+        b"TRACE ",
+        b"CONNECT ",
+    ];
+    if peeked.len() < 4 {
+        return false;
+    }
+    methods.iter().any(|m| {
+        let len = m.len().min(peeked.len());
+        peeked[..len] == m[..len]
+    })
 }
 
 fn is_benign_http_serve_error(error: &(dyn std::error::Error + 'static)) -> bool {

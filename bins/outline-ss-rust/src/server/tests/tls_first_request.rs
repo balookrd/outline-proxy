@@ -157,7 +157,8 @@ async fn a_request_within_the_budget_is_served() -> Result<()> {
         let mut response = Vec::new();
         let _ = tokio::time::timeout(Duration::from_secs(2), tls.read_to_end(&mut response)).await;
         let head = String::from_utf8_lossy(&response);
-        assert!(head.starts_with("HTTP/1.1 404"), "offer {offered:?}: got {head:?}");
+        assert!(head.starts_with("HTTP/1.1 200"), "offer {offered:?}: got {head:?}");
+        assert!(head.contains("server: Caddy"), "offer {offered:?}: got {head:?}");
     }
 
     server.abort();

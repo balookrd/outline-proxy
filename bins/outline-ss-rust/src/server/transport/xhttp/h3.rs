@@ -428,6 +428,7 @@ async fn xhttp_h3_post(
         .body(())
         .context("failed to build xhttp/h3 POST response")?;
     let resp_headers = response.headers_mut();
+    resp_headers.insert(axum::http::header::SERVER, axum::http::HeaderValue::from_static("Caddy"));
     for (name, value) in post_response_headers() {
         resp_headers.insert(name, value);
     }
@@ -739,6 +740,7 @@ fn protocol_from_h3_version(version: Version) -> Protocol {
 }
 
 fn apply_response_masquerade(headers: &mut HeaderMap) {
+    headers.insert(axum::http::header::SERVER, axum::http::HeaderValue::from_static("Caddy"));
     for (name, value) in masquerade_response_headers() {
         headers.insert(name, value);
     }
@@ -755,6 +757,9 @@ async fn finish_with_status(
         .status(status)
         .body(())
         .context("failed to build xhttp/h3 status response")?;
+    response
+        .headers_mut()
+        .insert(axum::http::header::SERVER, axum::http::HeaderValue::from_static("Caddy"));
     if let Some((name, value)) = generate_padding_header() {
         response.headers_mut().insert(name, value);
     }

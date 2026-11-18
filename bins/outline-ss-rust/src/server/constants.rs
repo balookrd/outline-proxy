@@ -3,8 +3,10 @@
 //! HTTP/2 and HTTP/3 resource limits live in [`crate::config::TuningProfile`],
 //! driven by the `tuning_profile` preset with optional `[tuning]` overrides.
 
-pub(super) const H2_KEEPALIVE_INTERVAL_SECS: u64 = 20;
-pub(super) const H2_KEEPALIVE_TIMEOUT_SECS: u64 = 20;
+/// HTTP/2 tuning constants matching Caddy / Go 1.26 `x/net/http2`.
+pub(super) const H2_CADDY_MAX_CONCURRENT_STREAMS: u32 = 250;
+pub(super) const H2_CADDY_MAX_FRAME_SIZE: u32 = 1_048_576; // 1 MiB (Caddy default)
+pub(super) const H2_CADDY_MAX_HEADER_LIST_SIZE: u32 = 16_704; // 16 KiB + 320 (Caddy default)
 
 // Cap on concurrent active TLS connections (handshake + established). Matches
 // the plain-TCP shadowsocks cap so a TLS listener cannot spawn unbounded tasks.

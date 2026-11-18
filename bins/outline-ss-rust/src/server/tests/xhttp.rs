@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 use arc_swap::ArcSwap;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{Method, Request, StatusCode, header};
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full};
 use http_body_util::{StreamBody, combinators::BoxBody};
@@ -366,7 +366,8 @@ async fn xhttp_path_based_get_is_answered_like_an_unknown_path() -> Result<()> {
         .uri(&url)
         .body(Full::new(Bytes::new()))?;
     let resp = client.request(req).await?;
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers().get(header::SERVER).unwrap(), "Caddy");
     assert!(resp.headers().get("x-padding").is_none(), "padding header marks an XHTTP route");
 
     server.abort();
@@ -791,9 +792,10 @@ async fn xhttp_sessionless_get_is_answered_like_an_unknown_path() -> Result<()> 
         let resp = client.request(req).await?;
         assert_eq!(
             resp.status(),
-            StatusCode::NOT_FOUND,
+            StatusCode::OK,
             "GET on sessionless XHTTP route must look like an unknown path",
         );
+        assert_eq!(resp.headers().get(header::SERVER).unwrap(), "Caddy");
         assert!(resp.headers().get("x-padding").is_none(), "padding header marks an XHTTP route");
     }
 

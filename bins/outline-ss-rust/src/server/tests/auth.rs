@@ -90,7 +90,9 @@ async fn root_http_auth_challenges_allows_password_and_hides_other_paths() -> Re
                 .body(Empty::<Bytes>::new())?,
         )
         .await?;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get(header::SERVER).unwrap(), "Caddy");
+    assert_eq!(response.headers().get(header::CONTENT_LENGTH).unwrap(), "0");
 
     let response = client
         .request(
@@ -100,7 +102,9 @@ async fn root_http_auth_challenges_allows_password_and_hides_other_paths() -> Re
                 .body(Empty::<Bytes>::new())?,
         )
         .await?;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get(header::SERVER).unwrap(), "Caddy");
+    assert_eq!(response.headers().get(header::CONTENT_LENGTH).unwrap(), "0");
 
     server.abort();
     let _ = server.await;

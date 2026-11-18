@@ -249,7 +249,7 @@ async fn http_fallback_proxies_post_with_body() -> Result<()> {
 }
 
 #[tokio::test]
-async fn http_fallback_disabled_returns_404_for_unknown_path() -> Result<()> {
+async fn http_fallback_disabled_returns_empty_200_for_unknown_path() -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let config = sample_config(addr);
@@ -276,7 +276,11 @@ async fn http_fallback_disabled_returns_404_for_unknown_path() -> Result<()> {
                 .body(Empty::<Bytes>::new())?,
         )
         .await?;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get(header::SERVER).unwrap(), "Caddy");
+    assert_eq!(response.headers().get(header::CONTENT_LENGTH).unwrap(), "0");
+    let body = response.into_body().collect().await?.to_bytes();
+    assert!(body.is_empty());
 
     server.abort();
     let _ = server.await;
@@ -380,7 +384,7 @@ async fn tunnel_routes_answer_plain_requests_like_unknown_paths_without_fallback
     let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
     let unknown =
         observable_response(&client, Method::GET, format!("http://{addr}/no-such-path")).await?;
-    assert_eq!(unknown.0, StatusCode::NOT_FOUND);
+    assert_eq!(unknown.0, StatusCode::OK);
     for (method, url) in tunnel_route_misses(addr) {
         let miss = observable_response(&client, method.clone(), url.clone()).await?;
         assert_eq!(miss, unknown, "{method} {url} differs from an unknown path");

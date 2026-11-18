@@ -29,6 +29,7 @@ mod nat;
 mod relay;
 mod resumption;
 mod sni_fallback;
+mod tcp_caddy_emulation;
 mod tls_first_request;
 pub(in crate::server::tests) mod vless;
 mod websocket;
