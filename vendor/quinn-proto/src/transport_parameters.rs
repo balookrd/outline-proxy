@@ -788,8 +788,9 @@ impl ReservedTransportParameter {
     /// See: <https://www.rfc-editor.org/rfc/rfc9000.html#section-18.1> and <https://www.rfc-editor.org/rfc/rfc9000.html#section-22.3>
     fn generate_reserved_id(rng: &mut impl Rng) -> VarInt {
         let id = {
-            let rand = rng.random_range(0u64..(1 << 62) - 27);
-            let n = rand / 31;
+            // Match quic-go (Caddy) and quiche: N is drawn from a single random byte
+            // (0..=255), so the reserved id fits in a 1- or 2-byte varint (27..=7932).
+            let n = rng.random_range(0u64..=255);
             31 * n + 27
         };
         debug_assert!(

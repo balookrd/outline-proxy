@@ -23,6 +23,7 @@ fn base_config() -> Config {
         tls_cert_path: None,
         tls_key_path: None,
         tls_certs: Vec::new(),
+        max_connections_per_ip: None,
         h3_listen: None,
         h3_cert_path: None,
         h3_key_path: None,

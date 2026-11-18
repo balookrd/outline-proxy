@@ -116,19 +116,25 @@ impl TryFrom<Config> for frame::Settings {
             frame::SettingId::MAX_HEADER_LIST_SIZE,
             max_field_section_size,
         )?;
-        settings.insert(
-            frame::SettingId::ENABLE_CONNECT_PROTOCOL,
-            enable_extended_connect as u64,
-        )?;
-        settings.insert(
-            frame::SettingId::ENABLE_WEBTRANSPORT,
-            enable_webtransport as u64,
-        )?;
-        settings.insert(frame::SettingId::H3_DATAGRAM, enable_datagram as u64)?;
-        settings.insert(
-            frame::SettingId::WEBTRANSPORT_MAX_SESSIONS,
-            max_webtransport_sessions,
-        )?;
+        if enable_datagram {
+            settings.insert(frame::SettingId::H3_DATAGRAM, 1)?;
+        }
+        if enable_extended_connect {
+            settings.insert(
+                frame::SettingId::ENABLE_CONNECT_PROTOCOL,
+                1,
+            )?;
+        }
+        if enable_webtransport {
+            settings.insert(
+                frame::SettingId::ENABLE_WEBTRANSPORT,
+                1,
+            )?;
+            settings.insert(
+                frame::SettingId::WEBTRANSPORT_MAX_SESSIONS,
+                max_webtransport_sessions,
+            )?;
+        }
 
         Ok(settings)
     }

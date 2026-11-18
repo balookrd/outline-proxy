@@ -117,6 +117,11 @@ impl Builder {
         self.config.settings.enable_datagram = value;
         self
     }
+
+    /// Evaluates the SETTINGS frame entries configured on this builder as `(id, value)` pairs.
+    pub fn build_settings_entries(&self) -> Result<Vec<(u64, u64)>, crate::proto::frame::SettingsError> {
+        crate::proto::frame::Settings::try_from(self.config).map(|s| s.entries())
+    }
 }
 
 impl Builder {

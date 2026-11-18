@@ -146,6 +146,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         tls_cert_path: None,
         tls_key_path: None,
         tls_certs: Vec::new(),
+        max_connections_per_ip: None,
         h3_listen: None,
         h3_cert_path: None,
         h3_key_path: None,

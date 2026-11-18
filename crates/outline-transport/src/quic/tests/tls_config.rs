@@ -404,7 +404,15 @@ async fn h3_chromium_transport_params_match_chrome() {
         BTreeSet::from([0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0f, 0x11, 0x20, 0x3128]),
         "unexpected transport-parameter set"
     );
-    assert!(tp.iter().any(|(id, _)| is_grease_tp(*id)), "Chrome sends a GREASE parameter");
+    let grease_tp = tp
+        .iter()
+        .find(|(id, _)| is_grease_tp(*id))
+        .expect("Chrome sends a GREASE parameter");
+    assert!(
+        grease_tp.0 <= 7932,
+        "GREASE TP id must fit into 1 or 2 byte varint (quic-go/Caddy shape, N <= 255), got: {}",
+        grease_tp.0
+    );
     // BTreeSet hides duplicates: the raw count is the set plus one GREASE entry.
     assert_eq!(tp.len(), ids.len() + 1, "duplicate or extra transport parameters");
 

@@ -32,9 +32,17 @@ use crate::metrics::Metrics;
 async fn spawn_tls_caddy_server(
     h3_port: Option<u16>,
 ) -> Result<(SocketAddr, Arc<Metrics>, JoinHandle<Result<()>>)> {
+    spawn_tls_caddy_server_with_limit(h3_port, None).await
+}
+
+async fn spawn_tls_caddy_server_with_limit(
+    h3_port: Option<u16>,
+    max_connections_per_ip: Option<usize>,
+) -> Result<(SocketAddr, Arc<Metrics>, JoinHandle<Result<()>>)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let (mut config, cert_path, key_path) = make_sample_config_with_tls(addr)?;
+    config.max_connections_per_ip = max_connections_per_ip;
     if let Some(port) = h3_port {
         config.h3_listen = Some(SocketAddr::from((Ipv4Addr::LOCALHOST, port)));
         config.h3_cert_path = Some(cert_path);
@@ -460,6 +468,102 @@ async fn test_tls_dynamic_record_sizing() -> Result<()> {
         "records after 128 KiB boost threshold should grow larger than 1208 bytes"
     );
 
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_h3_caddy_settings_shape() -> Result<()> {
+    use super::super::h3::vendored::h3_server_builder;
+
+    // With datagrams enabled: Caddy writes MAX_FIELD_SECTION_SIZE, H3_DATAGRAM, and ENABLE_CONNECT_PROTOCOL
+    let builder_with_dg = h3_server_builder(true);
+    let entries_with_dg = builder_with_dg
+        .build_settings_entries()
+        .expect("build settings with datagrams");
+
+    assert_eq!(
+        entries_with_dg,
+        vec![
+            (0x06, 16_384), // MAX_FIELD_SECTION_SIZE = 16 KiB
+            (0x33, 1),      // H3_DATAGRAM = 1
+            (0x08, 1),      // ENABLE_CONNECT_PROTOCOL = 1
+        ],
+        "H3 SETTINGS with datagrams must match Caddy quic-go wire order and values"
+    );
+
+    // With datagrams disabled: H3_DATAGRAM (0x33) is omitted entirely
+    let builder_no_dg = h3_server_builder(false);
+    let entries_no_dg = builder_no_dg
+        .build_settings_entries()
+        .expect("build settings without datagrams");
+
+    assert_eq!(
+        entries_no_dg,
+        vec![
+            (0x06, 16_384), // MAX_FIELD_SECTION_SIZE = 16 KiB
+            (0x08, 1),      // ENABLE_CONNECT_PROTOCOL = 1
+        ],
+        "H3 SETTINGS without datagrams must omit 0x33"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_tls_per_ip_connection_limit() -> Result<()> {
+    let _lock = test_lock().lock().await;
+
+    // Spawn server with a cap of 2 concurrent connections per IP
+    let (addr, _metrics, server) = spawn_tls_caddy_server_with_limit(None, Some(2)).await?;
+
+    let client_config = Arc::new(permissive_client_config());
+
+    // Connect connection #1
+    let raw1 = TcpStream::connect(addr).await?;
+    let mut tls1 = TlsConnector::from(Arc::clone(&client_config))
+        .connect(ServerName::try_from("localhost")?, raw1)
+        .await?;
+    tls1.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").await?;
+
+    // Connect connection #2
+    let raw2 = TcpStream::connect(addr).await?;
+    let mut tls2 = TlsConnector::from(Arc::clone(&client_config))
+        .connect(ServerName::try_from("localhost")?, raw2)
+        .await?;
+    tls2.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").await?;
+
+    // Attempt connection #3 from same IP (127.0.0.1) -> must be dropped by server
+    let mut raw3 = TcpStream::connect(addr).await?;
+    // The server drops connection #3 immediately on accept. Reading should hit EOF/reset.
+    let mut buf = [0u8; 64];
+    let res = tokio::time::timeout(Duration::from_millis(500), raw3.read(&mut buf)).await?;
+    match res {
+        Ok(0) => {}, // EOF as expected (server closed socket)
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {},
+        other => panic!(
+            "expected connection drop/EOF for connection exceeding per-IP limit, got: {other:?}"
+        ),
+    }
+
+    // Close connection #1 to free up a slot
+    drop(tls1);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Connection #4 should now successfully connect
+    let raw4 = TcpStream::connect(addr).await?;
+    let mut tls4 = TlsConnector::from(Arc::clone(&client_config))
+        .connect(ServerName::try_from("localhost")?, raw4)
+        .await?;
+    tls4.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").await?;
+
+    let mut resp = [0u8; 64];
+    let n = tokio::time::timeout(Duration::from_secs(2), tls4.read(&mut resp)).await??;
+    assert!(n > 0, "connection #4 should receive response after slot freed");
+
+    drop(tls2);
+    drop(tls4);
     server.abort();
     let _ = server.await;
     Ok(())

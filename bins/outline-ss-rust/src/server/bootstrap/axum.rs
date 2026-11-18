@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    net::IpAddr,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
@@ -230,8 +234,17 @@ pub(in crate::server) async fn serve_tcp_listener(
     if config.tcp_tls_enabled() {
         let acceptor = Arc::new(ArcSwap::from_pointee(build_tcp_tls_acceptor(config.as_ref())?));
         spawn_tcp_cert_reloader(Arc::clone(&acceptor), Arc::clone(&config), shutdown.clone());
-        serve_tls_listener(listener, app, acceptor, config.tuning, sni_fallback, metrics, shutdown)
-            .await
+        serve_tls_listener(
+            listener,
+            app,
+            acceptor,
+            config.tuning,
+            sni_fallback,
+            config.max_connections_per_ip,
+            metrics,
+            shutdown,
+        )
+        .await
     } else {
         // SNI fallback only makes sense for the TLS path. Validation
         // already rejects `[sni_fallback]` without TLS so the
@@ -619,16 +632,81 @@ fn http_header_read_timeout() -> Duration {
     Duration::from_secs(PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS)
 }
 
+/// Per-IP connection tracker for the TLS listener. When `limit` is configured
+/// (`Some(n)` where `n > 0`), limits concurrent active TCP connections from any
+/// single remote IP address.
+#[derive(Clone, Default)]
+pub(super) struct IpConnectionTracker {
+    inner: Option<Arc<IpConnectionTrackerInner>>,
+}
+
+struct IpConnectionTrackerInner {
+    limit: usize,
+    counts: Mutex<HashMap<IpAddr, usize>>,
+}
+
+pub(super) struct IpConnectionGuard {
+    ip: IpAddr,
+    inner: Arc<IpConnectionTrackerInner>,
+}
+
+impl Drop for IpConnectionGuard {
+    fn drop(&mut self) {
+        let mut counts = self.inner.counts.lock().unwrap();
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = counts.entry(self.ip) {
+            if *entry.get() <= 1 {
+                entry.remove();
+            } else {
+                *entry.get_mut() -= 1;
+            }
+        }
+    }
+}
+
+impl IpConnectionTracker {
+    pub(super) fn new(limit: Option<usize>) -> Self {
+        let inner = match limit {
+            Some(l) if l > 0 => Some(Arc::new(IpConnectionTrackerInner {
+                limit: l,
+                counts: Mutex::new(HashMap::new()),
+            })),
+            _ => None,
+        };
+        Self { inner }
+    }
+
+    pub(super) fn limit(&self) -> usize {
+        self.inner.as_ref().map(|i| i.limit).unwrap_or(0)
+    }
+
+    pub(super) fn try_acquire(&self, ip: IpAddr) -> Result<Option<IpConnectionGuard>, usize> {
+        let inner = match &self.inner {
+            Some(inner) => inner,
+            None => return Ok(None),
+        };
+        let mut counts = inner.counts.lock().unwrap();
+        let current = counts.entry(ip).or_insert(0);
+        if *current >= inner.limit {
+            return Err(*current);
+        }
+        *current += 1;
+        Ok(Some(IpConnectionGuard { ip, inner: Arc::clone(inner) }))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn serve_tls_listener(
     listener: TcpListener,
     app: Router,
     acceptor: Arc<ArcSwap<TlsAcceptor>>,
     profile: TuningProfile,
     sni_fallback: Option<Arc<SniFallbackContext>>,
+    max_connections_per_ip: Option<usize>,
     metrics: Arc<Metrics>,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     let connection_limit = Arc::new(Semaphore::new(TLS_MAX_CONCURRENT_CONNECTIONS));
+    let ip_tracker = IpConnectionTracker::new(max_connections_per_ip);
     let mut tasks: JoinSet<()> = JoinSet::new();
 
     loop {
@@ -666,6 +744,20 @@ async fn serve_tls_listener(
             warn!(%peer_addr, ?error, "failed to configure TLS tcp connection");
             continue;
         }
+
+        let ip_guard = match ip_tracker.try_acquire(peer_addr.ip()) {
+            Ok(guard) => guard,
+            Err(current) => {
+                warn!(
+                    %peer_addr,
+                    current,
+                    limit = ip_tracker.limit(),
+                    "dropping TLS tcp connection: per-IP connection limit exceeded"
+                );
+                continue;
+            },
+        };
+
         // Load the current acceptor per connection so a cert reload
         // (which swaps the pointer) takes effect on the next handshake
         // without disturbing connections already in flight.
@@ -677,6 +769,7 @@ async fn serve_tls_listener(
 
         tasks.spawn(async move {
             let _permit = permit;
+            let _ip_guard = ip_guard;
             let mut stream = stream;
 
             // A single deadline covers the whole unauthenticated pre-handshake

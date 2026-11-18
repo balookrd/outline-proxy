@@ -102,6 +102,49 @@ index ef64de7..2f04c72 100644
      /// Stop a stream with an error code
      ///
      /// The code can be [`Code::H3_NO_ERROR`].
+diff --git a/src/config.rs b/src/config.rs
+index c2a6fe6..e536e98 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -116,19 +116,25 @@ impl TryFrom<Config> for frame::Settings {
+             frame::SettingId::MAX_HEADER_LIST_SIZE,
+             max_field_section_size,
+         )?;
+-        settings.insert(
+-            frame::SettingId::ENABLE_CONNECT_PROTOCOL,
+-            enable_extended_connect as u64,
+-        )?;
+-        settings.insert(
+-            frame::SettingId::ENABLE_WEBTRANSPORT,
+-            enable_webtransport as u64,
+-        )?;
+-        settings.insert(frame::SettingId::H3_DATAGRAM, enable_datagram as u64)?;
+-        settings.insert(
+-            frame::SettingId::WEBTRANSPORT_MAX_SESSIONS,
+-            max_webtransport_sessions,
+-        )?;
++        if enable_datagram {
++            settings.insert(frame::SettingId::H3_DATAGRAM, 1)?;
++        }
++        if enable_extended_connect {
++            settings.insert(
++                frame::SettingId::ENABLE_CONNECT_PROTOCOL,
++                1,
++            )?;
++        }
++        if enable_webtransport {
++            settings.insert(
++                frame::SettingId::ENABLE_WEBTRANSPORT,
++                1,
++            )?;
++            settings.insert(
++                frame::SettingId::WEBTRANSPORT_MAX_SESSIONS,
++                max_webtransport_sessions,
++            )?;
++        }
+ 
+         Ok(settings)
+     }
 diff --git a/src/connection.rs b/src/connection.rs
 index 275e4c9..430260b 100644
 --- a/src/connection.rs
@@ -223,6 +266,40 @@ index 726a4d6..17b862c 100644
 -mod tests;
 -#[cfg(test)]
  extern crate self as h3;
+diff --git a/src/proto/frame.rs b/src/proto/frame.rs
+index a09520b..142461f 100644
+--- a/src/proto/frame.rs
++++ b/src/proto/frame.rs
+@@ -512,6 +512,13 @@ impl Settings {
+         None
+     }
+ 
++    pub fn entries(&self) -> Vec<(u64, u64)> {
++        self.entries[..self.len]
++            .iter()
++            .map(|(id, val)| (id.0, *val))
++            .collect()
++    }
++
+     pub(crate) fn encode<T: BufMut>(&self, buf: &mut T) {
+         self.encode_header(buf);
+         for (id, val) in self.entries[..self.len].iter() {
+diff --git a/src/server/builder.rs b/src/server/builder.rs
+index 08be4f4..51717dd 100644
+--- a/src/server/builder.rs
++++ b/src/server/builder.rs
+@@ -117,6 +117,11 @@ impl Builder {
+         self.config.settings.enable_datagram = value;
+         self
+     }
++
++    /// Evaluates the SETTINGS frame entries configured on this builder as `(id, value)` pairs.
++    pub fn build_settings_entries(&self) -> Result<Vec<(u64, u64)>, crate::proto::frame::SettingsError> {
++        crate::proto::frame::Settings::try_from(self.config).map(|s| s.entries())
++    }
+ }
+ 
+ impl Builder {
 diff --git a/src/server/stream.rs b/src/server/stream.rs
 index fa1aecf..4660cb2 100644
 --- a/src/server/stream.rs

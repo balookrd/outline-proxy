@@ -104,6 +104,10 @@ pub(crate) struct ServerSection {
     /// becomes the default returned when SNI matches none of the entries.
     #[serde(default)]
     pub certs: Option<Vec<TlsCertSection>>,
+    /// Optional limit on concurrent TCP connections per IP on the TLS listener.
+    /// Default `None` (no per-IP cap).
+    #[serde(default)]
+    pub max_connections_per_ip: Option<usize>,
     #[serde(default)]
     pub h3: Option<ServerH3Section>,
 }
