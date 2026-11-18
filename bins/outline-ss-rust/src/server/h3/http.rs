@@ -255,18 +255,24 @@ async fn handle_h3_request(
     let path_is_vless = force_kind.is_none() && ctx.vless_paths.contains(ws_req.path.as_str());
 
     if !path_is_tcp && !path_is_udp && !path_is_vless {
+        let mut res = build_extended_connect_error(StatusCode::NOT_FOUND, None);
+        res.headers_mut()
+            .insert(axum::http::header::SERVER, axum::http::HeaderValue::from_static("Caddy"));
         stream
             // No reason: it would be sent as an `x-error-reason` header, which
             // no ordinary web server emits.
-            .send_response(build_extended_connect_error(StatusCode::NOT_FOUND, None))
+            .send_response(res)
             .await
             .context("failed to send HTTP/3 not found response")?;
         return Ok(());
     }
 
     if let Err(status) = ws_req.validate() {
+        let mut res = build_extended_connect_error(status, None);
+        res.headers_mut()
+            .insert(axum::http::header::SERVER, axum::http::HeaderValue::from_static("Caddy"));
         stream
-            .send_response(build_extended_connect_error(status, None))
+            .send_response(res)
             .await
             .context("failed to send HTTP/3 websocket error response")?;
         return Ok(());
@@ -358,6 +364,9 @@ async fn handle_h3_request(
         None => (local, UpstreamSource::Direct),
     };
     let mut response = build_extended_connect_response(None, None);
+    response
+        .headers_mut()
+        .insert(axum::http::header::SERVER, axum::http::HeaderValue::from_static("Caddy"));
     echo.apply(response.headers_mut());
     // UDP over HTTP/3 DATAGRAM, on SS-UDP and VLESS paths. Registered before the
     // response goes out, so the client's first datagram after it is not lost.

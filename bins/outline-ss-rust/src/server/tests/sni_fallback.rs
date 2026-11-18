@@ -237,7 +237,8 @@ async fn matched_sni_terminates_locally() -> Result<()> {
         .await
         .context("client read timed out")??;
     let head = std::str::from_utf8(&response).unwrap_or("");
-    assert!(head.starts_with("HTTP/1.1 404"), "expected our 404, got: {head:?}");
+    assert!(head.starts_with("HTTP/1.1 200"), "expected our 200, got: {head:?}");
+    assert!(head.contains("server: Caddy"), "expected server: Caddy, got: {head:?}");
     // Backend MUST NOT have seen anything.
     let backend_seen = tokio::time::timeout(Duration::from_millis(200), backend_rx).await;
     assert!(backend_seen.is_err(), "backend was unexpectedly hit");

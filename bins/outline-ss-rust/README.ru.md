@@ -57,7 +57,7 @@
 | VLESS поверх XHTTP packet-up | Поддерживается | Long-lived GET плюс POST'ы с порядковым номером на одном HTTP/2 (или HTTP/3) соединении; reorder-буфер принимает POST'ы не по порядку; downlink-кольцо переживает обрыв GET'а в полёте (CDN рвут длинные запросы примерно через 100 с); `X-Padding` и заголовки в стиле SSE (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
 | VLESS поверх XHTTP stream-one | Поддерживается | Один двунаправленный запрос: тело запроса — uplink, тело ответа — downlink. Включается через `?mode=stream-one` на том же base path. Требует h2 или h3 (h1 → 505); на h3 bidi-стрим делится через `RequestStream::split`, каждая половина работает в своём task |
 | Resumption через XHTTP | Поддерживается | Сервер выдаёт `X-Outline-Session` на первом запросе, паркует VLESS-upstream при разрыве носителя и переподключает его на следующем запросе с `X-Outline-Resume`, в том числе при смене носителя (клиент не смог h3 и переподключился по h2 с тем же токеном) |
-| HTTP fallback (маскировка) | Поддерживается | Reverse-proxy не совпавших с маршрутами HTTP/1.1 и HTTP/2 запросов (а с `apply_to_h3` — и HTTP/3) на бэкенд (haproxy, nginx, caddy) вместо `404`. Опциональный заголовок HAProxy PROXY protocol v1/v2 передаёт бэкенду IP клиента |
+| HTTP fallback (маскировка) | Поддерживается | Reverse-proxy не совпавших с маршрутами HTTP/1.1 и HTTP/2 запросов (а с `apply_to_h3` — и HTTP/3) на бэкенд (haproxy, nginx, caddy) вместо пустого `200 OK` Caddy. Опциональный заголовок HAProxy PROXY protocol v1/v2 передаёт бэкенду IP клиента |
 | SNI fallback (L4-маскировка) | Поддерживается | Подсматривает ClientHello на TLS-слушателе и сплайсит соединения с чужим SNI (сырой TCP вместе с захваченным ClientHello) на бэкенд с собственным сертификатом. nginx-style wildcards в `match_sni`; без PROXY protocol v1/v2 бэкенд видит peer `127.0.0.1` |
 | VLESS REALITY / XTLS / Vision | Не поддерживается | Вне области применения |
 | Outline management API | Не поддерживается | Только data plane |
@@ -896,6 +896,18 @@ MTU пути у QUIC-соединений, которые могут нести 
 Окна, лимиты потоков, idle-таймаут и MTU не менялись. От quic-go пока отличаются: id GREASE-параметра (quinn берёт 62-битное значение, quic-go — один байт), Version Negotiation (quinn ставит reserved-версию первой, quic-go объявляет ещё и v2) и SETTINGS HTTP/3 (крейт h3 добавляет GREASE и нулевые параметры WebTransport и пишет `H3_DATAGRAM = 0` вместо того, чтобы его не слать). Для них нужны патчи vendored `quinn-proto` и `h3`.
 
 Короткий connection ID оставляет клиентским датаграммам на uplink на 4 байта больше места. Клиенты от длины connection ID сервера не зависят, старые клиенты работают как раньше.
+
+## Сетевая маскировка TCP и HTTP под Caddy (Go)
+
+Поведение сервера на TCP (HTTP/1.1 и HTTP/2) и HTTP/3 приведено в соответствие с эталоном веб-сервера Caddy (Go 1.26 `net/http` + `golang.org/x/net/http2`):
+
+- **Заголовок `Server: Caddy`**: выставляется на всех HTTP-ответах TCP- и H3-листенеров.
+- **Заголовок `Alt-Svc: h3=":<port>"; ma=2592000`**: выставляется на всех ответах по HTTP/1.1 и HTTP/2, если активен листенер HTTP/3 (на ответах по H3 не выставляется, в точности как в Caddy).
+- **HTTP на HTTPS-порту**: при получении plaintext HTTP-запроса на порт с TLS сервер перехватывает его до рукопожатия TLS и возвращает побайтовый ответ Go:
+  `HTTP/1.0 400 Bad Request\r\n\r\nClient sent an HTTP request to an HTTPS server.\n`
+  с закрытием TCP-соединения (счётчик `outline_ss_tls_handshake_failed_total{reason="http_on_https"}`).
+- **Ответ по умолчанию на неизвестные маршруты**: при отсутствии секции `[http_fallback]` сервер возвращает пустой `200 OK` с `Content-Length: 0` (поведение `emptyHandler` в Caddy), не выдавая присутствие прокси статусом 404.
+- **Параметры HTTP/2 SETTINGS**: `MAX_CONCURRENT_STREAMS = 250`, `MAX_FRAME_SIZE = 1048576` (1 MiB), `MAX_HEADER_LIST_SIZE = 16704` (16 KiB + 320), отключены серверные периодические PING (дефолт Go).
 
 ## UDP-буферы сокета HTTP/3
 

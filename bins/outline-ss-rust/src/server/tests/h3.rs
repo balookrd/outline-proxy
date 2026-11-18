@@ -1443,8 +1443,15 @@ async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
     let response = stream.recv_response().await?;
     assert_eq!(
         response.status(),
-        StatusCode::NOT_FOUND,
+        StatusCode::OK,
         "xhttp/h3 must resolve routes from the live snapshot, not a startup copy"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::SERVER)
+            .map(|v| v.as_bytes()),
+        Some(b"Caddy".as_slice())
     );
 
     driver.abort();

@@ -47,14 +47,17 @@ pub(super) fn escape_http_auth_realm(realm: &str) -> String {
 
 pub(super) fn build_not_found_response<T>(body: T) -> http::Response<T> {
     http::Response::builder()
-        .status(StatusCode::NOT_FOUND)
+        .status(StatusCode::OK)
+        .header(header::SERVER, "Caddy")
+        .header(header::CONTENT_LENGTH, "0")
         .body(body)
-        .expect("failed to build not found response")
+        .expect("failed to build empty caddy response")
 }
 
 pub(super) fn build_root_http_auth_success_response<T>(body: T) -> http::Response<T> {
     http::Response::builder()
         .status(StatusCode::OK)
+        .header(header::SERVER, "Caddy")
         .header(header::CACHE_CONTROL, "no-store")
         .header(
             header::SET_COOKIE,
@@ -71,6 +74,7 @@ pub(super) fn build_root_http_auth_challenge_response<T>(
 ) -> http::Response<T> {
     http::Response::builder()
         .status(StatusCode::UNAUTHORIZED)
+        .header(header::SERVER, "Caddy")
         .header(
             header::WWW_AUTHENTICATE,
             format!("Basic realm=\"{}\"", escape_http_auth_realm(realm)),
@@ -89,6 +93,7 @@ pub(super) fn build_root_http_auth_challenge_response<T>(
 pub(super) fn build_root_http_auth_forbidden_response<T>(body: T) -> http::Response<T> {
     http::Response::builder()
         .status(StatusCode::FORBIDDEN)
+        .header(header::SERVER, "Caddy")
         .header(header::CACHE_CONTROL, "no-store")
         .header(
             header::SET_COOKIE,
