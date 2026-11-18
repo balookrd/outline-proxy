@@ -5,6 +5,13 @@ pub(crate) const MAX_FRAGMENT_LEN: usize = 16384;
 pub(crate) const PACKET_OVERHEAD: usize = 1 + 2 + 2;
 pub(crate) const MAX_FRAGMENT_SIZE: usize = MAX_FRAGMENT_LEN + PACKET_OVERHEAD;
 
+/// Conservative estimate of MSS application payload size (matches Go crypto/tls tcpMSSEstimate 1208 bytes,
+/// minus 5 bytes record header, 1 byte TLS 1.3 content type, and 16 bytes AEAD overhead = 1186 bytes).
+pub(crate) const TCP_MSS_PAYLOAD: usize = 1186;
+
+/// Number of application data bytes before boosting TLS record size to maximum (128 KiB, matches Go crypto/tls).
+pub(crate) const RECORD_SIZE_BOOST_THRESHOLD: usize = 128 * 1024;
+
 pub struct MessageFragmenter {
     max_frag: usize,
 }
@@ -52,6 +59,23 @@ impl MessageFragmenter {
         })
     }
 
+    /// Take application data `payload` and fragment it into new messages with dynamic sizing
+    /// matching Go/Caddy behavior if `dynamic` is true.
+    pub(crate) fn fragment_appdata_payload<'a>(
+        &self,
+        payload: OutboundChunks<'a>,
+        dynamic: bool,
+        bytes_sent: usize,
+    ) -> impl ExactSizeIterator<Item = OutboundPlainMessage<'a>> {
+        Chunker::new_dynamic(payload, self.max_frag, dynamic, bytes_sent).map(move |payload| {
+            OutboundPlainMessage {
+                typ: ContentType::ApplicationData,
+                version: ProtocolVersion::TLSv1_2,
+                payload,
+            }
+        })
+    }
+
     /// Set the maximum fragment size that will be produced.
     ///
     /// This includes overhead. A `max_fragment_size` of 10 will produce TLS fragments
@@ -74,11 +98,32 @@ impl MessageFragmenter {
 struct Chunker<'a> {
     payload: OutboundChunks<'a>,
     limit: usize,
+    dynamic: bool,
+    bytes_sent: usize,
 }
 
 impl<'a> Chunker<'a> {
     fn new(payload: OutboundChunks<'a>, limit: usize) -> Self {
-        Self { payload, limit }
+        Self {
+            payload,
+            limit,
+            dynamic: false,
+            bytes_sent: 0,
+        }
+    }
+
+    fn new_dynamic(
+        payload: OutboundChunks<'a>,
+        limit: usize,
+        dynamic: bool,
+        bytes_sent: usize,
+    ) -> Self {
+        Self {
+            payload,
+            limit,
+            dynamic,
+            bytes_sent,
+        }
     }
 }
 
@@ -90,15 +135,45 @@ impl<'a> Iterator for Chunker<'a> {
             return None;
         }
 
-        let (before, after) = self.payload.split_at(self.limit);
+        let chunk_limit = if self.dynamic && self.bytes_sent < RECORD_SIZE_BOOST_THRESHOLD {
+            TCP_MSS_PAYLOAD
+        } else {
+            self.limit
+        };
+
+        let (before, after) = self.payload.split_at(chunk_limit);
         self.payload = after;
+        self.bytes_sent = self.bytes_sent.saturating_add(before.len());
         Some(before)
     }
 }
 
 impl ExactSizeIterator for Chunker<'_> {
     fn len(&self) -> usize {
-        (self.payload.len() + self.limit - 1) / self.limit
+        let total = self.payload.len();
+        if total == 0 {
+            return 0;
+        }
+
+        if !self.dynamic || self.bytes_sent >= RECORD_SIZE_BOOST_THRESHOLD {
+            (total + self.limit - 1) / self.limit
+        } else {
+            let mut count = 0;
+            let mut rem = total;
+            let mut sent = self.bytes_sent;
+            while rem > 0 {
+                let lim = if sent < RECORD_SIZE_BOOST_THRESHOLD {
+                    TCP_MSS_PAYLOAD
+                } else {
+                    self.limit
+                };
+                let chunk = rem.min(lim);
+                rem -= chunk;
+                sent = sent.saturating_add(chunk);
+                count += 1;
+            }
+            count
+        }
     }
 }
 

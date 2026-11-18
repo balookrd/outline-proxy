@@ -1305,6 +1305,10 @@ extension_struct! {
         ExtensionType::ALProtocolNegotiation =>
             pub(crate) selected_protocol: Option<SingleProtocolName>,
 
+        /// Selected TLS version (RFC8446)
+        ExtensionType::SupportedVersions =>
+            pub(crate) selected_version: Option<ProtocolVersion>,
+
         /// Key exchange server share (RFC8446)
         ExtensionType::KeyShare =>
             pub(crate) key_share: Option<KeyShareEntry>,
@@ -1328,10 +1332,6 @@ extension_struct! {
         /// Certificate status acknowledgement (RFC6066)
         ExtensionType::StatusRequest =>
             pub(crate) certificate_status_request_ack: Option<()>,
-
-        /// Selected TLS version (RFC8446)
-        ExtensionType::SupportedVersions =>
-            pub(crate) selected_version: Option<ProtocolVersion>,
 
         /// QUIC transport parameters (RFC9001)
         ExtensionType::TransportParameters =>
@@ -1560,14 +1560,14 @@ impl TlsListElement for ExtensionType {
 extension_struct! {
     /// A representation of extensions present in a `HelloRetryRequest` message
     pub(crate) struct HelloRetryRequestExtensions<'a> {
+        ExtensionType::SupportedVersions =>
+            pub(crate) supported_versions: Option<ProtocolVersion>,
+
         ExtensionType::KeyShare =>
             pub(crate) key_share: Option<NamedGroup>,
 
         ExtensionType::Cookie =>
             pub(crate) cookie: Option<PayloadU16<NonEmpty>>,
-
-        ExtensionType::SupportedVersions =>
-            pub(crate) supported_versions: Option<ProtocolVersion>,
 
         ExtensionType::EncryptedClientHello =>
             pub(crate) encrypted_client_hello: Option<Payload<'a>>,

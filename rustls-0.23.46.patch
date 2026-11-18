@@ -969,6 +969,98 @@ index 8678c1d..35a9aa6 100644
          /* Send our authentication/finished messages.  These are still encrypted
           * with our handshake keys. */
          if let Some(client_auth) = st.client_auth {
+diff --git a/src/common_state.rs b/src/common_state.rs
+index 9a6e6b5..2653605 100644
+--- a/src/common_state.rs
++++ b/src/common_state.rs
+@@ -61,6 +61,8 @@ pub struct CommonState {
+     pub(crate) refresh_traffic_keys_pending: bool,
+     pub(crate) fips: bool,
+     pub(crate) tls13_tickets_received: u32,
++    pub(crate) dynamic_record_sizing: bool,
++    pub(crate) appdata_bytes_sent: usize,
+ }
+ 
+ impl CommonState {
+@@ -94,6 +96,8 @@ impl CommonState {
+             refresh_traffic_keys_pending: false,
+             fips: false,
+             tls13_tickets_received: 0,
++            dynamic_record_sizing: side == Side::Server,
++            appdata_bytes_sent: 0,
+         }
+     }
+ 
+@@ -240,10 +244,10 @@ impl CommonState {
+     pub(crate) fn request_key_update_for(&mut self, payload: OutboundChunks<'_>) {
+         let records = self
+             .message_fragmenter
+-            .fragment_payload(
+-                ContentType::ApplicationData,
+-                ProtocolVersion::TLSv1_2,
++            .fragment_appdata_payload(
+                 payload,
++                self.dynamic_record_sizing,
++                self.appdata_bytes_sent,
+             )
+             .len();
+ 
+@@ -271,10 +275,10 @@ impl CommonState {
+ 
+         let fragments = self
+             .message_fragmenter
+-            .fragment_payload(
+-                ContentType::ApplicationData,
+-                ProtocolVersion::TLSv1_2,
++            .fragment_appdata_payload(
+                 payload.clone(),
++                self.dynamic_record_sizing,
++                self.appdata_bytes_sent,
+             );
+ 
+         for f in 0..fragments.len() {
+@@ -308,13 +312,15 @@ impl CommonState {
+ 
+         let fragments = self
+             .message_fragmenter
+-            .fragment_payload(
+-                ContentType::ApplicationData,
+-                ProtocolVersion::TLSv1_2,
++            .fragment_appdata_payload(
+                 payload,
++                self.dynamic_record_sizing,
++                self.appdata_bytes_sent,
+             );
+ 
+-        Ok(self.write_fragments(outgoing_tls, fragments))
++        let total_written = self.write_fragments(outgoing_tls, fragments);
++        self.appdata_bytes_sent = self.appdata_bytes_sent.saturating_add(total_written);
++        Ok(total_written)
+     }
+ 
+     // Changing the keys must not span any fragmented handshake
+@@ -369,10 +375,10 @@ impl CommonState {
+ 
+         let iter = self
+             .message_fragmenter
+-            .fragment_payload(
+-                ContentType::ApplicationData,
+-                ProtocolVersion::TLSv1_2,
++            .fragment_appdata_payload(
+                 payload.split_at(len).0,
++                self.dynamic_record_sizing,
++                self.appdata_bytes_sent,
+             );
+ 
+         // Check the record limit for the last fragment before encrypting any of them, so
+@@ -398,6 +404,7 @@ impl CommonState {
+             }
+ 
+             sent += m.payload.len();
++            self.appdata_bytes_sent = self.appdata_bytes_sent.saturating_add(m.payload.len());
+             self.send_single_fragment(m);
+         }
+ 
 diff --git a/src/crypto/aws_lc_rs/mod.rs b/src/crypto/aws_lc_rs/mod.rs
 index 9262b9a..3d5ebf2 100644
 --- a/src/crypto/aws_lc_rs/mod.rs
@@ -1067,8 +1159,132 @@ index 8652415..af309c2 100644
      };
      #[cfg(feature = "std")]
      pub use client_conn::{ClientConnection, WriteEarlyData};
+diff --git a/src/msgs/fragmenter.rs b/src/msgs/fragmenter.rs
+index 4863677..53aab24 100644
+--- a/src/msgs/fragmenter.rs
++++ b/src/msgs/fragmenter.rs
+@@ -5,6 +5,13 @@ pub(crate) const MAX_FRAGMENT_LEN: usize = 16384;
+ pub(crate) const PACKET_OVERHEAD: usize = 1 + 2 + 2;
+ pub(crate) const MAX_FRAGMENT_SIZE: usize = MAX_FRAGMENT_LEN + PACKET_OVERHEAD;
+ 
++/// Conservative estimate of MSS application payload size (matches Go crypto/tls tcpMSSEstimate 1208 bytes,
++/// minus 5 bytes record header, 1 byte TLS 1.3 content type, and 16 bytes AEAD overhead = 1186 bytes).
++pub(crate) const TCP_MSS_PAYLOAD: usize = 1186;
++
++/// Number of application data bytes before boosting TLS record size to maximum (128 KiB, matches Go crypto/tls).
++pub(crate) const RECORD_SIZE_BOOST_THRESHOLD: usize = 128 * 1024;
++
+ pub struct MessageFragmenter {
+     max_frag: usize,
+ }
+@@ -52,6 +59,23 @@ impl MessageFragmenter {
+         })
+     }
+ 
++    /// Take application data `payload` and fragment it into new messages with dynamic sizing
++    /// matching Go/Caddy behavior if `dynamic` is true.
++    pub(crate) fn fragment_appdata_payload<'a>(
++        &self,
++        payload: OutboundChunks<'a>,
++        dynamic: bool,
++        bytes_sent: usize,
++    ) -> impl ExactSizeIterator<Item = OutboundPlainMessage<'a>> {
++        Chunker::new_dynamic(payload, self.max_frag, dynamic, bytes_sent).map(move |payload| {
++            OutboundPlainMessage {
++                typ: ContentType::ApplicationData,
++                version: ProtocolVersion::TLSv1_2,
++                payload,
++            }
++        })
++    }
++
+     /// Set the maximum fragment size that will be produced.
+     ///
+     /// This includes overhead. A `max_fragment_size` of 10 will produce TLS fragments
+@@ -74,11 +98,32 @@ impl MessageFragmenter {
+ struct Chunker<'a> {
+     payload: OutboundChunks<'a>,
+     limit: usize,
++    dynamic: bool,
++    bytes_sent: usize,
+ }
+ 
+ impl<'a> Chunker<'a> {
+     fn new(payload: OutboundChunks<'a>, limit: usize) -> Self {
+-        Self { payload, limit }
++        Self {
++            payload,
++            limit,
++            dynamic: false,
++            bytes_sent: 0,
++        }
++    }
++
++    fn new_dynamic(
++        payload: OutboundChunks<'a>,
++        limit: usize,
++        dynamic: bool,
++        bytes_sent: usize,
++    ) -> Self {
++        Self {
++            payload,
++            limit,
++            dynamic,
++            bytes_sent,
++        }
+     }
+ }
+ 
+@@ -90,15 +135,45 @@ impl<'a> Iterator for Chunker<'a> {
+             return None;
+         }
+ 
+-        let (before, after) = self.payload.split_at(self.limit);
++        let chunk_limit = if self.dynamic && self.bytes_sent < RECORD_SIZE_BOOST_THRESHOLD {
++            TCP_MSS_PAYLOAD
++        } else {
++            self.limit
++        };
++
++        let (before, after) = self.payload.split_at(chunk_limit);
+         self.payload = after;
++        self.bytes_sent = self.bytes_sent.saturating_add(before.len());
+         Some(before)
+     }
+ }
+ 
+ impl ExactSizeIterator for Chunker<'_> {
+     fn len(&self) -> usize {
+-        (self.payload.len() + self.limit - 1) / self.limit
++        let total = self.payload.len();
++        if total == 0 {
++            return 0;
++        }
++
++        if !self.dynamic || self.bytes_sent >= RECORD_SIZE_BOOST_THRESHOLD {
++            (total + self.limit - 1) / self.limit
++        } else {
++            let mut count = 0;
++            let mut rem = total;
++            let mut sent = self.bytes_sent;
++            while rem > 0 {
++                let lim = if sent < RECORD_SIZE_BOOST_THRESHOLD {
++                    TCP_MSS_PAYLOAD
++                } else {
++                    self.limit
++                };
++                let chunk = rem.min(lim);
++                rem -= chunk;
++                sent = sent.saturating_add(chunk);
++                count += 1;
++            }
++            count
++        }
+     }
+ }
+ 
 diff --git a/src/msgs/handshake.rs b/src/msgs/handshake.rs
-index 63b836a..4f2992c 100644
+index 63b836a..0c81ce5 100644
 --- a/src/msgs/handshake.rs
 +++ b/src/msgs/handshake.rs
 @@ -978,9 +978,35 @@ extension_struct! {
@@ -1255,4 +1471,124 @@ index 63b836a..4f2992c 100644
 +            self.encode_shaped(item, body.buf);
          }
      }
+ 
+@@ -1199,6 +1305,10 @@ extension_struct! {
+         ExtensionType::ALProtocolNegotiation =>
+             pub(crate) selected_protocol: Option<SingleProtocolName>,
+ 
++        /// Selected TLS version (RFC8446)
++        ExtensionType::SupportedVersions =>
++            pub(crate) selected_version: Option<ProtocolVersion>,
++
+         /// Key exchange server share (RFC8446)
+         ExtensionType::KeyShare =>
+             pub(crate) key_share: Option<KeyShareEntry>,
+@@ -1223,10 +1333,6 @@ extension_struct! {
+         ExtensionType::StatusRequest =>
+             pub(crate) certificate_status_request_ack: Option<()>,
+ 
+-        /// Selected TLS version (RFC8446)
+-        ExtensionType::SupportedVersions =>
+-            pub(crate) selected_version: Option<ProtocolVersion>,
+-
+         /// QUIC transport parameters (RFC9001)
+         ExtensionType::TransportParameters =>
+             pub(crate) transport_parameters: Option<Payload<'a>>,
+@@ -1454,15 +1560,15 @@ impl TlsListElement for ExtensionType {
+ extension_struct! {
+     /// A representation of extensions present in a `HelloRetryRequest` message
+     pub(crate) struct HelloRetryRequestExtensions<'a> {
++        ExtensionType::SupportedVersions =>
++            pub(crate) supported_versions: Option<ProtocolVersion>,
++
+         ExtensionType::KeyShare =>
+             pub(crate) key_share: Option<NamedGroup>,
+ 
+         ExtensionType::Cookie =>
+             pub(crate) cookie: Option<PayloadU16<NonEmpty>>,
+ 
+-        ExtensionType::SupportedVersions =>
+-            pub(crate) supported_versions: Option<ProtocolVersion>,
+-
+         ExtensionType::EncryptedClientHello =>
+             pub(crate) encrypted_client_hello: Option<Payload<'a>>,
+     } + {
+diff --git a/src/server/builder.rs b/src/server/builder.rs
+index 22b30ab..a1678b7 100644
+--- a/src/server/builder.rs
++++ b/src/server/builder.rs
+@@ -120,8 +120,9 @@ impl ConfigBuilder<ServerConfig, WantsServerCert> {
+             enable_secret_extraction: false,
+             max_early_data_size: 0,
+             send_half_rtt_data: false,
+-            send_tls13_tickets: 2,
++            send_tls13_tickets: 1,
+             max_tls13_tickets: 0,
++            dynamic_record_sizing: true,
+             #[cfg(feature = "tls12")]
+             require_ems,
+             time_provider: self.time_provider,
+diff --git a/src/server/server_conn.rs b/src/server/server_conn.rs
+index 2cfd8b8..8902ba3 100644
+--- a/src/server/server_conn.rs
++++ b/src/server/server_conn.rs
+@@ -261,7 +261,7 @@ impl<'a> ClientHello<'a> {
+ ///   implementation.
+ /// * [`ServerConfig::alpn_protocols`]: the default is empty -- no ALPN protocol is negotiated.
+ /// * [`ServerConfig::key_log`]: key material is not logged.
+-/// * [`ServerConfig::send_tls13_tickets`]: 2 tickets are sent.
++/// * [`ServerConfig::send_tls13_tickets`]: 1 ticket is sent.
+ /// * [`ServerConfig::cert_compressors`]: depends on the crate features, see [`compress::default_cert_compressors()`].
+ /// * [`ServerConfig::cert_compression_cache`]: caches the most recently used 4 compressions
+ /// * [`ServerConfig::cert_decompressors`]: depends on the crate features, see [`compress::default_cert_decompressors()`].
+@@ -392,12 +392,19 @@ pub struct ServerConfig {
+     /// Because TLS1.3 tickets are single-use, this allows
+     /// a client to perform multiple resumptions.
+     ///
+-    /// The default is 2.
++    /// The default is 1 (matches Go 1.26 / Caddy default).
+     ///
+     /// If this is 0, no tickets are sent and clients will not be able to
+     /// do any resumption.
+     pub send_tls13_tickets: usize,
+ 
++    /// Whether to dynamically scale TLS application data record sizes (Go/Caddy emulation).
++    /// Initial records are capped to fit within ~1208 byte TCP MSS for low latency until
++    /// 128 KiB of application data has been sent, after which records scale up to 16 KiB.
++    ///
++    /// The default is `true`.
++    pub dynamic_record_sizing: bool,
++
+     /// Upper bound on the number of TLS 1.3 tickets sent in response to a
+     /// client [RFC 9149] `ticket_request` extension.
+     ///
+@@ -1226,6 +1233,7 @@ impl ConnectionCore<ServerConnectionData> {
+         let mut common = CommonState::new(Side::Server);
+         common.set_max_fragment_size(config.max_fragment_size)?;
+         common.enable_secret_extraction = config.enable_secret_extraction;
++        common.dynamic_record_sizing = config.dynamic_record_sizing;
+         common.fips = config.fips();
+         Ok(Self::new(
+             Box::new(hs::ExpectClientHello::new(config, extra_exts)),
+diff --git a/src/server/tls13.rs b/src/server/tls13.rs
+index 55e32f1..8f98fc4 100644
+--- a/src/server/tls13.rs
++++ b/src/server/tls13.rs
+@@ -1333,7 +1333,7 @@ impl ExpectFinished {
+         config: &ServerConfig,
+     ) -> Result<(), Error> {
+         let secure_random = config.provider.secure_random;
+-        let nonce = rand::random_vec(secure_random, 32)?;
++        let nonce = Vec::new(); // empty nonce (0 bytes) matches Go crypto/tls single ticket
+         let age_add = rand::random_u32(secure_random)?;
+ 
+         let now = config.current_time()?;
+@@ -1356,7 +1356,7 @@ impl ExpectFinished {
+                 trace!("resumption not available; not issuing ticket");
+                 return Ok(());
+             }
+-            let stateful_lifetime = 24 * 60 * 60; // this is a bit of a punt
++            let stateful_lifetime = 7 * 24 * 60 * 60; // 7 days (604800s), matches Go ticketLifetime
+             (id, stateful_lifetime)
+         };
  

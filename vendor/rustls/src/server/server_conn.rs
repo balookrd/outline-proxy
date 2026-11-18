@@ -261,7 +261,7 @@ impl<'a> ClientHello<'a> {
 ///   implementation.
 /// * [`ServerConfig::alpn_protocols`]: the default is empty -- no ALPN protocol is negotiated.
 /// * [`ServerConfig::key_log`]: key material is not logged.
-/// * [`ServerConfig::send_tls13_tickets`]: 2 tickets are sent.
+/// * [`ServerConfig::send_tls13_tickets`]: 1 ticket is sent.
 /// * [`ServerConfig::cert_compressors`]: depends on the crate features, see [`compress::default_cert_compressors()`].
 /// * [`ServerConfig::cert_compression_cache`]: caches the most recently used 4 compressions
 /// * [`ServerConfig::cert_decompressors`]: depends on the crate features, see [`compress::default_cert_decompressors()`].
@@ -392,11 +392,18 @@ pub struct ServerConfig {
     /// Because TLS1.3 tickets are single-use, this allows
     /// a client to perform multiple resumptions.
     ///
-    /// The default is 2.
+    /// The default is 1 (matches Go 1.26 / Caddy default).
     ///
     /// If this is 0, no tickets are sent and clients will not be able to
     /// do any resumption.
     pub send_tls13_tickets: usize,
+
+    /// Whether to dynamically scale TLS application data record sizes (Go/Caddy emulation).
+    /// Initial records are capped to fit within ~1208 byte TCP MSS for low latency until
+    /// 128 KiB of application data has been sent, after which records scale up to 16 KiB.
+    ///
+    /// The default is `true`.
+    pub dynamic_record_sizing: bool,
 
     /// Upper bound on the number of TLS 1.3 tickets sent in response to a
     /// client [RFC 9149] `ticket_request` extension.
@@ -1226,6 +1233,7 @@ impl ConnectionCore<ServerConnectionData> {
         let mut common = CommonState::new(Side::Server);
         common.set_max_fragment_size(config.max_fragment_size)?;
         common.enable_secret_extraction = config.enable_secret_extraction;
+        common.dynamic_record_sizing = config.dynamic_record_sizing;
         common.fips = config.fips();
         Ok(Self::new(
             Box::new(hs::ExpectClientHello::new(config, extra_exts)),
