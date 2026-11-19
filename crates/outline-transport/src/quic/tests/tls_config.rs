@@ -331,7 +331,7 @@ fn first_initial_datagram(
 
 /// The destination CID length is in the clear in the long header
 /// (`flags | version(4) | dcid_len | dcid | scid_len | scid`). It must be the
-/// browser's: 8 bytes for Chrome (measured), 8..=20 for Firefox (neqo's rule),
+/// browser's: 8 bytes for Chrome and Safari (measured), 8..=20 for Firefox (neqo's rule),
 /// not quinn's constant 20.
 #[tokio::test]
 async fn h3_initial_dcid_length_follows_the_browser() {
@@ -348,6 +348,12 @@ async fn h3_initial_dcid_length_follows_the_browser() {
     })
     .await;
     assert_eq!(dcid_and_scid_len(&chromium), (8, 0), "Chrome: 8-byte DCID, empty SCID");
+
+    let safari = with_dial_fingerprint(Some(TlsFingerprint::Safari), async {
+        first_initial_datagram(super::h3_quic_client_config(), super::h3_endpoint_config())
+    })
+    .await;
+    assert_eq!(dcid_and_scid_len(&safari), (8, 0), "Safari: 8-byte DCID, empty SCID");
 
     let mut firefox_lens = std::collections::BTreeSet::new();
     for _ in 0..64 {
