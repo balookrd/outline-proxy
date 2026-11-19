@@ -191,6 +191,8 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
   `[[example]]` and `[[bench]]` targets, the optional `criterion` dependency,
   `[dev-dependencies]` and the `[profile.*]` sections (ignored in a non-root
   package anyway) are removed.
+- Explicit `[lints]` — empty `[lints]` section declares intentional opt-out from
+  inheriting `[workspace.lints]` for Cargo 1.100+ (`cargo::missing_lints_inheritance`).
 
 ## quinn-proto (0.11.19)
 

@@ -15,7 +15,7 @@ workspace = true
 default = ["h3", "metrics", "control", "env-filter", "multi-thread", "jemalloc", "tun", "socks5"]
 # SOCKS5 ingress (src/proxy). Off on Android, where the native TUN carries all
 # traffic and the whole 5.3k-LOC ingress can be compiled out.
-socks5 = []
+socks5 = ["dep:lru"]
 # TUN device support (transparent proxy). No longer forces metrics: on Android
 # (`tun` without `metrics`) the engine's metric calls resolve to outline-metrics
 # no-op stubs. See `metrics` below for the weak-feature that re-adds TUN metrics.
@@ -63,7 +63,7 @@ hyper = { workspace = true, features = ["client", "http1", "http2"] }
 hyper-util = { workspace = true, features = ["tokio"] }
 libc = { workspace = true, default-features = true }
 libmimalloc-sys = { workspace = true, features = ["extended"], optional = true }
-lru = { workspace = true }
+lru = { workspace = true, optional = true }
 mimalloc = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true, features = ["background_threads", "stats", "unprefixed_malloc_on_supported_platforms"], optional = true }
 tikv-jemalloc-ctl = { workspace = true, features = ["stats"], optional = true }

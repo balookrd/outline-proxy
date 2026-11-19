@@ -1,5 +1,5 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 4418676..d7f6db8 100644
+index 4418676..170811b 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -11,14 +11,6 @@ license = "MIT"
@@ -45,7 +45,7 @@ index 4418676..d7f6db8 100644
  webpki-roots = { version = "^1.0", optional = true }
  rustls-native-certs = { version = "^0.8", optional = true }
  rustls-platform-verifier = { version = "^0.6", optional = true }
-@@ -161,55 +150,16 @@ h2 = { version = "^0.4", optional = true }
+@@ -161,10 +150,13 @@ h2 = { version = "^0.4", optional = true }
  http = { version = "^1.0", optional = true }
  
  # HTTP/3 support (RFC 9220)
@@ -61,10 +61,10 @@ index 4418676..d7f6db8 100644
  
  # io_uring support (Linux only)
  tokio-uring = { version = "^0.5", optional = true }
- 
+@@ -172,44 +164,4 @@ tokio-uring = { version = "^0.5", optional = true }
  # High-performance allocator
  mimalloc = { version = "^0.1", default-features = false, optional = true }
--
+ 
 -[dev-dependencies]
 -criterion = "^0.5"
 -rand = "^0.9"
@@ -106,6 +106,7 @@ index 4418676..d7f6db8 100644
 -opt-level = 3
 -lto = "thin"
 -debug = true
++[lints]
 diff --git a/src/error.rs b/src/error.rs
 index 518bae5..7792ccd 100644
 --- a/src/error.rs

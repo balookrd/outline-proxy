@@ -193,6 +193,8 @@ maintenance-артефакты; сборки используют vendored-ко�
   `autobahn-server`), `[[example]]` и `[[bench]]`, опциональная зависимость
   `criterion`, `[dev-dependencies]` и секции `[profile.*]` (в некорневом пакете
   они всё равно игнорируются).
+- Явный `[lints]` — пустая секция `[lints]` в манифесте подтверждает отказ от
+  наследования `[workspace.lints]` для Cargo 1.100+ (`cargo::missing_lints_inheritance`).
 
 ## quinn-proto (0.11.19)
 
