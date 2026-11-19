@@ -1,46 +1,62 @@
 import AppKit
 
-/// Pure AppKit window controller for managing server profiles, subscriptions, and proxy modes.
+/// Pure AppKit window controller for managing system preferences (proxy mode, TCP only, TUN helper, appearance).
 @MainActor
-public final class SettingsWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
+public final class SettingsWindowController: NSWindowController {
     public static let shared = SettingsWindowController()
 
-    private let tableView = NSTableView()
-    private var profiles: [ServerProfile] = []
-
+    // MARK: - Block 1: Mode Selector
+    private let modeBox = NSBox()
     private let bannerIcon = NSImageView()
-    private let modePopUpButton = NSPopUpButton()
-    private let themePopUpButton = NSPopUpButton()
+    private let modeTitle = NSTextField(labelWithString: "Режим перехвата трафика")
     private let bannerSubtitle = NSTextField(labelWithString: "")
+    private let modePopUpButton = NSPopUpButton()
 
-    // TUN Passwordless Helper Box
-    private let tunAuthBox = NSBox()
-    private let tunAuthIcon = NSImageView()
-    private let tunAuthTitle = NSTextField(labelWithString: "Режим TUN (VPN): запуск без пароля")
-    private let tunAuthSubtitle = NSTextField(labelWithString: "")
-    private let tunAuthButton = NSButton()
-
-    // TCP Only Box
+    // MARK: - Block 2: TCP Only Box
     private let tcpOnlyBox = NSBox()
     private let tcpOnlyIcon = NSImageView()
     private let tcpOnlyTitle = NSTextField(labelWithString: "Режим «Только TCP» (без HTTP/3)")
     private let tcpOnlySubtitle = NSTextField(labelWithString: "Отключает QUIC/H3 (UDP 443) и переводит туннели на HTTP/2 / HTTP/1.1 для сетей с блокировкой UDP.")
     private let tcpOnlySwitch = NSSwitch()
 
+    // MARK: - Block 3: TUN Passwordless Helper Box
+    private let tunAuthBox = NSBox()
+    private let tunAuthIcon = NSImageView()
+    private let tunAuthTitle = NSTextField(labelWithString: "Режим TUN (VPN): запуск без пароля")
+    private let tunAuthSubtitle = NSTextField(labelWithString: "")
+    private let tunAuthButton = NSButton()
+
+    // MARK: - Block 4: Theme Box
+    private let themeBox = NSBox()
+    private let themeIcon = NSImageView()
+    private let themeTitle = NSTextField(labelWithString: "Тема оформления")
+    private let themeSubtitle = NSTextField(labelWithString: "Внешний вид интерфейса: системный, светлый или тёмный режим.")
+    private let themePopUpButton = NSPopUpButton()
+
+    // MARK: - Footer
+    private let versionLabel = NSTextField(labelWithString: AppVersion.displayString)
+    private let closeButton = NSButton()
+
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 440),
+            styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Настройки — Outline Proxy"
         window.center()
         window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 520, height: 440))
 
         super.init(window: window)
 
         setupUI()
+        updateModeUI()
+        updateTunAuthUI()
+        updateTcpOnlyUI()
+        updateThemeUI()
+        applyTheme()
 
         NotificationCenter.default.addObserver(
             self,
@@ -55,23 +71,54 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
             name: ThemeManager.themeChangedNotification,
             object: nil
         )
+
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(handleThemeChanged),
+            name: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil
+        )
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
+    public func show() {
+        updateModeUI()
+        updateTunAuthUI()
+        updateTcpOnlyUI()
+        updateThemeUI()
+        applyTheme()
+        window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     private func setupUI() {
         guard let contentView = window?.contentView else { return }
 
-        // 1. Top banner (Mode Selector)
-        let bannerBox = NSBox()
-        bannerBox.boxType = .custom
-        bannerBox.fillColor = NSColor.controlBackgroundColor
-        bannerBox.cornerRadius = 8
-        bannerBox.translatesAutoresizingMaskIntoConstraints = false
+        // 1. Mode Box
+        modeBox.boxType = .custom
+        modeBox.cornerRadius = 10
+        modeBox.translatesAutoresizingMaskIntoConstraints = false
 
         bannerIcon.translatesAutoresizingMaskIntoConstraints = false
+
+        modeTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        modeTitle.translatesAutoresizingMaskIntoConstraints = false
+
+        bannerSubtitle.font = NSFont.systemFont(ofSize: 11)
+        bannerSubtitle.cell?.wraps = true
+        bannerSubtitle.lineBreakMode = .byWordWrapping
+        bannerSubtitle.maximumNumberOfLines = 2
+        bannerSubtitle.translatesAutoresizingMaskIntoConstraints = false
+
+        let modeTextStack = NSStackView(views: [modeTitle, bannerSubtitle])
+        modeTextStack.orientation = .vertical
+        modeTextStack.alignment = .leading
+        modeTextStack.spacing = 3
+        modeTextStack.translatesAutoresizingMaskIntoConstraints = false
 
         modePopUpButton.translatesAutoresizingMaskIntoConstraints = false
         modePopUpButton.removeAllItems()
@@ -81,68 +128,16 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         }
         modePopUpButton.target = self
         modePopUpButton.action = #selector(modeChanged(_:))
+        modePopUpButton.setContentHuggingPriority(.required, for: .horizontal)
+        modePopUpButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        bannerSubtitle.font = NSFont.systemFont(ofSize: 11)
-        bannerSubtitle.textColor = .secondaryLabelColor
-        bannerSubtitle.translatesAutoresizingMaskIntoConstraints = false
+        modeBox.addSubview(bannerIcon)
+        modeBox.addSubview(modeTextStack)
+        modeBox.addSubview(modePopUpButton)
 
-        let bannerTextStack = NSStackView(views: [modePopUpButton, bannerSubtitle])
-        bannerTextStack.orientation = .vertical
-        bannerTextStack.alignment = .leading
-        bannerTextStack.spacing = 4
-        bannerTextStack.translatesAutoresizingMaskIntoConstraints = false
-
-        themePopUpButton.translatesAutoresizingMaskIntoConstraints = false
-        themePopUpButton.removeAllItems()
-        themePopUpButton.addItem(withTitle: "Тема: Системная")
-        themePopUpButton.lastItem?.representedObject = AppThemeMode.system.rawValue
-        themePopUpButton.addItem(withTitle: "Тема: Светлая")
-        themePopUpButton.lastItem?.representedObject = AppThemeMode.light.rawValue
-        themePopUpButton.addItem(withTitle: "Тема: Тёмная")
-        themePopUpButton.lastItem?.representedObject = AppThemeMode.dark.rawValue
-        themePopUpButton.target = self
-        themePopUpButton.action = #selector(themeChanged(_:))
-        updateThemeUI()
-
-        bannerBox.addSubview(bannerIcon)
-        bannerBox.addSubview(bannerTextStack)
-        bannerBox.addSubview(themePopUpButton)
-
-        // 1.1 TUN Passwordless Helper Box
-        tunAuthBox.boxType = .custom
-        tunAuthBox.fillColor = NSColor.controlBackgroundColor
-        tunAuthBox.cornerRadius = 8
-        tunAuthBox.translatesAutoresizingMaskIntoConstraints = false
-
-        tunAuthIcon.translatesAutoresizingMaskIntoConstraints = false
-
-        tunAuthTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        tunAuthTitle.translatesAutoresizingMaskIntoConstraints = false
-
-        tunAuthSubtitle.font = NSFont.systemFont(ofSize: 11)
-        tunAuthSubtitle.translatesAutoresizingMaskIntoConstraints = false
-
-        let tunTextStack = NSStackView(views: [tunAuthTitle, tunAuthSubtitle])
-        tunTextStack.orientation = .vertical
-        tunTextStack.alignment = .leading
-        tunTextStack.spacing = 2
-        tunTextStack.translatesAutoresizingMaskIntoConstraints = false
-
-        tunAuthButton.translatesAutoresizingMaskIntoConstraints = false
-        tunAuthButton.bezelStyle = .rounded
-        tunAuthButton.target = self
-        tunAuthButton.action = #selector(tunAuthAction)
-
-        tunAuthBox.addSubview(tunAuthIcon)
-        tunAuthBox.addSubview(tunTextStack)
-        tunAuthBox.addSubview(tunAuthButton)
-
-        updateTunAuthUI()
-
-        // 1.2 TCP Only Box
+        // 2. TCP Only Box
         tcpOnlyBox.boxType = .custom
-        tcpOnlyBox.fillColor = NSColor.controlBackgroundColor
-        tcpOnlyBox.cornerRadius = 8
+        tcpOnlyBox.cornerRadius = 10
         tcpOnlyBox.translatesAutoresizingMaskIntoConstraints = false
 
         tcpOnlyIcon.image = NSImage(systemSymbolName: "network.badge.shield.half.filled", accessibilityDescription: nil)
@@ -153,13 +148,15 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         tcpOnlyTitle.translatesAutoresizingMaskIntoConstraints = false
 
         tcpOnlySubtitle.font = NSFont.systemFont(ofSize: 11)
-        tcpOnlySubtitle.textColor = NSColor.secondaryLabelColor
+        tcpOnlySubtitle.cell?.wraps = true
+        tcpOnlySubtitle.lineBreakMode = .byWordWrapping
+        tcpOnlySubtitle.maximumNumberOfLines = 2
         tcpOnlySubtitle.translatesAutoresizingMaskIntoConstraints = false
 
         let tcpTextStack = NSStackView(views: [tcpOnlyTitle, tcpOnlySubtitle])
         tcpTextStack.orientation = .vertical
         tcpTextStack.alignment = .leading
-        tcpTextStack.spacing = 2
+        tcpTextStack.spacing = 3
         tcpTextStack.translatesAutoresizingMaskIntoConstraints = false
 
         tcpOnlySwitch.translatesAutoresizingMaskIntoConstraints = false
@@ -170,105 +167,131 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         tcpOnlyBox.addSubview(tcpTextStack)
         tcpOnlyBox.addSubview(tcpOnlySwitch)
 
-        updateTcpOnlyUI()
+        // 3. TUN Auth Box
+        tunAuthBox.boxType = .custom
+        tunAuthBox.cornerRadius = 10
+        tunAuthBox.translatesAutoresizingMaskIntoConstraints = false
 
-        // 2. Table view for profiles
-        let colActive = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Active"))
-        colActive.title = "Статус"
-        colActive.width = 65
+        tunAuthIcon.translatesAutoresizingMaskIntoConstraints = false
 
-        let colName = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Name"))
-        colName.title = "Имя сервера"
-        colName.width = 160
+        tunAuthTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        tunAuthTitle.translatesAutoresizingMaskIntoConstraints = false
 
-        let colType = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Type"))
-        colType.title = "Протокол"
-        colType.width = 85
+        tunAuthSubtitle.font = NSFont.systemFont(ofSize: 11)
+        tunAuthSubtitle.cell?.wraps = true
+        tunAuthSubtitle.lineBreakMode = .byWordWrapping
+        tunAuthSubtitle.maximumNumberOfLines = 2
+        tunAuthSubtitle.translatesAutoresizingMaskIntoConstraints = false
 
-        let colLink = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Link"))
-        colLink.title = "Ссылка подключения / URL подписки"
-        colLink.width = 330
+        let tunTextStack = NSStackView(views: [tunAuthTitle, tunAuthSubtitle])
+        tunTextStack.orientation = .vertical
+        tunTextStack.alignment = .leading
+        tunTextStack.spacing = 3
+        tunTextStack.translatesAutoresizingMaskIntoConstraints = false
 
-        tableView.addTableColumn(colActive)
-        tableView.addTableColumn(colName)
-        tableView.addTableColumn(colType)
-        tableView.addTableColumn(colLink)
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.usesAlternatingRowBackgroundColors = true
-        tableView.rowHeight = 24
+        tunAuthButton.translatesAutoresizingMaskIntoConstraints = false
+        tunAuthButton.bezelStyle = .rounded
+        tunAuthButton.target = self
+        tunAuthButton.action = #selector(tunAuthAction)
+        tunAuthButton.setContentHuggingPriority(.required, for: .horizontal)
+        tunAuthButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let scroll = NSScrollView()
-        scroll.documentView = tableView
-        scroll.hasVerticalScroller = true
-        scroll.translatesAutoresizingMaskIntoConstraints = false
+        tunAuthBox.addSubview(tunAuthIcon)
+        tunAuthBox.addSubview(tunTextStack)
+        tunAuthBox.addSubview(tunAuthButton)
 
-        // 3. Buttons toolbar
-        let addButton = NSButton(title: "Добавить...", target: self, action: #selector(addAction))
-        let pasteButton = NSButton(title: "Вставить из буфера", target: self, action: #selector(pasteAction))
-        let selectButton = NSButton(title: "Сделать активным", target: self, action: #selector(selectAction))
-        let removeButton = NSButton(title: "Удалить", target: self, action: #selector(removeAction))
-        let closeButton = NSButton(title: "Закрыть", target: self, action: #selector(closeAction))
+        // 4. Theme Box
+        themeBox.boxType = .custom
+        themeBox.cornerRadius = 10
+        themeBox.translatesAutoresizingMaskIntoConstraints = false
 
-        let leftButtons = NSStackView(views: [addButton, pasteButton, selectButton, removeButton])
-        leftButtons.orientation = .horizontal
-        leftButtons.spacing = 8
-        leftButtons.translatesAutoresizingMaskIntoConstraints = false
+        themeIcon.image = NSImage(systemSymbolName: "circle.lefthalf.filled", accessibilityDescription: "Тема оформления")
+        themeIcon.contentTintColor = NSColor.systemPurple
+        themeIcon.translatesAutoresizingMaskIntoConstraints = false
 
-        let versionLabel = NSTextField(labelWithString: AppVersion.displayString)
+        themeTitle.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        themeTitle.translatesAutoresizingMaskIntoConstraints = false
+
+        themeSubtitle.font = NSFont.systemFont(ofSize: 11)
+        themeSubtitle.cell?.wraps = true
+        themeSubtitle.lineBreakMode = .byWordWrapping
+        themeSubtitle.maximumNumberOfLines = 2
+        themeSubtitle.translatesAutoresizingMaskIntoConstraints = false
+
+        let themeTextStack = NSStackView(views: [themeTitle, themeSubtitle])
+        themeTextStack.orientation = .vertical
+        themeTextStack.alignment = .leading
+        themeTextStack.spacing = 3
+        themeTextStack.translatesAutoresizingMaskIntoConstraints = false
+
+        themePopUpButton.translatesAutoresizingMaskIntoConstraints = false
+        themePopUpButton.removeAllItems()
+        themePopUpButton.addItem(withTitle: "Системная")
+        themePopUpButton.lastItem?.representedObject = AppThemeMode.system.rawValue
+        themePopUpButton.addItem(withTitle: "Светлая")
+        themePopUpButton.lastItem?.representedObject = AppThemeMode.light.rawValue
+        themePopUpButton.addItem(withTitle: "Тёмная")
+        themePopUpButton.lastItem?.representedObject = AppThemeMode.dark.rawValue
+        themePopUpButton.target = self
+        themePopUpButton.action = #selector(themeChanged(_:))
+        themePopUpButton.setContentHuggingPriority(.required, for: .horizontal)
+        themePopUpButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        themeBox.addSubview(themeIcon)
+        themeBox.addSubview(themeTextStack)
+        themeBox.addSubview(themePopUpButton)
+
+        // Footer
         versionLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        versionLabel.textColor = NSColor.secondaryLabelColor
         versionLabel.toolTip = AppVersion.fullDiagnosticString
+        versionLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let bottomStack = NSStackView(views: [leftButtons, NSView(), versionLabel, closeButton])
+        closeButton.title = "Закрыть"
+        closeButton.bezelStyle = .rounded
+        closeButton.target = self
+        closeButton.action = #selector(closeAction)
+        closeButton.keyEquivalent = "\r"
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let bottomStack = NSStackView(views: [versionLabel, spacer, closeButton])
         bottomStack.orientation = .horizontal
+        bottomStack.alignment = .centerY
         bottomStack.translatesAutoresizingMaskIntoConstraints = false
 
-        contentView.addSubview(bannerBox)
-        contentView.addSubview(tunAuthBox)
+        contentView.addSubview(modeBox)
         contentView.addSubview(tcpOnlyBox)
-        contentView.addSubview(scroll)
+        contentView.addSubview(tunAuthBox)
+        contentView.addSubview(themeBox)
         contentView.addSubview(bottomStack)
 
         NSLayoutConstraint.activate([
-            bannerBox.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
-            bannerBox.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
-            bannerBox.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-            bannerBox.heightAnchor.constraint(equalToConstant: 58),
+            // Block 1: Mode
+            modeBox.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 18),
+            modeBox.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            modeBox.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            modeBox.heightAnchor.constraint(equalToConstant: 76),
 
-            bannerIcon.leadingAnchor.constraint(equalTo: bannerBox.leadingAnchor, constant: 14),
-            bannerIcon.centerYAnchor.constraint(equalTo: bannerBox.centerYAnchor),
-            bannerIcon.widthAnchor.constraint(equalToConstant: 26),
-            bannerIcon.heightAnchor.constraint(equalToConstant: 26),
+            bannerIcon.leadingAnchor.constraint(equalTo: modeBox.leadingAnchor, constant: 14),
+            bannerIcon.centerYAnchor.constraint(equalTo: modeBox.centerYAnchor),
+            bannerIcon.widthAnchor.constraint(equalToConstant: 24),
+            bannerIcon.heightAnchor.constraint(equalToConstant: 24),
 
-            bannerTextStack.leadingAnchor.constraint(equalTo: bannerIcon.trailingAnchor, constant: 12),
-            bannerTextStack.centerYAnchor.constraint(equalTo: bannerBox.centerYAnchor),
+            modeTextStack.leadingAnchor.constraint(equalTo: bannerIcon.trailingAnchor, constant: 12),
+            modeTextStack.centerYAnchor.constraint(equalTo: modeBox.centerYAnchor),
+            modeTextStack.trailingAnchor.constraint(lessThanOrEqualTo: modePopUpButton.leadingAnchor, constant: -12),
 
-            themePopUpButton.trailingAnchor.constraint(equalTo: bannerBox.trailingAnchor, constant: -14),
-            themePopUpButton.centerYAnchor.constraint(equalTo: bannerBox.centerYAnchor),
-            bannerTextStack.trailingAnchor.constraint(lessThanOrEqualTo: themePopUpButton.leadingAnchor, constant: -12),
+            modePopUpButton.trailingAnchor.constraint(equalTo: modeBox.trailingAnchor, constant: -14),
+            modePopUpButton.centerYAnchor.constraint(equalTo: modeBox.centerYAnchor),
 
-            tunAuthBox.topAnchor.constraint(equalTo: bannerBox.bottomAnchor, constant: 8),
-            tunAuthBox.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
-            tunAuthBox.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-            tunAuthBox.heightAnchor.constraint(equalToConstant: 48),
-
-            tunAuthIcon.leadingAnchor.constraint(equalTo: tunAuthBox.leadingAnchor, constant: 14),
-            tunAuthIcon.centerYAnchor.constraint(equalTo: tunAuthBox.centerYAnchor),
-            tunAuthIcon.widthAnchor.constraint(equalToConstant: 22),
-            tunAuthIcon.heightAnchor.constraint(equalToConstant: 22),
-
-            tunTextStack.leadingAnchor.constraint(equalTo: tunAuthIcon.trailingAnchor, constant: 12),
-            tunTextStack.centerYAnchor.constraint(equalTo: tunAuthBox.centerYAnchor),
-            tunTextStack.trailingAnchor.constraint(lessThanOrEqualTo: tunAuthButton.leadingAnchor, constant: -12),
-
-            tunAuthButton.trailingAnchor.constraint(equalTo: tunAuthBox.trailingAnchor, constant: -14),
-            tunAuthButton.centerYAnchor.constraint(equalTo: tunAuthBox.centerYAnchor),
-
-            tcpOnlyBox.topAnchor.constraint(equalTo: tunAuthBox.bottomAnchor, constant: 8),
-            tcpOnlyBox.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
-            tcpOnlyBox.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-            tcpOnlyBox.heightAnchor.constraint(equalToConstant: 48),
+            // Block 2: TCP Only
+            tcpOnlyBox.topAnchor.constraint(equalTo: modeBox.bottomAnchor, constant: 14),
+            tcpOnlyBox.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            tcpOnlyBox.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            tcpOnlyBox.heightAnchor.constraint(equalToConstant: 76),
 
             tcpOnlyIcon.leadingAnchor.constraint(equalTo: tcpOnlyBox.leadingAnchor, constant: 14),
             tcpOnlyIcon.centerYAnchor.constraint(equalTo: tcpOnlyBox.centerYAnchor),
@@ -282,40 +305,129 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
             tcpOnlySwitch.trailingAnchor.constraint(equalTo: tcpOnlyBox.trailingAnchor, constant: -14),
             tcpOnlySwitch.centerYAnchor.constraint(equalTo: tcpOnlyBox.centerYAnchor),
 
-            scroll.topAnchor.constraint(equalTo: tcpOnlyBox.bottomAnchor, constant: 10),
-            scroll.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
-            scroll.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-            scroll.bottomAnchor.constraint(equalTo: bottomStack.topAnchor, constant: -12),
+            // Block 3: TUN Auth
+            tunAuthBox.topAnchor.constraint(equalTo: tcpOnlyBox.bottomAnchor, constant: 14),
+            tunAuthBox.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            tunAuthBox.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            tunAuthBox.heightAnchor.constraint(equalToConstant: 76),
 
-            bottomStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
-            bottomStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-            bottomStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
-            bottomStack.heightAnchor.constraint(equalToConstant: 30)
+            tunAuthIcon.leadingAnchor.constraint(equalTo: tunAuthBox.leadingAnchor, constant: 14),
+            tunAuthIcon.centerYAnchor.constraint(equalTo: tunAuthBox.centerYAnchor),
+            tunAuthIcon.widthAnchor.constraint(equalToConstant: 22),
+            tunAuthIcon.heightAnchor.constraint(equalToConstant: 22),
+
+            tunTextStack.leadingAnchor.constraint(equalTo: tunAuthIcon.trailingAnchor, constant: 12),
+            tunTextStack.centerYAnchor.constraint(equalTo: tunAuthBox.centerYAnchor),
+            tunTextStack.trailingAnchor.constraint(lessThanOrEqualTo: tunAuthButton.leadingAnchor, constant: -12),
+
+            tunAuthButton.trailingAnchor.constraint(equalTo: tunAuthBox.trailingAnchor, constant: -14),
+            tunAuthButton.centerYAnchor.constraint(equalTo: tunAuthBox.centerYAnchor),
+
+            // Block 4: Theme
+            themeBox.topAnchor.constraint(equalTo: tunAuthBox.bottomAnchor, constant: 14),
+            themeBox.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            themeBox.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            themeBox.heightAnchor.constraint(equalToConstant: 76),
+
+            themeIcon.leadingAnchor.constraint(equalTo: themeBox.leadingAnchor, constant: 14),
+            themeIcon.centerYAnchor.constraint(equalTo: themeBox.centerYAnchor),
+            themeIcon.widthAnchor.constraint(equalToConstant: 22),
+            themeIcon.heightAnchor.constraint(equalToConstant: 22),
+
+            themeTextStack.leadingAnchor.constraint(equalTo: themeIcon.trailingAnchor, constant: 12),
+            themeTextStack.centerYAnchor.constraint(equalTo: themeBox.centerYAnchor),
+            themeTextStack.trailingAnchor.constraint(lessThanOrEqualTo: themePopUpButton.leadingAnchor, constant: -12),
+
+            themePopUpButton.trailingAnchor.constraint(equalTo: themeBox.trailingAnchor, constant: -14),
+            themePopUpButton.centerYAnchor.constraint(equalTo: themeBox.centerYAnchor),
+
+            // Footer
+            bottomStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            bottomStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            bottomStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
+            bottomStack.heightAnchor.constraint(equalToConstant: 32)
         ])
     }
 
-    public func show() {
-        reloadProfiles()
-        updateModeUI()
+    private func applyTheme() {
+        guard let win = window else { return }
+        let palette = ThemeManager.shared.palette(for: win)
+
+        win.appearance = palette.isDark ? NSAppearance(named: .darkAqua) : NSAppearance(named: .aqua)
+        win.backgroundColor = palette.windowBackground
+
+        let boxes = [modeBox, tcpOnlyBox, tunAuthBox, themeBox]
+        for box in boxes {
+            box.fillColor = palette.contentCardBg
+            box.borderColor = palette.cardBorder
+            box.borderWidth = 1.0
+        }
+
+        modeTitle.textColor = palette.primaryText
+        tcpOnlyTitle.textColor = palette.primaryText
+        tunAuthTitle.textColor = palette.primaryText
+        themeTitle.textColor = palette.primaryText
+
+        bannerSubtitle.textColor = palette.secondaryText
+        tcpOnlySubtitle.textColor = palette.secondaryText
+        themeSubtitle.textColor = palette.secondaryText
+        versionLabel.textColor = palette.secondaryText
+
         updateTunAuthUI()
-        updateTcpOnlyUI()
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func updateModeUI() {
+        let currentMode = AppState.shared.mode
+        for (index, item) in modePopUpButton.itemArray.enumerated() {
+            if let raw = item.representedObject as? String, raw == currentMode.rawValue {
+                modePopUpButton.selectItem(at: index)
+                break
+            }
+        }
+
+        bannerSubtitle.stringValue = currentMode.summary
+        if let iconURL = Bundle.main.url(forResource: "AppIcon_round", withExtension: "png") ??
+                         Bundle.main.url(forResource: "AppIcon", withExtension: "png"),
+           let img = NSImage(contentsOf: iconURL) {
+            bannerIcon.image = img
+        } else {
+            let iconName = (currentMode == .tun) ? "shield.fill" : "network"
+            bannerIcon.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
+            bannerIcon.contentTintColor = NSColor.systemBlue
+        }
+    }
+
+    @objc private func modeChanged(_ sender: NSPopUpButton) {
+        guard let item = sender.selectedItem,
+              let raw = item.representedObject as? String,
+              let newMode = ProxyMode(rawValue: raw) else { return }
+
+        AppState.shared.setMode(newMode)
+        updateModeUI()
+    }
+
+    private func updateTcpOnlyUI() {
+        tcpOnlySwitch.state = AppState.shared.tcpOnly ? .on : .off
+    }
+
+    @objc private func tcpOnlyAction(_ sender: NSSwitch) {
+        AppState.shared.setTcpOnly(sender.state == .on)
     }
 
     private func updateTunAuthUI() {
         let isConfigured = PrivilegedHelperManager.shared.isSudoersConfigured()
+        let palette = ThemeManager.shared.palette(for: window)
         if isConfigured {
             tunAuthIcon.image = NSImage(systemSymbolName: "checkmark.shield.fill", accessibilityDescription: "Настроено")
-            tunAuthIcon.contentTintColor = NSColor.systemGreen
+            tunAuthIcon.contentTintColor = palette.statusGreen
             tunAuthSubtitle.stringValue = "Настроено: TUN (VPN) подключается в 1 клик без ввода пароля."
-            tunAuthSubtitle.textColor = NSColor.systemGreen
+            tunAuthSubtitle.textColor = palette.statusGreen
             tunAuthButton.title = "Удалить правило"
         } else {
             tunAuthIcon.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: "Требуется пароль")
-            tunAuthIcon.contentTintColor = NSColor.systemOrange
+            tunAuthIcon.contentTintColor = palette.statusAmber
             tunAuthSubtitle.stringValue = "Требуется ввод пароля. Нажмите, чтобы разрешить запуск в 1 клик."
-            tunAuthSubtitle.textColor = NSColor.secondaryLabelColor
+            tunAuthSubtitle.textColor = palette.secondaryText
             tunAuthButton.title = "Настроить в 1 клик..."
         }
     }
@@ -355,50 +467,6 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
         }
     }
 
-    private func updateModeUI() {
-        let currentMode = AppState.shared.mode
-        for (index, item) in modePopUpButton.itemArray.enumerated() {
-            if let raw = item.representedObject as? String, raw == currentMode.rawValue {
-                modePopUpButton.selectItem(at: index)
-                break
-            }
-        }
-
-        bannerSubtitle.stringValue = currentMode.summary
-        if let iconURL = Bundle.main.url(forResource: "AppIcon_round", withExtension: "png") ??
-                         Bundle.main.url(forResource: "AppIcon", withExtension: "png"),
-           let img = NSImage(contentsOf: iconURL) {
-            bannerIcon.image = img
-        } else {
-            let iconName = (currentMode == .tun) ? "shield.fill" : "network"
-            bannerIcon.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
-        }
-    }
-
-    @objc private func modeChanged(_ sender: NSPopUpButton) {
-        guard let item = sender.selectedItem,
-              let raw = item.representedObject as? String,
-              let newMode = ProxyMode(rawValue: raw) else { return }
-
-        AppState.shared.setMode(newMode)
-        updateModeUI()
-    }
-
-    private func updateTcpOnlyUI() {
-        tcpOnlySwitch.state = AppState.shared.tcpOnly ? .on : .off
-    }
-
-    @objc private func tcpOnlyAction(_ sender: NSSwitch) {
-        AppState.shared.setTcpOnly(sender.state == .on)
-    }
-
-    @objc private func handleAppStateUpdated() {
-        updateModeUI()
-        updateTunAuthUI()
-        updateTcpOnlyUI()
-        reloadProfiles()
-    }
-
     private func updateThemeUI() {
         let currentTheme = ThemeManager.shared.mode
         for (index, item) in themePopUpButton.itemArray.enumerated() {
@@ -411,140 +479,25 @@ public final class SettingsWindowController: NSWindowController, NSTableViewData
 
     @objc private func themeChanged(_ sender: NSPopUpButton) {
         guard let item = sender.selectedItem,
-               let raw = item.representedObject as? String,
-               let newTheme = AppThemeMode(rawValue: raw) else { return }
+              let raw = item.representedObject as? String,
+              let newTheme = AppThemeMode(rawValue: raw) else { return }
 
         ThemeManager.shared.mode = newTheme
+        applyTheme()
     }
 
     @objc private func handleThemeChanged() {
         updateThemeUI()
+        applyTheme()
     }
 
-    private func reloadProfiles() {
-        profiles = ProfileStore.shared.profiles
-        tableView.reloadData()
-    }
-
-    // MARK: - NSTableViewDataSource & Delegate
-
-    public func numberOfRows(in tableView: NSTableView) -> Int {
-        return profiles.count
-    }
-
-    public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < profiles.count, let col = tableColumn else { return nil }
-        let profile = profiles[row]
-        let isActive = (profile.id == ProfileStore.shared.activeProfileId)
-
-        let cell = NSTextField(labelWithString: "")
-        cell.font = NSFont.systemFont(ofSize: 12)
-
-        switch col.identifier.rawValue {
-        case "Active":
-            cell.stringValue = isActive ? "● АКТИВЕН" : ""
-            cell.font = NSFont.boldSystemFont(ofSize: 10)
-            cell.textColor = isActive ? .systemGreen : .secondaryLabelColor
-        case "Name":
-            cell.stringValue = profile.name.isEmpty ? "Без названия" : profile.name
-            if isActive { cell.font = NSFont.boldSystemFont(ofSize: 12) }
-        case "Type":
-            let isTcpOnly = profile.tcpOnly || AppState.shared.tcpOnly
-            let baseType = profile.isSubscription ? "Подписка" : profile.transport.uppercased()
-            cell.stringValue = isTcpOnly ? "\(baseType) (TCP)" : baseType
-        case "Link":
-            cell.stringValue = profile.isSubscription ? profile.configUrl : profile.link
-            cell.textColor = .secondaryLabelColor
-            cell.cell?.truncatesLastVisibleLine = true
-        default:
-            break
-        }
-        return cell
-    }
-
-    // MARK: - Actions
-
-    @objc private func addAction() {
-        let alert = NSAlert()
-        alert.messageText = "Добавить сервер или подписку"
-        alert.informativeText = "Вставьте ссылку vless://, ss:// или URL подписки https://:"
-        alert.alertStyle = .informational
-
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 24))
-        input.placeholderString = "vless://..., ss://... или https://..."
-        alert.accessoryView = input
-
-        alert.addButton(withTitle: "Добавить")
-        alert.addButton(withTitle: "Отмена")
-
-        let resp = alert.runModal()
-        if resp == .alertFirstButtonReturn {
-            let text = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let profile = ServerProfile.from(link: text) {
-                ProfileStore.shared.addProfile(profile)
-                reloadProfiles()
-                if profile.isSubscription {
-                    Task {
-                        _ = try? await SubscriptionFetcher.updateSubscription(profile)
-                        await MainActor.run {
-                            self.reloadProfiles()
-                        }
-                    }
-                }
-            } else {
-                showError("Не удалось распознать ссылку. Поддерживаются vless://, ss:// и https://.")
-            }
-        }
-    }
-
-    @objc private func pasteAction() {
-        guard let text = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty else {
-            showError("Буфер обмена пуст.")
-            return
-        }
-
-        if let profile = ServerProfile.from(link: text) {
-            ProfileStore.shared.addProfile(profile)
-            reloadProfiles()
-            if profile.isSubscription {
-                Task {
-                    _ = try? await SubscriptionFetcher.updateSubscription(profile)
-                    await MainActor.run {
-                        self.reloadProfiles()
-                    }
-                }
-            }
-        } else {
-            showError("Не удалось распознать ссылку vless://, ss:// или URL подписки в буфере обмена.")
-        }
-    }
-
-    @objc private func selectAction() {
-        let row = tableView.selectedRow
-        guard row >= 0 && row < profiles.count else { return }
-        let profile = profiles[row]
-        AppState.shared.switchProfile(to: profile.id)
-        reloadProfiles()
-    }
-
-    @objc private func removeAction() {
-        let row = tableView.selectedRow
-        guard row >= 0 && row < profiles.count else { return }
-        let profile = profiles[row]
-        ProfileStore.shared.removeProfile(id: profile.id)
-        reloadProfiles()
+    @objc private func handleAppStateUpdated() {
+        updateModeUI()
+        updateTunAuthUI()
+        updateTcpOnlyUI()
     }
 
     @objc private func closeAction() {
         window?.close()
-    }
-
-    private func showError(_ msg: String) {
-        let alert = NSAlert()
-        alert.messageText = "Ошибка"
-        alert.informativeText = msg
-        alert.alertStyle = .warning
-        alert.runModal()
     }
 }
