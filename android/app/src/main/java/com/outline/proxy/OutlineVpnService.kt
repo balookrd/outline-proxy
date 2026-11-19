@@ -108,6 +108,9 @@ class OutlineVpnService : VpnService() {
     private val notifScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var notifJob: Job? = null
 
+    /** Background scope for off-main-thread FFI operations (start, stop) to prevent ANR. */
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     /** When the tunnel last had a live link (or the session start). Debounces the
      *  status: a brief drop below the grace window reads "Connecting…", not the
      *  jarring "No link" flash. */
@@ -154,13 +157,16 @@ class OutlineVpnService : VpnService() {
         private const val WIFI_SSID_RETRY_DELAY_MS = 1_500L
         private const val BOOT_GRACE_PERIOD_MS = 25_000L
 
+        @Volatile
+        private var isTunnelActive: Boolean = false
+
         /**
          * Whether the tunnel is up, as reported by the Rust core (same process,
          * so this is the live state, not a cached flag). Used by
          * [ControlActivity] to decide what `outline://toggle` means. Defaults to
          * "down" if the native library cannot be loaded.
          */
-        fun isActive(): Boolean = runCatching { isRunning() }.getOrDefault(false)
+        fun isActive(): Boolean = isTunnelActive || runCatching { isRunning() }.getOrDefault(false)
 
         /** Ask the service to bring the tunnel up with [configToml]. */
         fun requestConnect(context: Context, configToml: String) {
@@ -333,7 +339,7 @@ class OutlineVpnService : VpnService() {
                     }
                     startServiceForeground(currentNotification())
                 }
-                return if (isRunning()) START_STICKY else START_NOT_STICKY
+                return if (isActive()) START_STICKY else START_NOT_STICKY
             }
             ACTION_STANDBY -> {
                 // Persistent-notification mode wants the banner up even with the
@@ -343,10 +349,10 @@ class OutlineVpnService : VpnService() {
                 // scope). If the tunnel is somehow already up (a race), keep it
                 // sticky so we do not weaken a running tunnel's keep-alive.
                 startServiceForeground(currentNotification())
-                return if (isRunning()) START_STICKY else START_NOT_STICKY
+                return if (isActive()) START_STICKY else START_NOT_STICKY
             }
             ACTION_STOP_STANDBY -> {
-                if (!isRunning()) {
+                if (!isActive()) {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
@@ -543,7 +549,19 @@ class OutlineVpnService : VpnService() {
             .addDnsServer("1.1.1.1")
             .addDnsServer("2606:4700:4700::1111")
 
-        applySplitTunnel(builder)
+        if (!applySplitTunnel(builder)) {
+            Log.e(TAG, "failed to apply split-tunnel; aborting connection to prevent routing loop")
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(
+                    this,
+                    R.string.split_empty_allowlist_error,
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+            KeepAliveState(this).recordFailure()
+            stopSelf()
+            return
+        }
 
         val tun = builder.establish()
         if (tun == null) {
@@ -555,37 +573,42 @@ class OutlineVpnService : VpnService() {
         tunInterface = tun
         startServiceForeground(buildNotification())
 
-        val state = KeepAliveState(this)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            state.alwaysOnSeen = isAlwaysOn
-        }
-        try {
-            val store = ProfileStore(this)
-            val isTcpOnly = store.tcpOnly || (store.selectedProfile()?.tcpOnly == true)
-            val tomlWithTcpOnly = if (isTcpOnly) {
-                Log.i(TAG, "TCP only mode active: HTTP/3 (QUIC) disabled, forced h2/h1")
-                TcpOnlyConfig.apply(configToml)
-            } else {
-                configToml
+        serviceScope.launch(Dispatchers.IO) {
+            val state = KeepAliveState(this@OutlineVpnService)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                state.alwaysOnSeen = isAlwaysOn
             }
-            val powerOptimizedToml = MobilePowerConfig.sanitize(withDialBudget(tomlWithTcpOnly))
-            start(powerOptimizedToml, filesDir.absolutePath, tun.fd)
-            Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
-            state.clearFailures()
-            // Capture the session baseline once, together with the connect time —
-            // a reconnect that keeps the session must not restart the counters.
-            if (SessionTraffic.shouldCaptureBaseline(state.connectedSince)) {
-                state.connectedSince = System.currentTimeMillis()
-                captureTrafficBaseline(state)
+            try {
+                val store = ProfileStore(this@OutlineVpnService)
+                val isTcpOnly = store.tcpOnly || (store.selectedProfile()?.tcpOnly == true)
+                val tomlWithTcpOnly = if (isTcpOnly) {
+                    Log.i(TAG, "TCP only mode active: HTTP/3 (QUIC) disabled, forced h2/h1")
+                    TcpOnlyConfig.apply(configToml)
+                } else {
+                    configToml
+                }
+                val powerOptimizedToml = MobilePowerConfig.sanitize(withDialBudget(tomlWithTcpOnly))
+                start(powerOptimizedToml, filesDir.absolutePath, tun.fd)
+                isTunnelActive = true
+                Log.i(TAG, "outline-ws-rust client started with native TUN (fd=${tun.fd})")
+                state.clearFailures()
+                // Capture the session baseline once, together with the connect time —
+                // a reconnect that keeps the session must not restart the counters.
+                if (SessionTraffic.shouldCaptureBaseline(state.connectedSince)) {
+                    state.connectedSince = System.currentTimeMillis()
+                    captureTrafficBaseline(state)
+                }
+                seedLinkGrace()
+                startNotificationUpdates()
+                registerNetworkCallback()
+            } catch (e: Exception) {
+                Log.e(TAG, "failed to start client", e)
+                val failures = state.recordFailure()
+                WatchdogAlarm.schedule(this@OutlineVpnService, KeepAlivePolicy.backoffFor(failures))
+                withContext(Dispatchers.Main) {
+                    disconnect()
+                }
             }
-            seedLinkGrace()
-            startNotificationUpdates()
-            registerNetworkCallback()
-        } catch (e: Exception) {
-            Log.e(TAG, "failed to start client", e)
-            val failures = state.recordFailure()
-            WatchdogAlarm.schedule(this, KeepAlivePolicy.backoffFor(failures))
-            disconnect()
         }
     }
 
@@ -597,7 +620,7 @@ class OutlineVpnService : VpnService() {
      * simply never add ourselves, so we bypass by omission. Android forbids
      * mixing allowed and disallowed apps, hence the exclusive branches.
      */
-    private fun applySplitTunnel(builder: Builder) {
+    private fun applySplitTunnel(builder: Builder): Boolean {
         val config = SplitTunnelStore(this).load()
         when (config.mode) {
             SplitMode.OFF -> disallow(builder, packageName)
@@ -609,10 +632,20 @@ class OutlineVpnService : VpnService() {
 
             SplitMode.ALLOWLIST -> {
                 val allowed = config.allowPackages.filter { it != packageName }
-                if (allowed.isEmpty()) {
-                    Log.w(TAG, "allowlist is empty — no app traffic will be tunneled")
+                var added = 0
+                for (pkg in allowed) {
+                    if (allow(builder, pkg)) {
+                        added++
+                    }
                 }
-                allowed.forEach { allow(builder, it) }
+                if (added == 0) {
+                    Log.e(
+                        TAG,
+                        "allowlist has 0 valid installed packages! Refusing to establish TUN to avoid routing loop.",
+                    )
+                    disallow(builder, packageName)
+                    return false
+                }
             }
         }
         Log.i(
@@ -620,21 +653,26 @@ class OutlineVpnService : VpnService() {
             "split-tunnel mode=${config.mode} " +
                 "allow=${config.allowPackages.size} deny=${config.denyPackages.size}",
         )
+        return true
     }
 
-    private fun allow(builder: Builder, pkg: String) {
-        try {
+    private fun allow(builder: Builder, pkg: String): Boolean {
+        return try {
             builder.addAllowedApplication(pkg)
+            true
         } catch (e: PackageManager.NameNotFoundException) {
             Log.w(TAG, "allow: package not found: $pkg")
+            false
         }
     }
 
-    private fun disallow(builder: Builder, pkg: String) {
-        try {
+    private fun disallow(builder: Builder, pkg: String): Boolean {
+        return try {
             builder.addDisallowedApplication(pkg)
+            true
         } catch (e: PackageManager.NameNotFoundException) {
             Log.w(TAG, "disallow: package not found: $pkg")
+            false
         }
     }
 
@@ -803,16 +841,25 @@ class OutlineVpnService : VpnService() {
      * path, pause path, and by [onDestroy].
      */
     private fun teardownTunnel() {
+        isTunnelActive = false
         stopNotificationUpdates()
         KeepAliveState(this).connectedSince = 0L
         unregisterNetworkCallback()
-        try {
-            if (isRunning()) stop()
-        } catch (e: Exception) {
-            Log.e(TAG, "error stopping client", e)
-        }
-        tunInterface?.close()
+        val tun = tunInterface
         tunInterface = null
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                if (isRunning()) stop()
+            } catch (e: Exception) {
+                Log.e(TAG, "error stopping client", e)
+            } finally {
+                try {
+                    tun?.close()
+                } catch (e: Exception) {
+                    Log.e(TAG, "error closing tun interface", e)
+                }
+            }
+        }
     }
 
     /**
@@ -870,6 +917,12 @@ class OutlineVpnService : VpnService() {
         }
         teardownTunnel()
         super.onDestroy()
+    }
+
+    override fun onRevoke() {
+        Log.i(TAG, "VPN permission revoked by system or user")
+        disconnect()
+        super.onRevoke()
     }
 
     private fun isAirplaneModeOn(context: Context): Boolean =

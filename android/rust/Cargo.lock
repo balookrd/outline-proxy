@@ -1338,6 +1338,7 @@ name = "outline-android"
 version = "1.9.1"
 dependencies = [
  "clap",
+ "libc",
  "outline-ws-rust",
  "paranoid-android",
  "thiserror",
@@ -1502,6 +1503,7 @@ version = "1.9.2"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "blake3",
  "bytes",
  "clap",
  "futures-util",
@@ -2103,6 +2105,7 @@ dependencies = [
 name = "socks5-proto"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "outline-wire",
  "thiserror",
  "tokio",

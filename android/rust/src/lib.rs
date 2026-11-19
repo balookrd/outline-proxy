@@ -53,6 +53,40 @@ static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
 /// attempt did not come up rather than failing silently.
 static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
+fn acquire_engine() -> std::sync::MutexGuard<'static, Option<Engine>> {
+    ENGINE.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("ENGINE mutex was poisoned; recovering inner state");
+        poisoned.into_inner()
+    })
+}
+
+fn acquire_last_error() -> std::sync::MutexGuard<'static, Option<String>> {
+    LAST_ERROR.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("LAST_ERROR mutex was poisoned; recovering inner state");
+        poisoned.into_inner()
+    })
+}
+
+#[cfg(unix)]
+fn dup_tun_fd(fd: i32) -> Result<i32, VpnError> {
+    // Duplicate the descriptor and set FD_CLOEXEC atomically before spawning Tokio task.
+    // This eliminates the race condition where Kotlin closes its ParcelFileDescriptor
+    // before the worker thread starts reading from tun_fd.
+    let dup_fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if dup_fd < 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(VpnError::Runtime {
+            msg: format!("failed to dup tun_fd {fd}: {err}"),
+        });
+    }
+    Ok(dup_fd)
+}
+
+#[cfg(not(unix))]
+fn dup_tun_fd(fd: i32) -> Result<i32, VpnError> {
+    Ok(fd)
+}
+
 /// Best-effort one-time logging setup. On Android, `tracing` is routed into
 /// logcat (tag `OutlineProxy`) via paranoid-android; elsewhere it goes to the
 /// plain fmt subscriber. Failures here are non-fatal.
@@ -91,7 +125,7 @@ fn init_logging() {
 pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), VpnError> {
     init_logging();
 
-    let mut guard = ENGINE.lock().expect("ENGINE mutex poisoned");
+    let mut guard = acquire_engine();
     match guard.as_ref() {
         // A live client task is genuinely already running — refuse.
         Some(engine) if !engine.client_task.is_finished() => {
@@ -112,40 +146,74 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
 
     // A fresh attempt starts with a clean slate — any earlier failure reason is
     // stale now.
-    *LAST_ERROR.lock().expect("LAST_ERROR mutex poisoned") = None;
+    *acquire_last_error() = None;
 
     outline_ws_rust::init_rustls_crypto_provider()
         .map_err(|e| VpnError::Runtime { msg: format!("crypto provider: {e:#}") })?;
 
+    // Duplicate tun_fd synchronously before launching Tokio task to eliminate FD race.
+    let duplicated_tun_fd = dup_tun_fd(tun_fd)?;
+
     let cfg_path = PathBuf::from(&work_dir).join("config.toml");
-    std::fs::write(&cfg_path, config_toml).map_err(|e| VpnError::Config {
-        msg: format!("write {}: {e}", cfg_path.display()),
-    })?;
+    if let Err(e) = std::fs::write(&cfg_path, config_toml) {
+        #[cfg(unix)]
+        unsafe {
+            libc::close(duplicated_tun_fd);
+        }
+        return Err(VpnError::Config {
+            msg: format!("write {}: {e}", cfg_path.display()),
+        });
+    }
 
     let cfg_arg = cfg_path.to_string_lossy().into_owned();
-    let client_args =
-        outline_ws_rust::config::Args::try_parse_from(["outline-ws-rust", "--config", &cfg_arg])
-            .map_err(|e| VpnError::Config { msg: format!("args: {e}") })?;
+    let client_args = match outline_ws_rust::config::Args::try_parse_from([
+        "outline-ws-rust",
+        "--config",
+        &cfg_arg,
+    ]) {
+        Ok(args) => args,
+        Err(e) => {
+            #[cfg(unix)]
+            unsafe {
+                libc::close(duplicated_tun_fd);
+            }
+            return Err(VpnError::Config { msg: format!("args: {e}") });
+        },
+    };
 
     // Sized for mobile battery efficiency: 2 worker threads comfortably handle the
     // native TUN read/write loop and transport crypto without spinning up 8 threads
     // across all CPU clusters on modern octa-core mobile SoCs.
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
-        .map_err(|e| VpnError::Runtime { msg: format!("tokio runtime: {e}") })?;
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            #[cfg(unix)]
+            unsafe {
+                libc::close(duplicated_tun_fd);
+            }
+            return Err(VpnError::Runtime { msg: format!("tokio runtime: {e}") });
+        },
+    };
 
-    info!(tun_fd, %cfg_arg, "starting outline-ws-rust client with native TUN");
+    info!(
+        tun_fd = duplicated_tun_fd,
+        original_tun_fd = tun_fd,
+        %cfg_arg,
+        "starting outline-ws-rust client with native TUN"
+    );
 
-    let opts = RunOptions { tun_fd: Some(tun_fd) };
+    let opts = RunOptions { tun_fd: Some(duplicated_tun_fd) };
     let client_task = runtime.spawn(async move {
         if let Err(e) = outline_ws_rust::run_with_options(client_args, opts).await {
             let msg = format!("{e:#}");
             error!("client exited with error: {msg}");
             // Record the reason so the UI can surface it; the task ending is
             // what flips `is_running` to false.
-            *LAST_ERROR.lock().expect("LAST_ERROR mutex poisoned") = Some(msg);
+            *acquire_last_error() = Some(msg);
         }
     });
 
@@ -157,7 +225,7 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
 /// is active.
 #[uniffi::export]
 pub fn stop() -> Result<(), VpnError> {
-    let mut guard = ENGINE.lock().expect("ENGINE mutex poisoned");
+    let mut guard = acquire_engine();
     match guard.take() {
         Some(engine) => {
             // Aborting the task skips `run_with_config`'s own cleanup, so drop
@@ -178,9 +246,7 @@ pub fn stop() -> Result<(), VpnError> {
 /// than a phantom "connected" backed by a dead task.
 #[uniffi::export]
 pub fn is_running() -> bool {
-    ENGINE
-        .lock()
-        .expect("ENGINE mutex poisoned")
+    acquire_engine()
         .as_ref()
         .is_some_and(|engine| !engine.client_task.is_finished())
 }
@@ -209,7 +275,7 @@ pub fn set_dial_timeout_secs(secs: Option<u32>) {
 /// user why a connect did not come up.
 #[uniffi::export]
 pub fn last_error() -> Option<String> {
-    LAST_ERROR.lock().expect("LAST_ERROR mutex poisoned").clone()
+    acquire_last_error().clone()
 }
 
 /// The tunnel's currently active carriers, one per transport. `*_family` is the
@@ -245,11 +311,18 @@ pub struct TunnelStatus {
 /// home-screen "traffic" readout. Cheap enough for the UI's ~2s poll.
 #[uniffi::export]
 pub fn tunnel_status() -> Option<TunnelStatus> {
-    let guard = ENGINE.lock().expect("ENGINE mutex poisoned");
-    let engine = guard.as_ref()?;
-    // The FFI thread is not a Tokio worker, so `block_on` is legal here; the
-    // read is sub-millisecond, so holding the ENGINE lock across it is fine.
-    let status = engine.runtime.block_on(outline_ws_rust::active_carriers())?;
+    let handle = {
+        let guard = acquire_engine();
+        let engine = guard.as_ref()?;
+        if engine.client_task.is_finished() {
+            return None;
+        }
+        engine.runtime.handle().clone()
+    };
+    // The FFI thread is not a Tokio worker, so `block_on` is legal here.
+    // The ENGINE lock is deliberately released before `block_on` to avoid
+    // blocking lifecycle operations (such as `stop` or `is_running`).
+    let status = handle.block_on(outline_ws_rust::active_carriers())?;
     // Saturating: a latency past u32::MAX ms is a broken measurement, and the
     // UI only ever compares it against a "this is slow" threshold anyway.
     let to_millis = |d: Option<std::time::Duration>| {
