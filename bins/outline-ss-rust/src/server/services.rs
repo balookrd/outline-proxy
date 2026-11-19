@@ -216,11 +216,11 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         },
         salt_replay_store,
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::clone(&auth_users),
-        http_root_auth: config.http_root_auth,
-        http_root_realm: Arc::from(config.http_root_realm.clone()),
-    });
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::clone(&auth_users),
+        config.http_root_auth,
+        Arc::from(config.http_root_realm.clone()),
+    ));
     let http_fallback = config.http_fallback.as_ref().map(|cfg| {
         // `validate()` already enforces that the listener required by
         // each `apply_to_*` flag is set; we simply gate the bind addr

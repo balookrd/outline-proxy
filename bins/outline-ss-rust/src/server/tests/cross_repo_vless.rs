@@ -111,13 +111,13 @@ async fn setup_vless_ws_server(
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let handle =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
@@ -281,13 +281,13 @@ async fn setup_vless_ws_h3_server(
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
 
     let handle = tokio::spawn(async move {
         serve_h3_server(
@@ -432,13 +432,13 @@ async fn setup_vless_ws_server_with_resumption_inner(
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let handle =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
@@ -941,13 +941,13 @@ async fn setup_vless_ws_h3_server_with_resumption(
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
 
     let handle = tokio::spawn(async move {
         serve_h3_server(
@@ -1119,13 +1119,13 @@ async fn setup_vless_ws_h2_tls_server_with_resumption(
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
 
     let server_tls = super::cross_repo_test_server_tls_config(&[b"h2", b"http/1.1"]);
@@ -1288,13 +1288,13 @@ async fn setup_vless_ws_h1_only_server_with_resumption(
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
 
     let handle = tokio::spawn(super::cross_repo_serve_axum_h1_only(listener, app));

@@ -287,7 +287,7 @@ Keys are given as `[table].key`. CLI flags and environment variables for the key
 | `tuning.ws_data_channel_capacity` | `16` / `64` / `128` | Per-session channel capacity, in chunks, between the upstream reader and the WebSocket writer (TCP relay) or the NAT reader and the WebSocket writer (UDP relay). Too low: a short writer stall back-pressures the upstream read, visible as video buffer underruns. Too high: worst-case per-session memory grows (`capacity × 16 KiB` for TCP). Must be > 0 |
 | `tuning.h2_*` / `tuning.h3_*` | per profile | H2/H3 flow-control windows, stream limits, H3 write buffer and backpressure limit, H3 UDP socket buffers; see `TuningProfile` in [src/config/tuning.rs](src/config/tuning.rs) and [QUIC limits](#quic-limits) |
 | `[[endpoint]]` | none | Carrier endpoints: `path` (unique across all endpoints), `kind` (see [Endpoint model](#endpoint-model)), `padded` (bool, default `false`, alias `padding`; see [Carrier padding](#carrier-padding)). `padded` can be changed through `PATCH /control/config` and takes effect after a restart; paths are read only at startup, see [Control plane](#control-plane) |
-| `[http_root].auth` | `false` | HTTP Basic auth on `/` (OpenConnect-style); after 3 failed passwords the server returns `403`. Other unmatched paths still return `404` |
+| `[http_root].auth` | `false` | HTTP Basic auth on `/` (OpenConnect-style); after 3 failed passwords (cookie + in-memory per-IP rate limiter) the server returns `403` for 5 minutes. Unmatched paths return `200 OK` (Caddy emptyHandler) or fallback |
 | `[http_root].realm` | `Authorization required` | Text shown in the password prompt for `/` |
 | `[access_keys]` | ignored | Read by the external `ops/access-keys` generator, not by this binary. The section is parsed so that existing configs still load under `deny_unknown_fields`, then ignored. Fields: `public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`. See [Client config generation](#client-config-generation) |
 | `[shadowsocks].method` | `chacha20-ietf-poly1305` | Default Shadowsocks cipher |
@@ -462,7 +462,7 @@ Endpoints (`[[endpoint]]`) are resolved once at startup: the Axum and H3 routers
 
 ### HTTP Basic auth on `/`
 
-With `[http_root].auth = true`, a `GET /` gets an HTTP Basic auth challenge. The username is ignored; the password is compared, in constant time, with the configured Shadowsocks user passwords. `[http_root].realm` sets the prompt text. After three failed attempts in one browser session the server returns `403 Forbidden`. Requests to other unmatched paths return `404 Not Found`.
+With `[http_root].auth = true`, a `GET /` gets an HTTP Basic auth challenge. The username is ignored; the password is compared, in constant time, with the configured Shadowsocks user passwords. `[http_root].realm` sets the prompt text. After three failed attempts (tracked via cookie and enforced by a server-side in-memory per-IP rate limiter with a 300s window across TCP and HTTP/3) the server returns `403 Forbidden`. Requests to other unmatched paths return empty `200 OK` (or fallback).
 
 ### Environment variables and CLI flags
 

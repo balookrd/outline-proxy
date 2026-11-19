@@ -336,11 +336,11 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = std::sync::Arc::new(AuthPolicy {
-        users: std::sync::Arc::new(ArcSwap::from_pointee(users)),
-        http_root_auth: false,
-        http_root_realm: "Authorization required".into(),
-    });
+    let auth = std::sync::Arc::new(AuthPolicy::new(
+        std::sync::Arc::new(ArcSwap::from_pointee(users)),
+        false,
+        "Authorization required".into(),
+    ));
 
     let server = tokio::spawn(async move {
         serve_h3_server(
@@ -492,13 +492,13 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
@@ -650,13 +650,13 @@ async fn ws_h3_send_failure_does_not_collapse_the_shared_connection() -> Result<
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
@@ -960,13 +960,13 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
@@ -1099,13 +1099,13 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
@@ -1230,13 +1230,13 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
@@ -1383,13 +1383,13 @@ async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             ss_users.clone().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: "Authorization required".into(),
-    });
+        false,
+        "Authorization required".into(),
+    ));
 
     let serve_routes = Arc::clone(&routes);
     let server_task = tokio::spawn(async move {

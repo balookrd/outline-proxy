@@ -75,13 +75,13 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
@@ -160,13 +160,13 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
@@ -254,13 +254,13 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
@@ -340,13 +340,13 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
@@ -457,13 +457,13 @@ async fn vless_websocket_mux_tcp_relay_padded() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
@@ -596,13 +596,13 @@ async fn vless_websocket_invalid_version_sinks_then_closes() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
@@ -691,13 +691,13 @@ async fn vless_websocket_probe_sink_byte_cap_short_circuits() -> Result<()> {
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });

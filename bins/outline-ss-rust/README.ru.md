@@ -287,7 +287,7 @@ cargo ss-release-musl-armv7
 | `tuning.ws_data_channel_capacity` | `16` / `64` / `128` | Ёмкость канала на сессию, в чанках, между upstream-reader и WebSocket-writer (TCP-relay) или NAT-reader и WebSocket-writer (UDP-relay). Слишком мало — кратковременная задержка writer'а тормозит чтение upstream, это видно как опустевший буфер видеоплеера. Слишком много — растёт худший случай памяти на сессию (`capacity × 16 KiB` для TCP). Должно быть > 0 |
 | `tuning.h2_*` / `tuning.h3_*` | по профилю | Flow-control окна H2/H3, лимиты стримов, буфер записи и порог backpressure H3, UDP-буферы сокета H3; см. `TuningProfile` в [src/config/tuning.rs](src/config/tuning.rs) и [Лимиты QUIC](#лимиты-quic) |
 | `[[endpoint]]` | нет | Эндпоинты носителей: `path` (уникален среди всех эндпоинтов), `kind` (см. [Модель эндпоинтов](#модель-эндпоинтов)), `padded` (bool, по умолчанию `false`, алиас `padding`; см. [Carrier-padding](#carrier-padding)). `padded` можно поменять через `PATCH /control/config`, действует после рестарта; пути читаются только при старте, см. [Управляющий эндпоинт](#управляющий-эндпоинт) |
-| `[http_root].auth` | `false` | HTTP Basic auth на `/` (как в OpenConnect); после 3 неверных паролей сервер отдаёт `403`. Остальные не совпавшие пути по-прежнему получают `404` |
+| `[http_root].auth` | `false` | HTTP Basic auth на `/` (как в OpenConnect); после 3 неверных паролей (cookie + серверный rate limiter по IP) сервер отдаёт `403` на 5 минут. Не совпавшие пути отдают `200 OK` (Caddy emptyHandler) или fallback |
 | `[http_root].realm` | `Authorization required` | Текст запроса пароля для `/` |
 | `[access_keys]` | игнорируется | Читается внешним генератором `ops/access-keys`, а не этим бинарём. Секция разбирается, чтобы существующие конфиги загружались при `deny_unknown_fields`, и игнорируется. Поля: `public_host`, `public_scheme`, `url_base`, `file_extension`, `print`, `write_dir`. См. [Генерация клиентских конфигов](#генерация-клиентских-конфигов) |
 | `[shadowsocks].method` | `chacha20-ietf-poly1305` | Шифр Shadowsocks по умолчанию |
@@ -461,7 +461,7 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 
 ### HTTP Basic auth на `/`
 
-При `[http_root].auth = true` запрос `GET /` получает HTTP Basic challenge. Имя пользователя игнорируется; пароль сравнивается за постоянное время с паролями настроенных Shadowsocks-пользователей. `[http_root].realm` задаёт текст запроса. После трёх неудачных попыток в одной браузерной сессии сервер отвечает `403 Forbidden`. Запросы к остальным не совпавшим путям получают `404 Not Found`.
+При `[http_root].auth = true` запрос `GET /` получает HTTP Basic challenge. Имя пользователя игнорируется; пароль сравнивается за постоянное время с паролями настроенных Shadowsocks-пользователей. `[http_root].realm` задаёт текст запроса. После трёх неудачных попыток (отслеживаемых в cookies и серверным in-memory rate-limiter'ом по IP с окном 300 с на TCP и HTTP/3) сервер отвечает `403 Forbidden`. Запросы к остальным не совпавшим путям получают пустой `200 OK` (или fallback).
 
 ### Переменные окружения и флаги CLI
 

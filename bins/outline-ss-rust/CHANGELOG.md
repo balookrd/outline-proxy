@@ -10,6 +10,7 @@ This changelog covers the git release tags `v1.0.0` through `1.9.0` (the monorep
 
 ### Added
 
+- **In-memory per-IP rate limiting for `http_root_auth`.** Brute-force protection on `GET /` now maintains an in-memory thread-safe LRU cache of remote IP addresses (up to 1024 concurrent addresses) with a 300-second lockout window, shared across both TCP (axum) and HTTP/3 listeners. Failed attempts are counted as `max(cookie_attempts, server_attempts)`: after 3 failures from the same IP (even if cookies are dropped or reset), the server immediately returns `403 Forbidden` for 5 minutes. Successful authentication clears the IP's failure history.
 - **Server Caddy emulation (Stage 3): H3 SETTINGS, GREASE transport parameter ID and configurable per-IP TLS connection limit.**
   - New configuration option `[server].max_connections_per_ip` (default `None`, unlimited) limits concurrent active TCP connections from any single remote IP address on the TLS listener. Inbound connections exceeding the cap are immediately dropped on accept and logged with a warning.
   - In `vendor/h3`, HTTP/3 SETTINGS encoding matches Caddy (quic-go): entries are written in canonical order `0x06 MAX_FIELD_SECTION_SIZE = 16384` -> `0x33 H3_DATAGRAM = 1` (only when `udp_datagrams` is enabled) -> `0x08 ENABLE_CONNECT_PROTOCOL = 1`. Unnegotiated `H3_DATAGRAM` (when false), empty WebTransport parameters (`0x2b`, `0x2c`), and GREASE settings are omitted.

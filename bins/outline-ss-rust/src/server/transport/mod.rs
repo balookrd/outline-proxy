@@ -323,18 +323,23 @@ pub(super) async fn root_http_auth_handler(
         return unmatched_route_response(&state, peer_addr, uri, request).await;
     }
 
-    let failed_attempts = parse_failed_root_auth_attempts(&headers);
-    if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
+    let ip = peer_addr.ip();
+    let cookie_attempts = parse_failed_root_auth_attempts(&headers);
+    let server_attempts = state.auth.rate_limiter.failed_attempts(ip);
+    let current_attempts = cookie_attempts.max(server_attempts);
+
+    if current_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
         return build_root_http_auth_forbidden_response(Body::empty());
     }
 
     let users_snap = state.auth.users.load();
     match parse_root_http_auth_password(&headers) {
         Some(password) if password_matches_any_user(users_snap.0.as_ref(), &password) => {
+            state.auth.rate_limiter.reset(ip);
             build_root_http_auth_success_response(Body::empty())
         },
         Some(_) => {
-            let failed_attempts = failed_attempts.saturating_add(1);
+            let failed_attempts = state.auth.rate_limiter.record_failure(ip, cookie_attempts);
             if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
                 build_root_http_auth_forbidden_response(Body::empty())
             } else {
@@ -346,7 +351,7 @@ pub(super) async fn root_http_auth_handler(
             }
         },
         None => build_root_http_auth_challenge_response(
-            failed_attempts,
+            current_attempts,
             state.auth.http_root_realm.as_ref(),
             Body::empty(),
         ),

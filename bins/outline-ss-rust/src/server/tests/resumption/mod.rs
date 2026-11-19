@@ -203,11 +203,11 @@ async fn spawn_test_server(
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
-        http_root_auth: false,
-        http_root_realm: "Authorization required".into(),
-    });
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
+        false,
+        "Authorization required".into(),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let metrics_for_handle = Arc::clone(&metrics);
     let task =
