@@ -228,7 +228,7 @@ impl Assembler {
         // balance between defragmentation overhead and over-allocation.
         let threshold = 32768.max(buffered * 3 / 2);
         // Small gapped frames hold over-allocation below the threshold, so bound the count too.
-        if over_allocation > threshold || self.data.len() > COMPACT_FACTOR * max_chunks {
+        if over_allocation > threshold || self.data.len() > COMPACT_FACTOR.saturating_mul(max_chunks) {
             self.defragment_to(max_chunks);
             // ngtcp2 uses a threshold of 4000 -- try to be a little more conservative?
             if self.data.len() > max_chunks {
@@ -387,9 +387,11 @@ const WINDOW_BYTES_PER_CHUNK: u64 = 1280;
 /// the read offset waits for the first retransmission, and the stream would be rejected.
 /// Never below `MAX_CHUNKS`; the per-span overhead stays the same share of the window.
 pub(super) fn chunk_limit(window: u64) -> usize {
+    const HARD_CEILING_CHUNKS: usize = 16384;
     usize::try_from(window / WINDOW_BYTES_PER_CHUNK)
         .unwrap_or(usize::MAX)
         .max(MAX_CHUNKS)
+        .min(HARD_CEILING_CHUNKS)
 }
 
 /// Minimum size of a defragmented chunk that is retained without coalescing.

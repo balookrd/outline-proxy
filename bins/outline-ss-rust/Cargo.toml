@@ -39,7 +39,7 @@ quinn = { workspace = true, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
 # The patched transport-parameter options (`TransportParameterOrder`), reached
 # only through `src/server/h3/vendored.rs`. `default-features = false` +
 # `rustls-aws-lc-rs` keeps the single-CryptoProvider invariant (no rustls-ring).
-quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"] }
+quinn-proto = { workspace = true, features = ["rustls-aws-lc-rs"] }
 rand = { workspace = true }
 # rcgen on the aws_lc_rs backend, matching the workspace-wide single rustls
 # CryptoProvider (aws-lc-rs). Used both in tests and, in production, by the
@@ -53,7 +53,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 socket2 = { workspace = true }
 sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio", "http3", "fastrand"] }
-subtle = "2.6"
+subtle = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
 tokio-rustls = { workspace = true, features = ["logging", "tls12", "aws_lc_rs"] }

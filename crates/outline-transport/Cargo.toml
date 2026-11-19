@@ -65,7 +65,7 @@ quinn = { workspace = true, features = ["runtime-tokio", "rustls-aws-lc-rs"], op
 # Patched-API types (transport-parameter order, version_information) and
 # RandomConnectionIdGenerator, which quinn does not re-export. Same
 # aws-lc-rs-only features as quinn.
-quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"], optional = true }
+quinn-proto = { workspace = true, features = ["rustls-aws-lc-rs"], optional = true }
 rand = { workspace = true }
 # zstd certificate decompressor (`tls_hello.rs`), see `brotli-decompressor`.
 ruzstd = { version = "0.9", default-features = false, features = ["std"] }

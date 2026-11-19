@@ -1331,9 +1331,14 @@ impl ExpectFinished {
         cx: &ServerContext<'_>,
         resumption: &KeyScheduleResumption,
         config: &ServerConfig,
+        total_tickets: usize,
     ) -> Result<(), Error> {
         let secure_random = config.provider.secure_random;
-        let nonce = Vec::new(); // empty nonce (0 bytes) matches Go crypto/tls single ticket
+        let nonce = if total_tickets <= 1 {
+            Vec::new() // empty nonce (0 bytes) matches Go crypto/tls single ticket
+        } else {
+            rand::random_vec(secure_random, 8)?
+        };
         let age_add = rand::random_u32(secure_random)?;
 
         let now = config.current_time()?;
@@ -1418,7 +1423,7 @@ impl State<ServerConnectionData> for ExpectFinished {
 
         let mut flight = HandshakeFlightTls13::new(&mut self.transcript);
         for _ in 0..self.send_tickets {
-            Self::emit_ticket(&mut flight, self.suite, cx, &resumption, &self.config)?;
+            Self::emit_ticket(&mut flight, self.suite, cx, &resumption, &self.config, self.send_tickets)?;
         }
         flight.finish(cx.common);
 

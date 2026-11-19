@@ -34,8 +34,17 @@ install -D -m 0644 README.md                /usr/local/share/heartbeat-watch/REA
 install -d -m 0755                          /var/lib/heartbeat-watch
 
 echo "==> installing nginx snippet"
-sed "s|__HEARTBEAT_TOKEN__|$token|" nginx-heartbeat.conf > /etc/nginx/snippets/heartbeat.conf
-chmod 0644 /etc/nginx/snippets/heartbeat.conf
+install -d -m 0755 /etc/nginx/snippets
+TOKEN="$token" python3 -c '
+import os
+token = os.environ["TOKEN"]
+with open("nginx-heartbeat.conf", "r", encoding="utf-8") as f:
+    content = f.read()
+with open("/etc/nginx/snippets/heartbeat.conf", "w", encoding="utf-8") as f:
+    f.write(content.replace("__HEARTBEAT_TOKEN__", token))
+'
+chown root:www-data /etc/nginx/snippets/heartbeat.conf 2>/dev/null || true
+chmod 0640 /etc/nginx/snippets/heartbeat.conf
 
 if grep -q 'snippets/heartbeat.conf' "$site"; then
 	echo "==> $site already includes the snippet"

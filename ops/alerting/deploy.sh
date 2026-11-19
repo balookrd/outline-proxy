@@ -23,10 +23,20 @@ render() { # render <out dir>
 	tg_token="$(tr -d '\n' < "$conf/telegram-bot-token")"
 	tg_chat="$(tr -d '\n' < "$conf/telegram-chat-id")"
 	case "$tg_chat" in ''|*[!0-9-]*) echo "telegram-chat-id must be an integer" >&2; exit 1 ;; esac
-	sed -e "s|__HEARTBEAT_TOKEN__|$token|g" \
-		-e "s|__TELEGRAM_BOT_TOKEN__|$tg_token|g" \
-		-e "s|__TELEGRAM_CHAT_ID__|$tg_chat|g" \
-		alertmanager/alertmanager.yml > "$1/alertmanager.yml"
+	TOKEN="$token" TG_TOKEN="$tg_token" TG_CHAT="$tg_chat" OUT_FILE="$1/alertmanager.yml" python3 -c '
+import os
+token = os.environ["TOKEN"]
+tg_token = os.environ["TG_TOKEN"]
+tg_chat = os.environ["TG_CHAT"]
+out_file = os.environ["OUT_FILE"]
+with open("alertmanager/alertmanager.yml", "r", encoding="utf-8") as f:
+    content = f.read()
+content = content.replace("__HEARTBEAT_TOKEN__", token)
+content = content.replace("__TELEGRAM_BOT_TOKEN__", tg_token)
+content = content.replace("__TELEGRAM_CHAT_ID__", tg_chat)
+with open(out_file, "w", encoding="utf-8") as f:
+    f.write(content)
+'
 	if grep -q '__[A-Z_]*__' "$1/alertmanager.yml"; then
 		echo "unsubstituted placeholder left in alertmanager.yml" >&2
 		exit 1

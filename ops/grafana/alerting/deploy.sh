@@ -39,12 +39,26 @@ tg_chat="$(tr -d '\n' < "$tg_chat_file")"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-for f in rules.yaml contact-points.yaml policies.yaml; do
-	[ -f "$f" ] || { echo "missing $f" >&2; exit 1; }
-	sed -e "s|__HEARTBEAT_TOKEN__|$token|g" \
-		-e "s|__TELEGRAM_BOT_TOKEN__|$tg_token|g" \
-		-e "s|__TELEGRAM_CHAT_ID__|$tg_chat|g" "$f" > "$tmp/$f"
-done
+TOKEN="$token" TG_TOKEN="$tg_token" TG_CHAT="$tg_chat" TMP_DIR="$tmp" python3 -c '
+import os
+token = os.environ["TOKEN"]
+tg_token = os.environ["TG_TOKEN"]
+tg_chat = os.environ["TG_CHAT"]
+tmp_dir = os.environ["TMP_DIR"]
+
+for f in ["rules.yaml", "contact-points.yaml", "policies.yaml"]:
+    if not os.path.isfile(f):
+        raise SystemExit(f"missing {f}")
+    with open(f, "r", encoding="utf-8") as src:
+        content = src.read()
+    content = content.replace("__HEARTBEAT_TOKEN__", token)
+    content = content.replace("__TELEGRAM_BOT_TOKEN__", tg_token)
+    content = content.replace("__TELEGRAM_CHAT_ID__", tg_chat)
+    out_path = os.path.join(tmp_dir, f)
+    with open(out_path, "w", encoding="utf-8") as dst:
+        dst.write(content)
+    os.chmod(out_path, 0o600)
+'
 
 # A YAML syntax error would otherwise surface only as a silent no-op in the
 # Grafana log, hours later, with the old rules still in force. PyYAML is present
@@ -93,13 +107,14 @@ EOF
 fi
 
 echo "==> copying to $host:$dest"
-scp -q "$tmp"/rules.yaml "$tmp"/contact-points.yaml "$tmp"/policies.yaml "$host:/tmp/"
+remote_tmp="$(ssh "$host" 'd=$(mktemp -d -t grafana-alerting.XXXXXX); chmod 0700 "$d"; echo "$d"')"
+scp -q "$tmp"/rules.yaml "$tmp"/contact-points.yaml "$tmp"/policies.yaml "$host:$remote_tmp/"
 ssh "$host" "
 	set -e
 	for f in rules.yaml contact-points.yaml policies.yaml; do
-		sudo install -D -m 0640 -o 1000 -g 1000 \"/tmp/\$f\" \"$dest/\$f\"
-		rm -f \"/tmp/\$f\"
+		sudo install -D -m 0640 -o 1000 -g 1000 \"$remote_tmp/\$f\" \"$dest/\$f\"
 	done
+	rm -rf \"$remote_tmp\"
 "
 
 cat <<EOF

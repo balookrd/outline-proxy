@@ -616,6 +616,7 @@ impl AsyncWrite for Stream<Http3> {
             StreamInner::Http3(Http3StreamInner::Server {
                 stream,
                 write_queued,
+                shutdown_started,
                 send_poisoned,
                 ..
             }) => {
@@ -633,6 +634,12 @@ impl AsyncWrite for Stream<Http3> {
                         "h3 send side poisoned by an earlier write failure",
                     )));
                 }
+                if *shutdown_started {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "h3 send side has initiated shutdown",
+                    )));
+                }
                 if write_queued.is_none() {
                     let data = Bytes::copy_from_slice(buf);
                     let n = data.len();
@@ -645,7 +652,10 @@ impl AsyncWrite for Stream<Http3> {
                     }
                 }
                 match stream.poll_drain(cx) {
-                    Poll::Ready(Ok(())) => Poll::Ready(Ok(write_queued.take().unwrap())),
+                    Poll::Ready(Ok(())) => {
+                        let queued = write_queued.take().unwrap();
+                        Poll::Ready(Ok(queued.min(buf.len())))
+                    },
                     Poll::Ready(Err(e)) => {
                         // h3-quinn's `poll_ready` only clears its `writing`
                         // slot on the success path, so a failed drain leaves
@@ -663,6 +673,7 @@ impl AsyncWrite for Stream<Http3> {
             StreamInner::Http3(Http3StreamInner::Client {
                 stream,
                 write_queued,
+                shutdown_started,
                 send_poisoned,
                 ..
             }) => {
@@ -672,6 +683,12 @@ impl AsyncWrite for Stream<Http3> {
                 if *send_poisoned {
                     return Poll::Ready(Err(io::Error::other(
                         "h3 send side poisoned by an earlier write failure",
+                    )));
+                }
+                if *shutdown_started {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "h3 send side has initiated shutdown",
                     )));
                 }
                 if write_queued.is_none() {
@@ -686,7 +703,10 @@ impl AsyncWrite for Stream<Http3> {
                     }
                 }
                 match stream.poll_drain(cx) {
-                    Poll::Ready(Ok(())) => Poll::Ready(Ok(write_queued.take().unwrap())),
+                    Poll::Ready(Ok(())) => {
+                        let queued = write_queued.take().unwrap();
+                        Poll::Ready(Ok(queued.min(buf.len())))
+                    },
                     Poll::Ready(Err(e)) => {
                         // See the Server arm: a failed drain leaves h3-quinn's
                         // `writing` slot occupied, so the send side must be
@@ -702,9 +722,66 @@ impl AsyncWrite for Stream<Http3> {
         }
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        // QUIC/h3 handles flushing internally
-        Poll::Ready(Ok(()))
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut self.inner {
+            StreamInner::Http3(Http3StreamInner::Server {
+                stream,
+                write_queued,
+                send_poisoned,
+                ..
+            }) => {
+                if *send_poisoned {
+                    return Poll::Ready(Err(io::Error::other(
+                        "h3 send side poisoned by an earlier write failure",
+                    )));
+                }
+                if write_queued.is_some() {
+                    match stream.poll_drain(cx) {
+                        Poll::Ready(Ok(())) => {
+                            *write_queued = None;
+                            Poll::Ready(Ok(()))
+                        },
+                        Poll::Ready(Err(e)) => {
+                            *write_queued = None;
+                            *send_poisoned = true;
+                            Poll::Ready(Err(io::Error::other(e.to_string())))
+                        },
+                        Poll::Pending => Poll::Pending,
+                    }
+                } else {
+                    Poll::Ready(Ok(()))
+                }
+            },
+            StreamInner::Http3(Http3StreamInner::Client {
+                stream,
+                write_queued,
+                send_poisoned,
+                ..
+            }) => {
+                if *send_poisoned {
+                    return Poll::Ready(Err(io::Error::other(
+                        "h3 send side poisoned by an earlier write failure",
+                    )));
+                }
+                if write_queued.is_some() {
+                    match stream.poll_drain(cx) {
+                        Poll::Ready(Ok(())) => {
+                            *write_queued = None;
+                            Poll::Ready(Ok(()))
+                        },
+                        Poll::Ready(Err(e)) => {
+                            *write_queued = None;
+                            *send_poisoned = true;
+                            Poll::Ready(Err(io::Error::other(e.to_string())))
+                        },
+                        Poll::Pending => Poll::Pending,
+                    }
+                } else {
+                    Poll::Ready(Ok(()))
+                }
+            },
+            _ => Poll::Ready(Ok(())),
+        }
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

@@ -70,6 +70,7 @@ mimalloc = { version = "0.1", default-features = false }
 parking_lot = "0.13"
 proptest = "1.5"
 quinn = { version = "0.11", default-features = false }
+quinn-proto = { version = "0.11", default-features = false }
 rand = "0.10"
 rcgen = { version = "0.14", default-features = false }
 ring = "0.17"
@@ -77,6 +78,7 @@ rustls = { version = "0.23", default-features = false }
 serde = "1.0"
 serde_json = "1.0"
 socket2 = "0.6"
+subtle = "2.6"
 tempfile = "3"
 thiserror = "2.0"
 tikv-jemalloc-ctl = { version = "0.7", default-features = false }
