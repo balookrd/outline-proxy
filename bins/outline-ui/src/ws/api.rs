@@ -130,6 +130,9 @@ struct ActivateResult {
     error: Option<String>,
 }
 
+/// Maximum number of targets allowed in a single activate request to prevent DoS.
+const MAX_ACTIVATE_TARGETS: usize = 64;
+
 pub async fn activate(State(state): State<WsState>, body: Bytes) -> Response {
     let payload: ActivateRequest = match serde_json::from_slice(&body) {
         Ok(payload) => payload,
@@ -139,6 +142,12 @@ pub async fn activate(State(state): State<WsState>, body: Bytes) -> Response {
     };
     if payload.targets.is_empty() {
         return json_error(StatusCode::BAD_REQUEST, "targets must not be empty");
+    }
+    if payload.targets.len() > MAX_ACTIVATE_TARGETS {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            &format!("too many targets: maximum is {MAX_ACTIVATE_TARGETS}"),
+        );
     }
     if let Some(transport) = payload.transport.as_deref()
         && !matches!(transport, "tcp" | "udp" | "both")

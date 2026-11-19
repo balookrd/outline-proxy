@@ -64,11 +64,51 @@ fn build_app(config: &UiConfig) -> Router {
             .fallback(|| async { assets::spa_index() });
 
     // Origin inner, credentials outermost: an unauthorised caller gets a plain
-    // 401 rather than a 403 describing what this listener expects.
+    // 401 rather than a 403 describing what this listener expects. Security
+    // headers wrap everything outermost so every response carries them.
     let policy = origin::OriginPolicy::new(config.listen, &config.allowed_hosts);
     let router = router.layer(middleware::from_fn_with_state(policy, origin::enforce_origin));
-    let auth_state = auth::AuthState { token: Arc::from(config.token.as_str()) };
-    router.layer(middleware::from_fn_with_state(auth_state, auth::require_auth))
+    let auth_state = auth::AuthState::new(&config.token);
+    let router = router.layer(middleware::from_fn_with_state(auth_state, auth::require_auth));
+    router.layer(middleware::from_fn(security_headers))
+}
+
+async fn security_headers(
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let path = request.uri().path();
+    let is_api = path.starts_with("/ss/dashboard/api/") || path.starts_with("/ws/dashboard/api/");
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+
+    headers.insert(
+        axum::http::header::CONTENT_SECURITY_POLICY,
+        axum::http::HeaderValue::from_static(
+            "default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'",
+        ),
+    );
+    headers.insert(
+        axum::http::header::X_FRAME_OPTIONS,
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::header::REFERRER_POLICY,
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
+
+    if is_api {
+        headers.insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+    }
+
+    response
 }
 
 #[tokio::main]
