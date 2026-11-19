@@ -7,8 +7,10 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -31,7 +33,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,9 +46,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -107,73 +114,84 @@ fun WifiAutomationScreen(
         Column(
             modifier = Modifier.verticalScroll(rememberScrollState()),
         ) {
-            // Master toggle card
+            // Master toggle + Segmented Mode selector in a single compact card
             SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            stringResource(R.string.auto_wifi_enabled),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            stringResource(R.string.auto_wifi_enabled_desc),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 4.dp),
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                stringResource(R.string.auto_wifi_enabled),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                stringResource(R.string.auto_wifi_enabled_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                        Switch(
+                            checked = wifiEnabled,
+                            onCheckedChange = {
+                                wifiEnabled = it
+                                persist()
+                            },
                         )
                     }
-                    Switch(
-                        checked = wifiEnabled,
-                        onCheckedChange = {
-                            wifiEnabled = it
+
+                    if (wifiEnabled) {
+                        Spacer(Modifier.height(14.dp))
+                        WifiModeSelector(wifiMode) {
+                            wifiMode = it
                             persist()
-                        },
-                    )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        val desc = when (wifiMode) {
+                            WifiRuleMode.PAUSE_ALL_WIFI -> stringResource(R.string.auto_wifi_mode_pause_all_desc)
+                            WifiRuleMode.PAUSE_ON_SELECTED -> stringResource(R.string.auto_wifi_mode_pause_desc)
+                            WifiRuleMode.CONNECT_ON_SELECTED -> stringResource(R.string.auto_wifi_mode_connect_desc)
+                        }
+                        Text(
+                            text = desc,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 4.dp),
+                        )
+                    }
                 }
             }
 
             if (wifiEnabled) {
-                // Mode selector
-                SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
-                    Column {
-                        Text(
-                            stringResource(R.string.auto_wifi_mode_title),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 8.dp),
-                        )
+                if (wifiMode == WifiRuleMode.PAUSE_ALL_WIFI) {
+                    val isOnWifi = LinkProbe.isOnWifi(context)
+                    SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
+                        Column {
+                            val currentText = when {
+                                currentSsid != null -> stringResource(R.string.auto_wifi_current_network, currentSsid)
+                                isOnWifi -> stringResource(R.string.auto_wifi_current_wifi)
+                                else -> stringResource(R.string.auto_wifi_current_none)
+                            }
 
-                        WifiModeOption(
-                            title = stringResource(R.string.auto_wifi_mode_pause),
-                            description = stringResource(R.string.auto_wifi_mode_pause_desc),
-                            selected = wifiMode == WifiRuleMode.PAUSE_ON_SELECTED,
-                            onClick = {
-                                wifiMode = WifiRuleMode.PAUSE_ON_SELECTED
-                                persist()
-                            },
-                        )
-
-                        Spacer(Modifier.height(8.dp))
-
-                        WifiModeOption(
-                            title = stringResource(R.string.auto_wifi_mode_connect),
-                            description = stringResource(R.string.auto_wifi_mode_connect_desc),
-                            selected = wifiMode == WifiRuleMode.CONNECT_ON_SELECTED,
-                            onClick = {
-                                wifiMode = WifiRuleMode.CONNECT_ON_SELECTED
-                                persist()
-                            },
-                        )
+                            Text(
+                                currentText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(bottom = 6.dp),
+                            )
+                            Text(
+                                stringResource(R.string.auto_wifi_pause_all_info),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
-                }
-
-                // Location permission warning card if missing
-                if (!hasLocationPermission) {
+                } else {
+                    // Location permission warning card if missing
+                    if (!hasLocationPermission) {
                     SectionCard(modifier = Modifier.padding(bottom = 16.dp)) {
                         Column {
                             Text(
@@ -387,41 +405,57 @@ fun WifiAutomationScreen(
             }
         }
     }
+    }
 }
 
 @Composable
-private fun WifiModeOption(
-    title: String,
-    description: String,
-    selected: Boolean,
-    onClick: () -> Unit,
+private fun WifiModeSelector(
+    current: WifiRuleMode,
+    onSelect: (WifiRuleMode) -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 6.dp),
-        verticalAlignment = Alignment.Top,
+    val options = listOf(
+        WifiRuleMode.PAUSE_ALL_WIFI to stringResource(R.string.auto_wifi_tab_all),
+        WifiRuleMode.PAUSE_ON_SELECTED to stringResource(R.string.auto_wifi_tab_pause),
+        WifiRuleMode.CONNECT_ON_SELECTED to stringResource(R.string.auto_wifi_tab_connect),
+    )
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        border = outlineCardBorder(),
     ) {
-        RadioButton(
-            selected = selected,
-            onClick = onClick,
-            modifier = Modifier.padding(top = 2.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        Column {
-            Text(
-                title,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) BrandBlue else MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp),
-            )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            options.forEach { (mode, label) ->
+                val selected = current == mode
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primaryContainer
+                            else Color.Transparent,
+                        )
+                        .clickable { onSelect(mode) }
+                        .padding(vertical = 10.dp, horizontal = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
         }
     }
 }

@@ -828,12 +828,7 @@ class OutlineVpnService : VpnService() {
             if (autoConfig.wifiAutomationEnabled) registerWifiAutomationCallback()
             val autoState = AutomationState(this)
             val statusText = if (autoState.pausedByWifi) {
-                val lastSsid = autoState.lastSeenWifiSsid
-                if (lastSsid != null) {
-                    getString(R.string.status_paused_wifi_named, lastSsid)
-                } else {
-                    getString(R.string.status_paused_wifi)
-                }
+                getPausedWifiStatus(autoState.lastSeenWifiSsid, autoConfig.wifiMode)
             } else {
                 getString(R.string.status_disconnected)
             }
@@ -1202,11 +1197,8 @@ class OutlineVpnService : VpnService() {
                 autoState.pausedWifiSsid = extra
                 autoState.lastSeenWifiSsid = extra
                 autoState.clearOverride()
-                if (extra != null) {
-                    getString(R.string.status_paused_wifi_named, extra)
-                } else {
-                    getString(R.string.status_paused_wifi)
-                }
+                val autoConfig = AutomationStore(this).load()
+                getPausedWifiStatus(extra, autoConfig.wifiMode)
             }
         }
         WatchdogAlarm.cancel(this)
@@ -1223,6 +1215,16 @@ class OutlineVpnService : VpnService() {
         ensureTunnel()
     }
 
+    private fun getPausedWifiStatus(ssid: String?, wifiMode: WifiRuleMode): String {
+        return if (ssid != null) {
+            getString(R.string.status_paused_wifi_named, ssid)
+        } else if (wifiMode == WifiRuleMode.PAUSE_ALL_WIFI) {
+            getString(R.string.status_paused_wifi_all)
+        } else {
+            getString(R.string.status_paused_wifi)
+        }
+    }
+
     @Suppress("DEPRECATION")
     private fun startServiceForeground(
         notification: Notification,
@@ -1235,7 +1237,9 @@ class OutlineVpnService : VpnService() {
         val autoState = AutomationState(this)
         val isPaused = autoState.pausedByAirplane || autoState.pausedByWifi
         val shouldRun = KeepAliveState(this).shouldRun
-        val needsLocation = shouldRun && !isPaused && autoConfig.wifiAutomationEnabled && LinkProbe.canReadWifiSsid(this)
+        val needsLocation = shouldRun && !isPaused && autoConfig.wifiAutomationEnabled &&
+            autoConfig.wifiMode != WifiRuleMode.PAUSE_ALL_WIFI &&
+            LinkProbe.canReadWifiSsid(this)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 val types = if (needsLocation) {
@@ -1462,11 +1466,8 @@ class OutlineVpnService : VpnService() {
                     val currentSsid = currentWifiSsid
                         ?: LinkProbe.currentWifiSsid(this)
                         ?: autoState.lastSeenWifiSsid
-                    if (currentSsid != null) {
-                        getString(R.string.status_paused_wifi_named, currentSsid)
-                    } else {
-                        getString(R.string.status_paused_wifi)
-                    }
+                    val autoConfig = AutomationStore(this).load()
+                    getPausedWifiStatus(currentSsid, autoConfig.wifiMode)
                 }
                 else -> getString(R.string.status_disconnected)
             }
