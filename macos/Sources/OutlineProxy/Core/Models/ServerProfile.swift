@@ -78,8 +78,8 @@ public struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
             transport = "vless"
         } else if trimmed.lowercased().hasPrefix("ss://") {
             transport = "ss"
-        } else if trimmed.lowercased().hasPrefix("https://") || trimmed.lowercased().hasPrefix("http://") {
-            // Subscription URL
+        } else if trimmed.lowercased().hasPrefix("https://") {
+            // Subscription URL (HTTPS only)
             return ServerProfile(
                 name: "Подписка",
                 configUrl: trimmed
@@ -124,7 +124,7 @@ public struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
             }
         }
         if !configUrl.isEmpty, let url = URL(string: configUrl), let host = url.host {
-            return host
+            return ServerProfile.sanitizeHost(host)
         }
         return nil
     }
@@ -143,11 +143,22 @@ public struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
         return transport.uppercased() + " сервер"
     }
 
+    public static func sanitizeHost(_ host: String) -> String? {
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed.range(of: "^[a-zA-Z0-9.:\\[\\]-]+$", options: .regularExpression) != nil else {
+            return nil
+        }
+        let clean = trimmed.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+        return clean.isEmpty ? nil : clean
+    }
+
     public static func extractHost(from urlStr: String) -> String? {
         guard let atIndex = urlStr.lastIndex(of: "@") else { return nil }
         let afterAt = urlStr[urlStr.index(after: atIndex)...]
         let hostPort = afterAt.prefix { $0 != "?" && $0 != "#" && $0 != "/" }
-        let host = hostPort.split(separator: ":").first
-        return host.map(String.init)
+        guard let hostSub = hostPort.split(separator: ":").first else { return nil }
+        let rawHost = String(hostSub)
+        return sanitizeHost(rawHost)
     }
 }
