@@ -25,9 +25,10 @@ impl CidrSet {
                 Some((a, l)) => (a, Some(l)),
                 None => (s.as_str(), None),
             };
-            let addr: IpAddr = addr_str
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid IP address in prefix: {s}"))?;
+            let addr: IpAddr = addr_str.parse().map_err(|_| {
+                let sanitized: String = s.chars().take(20).collect();
+                anyhow::anyhow!("invalid IP address in prefix: {sanitized}")
+            })?;
             match addr {
                 IpAddr::V4(ip) => {
                     let prefix_len = parse_prefix_len(len_str, 32, s)?;
@@ -49,7 +50,14 @@ impl CidrSet {
     pub fn contains(&self, target: &TargetAddr) -> bool {
         match target {
             TargetAddr::IpV4(ip, _) => contains_v4(&self.v4, u32::from(*ip)),
-            TargetAddr::IpV6(ip, _) => contains_v6(&self.v6, u128::from(*ip)),
+            TargetAddr::IpV6(ip, _) => {
+                if let Some(v4) = ip.to_ipv4_mapped()
+                    && contains_v4(&self.v4, u32::from(v4))
+                {
+                    return true;
+                }
+                contains_v6(&self.v6, u128::from(*ip))
+            },
             TargetAddr::Domain(_, _) => false,
         }
     }
@@ -69,9 +77,20 @@ impl CidrSet {
 
 // ── File loading ─────────────────────────────────────────────────────────────
 
+const MAX_PREFIX_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+
 /// Read a CIDR prefix file: one CIDR per line, `#` comments and blank lines
 /// are ignored. Both IPv4 and IPv6 prefixes are accepted.
 pub async fn read_prefixes_from_file(path: &Path) -> Result<Vec<String>> {
+    let meta = tokio::fs::metadata(path)
+        .await
+        .with_context(|| format!("failed to read prefix file {}", path.display()))?;
+    if !meta.is_file() {
+        bail!("prefix path {} is not a regular file", path.display());
+    }
+    if meta.len() > MAX_PREFIX_FILE_BYTES {
+        bail!("prefix file {} exceeds maximum size of 10 MiB", path.display());
+    }
     let content = tokio::fs::read_to_string(path)
         .await
         .with_context(|| format!("failed to read prefix file {}", path.display()))?;

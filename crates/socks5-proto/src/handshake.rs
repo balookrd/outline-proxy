@@ -144,26 +144,28 @@ async fn read_auth_field(stream: &mut TcpStream, field_name: &'static str) -> Re
     Ok(value)
 }
 
-/// Constant-time byte-slice equality to prevent timing side-channel attacks on
-/// credential comparison.  Length is compared first (non-constant-time), but an
-/// attacker controlling the client already knows the length they submitted, so
-/// this leaks no additional information.
+/// Constant-time byte-slice equality using fixed-length BLAKE3 hashes to prevent
+/// timing side-channel attacks on credential comparison without leaking length.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
+    let hash_a = blake3::hash(a);
+    let hash_b = blake3::hash(b);
     let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
+    for (x, y) in hash_a.as_bytes().iter().zip(hash_b.as_bytes().iter()) {
         diff |= x ^ y;
     }
     diff == 0
 }
 
 fn matches_socks5_user(users: &[Socks5AuthUserConfig], username: &[u8], password: &[u8]) -> bool {
-    users.iter().any(|user| {
-        constant_time_eq(username, user.username.as_bytes())
-            && constant_time_eq(password, user.password.as_bytes())
-    })
+    let mut matched = false;
+    for user in users {
+        let u_match = constant_time_eq(username, user.username.as_bytes());
+        let p_match = constant_time_eq(password, user.password.as_bytes());
+        if u_match && p_match {
+            matched = true;
+        }
+    }
+    matched
 }
 
 pub async fn send_reply(stream: &mut TcpStream, status: u8, bound_addr: &TargetAddr) -> Result<()> {

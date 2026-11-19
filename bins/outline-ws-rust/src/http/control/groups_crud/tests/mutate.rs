@@ -93,6 +93,16 @@ fn delete_empty_group_removes_it_from_rendered_doc() {
 }
 
 #[test]
+fn delete_rejects_group_referenced_by_routes() {
+    let mut d = (BASE.to_string() + "\n[[route]]\nvia = \"backup\"\ndefault = true\n")
+        .parse::<DocumentMut>()
+        .unwrap();
+    apply_create(&mut d, &payload(r#"{"name":"backup","mode":"active_passive"}"#)).expect("create");
+    let err = apply_delete(&mut d, "backup").expect_err("referenced by route");
+    assert!(err.contains("referenced by routing rules"), "got error: {err}");
+}
+
+#[test]
 fn update_rejects_invalid_policy() {
     let mut d = doc();
     // reselect requires active_passive; on an active_active group it must fail.

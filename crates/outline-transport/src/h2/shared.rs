@@ -51,11 +51,11 @@ pub fn init_h2_keepalive(interval: Duration, timeout: Duration) {
     H2_KEEPALIVE_TIMEOUT.get_or_init(|| timeout);
 }
 
-fn h2_keepalive_interval() -> Duration {
+pub(crate) fn h2_keepalive_interval() -> Duration {
     *H2_KEEPALIVE_INTERVAL.get_or_init(|| Duration::from_secs(10))
 }
 
-fn h2_keepalive_timeout() -> Duration {
+pub(crate) fn h2_keepalive_timeout() -> Duration {
     *H2_KEEPALIVE_TIMEOUT.get_or_init(|| Duration::from_secs(10))
 }
 

@@ -190,20 +190,60 @@ impl TunTcpEngine {
         self.inner.pending_connects.lock().await.remove(key);
     }
 
+    pub(super) async fn evict_flow_for_admission(&self, is_new_syn: bool) -> Result<()> {
+        let mut skipped = Vec::new();
+        let mut evicted = false;
+
+        while let Some(candidate) = self.inner.eviction_index.pop_oldest() {
+            let status = if let Some(flow_ref) = self.inner.flows.get(&candidate.key) {
+                let guard = flow_ref.lock().await;
+                if guard.id == candidate.flow_id {
+                    Some(guard.status)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            match status {
+                Some(TcpFlowStatus::Established) if is_new_syn && skipped.len() < 32 => {
+                    // Do not evict an established flow for an unconfirmed SYN if other candidates exist
+                    skipped.push(candidate);
+                },
+                Some(_) => {
+                    self.abort_flow_with_rst_if_id(&candidate.key, candidate.flow_id, "evicted")
+                        .await;
+                    evicted = true;
+                    break;
+                },
+                None => {
+                    evicted = true;
+                    break;
+                },
+            }
+        }
+
+        // Put skipped established flows back into eviction index
+        for item in skipped {
+            if let Some(flow_ref) = self.inner.flows.get(&item.key) {
+                let last_seen = flow_ref.lock().await.timestamps.last_seen;
+                self.inner.eviction_index.upsert(item.key, item.flow_id, last_seen);
+            }
+        }
+
+        if !evicted {
+            bail!("TUN TCP flow table limit reached and no suitable flow could be evicted");
+        }
+        Ok(())
+    }
+
     pub(super) async fn insert_flow(
         &self,
         key: TcpFlowKey,
         flow: Arc<Mutex<TcpFlowState>>,
     ) -> Result<()> {
-        while self.inner.flows.len() >= self.inner.max_flows {
-            let Some(candidate) = self.inner.eviction_index.pop_oldest() else {
-                bail!("TUN TCP flow table limit reached and no flow could be evicted");
-            };
-            self.abort_flow_with_rst_if_id(&candidate.key, candidate.flow_id, "evicted")
-                .await;
-        }
-
-        let (flow_id, group_name, uplink_name, last_seen, is_tunnelled) = {
+        let (flow_id, group_name, uplink_name, last_seen, is_tunnelled, is_new_syn) = {
             let state = flow.lock().await;
             (
                 state.id,
@@ -211,8 +251,13 @@ impl TunTcpEngine {
                 state.routing.uplink_name.clone(),
                 state.timestamps.last_seen,
                 matches!(state.routing.route, TunRoute::Group { .. }),
+                matches!(state.status, TcpFlowStatus::SynReceived),
             )
         };
+
+        while self.inner.flows.len() >= self.inner.max_flows {
+            self.evict_flow_for_admission(is_new_syn).await?;
+        }
 
         // Carriers, not flows, are what `max_carrier_flows` bounds: a tunnelled
         // flow dials its own and costs ~28× a direct one in RSS. The budget is
@@ -272,7 +317,7 @@ impl TunTcpEngine {
         self.abort_removed_flow_with_rst(key, flow, reason).await;
     }
 
-    async fn abort_flow_with_rst_if_id(
+    pub(in crate::tcp::engine) async fn abort_flow_with_rst_if_id(
         &self,
         key: &TcpFlowKey,
         expected_flow_id: u64,

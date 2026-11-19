@@ -114,9 +114,20 @@ pub fn normalize_host(s: &str) -> Cow<'_, str> {
     }
 }
 
+const MAX_DOMAIN_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+
 /// Read domain patterns from a file: one per line, `#` comments and blank
 /// lines ignored — the same shape as the CIDR prefix files.
 pub async fn read_domains_from_file(path: &Path) -> Result<Vec<String>> {
+    let meta = tokio::fs::metadata(path)
+        .await
+        .with_context(|| format!("failed to read domain file {}", path.display()))?;
+    if !meta.is_file() {
+        bail!("domain path {} is not a regular file", path.display());
+    }
+    if meta.len() > MAX_DOMAIN_FILE_BYTES {
+        bail!("domain file {} exceeds maximum size of 10 MiB", path.display());
+    }
     let content = tokio::fs::read_to_string(path)
         .await
         .with_context(|| format!("failed to read domain file {}", path.display()))?;

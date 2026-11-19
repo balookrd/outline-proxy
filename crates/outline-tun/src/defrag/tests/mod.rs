@@ -376,3 +376,12 @@ fn build_ipv6_tcp_packet(
     packet[56..58].copy_from_slice(&checksum.to_be_bytes());
     packet
 }
+
+#[test]
+fn insert_chunk_zero_bytes_is_ignored_without_leak() {
+    use crate::defrag::chunk::{ChunkInsertOutcome, insert_chunk};
+    let mut chunks = Vec::new();
+    let outcome = insert_chunk(&mut chunks, 0, &[]);
+    assert_eq!(outcome, ChunkInsertOutcome::DuplicateExact);
+    assert!(chunks.is_empty(), "0-byte chunk must not be inserted");
+}

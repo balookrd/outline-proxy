@@ -1017,6 +1017,51 @@ async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
 }
 
 #[tokio::test]
+async fn process_server_ack_clamps_future_sack_blocks_to_server_seq() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.last_client_ack = 1000;
+    state.server_seq = 1008; // only sent up to 1008
+    state.unacked_server_segments = VecDeque::from([
+        super::ServerSegment {
+            sequence_number: 1000,
+            acknowledgement_number: 500,
+            flags: TCP_FLAG_ACK,
+            payload: b"AAAA".to_vec().into(),
+            last_sent: Instant::now(),
+            first_sent: Instant::now(),
+            retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
+            first_tx_snapshot: Instant::now(),
+            app_limited: false,
+        },
+        super::ServerSegment {
+            sequence_number: 1004,
+            acknowledgement_number: 500,
+            flags: TCP_FLAG_ACK,
+            payload: b"BBBB".to_vec().into(),
+            last_sent: Instant::now(),
+            first_sent: Instant::now(),
+            retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
+            first_tx_snapshot: Instant::now(),
+            app_limited: false,
+        },
+    ]);
+    super::rebuild_unacked_accounting(&mut state);
+
+    // Client reports block (1004, 1020) and a block far in future (2000, 2010).
+    super::process_server_ack(&mut state, 1000, &[(1004, 1020), (2000, 2010)]);
+    // The (1004, 1020) block must be clamped to server_seq=1008, and (2000, 2010) dropped entirely.
+    assert_eq!(state.sack_scoreboard, vec![SequenceRange { start: 1004, end: 1008 }]);
+}
+
+#[tokio::test]
 async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmit() {
     let mut state = tcp_flow_state_for_tests().await;
     state.last_client_ack = 1000;

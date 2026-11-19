@@ -187,26 +187,39 @@ pub(in crate::tcp) fn queue_future_segment(
     }
     // Pass 2: materialise them, in ascending sequence order — the same order the
     // old loop inserted them in, and the order `insert_client_segment` keeps the
-    // queue sorted by.
+    // queue sorted by. Copy small slices from large packets to avoid holding
+    // large backing buffers in memory.
     for (sequence_number, start_offset, end_offset) in holes {
+        let slice_len = end_offset - start_offset;
+        let payload = if slice_len * 2 < packet.payload.len() {
+            Bytes::copy_from_slice(&packet.payload[start_offset..end_offset])
+        } else {
+            packet.payload.slice(start_offset..end_offset)
+        };
         insert_client_segment(
             pending_segments,
             BufferedClientSegment {
                 sequence_number,
                 flags: packet.flags & TCP_FLAG_ACK,
-                payload: packet.payload.slice(start_offset..end_offset),
+                payload,
             },
             expected_seq,
         );
     }
     if seq_gt(payload_end, cursor) {
         let start_offset = cursor.wrapping_sub(payload_start) as usize;
+        let slice_len = packet.payload.len() - start_offset;
+        let payload = if slice_len * 2 < packet.payload.len() {
+            Bytes::copy_from_slice(&packet.payload[start_offset..])
+        } else {
+            packet.payload.slice(start_offset..)
+        };
         insert_client_segment(
             pending_segments,
             BufferedClientSegment {
                 sequence_number: cursor,
                 flags: packet.flags & TCP_FLAG_ACK,
-                payload: packet.payload.slice(start_offset..),
+                payload,
             },
             expected_seq,
         );
@@ -244,6 +257,40 @@ pub(in crate::tcp) enum QueueFutureSegmentOutcome {
     WouldExceedLimits,
 }
 
+fn estimate_additional_segments(
+    pending_segments: &VecDeque<BufferedClientSegment>,
+    payload_start: u32,
+    payload_end: u32,
+    has_fin: bool,
+) -> usize {
+    if payload_start == payload_end {
+        return usize::from(has_fin);
+    }
+    let mut cursor = payload_start;
+    let mut holes = 0usize;
+    for existing in pending_segments.iter() {
+        let existing_start = existing.sequence_number;
+        let existing_end = buffered_client_segment_data_end(existing);
+        if !seq_gt(existing_end, cursor) {
+            continue;
+        }
+        if !seq_gt(payload_end, existing_start) {
+            break;
+        }
+        if seq_gt(existing_start, cursor) {
+            holes += 1;
+        }
+        if seq_gt(existing_end, cursor) {
+            cursor = existing_end;
+        }
+        if !seq_gt(payload_end, cursor) {
+            break;
+        }
+    }
+    let has_tail = seq_gt(payload_end, cursor);
+    holes + usize::from(has_tail) + usize::from(has_fin)
+}
+
 pub(in crate::tcp) fn queue_future_segment_with_recv_window(
     state: &mut TcpFlowState,
     config: &TunTcpConfig,
@@ -253,20 +300,15 @@ pub(in crate::tcp) fn queue_future_segment_with_recv_window(
         return QueueFutureSegmentOutcome::OutsideWindow;
     };
 
-    // Pre-check: reject BEFORE mutating the reassembly queue. `queue_future_segment`
-    // may split the packet into multiple sub-segments (up to 1 payload chunk
-    // plus an optional FIN marker), so the upper bound on what gets added is
-    // `trimmed.payload.len()` bytes and 2 segments. Checking the pessimistic
-    // bound up front means an attacker cannot push the flow past the cap even
-    // transiently by sending a single oversized segment.
     let has_fin = (trimmed.flags & TCP_FLAG_FIN) != 0;
-    let additional_segments = if trimmed.payload.is_empty() && !has_fin {
-        0
-    } else if has_fin {
-        2
-    } else {
-        1
-    };
+    let payload_start = trimmed.sequence_number;
+    let payload_end = payload_start.wrapping_add(trimmed.payload.len() as u32);
+    let additional_segments = estimate_additional_segments(
+        &state.pending_client_segments,
+        payload_start,
+        payload_end,
+        has_fin,
+    );
     let additional_bytes = trimmed.payload.len();
     if state.pending_client_segments.len() + additional_segments
         > config.max_buffered_client_segments

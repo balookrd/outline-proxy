@@ -163,7 +163,7 @@ pub(crate) fn selection_health(
             if !config.global_udp_strict_health {
                 return true;
             }
-            !uplink.supports_udp()
+            !uplink.supports_udp_any()
                 || (status.udp.healthy != Some(false)
                     && !cooldown_active(status, TransportKind::Udp, now))
         },
@@ -267,7 +267,9 @@ pub(crate) fn scoring_base_latency<S: StatusView>(
 pub(crate) fn weighted_latency_score(base: Option<Duration>, weight: f64) -> Option<Duration> {
     let base = base?;
     let weight = weight.max(0.000_001);
-    Some(Duration::from_secs_f64(base.as_secs_f64() / weight))
+    Duration::try_from_secs_f64(base.as_secs_f64() / weight)
+        .ok()
+        .or(Some(Duration::MAX))
 }
 
 pub(crate) fn score_latency<S: StatusView>(
@@ -342,7 +344,9 @@ pub(crate) fn global_selection_score_latency<S: StatusView>(
 
     match (tcp_score, udp_score) {
         (Some(tcp), Some(udp)) => {
-            Some(Duration::from_secs_f64(tcp.as_secs_f64() + udp.as_secs_f64() * 0.05))
+            Duration::try_from_secs_f64(tcp.as_secs_f64() + udp.as_secs_f64() * 0.05)
+                .ok()
+                .or(Some(Duration::MAX))
         },
         (Some(tcp), None) => Some(tcp),
         (None, Some(udp)) => Some(udp),
