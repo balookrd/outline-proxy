@@ -19,13 +19,13 @@ python3 scripts/code-index.py
 
 Результаты:
 
-- `target/code-index/repo-map.md` — компактная Markdown-карта для человека и
+- `.code-index/repo-map.md` — компактная Markdown-карта для человека и
   агента.
-- `target/code-index/symbols.json` — машинно-читаемые данные по пакетам, файлам
+- `.code-index/symbols.json` — машинно-читаемые данные по пакетам, файлам
   и символам.
 
-`target/` игнорируется git'ом, поэтому сгенерированный индекс остаётся
-локальным.
+`.code-index/` игнорируется git'ом, поэтому сгенерированный индекс остаётся
+локальным и не сбрасывается при `cargo clean`.
 
 ## Параметры
 
@@ -34,7 +34,7 @@ python3 scripts/code-index.py
 | `--package <name>` | все пакеты | ограничить индекс одним пакетом; для нескольких повторить флаг |
 | `--skip-detached` | выключен | пропустить отдельные (detached) workspace (`android/rust`) |
 | `--include-vendor` | выключен | включить vendored Rust-исходники (`vendor/`) |
-| `--output-dir <dir>` | `target/code-index` | куда писать `repo-map.md` и `symbols.json`; относительный путь считается от `--repo-root` |
+| `--output-dir <dir>` | `.code-index` | куда писать `repo-map.md` и `symbols.json`; относительный путь считается от `--repo-root` |
 | `--repo-root <dir>` | `.` (текущий каталог) | корень репозитория |
 
 Ограничьте индекс пакетами, которые затрагивает задача:
@@ -61,13 +61,13 @@ python3 scripts/code-index.py --include-vendor
 Найти, где объявлен символ:
 
 ```bash
-rg 'poll_shutdown|H3DatagramChannel|Resume' target/code-index/repo-map.md
+rg 'poll_shutdown|H3DatagramChannel|Resume' .code-index/repo-map.md
 ```
 
 Посмотреть JSON через `jq`:
 
 ```bash
-jq '.packages[] | select(.name == "outline-transport") | .source_files[] | select(.path | contains("/h3/")) | {path, module, symbols: [.symbols[].name]}' target/code-index/symbols.json
+jq '.packages[] | select(.name == "outline-transport") | .source_files[] | select(.path | contains("/h3/")) | {path, module, symbols: [.symbols[].name]}' .code-index/symbols.json
 ```
 
 У каждого символа в `symbols.json` есть поля `kind`, `name`, `line`,

@@ -25,6 +25,7 @@ target
 *.iml
 .claude/
 .DS_Store
+/.code-index/
 
 # Per-instance runtime logs
 logs/
