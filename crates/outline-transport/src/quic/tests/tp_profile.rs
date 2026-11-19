@@ -188,6 +188,17 @@ async fn firefox_profile_sends_a_random_spin_bit() {
     assert!(bits.iter().any(|bit| !bit), "spin bit always set in {} packets", bits.len());
 }
 
+/// Safari (Apple Network.framework) implements the RFC 9000 spin bit: it flips
+/// every round trip as fresh short-header packets arrive from the server.
+#[tokio::test]
+async fn safari_profile_spins_the_spin_bit() {
+    let bits = observed_spin_bits(&SAFARI).await;
+    assert!(bits.iter().any(|bit| *bit), "spin bit never set in {} packets", bits.len());
+    assert!(bits.iter().any(|bit| !bit), "spin bit always set in {} packets", bits.len());
+    let flips = bits.windows(2).filter(|w| w[0] != w[1]).count();
+    assert!(flips >= 2, "spin bit did not flip enough times across round trips: {flips}");
+}
+
 #[test]
 fn profiles_carry_the_measured_spin_bit_behaviour() {
     use super::super::vendored::SpinBit;

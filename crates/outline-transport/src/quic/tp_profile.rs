@@ -151,8 +151,9 @@ pub(crate) const SAFARI: QuicTpProfile = QuicTpProfile {
     max_uni_streams: 8,
     source_cid_len: 0,
     grease_quic_bit: false,
-    // Not measured for Safari; both left at quinn's defaults.
-    initial_dcid_len: InitialDcidLen::Fixed(MAX_CID_LEN),
+    // Measured on macOS 27 (Safari / Network.framework): 8 bytes, empty SCID.
+    initial_dcid_len: InitialDcidLen::Fixed(8),
+    // Measured: flips every round trip (RFC 9000 spin bit).
     spin_bit: SpinBit::Spinning,
     options: BrowserTpOptions {
         advertise_min_ack_delay: false,
