@@ -130,17 +130,17 @@ public struct ServerProfile: Identifiable, Codable, Equatable, Sendable {
     }
 
     public var displayName: String {
-        if !name.isEmpty && name != "Подписка" {
-            return name
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        if isSubscription {
+            return "Подписка"
         }
         if let host = serverHost {
-            let parts = host.split(separator: ".")
-            if let first = parts.first, !first.isEmpty && first != "www" {
-                return String(first)
-            }
             return host
         }
-        return name.isEmpty ? "cloud" : name
+        return transport.uppercased() + " сервер"
     }
 
     public static func extractHost(from urlStr: String) -> String? {
