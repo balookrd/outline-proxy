@@ -8,21 +8,21 @@ public final class SettingsWindowController: NSWindowController {
     // MARK: - Block 1: Mode Selector
     private let modeBox = NSBox()
     private let bannerIcon = NSImageView()
-    private let modeTitle = NSTextField(labelWithString: "Режим перехвата трафика")
+    private let modeTitle = NSTextField(labelWithString: "Режим перехвата")
     private let bannerSubtitle = NSTextField(labelWithString: "")
     private let modePopUpButton = NSPopUpButton()
 
     // MARK: - Block 2: TCP Only Box
     private let tcpOnlyBox = NSBox()
     private let tcpOnlyIcon = NSImageView()
-    private let tcpOnlyTitle = NSTextField(labelWithString: "Режим «Только TCP» (без HTTP/3)")
-    private let tcpOnlySubtitle = NSTextField(labelWithString: "Отключает QUIC/H3 (UDP 443) и переводит туннели на HTTP/2 / HTTP/1.1 для сетей с блокировкой UDP.")
+    private let tcpOnlyTitle = NSTextField(labelWithString: "Только TCP (без H3)")
+    private let tcpOnlySubtitle = NSTextField(labelWithString: "Отключает QUIC/H3 при блокировках UDP.")
     private let tcpOnlySwitch = NSSwitch()
 
     // MARK: - Block 3: TUN Passwordless Helper Box
     private let tunAuthBox = NSBox()
     private let tunAuthIcon = NSImageView()
-    private let tunAuthTitle = NSTextField(labelWithString: "Режим TUN (VPN): запуск без пароля")
+    private let tunAuthTitle = NSTextField(labelWithString: "TUN без пароля")
     private let tunAuthSubtitle = NSTextField(labelWithString: "")
     private let tunAuthButton = NSButton()
 
@@ -30,7 +30,7 @@ public final class SettingsWindowController: NSWindowController {
     private let themeBox = NSBox()
     private let themeIcon = NSImageView()
     private let themeTitle = NSTextField(labelWithString: "Тема оформления")
-    private let themeSubtitle = NSTextField(labelWithString: "Внешний вид интерфейса: системный, светлый или тёмный режим.")
+    private let themeSubtitle = NSTextField(labelWithString: "Системный, светлый или тёмный вид.")
     private let themePopUpButton = NSPopUpButton()
 
     // MARK: - Footer
@@ -39,7 +39,7 @@ public final class SettingsWindowController: NSWindowController {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 440),
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 460),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -47,7 +47,7 @@ public final class SettingsWindowController: NSWindowController {
         window.title = "Настройки — Outline Proxy"
         window.center()
         window.isReleasedWhenClosed = false
-        window.setContentSize(NSSize(width: 520, height: 440))
+        window.setContentSize(NSSize(width: 380, height: 460))
 
         super.init(window: window)
 
@@ -90,6 +90,18 @@ public final class SettingsWindowController: NSWindowController {
         updateTcpOnlyUI()
         updateThemeUI()
         applyTheme()
+
+        if let mainWin = MainWindowController.shared.window, mainWin.isVisible {
+            let mainFrame = mainWin.frame
+            if let win = window {
+                let x = mainFrame.origin.x + (mainFrame.width - win.frame.width) / 2.0
+                let y = mainFrame.origin.y + (mainFrame.height - win.frame.height) / 2.0
+                win.setFrameOrigin(NSPoint(x: x, y: y))
+            }
+        } else {
+            window?.center()
+        }
+
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
@@ -123,7 +135,7 @@ public final class SettingsWindowController: NSWindowController {
         modePopUpButton.translatesAutoresizingMaskIntoConstraints = false
         modePopUpButton.removeAllItems()
         for mode in ProxyMode.allCases {
-            modePopUpButton.addItem(withTitle: mode.title)
+            modePopUpButton.addItem(withTitle: mode.shortTitle)
             modePopUpButton.lastItem?.representedObject = mode.rawValue
         }
         modePopUpButton.target = self
@@ -420,15 +432,15 @@ public final class SettingsWindowController: NSWindowController {
         if isConfigured {
             tunAuthIcon.image = NSImage(systemSymbolName: "checkmark.shield.fill", accessibilityDescription: "Настроено")
             tunAuthIcon.contentTintColor = palette.statusGreen
-            tunAuthSubtitle.stringValue = "Настроено: TUN (VPN) подключается в 1 клик без ввода пароля."
+            tunAuthSubtitle.stringValue = "Подключение в 1 клик без пароля."
             tunAuthSubtitle.textColor = palette.statusGreen
-            tunAuthButton.title = "Удалить правило"
+            tunAuthButton.title = "Удалить"
         } else {
             tunAuthIcon.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: "Требуется пароль")
             tunAuthIcon.contentTintColor = palette.statusAmber
-            tunAuthSubtitle.stringValue = "Требуется ввод пароля. Нажмите, чтобы разрешить запуск в 1 клик."
+            tunAuthSubtitle.stringValue = "Нажмите для запуска без ввода пароля."
             tunAuthSubtitle.textColor = palette.secondaryText
-            tunAuthButton.title = "Настроить в 1 клик..."
+            tunAuthButton.title = "Настроить..."
         }
     }
 

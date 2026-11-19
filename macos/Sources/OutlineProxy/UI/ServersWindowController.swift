@@ -57,6 +57,18 @@ public final class ServersWindowController: NSWindowController, NSTableViewDataS
     public func show() {
         applyTheme()
         reloadProfiles()
+
+        if let mainWin = MainWindowController.shared.window, mainWin.isVisible {
+            let mainFrame = mainWin.frame
+            if let win = window {
+                let x = mainFrame.origin.x + (mainFrame.width - win.frame.width) / 2.0
+                let y = mainFrame.origin.y + (mainFrame.height - win.frame.height) / 2.0
+                win.setFrameOrigin(NSPoint(x: x, y: y))
+            }
+        } else {
+            window?.center()
+        }
+
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
