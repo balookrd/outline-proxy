@@ -331,6 +331,12 @@ Baseline — crates.io `quinn-proto 0.11.19`. Логические измене�
    число $N$ для идентификатора GREASE-параметра (`31 * N + 27`) генерируется из одного
    случайного байта `0..=255`, в точности как в quic-go (Caddy). В результате varint ID
    занимает 1 или 2 байта (`27..=7932`) вместо 8 байт varint из upstream quinn-proto.
+10. `caddy-version-negotiation` (`src/endpoint.rs`) — при отправке пакета Version
+    Negotiation (ответ на Initial с неподдерживаемой версией) случайная reserved-версия
+    вида `0x?a?a?a?a` (RFC 9000 §15) генерируется динамически (`(rng.random::<u32>() & 0xf0f0_f0f0) | 0x0a0a_0a0a`)
+    и вставляется на случайную позицию в списке поддерживаемых версий, как в quic-go (Caddy).
+    Это устраняет статическую сигнатуру Quinn (`0x0a1a_2a3a` на позиции 0). Тест:
+    `server::h3::tests::version_negotiation_greases_reserved_version_and_randomizes_position`.
 
 Проверка соответствия: применить патч к чистой копии crates.io 0.11.19 и сравнить
 `diff -r src/` — совпадение побайтово.
