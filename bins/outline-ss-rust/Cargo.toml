@@ -59,16 +59,15 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time"
 tokio-rustls = { workspace = true, features = ["logging", "tls12", "aws_lc_rs"] }
 tungstenite = { version = "0.29", default-features = false }
 toml = { workspace = true }
-toml_edit = { workspace = true, features = ["serde"] }
+toml_edit = { workspace = true, features = ["serde"], optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "tracing-log"] }
-webpki-roots = { workspace = true }
 x509-parser = "0.18"
 zeroize = { workspace = true }
 
 [features]
 default = ["control", "jemalloc"]
-control = []
+control = ["dep:toml_edit"]
 # Allocator, mutually exclusive. jemalloc is the default since 2026-08-23: on
 # the client it cut RSS from 143 MiB to 30 at matched load, and the server has
 # the same symptom — 87-90% of its resident memory sits in dirty mimalloc

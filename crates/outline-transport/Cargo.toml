@@ -14,7 +14,6 @@ quic = [
     "dep:quinn",
     "dep:quinn-proto",
     "dep:once_cell",
-    "dep:ring",
 ]
 h3 = ["quic", "dep:h3", "dep:h3-quinn", "sockudo-ws/http3", "outline-wire/h3-datagram"]
 metrics = ["outline-metrics/prometheus", "hyper/server"]
@@ -70,9 +69,6 @@ quinn-proto = { version = "0.11", default-features = false, features = ["rustls-
 rand = { workspace = true }
 # zstd certificate decompressor (`tls_hello.rs`), see `brotli-decompressor`.
 ruzstd = { version = "0.9", default-features = false, features = ["std"] }
-# SHA-256 / HKDF primitives for the QUIC-Initial decrypt diagnostic test
-# (`quic/tests/tls_config.rs`). Gated under `quic` so slim builds pull neither.
-ring = { workspace = true, optional = true }
 rustls = { workspace = true, features = ["aws_lc_rs", "std"] }
 serde = { workspace = true, features = ["derive"] }
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }
