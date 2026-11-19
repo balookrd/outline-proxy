@@ -45,6 +45,7 @@ public final class ProfileStore: @unchecked Sendable {
         selectedId = id
         saveInternal()
         lock.unlock()
+        NotificationCenter.default.post(name: NSNotification.Name("ProfilesChanged"), object: nil)
         onProfilesChanged?()
     }
 
@@ -56,16 +57,22 @@ public final class ProfileStore: @unchecked Sendable {
         }
         saveInternal()
         lock.unlock()
+        NotificationCenter.default.post(name: NSNotification.Name("ProfilesChanged"), object: nil)
         onProfilesChanged?()
     }
 
     public func updateProfile(_ profile: ServerProfile) {
         lock.lock()
+        var updated = false
         if let idx = cachedProfiles.firstIndex(where: { $0.id == profile.id }) {
             cachedProfiles[idx] = profile
             saveInternal()
+            updated = true
         }
         lock.unlock()
+        if updated {
+            NotificationCenter.default.post(name: NSNotification.Name("ProfilesChanged"), object: nil)
+        }
         onProfilesChanged?()
     }
 
@@ -77,6 +84,7 @@ public final class ProfileStore: @unchecked Sendable {
         }
         saveInternal()
         lock.unlock()
+        NotificationCenter.default.post(name: NSNotification.Name("ProfilesChanged"), object: nil)
         onProfilesChanged?()
     }
 

@@ -54,6 +54,7 @@ public final class ServersWindowController: NSWindowController, NSTableViewDataS
     }
 
     public func show() {
+        applyTheme()
         reloadProfiles()
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
@@ -138,11 +139,19 @@ public final class ServersWindowController: NSWindowController, NSTableViewDataS
         tableView.reloadData()
     }
 
+    private func applyTheme() {
+        guard let win = window else { return }
+        let palette = ThemeManager.shared.palette(for: win)
+        win.appearance = palette.isDark ? NSAppearance(named: .darkAqua) : NSAppearance(named: .aqua)
+        win.backgroundColor = palette.windowBackground
+    }
+
     @objc private func handleProfilesChanged() {
         reloadProfiles()
     }
 
     @objc private func handleThemeChanged() {
+        applyTheme()
         tableView.reloadData()
     }
 
@@ -188,7 +197,7 @@ public final class ServersWindowController: NSWindowController, NSTableViewDataS
         let row = tableView.selectedRow
         guard row >= 0 && row < profiles.count else { return }
         let profile = profiles[row]
-        AppState.shared.selectProfile(id: profile.id)
+        ProfileStore.shared.selectProfile(id: profile.id)
         tableView.reloadData()
     }
 
@@ -224,8 +233,15 @@ public final class ServersWindowController: NSWindowController, NSTableViewDataS
                     }
                 }
             }
-        } else if let profile = ServerProfile.parse(link: text) {
+        } else if let profile = ServerProfile.from(link: text) {
             ProfileStore.shared.addProfile(profile)
+        } else {
+            let errorAlert = NSAlert()
+            errorAlert.messageText = "Не удалось распознать ссылку. Поддерживаются ссылки vless://, ss:// и URL подписок https://"
+            errorAlert.alertStyle = .warning
+            errorAlert.addButton(withTitle: "OK")
+            errorAlert.runModal()
+            return
         }
         reloadProfiles()
     }
@@ -245,19 +261,5 @@ public final class ServersWindowController: NSWindowController, NSTableViewDataS
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         ProfileStore.shared.removeProfile(id: profile.id)
         reloadProfiles()
-    }
-}
-
-// MARK: - Compatibility Extensions
-
-extension AppState {
-    public func selectProfile(id: String) {
-        switchProfile(to: id)
-    }
-}
-
-extension ServerProfile {
-    public static func parse(link: String) -> ServerProfile? {
-        return from(link: link)
     }
 }
