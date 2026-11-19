@@ -234,3 +234,32 @@ async fn groups_get_forwards_instance_and_injects_token() {
         "control token must be injected server-side"
     );
 }
+
+#[tokio::test]
+async fn activate_rejects_more_than_64_targets() {
+    let targets: Vec<serde_json::Value> = (0..65)
+        .map(|i| {
+            serde_json::json!({
+                "instance": "inst",
+                "group": "main",
+                "uplink": format!("up-{i}")
+            })
+        })
+        .collect();
+    let body = serde_json::json!({ "targets": targets }).to_string();
+
+    let response = router(state())
+        .oneshot(
+            Request::post("/dashboard/api/activate")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("too many targets"), "expected error on >64 targets, got: {text}");
+}

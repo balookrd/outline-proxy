@@ -20,12 +20,14 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "http1"] }
 hyper-util = { workspace = true, features = ["tokio"] }
+ring = { workspace = true }
 rust-embed = { version = "8", optional = true, features = ["mime-guess"] }
 # aws-lc-rs only: a second provider in the graph panics the rustls default
 # provider with "exactly one of aws-lc-rs and ring".
 rustls = { workspace = true, features = ["aws_lc_rs", "std"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+subtle = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
 tokio-rustls = { workspace = true, features = ["logging", "tls12", "aws_lc_rs"] }
 toml = { workspace = true }

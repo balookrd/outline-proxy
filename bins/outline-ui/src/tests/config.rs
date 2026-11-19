@@ -96,6 +96,41 @@ fn token_file_trailing_newline_is_trimmed() {
 }
 
 #[test]
+fn empty_token_literal_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ui.toml");
+    std::fs::write(&path, "[server]\nlisten = \"0.0.0.0:9000\"\ntoken = \"   \"\n").unwrap();
+
+    let error = UiConfig::load(&path).expect_err("must refuse empty token literal");
+    assert!(
+        error.to_string().contains("token must not be empty"),
+        "error should indicate empty token, got: {error}"
+    );
+}
+
+#[test]
+fn empty_token_file_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("empty-token");
+    std::fs::write(&secret, "  \n\t \n").unwrap();
+    let path = dir.path().join("ui.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[server]\nlisten = \"0.0.0.0:9000\"\ntoken_file = \"{}\"\n",
+            secret.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let error = UiConfig::load(&path).expect_err("must refuse empty token file");
+    assert!(
+        error.to_string().contains("is empty"),
+        "error should indicate empty token file, got: {error}"
+    );
+}
+
+#[test]
 fn debug_output_hides_every_token() {
     let config = UiConfig {
         listen: "127.0.0.1:8080".parse().unwrap(),

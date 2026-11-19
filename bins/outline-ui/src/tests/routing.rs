@@ -198,3 +198,48 @@ async fn ss_defaults_route_is_not_the_spa_fallback() {
         "expected JSON from the defaults handler, got content-type {content_type:?}"
     );
 }
+
+#[tokio::test]
+async fn security_headers_present_on_all_responses() {
+    let app = build_app(&config());
+
+    // 1. Root SPA response
+    let response = app.clone().oneshot(authed("/")).await.unwrap();
+    let headers = response.headers();
+    assert_eq!(headers.get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
+    assert_eq!(headers.get(header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
+    assert_eq!(headers.get(header::REFERRER_POLICY).unwrap(), "no-referrer");
+    assert_eq!(
+        headers.get(header::CONTENT_SECURITY_POLICY).unwrap(),
+        "default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    );
+    assert!(!headers.contains_key(header::CACHE_CONTROL));
+
+    // 2. Unauthorized 401 response
+    let unauthed = app
+        .clone()
+        .oneshot(
+            Request::get("/some/path")
+                .header(header::HOST, "127.0.0.1:9000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthed.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(unauthed.headers().get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
+    assert_eq!(unauthed.headers().get(header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
+
+    // 3. API responses carry Cache-Control: no-store
+    let api_ws = app
+        .clone()
+        .oneshot(authed("/ws/dashboard/api/instances"))
+        .await
+        .unwrap();
+    assert_eq!(api_ws.headers().get(header::CACHE_CONTROL).unwrap(), "no-store");
+    assert_eq!(api_ws.headers().get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
+
+    let api_ss = app.oneshot(authed("/ss/dashboard/api/instances")).await.unwrap();
+    assert_eq!(api_ss.headers().get(header::CACHE_CONTROL).unwrap(), "no-store");
+    assert_eq!(api_ss.headers().get(header::X_FRAME_OPTIONS).unwrap(), "DENY");
+}

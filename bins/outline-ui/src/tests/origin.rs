@@ -81,6 +81,28 @@ async fn unknown_host_is_refused() {
     assert_eq!(status(app(&[]), request).await, StatusCode::FORBIDDEN);
 }
 
+#[tokio::test]
+async fn origin_with_userinfo_is_refused() {
+    let request = Request::post("/mutate")
+        .header(header::HOST, "127.0.0.1:9000")
+        .header(header::ORIGIN, "http://admin@127.0.0.1:9000")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::empty())
+        .unwrap();
+
+    assert_eq!(status(app(&[]), request).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn host_with_userinfo_is_refused() {
+    let request = Request::get("/probe")
+        .header(header::HOST, "user@127.0.0.1:9000")
+        .body(Body::empty())
+        .unwrap();
+
+    assert_eq!(status(app(&[]), request).await, StatusCode::FORBIDDEN);
+}
+
 /// The third check: a body-bearing method without a JSON content type is what a
 /// cross-origin form post looks like, and those never carry `Origin` to be
 /// caught by the check above.
