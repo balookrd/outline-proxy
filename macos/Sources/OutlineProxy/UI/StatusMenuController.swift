@@ -35,10 +35,17 @@ public final class StatusMenuController: NSObject, NSMenuDelegate {
             object: nil
         )
 
-        ProfileStore.shared.onProfilesChanged = { [weak self] in
-            DispatchQueue.main.async {
-                self?.rebuildMenu()
-            }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleProfilesChanged),
+            name: NSNotification.Name("ProfilesChanged"),
+            object: nil
+        )
+    }
+
+    @objc private func handleProfilesChanged() {
+        DispatchQueue.main.async { [weak self] in
+            self?.rebuildMenu()
         }
     }
 

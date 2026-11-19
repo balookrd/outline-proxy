@@ -306,11 +306,12 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
             object: nil
         )
 
-        ProfileStore.shared.onProfilesChanged = { [weak self] in
-            DispatchQueue.main.async {
-                self?.refreshServerInfo()
-            }
-        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleProfilesChanged),
+            name: NSNotification.Name("ProfilesChanged"),
+            object: nil
+        )
 
         applyCurrentTheme()
     }
@@ -1060,6 +1061,12 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    @objc private func handleProfilesChanged() {
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshServerInfo()
+        }
+    }
+
     @objc private func handleStateUpdate() {
         let palette = ThemeManager.shared.palette(for: window)
         refreshServerInfo()
@@ -1160,7 +1167,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
             carrierMode = isTcpOnly ? "H2" : "H3"
         } else if fullConfig.contains("alpn=h2") || fullConfig.contains("http/2") {
             carrierMode = "H2"
-        } else if fullConfig.contains("http/1.1") || fullConfig.contains("alpn=http/1.1") || fullConfig.contains("h1") {
+        } else if fullConfig.contains("http/1.1") || fullConfig.contains("ws_h1") || fullConfig.contains("xhttp_h1") || fullConfig.contains("alpn=http%2f1.1") || fullConfig.contains("alpn=http/1.1") {
             carrierMode = "H1"
         }
 
@@ -1209,7 +1216,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func startDurationTimer() {
         stopDurationTimer()
         updateTrafficMetrics()
-        durationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let since = self.connectedSince else { return }
                 let elapsed = Int(Date().timeIntervalSince(since))
@@ -1220,6 +1227,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
                 self.updateTrafficMetrics()
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        durationTimer = timer
     }
 
     private func stopDurationTimer() {
