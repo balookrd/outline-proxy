@@ -18,7 +18,7 @@
 
 ---
 
-### Задача 1: Исправление отображения имени профиля на карточке (`ServerProfile.swift`)
+### Task 1: Исправление отображения имени профиля на карточке (`ServerProfile.swift`)
 
 **Файлы:**
 - Изменить: `macos/Sources/OutlineProxy/Core/Models/ServerProfile.swift:130-145`
@@ -78,7 +78,7 @@ git commit -m "fix(macos): display exact profile name on status card without hos
 
 ---
 
-### Задача 2: Сервис подсчета сетевого трафика (`NetworkTrafficMonitor.swift`)
+### Task 2: Сервис подсчета сетевого трафика (`NetworkTrafficMonitor.swift`)
 
 **Файлы:**
 - Создать: `macos/Sources/OutlineProxy/Core/Services/NetworkTrafficMonitor.swift`
@@ -215,7 +215,7 @@ git commit -m "feat(macos): add NetworkTrafficMonitor for session bytes tracking
 
 ---
 
-### Задача 3: Редизайн полосы статистики (`StatsStrip`) в `MainWindowController.swift`
+### Task 3: Редизайн полосы статистики (`StatsStrip`) в `MainWindowController.swift`
 
 **Файлы:**
 - Изменить: `macos/Sources/OutlineProxy/UI/MainWindowController.swift:200-260, 480-570, 890-970`
@@ -336,7 +336,7 @@ git commit -m "feat(macos): implement Android-parity stats strip with traffic an
 
 ---
 
-### Задача 4: Создание специализированного окна серверов (`ServersWindowController.swift`)
+### Task 4: Создание специализированного окна серверов (`ServersWindowController.swift`)
 
 **Файлы:**
 - Создать: `macos/Sources/OutlineProxy/UI/ServersWindowController.swift`
@@ -605,7 +605,7 @@ git commit -m "feat(macos): create dedicated ServersWindowController for server 
 
 ---
 
-### Задача 5: Рефакторинг `SettingsWindowController.swift` в окно чистых настроек
+### Task 5: Рефакторинг `SettingsWindowController.swift` в окно чистых настроек
 
 **Файлы:**
 - Изменить: `macos/Sources/OutlineProxy/UI/SettingsWindowController.swift`
@@ -643,7 +643,7 @@ git commit -m "refactor(macos): remove server table from SettingsWindowControlle
 
 ---
 
-### Задача 6: Обновление вызовов и точек входа во всех контроллерах
+### Task 6: Обновление вызовов и точек входа во всех контроллерах
 
 **Файлы:**
 - Изменить: `macos/Sources/OutlineProxy/UI/MainWindowController.swift:1030-1050`
@@ -702,7 +702,7 @@ git commit -m "feat(macos): wire navigation routes to separate Servers and Setti
 
 ---
 
-### Задача 7: Сквозная верификация и запуск гейтов проверки
+### Task 7: Сквозная верификация и запуск гейтов проверки
 
 **Файлы:**
 - Все затронутые файлы проекта.
