@@ -112,13 +112,13 @@ pub(super) async fn setup_xhttp_server_with_resumption_v2(
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
     let xhttp_registry = Arc::clone(&services.xhttp_registry);
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
         )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+        false,
+        Arc::from("Authorization required"),
+    ));
     let app = build_app(routes, services, auth, None, None);
     let handle =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });

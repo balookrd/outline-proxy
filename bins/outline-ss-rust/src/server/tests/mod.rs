@@ -73,11 +73,11 @@ pub(in crate::server) fn build_test_state(
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(std::time::Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
         http_root_auth,
-        http_root_realm: http_root_realm.into(),
-    });
+        http_root_realm.into(),
+    ));
     (routes, services, auth)
 }
 

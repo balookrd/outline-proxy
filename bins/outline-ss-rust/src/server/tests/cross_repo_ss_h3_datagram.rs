@@ -190,13 +190,11 @@ pub(super) async fn serve_h3_datagram_config(config: Config) -> Result<DatagramT
         crate::server::transport::XhttpRegistryLimits::unbounded(),
         crate::server::salt_replay::SaltReplayStore::new(Duration::from_secs(60), 0),
     ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
-            ss_users.into_boxed_slice(),
-        )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
+    let auth = Arc::new(AuthPolicy::new(
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(ss_users.into_boxed_slice())))),
+        false,
+        Arc::from("Authorization required"),
+    ));
     let task = tokio::spawn(async move {
         serve_h3_server(
             server,

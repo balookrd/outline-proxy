@@ -1,5 +1,13 @@
+use std::{
+    net::IpAddr,
+    num::NonZeroUsize,
+    time::{Duration, Instant},
+};
+
 use axum::http::{self, HeaderMap, StatusCode, header};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use lru::LruCache;
+use parking_lot::Mutex;
 
 use crate::crypto::UserKey;
 
@@ -8,6 +16,77 @@ use crate::crypto::UserKey;
 pub(super) const ROOT_HTTP_AUTH_COOKIE_NAME: &str = "auth_attempts";
 pub(super) const ROOT_HTTP_AUTH_MAX_FAILURES: u8 = 3;
 pub(super) const ROOT_HTTP_AUTH_COOKIE_TTL_SECS: u32 = 300;
+pub(super) const ROOT_AUTH_RATE_LIMIT_CAPACITY: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct FailureRecord {
+    count: u8,
+    last_failure: Instant,
+}
+
+/// In-memory IP-based rate limiter for root HTTP Basic Auth.
+/// Protects against brute-force password guessing by clients that discard or omit cookies.
+pub(super) struct RootAuthRateLimiter {
+    cache: Mutex<LruCache<IpAddr, FailureRecord>>,
+    lockout_duration: Duration,
+}
+
+impl RootAuthRateLimiter {
+    pub(super) fn new(capacity: NonZeroUsize, lockout_duration: Duration) -> Self {
+        Self {
+            cache: Mutex::new(LruCache::new(capacity)),
+            lockout_duration,
+        }
+    }
+
+    pub(super) fn failed_attempts(&self, ip: IpAddr) -> u8 {
+        let mut guard = self.cache.lock();
+        if let Some(record) = guard.get(&ip) {
+            if record.last_failure.elapsed() < self.lockout_duration {
+                return record.count;
+            }
+            guard.pop(&ip);
+        }
+        0
+    }
+
+    pub(super) fn record_failure(&self, ip: IpAddr, cookie_attempts: u8) -> u8 {
+        let mut guard = self.cache.lock();
+        let server_attempts = if let Some(record) = guard.get(&ip) {
+            if record.last_failure.elapsed() < self.lockout_duration {
+                record.count
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        let current = cookie_attempts.max(server_attempts);
+        let new_count = current.saturating_add(1).min(ROOT_HTTP_AUTH_MAX_FAILURES);
+        guard.put(
+            ip,
+            FailureRecord {
+                count: new_count,
+                last_failure: Instant::now(),
+            },
+        );
+        new_count
+    }
+
+    pub(super) fn reset(&self, ip: IpAddr) {
+        self.cache.lock().pop(&ip);
+    }
+}
+
+impl Default for RootAuthRateLimiter {
+    fn default() -> Self {
+        Self::new(
+            NonZeroUsize::new(ROOT_AUTH_RATE_LIMIT_CAPACITY)
+                .expect("ROOT_AUTH_RATE_LIMIT_CAPACITY > 0"),
+            Duration::from_secs(ROOT_HTTP_AUTH_COOKIE_TTL_SECS as u64),
+        )
+    }
+}
 
 pub(super) fn parse_root_http_auth_password(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;

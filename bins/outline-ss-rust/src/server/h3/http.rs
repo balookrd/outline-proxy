@@ -34,7 +34,6 @@ use super::H3ConnectionCtx;
 use super::vendored::{
     self, H3ExtendedConnectRequest, build_extended_connect_error, build_extended_connect_response,
 };
-use crate::crypto::UserKey;
 use crate::metrics::{AppProtocol, Protocol, Transport};
 
 pub(super) async fn handle_h3_connection(
@@ -209,15 +208,8 @@ async fn handle_h3_request(
             return h3_fallback_handle(request, stream, Arc::clone(fb), peer_addr).await;
         }
 
-        let users_snap = ctx.auth.users.load();
-        let response = h3_http_response(
-            users_snap.0.as_ref(),
-            request.method(),
-            &path,
-            request.headers(),
-            ctx.auth.http_root_auth,
-            ctx.auth.http_root_realm.as_ref(),
-        );
+        let response =
+            h3_http_response(&ctx.auth, peer_addr.ip(), request.method(), &path, request.headers());
         stream
             .send_response(response)
             .await
@@ -621,35 +613,47 @@ fn match_xhttp_path(
 }
 
 fn h3_http_response(
-    users: &[UserKey],
+    auth: &crate::server::state::AuthPolicy,
+    peer_ip: std::net::IpAddr,
     method: &Method,
     path: &str,
     headers: &axum::http::HeaderMap,
-    http_root_auth: bool,
-    http_root_realm: &str,
 ) -> http::Response<()> {
-    if path != "/" || !http_root_auth || !(method == Method::GET || method == Method::HEAD) {
+    if path != "/" || !auth.http_root_auth || !(method == Method::GET || method == Method::HEAD) {
         return build_not_found_response(());
     }
 
-    let failed_attempts = parse_failed_root_auth_attempts(headers);
-    if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
+    let cookie_attempts = parse_failed_root_auth_attempts(headers);
+    let server_attempts = auth.rate_limiter.failed_attempts(peer_ip);
+    let current_attempts = cookie_attempts.max(server_attempts);
+
+    if current_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
         return build_root_http_auth_forbidden_response(());
     }
 
+    let users_snap = auth.users.load();
     match parse_root_http_auth_password(headers) {
-        Some(password) if password_matches_any_user(users, &password) => {
+        Some(password) if password_matches_any_user(users_snap.0.as_ref(), &password) => {
+            auth.rate_limiter.reset(peer_ip);
             build_root_http_auth_success_response(())
         },
         Some(_) => {
-            let failed_attempts = failed_attempts.saturating_add(1);
+            let failed_attempts = auth.rate_limiter.record_failure(peer_ip, cookie_attempts);
             if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
                 build_root_http_auth_forbidden_response(())
             } else {
-                build_root_http_auth_challenge_response(failed_attempts, http_root_realm, ())
+                build_root_http_auth_challenge_response(
+                    failed_attempts,
+                    auth.http_root_realm.as_ref(),
+                    (),
+                )
             }
         },
-        None => build_root_http_auth_challenge_response(failed_attempts, http_root_realm, ()),
+        None => build_root_http_auth_challenge_response(
+            current_attempts,
+            auth.http_root_realm.as_ref(),
+            (),
+        ),
     }
 }
 

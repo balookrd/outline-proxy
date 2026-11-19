@@ -178,3 +178,79 @@ async fn root_http_auth_returns_403_after_three_failed_password_attempts() -> Re
     let _ = server.await;
     Ok(())
 }
+
+#[tokio::test]
+async fn root_http_auth_rate_limiting_blocks_brute_force_without_cookies() -> Result<()> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+
+    let mut config = sample_config(addr);
+    config.http_root_auth = true;
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        &config,
+        Metrics::new(&config),
+        nat_table,
+        dns_cache,
+        true,
+        config.http_root_realm.clone(),
+    );
+    let app = build_app(routes, services, auth, None, None);
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+
+    let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
+
+    // Attempt 1: wrong password, NO cookies -> 401 Unauthorized
+    let response = client
+        .request(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("http://{addr}/"))
+                .header(header::AUTHORIZATION, basic_auth_header("wrong-1"))
+                .body(Empty::<Bytes>::new())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Attempt 2: wrong password, NO cookies -> 401 Unauthorized
+    let response = client
+        .request(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("http://{addr}/"))
+                .header(header::AUTHORIZATION, basic_auth_header("wrong-2"))
+                .body(Empty::<Bytes>::new())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Attempt 3: wrong password, NO cookies -> 403 Forbidden (cap reached in server rate limiter)
+    let response = client
+        .request(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("http://{addr}/"))
+                .header(header::AUTHORIZATION, basic_auth_header("wrong-3"))
+                .body(Empty::<Bytes>::new())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // Attempt 4: even with valid password, IP is now locked out -> 403 Forbidden
+    let response = client
+        .request(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("http://{addr}/"))
+                .header(header::AUTHORIZATION, basic_auth_header("secret-b"))
+                .body(Empty::<Bytes>::new())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}

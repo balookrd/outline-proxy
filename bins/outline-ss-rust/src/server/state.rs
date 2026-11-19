@@ -12,6 +12,7 @@ use crate::{
     protocol::vless::VlessUser,
 };
 
+use super::auth::RootAuthRateLimiter;
 use super::cluster::ClusterCtx;
 use super::nat::NatTable;
 use super::peer_user_cache::PeerUserCache;
@@ -151,6 +152,22 @@ pub(super) struct AuthPolicy {
     pub(super) users: AuthUsersSnapshot,
     pub(super) http_root_auth: bool,
     pub(super) http_root_realm: Arc<str>,
+    pub(super) rate_limiter: Arc<RootAuthRateLimiter>,
+}
+
+impl AuthPolicy {
+    pub(super) fn new(
+        users: AuthUsersSnapshot,
+        http_root_auth: bool,
+        http_root_realm: Arc<str>,
+    ) -> Self {
+        Self {
+            users,
+            http_root_auth,
+            http_root_realm,
+            rate_limiter: Arc::new(RootAuthRateLimiter::default()),
+        }
+    }
 }
 
 #[derive(Clone)]
