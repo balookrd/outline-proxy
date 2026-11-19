@@ -159,13 +159,17 @@ public final class StatusMenuController: NSObject, NSMenuDelegate {
         menu.addItem(NSMenuItem.separator())
 
         // 6. Diagnostics & Settings
-        let logItem = NSMenuItem(title: "Журнал (логи)...", action: #selector(openLogsAction), keyEquivalent: "l")
-        logItem.target = self
-        menu.addItem(logItem)
+        let serversItem = NSMenuItem(title: "Серверы...", action: #selector(openServersAction), keyEquivalent: "s")
+        serversItem.target = self
+        menu.addItem(serversItem)
 
         let settingsItem = NSMenuItem(title: "Настройки...", action: #selector(openSettingsAction), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+
+        let logItem = NSMenuItem(title: "Журнал (логи)...", action: #selector(openLogsAction), keyEquivalent: "l")
+        logItem.target = self
+        menu.addItem(logItem)
 
         let updates = UpdateController.shared
         let updateTitle: String
@@ -242,8 +246,12 @@ public final class StatusMenuController: NSObject, NSMenuDelegate {
         }
     }
 
+    @objc private func openServersAction() {
+        ServersWindowController.shared.show()
+    }
+
     @objc private func addServerAction() {
-        SettingsWindowController.shared.show()
+        ServersWindowController.shared.show()
     }
 
     @objc private func refreshSubscriptionsAction() {

@@ -1243,11 +1243,11 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func openServersAction() {
-        SettingsWindowController.shared.show()
+        ServersWindowController.shared.show()
     }
 
     @objc private func addServerAction() {
-        SettingsWindowController.shared.show()
+        ServersWindowController.shared.show()
     }
 
     @objc private func openLogsAction() {

@@ -28,6 +28,14 @@ public final class MainMenuController {
 
         appMenu.addItem(NSMenuItem.separator())
 
+        let serversItem = NSMenuItem(
+            title: "Серверы...",
+            action: #selector(openServersAction),
+            keyEquivalent: ""
+        )
+        serversItem.target = self
+        appMenu.addItem(serversItem)
+
         let settingsItem = NSMenuItem(
             title: "Настройки...",
             action: #selector(openSettingsAction),
@@ -224,6 +232,10 @@ public final class MainMenuController {
 
     @objc private static func openMainWindowAction() {
         MainWindowController.shared.show()
+    }
+
+    @objc private static func openServersAction() {
+        ServersWindowController.shared.show()
     }
 
     @objc private static func openSettingsAction() {
