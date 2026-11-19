@@ -6,19 +6,29 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
     public static let shared = PrivilegedHelperManager()
 
     public static let sudoersFilePath = "/etc/sudoers.d/outline-proxy"
+    public static let systemSupportDir = "/Library/Application Support/OutlineProxy"
     public static let systemRunnerPath = "/Library/Application Support/OutlineProxy/tun-runner.sh"
+    public static let systemBinaryPath = "/Library/Application Support/OutlineProxy/outline-ws-rust"
+    public static let systemRunDir = "/var/run/outline-proxy"
 
     private init() {}
 
-    /// Checks whether passwordless `sudo` is currently permitted for `tun-runner.sh`.
+    /// Safely quotes an argument for POSIX shell execution using single quotes.
+    public static func shellQuote(_ string: String) -> String {
+        "'" + string.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Checks whether passwordless `sudo` is currently permitted for `tun-runner.sh`
+    /// and whether both the system script and binary are properly installed.
     public func isSudoersConfigured() -> Bool {
-        guard let runnerURL = ProcessController.shared.locateTunRunner() else {
+        guard FileManager.default.isExecutableFile(atPath: Self.systemRunnerPath),
+              FileManager.default.isExecutableFile(atPath: Self.systemBinaryPath) else {
             return false
         }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        proc.arguments = ["-n", runnerURL.path, "status", "/tmp"]
+        proc.arguments = ["-n", Self.systemRunnerPath, "status"]
 
         let devNull = FileHandle.nullDevice
         proc.standardOutput = devNull
@@ -41,54 +51,94 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
             ])
         }
 
+        guard let binaryURL = ProcessController.shared.locateBinary() else {
+            throw NSError(domain: "PrivilegedHelperManager", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Бинарник outline-ws-rust не найден для установки системного хелпера."
+            ])
+        }
+
         let currentUser = NSUserName()
+        guard currentUser.range(of: "^[a-zA-Z0-9._-]+$", options: .regularExpression) != nil else {
+            throw NSError(domain: "PrivilegedHelperManager", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Имя текущего пользователя содержит недопустимые символы: \(currentUser)"
+            ])
+        }
+
+        let qSupportDir = Self.shellQuote(Self.systemSupportDir)
+        let qRunnerSrc = Self.shellQuote(bundleRunnerURL.path)
+        let qRunnerDst = Self.shellQuote(Self.systemRunnerPath)
+        let qBinarySrc = Self.shellQuote(binaryURL.path)
+        let qBinaryDst = Self.shellQuote(Self.systemBinaryPath)
+        let qRunDir = Self.shellQuote(Self.systemRunDir)
+        let qSudoersFile = Self.shellQuote(Self.sudoersFilePath)
+
         let script = """
-        mkdir -p "/Library/Application Support/OutlineProxy"
-        cp "\(bundleRunnerURL.path)" "\(Self.systemRunnerPath)"
-        chmod 755 "\(Self.systemRunnerPath)"
-        chown root:wheel "\(Self.systemRunnerPath)"
+        mkdir -p \(qSupportDir)
+        cp \(qRunnerSrc) \(qRunnerDst)
+        chmod 755 \(qRunnerDst)
+        chown root:wheel \(qRunnerDst)
+
+        cp \(qBinarySrc) \(qBinaryDst)
+        chmod 755 \(qBinaryDst)
+        chown root:wheel \(qBinaryDst)
+
+        mkdir -p \(qRunDir)
+        chmod 700 \(qRunDir)
+        chown root:wheel \(qRunDir)
 
         mkdir -p /etc/sudoers.d
-        TMP_FILE="/tmp/outline_proxy_sudoers.$$"
+        TMP_FILE=$(mktemp /etc/sudoers.d/.outline-proxy.XXXXXX)
         cat << 'EOF' > "$TMP_FILE"
         # Outline Proxy NOPASSWD rule for L3 TUN mode
         \(currentUser) ALL=(ALL) NOPASSWD: /Library/Application\\ Support/OutlineProxy/tun-runner.sh
-        \(currentUser) ALL=(ALL) NOPASSWD: /Applications/Outline\\ Proxy.app/Contents/Resources/tun-runner.sh
         %admin ALL=(ALL) NOPASSWD: /Library/Application\\ Support/OutlineProxy/tun-runner.sh
-        %admin ALL=(ALL) NOPASSWD: /Applications/Outline\\ Proxy.app/Contents/Resources/tun-runner.sh
         EOF
         /usr/sbin/visudo -c -f "$TMP_FILE" || { rm -f "$TMP_FILE"; exit 1; }
-        mv "$TMP_FILE" "\(Self.sudoersFilePath)"
-        chmod 0440 "\(Self.sudoersFilePath)"
-        chown root:wheel "\(Self.sudoersFilePath)"
+        mv "$TMP_FILE" \(qSudoersFile)
+        chmod 0440 \(qSudoersFile)
+        chown root:wheel \(qSudoersFile)
         """
 
-        try executeAsAdmin(command: script)
+        _ = try executeAsAdmin(command: script)
     }
 
     /// Removes the sudoers rule and system helper script.
     public func removeSudoersRule() throws {
+        let qSudoers = Self.shellQuote(Self.sudoersFilePath)
+        let qRunner = Self.shellQuote(Self.systemRunnerPath)
+        let qBinary = Self.shellQuote(Self.systemBinaryPath)
+        let qRunDir = Self.shellQuote(Self.systemRunDir)
+
         let script = """
-        rm -f "\(Self.sudoersFilePath)"
-        rm -f "\(Self.systemRunnerPath)"
+        rm -f \(qSudoers)
+        rm -f \(qRunner)
+        rm -f \(qBinary)
+        rm -rf \(qRunDir)
         """
-        try executeAsAdmin(command: script)
+        _ = try executeAsAdmin(command: script)
     }
 
-    private func executeAsAdmin(command: String) throws {
+    @discardableResult
+    public func executeAsAdmin(command: String) throws -> String {
+        try Self.executeAsAdmin(command: command)
+    }
+
+    @discardableResult
+    public static func executeAsAdmin(command: String) throws -> String {
         let escaped = command.replacingOccurrences(of: "\\", with: "\\\\")
                              .replacingOccurrences(of: "\"", with: "\\\"")
         let appleScriptCode = "do shell script \"\(escaped)\" with administrator privileges"
 
         var errorDict: NSDictionary?
         if let appleScript = NSAppleScript(source: appleScriptCode) {
-            _ = appleScript.executeAndReturnError(&errorDict)
+            let output = appleScript.executeAndReturnError(&errorDict)
             if let error = errorDict {
                 let errorMsg = (error[NSAppleScript.errorMessage] as? String) ?? "Отказ в правах администратора"
-                throw NSError(domain: "PrivilegedHelperManager", code: 2, userInfo: [NSLocalizedDescriptionKey: errorMsg])
+                throw NSError(domain: "PrivilegedHelperManager", code: 4, userInfo: [NSLocalizedDescriptionKey: errorMsg])
             }
+            return output.stringValue ?? ""
         } else {
-            throw NSError(domain: "PrivilegedHelperManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "Не удалось инициализировать AppleScript"])
+            throw NSError(domain: "PrivilegedHelperManager", code: 5, userInfo: [NSLocalizedDescriptionKey: "Не удалось инициализировать AppleScript"])
         }
     }
 }
