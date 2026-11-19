@@ -254,3 +254,24 @@ async fn root_http_auth_rate_limiting_blocks_brute_force_without_cookies() -> Re
     let _ = server.await;
     Ok(())
 }
+
+#[test]
+fn root_auth_rate_limiter_groups_ipv6_slash_64() {
+    use crate::server::auth::RootAuthRateLimiter;
+    use std::net::IpAddr;
+
+    let limiter = RootAuthRateLimiter::default();
+    let ip1: IpAddr = "2001:db8:abcd:0012::1".parse().unwrap();
+    let ip2: IpAddr = "2001:db8:abcd:0012:ffff:eeee:dddd:cccc".parse().unwrap();
+
+    assert_eq!(limiter.failed_attempts(ip1), 0);
+    assert_eq!(limiter.record_failure(ip1, 0), 1);
+    // ip2 is from the same /64 subnet — should see the failure recorded by ip1
+    assert_eq!(limiter.failed_attempts(ip2), 1);
+    assert_eq!(limiter.record_failure(ip2, 1), 2);
+    assert_eq!(limiter.failed_attempts(ip1), 2);
+
+    // Resetting ip2 should clear the /64 entry
+    limiter.reset(ip2);
+    assert_eq!(limiter.failed_attempts(ip1), 0);
+}

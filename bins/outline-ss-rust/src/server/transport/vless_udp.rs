@@ -160,24 +160,28 @@ where
 
     debug!(user = user.label(), path = %route.path, target = %target_display, "vless udp target");
 
-    let resolved =
-        match resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream)
-            .await
-        {
-            Ok(addr) => addr,
-            Err(error) => {
-                warn!(
-                    user = user.label(),
-                    path = %route.path,
-                    target = %target_display,
-                    error = %error,
-                    "vless udp dns resolution failed; sending try-again close"
-                );
-                return Err(VlessFrameError::UpstreamConnectFailed(
-                    error.context("vless udp dns resolution failed"),
-                ));
-            },
-        };
+    let resolved = match resolve_udp_target(
+        server.dns_cache.as_ref(),
+        &target,
+        server.prefer_ipv4_upstream,
+        &server.outbound_filter,
+    )
+    .await
+    {
+        Ok(addr) => addr,
+        Err(error) => {
+            warn!(
+                user = user.label(),
+                path = %route.path,
+                target = %target_display,
+                error = %error,
+                "vless udp dns resolution failed; sending try-again close"
+            );
+            return Err(VlessFrameError::UpstreamConnectFailed(
+                error.context("vless udp dns resolution failed"),
+            ));
+        },
+    };
 
     let socket = match bind_and_connect_udp(
         resolved,

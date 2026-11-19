@@ -1,6 +1,8 @@
 use super::*;
 use arc_swap::ArcSwap;
+use outline_wire::cluster::ShardId;
 
+use crate::config::{ClusterConfig, ClusterPsk};
 use crate::server::tests::sample_config;
 
 /// Builds a `UserManager` whose only registered route surface is the default
@@ -298,4 +300,93 @@ fn server_defaults_serializes_method_as_string() {
 
     let json = serde_json::to_value(&defaults).unwrap();
     assert_eq!(json["method"], "aes-256-gcm");
+}
+
+#[test]
+fn validate_new_rejects_invalid_vless_uuid() {
+    let manager = test_manager();
+    let mut entry = vless_only_entry();
+    entry.vless_id = Some("not-a-valid-uuid".into());
+    assert!(manager.validate_new(&entry).is_err());
+}
+
+#[tokio::test]
+async fn rebuild_snapshots_rejects_duplicate_vless_uuid() {
+    let path = scratch_config("dup-vless").with_file_name("config.toml");
+    let initial_toml = r#"
+[server]
+listen = "127.0.0.1:443"
+tls_cert_path = "cert.pem"
+tls_key_path = "key.pem"
+
+[[endpoint]]
+path = "/vless"
+kind = "ws_vless"
+
+[[users]]
+id = "vless-1"
+vless_id = "00000000-0000-0000-0000-000000000001"
+"#;
+    std::fs::write(&path, initial_toml).unwrap();
+    let mut config = sample_config("127.0.0.1:0".parse().unwrap());
+    config.config_path = Some(path.clone());
+    config.endpoints = vec![EndpointConfig {
+        path: "/vless".into(),
+        kind: crate::config::EndpointKind::WsVless,
+        padded: false,
+    }];
+    config.users = vec![UserEntry {
+        id: "vless-1".into(),
+        password: None,
+        fwmark: None,
+        method: None,
+        vless_id: Some("00000000-0000-0000-0000-000000000001".into()),
+        enabled: None,
+        aliases: None,
+    }];
+    let manager = manager_for(config);
+
+    let dup_entry = UserEntry {
+        id: "vless-2".into(),
+        password: None,
+        fwmark: None,
+        method: None,
+        vless_id: Some("00000000-0000-0000-0000-000000000001".into()),
+        enabled: None,
+        aliases: None,
+    };
+    let err = manager
+        .create(dup_entry)
+        .await
+        .expect_err("must reject duplicate vless_id");
+    assert!(err.to_string().contains("duplicate vless_id"));
+}
+
+#[tokio::test]
+async fn clustered_manager_rejects_overlong_user_id() {
+    let mut config = sample_config("127.0.0.1:0".parse().unwrap());
+    config.cluster = Some(ClusterConfig {
+        shard: ShardId::new(0).unwrap(),
+        psk: ClusterPsk::from_bytes(vec![1u8; 32]),
+        mesh_listen: "127.0.0.1:0".parse().unwrap(),
+        peers: std::collections::HashMap::new(),
+        mesh_relay_budget: std::time::Duration::from_millis(100),
+    });
+    let manager = manager_for(config);
+
+    let overlong_id = "a".repeat(crate::server::MAX_USER_LEN + 1);
+    let entry = UserEntry {
+        id: overlong_id,
+        password: Some("secret".into()),
+        fwmark: None,
+        method: None,
+        vless_id: None,
+        enabled: None,
+        aliases: None,
+    };
+    let err = manager
+        .create(entry)
+        .await
+        .expect_err("must reject overlong id in cluster");
+    assert!(err.to_string().contains("exceeds MAX_USER_LEN"));
 }

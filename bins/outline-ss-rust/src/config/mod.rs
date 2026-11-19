@@ -31,4 +31,6 @@ pub use user_entry::{CipherKind, ConfigError, UserEntry, validate_ip_aliases};
 #[cfg_attr(not(feature = "control"), allow(unused_imports))]
 pub(crate) use file::FileConfig;
 #[cfg_attr(not(feature = "control"), allow(unused_imports))]
+pub(crate) use loader::parse_and_validate;
+#[cfg_attr(not(feature = "control"), allow(unused_imports))]
 pub use user_entry::OneOrManyCidr;

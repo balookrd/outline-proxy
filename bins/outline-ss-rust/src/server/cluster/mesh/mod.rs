@@ -18,7 +18,8 @@ mod tls;
 // splice them onto the parks this node owns.
 pub(in crate::server) use datagram::{read_datagram, write_datagram};
 pub(in crate::server) use endpoint::{
-    AcceptRelayError, MeshEndpoint, MeshStream, accept_relay, write_open_ack,
+    AcceptRelayError, MESH_HANDSHAKE_TIMEOUT, MeshEndpoint, MeshStream, accept_relay,
+    write_open_ack,
 };
 pub(in crate::server) use frame::{
     CloseIntent, CloseReason, MeshFraming, MeshProtocol, MeshShape, OpenHeader,

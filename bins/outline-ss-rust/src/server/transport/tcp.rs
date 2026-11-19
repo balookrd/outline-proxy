@@ -55,7 +55,7 @@ use super::jittered_ticker::JitteredTicker;
 use outline_wire::resume::build_v1_payload;
 
 use super::super::resumption::{
-    OrphanRegistry, Parked, ParkedProtocol, ParkedTcp, ResumeOutcome, SessionId,
+    OrphanRegistry, PARK_HARVEST_WAIT, Parked, ParkedProtocol, ParkedTcp, ResumeOutcome, SessionId,
 };
 use super::super::scratch::ScratchBuf;
 use super::carrier_padding;
@@ -85,6 +85,8 @@ pub(in crate::server) struct WsTcpServerCtx {
     /// so deployments can trade memory for video throughput headroom
     /// without code changes.
     pub(in crate::server) ws_data_channel_capacity: usize,
+    /// Outbound SSRF filter.
+    pub(in crate::server) outbound_filter: Arc<super::super::outbound_filter::OutboundFilter>,
     /// Process-wide anti-replay filter for Shadowsocks TCP handshakes. Shared
     /// across every carrier (WS / H3 / XHTTP) so a handshake captured on one is
     /// rejected when replayed on any of them.
@@ -620,11 +622,17 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
             cancel.notify_one();
             // Surface relay-task errors but ignore the resumption outcome
             // (we already decided not to park).
-            match task
-                .into_inner()
-                .await
-                .context("tcp upstream relay task join failed")?
-            {
+            let mut join_handle = task.into_inner();
+            let join_res = match tokio::time::timeout(PARK_HARVEST_WAIT, &mut join_handle).await {
+                Ok(res) => res,
+                Err(_) => {
+                    join_handle.abort();
+                    let _ = join_handle.await;
+                    warn!("tcp upstream relay task did not stop in time; aborted");
+                    Ok(Ok(UpstreamRelayOutcome::Closed))
+                },
+            };
+            match join_res.context("tcp upstream relay task join failed")? {
                 Ok(_) => {},
                 Err(error) => return Err(error),
             }
@@ -717,7 +725,17 @@ async fn try_park_on_drop(
     // `into_inner` suppresses the on-drop abort: this is the one path that
     // wants the task to run to completion so its reader half can be
     // harvested for parking. Mirrors the VLESS park (`try_park_vless_tcp`).
-    let reader = match task.into_inner().await {
+    let mut join_handle = task.into_inner();
+    let harvested = match tokio::time::timeout(PARK_HARVEST_WAIT, &mut join_handle).await {
+        Ok(res) => res,
+        Err(_) => {
+            join_handle.abort();
+            let _ = join_handle.await;
+            warn!("relay task did not stop for park in time; not parking");
+            return false;
+        },
+    };
+    let reader = match harvested {
         Ok(Ok(UpstreamRelayOutcome::Cancelled(HarvestedUpstream::Tcp(reader)))) => reader,
         // Unreachable: the mesh guard above returns before the harvest. Kept as
         // a refusal rather than a panic — nothing here can park a relayed
@@ -980,13 +998,13 @@ fn check_salt_replay(
         && let Some(salt) = decryptor.request_salt()
     {
         state.salt_replay_checked = true;
-        match server.salt_replay_store.check_and_mark(Arc::clone(salt)) {
+        let user_id = decryptor
+            .user()
+            .map(UserKey::id_arc)
+            .unwrap_or_else(|| Arc::from("unknown"));
+        match server.salt_replay_store.check_and_mark(&user_id, Arc::clone(salt)) {
             SaltReplayCheck::Fresh => {},
             SaltReplayCheck::Replay => {
-                let user_id = decryptor
-                    .user()
-                    .map(UserKey::id_arc)
-                    .unwrap_or_else(|| Arc::from("unknown"));
                 server
                     .metrics
                     .record_tcp_handshake_replay_dropped(user_id, route.protocol);
@@ -1367,6 +1385,7 @@ where
         user.fwmark(),
         server.prefer_ipv4_upstream,
         server.outbound_ipv6.as_deref(),
+        &server.outbound_filter,
     )
     .await
     {
@@ -1529,15 +1548,12 @@ where
         );
         // Accounting label = the per-source-IP alias when the peer matches a
         // configured subnet, else the base id. Drives metrics, NAT keying,
-        // logging, AND resume owner-matching below — all keyed on the same
-        // effective label. Safe for resume: a parked session resumes from the
-        // same peer, so the alias is identical across the park boundary; do
-        // not "simplify" this back to `user.id_arc()`.
+        // and logging. Authentication and resume ownership are strictly keyed
+        // on the canonical base user id (`user.id_arc()`) so that roaming
+        // (e.g. Wi-Fi <-> LTE IP change) never triggers an owner mismatch.
         let user_id = user.effective_label(peer_addr.map(|a| a.ip()));
-        // Mirrored onto the relay state so `try_park_on_drop` parks under the
-        // very label this resume path matches against. The park side has no
-        // `peer_addr`, so it cannot recompute the alias itself.
-        state.authenticated_user_id = Some(Arc::clone(&user_id));
+        let base_user_id = user.id_arc();
+        state.authenticated_user_id = Some(Arc::clone(&base_user_id));
         let target_display: Arc<str> = Arc::from(target.to_string());
 
         // Cluster edge: the upstream lives on the home, which is still waiting
@@ -1569,7 +1585,7 @@ where
         // hit — by spec the parked target is authoritative.
         if let Some(resume_id) = state.pending_resume_request.take()
             && let ResumeOutcome::Hit(Parked::Tcp(parked)) =
-                server.orphan_registry.take_for_resume(resume_id, &user_id).await
+                server.orphan_registry.take_for_resume(resume_id, &base_user_id).await
         {
             resume_parked_upstream(
                 state, parked, user, &user_id, decryptor, server, route, &outbound,

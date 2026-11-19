@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use tokio::{
     net::{TcpSocket, TcpStream, lookup_host},
@@ -24,24 +24,36 @@ pub(super) async fn resolve_udp_target(
     dns_cache: &DnsCache,
     target: &TargetAddr,
     prefer_ipv4_upstream: bool,
+    outbound_filter: &super::outbound_filter::OutboundFilter,
 ) -> Result<SocketAddr> {
     match target {
         TargetAddr::Domain(host, port) => {
-            if let Some(resolved) = dns_cache.lookup_one(host, *port, prefer_ipv4_upstream) {
+            if let Some(resolved) = dns_cache.lookup_one(host, *port, prefer_ipv4_upstream)
+                && !outbound_filter.is_blocked(resolved.ip())
+            {
                 return Ok(resolved);
             }
             let addrs =
                 resolve_via_singleflight(dns_cache, host, *port, prefer_ipv4_upstream).await?;
             addrs
-                .first()
+                .iter()
                 .copied()
-                .ok_or_else(|| anyhow!("dns lookup returned no records for {}", target))
+                .find(|addr| !outbound_filter.is_blocked(addr.ip()))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "all resolved addresses for {target} were blocked by outbound SSRF filter"
+                    )
+                })
         },
         TargetAddr::IpV4(ip, port) => {
-            literal_ip_addr(SocketAddr::from((*ip, *port)), prefer_ipv4_upstream)
+            let addr = literal_ip_addr(SocketAddr::from((*ip, *port)), prefer_ipv4_upstream)?;
+            outbound_filter.check_ip(addr.ip())?;
+            Ok(addr)
         },
         TargetAddr::IpV6(ip, port) => {
-            literal_ip_addr(SocketAddr::from((*ip, *port)), prefer_ipv4_upstream)
+            let addr = literal_ip_addr(SocketAddr::from((*ip, *port)), prefer_ipv4_upstream)?;
+            outbound_filter.check_ip(addr.ip())?;
+            Ok(addr)
         },
     }
 }
@@ -128,9 +140,18 @@ pub(super) async fn connect_tcp_target(
     fwmark: Option<u32>,
     prefer_ipv4_upstream: bool,
     outbound_ipv6: Option<&OutboundIpv6>,
+    outbound_filter: &super::outbound_filter::OutboundFilter,
 ) -> Result<TcpStream> {
     let resolved = resolve_target_addrs(dns_cache, target, prefer_ipv4_upstream).await?;
-    let ordered = sort_addrs_for_happy_eyeballs(&resolved, prefer_ipv4_upstream);
+    let filtered: Vec<SocketAddr> = resolved
+        .iter()
+        .copied()
+        .filter(|addr| !outbound_filter.is_blocked(addr.ip()))
+        .collect();
+    if filtered.is_empty() {
+        bail!("all resolved addresses for {target} were blocked by outbound SSRF filter");
+    }
+    let ordered = sort_addrs_for_happy_eyeballs(&filtered, prefer_ipv4_upstream);
     connect_tcp_addrs(&ordered, fwmark, outbound_ipv6)
         .await
         .with_context(|| format!("tcp connect failed for {}", target))
@@ -280,5 +301,12 @@ async fn connect_tcp_addr(
 }
 
 pub(super) fn configure_tcp_stream(stream: &TcpStream) -> Result<()> {
-    stream.set_nodelay(true).context("failed to enable TCP_NODELAY")
+    stream.set_nodelay(true).context("failed to enable TCP_NODELAY")?;
+    let sock = socket2::SockRef::from(stream);
+    let mut keepalive = socket2::TcpKeepalive::new();
+    keepalive = keepalive.with_time(std::time::Duration::from_secs(45));
+    keepalive = keepalive.with_interval(std::time::Duration::from_secs(15));
+    sock.set_tcp_keepalive(&keepalive)
+        .context("failed to enable SO_KEEPALIVE")?;
+    Ok(())
 }

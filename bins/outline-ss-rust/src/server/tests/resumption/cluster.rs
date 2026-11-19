@@ -670,6 +670,7 @@ async fn boot_h3_edge_node(parts: ClusterParts) -> Result<(H3EdgeNode, UserKey)>
         alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
         http_fallback: None,
         cluster: Some(cluster),
+        max_connections_per_ip: None,
     };
     let h3_task = tokio::spawn(serve_h3_server(server, ctx, ShutdownSignal::never()));
 
@@ -743,6 +744,7 @@ async fn spawn_combined_xhttp_h3_node(
         alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
         http_fallback: None,
         cluster: Some(cluster),
+        max_connections_per_ip: None,
     };
     let h3_task = tokio::spawn(serve_h3_server(server, ctx, ShutdownSignal::never()));
 

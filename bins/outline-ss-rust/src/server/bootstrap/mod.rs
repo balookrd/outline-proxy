@@ -4,6 +4,8 @@ mod cert_reload;
 mod first_bytes_deadline;
 mod tls;
 
+pub(in crate::server) use axum::IpConnectionTracker;
+
 #[cfg(test)]
 pub(in crate::server) use axum::TestTlsFirstRequestTimeout;
 #[cfg(test)]

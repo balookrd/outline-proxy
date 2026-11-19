@@ -270,6 +270,8 @@ cargo ss-release-musl-armv7
 | `[outbound].ipv6_refresh_secs` | `30` | Интервал перечитывания адресов интерфейса для `ipv6_interface` / `ipv6_prefix_interface` |
 | `[outbound].ipv6_sticky` | `true` | При включённой ротации source закрепляет один адрес на каждый upstream destination IP на `ipv6_sticky_ttl_secs` вместо нового на каждый connect. Cloudflare привязывает cookie `cf_clearance` к source IP клиента, поэтому при новом source на каждый запрос сайт вроде `claude.ai` каждый раз показывает challenge «Verifying you are human». Ротация сохраняется между разными адресатами и после TTL. У кэша закреплений есть LRU-лимит и TTL на запись; стартовая проба достижимости по-прежнему проверяет случайные source. Без префикса или интерфейса не действует. `false` возвращает случайный source на каждый connect |
 | `[outbound].ipv6_sticky_ttl_secs` | `1800` | TTL закрепления source. Ставьте выше срока жизни challenge-clearance у origin (у Cloudflare около 30 мин) |
+| `[outbound].block_private_ips` | `false` | Блокировать loopback, частные, link-local, unspecified, multicast, broadcast и cloud metadata IP-адреса назначения в исходящих TCP/UDP подключениях для защиты от SSRF |
+| `[outbound].allowed_subnets` | `[]` | Явный список CIDR или IP-адресов, разрешенных даже при включенном `block_private_ips` |
 | `tuning_profile` | `large` | Пресет ресурсных лимитов: `small` / `medium` / `large`. Задаёт flow-control окна H2/H3, лимиты стримов, таймауты сессий и NAT, глобальные лимиты UDP- и XHTTP-задач и сессий |
 | `[tuning]` | значения профиля | Переопределения отдельных ключей поверх профиля; ключи ниже |
 | `tuning.client_active_ttl_secs` | `180` / `300` / `300` | TTL для вычисления `client_active` / `client_up`. Должен быть > 0 |
@@ -485,6 +487,7 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 | `OUTLINE_SS_OUTBOUND_IPV6_REFRESH_SECS` | `--outbound-ipv6-refresh-secs` | `[outbound].ipv6_refresh_secs` |
 | `OUTLINE_SS_OUTBOUND_IPV6_STICKY` | `--outbound-ipv6-sticky` | `[outbound].ipv6_sticky` |
 | `OUTLINE_SS_OUTBOUND_IPV6_STICKY_TTL_SECS` | `--outbound-ipv6-sticky-ttl-secs` | `[outbound].ipv6_sticky_ttl_secs` |
+| `OUTLINE_SS_OUTBOUND_BLOCK_PRIVATE_IPS` | `--outbound-block-private-ips` | `[outbound].block_private_ips` |
 | `OUTLINE_SS_HTTP_ROOT_AUTH` | `--http-root-auth[=true\|false]` | `[http_root].auth` |
 | `OUTLINE_SS_HTTP_ROOT_REALM` | `--http-root-realm` | `[http_root].realm` |
 | `OUTLINE_SS_METHOD` | `--method` | `[shadowsocks].method` |

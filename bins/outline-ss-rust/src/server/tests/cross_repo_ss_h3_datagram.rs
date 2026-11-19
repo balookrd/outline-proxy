@@ -206,6 +206,7 @@ pub(super) async fn serve_h3_datagram_config(config: Config) -> Result<DatagramT
                 alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )

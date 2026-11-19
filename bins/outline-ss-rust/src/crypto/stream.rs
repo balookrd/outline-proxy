@@ -211,7 +211,12 @@ impl AeadStreamDecryptor {
             return Ok(());
         }
 
+        if self.users.is_empty() {
+            return Err(CryptoError::UnknownUser);
+        }
+
         let mut any_candidate = false;
+        let mut any_too_short = false;
 
         // Try the cached hint first when present. A hit here turns N HKDF +
         // AEAD probes into 1; on miss we fall through to the full scan.
@@ -221,7 +226,7 @@ impl AeadStreamDecryptor {
             match Self::try_user(&mut self.buffer, user, hint, &mut self.active)? {
                 CandidateOutcome::Authenticated => return Ok(()),
                 CandidateOutcome::Probed => any_candidate = true,
-                CandidateOutcome::TooShort => {},
+                CandidateOutcome::TooShort => any_too_short = true,
             }
         }
 
@@ -232,11 +237,11 @@ impl AeadStreamDecryptor {
             match Self::try_user(&mut self.buffer, user, idx, &mut self.active)? {
                 CandidateOutcome::Authenticated => return Ok(()),
                 CandidateOutcome::Probed => any_candidate = true,
-                CandidateOutcome::TooShort => {},
+                CandidateOutcome::TooShort => any_too_short = true,
             }
         }
 
-        if any_candidate {
+        if any_candidate && !any_too_short {
             Err(CryptoError::UnknownUser)
         } else {
             Ok(())

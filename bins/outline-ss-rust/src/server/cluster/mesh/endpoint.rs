@@ -2,9 +2,9 @@
 //! receiving from an edge) and dials peers (an edge relaying to a home). Both
 //! directions authenticate with the same PSK-derived mutual pin.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use quinn::{Connection, ConnectionError, Endpoint, RecvStream, SendStream, VarInt};
 
 use super::frame::{CloseReason, MeshShape, OpenHeader, open_ack_byte, parse_open_ack};
@@ -15,6 +15,9 @@ use super::tls::{
 /// Upper bound on the length-prefixed OPEN header a peer may send, so a
 /// malformed prefix can't drive an unbounded read/allocation.
 const MAX_OPEN_HEADER_LEN: usize = 4096;
+
+pub(in crate::server) const MESH_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(in crate::server) const MESH_STREAM_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One relayed session's bidirectional QUIC stream.
 pub(in crate::server) struct MeshStream {
@@ -59,11 +62,22 @@ impl MeshEndpoint {
         Ok(conn)
     }
 
+    /// Returns the next pending incoming peer connection without awaiting the TLS
+    /// handshake, allowing the accept loop to proceed concurrently.
+    pub(in crate::server) async fn accept_incoming(&self) -> Option<quinn::Incoming> {
+        self.endpoint.accept().await
+    }
+
     /// Accepts the next inbound peer connection, or `None` once the endpoint is
     /// closed.
     pub(in crate::server) async fn accept(&self) -> Option<Result<Connection>> {
-        let incoming = self.endpoint.accept().await?;
-        Some(incoming.await.context("accepting mesh connection"))
+        let incoming = self.accept_incoming().await?;
+        let res = match tokio::time::timeout(MESH_HANDSHAKE_TIMEOUT, incoming).await {
+            Ok(Ok(conn)) => Ok(conn),
+            Ok(Err(error)) => Err(anyhow::Error::from(error)).context("accepting mesh connection"),
+            Err(_) => Err(anyhow!("mesh connection handshake timed out")),
+        };
+        Some(res)
     }
 
     /// Closes the endpoint and waits for it to become idle.
@@ -152,13 +166,21 @@ pub(in crate::server) async fn accept_relay(
     conn: &Connection,
 ) -> std::result::Result<(OpenHeader, MeshStream), AcceptRelayError> {
     let (mut send, mut recv) = conn.accept_bi().await.map_err(AcceptRelayError::Connection)?;
-    match read_open_header(&mut recv).await {
-        Ok(header) => Ok((header, MeshStream { send, recv })),
-        Err(error) => {
+    let read_result =
+        tokio::time::timeout(MESH_STREAM_READ_TIMEOUT, read_open_header(&mut recv)).await;
+    match read_result {
+        Ok(Ok(header)) => Ok((header, MeshStream { send, recv })),
+        Ok(Err(error)) => {
             let code = VarInt::from_u32(CloseReason::Abort.code());
             let _ = send.reset(code);
             let _ = recv.stop(code);
             Err(AcceptRelayError::Stream(error))
+        },
+        Err(_) => {
+            let code = VarInt::from_u32(CloseReason::Abort.code());
+            let _ = send.reset(code);
+            let _ = recv.stop(code);
+            Err(AcceptRelayError::Stream(anyhow!("mesh OPEN header read timed out")))
         },
     }
 }

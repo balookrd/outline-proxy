@@ -118,6 +118,10 @@ pub struct Config {
     /// TTL (seconds) for sticky source pins. Should exceed the origin's
     /// challenge-clearance lifetime (Cloudflare's is ~30 min). Default 1800.
     pub outbound_ipv6_sticky_ttl_secs: u64,
+    /// Block private / local / loopback IPs in outbound connections.
+    pub outbound_block_private_ips: bool,
+    /// Explicitly allowed subnets/IPs when `outbound_block_private_ips` is active.
+    pub outbound_allowed_subnets: Vec<String>,
     pub http_root_auth: bool,
     pub http_root_realm: String,
     pub users: Vec<UserEntry>,

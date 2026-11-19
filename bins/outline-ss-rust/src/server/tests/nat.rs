@@ -177,6 +177,7 @@ async fn websocket_rfc9220_http3_udp_reuses_nat_entry_after_client_reconnect() -
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )

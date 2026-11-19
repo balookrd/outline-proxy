@@ -69,6 +69,7 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -157,6 +158,7 @@ async fn http3_datagram_client_sees_max_datagram_size_and_connect_works() -> Res
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -247,6 +249,7 @@ async fn websocket_http3_connect_response_omits_sec_websocket_extensions() -> Re
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -353,6 +356,7 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -510,6 +514,7 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -668,6 +673,7 @@ async fn ws_h3_send_failure_does_not_collapse_the_shared_connection() -> Result<
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -791,6 +797,7 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -867,6 +874,7 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -978,6 +986,7 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -1117,6 +1126,7 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -1248,6 +1258,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -1403,6 +1414,7 @@ async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
                 alpn: Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )

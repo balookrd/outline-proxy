@@ -616,8 +616,10 @@ fn enumerate_ipv6_on_interface(iface: &str) -> std::io::Result<Vec<Ipv6Addr>> {
         if family as i32 != libc::AF_INET6 {
             continue;
         }
-        // SAFETY: with family == AF_INET6, ifa_addr points to a sockaddr_in6.
-        let sa6 = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in6) };
+        // SAFETY: with family == AF_INET6, ifa_addr points to a valid sockaddr_in6.
+        // We read it unaligned because ifa_addr's alignment may be less than sockaddr_in6.
+        let sa6: libc::sockaddr_in6 =
+            unsafe { std::ptr::read_unaligned(ifa.ifa_addr as *const libc::sockaddr_in6) };
         let addr = Ipv6Addr::from(sa6.sin6_addr.s6_addr);
 
         // Only accept global unicast (2000::/3). This rejects, in one go:

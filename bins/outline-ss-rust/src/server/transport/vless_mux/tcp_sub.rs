@@ -51,6 +51,7 @@ where
         state.user.fwmark(),
         server.prefer_ipv4_upstream,
         server.outbound_ipv6.as_deref(),
+        &server.outbound_filter,
     )
     .await
     {

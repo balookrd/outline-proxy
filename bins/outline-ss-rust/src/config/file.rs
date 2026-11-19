@@ -201,6 +201,8 @@ pub(crate) struct OutboundSection {
     pub ipv6_refresh_secs: Option<u64>,
     pub ipv6_sticky: Option<bool>,
     pub ipv6_sticky_ttl_secs: Option<u64>,
+    pub block_private_ips: Option<bool>,
+    pub allowed_subnets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

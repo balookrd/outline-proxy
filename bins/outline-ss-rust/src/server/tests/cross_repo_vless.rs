@@ -300,6 +300,7 @@ async fn setup_vless_ws_h3_server(
                 alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -960,6 +961,7 @@ async fn setup_vless_ws_h3_server_with_resumption(
                 alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )

@@ -49,6 +49,15 @@ impl Config {
         // CIDRs must parse and alias names must be globally unique vs ids.
         super::validate_ip_aliases(&self.users)?;
 
+        // Validate outbound allowed_subnets CIDRs if any are specified
+        if !self.outbound_allowed_subnets.is_empty() {
+            outline_net::IpAliasTable::build([(
+                "allowed",
+                self.outbound_allowed_subnets.as_slice(),
+            )])
+            .map_err(|e| anyhow::anyhow!("invalid [outbound] allowed_subnets: {e}"))?;
+        }
+
         // ── Carrier endpoints ────────────────────────────────────────────
         // `self.endpoints` is the single source of truth for every carrier
         // path now (users are pure credentials that work on every endpoint of

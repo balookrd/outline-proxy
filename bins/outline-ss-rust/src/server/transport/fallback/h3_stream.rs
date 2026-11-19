@@ -111,26 +111,14 @@ async fn proxy_h3_to_backend(
             chunk.advance(len);
         }
     }
-    let request_trailers = stream
+    let _request_trailers = stream
         .recv_trailers()
         .await
         .context("failed to read HTTP/3 request trailers")?;
 
     let original_uri = request.uri().clone();
     let (parts_in, _empty_body) = request.into_parts();
-    let mut upstream_parts = build_upstream_parts(&ctx, peer_addr, &original_uri, &parts_in, true)?;
-
-    // h3 lets the request carry trailers; relay them on the upstream
-    // request via the `Trailer` HTTP header so an h2 backend that
-    // tracks the indication can mirror it back. The actual trailer
-    // values are merged into the body's trailing frame below — but
-    // hyper http1 does not surface request trailers in the wire form
-    // anyway, so this is effectively a no-op for `backend_proto = h1`.
-    if let Some(trailers) = request_trailers.as_ref() {
-        for (name, value) in trailers.iter() {
-            upstream_parts.headers.append(name.clone(), value.clone());
-        }
-    }
+    let upstream_parts = build_upstream_parts(&ctx, peer_addr, &original_uri, &parts_in, true)?;
 
     let upstream_req = http::Request::from_parts(upstream_parts, Full::new(body_buf.freeze()));
 

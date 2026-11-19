@@ -10,6 +10,7 @@ use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::AcceptRelayError;
 use crate::server::cluster::mesh::CloseReason;
 use crate::server::cluster::mesh::MAX_USER_LEN;
+use crate::server::cluster::mesh::MESH_HANDSHAKE_TIMEOUT;
 use crate::server::cluster::mesh::MeshFraming;
 use crate::server::cluster::mesh::MeshProtocol;
 use crate::server::cluster::mesh::MeshShape;
@@ -51,16 +52,19 @@ pub(in crate::server) async fn run_mesh_listener(
 ) -> Result<()> {
     loop {
         tokio::select! {
-            accepted = cluster.endpoint.accept() => {
-                match accepted {
-                    Some(Ok(conn)) => {
-                        let cluster = Arc::clone(&cluster);
-                        let services = Arc::clone(&services);
-                        tokio::spawn(handle_mesh_connection(conn, cluster, services));
-                    },
-                    Some(Err(error)) => debug!(?error, "mesh peer connection failed"),
-                    None => break, // endpoint closed
-                }
+            incoming = cluster.endpoint.accept_incoming() => {
+                let Some(incoming) = incoming else { break };
+                let cluster = Arc::clone(&cluster);
+                let services = Arc::clone(&services);
+                tokio::spawn(async move {
+                    match tokio::time::timeout(MESH_HANDSHAKE_TIMEOUT, incoming).await {
+                        Ok(Ok(conn)) => {
+                            handle_mesh_connection(conn, cluster, services).await;
+                        },
+                        Ok(Err(error)) => debug!(?error, "mesh peer connection failed"),
+                        Err(_) => debug!("mesh peer connection handshake timed out"),
+                    }
+                });
             }
             _ = shutdown.cancelled() => break,
         }

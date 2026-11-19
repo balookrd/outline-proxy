@@ -44,20 +44,20 @@ const SHARD_COUNT: usize = 16;
 
 #[derive(Hash, Eq, PartialEq, Clone, Copy)]
 struct CacheKey {
-    user_index: u32,
+    user_fingerprint: u64,
     salt_len: u8,
     salt: [u8; MAX_SALT_LEN],
 }
 
 impl CacheKey {
-    fn new(user_index: usize, salt: &[u8]) -> Option<Self> {
-        if salt.len() > MAX_SALT_LEN || user_index > u32::MAX as usize {
+    fn new(user_fingerprint: u64, salt: &[u8]) -> Option<Self> {
+        if salt.len() > MAX_SALT_LEN {
             return None;
         }
         let mut buf = [0u8; MAX_SALT_LEN];
         buf[..salt.len()].copy_from_slice(salt);
         Some(Self {
-            user_index: user_index as u32,
+            user_fingerprint,
             salt_len: salt.len() as u8,
             salt: buf,
         })
@@ -71,7 +71,7 @@ impl CacheKey {
 /// Internally split into [`SHARD_COUNT`] LRU partitions, each guarded by its
 /// own [`parking_lot::Mutex`]. The total capacity is divided evenly between
 /// shards (rounded up). Lookups and inserts pick a shard via FNV-1a over
-/// `(user_index, salt[..8])` so the same `(user, salt)` always hits the same
+/// `(user_fingerprint, salt[..8])` so the same `(user, salt)` always hits the same
 /// shard.
 pub struct SessionKeyCache {
     shards: Box<[Mutex<LruCache<CacheKey, Arc<LessSafeKey>>>]>,
@@ -94,7 +94,7 @@ impl SessionKeyCache {
         )
     }
 
-    /// Pick the shard for a given cache key. Folds `user_index` together with
+    /// Pick the shard for a given cache key. Folds `user_fingerprint` together with
     /// the first 8 salt bytes via FNV-1a; the 8-byte prefix is enough to
     /// distinguish SS-2022 8-byte session IDs as well as scattered legacy
     /// 16/32-byte salts.
@@ -103,7 +103,7 @@ impl SessionKeyCache {
         const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
         const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
         let mut h = FNV_OFFSET;
-        for b in (key.user_index as u64).to_le_bytes() {
+        for b in key.user_fingerprint.to_le_bytes() {
             h ^= b as u64;
             h = h.wrapping_mul(FNV_PRIME);
         }
@@ -116,16 +116,23 @@ impl SessionKeyCache {
         &self.shards[(h as usize) & (SHARD_COUNT - 1)]
     }
 
-    pub fn get(&self, user_index: usize, salt: &[u8]) -> Option<Arc<LessSafeKey>> {
-        let key = CacheKey::new(user_index, salt)?;
+    pub fn get(&self, user_fingerprint: u64, salt: &[u8]) -> Option<Arc<LessSafeKey>> {
+        let key = CacheKey::new(user_fingerprint, salt)?;
         self.shard_for(&key).lock().get(&key).cloned()
     }
 
-    pub fn insert(&self, user_index: usize, salt: &[u8], value: Arc<LessSafeKey>) {
-        let Some(key) = CacheKey::new(user_index, salt) else {
+    pub fn insert(&self, user_fingerprint: u64, salt: &[u8], value: Arc<LessSafeKey>) {
+        let Some(key) = CacheKey::new(user_fingerprint, salt) else {
             return;
         };
         self.shard_for(&key).lock().put(key, value);
+    }
+
+    #[allow(dead_code)]
+    pub fn clear(&self) {
+        for shard in self.shards.iter() {
+            shard.lock().clear();
+        }
     }
 
     #[cfg(test)]

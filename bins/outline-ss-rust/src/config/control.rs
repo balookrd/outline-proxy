@@ -37,7 +37,13 @@ pub(super) fn resolve_control_config(
         .or_else(|| file_control.and_then(|c| c.token_file.clone()));
 
     let token = match (token_literal, token_file) {
-        (Some(t), None) => Some(t),
+        (Some(t), None) => {
+            let trimmed = t.trim().to_owned();
+            if trimmed.is_empty() {
+                anyhow::bail!("control.token cannot be empty");
+            }
+            Some(trimmed)
+        },
         (None, Some(path)) => {
             let contents = std::fs::read_to_string(&path).map_err(|error| {
                 anyhow::anyhow!("failed to read control token file {}: {error}", path.display())

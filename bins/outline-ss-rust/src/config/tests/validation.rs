@@ -41,6 +41,8 @@ fn base_config() -> Config {
         outbound_ipv6_refresh_secs: 30,
         outbound_ipv6_sticky: false,
         outbound_ipv6_sticky_ttl_secs: 1800,
+        outbound_block_private_ips: false,
+        outbound_allowed_subnets: Vec::new(),
         http_root_auth: false,
         http_root_realm: default_http_root_realm(),
         users: vec![super::super::UserEntry {
@@ -499,4 +501,21 @@ fn alias_colliding_with_a_user_id_is_rejected() {
     cfg.users[0].aliases = Some(aliases(&[("default", "192.0.2.0/24")]));
     let error = cfg.validate().unwrap_err().to_string();
     assert!(error.contains("collides") || error.contains("unique"), "got: {error}");
+}
+
+#[test]
+fn outbound_allowed_subnets_valid_cidrs_are_accepted() {
+    let mut cfg = base_config();
+    cfg.outbound_block_private_ips = true;
+    cfg.outbound_allowed_subnets = vec!["192.168.1.0/24".into(), "10.0.0.1/32".into()];
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
+fn outbound_allowed_subnets_invalid_cidr_is_rejected() {
+    let mut cfg = base_config();
+    cfg.outbound_block_private_ips = true;
+    cfg.outbound_allowed_subnets = vec!["not-a-cidr".into()];
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("allowed_subnets") || err.contains("invalid"));
 }

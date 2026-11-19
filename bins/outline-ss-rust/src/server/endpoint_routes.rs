@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::config::{CipherKind, EndpointConfig, EndpointKind, UserEntry};
-use crate::crypto::UserKey;
+use crate::crypto::{SessionKeyCache, UserKey};
 use crate::protocol::vless::VlessUser;
 
 use super::constants::TCP_PEER_USER_CACHE_CAPACITY;
@@ -42,6 +42,7 @@ fn ss_route(pool: &Arc<[UserKey]>, candidates: &Arc<[Arc<str>]>) -> Arc<Transpor
         users: Arc::clone(pool),
         candidate_users: Arc::clone(candidates),
         peer_user_cache: Arc::new(PeerUserCache::with_capacity(TCP_PEER_USER_CACHE_CAPACITY)),
+        session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
     })
 }
 

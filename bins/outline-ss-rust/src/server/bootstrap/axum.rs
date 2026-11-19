@@ -632,11 +632,11 @@ fn http_header_read_timeout() -> Duration {
     Duration::from_secs(PLAIN_HTTP_HEADER_READ_TIMEOUT_SECS)
 }
 
-/// Per-IP connection tracker for the TLS listener. When `limit` is configured
-/// (`Some(n)` where `n > 0`), limits concurrent active TCP connections from any
+/// Per-IP connection tracker for listeners. When `limit` is configured
+/// (`Some(n)` where `n > 0`), limits concurrent active connections from any
 /// single remote IP address.
 #[derive(Clone, Default)]
-pub(super) struct IpConnectionTracker {
+pub(in crate::server) struct IpConnectionTracker {
     inner: Option<Arc<IpConnectionTrackerInner>>,
 }
 
@@ -645,7 +645,7 @@ struct IpConnectionTrackerInner {
     counts: Mutex<HashMap<IpAddr, usize>>,
 }
 
-pub(super) struct IpConnectionGuard {
+pub(in crate::server) struct IpConnectionGuard {
     ip: IpAddr,
     inner: Arc<IpConnectionTrackerInner>,
 }
@@ -664,7 +664,7 @@ impl Drop for IpConnectionGuard {
 }
 
 impl IpConnectionTracker {
-    pub(super) fn new(limit: Option<usize>) -> Self {
+    pub(in crate::server) fn new(limit: Option<usize>) -> Self {
         let inner = match limit {
             Some(l) if l > 0 => Some(Arc::new(IpConnectionTrackerInner {
                 limit: l,
@@ -675,11 +675,14 @@ impl IpConnectionTracker {
         Self { inner }
     }
 
-    pub(super) fn limit(&self) -> usize {
+    pub(in crate::server) fn limit(&self) -> usize {
         self.inner.as_ref().map(|i| i.limit).unwrap_or(0)
     }
 
-    pub(super) fn try_acquire(&self, ip: IpAddr) -> Result<Option<IpConnectionGuard>, usize> {
+    pub(in crate::server) fn try_acquire(
+        &self,
+        ip: IpAddr,
+    ) -> Result<Option<IpConnectionGuard>, usize> {
         let inner = match &self.inner {
             Some(inner) => inner,
             None => return Ok(None),
@@ -853,12 +856,37 @@ async fn serve_tls_listener(
                     }
                     res = timeout_at(
                         preauth_deadline,
-                        sni_fallback::dispatch_sni(ctx, &metrics, stream, peer_addr),
+                        sni_fallback::peek_and_route(ctx, &metrics, stream, peer_addr),
                     ) => res,
                 };
                 match dispatch {
-                    Ok(Ok(Some(accepted))) => (accepted.stream, accepted.sni),
-                    Ok(Ok(None)) => return,
+                    Ok(Ok(sni_fallback::SniDispatchResult::Local(accepted))) => {
+                        (accepted.stream, accepted.sni)
+                    },
+                    Ok(Ok(sni_fallback::SniDispatchResult::Backend {
+                        backend_idx,
+                        inbound,
+                        buffered,
+                        sni,
+                    })) => {
+                        let backend = &ctx.config.backends[backend_idx];
+                        debug!(
+                            ?peer_addr,
+                            ?sni,
+                            backend = %backend.authority,
+                            "splicing foreign SNI to backend",
+                        );
+                        let _ = sni_fallback::splice_to_backend(
+                            backend,
+                            ctx.inbound_listen,
+                            inbound,
+                            peer_addr,
+                            buffered,
+                        )
+                        .await;
+                        return;
+                    },
+                    Ok(Ok(sni_fallback::SniDispatchResult::Dropped)) => return,
                     Ok(Err(_)) => return,
                     Err(_elapsed) => {
                         // Pre-auth budget spent before a complete ClientHello
@@ -1028,7 +1056,9 @@ fn build_http_server_builder(
         .max_header_list_size(H2_CADDY_MAX_HEADER_LIST_SIZE)
         .initial_stream_window_size(Some(profile.h2_stream_window_bytes))
         .initial_connection_window_size(Some(profile.h2_connection_window_bytes))
-        .max_send_buf_size(profile.h2_max_send_buf_size);
+        .max_send_buf_size(profile.h2_max_send_buf_size)
+        .keep_alive_interval(Some(Duration::from_secs(45)))
+        .keep_alive_timeout(Duration::from_secs(20));
     builder
 }
 

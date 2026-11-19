@@ -533,3 +533,36 @@ padding = true
     let ep = &file.endpoints.unwrap()[0];
     assert!(ep.padded);
 }
+
+#[test]
+fn persist_config_patch_validates_result_and_rejects_invalid_config() {
+    let path = std::env::temp_dir()
+        .join(format!("outline-ss-persist-patch-{}", std::process::id()))
+        .with_extension("toml");
+    let original = r#"
+[server]
+listen = "127.0.0.1:443"
+tls_cert_path = "cert.pem"
+tls_key_path = "key.pem"
+
+[[users]]
+id = "alice"
+password = "secret-password"
+"#;
+    std::fs::write(&path, original).expect("write initial config");
+
+    // Patch that attempts to set an invalid tuning profile name
+    let patch = ServerConfigPatch {
+        tuning_profile: Some("invalid-profile-name".to_string()),
+        ..Default::default()
+    };
+
+    let err =
+        persist_config_patch(&path, &patch).expect_err("should reject invalid tuning profile");
+    assert!(err.to_string().contains("validation") || err.to_string().contains("failed"));
+
+    // File content remains unchanged
+    let after = std::fs::read_to_string(&path).expect("read after failed patch");
+    assert_eq!(after, original);
+    let _ = std::fs::remove_file(path);
+}

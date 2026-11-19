@@ -216,7 +216,7 @@ struct LegacySaltEntry {
 /// and starve the others (a cross-tenant availability DoS) — only its own new
 /// sessions are dropped once it is at its share.
 pub(crate) struct ReplayStore {
-    entries: DashMap<[u8; 8], Arc<ReplayEntry>>,
+    entries: DashMap<(Arc<str>, [u8; 8]), Arc<ReplayEntry>>,
     /// Legacy request salt -> who first presented it and when (for idle
     /// eviction and per-user accounting).
     legacy_salts: DashMap<LegacySalt, LegacySaltEntry>,
@@ -260,7 +260,8 @@ impl ReplayStore {
         client_session_id: [u8; 8],
         packet_id: u64,
     ) -> ReplayCheck {
-        let entry = if let Some(e) = self.entries.get(&client_session_id) {
+        let key = (Arc::clone(user_id), client_session_id);
+        let entry = if let Some(e) = self.entries.get(&key) {
             Arc::clone(e.value())
         } else {
             // Check the global cap before taking a shard lock in `entry(...)`.
@@ -280,7 +281,7 @@ impl ReplayStore {
             if !self.reserve_user_slot(user_id) {
                 return ReplayCheck::StoreFull(ReplayFull::PerUser);
             }
-            match self.entries.entry(client_session_id) {
+            match self.entries.entry(key) {
                 Entry::Occupied(occupied) => {
                     self.release_user_slot(user_id);
                     Arc::clone(occupied.get())
@@ -296,10 +297,10 @@ impl ReplayStore {
                 ),
             }
         };
-        entry
-            .last_seen_secs
-            .store(clock::current_unix_secs(), Ordering::Relaxed);
         if entry.window.lock().check_and_mark(packet_id) {
+            entry
+                .last_seen_secs
+                .store(clock::current_unix_secs(), Ordering::Relaxed);
             ReplayCheck::Fresh
         } else {
             ReplayCheck::Replay

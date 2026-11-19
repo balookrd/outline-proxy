@@ -185,6 +185,7 @@ async fn start_listener(udp_datagrams: bool) -> Result<TestListener> {
                 http_fallback: None,
                 cluster: None,
                 udp_datagrams,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )

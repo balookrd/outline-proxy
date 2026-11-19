@@ -142,9 +142,14 @@ pub(crate) struct NatLimits {
     pub max_entries_per_user: usize,
 }
 
+struct NatCell {
+    cell: OnceCell<Arc<NatEntry>>,
+    created_secs: u64,
+}
+
 /// Process-wide NAT table.  Shared via `Arc` in `AppState`.
 pub(crate) struct NatTable {
-    entries: DashMap<NatKey, Arc<OnceCell<Arc<NatEntry>>>>,
+    entries: DashMap<NatKey, Arc<NatCell>>,
     idle_timeout: Duration,
     limits: NatLimits,
     /// Live entry count per user, maintained alongside `entries` so the
@@ -181,7 +186,7 @@ impl NatTable {
     /// SS-UDP-over-WS resume / park paths that only want to inspect
     /// already-live state.
     pub(crate) fn try_get(&self, key: &NatKey) -> Option<Arc<NatEntry>> {
-        self.entries.get(key).and_then(|cell| cell.get().cloned())
+        self.entries.get(key).and_then(|cell| cell.cell.get().cloned())
     }
 
     /// Whether a live entry is registered for `key`. Same lookup as
@@ -189,7 +194,7 @@ impl NatTable {
     /// need liveness, e.g. the SS-UDP stream reconciling the set of NAT keys it
     /// still owns against the entries that idle eviction has since dropped.
     pub(crate) fn contains(&self, key: &NatKey) -> bool {
-        self.entries.get(key).is_some_and(|cell| cell.get().is_some())
+        self.entries.get(key).is_some_and(|cell| cell.cell.get().is_some())
     }
 
     /// Returns the existing NAT entry for `key`, or creates a new one: binds a
@@ -213,7 +218,7 @@ impl NatTable {
         // after a session's first packet. Only fall back to `entry()` (write
         // lock + key clone) when the entry is missing. The OnceCell still
         // deduplicates concurrent creation on the cold path.
-        let cell = if let Some(existing) = self.entries.get(&key) {
+        let entry_cell = if let Some(existing) = self.entries.get(&key) {
             Arc::clone(existing.value())
         } else {
             // New key: enforce the entry cap before allocating a socket + reader
@@ -241,22 +246,28 @@ impl NatTable {
                     self.release_user_slot(&key.user_id);
                     Arc::clone(occupied.get())
                 },
-                Entry::Vacant(vacant) => {
-                    Arc::clone(vacant.insert(Arc::new(OnceCell::new())).value())
-                },
+                Entry::Vacant(vacant) => Arc::clone(
+                    vacant
+                        .insert(Arc::new(NatCell {
+                            cell: OnceCell::new(),
+                            created_secs: clock::current_unix_secs(),
+                        }))
+                        .value(),
+                ),
             }
         };
 
         // On error the cell stays uninitialised; evict_idle drops such cells
-        // without counting them as evictions (they never incremented the
-        // active-entries metric) and returns their per-user slot, so no second
-        // lock is needed to clean up.
+        // once their creation timestamp is older than idle_timeout, returning
+        // their per-user slot without dropping in-flight requests prematurely.
         let outbound = self.outbound_ipv6.clone();
-        cell.get_or_try_init(|| async move {
-            Self::create_entry(&key, server_session, metrics, outbound).await
-        })
-        .await
-        .map(Arc::clone)
+        entry_cell
+            .cell
+            .get_or_try_init(|| async move {
+                Self::create_entry(&key, server_session, metrics, outbound).await
+            })
+            .await
+            .map(Arc::clone)
     }
 
     /// Claims one per-user entry slot, returning `false` when the user is
@@ -337,7 +348,7 @@ impl NatTable {
     /// Current number of active NAT entries (informational).
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.entries.iter().filter(|r| r.value().get().is_some()).count()
+        self.entries.iter().filter(|r| r.value().cell.get().is_some()).count()
     }
 
     /// Remove entries that have had no outbound traffic for longer than
@@ -352,8 +363,8 @@ impl NatTable {
         // `retain` holds an `entries` shard.
         let track_users = self.limits.max_entries_per_user > 0;
         let mut released: Vec<Arc<str>> = Vec::new();
-        self.entries.retain(|key, cell| {
-            let keep = match cell.get() {
+        self.entries.retain(|key, entry_cell| {
+            let keep = match entry_cell.cell.get() {
                 Some(entry) => {
                     let keep = entry.last_active_secs().load(Ordering::Relaxed) >= threshold;
                     if !keep {
@@ -361,7 +372,10 @@ impl NatTable {
                     }
                     keep
                 },
-                None => false,
+                None => {
+                    // Do not evict in-flight cells created recently.
+                    entry_cell.created_secs >= threshold
+                },
             };
             if !keep && track_users {
                 released.push(Arc::clone(&key.user_id));
