@@ -200,14 +200,33 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let refreshSubtitleLabel = NSTextField(labelWithString: "Обновлено недавно · каждые 12 ч")
     private let chevronButton = NSButton()
 
-    // Stats strip
+    // Stats strip (Android parity)
     private let statsContainer = NSView()
-    private let statDivider = NSBox()
-    private var statHeaderLabels: [NSTextField] = []
-    private var statIconViews: [NSImageView] = []
+    private let statTopDivider = NSBox()
+    private let statDivider1 = NSBox()
+    private let statDivider2 = NSBox()
+
+    // 1. Duration column
+    private let durationIconView = NSImageView()
+    private let durationHeaderLabel = NSTextField(labelWithString: "ДЛИТЕЛЬНОСТЬ")
     private let durationValueLabel = NSTextField(labelWithString: "00:00:00")
-    private let modeValueLabel = NSTextField(labelWithString: "SOCKS5")
-    private let protocolValueLabel = NSTextField(labelWithString: "VLESS/H3")
+    private let durationCaptionLabel = NSTextField(labelWithString: "чч:мм:сс")
+
+    // 2. Traffic column
+    private let trafficIconView = NSImageView()
+    private let trafficHeaderLabel = NSTextField(labelWithString: "ТРАФИК")
+    private let trafficUpIcon = NSTextField(labelWithString: "↑")
+    private let trafficUpValueLabel = NSTextField(labelWithString: "0 Б")
+    private let trafficDownIcon = NSTextField(labelWithString: "↓")
+    private let trafficDownValueLabel = NSTextField(labelWithString: "0 Б")
+
+    // 3. Protocol column
+    private let protocolIconView = NSImageView()
+    private let protocolHeaderLabel = NSTextField(labelWithString: "ПРОТОКОЛ")
+    private let tcpTagLabel = NSTextField(labelWithString: "TCP")
+    private let tcpCarrierLabel = NSTextField(labelWithString: "—")
+    private let udpTagLabel = NSTextField(labelWithString: "UDP")
+    private let udpCarrierLabel = NSTextField(labelWithString: "—")
 
     // 3. Mode selector
     private let modeCard = AndroidCardView(cornerRadius: 18)
@@ -531,63 +550,182 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     private func setupStatsStrip() {
         statsContainer.translatesAutoresizingMaskIntoConstraints = false
 
-        statDivider.boxType = .separator
-        statDivider.translatesAutoresizingMaskIntoConstraints = false
-        statsContainer.addSubview(statDivider)
+        statTopDivider.boxType = .custom
+        statTopDivider.borderWidth = 0
+        statTopDivider.translatesAutoresizingMaskIntoConstraints = false
+        statsContainer.addSubview(statTopDivider)
 
         let stripRow = NSStackView()
         stripRow.orientation = .horizontal
-        stripRow.distribution = .fillEqually
-        stripRow.alignment = .centerY
+        stripRow.distribution = .equalSpacing
+        stripRow.alignment = .top
+        stripRow.spacing = 6
         stripRow.translatesAutoresizingMaskIntoConstraints = false
         statsContainer.addSubview(stripRow)
 
-        NSLayoutConstraint.activate([
-            statDivider.topAnchor.constraint(equalTo: statsContainer.topAnchor),
-            statDivider.leadingAnchor.constraint(equalTo: statsContainer.leadingAnchor),
-            statDivider.trailingAnchor.constraint(equalTo: statsContainer.trailingAnchor),
-            statDivider.heightAnchor.constraint(equalToConstant: 1),
+        statDivider1.boxType = .custom
+        statDivider1.borderWidth = 0
+        statDivider1.translatesAutoresizingMaskIntoConstraints = false
+        statDivider1.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        statDivider1.heightAnchor.constraint(equalToConstant: 38).isActive = true
 
-            stripRow.topAnchor.constraint(equalTo: statDivider.bottomAnchor, constant: 8),
+        statDivider2.boxType = .custom
+        statDivider2.borderWidth = 0
+        statDivider2.translatesAutoresizingMaskIntoConstraints = false
+        statDivider2.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        statDivider2.heightAnchor.constraint(equalToConstant: 38).isActive = true
+
+        let col1 = setupDurationColumn()
+        let col2 = setupTrafficColumn()
+        let col3 = setupProtocolColumn()
+
+        stripRow.addArrangedSubview(col1)
+        stripRow.addArrangedSubview(statDivider1)
+        stripRow.addArrangedSubview(col2)
+        stripRow.addArrangedSubview(statDivider2)
+        stripRow.addArrangedSubview(col3)
+
+        NSLayoutConstraint.activate([
+            statTopDivider.topAnchor.constraint(equalTo: statsContainer.topAnchor),
+            statTopDivider.leadingAnchor.constraint(equalTo: statsContainer.leadingAnchor),
+            statTopDivider.trailingAnchor.constraint(equalTo: statsContainer.trailingAnchor),
+            statTopDivider.heightAnchor.constraint(equalToConstant: 1),
+
+            stripRow.topAnchor.constraint(equalTo: statTopDivider.bottomAnchor, constant: 10),
             stripRow.leadingAnchor.constraint(equalTo: statsContainer.leadingAnchor),
             stripRow.trailingAnchor.constraint(equalTo: statsContainer.trailingAnchor),
-            stripRow.bottomAnchor.constraint(equalTo: statsContainer.bottomAnchor),
-            stripRow.heightAnchor.constraint(equalToConstant: 36)
+            stripRow.bottomAnchor.constraint(equalTo: statsContainer.bottomAnchor)
         ])
-
-        stripRow.addArrangedSubview(createStatColumn(title: "ДЛИТЕЛЬНОСТЬ", icon: "clock", valueLabel: durationValueLabel))
-        stripRow.addArrangedSubview(createStatColumn(title: "РЕЖИМ", icon: "shield", valueLabel: modeValueLabel))
-        stripRow.addArrangedSubview(createStatColumn(title: "ПРОТОКОЛ", icon: "waveform", valueLabel: protocolValueLabel))
     }
 
-    private func createStatColumn(title: String, icon: String, valueLabel: NSTextField) -> NSView {
+    private func setupDurationColumn() -> NSView {
         let col = NSStackView()
         col.orientation = .vertical
-        col.alignment = .centerX
-        col.spacing = 2
+        col.alignment = .leading
+        col.spacing = 3
 
-        let headRow = NSStackView()
-        headRow.orientation = .horizontal
-        headRow.alignment = .centerY
-        headRow.spacing = 4
+        let headerRow = NSStackView()
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = 4
 
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.widthAnchor.constraint(equalToConstant: 11).isActive = true
-        iconView.heightAnchor.constraint(equalToConstant: 11).isActive = true
-        statIconViews.append(iconView)
-        headRow.addArrangedSubview(iconView)
+        durationIconView.image = NSImage(systemSymbolName: "clock", accessibilityDescription: "Длительность")
+        durationIconView.translatesAutoresizingMaskIntoConstraints = false
+        durationIconView.widthAnchor.constraint(equalToConstant: 11).isActive = true
+        durationIconView.heightAnchor.constraint(equalToConstant: 11).isActive = true
+        headerRow.addArrangedSubview(durationIconView)
 
-        let cap = NSTextField(labelWithString: title)
-        cap.font = NSFont.systemFont(ofSize: 8.5, weight: .bold)
-        statHeaderLabels.append(cap)
-        headRow.addArrangedSubview(cap)
-        col.addArrangedSubview(headRow)
+        durationHeaderLabel.font = NSFont.systemFont(ofSize: 8.5, weight: .bold)
+        headerRow.addArrangedSubview(durationHeaderLabel)
+        col.addArrangedSubview(headerRow)
 
-        valueLabel.font = NSFont.systemFont(ofSize: 13, weight: .bold)
-        valueLabel.alignment = .center
-        col.addArrangedSubview(valueLabel)
+        durationValueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
+        col.addArrangedSubview(durationValueLabel)
+
+        durationCaptionLabel.font = NSFont.systemFont(ofSize: 8.5, weight: .regular)
+        col.addArrangedSubview(durationCaptionLabel)
+
+        return col
+    }
+
+    private func setupTrafficColumn() -> NSView {
+        let col = NSStackView()
+        col.orientation = .vertical
+        col.alignment = .leading
+        col.spacing = 3
+
+        let headerRow = NSStackView()
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = 4
+
+        trafficIconView.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Трафик")
+        trafficIconView.translatesAutoresizingMaskIntoConstraints = false
+        trafficIconView.widthAnchor.constraint(equalToConstant: 11).isActive = true
+        trafficIconView.heightAnchor.constraint(equalToConstant: 11).isActive = true
+        headerRow.addArrangedSubview(trafficIconView)
+
+        trafficHeaderLabel.font = NSFont.systemFont(ofSize: 8.5, weight: .bold)
+        headerRow.addArrangedSubview(trafficHeaderLabel)
+        col.addArrangedSubview(headerRow)
+
+        let upRow = NSStackView()
+        upRow.orientation = .horizontal
+        upRow.alignment = .centerY
+        upRow.spacing = 3
+
+        trafficUpIcon.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        upRow.addArrangedSubview(trafficUpIcon)
+
+        trafficUpValueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        upRow.addArrangedSubview(trafficUpValueLabel)
+        col.addArrangedSubview(upRow)
+
+        let downRow = NSStackView()
+        downRow.orientation = .horizontal
+        downRow.alignment = .centerY
+        downRow.spacing = 3
+
+        trafficDownIcon.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        downRow.addArrangedSubview(trafficDownIcon)
+
+        trafficDownValueLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        downRow.addArrangedSubview(trafficDownValueLabel)
+        col.addArrangedSubview(downRow)
+
+        return col
+    }
+
+    private func setupProtocolColumn() -> NSView {
+        let col = NSStackView()
+        col.orientation = .vertical
+        col.alignment = .leading
+        col.spacing = 3
+
+        let headerRow = NSStackView()
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = 4
+
+        protocolIconView.image = NSImage(systemSymbolName: "waveform.path.ecg", accessibilityDescription: "Протокол")
+        protocolIconView.translatesAutoresizingMaskIntoConstraints = false
+        protocolIconView.widthAnchor.constraint(equalToConstant: 11).isActive = true
+        protocolIconView.heightAnchor.constraint(equalToConstant: 11).isActive = true
+        headerRow.addArrangedSubview(protocolIconView)
+
+        protocolHeaderLabel.font = NSFont.systemFont(ofSize: 8.5, weight: .bold)
+        headerRow.addArrangedSubview(protocolHeaderLabel)
+        col.addArrangedSubview(headerRow)
+
+        let tcpRow = NSStackView()
+        tcpRow.orientation = .horizontal
+        tcpRow.alignment = .firstBaseline
+        tcpRow.spacing = 4
+
+        tcpTagLabel.font = NSFont.systemFont(ofSize: 9, weight: .medium)
+        tcpTagLabel.translatesAutoresizingMaskIntoConstraints = false
+        tcpTagLabel.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        tcpRow.addArrangedSubview(tcpTagLabel)
+
+        tcpCarrierLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        tcpCarrierLabel.lineBreakMode = .byTruncatingTail
+        tcpRow.addArrangedSubview(tcpCarrierLabel)
+        col.addArrangedSubview(tcpRow)
+
+        let udpRow = NSStackView()
+        udpRow.orientation = .horizontal
+        udpRow.alignment = .firstBaseline
+        udpRow.spacing = 4
+
+        udpTagLabel.font = NSFont.systemFont(ofSize: 9, weight: .medium)
+        udpTagLabel.translatesAutoresizingMaskIntoConstraints = false
+        udpTagLabel.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        udpRow.addArrangedSubview(udpTagLabel)
+
+        udpCarrierLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        udpCarrierLabel.lineBreakMode = .byTruncatingTail
+        udpRow.addArrangedSubview(udpCarrierLabel)
+        col.addArrangedSubview(udpRow)
 
         return col
     }
@@ -814,15 +952,30 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         chevronButton.contentTintColor = palette.chevronTint
 
         // Stats
-        for lbl in statHeaderLabels {
-            lbl.textColor = palette.secondaryText
-        }
-        for icn in statIconViews {
-            icn.contentTintColor = palette.bubbleIcon
-        }
+        statTopDivider.fillColor = palette.cardBorder
+        statDivider1.fillColor = palette.cardBorder
+        statDivider2.fillColor = palette.cardBorder
+
+        durationIconView.contentTintColor = palette.bubbleIcon
+        trafficIconView.contentTintColor = palette.bubbleIcon
+        protocolIconView.contentTintColor = palette.bubbleIcon
+
+        durationHeaderLabel.textColor = palette.secondaryText
+        trafficHeaderLabel.textColor = palette.secondaryText
+        protocolHeaderLabel.textColor = palette.secondaryText
+
         durationValueLabel.textColor = palette.primaryText
-        modeValueLabel.textColor = palette.primaryText
-        protocolValueLabel.textColor = palette.primaryText
+        durationCaptionLabel.textColor = palette.secondaryText
+
+        trafficUpIcon.textColor = palette.bubbleIcon
+        trafficUpValueLabel.textColor = palette.primaryText
+        trafficDownIcon.textColor = palette.bubbleIcon
+        trafficDownValueLabel.textColor = palette.primaryText
+
+        tcpTagLabel.textColor = palette.secondaryText
+        tcpCarrierLabel.textColor = palette.primaryText
+        udpTagLabel.textColor = palette.secondaryText
+        updateCarrierLines()
 
         // 4. Mode Card
         modeCard.applyTheme(bg: palette.contentCardBg, border: palette.cardBorder)
@@ -926,12 +1079,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
             actionButton.isEnabled = true
 
             statsContainer.isHidden = false
-            modeValueLabel.stringValue = AppState.shared.mode.shortTitle
-            let isTcp = AppState.shared.tcpOnly || (ProfileStore.shared.activeProfile?.tcpOnly == true)
-            let transportName = ProfileStore.shared.activeProfile?.transport.uppercased() ?? "VLESS"
-            protocolValueLabel.stringValue = "\(transportName)/\(isTcp ? "H2" : "H3")"
+            updateCarrierLines()
             if connectedSince == nil {
                 connectedSince = Date()
+                NetworkTrafficMonitor.shared.start(mode: AppState.shared.mode)
                 startDurationTimer()
             }
 
@@ -970,6 +1121,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
             statsContainer.isHidden = true
             stopDurationTimer()
+            NetworkTrafficMonitor.shared.stop()
             connectedSince = nil
 
         case .error(let msg):
@@ -986,7 +1138,58 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
             statsContainer.isHidden = true
             stopDurationTimer()
+            NetworkTrafficMonitor.shared.stop()
             connectedSince = nil
+        }
+    }
+
+    private func updateCarrierLines() {
+        guard let profile = ProfileStore.shared.activeProfile else {
+            tcpCarrierLabel.stringValue = "—"
+            udpCarrierLabel.stringValue = "—"
+            return
+        }
+
+        let isTcpOnly = AppState.shared.tcpOnly || profile.tcpOnly
+        let transportFamily = profile.transport.uppercased() // VLESS / SS / XHTTP / WS
+
+        // Determine mode and HTTP version (H3, H2, H1)
+        var carrierMode = isTcpOnly ? "H2" : "H3"
+        let fullConfig = (profile.cachedToml + profile.link).lowercased()
+        if fullConfig.contains("alpn=h3") {
+            carrierMode = isTcpOnly ? "H2" : "H3"
+        } else if fullConfig.contains("alpn=h2") || fullConfig.contains("http/2") {
+            carrierMode = "H2"
+        } else if fullConfig.contains("http/1.1") || fullConfig.contains("alpn=http/1.1") || fullConfig.contains("h1") {
+            carrierMode = "H1"
+        }
+
+        // Submode (e.g. XHTTP or WS)
+        let subMode: String
+        if fullConfig.contains("xhttp") {
+            subMode = "XHTTP"
+        } else if fullConfig.contains("ws") {
+            subMode = "WS"
+        } else {
+            subMode = transportFamily
+        }
+
+        let tcpString: String
+        if subMode == transportFamily {
+            tcpString = "\(transportFamily)/\(carrierMode)"
+        } else {
+            tcpString = "\(transportFamily)/\(subMode)/\(carrierMode)"
+        }
+
+        tcpCarrierLabel.stringValue = tcpString
+
+        let palette = ThemeManager.shared.palette(for: window)
+        if isTcpOnly {
+            udpCarrierLabel.stringValue = "—"
+            udpCarrierLabel.textColor = palette.secondaryText.withAlphaComponent(0.5)
+        } else {
+            udpCarrierLabel.stringValue = tcpString
+            udpCarrierLabel.textColor = palette.primaryText
         }
     }
 
@@ -1005,6 +1208,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private func startDurationTimer() {
         stopDurationTimer()
+        updateTrafficMetrics()
         durationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let since = self.connectedSince else { return }
@@ -1013,6 +1217,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
                 let minutes = (elapsed % 3600) / 60
                 let seconds = elapsed % 60
                 self.durationValueLabel.stringValue = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+                self.updateTrafficMetrics()
             }
         }
     }
@@ -1021,6 +1226,14 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         durationTimer?.invalidate()
         durationTimer = nil
         durationValueLabel.stringValue = "00:00:00"
+        trafficUpValueLabel.stringValue = "0 Б"
+        trafficDownValueLabel.stringValue = "0 Б"
+    }
+
+    private func updateTrafficMetrics() {
+        let bytes = NetworkTrafficMonitor.shared.currentBytes()
+        trafficUpValueLabel.stringValue = NetworkTrafficMonitor.formatBytes(bytes.tx)
+        trafficDownValueLabel.stringValue = NetworkTrafficMonitor.formatBytes(bytes.rx)
     }
 
     // MARK: - Actions
