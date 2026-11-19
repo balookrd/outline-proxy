@@ -307,7 +307,7 @@ impl OrphanRegistry {
     /// a park landing would miss instead of waiting.
     pub(crate) fn probe_park(&self, id: SessionId, want: ParkQuery) -> ParkProbe {
         match self.by_id.get(&id) {
-            Some(entry) => {
+            Some(entry) if entry.deadline > Instant::now() => {
                 let shape = ParkShape::of(&entry.parked);
                 if want.admits(shape) {
                     ParkProbe::Splicable(Some(shape))
@@ -315,8 +315,8 @@ impl OrphanRegistry {
                     ParkProbe::OtherShape
                 }
             },
-            None if self.reservations.contains_key(&id) => ParkProbe::Splicable(None),
-            None => ParkProbe::Missing,
+            _ if self.reservations.contains_key(&id) => ParkProbe::Splicable(None),
+            _ => ParkProbe::Missing,
         }
     }
 
@@ -481,31 +481,37 @@ impl OrphanRegistry {
     /// inline; the plain "unknown" miss is left to the caller so an in-flight
     /// park is not counted as a miss before it has had a chance to land.
     fn try_take_committed(&self, id: SessionId, authenticated_user: &str) -> Option<ResumeOutcome> {
-        let (_, entry) = self.by_id.remove(&id)?;
-        if entry.deadline <= Instant::now() {
-            self.detach_from_per_user(&entry.owner, &id);
-            let kind = entry.parked.kind();
-            self.metrics.record_orphan_evicted(kind, "ttl_expired");
-            self.metrics
-                .record_orphan_resume_miss(ResumeMiss::Expired.metric_reason());
-            self.refresh_kind_gauge(kind);
-            drop(entry);
+        let entry_ref = self.by_id.get(&id)?;
+        if entry_ref.deadline <= Instant::now() {
+            drop(entry_ref);
+            if let Some((_, entry)) = self.by_id.remove(&id) {
+                self.detach_from_per_user(&entry.owner, &id);
+                let kind = entry.parked.kind();
+                self.metrics.record_orphan_evicted(kind, "ttl_expired");
+                self.metrics
+                    .record_orphan_resume_miss(ResumeMiss::Expired.metric_reason());
+                self.refresh_kind_gauge(kind);
+            }
             return Some(ResumeOutcome::Miss(ResumeMiss::Expired));
         }
-        if entry.owner.as_ref() != authenticated_user {
-            // Reinsert and report owner mismatch internally. The same ID
-            // may still be claimed by its rightful owner before TTL.
-            let owner_for_log = Arc::clone(&entry.owner);
-            self.by_id.insert(id, entry);
+        if entry_ref.owner.as_ref() != authenticated_user {
+            let rightful_owner = Arc::clone(&entry_ref.owner);
+            drop(entry_ref);
             warn!(
                 attempted_by = %authenticated_user,
-                rightful_owner = %owner_for_log,
+                rightful_owner = %rightful_owner,
                 "resume rejected due to owner mismatch (security event)"
             );
             self.metrics
                 .record_orphan_resume_miss(ResumeMiss::OwnerMismatch.metric_reason());
             return Some(ResumeOutcome::Miss(ResumeMiss::OwnerMismatch));
         }
+        drop(entry_ref);
+
+        let (_, entry) = self
+            .by_id
+            .remove_if(&id, |_, e| e.owner.as_ref() == authenticated_user)?;
+
         self.detach_from_per_user(&entry.owner, &id);
         let kind = entry.parked.kind();
         self.metrics.record_orphan_resume_hit(kind);

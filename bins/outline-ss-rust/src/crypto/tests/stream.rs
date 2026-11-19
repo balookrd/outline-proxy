@@ -6,7 +6,9 @@ use ring::aead::Aad;
 
 use crate::config::CipherKind;
 use crate::crypto::tests::users;
-use crate::crypto::{AeadStreamDecryptor, AeadStreamEncryptor, UserKey, primitives, ss2022_header};
+use crate::crypto::{
+    AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, UserKey, primitives, ss2022_header,
+};
 use crate::protocol::TargetAddr;
 
 #[test]
@@ -101,6 +103,52 @@ fn decryptor_matches_user_with_different_cipher() {
 
     assert_eq!(decryptor.user().map(UserKey::id), Some("bob"));
     assert_eq!(plaintext, b"mixed cipher");
+}
+
+#[test]
+fn decryptor_mixed_cipher_pool_does_not_abort_early_on_fragmentation() {
+    let users: Arc<[UserKey]> = Arc::from(
+        vec![
+            // user 0 requires 16 salt + 18 header = 34 bytes to probe
+            UserKey::new("alice", "secret-a", Some(1001), CipherKind::Aes128Gcm, None).unwrap(),
+            // user 1 requires 32 salt + 18 header = 50 bytes to probe
+            UserKey::new("bob", "secret-b", Some(1002), CipherKind::Aes256Gcm, None).unwrap(),
+        ]
+        .into_boxed_slice(),
+    );
+
+    // Client authenticates with user 1 (AES-256-GCM)
+    let mut encryptor = AeadStreamEncryptor::new(&users[1], None).unwrap();
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(b"fragmented mixed test", &mut buf).unwrap();
+    let ciphertext = buf.freeze();
+    assert!(ciphertext.len() > 50);
+
+    let mut decryptor = AeadStreamDecryptor::new(users);
+
+    // Feed 40 bytes: >= 34 bytes (probed by user 0, fails), but < 50 bytes (too short for user 1)
+    decryptor.feed_ciphertext(&ciphertext[..40]);
+    let mut plaintext = Vec::new();
+    // Must NOT fail with UnknownUser here; it should wait for more bytes!
+    assert!(decryptor.drain_plaintext(&mut plaintext).is_ok());
+    assert!(plaintext.is_empty());
+
+    // Feed the rest of the ciphertext
+    decryptor.feed_ciphertext(&ciphertext[40..]);
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
+
+    assert_eq!(decryptor.user().map(UserKey::id), Some("bob"));
+    assert_eq!(plaintext, b"fragmented mixed test");
+}
+
+#[test]
+fn empty_user_pool_immediately_returns_unknown_user() {
+    let empty_users: Arc<[UserKey]> = Arc::from(Vec::<UserKey>::new().into_boxed_slice());
+    let mut decryptor = AeadStreamDecryptor::new(empty_users);
+    decryptor.feed_ciphertext(b"some random bytes");
+    let mut plaintext = Vec::new();
+    let err = decryptor.drain_plaintext(&mut plaintext).unwrap_err();
+    assert!(matches!(err, CryptoError::UnknownUser));
 }
 
 #[test]

@@ -9,7 +9,7 @@ use vendored::{H3Transport, H3WebSocketConfig, H3WebSocketServer};
 use crate::config::{Config, H3Alpn, TuningProfile};
 
 use super::{
-    bootstrap::{h3_cert_paths, load_h3_tls_config, spawn_cert_reloader},
+    bootstrap::{IpConnectionTracker, h3_cert_paths, load_h3_tls_config, spawn_cert_reloader},
     cluster::ClusterCtx,
     constants::{
         CERT_RELOAD_POLL_INTERVAL_SECS, H3_DATAGRAM_BUFFER_BYTES, H3_DEFAULT_INITIAL_MTU,
@@ -326,6 +326,8 @@ fn negotiated_alpn(connection: &quinn::Connection) -> Option<H3Alpn> {
     H3Alpn::parse(std::str::from_utf8(&bytes).ok()?)
 }
 
+pub(in crate::server) const H3_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Everything the HTTP/3 accept loop needs besides the endpoint
 /// itself: the shared route/auth state served on the listener.
 /// Bundled so [`serve_h3_server`] keeps a flat three-argument
@@ -341,6 +343,7 @@ pub(in crate::server) struct H3ServeCtx {
     pub(in crate::server) cluster: Option<Arc<ClusterCtx>>,
     /// `[server.h3] udp_datagrams`: whether UDP-over-DATAGRAM may be agreed.
     pub(in crate::server) udp_datagrams: bool,
+    pub(in crate::server) max_connections_per_ip: Option<usize>,
 }
 
 pub(in crate::server) async fn serve_h3_server(
@@ -356,6 +359,7 @@ pub(in crate::server) async fn serve_h3_server(
         http_fallback,
         cluster,
         udp_datagrams,
+        max_connections_per_ip,
     } = ctx;
     let initial = routes.load();
     let tcp_paths: Arc<BTreeSet<String>> =
@@ -384,40 +388,53 @@ pub(in crate::server) async fn serve_h3_server(
 
     let connection_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_CONNECTIONS));
     let stream_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_STREAMS));
+    let ip_tracker = IpConnectionTracker::new(max_connections_per_ip);
 
-    loop {
+    'accept: loop {
         // Acquire a connection permit before accepting so that at most
         // H3_MAX_CONCURRENT_CONNECTIONS connection handlers exist at once.
-        // New QUIC handshakes queue inside the endpoint (and are eventually
-        // dropped by QUIC's own anti-amplification limits) rather than
-        // spawning unbounded tasks.
-        let connection_permit = tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                debug!("HTTP/3 endpoint stopping on shutdown signal");
-                endpoint.close(quinn::VarInt::from_u32(0), b"server shutting down");
-                break;
-            }
-            permit = connection_semaphore.clone().acquire_owned() => {
-                permit.expect("H3 connection semaphore unexpectedly closed")
-            }
-        };
+        // Also enforce the per-source-IP limit before launching the task.
+        let (incoming, ip_guard) = loop {
+            let connection_permit = tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {
+                    debug!("HTTP/3 endpoint stopping on shutdown signal");
+                    endpoint.close(quinn::VarInt::from_u32(0), b"server shutting down");
+                    break 'accept;
+                }
+                permit = connection_semaphore.clone().acquire_owned() => {
+                    permit.expect("H3 connection semaphore unexpectedly closed")
+                }
+            };
 
-        let incoming = tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                debug!("HTTP/3 endpoint stopping on shutdown signal");
-                // Stop accepting new connections and politely close existing
-                // ones. `close` is synchronous; the runtime eventually
-                // reclaims the QUIC state.
-                endpoint.close(quinn::VarInt::from_u32(0), b"server shutting down");
-                break;
+            let incoming = tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {
+                    debug!("HTTP/3 endpoint stopping on shutdown signal");
+                    endpoint.close(quinn::VarInt::from_u32(0), b"server shutting down");
+                    break 'accept;
+                }
+                incoming = endpoint.accept() => match incoming {
+                    Some(incoming) => incoming,
+                    None => break 'accept,
+                },
+            };
+
+            let remote_ip = incoming.remote_address().ip();
+            match ip_tracker.try_acquire(remote_ip) {
+                Ok(guard) => break ((incoming, connection_permit), guard),
+                Err(current) => {
+                    warn!(
+                        ip = %remote_ip, current, limit = ip_tracker.limit(),
+                        "rejecting H3 QUIC connection: per-IP connection limit exceeded"
+                    );
+                    incoming.refuse();
+                    continue;
+                },
             }
-            incoming = endpoint.accept() => match incoming {
-                Some(incoming) => incoming,
-                None => break,
-            },
         };
+        let (incoming, connection_permit) = incoming;
+
         let ctx = Arc::new(H3ConnectionCtx {
             routes: Arc::clone(&routes),
             auth: Arc::clone(&auth),
@@ -440,6 +457,7 @@ pub(in crate::server) async fn serve_h3_server(
 
         tokio::spawn(async move {
             let _connection_permit = connection_permit;
+            let _ip_guard = ip_guard;
             if let Err(error) = handle_quic_connection(incoming, ctx).await
                 && !is_normal_h3_shutdown(&error)
             {
@@ -455,7 +473,10 @@ async fn handle_quic_connection(
     incoming: quinn::Incoming,
     ctx: Arc<H3ConnectionCtx>,
 ) -> Result<()> {
-    let connection = incoming.await.context("failed to accept incoming QUIC connection")?;
+    let connection = tokio::time::timeout(H3_HANDSHAKE_TIMEOUT, incoming)
+        .await
+        .context("incoming QUIC handshake timed out")?
+        .context("failed to accept incoming QUIC connection")?;
     let alpn = negotiated_alpn(&connection);
     match alpn {
         Some(H3Alpn::H3) if ctx.alpn.contains(&H3Alpn::H3) => {

@@ -371,9 +371,24 @@ impl XhttpRegistry {
         self.sessions.get(&key).map(|entry| Arc::clone(entry.value()))
     }
 
+    #[allow(dead_code)]
     pub(in crate::server) fn remove(&self, session_id: &str) {
         let key: Arc<str> = Arc::from(session_id);
         self.sessions.remove(&key);
+    }
+
+    /// Removes the session from the registry only if the current entry
+    /// matches `expected`. Prevents an exiting relay or dead carrier from
+    /// racing with a freshly reconnected session using the same id.
+    pub(in crate::server) fn remove_session_if_same(
+        &self,
+        session_id: &str,
+        expected: &Arc<XhttpSession>,
+    ) -> bool {
+        let key: Arc<str> = Arc::from(session_id);
+        self.sessions
+            .remove_if(&key, |_, current| Arc::ptr_eq(current, expected))
+            .is_some()
     }
 
     /// Sweep idle/closed entries. Cheap to call on a 30 s tick.
@@ -753,13 +768,14 @@ impl XhttpSession {
         if gap > UPLINK_REORDER_MAX_GAP {
             return Err(UplinkIngestError::GapTooLarge { expected: state.expected_seq, got: seq });
         }
-        if state.reorder_bytes.saturating_add(data.len()) > UPLINK_REORDER_BUFFER_BYTES_CAP {
+        let new_len = data.len();
+        let old_len = state.reorder.get(&seq).map(|b| b.len()).unwrap_or(0);
+        let new_reorder_bytes = state.reorder_bytes.saturating_sub(old_len).saturating_add(new_len);
+        if new_reorder_bytes > UPLINK_REORDER_BUFFER_BYTES_CAP {
             return Err(UplinkIngestError::BufferFull);
         }
-        let len = data.len();
-        if state.reorder.insert(seq, data).is_none() {
-            state.reorder_bytes = state.reorder_bytes.saturating_add(len);
-        }
+        state.reorder.insert(seq, data);
+        state.reorder_bytes = new_reorder_bytes;
         drop(state);
         self.touch_progress();
         Ok(())
@@ -802,10 +818,13 @@ impl XhttpSession {
     }
 
     /// Marks the uplink half closed (e.g. client sent FIN). Relay
-    /// sees `uplink_eof()` once the in-order queue drains.
+    /// sees `uplink_eof()` once the in-order queue drains. Wakes all uplink
+    /// notifiers so parked waiters do not stall.
     pub(in crate::server) fn close_uplink(&self) {
         self.uplink.lock().closed = true;
         self.uplink_notify.notify_waiters();
+        self.uplink_drain_notify.notify_waiters();
+        self.uplink_room_notify.notify_waiters();
     }
 
     /// Stream-one / stream-up variant of [`Self::ingest_uplink`]: the

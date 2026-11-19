@@ -33,6 +33,7 @@ use super::persist::{UserMutation, persist_user_mutation};
 /// adding a user and deleting everyone else.
 pub(in crate::server) struct UserManager {
     inner: Mutex<Inner>,
+    config_file_lock: Arc<Mutex<()>>,
     routes: RoutesSnapshot,
     auth_users: AuthUsersSnapshot,
     default_method: CipherKind,
@@ -42,6 +43,7 @@ pub(in crate::server) struct UserManager {
     /// the live axum/h3 routers cannot grow new paths until the next restart.
     endpoints: Arc<[EndpointConfig]>,
     config_path: Option<PathBuf>,
+    is_clustered: bool,
 }
 
 struct Inner {
@@ -106,12 +108,18 @@ impl UserManager {
         }
         Self {
             inner: Mutex::new(Inner { users: config.users.clone() }),
+            config_file_lock: Arc::new(Mutex::new(())),
             routes,
             auth_users,
             default_method: config.method,
             endpoints: Arc::from(config.endpoints.clone().into_boxed_slice()),
             config_path: config.config_path.clone(),
+            is_clustered: config.cluster.is_some(),
         }
+    }
+
+    pub(super) fn config_file_lock(&self) -> &Mutex<()> {
+        &self.config_file_lock
     }
 
     /// Snapshot of the server-wide defaults. Not `async` and takes no lock:
@@ -212,6 +220,30 @@ impl UserManager {
         if entry.password.is_none() && entry.vless_id.is_none() {
             bail!("user must have either password or vless_id");
         }
+        if let Some(vless_id) = &entry.vless_id {
+            crate::protocol::vless::parse_uuid(vless_id)
+                .map_err(|_| anyhow!("invalid vless_id for user {}", entry.id))?;
+        }
+        if self.is_clustered {
+            if entry.id.len() > crate::server::MAX_USER_LEN {
+                bail!(
+                    "user id {:?} exceeds MAX_USER_LEN ({})",
+                    entry.id,
+                    crate::server::MAX_USER_LEN
+                );
+            }
+            if let Some(aliases) = &entry.aliases {
+                for alias in aliases.keys() {
+                    if alias.len() > crate::server::MAX_USER_LEN {
+                        bail!(
+                            "alias {:?} exceeds MAX_USER_LEN ({})",
+                            alias,
+                            crate::server::MAX_USER_LEN
+                        );
+                    }
+                }
+            }
+        }
         // Users are pure credentials: there are no per-user paths to validate
         // against the startup route set. A credential is reachable on every
         // endpoint of its kind; whether any such endpoint exists is a
@@ -236,6 +268,7 @@ impl UserManager {
 
         if let Some(path) = &self.config_path {
             let path = path.clone();
+            let _file_guard = self.config_file_lock.lock().await;
             tokio::task::spawn_blocking(move || {
                 persist_user_mutation(&path, &mutation)
                     .with_context(|| format!("failed to persist user to {}", path.display()))
@@ -261,6 +294,38 @@ impl UserManager {
                 bail!("duplicate user id: {}", user.id);
             }
         }
+
+        let mut vless_seen = HashSet::new();
+        for user in enabled.iter().filter(|user| user.vless_id.is_some()) {
+            let vless_id = user.vless_id.as_deref().expect("filtered above");
+            let parsed = crate::protocol::vless::parse_uuid(vless_id)
+                .map_err(|_| anyhow!("invalid vless_id for user {}", user.id))?;
+            if !vless_seen.insert(parsed) {
+                bail!("duplicate vless_id for user {}", user.id);
+            }
+        }
+
+        if self.is_clustered {
+            for user in &enabled {
+                if user.id.len() > crate::server::MAX_USER_LEN {
+                    bail!(
+                        "user id {:?} exceeds MAX_USER_LEN ({})",
+                        user.id,
+                        crate::server::MAX_USER_LEN
+                    );
+                }
+                for alias in user.aliases.iter().flat_map(|map| map.keys()) {
+                    if alias.len() > crate::server::MAX_USER_LEN {
+                        bail!(
+                            "alias {:?} exceeds MAX_USER_LEN ({})",
+                            alias,
+                            crate::server::MAX_USER_LEN
+                        );
+                    }
+                }
+            }
+        }
+
         // Per-source-IP aliases: CIDRs parse and alias names are globally
         // unique vs ids — mirrors the startup `Config::validate` check so a
         // control-plane mutation cannot install config the server would reject

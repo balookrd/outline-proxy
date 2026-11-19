@@ -6,7 +6,7 @@
 //! to the session ring; POST drains the request body, ingests one
 //! reordered chunk into the uplink ring, and replies 200.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use axum::http::{self, HeaderMap, Method, StatusCode, Version};
@@ -37,6 +37,7 @@ use super::{
 };
 
 const MAX_POST_BYTES: usize = 256 * 1024;
+const POST_BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Session-routing context shared by every xhttp/h3 entry point: the
 /// process-wide session registry, the shared service bundle, and the
@@ -359,31 +360,47 @@ async fn xhttp_h3_post(
         return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
     }
 
-    let mut body_parts: Vec<Bytes> = Vec::new();
-    let mut body_len = 0usize;
-    loop {
-        match stream.recv_data().await {
-            Ok(Some(chunk)) => {
-                let mut chunk = chunk;
-                let remaining = chunk.remaining();
-                if body_len + remaining > MAX_POST_BYTES {
-                    return finish_with_status(stream, StatusCode::PAYLOAD_TOO_LARGE).await;
-                }
-                if remaining > 0 {
-                    // Zero-copy `split_to` for the h3-quinn `Bytes`-backed buf;
-                    // the common single-DATA-frame POST is then forwarded with no
-                    // copy at all (the `1 =>` arm below moves it out).
-                    body_parts.push(chunk.copy_to_bytes(remaining));
-                    body_len += remaining;
-                }
-            },
-            Ok(None) => break,
-            Err(error) => {
-                debug!(?error, session = %session_id, "xhttp/h3 POST recv_data failed");
-                return Err(anyhow!(error)).context("failed to read xhttp/h3 POST body");
-            },
+    let body_read = tokio::time::timeout(POST_BODY_READ_TIMEOUT, async {
+        let mut body_parts: Vec<Bytes> = Vec::new();
+        let mut body_len = 0usize;
+        loop {
+            match stream.recv_data().await {
+                Ok(Some(chunk)) => {
+                    let mut chunk = chunk;
+                    let remaining = chunk.remaining();
+                    if body_len + remaining > MAX_POST_BYTES {
+                        return Err(anyhow!("payload too large"));
+                    }
+                    if remaining > 0 {
+                        // Zero-copy `split_to` for the h3-quinn `Bytes`-backed buf;
+                        // the common single-DATA-frame POST is then forwarded with no
+                        // copy at all (the `1 =>` arm below moves it out).
+                        body_parts.push(chunk.copy_to_bytes(remaining));
+                        body_len += remaining;
+                    }
+                },
+                Ok(None) => break,
+                Err(error) => {
+                    debug!(?error, session = %session_id, "xhttp/h3 POST recv_data failed");
+                    return Err(anyhow!(error)).context("failed to read xhttp/h3 POST body");
+                },
+            }
         }
-    }
+        Ok((body_parts, body_len))
+    })
+    .await;
+
+    let (mut body_parts, body_len) = match body_read {
+        Ok(Ok(parts_and_len)) => parts_and_len,
+        Ok(Err(err)) if err.to_string().contains("payload too large") => {
+            return finish_with_status(stream, StatusCode::PAYLOAD_TOO_LARGE).await;
+        },
+        Ok(Err(err)) => return Err(err),
+        Err(_timeout) => {
+            debug!(session = %session_id, "xhttp/h3 POST body read timed out");
+            return finish_with_status(stream, StatusCode::REQUEST_TIMEOUT).await;
+        },
+    };
 
     let bytes = match body_parts.len() {
         0 => Bytes::new(),
@@ -407,7 +424,7 @@ async fn xhttp_h3_post(
             UplinkIngestError::GapTooLarge { expected, got } => {
                 warn!(session = %session_id, expected, got, "xhttp/h3 uplink seq gap; tearing down");
                 session.close();
-                ctx.registry.remove(&session_id);
+                ctx.registry.remove_session_if_same(&session_id, &session);
                 return finish_with_status(stream, StatusCode::CONFLICT).await;
             },
             UplinkIngestError::BufferFull | UplinkIngestError::ReadyFull => {
@@ -597,6 +614,7 @@ async fn xhttp_h3_stream_one(
     // is not lost.
     let result = drive_downlink_send_only(send_half, Arc::clone(&session)).await;
     release_anchor(&session, udp_datagram);
+    uplink_task.abort();
     let _ = uplink_task.await;
     result
 }

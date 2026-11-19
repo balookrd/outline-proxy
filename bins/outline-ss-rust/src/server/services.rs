@@ -197,7 +197,11 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         }
     };
     let orphan_registry = Arc::new(orphan_registry);
-    let services = Arc::new(Services::new(
+    let outbound_filter = Arc::new(super::outbound_filter::OutboundFilter::new(
+        config.outbound_block_private_ips,
+        &config.outbound_allowed_subnets,
+    )?);
+    let services = Arc::new(Services::with_outbound_filter(
         metrics.clone(),
         dns_cache,
         config.prefer_ipv4_upstream,
@@ -215,6 +219,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
             max_relay_tasks: config.tuning.xhttp_max_concurrent_relay_tasks,
         },
         salt_replay_store,
+        outbound_filter,
     ));
     let auth = Arc::new(AuthPolicy::new(
         Arc::clone(&auth_users),

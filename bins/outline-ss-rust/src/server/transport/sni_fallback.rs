@@ -33,6 +33,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -339,24 +340,31 @@ pub(in crate::server) async fn splice_to_backend(
     peer_addr: SocketAddr,
     buffered: Vec<u8>,
 ) -> Result<()> {
-    let mut upstream = TcpStream::connect(backend.authority.as_str())
-        .await
-        .with_context(|| {
-            format!("failed to connect to sni_fallback backend {}", backend.authority)
-        })?;
+    let connect_timeout = Duration::from_secs(10);
+    let mut upstream =
+        match tokio::time::timeout(connect_timeout, TcpStream::connect(backend.authority.as_str()))
+            .await
+        {
+            Ok(res) => res.with_context(|| {
+                format!("failed to connect to sni_fallback backend {}", backend.authority)
+            })?,
+            Err(_) => {
+                anyhow::bail!("timed out connecting to sni_fallback backend {}", backend.authority)
+            },
+        };
 
     if let Some(version) = backend.proxy_protocol {
         let mut header = Vec::with_capacity(64);
         encode_proxy_protocol(&mut header, version, peer_addr, inbound_listen, PpTransport::Stream);
-        upstream
-            .write_all(&header)
+        tokio::time::timeout(connect_timeout, upstream.write_all(&header))
             .await
+            .context("timed out writing PROXY-protocol header to sni_fallback backend")?
             .context("failed to write PROXY-protocol header to sni_fallback backend")?;
     }
 
-    upstream
-        .write_all(&buffered)
+    tokio::time::timeout(connect_timeout, upstream.write_all(&buffered))
         .await
+        .context("timed out forwarding ClientHello to sni_fallback backend")?
         .context("failed to forward ClientHello to sni_fallback backend")?;
 
     // copy_bidirectional closes naturally when either side hits EOF,
@@ -458,28 +466,30 @@ pub(in crate::server) struct LocalTlsAccepted {
     pub sni: Option<String>,
 }
 
-/// Top-level dispatch helper. Called by the TLS listener for every
-/// accepted stream when `[sni_fallback]` is configured. Returns
-/// `Ok(Some(accepted))` to continue with the local TLS terminator, or
-/// `Ok(None)` if the stream was spliced to a backend (caller stops
-/// processing it). Errors are fatal for this stream only.
-pub(in crate::server) async fn dispatch_sni(
+/// Routing outcome after peeking the ClientHello.
+pub(in crate::server) enum SniDispatchResult {
+    Local(LocalTlsAccepted),
+    Backend {
+        backend_idx: usize,
+        inbound: TcpStream,
+        buffered: Vec<u8>,
+        sni: Option<String>,
+    },
+    Dropped,
+}
+
+/// Peeks the ClientHello and evaluates SNI routing rules without performing
+/// any long-lived splicing. Safe to run under a short pre-auth handshake deadline.
+pub(in crate::server) async fn peek_and_route(
     ctx: &SniFallbackContext,
     metrics: &Metrics,
     mut inbound: TcpStream,
     peer_addr: SocketAddr,
-) -> Result<Option<LocalTlsAccepted>> {
+) -> Result<SniDispatchResult> {
     let peeked = match peek_sni(&mut inbound, ctx.config.max_client_hello_bytes).await {
         Ok(p) => p,
         Err(SniPeekError { failure, source }) => {
             metrics.record_sni_peek_failed(failure.as_str());
-            // A connection that closes before its ClientHello is a normal
-            // event on a public port — liveness probes and scanners produce
-            // a steady stream of them, and our own clients' bare-TCP uplink
-            // checks alone were measured at ~1 400/hour per server. Left at
-            // `warn` it drowned the journal; the counter keeps it visible
-            // without one line per connect. Anything we could not parse
-            // still warns.
             if failure.is_noteworthy() {
                 warn!(
                     ?peer_addr,
@@ -500,29 +510,23 @@ pub(in crate::server) async fn dispatch_sni(
     };
 
     match ctx.lookup.lookup(peeked.sni.as_deref()) {
-        Some(SniRoute::Local) => Ok(Some(LocalTlsAccepted {
+        Some(SniRoute::Local) => Ok(SniDispatchResult::Local(LocalTlsAccepted {
             stream: PrependStream::new(peeked.buffered, inbound),
             sni: peeked.sni,
         })),
-        Some(SniRoute::Backend(idx)) => {
-            let backend = &ctx.config.backends[idx];
-            debug!(
-                ?peer_addr,
-                sni = ?peeked.sni,
-                backend = %backend.authority,
-                "splicing foreign SNI to backend",
-            );
-            splice_to_backend(backend, ctx.inbound_listen, inbound, peer_addr, peeked.buffered)
-                .await?;
-            Ok(None)
-        },
+        Some(SniRoute::Backend(idx)) => Ok(SniDispatchResult::Backend {
+            backend_idx: idx,
+            inbound,
+            buffered: peeked.buffered,
+            sni: peeked.sni,
+        }),
         None => {
             warn!(
                 ?peer_addr,
                 sni = ?peeked.sni,
                 "sni_fallback: no backend matched, dropping connection",
             );
-            Ok(None)
+            Ok(SniDispatchResult::Dropped)
         },
     }
 }

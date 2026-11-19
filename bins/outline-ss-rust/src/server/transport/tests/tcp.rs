@@ -231,6 +231,7 @@ fn test_contexts_with_salt_store(
         outbound_ipv6: None,
         orphan_registry: Arc::new(OrphanRegistry::new_disabled(metrics)),
         ws_data_channel_capacity: 8,
+        outbound_filter: Arc::new(super::super::super::outbound_filter::OutboundFilter::default()),
         salt_replay_store,
     };
     let route = WsTcpRouteCtx {
@@ -381,6 +382,9 @@ impl EdgeHarness {
             outbound_ipv6: None,
             orphan_registry: Arc::clone(&registry),
             ws_data_channel_capacity: 8,
+            outbound_filter: Arc::new(
+                super::super::super::outbound_filter::OutboundFilter::default(),
+            ),
             salt_replay_store: SaltReplayStore::new(Duration::from_secs(60), 0),
         };
         let route = WsTcpRouteCtx {

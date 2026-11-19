@@ -76,15 +76,12 @@ pub(in crate::server) struct UdpServerCtx {
     /// the set of active NAT keys on disconnect and re-attach them
     /// to a resuming stream.
     pub(in crate::server) orphan_registry: Arc<OrphanRegistry>,
-    /// Bounded LRU mapping `(user_index, salt) -> derived AEAD key`. Read on
-    /// every UDP datagram before falling back to blake3/HKDF + ring's AES-GCM
-    /// key schedule; on a hit, the per-packet derivation collapses into a
-    /// hashmap lookup.
-    pub(in crate::server) session_key_cache: Arc<SessionKeyCache>,
     /// Per-session bounded mpsc capacity for the NAT-reader → WS-writer
     /// fan-in. Resolved from `tuning.ws_data_channel_capacity` so the
     /// same knob governs both TCP and UDP relay backpressure.
     pub(in crate::server) ws_data_channel_capacity: usize,
+    /// Outbound SSRF filter.
+    pub(in crate::server) outbound_filter: Arc<super::super::outbound_filter::OutboundFilter>,
 }
 
 /// Per-path state for a single UDP WebSocket session.
@@ -101,6 +98,7 @@ pub(in crate::server) struct UdpRouteCtx {
     /// resolves the same base path as the TCP leg, so listing the combined base
     /// path in `[padding] paths` pads both legs uniformly.
     pub(in crate::server) padding: PaddingScheme,
+    pub(in crate::server) session_key_cache: Arc<SessionKeyCache>,
 }
 
 /// Set size at (and above) which [`StreamNatKeys::track`] reconciles the
@@ -379,7 +377,7 @@ fn authenticate_udp_datagram(
         route.users.as_ref(),
         data,
         preferred_user_index,
-        Some(server.session_key_cache.as_ref()),
+        Some(route.session_key_cache.as_ref()),
     ) {
         Ok(result) => result,
         Err(CryptoError::UnknownUser) => {
@@ -566,8 +564,13 @@ pub(in crate::server::transport) async fn relay_socks5_datagram(
     };
     let payload = &datagram[consumed..];
 
-    let resolved =
-        resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream).await?;
+    let resolved = resolve_udp_target(
+        server.dns_cache.as_ref(),
+        &target,
+        server.prefer_ipv4_upstream,
+        &server.outbound_filter,
+    )
+    .await?;
     debug!(
         user = %ctx.user_id,
         fwmark = ?ctx.fwmark,

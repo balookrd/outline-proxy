@@ -96,12 +96,12 @@ pub fn decrypt_udp_packet_with_hint(
 /// see the call sites below for the success-path `cache.insert(...)`.
 fn resolve_session_key(
     user: &UserKey,
-    user_index: usize,
+    _user_index: usize,
     salt: &[u8],
     cache: Option<&SessionKeyCache>,
 ) -> Result<(Arc<LessSafeKey>, bool), CryptoError> {
     if let Some(cache) = cache
-        && let Some(key) = cache.get(user_index, salt)
+        && let Some(key) = cache.get(user.key_fingerprint(), salt)
     {
         return Ok((key, true));
     }
@@ -168,7 +168,7 @@ fn try_decrypt_udp_packet_for_user(
         })?;
         if let Some(payload) = payload {
             if !from_cache && let Some(cache) = cache {
-                cache.insert(user_index, &client_session_id, Arc::clone(&less_safe));
+                cache.insert(user.key_fingerprint(), &client_session_id, Arc::clone(&less_safe));
             }
             return Ok(Some(UdpPacket {
                 user: user.clone(),
@@ -200,7 +200,7 @@ fn try_decrypt_udp_packet_for_user(
     });
     if let Some(plaintext) = plaintext {
         if !from_cache && let Some(cache) = cache {
-            cache.insert(user_index, salt, Arc::clone(&less_safe));
+            cache.insert(user.key_fingerprint(), salt, Arc::clone(&less_safe));
         }
         // Zero-pad the salt (16 or 32 bytes) to the widest width for a fixed-size
         // replay-filter key. `salt_len <= 32` for every legacy cipher.

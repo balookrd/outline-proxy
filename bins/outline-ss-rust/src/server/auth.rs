@@ -1,5 +1,5 @@
 use std::{
-    net::IpAddr,
+    net::{IpAddr, Ipv6Addr},
     num::NonZeroUsize,
     time::{Duration, Instant},
 };
@@ -24,6 +24,18 @@ struct FailureRecord {
     last_failure: Instant,
 }
 
+fn normalize_ip_for_rate_limit(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+        IpAddr::V6(v6) => {
+            let octets = v6.octets();
+            let mut masked = [0u8; 16];
+            masked[..8].copy_from_slice(&octets[..8]);
+            IpAddr::V6(Ipv6Addr::from(masked))
+        },
+    }
+}
+
 /// In-memory IP-based rate limiter for root HTTP Basic Auth.
 /// Protects against brute-force password guessing by clients that discard or omit cookies.
 pub(super) struct RootAuthRateLimiter {
@@ -40,6 +52,7 @@ impl RootAuthRateLimiter {
     }
 
     pub(super) fn failed_attempts(&self, ip: IpAddr) -> u8 {
+        let ip = normalize_ip_for_rate_limit(ip);
         let mut guard = self.cache.lock();
         if let Some(record) = guard.get(&ip) {
             if record.last_failure.elapsed() < self.lockout_duration {
@@ -51,6 +64,7 @@ impl RootAuthRateLimiter {
     }
 
     pub(super) fn record_failure(&self, ip: IpAddr, cookie_attempts: u8) -> u8 {
+        let ip = normalize_ip_for_rate_limit(ip);
         let mut guard = self.cache.lock();
         let server_attempts = if let Some(record) = guard.get(&ip) {
             if record.last_failure.elapsed() < self.lockout_duration {
@@ -74,6 +88,7 @@ impl RootAuthRateLimiter {
     }
 
     pub(super) fn reset(&self, ip: IpAddr) {
+        let ip = normalize_ip_for_rate_limit(ip);
         self.cache.lock().pop(&ip);
     }
 }
@@ -140,7 +155,9 @@ pub(super) fn build_root_http_auth_success_response<T>(body: T) -> http::Respons
         .header(header::CACHE_CONTROL, "no-store")
         .header(
             header::SET_COOKIE,
-            format!("{ROOT_HTTP_AUTH_COOKIE_NAME}=0; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),
+            format!(
+                "{ROOT_HTTP_AUTH_COOKIE_NAME}=0; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+            ),
         )
         .body(body)
         .expect("failed to build root auth success response")
@@ -162,7 +179,7 @@ pub(super) fn build_root_http_auth_challenge_response<T>(
         .header(
             header::SET_COOKIE,
             format!(
-                "{ROOT_HTTP_AUTH_COOKIE_NAME}={failed_attempts}; Path=/; Max-Age={ROOT_HTTP_AUTH_COOKIE_TTL_SECS}; HttpOnly; SameSite=Lax"
+                "{ROOT_HTTP_AUTH_COOKIE_NAME}={failed_attempts}; Path=/; Max-Age={ROOT_HTTP_AUTH_COOKIE_TTL_SECS}; HttpOnly; Secure; SameSite=Lax"
             ),
         )
         .body(body)
@@ -177,7 +194,7 @@ pub(super) fn build_root_http_auth_forbidden_response<T>(body: T) -> http::Respo
         .header(
             header::SET_COOKIE,
             format!(
-                "{ROOT_HTTP_AUTH_COOKIE_NAME}={ROOT_HTTP_AUTH_MAX_FAILURES}; Path=/; Max-Age={ROOT_HTTP_AUTH_COOKIE_TTL_SECS}; HttpOnly; SameSite=Lax"
+                "{ROOT_HTTP_AUTH_COOKIE_NAME}={ROOT_HTTP_AUTH_MAX_FAILURES}; Path=/; Max-Age={ROOT_HTTP_AUTH_COOKIE_TTL_SECS}; HttpOnly; Secure; SameSite=Lax"
             ),
         )
         .body(body)

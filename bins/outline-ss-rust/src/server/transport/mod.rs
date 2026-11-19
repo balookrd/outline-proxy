@@ -474,6 +474,7 @@ async fn udp_upgrade_for_path(
             path,
             candidate_users: Arc::clone(&route.candidate_users),
             padding,
+            session_key_cache: Arc::clone(&route.session_key_cache),
         });
         let result = udp::handle_udp_connection(socket, server, route_ctx, resume, upstream).await;
         finish_ws_session(session, result, "udp");
@@ -518,10 +519,13 @@ pub(super) async fn combined_websocket_upgrade(
 /// Strips the trailing `/{token}` segment from a combined-path request URI
 /// to recover the base path the route maps are keyed on.
 fn combined_base_path(full: &str, token: &str) -> String {
-    full.strip_suffix(token)
-        .and_then(|base| base.strip_suffix('/'))
-        .unwrap_or(full)
-        .to_string()
+    if let Some(base) = full.strip_suffix(token).and_then(|b| b.strip_suffix('/')) {
+        return base.to_string();
+    }
+    if let Some((base, _)) = full.rsplit_once('/') {
+        return base.to_string();
+    }
+    full.to_string()
 }
 
 pub(super) fn finish_ws_session(

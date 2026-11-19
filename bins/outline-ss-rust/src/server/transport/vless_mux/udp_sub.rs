@@ -42,23 +42,27 @@ pub(super) async fn open_udp_sub<Msg>(
 where
     Msg: Send + 'static,
 {
-    let default_target =
-        match resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream)
-            .await
-        {
-            Ok(addr) => addr,
-            Err(error) => {
-                warn!(
-                    path = %route.path,
-                    session_id,
-                    error = %error,
-                    "mux udp dns resolution failed"
-                );
-                send_end(tx, make_binary, state.padding, state.header.as_deref(), session_id, true)
-                    .await?;
-                return Ok(());
-            },
-        };
+    let default_target = match resolve_udp_target(
+        server.dns_cache.as_ref(),
+        &target,
+        server.prefer_ipv4_upstream,
+        &server.outbound_filter,
+    )
+    .await
+    {
+        Ok(addr) => addr,
+        Err(error) => {
+            warn!(
+                path = %route.path,
+                session_id,
+                error = %error,
+                "mux udp dns resolution failed"
+            );
+            send_end(tx, make_binary, state.padding, state.header.as_deref(), session_id, true)
+                .await?;
+            return Ok(());
+        },
+    };
 
     let socket = match bind_unconnected_udp(
         default_target,

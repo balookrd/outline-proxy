@@ -288,6 +288,8 @@ pub(super) struct OutboundPatch {
     pub ipv6_refresh_secs: Option<u64>,
     pub ipv6_sticky: Option<bool>,
     pub ipv6_sticky_ttl_secs: Option<u64>,
+    pub block_private_ips: Option<bool>,
+    pub allowed_subnets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -350,6 +352,8 @@ pub(super) fn persist_config_patch(path: &Path, patch: &ServerConfigPatch) -> Re
     if new_contents == contents {
         return Ok(());
     }
+    crate::config::parse_and_validate(&new_contents)
+        .context("patched configuration failed validation")?;
     atomic_write(path, new_contents.as_bytes())
 }
 
@@ -482,6 +486,19 @@ fn patch_toml_config(original: &str, patch: &ServerConfigPatch) -> Result<String
         }
         if let Some(ttl) = outbound.ipv6_sticky_ttl_secs {
             table.insert("ipv6_sticky_ttl_secs", Item::Value((ttl as i64).into()));
+        }
+        if let Some(block) = outbound.block_private_ips {
+            table.insert("block_private_ips", Item::Value(block.into()));
+        }
+        if let Some(subnets) = &outbound.allowed_subnets {
+            let mut arr = Array::new();
+            for s in subnets {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    arr.push(trimmed);
+                }
+            }
+            table.insert("allowed_subnets", Item::Value(Value::Array(arr)));
         }
     }
 

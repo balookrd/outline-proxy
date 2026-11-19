@@ -289,8 +289,8 @@ fn test_server_ctx_with_resumption(resumption: bool) -> Arc<UdpServerCtx> {
         prefer_ipv4_upstream: true,
         relay_semaphore: None,
         orphan_registry: Arc::new(orphan_registry),
-        session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
         ws_data_channel_capacity: 8,
+        outbound_filter: Arc::new(super::super::super::outbound_filter::OutboundFilter::default()),
     })
 }
 
@@ -301,6 +301,7 @@ fn test_route_ctx(user: &UserKey) -> Arc<UdpRouteCtx> {
         path: Arc::from("/udp"),
         candidate_users: Arc::from(vec![Arc::from("alice")]),
         padding: PaddingScheme::disabled(),
+        session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
     })
 }
 
@@ -313,6 +314,7 @@ fn multi_user_route_ctx(users: &[UserKey]) -> Arc<UdpRouteCtx> {
         path: Arc::from("/udp"),
         candidate_users: users.iter().map(|user| Arc::from(user.id())).collect(),
         padding: PaddingScheme::disabled(),
+        session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
     })
 }
 
@@ -884,8 +886,10 @@ impl UdpEdgeHarness {
             prefer_ipv4_upstream: true,
             relay_semaphore: None,
             orphan_registry: Arc::clone(&registry),
-            session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
             ws_data_channel_capacity: 8,
+            outbound_filter: Arc::new(
+                super::super::super::outbound_filter::OutboundFilter::default(),
+            ),
         });
         (
             Self {
@@ -1311,6 +1315,7 @@ async fn padded_datagram_ingest_and_reply_round_trip() -> Result<()> {
         path: Arc::from("/udp"),
         candidate_users: Arc::from(vec![Arc::from("alice")]),
         padding: scheme,
+        session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
     });
     let server = test_server_ctx();
 

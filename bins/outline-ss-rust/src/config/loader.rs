@@ -165,6 +165,11 @@ fn resolve(args: ConfigArgs, file: FileConfig, config_path: Option<PathBuf>) -> 
             .outbound_ipv6_sticky_ttl_secs
             .or(outbound.ipv6_sticky_ttl_secs)
             .unwrap_or(1800),
+        outbound_block_private_ips: args
+            .outbound_block_private_ips
+            .or(outbound.block_private_ips)
+            .unwrap_or(false),
+        outbound_allowed_subnets: outbound.allowed_subnets.unwrap_or_default(),
         http_root_auth: args.http_root_auth.or(http_root.auth).unwrap_or(false),
         http_root_realm: args
             .http_root_realm
@@ -194,15 +199,19 @@ fn resolve(args: ConfigArgs, file: FileConfig, config_path: Option<PathBuf>) -> 
     Ok(config)
 }
 
-/// Test-only: resolves a complete TOML document straight into a validated
+/// Resolves a complete TOML document straight into a validated
 /// [`Config`], bypassing argv/env entirely — every [`ConfigArgs`] field
 /// defaults to empty/`None`, so the TOML text alone drives the result.
-/// Mirrors [`AppMode::load`] minus the CLI-parsing and disk-read steps.
+#[cfg_attr(not(feature = "control"), allow(dead_code))]
+pub(crate) fn parse_and_validate(toml_str: &str) -> Result<Config> {
+    let file: FileConfig = toml::from_str(toml_str).context("parsing TOML into FileConfig")?;
+    let args = ConfigArgs::parse_from(["outline-ss-rust"]);
+    resolve(args, file, None)
+}
+
 #[cfg(test)]
 pub(super) fn parse(toml_str: &str) -> Result<Config> {
-    let file: FileConfig = toml::from_str(toml_str).context("parsing test TOML into FileConfig")?;
-    let args = ConfigArgs::parse_from(["outline-ss-rust-test"]);
-    resolve(args, file, None)
+    parse_and_validate(toml_str)
 }
 
 fn parse_tls_cert_array(

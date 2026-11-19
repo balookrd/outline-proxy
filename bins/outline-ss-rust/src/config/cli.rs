@@ -90,6 +90,10 @@ pub(super) struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_OUTBOUND_IPV6_STICKY_TTL_SECS")]
     pub outbound_ipv6_sticky_ttl_secs: Option<u64>,
 
+    /// Block loopback, private, and local destination IPs in outbound connections (SSRF protection).
+    #[arg(long, env = "OUTLINE_SS_OUTBOUND_BLOCK_PRIVATE_IPS")]
+    pub outbound_block_private_ips: Option<bool>,
+
     #[arg(
         long,
         env = "OUTLINE_SS_HTTP_ROOT_AUTH",

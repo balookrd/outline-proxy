@@ -568,7 +568,7 @@ async fn xhttp_post(
             UplinkIngestError::GapTooLarge { expected, got } => {
                 warn!(session = %session_id, expected, got, "xhttp uplink seq gap too large; tearing down");
                 session.close();
-                state.registry.remove(&session_id);
+                state.registry.remove_session_if_same(&session_id, &session);
                 return short_status(StatusCode::CONFLICT);
             },
             UplinkIngestError::BufferFull | UplinkIngestError::ReadyFull => {
@@ -1046,7 +1046,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
             // so a session with no relay driving it does not linger until idle
             // eviction. The caller responds 503.
             session.close();
-            registry.remove(&session.id);
+            registry.remove_session_if_same(&session.id, &session);
             services
                 .tcp_server
                 .metrics
@@ -1100,7 +1100,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 // the session id should not be reused for a fresh
                 // handshake.
                 session_for_task.close();
-                registry.remove(&session_id);
+                registry.remove_session_if_same(&session_id, &session_for_task);
                 finish_ws_session(metrics_session, classify_relay_result(result), "vless");
             });
         },
@@ -1145,7 +1145,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 )
                 .await;
                 session_for_task.close();
-                registry.remove(&session_id);
+                registry.remove_session_if_same(&session_id, &session_for_task);
                 finish_ws_session(metrics_session, classify_relay_result(result), "ss");
             });
         },
@@ -1161,6 +1161,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 path: base_path,
                 candidate_users: Arc::clone(&route.candidate_users),
                 padding,
+                session_key_cache: Arc::clone(&route.session_key_cache),
             });
             let metrics_session = server.metrics.open_websocket_session(
                 Transport::Udp,
@@ -1200,7 +1201,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 )
                 .await;
                 session_for_task.close();
-                registry.remove(&session_id);
+                registry.remove_session_if_same(&session_id, &session_for_task);
                 finish_ws_session(metrics_session, classify_relay_result(result), "ss-udp");
             });
         },

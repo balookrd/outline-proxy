@@ -33,6 +33,7 @@ mod endpoint_routes;
 mod h3;
 mod listeners;
 mod nat;
+mod outbound_filter;
 mod peer_user_cache;
 mod periodic;
 mod relay;
@@ -54,6 +55,8 @@ mod tests;
 /// could never attest over the mesh. Kept a re-export rather than a second
 /// constant so the config check and the wire parser can never disagree.
 pub(crate) use self::cluster::mesh::MAX_USER_LEN;
+#[allow(unused_imports)]
+pub(in crate::server) use outbound_filter::OutboundFilter;
 
 #[cfg(test)]
 use self::{
@@ -175,6 +178,7 @@ pub async fn run(config: Config) -> Result<()> {
         let h3_cluster = built.cluster.clone();
         let shutdown = shutdown_signal.clone();
         let h3_udp_datagrams = config.h3_udp_datagrams;
+        let h3_max_connections_per_ip = config.max_connections_per_ip;
         tasks.spawn(async move {
             serve_h3_server(
                 h3_server,
@@ -186,6 +190,7 @@ pub async fn run(config: Config) -> Result<()> {
                     alpn,
                     http_fallback: h3_fallback,
                     cluster: h3_cluster,
+                    max_connections_per_ip: h3_max_connections_per_ip,
                 },
                 shutdown,
             )

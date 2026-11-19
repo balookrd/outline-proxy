@@ -71,6 +71,19 @@ impl UserKey {
         })
     }
 
+    #[inline]
+    pub fn key_fingerprint(&self) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut h = FNV_OFFSET;
+        for &b in self.master_key() {
+            h ^= b as u64;
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        h ^= (self.cipher as u8) as u64;
+        h.wrapping_mul(FNV_PRIME)
+    }
+
     pub(super) fn xchacha_cipher(&self) -> Result<&XChaCha20Poly1305, CryptoError> {
         if let Some(c) = self.ciphers.xchacha.get() {
             return Ok(c);

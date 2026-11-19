@@ -158,6 +158,7 @@ pub(super) async fn splice_plaintext_vless_mux(
         prefer_ipv4_upstream: vless.prefer_ipv4_upstream,
         outbound_ipv6: vless.outbound_ipv6.clone(),
         metrics: Arc::clone(&vless.metrics),
+        outbound_filter: Arc::clone(&vless.outbound_filter),
     };
     let mux_route = MuxRouteCtx {
         protocol: Protocol::Http3,

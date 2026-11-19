@@ -270,6 +270,8 @@ Keys are given as `[table].key`. CLI flags and environment variables for the key
 | `[outbound].ipv6_refresh_secs` | `30` | Interval between re-reads of the interface addresses for `ipv6_interface` / `ipv6_prefix_interface` |
 | `[outbound].ipv6_sticky` | `true` | With source rotation on, pin one source address per upstream destination IP for `ipv6_sticky_ttl_secs` instead of drawing a new one per connect. Cloudflare binds the `cf_clearance` cookie to the client source IP, so with a new source on every request an origin such as `claude.ai` shows the "Verifying you are human" challenge every time. Rotation still happens between destinations and after the TTL. The pin cache has an LRU cap and per-entry TTL; the startup reachability probe still tests random sources. No effect without a prefix or interface. `false` restores a random source per connect |
 | `[outbound].ipv6_sticky_ttl_secs` | `1800` | TTL of a sticky source pin. Set it above the origin's challenge-clearance lifetime (about 30 min for Cloudflare) |
+| `[outbound].block_private_ips` | `false` | Block loopback, private, link-local, unspecified, multicast, broadcast, and cloud metadata destination IPs in outbound TCP/UDP connections to prevent SSRF |
+| `[outbound].allowed_subnets` | `[]` | Explicit list of CIDRs or IPs permitted even when `block_private_ips` is enabled |
 | `tuning_profile` | `large` | Resource-limit preset: `small` / `medium` / `large`. Sets H2/H3 flow-control windows, stream limits, session and NAT timeouts, and the global UDP / XHTTP task and session caps |
 | `[tuning]` | profile values | Per-key overrides on top of the profile; keys below |
 | `tuning.client_active_ttl_secs` | `180` / `300` / `300` | TTL used to compute `client_active` / `client_up`. Must be > 0 |
@@ -486,6 +488,7 @@ Each variable has a CLI flag of the same name (`OUTLINE_SS_LISTEN` → `--listen
 | `OUTLINE_SS_OUTBOUND_IPV6_REFRESH_SECS` | `--outbound-ipv6-refresh-secs` | `[outbound].ipv6_refresh_secs` |
 | `OUTLINE_SS_OUTBOUND_IPV6_STICKY` | `--outbound-ipv6-sticky` | `[outbound].ipv6_sticky` |
 | `OUTLINE_SS_OUTBOUND_IPV6_STICKY_TTL_SECS` | `--outbound-ipv6-sticky-ttl-secs` | `[outbound].ipv6_sticky_ttl_secs` |
+| `OUTLINE_SS_OUTBOUND_BLOCK_PRIVATE_IPS` | `--outbound-block-private-ips` | `[outbound].block_private_ips` |
 | `OUTLINE_SS_HTTP_ROOT_AUTH` | `--http-root-auth[=true\|false]` | `[http_root].auth` |
 | `OUTLINE_SS_HTTP_ROOT_REALM` | `--http-root-realm` | `[http_root].realm` |
 | `OUTLINE_SS_METHOD` | `--method` | `[shadowsocks].method` |

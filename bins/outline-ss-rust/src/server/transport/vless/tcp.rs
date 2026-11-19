@@ -16,7 +16,7 @@ use super::super::super::{
     abort::AbortOnDrop,
     connect::connect_tcp_target,
     relay::{GREEDY_DRAIN_TARGET, UpstreamRead, try_read_bounded},
-    resumption::{Parked, ParkedProtocol, ParkedTcp, ResumeOutcome, SessionId},
+    resumption::{PARK_HARVEST_WAIT, Parked, ParkedProtocol, ParkedTcp, ResumeOutcome, SessionId},
 };
 use super::super::carrier_padding;
 use super::super::upstream_source::{
@@ -81,7 +81,18 @@ pub(super) async fn try_park_vless_tcp(
         },
     };
     cancel.notify_one();
-    let reader = match reader_task.into_inner().await {
+    let mut reader_task = reader_task.into_inner();
+    let harvested = match tokio::time::timeout(PARK_HARVEST_WAIT, &mut reader_task).await {
+        Ok(harvested) => harvested,
+        Err(_) => {
+            reader_task.abort();
+            let _ = reader_task.await;
+            warn!("vless tcp relay task did not stop for park in time; not parking");
+            shutdown_unparked_tcp(writer, guard).await;
+            return false;
+        },
+    };
+    let reader = match harvested {
         Ok(Ok(VlessRelayOutcome::Cancelled(HarvestedUpstream::Tcp(reader)))) => reader,
         // Unreachable: the mesh guard above returns before the harvest. Kept as
         // a refusal rather than a panic — nothing here can park a relayed
@@ -465,6 +476,7 @@ where
         user.fwmark(),
         server.prefer_ipv4_upstream,
         server.outbound_ipv6.as_deref(),
+        &server.outbound_filter,
     )
     .await
     {

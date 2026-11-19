@@ -843,6 +843,7 @@ fn mux_upstream(mux: MuxState, server: &VlessWsServerCtx, route: &VlessWsRouteCt
             prefer_ipv4_upstream: server.prefer_ipv4_upstream,
             outbound_ipv6: server.outbound_ipv6.clone(),
             metrics: Arc::clone(&server.metrics),
+            outbound_filter: Arc::clone(&server.outbound_filter),
         },
         route: MuxRouteCtx {
             protocol: route.protocol,

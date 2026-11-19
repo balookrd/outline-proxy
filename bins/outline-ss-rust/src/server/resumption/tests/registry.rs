@@ -38,6 +38,8 @@ fn test_config() -> Config {
         outbound_ipv6_refresh_secs: 30,
         outbound_ipv6_sticky: false,
         outbound_ipv6_sticky_ttl_secs: 1800,
+        outbound_block_private_ips: false,
+        outbound_allowed_subnets: Vec::new(),
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
         users: vec![UserEntry {

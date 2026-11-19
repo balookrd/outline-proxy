@@ -91,10 +91,8 @@ pub(super) struct Services {
 }
 
 impl Services {
-    /// Constructs the shared services bundle. Pass `None` for
-    /// `orphan_registry` in tests / setups that do not exercise
-    /// session-resumption — a permanently disabled (no-op) registry will
-    /// be substituted.
+    /// Constructs the shared services bundle with default outbound filter.
+    #[cfg_attr(not(test), allow(dead_code))]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         metrics: Arc<Metrics>,
@@ -107,6 +105,34 @@ impl Services {
         xhttp_limits: XhttpRegistryLimits,
         salt_replay_store: Arc<SaltReplayStore>,
     ) -> Self {
+        Self::with_outbound_filter(
+            metrics,
+            dns_cache,
+            prefer_ipv4_upstream,
+            outbound_ipv6,
+            udp,
+            orphan_registry,
+            ws_data_channel_capacity,
+            xhttp_limits,
+            salt_replay_store,
+            Arc::new(super::outbound_filter::OutboundFilter::default()),
+        )
+    }
+
+    /// Constructs the shared services bundle with a custom outbound filter.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn with_outbound_filter(
+        metrics: Arc<Metrics>,
+        dns_cache: Arc<DnsCache>,
+        prefer_ipv4_upstream: bool,
+        outbound_ipv6: Option<Arc<OutboundIpv6>>,
+        udp: UdpServices,
+        orphan_registry: Option<Arc<OrphanRegistry>>,
+        ws_data_channel_capacity: usize,
+        xhttp_limits: XhttpRegistryLimits,
+        salt_replay_store: Arc<SaltReplayStore>,
+        outbound_filter: Arc<super::outbound_filter::OutboundFilter>,
+    ) -> Self {
         let orphan_registry = orphan_registry
             .unwrap_or_else(|| Arc::new(OrphanRegistry::new_disabled(Arc::clone(&metrics))));
         let tcp_server = Arc::new(WsTcpServerCtx {
@@ -116,6 +142,7 @@ impl Services {
             outbound_ipv6: outbound_ipv6.clone(),
             orphan_registry: Arc::clone(&orphan_registry),
             ws_data_channel_capacity,
+            outbound_filter: Arc::clone(&outbound_filter),
             salt_replay_store,
         });
         let udp_server = Arc::new(UdpServerCtx {
@@ -126,8 +153,8 @@ impl Services {
             prefer_ipv4_upstream,
             relay_semaphore: udp.relay_semaphore,
             orphan_registry: Arc::clone(&orphan_registry),
-            session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
             ws_data_channel_capacity,
+            outbound_filter: Arc::clone(&outbound_filter),
         });
         let vless_server = Arc::new(VlessWsServerCtx {
             metrics,
@@ -136,6 +163,7 @@ impl Services {
             outbound_ipv6,
             orphan_registry: Arc::clone(&orphan_registry),
             ws_data_channel_capacity,
+            outbound_filter,
         });
         Self {
             tcp_server,
@@ -194,6 +222,9 @@ pub(super) struct TransportRoute {
     /// `user_index` is meaningful only against `users`; on any control-plane
     /// route rebuild the cache is replaced together with `users`.
     pub(super) peer_user_cache: Arc<PeerUserCache>,
+    /// Per-route session key cache. Rebuilt on user mutations to prevent
+    /// stale derived session keys from decrypting packets after revocation.
+    pub(super) session_key_cache: Arc<SessionKeyCache>,
 }
 
 #[derive(Clone)]
@@ -209,6 +240,7 @@ pub(super) fn empty_transport_route() -> Arc<TransportRoute> {
         peer_user_cache: Arc::new(PeerUserCache::with_capacity(
             super::constants::TCP_PEER_USER_CACHE_CAPACITY,
         )),
+        session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
     })
 }
 

@@ -82,6 +82,9 @@ pub(in crate::server) struct VlessWsServerCtx {
     /// — sized too low and a momentary WS writer stall back-pressures
     /// the upstream TCP read, visible as video buffer underrun.
     pub(in crate::server) ws_data_channel_capacity: usize,
+    /// Outbound SSRF filter.
+    pub(in crate::server) outbound_filter:
+        Arc<super::super::super::outbound_filter::OutboundFilter>,
 }
 
 pub(in crate::server) struct VlessWsRouteCtx {

@@ -114,6 +114,13 @@ pub(in crate::server) trait UpstreamSink: Send {
     }
 }
 
+async fn wait_cancelled(cancel: &Option<Arc<Notify>>) {
+    match cancel.as_deref() {
+        Some(notify) => notify.notified().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::server) async fn relay_upstream_to_client<S, U>(
     mut upstream_reader: U,
@@ -157,15 +164,9 @@ where
         // Cancel arm: when no cancel is registered we substitute a future
         // that never resolves, so the select degenerates to the legacy
         // single-arm read.
-        let cancelled = async {
-            match cancel.as_deref() {
-                Some(notify) => notify.notified().await,
-                None => std::future::pending::<()>().await,
-            }
-        };
         tokio::select! {
             biased;
-            _ = cancelled => {
+            _ = wait_cancelled(&cancel) => {
                 // The sink is intentionally NOT closed: the caller is
                 // about to hand the reader off to a new transport stream
                 // that will install a fresh encryptor and wire its own
@@ -250,7 +251,14 @@ where
                 aead_overhead_out
                     .increment((ciphertext.len() as u64).saturating_sub(read as u64));
                 sink.on_chunk_encrypted(read, ciphertext.len());
-                sink.send_ciphertext(ciphertext).await?;
+                let send_res = tokio::select! {
+                    biased;
+                    _ = wait_cancelled(&cancel) => {
+                        return Ok(UpstreamRelayOutcome::Cancelled(upstream_reader));
+                    }
+                    res = sink.send_ciphertext(ciphertext) => res,
+                };
+                send_res?;
             }
         }
     }

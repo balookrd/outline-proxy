@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use axum::http::{self, Method, StatusCode};
@@ -56,9 +56,23 @@ pub(super) async fn handle_h3_connection(
             .await
             .context("failed to initialize HTTP/3 connection")?;
 
+    let mut is_first_request = true;
     loop {
-        match h3_conn.accept().await {
+        let accept_timeout = if is_first_request {
+            Duration::from_secs(15)
+        } else {
+            Duration::from_secs(60)
+        };
+        let accept_res = match tokio::time::timeout(accept_timeout, h3_conn.accept()).await {
+            Ok(res) => res,
+            Err(_) => {
+                debug!(peer = %peer_addr, "HTTP/3 connection idle timeout; closing");
+                break;
+            },
+        };
+        match accept_res {
             Ok(Some(resolver)) => {
+                is_first_request = false;
                 let (request, stream) = match resolver.resolve_request().await {
                     Ok(parts) => parts,
                     Err(error) => {
@@ -214,6 +228,7 @@ async fn handle_h3_request(
             .send_response(response)
             .await
             .context("failed to send HTTP/3 plain response")?;
+        let _ = stream.finish().await;
         return Ok(());
     }
 
@@ -256,6 +271,7 @@ async fn handle_h3_request(
             .send_response(res)
             .await
             .context("failed to send HTTP/3 not found response")?;
+        let _ = stream.finish().await;
         return Ok(());
     }
 
@@ -267,6 +283,7 @@ async fn handle_h3_request(
             .send_response(res)
             .await
             .context("failed to send HTTP/3 websocket error response")?;
+        let _ = stream.finish().await;
         return Ok(());
     }
 
@@ -455,6 +472,7 @@ async fn handle_h3_request(
             // above, so this resolves the same scheme as the TCP leg — the
             // combined UDP leg pads iff the base path is listed.
             padding: crate::server::transport::carrier_padding::scheme_for_path(&ws_req.path),
+            session_key_cache: Arc::clone(&route.session_key_cache),
         });
         let result = handle_udp_h3_connection(
             socket,

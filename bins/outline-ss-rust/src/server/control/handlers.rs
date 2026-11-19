@@ -273,6 +273,8 @@ pub(super) struct OutboundConfigView {
     pub ipv6_refresh_secs: Option<u64>,
     pub ipv6_sticky: Option<bool>,
     pub ipv6_sticky_ttl_secs: Option<u64>,
+    pub block_private_ips: Option<bool>,
+    pub allowed_subnets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -332,9 +334,15 @@ pub(super) async fn get_config(State(state): State<ControlState>) -> axum::respo
     // Attempt to read current on-disk FileConfig if config_path exists
     let disk_file: Option<crate::config::FileConfig> =
         if let Some(path) = state.manager.config_path() {
-            std::fs::read_to_string(path)
-                .ok()
-                .and_then(|text| toml::from_str(&text).ok())
+            let path = path.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|text| toml::from_str(&text).ok())
+            })
+            .await
+            .ok()
+            .flatten()
         } else {
             None
         };
@@ -443,6 +451,8 @@ pub(super) async fn get_config(State(state): State<ControlState>) -> axum::respo
             ipv6_refresh_secs: df.ipv6_refresh_secs,
             ipv6_sticky: df.ipv6_sticky,
             ipv6_sticky_ttl_secs: df.ipv6_sticky_ttl_secs,
+            block_private_ips: df.block_private_ips,
+            allowed_subnets: df.allowed_subnets.clone(),
         })
     } else {
         Some(OutboundConfigView {
@@ -453,6 +463,8 @@ pub(super) async fn get_config(State(state): State<ControlState>) -> axum::respo
             ipv6_refresh_secs: Some(state.config.outbound_ipv6_refresh_secs),
             ipv6_sticky: Some(state.config.outbound_ipv6_sticky),
             ipv6_sticky_ttl_secs: Some(state.config.outbound_ipv6_sticky_ttl_secs),
+            block_private_ips: Some(state.config.outbound_block_private_ips),
+            allowed_subnets: Some(state.config.outbound_allowed_subnets.clone()),
         })
     };
 
@@ -850,6 +862,7 @@ pub(super) async fn patch_config(
     };
 
     let path = path.to_path_buf();
+    let _file_guard = state.manager.config_file_lock().lock().await;
     let res = tokio::task::spawn_blocking(move || persist_config_patch(&path, &req)).await;
 
     match res {

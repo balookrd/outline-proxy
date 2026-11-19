@@ -754,6 +754,7 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
                 alpn: std::sync::Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
                 http_fallback: Some(h3_fallback),
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -896,6 +897,7 @@ async fn h3_malformed_xhttp_requests_are_answered_like_unknown_paths() -> Result
                 alpn: std::sync::Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
                 http_fallback: Some(h3_fallback),
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )
@@ -989,6 +991,7 @@ async fn h3_fallback_rejects_oversized_request_body() -> Result<()> {
                 alpn: std::sync::Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
                 http_fallback: Some(h3_fallback),
                 cluster: None,
+                max_connections_per_ip: None,
             },
             ShutdownSignal::never(),
         )

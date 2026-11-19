@@ -286,3 +286,41 @@ fn global_cap_fires_before_per_user_when_both_reachable() {
         ReplayCheck::StoreFull(ReplayFull::Global)
     );
 }
+
+#[test]
+fn users_with_same_client_session_id_are_isolated() {
+    let store = ReplayStore::new(Duration::from_secs(60), 0, 0);
+    let user_a = user(1);
+    let user_b = user(2);
+    let shared_csid = [42_u8; 8];
+
+    // User A registers packet_id 1
+    assert_eq!(store.check_and_mark(&user_a, shared_csid, 1), ReplayCheck::Fresh);
+    // User B with the same client_session_id also registers packet_id 1 independently
+    assert_eq!(store.check_and_mark(&user_b, shared_csid, 1), ReplayCheck::Fresh);
+
+    // Replay on User A
+    assert_eq!(store.check_and_mark(&user_a, shared_csid, 1), ReplayCheck::Replay);
+    // User B can still receive packet_id 2
+    assert_eq!(store.check_and_mark(&user_b, shared_csid, 2), ReplayCheck::Fresh);
+}
+
+#[test]
+fn replayed_packet_does_not_refresh_timestamp() {
+    let store = ReplayStore::new(Duration::from_secs(60), 0, 0);
+    let u = user(1);
+    let csid = [1_u8; 8];
+    let t = crate::clock::current_unix_secs();
+
+    assert_eq!(store.check_and_mark(&u, csid, 1), ReplayCheck::Fresh);
+
+    // Replay does not advance last_seen_secs
+    assert_eq!(store.check_and_mark(&u, csid, 1), ReplayCheck::Replay);
+
+    // Sweep past the initial timestamp will evict the entry even if replays arrived
+    let evicted = store.sweep(t + 65);
+    assert_eq!(evicted, 1);
+
+    // After eviction, packet 1 is fresh again
+    assert_eq!(store.check_and_mark(&u, csid, 1), ReplayCheck::Fresh);
+}

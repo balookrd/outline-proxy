@@ -14,7 +14,7 @@ use tracing::debug;
 
 use super::super::super::{
     dns_cache::DnsCache,
-    resumption::{ParkedMuxSubConn, ParkedMuxSubKind, ParkedVlessMux},
+    resumption::{PARK_HARVEST_WAIT, ParkedMuxSubConn, ParkedMuxSubKind, ParkedVlessMux},
 };
 use super::super::held_header::HeldResponseHeader;
 
@@ -33,6 +33,7 @@ pub(in crate::server::transport) struct MuxServerCtx {
     pub prefer_ipv4_upstream: bool,
     pub outbound_ipv6: Option<Arc<OutboundIpv6>>,
     pub metrics: Arc<Metrics>,
+    pub outbound_filter: Arc<super::super::super::outbound_filter::OutboundFilter>,
 }
 
 pub(in crate::server::transport) struct MuxRouteCtx {
@@ -265,11 +266,19 @@ impl MuxState {
         for (id, sub) in self.sub_conns.drain() {
             let (kind, task, cancel) = sub.into_parts();
             cancel.notify_one();
-            let task = match task {
+            let mut task = match task {
                 Some(t) => t,
                 None => continue,
             };
-            let harvest = task.await;
+            let harvest = match tokio::time::timeout(PARK_HARVEST_WAIT, &mut task).await {
+                Ok(harvest) => harvest,
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                    debug!(session_id = id, "mux sub-conn reader task timed out; skipping");
+                    continue;
+                },
+            };
             let parked_kind = match (kind, harvest) {
                 (SubConnKind::Tcp(writer), Ok(MuxReaderHarvest::TcpCancelled(reader))) => {
                     ParkedMuxSubKind::Tcp { writer, reader }
