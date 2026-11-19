@@ -438,4 +438,166 @@ class AutomationPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun `wifi pause all wifi - pauses when connected to any wifi regardless of ssid`() {
+        // Entering Wi-Fi with known SSID while tunnel is active -> PAUSE
+        val actionKnown = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+            isOnWifi = true,
+            currentSsid = "Hotel_Free_WiFi",
+            trustedSsids = emptySet(),
+            tunnelActive = true,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.PAUSE_TUNNEL, actionKnown)
+
+        // Entering Wi-Fi with unknown SSID (e.g. no location permission) while tunnel active -> PAUSE
+        val actionUnknown = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+            isOnWifi = true,
+            currentSsid = null,
+            trustedSsids = emptySet(),
+            tunnelActive = true,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.PAUSE_TUNNEL, actionUnknown)
+
+        // Starting VPN while already connected to Wi-Fi -> PAUSE immediately
+        val actionStartOnWifi = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+            isOnWifi = true,
+            currentSsid = "Airport_WiFi",
+            trustedSsids = emptySet(),
+            tunnelActive = false,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.PAUSE_TUNNEL, actionStartOnWifi)
+
+        // Already paused on Wi-Fi -> DO_NOTHING (idempotent)
+        val actionAlreadyPaused = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+            isOnWifi = true,
+            currentSsid = "Airport_WiFi",
+            trustedSsids = emptySet(),
+            tunnelActive = false,
+            pausedByWifi = true,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, actionAlreadyPaused)
+    }
+
+    @Test
+    fun `wifi pause all wifi - resumes when leaving wifi to cellular`() {
+        // Disconnecting from Wi-Fi to cellular while paused by wifi -> RESUME
+        val actionLeaveToCellular = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+            isOnWifi = false,
+            currentSsid = null,
+            trustedSsids = emptySet(),
+            tunnelActive = false,
+            pausedByWifi = true,
+            userIntentShouldRun = true,
+        )
+        assertEquals(AutomationAction.RESUME_TUNNEL, actionLeaveToCellular)
+
+        // Disconnecting from Wi-Fi to cellular when user had disabled VPN (`shouldRun = false`) -> DO_NOTHING
+        val actionNoIntent = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+            isOnWifi = false,
+            currentSsid = null,
+            trustedSsids = emptySet(),
+            tunnelActive = false,
+            pausedByWifi = true,
+            userIntentShouldRun = false,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, actionNoIntent)
+    }
+
+    @Test
+    fun `wifi pause all wifi - manual override allows connection on wifi`() {
+        // Manual override for this SSID suppresses pause
+        val actionOverrideSsid = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+            isOnWifi = true,
+            currentSsid = "Hotel_WiFi",
+            trustedSsids = emptySet(),
+            tunnelActive = true,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+            manualOverrideSsid = "Hotel_WiFi",
+        )
+        assertEquals(AutomationAction.DO_NOTHING, actionOverrideSsid)
+
+        // Manual override active flag suppresses pause even if SSID is unknown/null
+        val actionOverrideActive = AutomationPolicy.decideWifiChange(
+            wifiAutomationEnabled = true,
+            wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+            isOnWifi = true,
+            currentSsid = null,
+            trustedSsids = emptySet(),
+            tunnelActive = true,
+            pausedByWifi = false,
+            userIntentShouldRun = true,
+            manualOverrideActive = true,
+        )
+        assertEquals(AutomationAction.DO_NOTHING, actionOverrideActive)
+    }
+
+    @Test
+    fun `isPauseMandated - pause all wifi mode`() {
+        // On Wi-Fi with SSID mandates pause
+        assertTrue(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = true,
+                wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+                isOnWifi = true,
+                currentSsid = "Any_WiFi",
+                trustedSsids = emptySet(),
+            ),
+        )
+
+        // On Wi-Fi with unknown SSID still mandates pause
+        assertTrue(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = true,
+                wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+                isOnWifi = true,
+                currentSsid = null,
+                trustedSsids = emptySet(),
+            ),
+        )
+
+        // On cellular data does NOT mandate pause
+        assertFalse(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = true,
+                wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+                isOnWifi = false,
+                currentSsid = null,
+                trustedSsids = emptySet(),
+            ),
+        )
+
+        // Disabled automation does NOT mandate pause
+        assertFalse(
+            AutomationPolicy.isPauseMandated(
+                wifiAutomationEnabled = false,
+                wifiMode = WifiRuleMode.PAUSE_ALL_WIFI,
+                isOnWifi = true,
+                currentSsid = "Any_WiFi",
+                trustedSsids = emptySet(),
+            ),
+        )
+    }
 }

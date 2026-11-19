@@ -19,6 +19,12 @@ enum class AutomationAction {
  */
 enum class WifiRuleMode {
     /**
+     * Pause the tunnel whenever connected to any Wi-Fi network;
+     * resume only on cellular data (e.g., when roaming abroad).
+     */
+    PAUSE_ALL_WIFI,
+
+    /**
      * Pause the tunnel when joining a selected network (e.g., home or office);
      * resume when disconnecting or switching to an unlisted network.
      */
@@ -110,6 +116,9 @@ object AutomationPolicy {
         val normalized = normalizeSsid(currentSsid)
 
         return when (wifiMode) {
+            WifiRuleMode.PAUSE_ALL_WIFI -> {
+                isOnWifi
+            }
             WifiRuleMode.PAUSE_ON_SELECTED -> {
                 if (isOnWifi) {
                     if (normalized != null) {
@@ -167,6 +176,25 @@ object AutomationPolicy {
         val normalized = normalizeSsid(currentSsid)
 
         return when (wifiMode) {
+            WifiRuleMode.PAUSE_ALL_WIFI -> {
+                if (isOnWifi) {
+                    if (normalized != null && normalized == manualOverrideSsid) {
+                        AutomationAction.DO_NOTHING
+                    } else if (tunnelActive || (!pausedByWifi && userIntentShouldRun)) {
+                        AutomationAction.PAUSE_TUNNEL
+                    } else {
+                        AutomationAction.DO_NOTHING
+                    }
+                } else {
+                    // Left Wi-Fi (switched to cellular or no network)
+                    if (pausedByWifi && userIntentShouldRun && !tunnelActive) {
+                        AutomationAction.RESUME_TUNNEL
+                    } else {
+                        AutomationAction.DO_NOTHING
+                    }
+                }
+            }
+
             WifiRuleMode.PAUSE_ON_SELECTED -> {
                 if (isOnWifi) {
                     if (normalized != null) {

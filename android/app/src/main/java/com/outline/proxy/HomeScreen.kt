@@ -289,6 +289,7 @@ private fun StatusCard(
                         // flow.
                         val context = LocalContext.current
                         val autoState = remember { AutomationState(context) }
+                        val autoConfig = remember { AutomationStore(context).load() }
                         val isPaused = !connected && (autoState.pausedByAirplane || autoState.pausedByWifi)
                         val dots = connectingDots(active = connecting)
                         val statusText = when {
@@ -298,6 +299,8 @@ private fun StatusCard(
                                     val currentSsid = LinkProbe.currentWifiSsid(context)
                                     if (currentSsid != null) {
                                         stringResource(R.string.status_paused_wifi_named, currentSsid)
+                                    } else if (autoConfig.wifiMode == WifiRuleMode.PAUSE_ALL_WIFI) {
+                                        stringResource(R.string.status_paused_wifi_all)
                                     } else {
                                         stringResource(R.string.status_paused_wifi)
                                     }

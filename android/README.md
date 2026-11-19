@@ -341,6 +341,15 @@ share links. It applies to structured profiles, share links, subscriptions and
 raw TOML overrides. UDP inside the tunnel (DNS, VoIP) is carried over the
 HTTP/2 connection. A change takes effect on the next connect.
 
+### Network Rules and Wi-Fi automation
+
+The **Network Rules** screen (accessed via quick links on the Home screen) automates VPN connection based on network type:
+
+- **Pause on all Wi-Fi networks**: pauses the VPN tunnel whenever connected to any Wi-Fi network (such as hotels, cafes, or airports while abroad) and restores it when returning to mobile data (cellular/roaming). Operates purely on network capabilities without requiring location permissions (`ACCESS_FINE_LOCATION`) or system GPS services.
+- **Pause on selected networks**: automatically pauses on designated trusted networks (e.g. home, office) and connects elsewhere.
+- **Connect only on selected networks**: activates the tunnel only when connected to designated networks and disconnects elsewhere.
+- **Manual override**: if the user taps "Connect" while on a paused network, the tunnel stays connected on that network until disconnecting or switching networks.
+
 ### What the home screen says about the link
 
 Under the tunnel status the card shows the network the tunnel is using:
