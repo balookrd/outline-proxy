@@ -1114,7 +1114,7 @@ git commit -m "ops(k3s): cut alerting over to vmalert, disable Grafana alerting"
 - Modify: `ops/grafana/README.md` (раздел «Алертинг» и абзац про `grafana_alerting_*`)
 - Modify: `ops/heartbeat/README.md` (источник пульса)
 
-- [ ] **Шаг 1: заменить запросы панелей ряда «Здоровье алертинга»**
+- [x] **Шаг 1: заменить запросы панелей ряда «Здоровье алертинга»**
 
 | Панель | Было | Стало |
 |---|---|---|
@@ -1128,13 +1128,13 @@ git commit -m "ops(k3s): cut alerting over to vmalert, disable Grafana alerting"
 
 Перед правкой снять фактические имена метрик: `kubectl -n monitoring exec deploy/vmalert -- wget -qO- http://127.0.0.1:8880/metrics | grep -oE '^vmalert_[a-z_]+' | sort -u`. Раскатить дашборд: `ops/grafana/dashboards/deploy.sh --k3s` (с согласия, нужен рестарт Grafana).
 
-- [ ] **Шаг 2: написать `ops/alerting/README.md`** по `~/.claude/tech-docs-style.md`: что делает каталог, требования (docker, kubectl, `KUBECONFIG`, три файла секретов), раскатка (`./ops/alerting/test.sh`, `./ops/alerting/deploy.sh`, reload Alertmanager), таблица правил (алерт, выражение, `for`, `keep_firing_for`, маршрут), проверка пульса, известные проблемы (emptyDir теряет заглушки при рестарте пода; пульс гаснет через ~4 мин после отказа VictoriaMetrics), раздел «Откат». Имена узлов и домены — условные, как в соседних README (`relay-a`, `fleet.example`).
+- [x] **Шаг 2: написать `ops/alerting/README.md`** по `~/.claude/tech-docs-style.md`: что делает каталог, требования (docker, kubectl, `KUBECONFIG`, три файла секретов), раскатка (`./ops/alerting/test.sh`, `./ops/alerting/deploy.sh`, reload Alertmanager), таблица правил (алерт, выражение, `for`, `keep_firing_for`, маршрут), проверка пульса, известные проблемы (emptyDir теряет заглушки при рестарте пода; пульс гаснет через ~4 мин после отказа VictoriaMetrics), раздел «Откат». Имена узлов и домены — условные, как в соседних README (`relay-a`, `fleet.example`).
 
-- [ ] **Шаг 3: обновить `ops/grafana/README.md`** — раздел «Алертинг» сократить до ссылки на `ops/alerting/README.md` с датой переезда; абзацы про `grafana_alerting_*`, **Alerting → History** и `alertlist` заменить описанием новых панелей; убрать упоминание, что «по этому же источнику считаются и алерты».
+- [x] **Шаг 3: обновить `ops/grafana/README.md`** — раздел «Алертинг» сократить до ссылки на `ops/alerting/README.md` с датой переезда; абзацы про `grafana_alerting_*`, **Alerting → History** и `alertlist` заменить описанием новых панелей; убрать упоминание, что «по этому же источнику считаются и алерты».
 
-- [ ] **Шаг 4: обновить `ops/heartbeat/README.md`** — источник пульса: Alertmanager в k3s (маршрут в `ops/alerting/alertmanager/alertmanager.yml`), правило в `ops/alerting/vmalert/rules.yaml`; на схеме `Grafana (k3s)` заменить на `vmalert → Alertmanager (k3s)`. Поправить и текст писем наблюдателя в `ops/heartbeat/heartbeat-watch` (там «home Grafana»), это меняет поведение скрипта на cloud1/cloud2: после правки — `ops/heartbeat/test-heartbeat-watch.sh` и переустановка через `install.sh` с согласия владельца.
+- [x] **Шаг 4: обновить `ops/heartbeat/README.md`** — источник пульса: Alertmanager в k3s (маршрут в `ops/alerting/alertmanager/alertmanager.yml`), правило в `ops/alerting/vmalert/rules.yaml`; на схеме `Grafana (k3s)` заменить на `vmalert → Alertmanager (k3s)`. Поправить и текст писем наблюдателя в `ops/heartbeat/heartbeat-watch` (там «home Grafana»), это меняет поведение скрипта на cloud1/cloud2: после правки — `ops/heartbeat/test-heartbeat-watch.sh` и переустановка через `install.sh` с согласия владельца.
 
-- [ ] **Шаг 5: коммит (только по команде владельца)**
+- [x] **Шаг 5: коммит (только по команде владельца)**
 
 ```bash
 git commit -m "docs(alerting): document vmalert + Alertmanager, rework alerting dashboard" -- \

@@ -99,7 +99,7 @@
       "type": "stat",
       "id": 2,
       "title": "Правил в работе",
-      "description": "Сколько алертинговых правил загрузил vmalert (по одной серии vmalert_alerts_firing на правило). Меньше восьми — rules.yaml в ConfigMap vmalert-rules не тот или не перечитался: vmalert_config_last_reload_successful, лог пода vmalert.",
+      "description": "Сколько алертинговых правил загрузил vmalert (по одной серии vmalert_alerts_firing на правило). Меньше десяти — rules.yaml в ConfigMap vmalert-rules не тот или не перечитался: vmalert_config_last_reload_successful, лог пода vmalert.",
       "datasource": {
         "type": "prometheus",
         "uid": "adnsc1wi03doga"
@@ -129,7 +129,7 @@
               },
               {
                 "color": "green",
-                "value": 8
+                "value": 10
               }
             ]
           }
@@ -420,7 +420,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{job=~\"rust-ws-exporter|rust-ss-exporter\"}",
+          "expr": "up{job=~\"rust-ws-exporter|rust-ss-exporter|unbound-exporter\"}",
           "legendFormat": "{{instance}} / {{job}}"
         }
       ],
@@ -797,6 +797,134 @@
           "calcs": [
             "sum"
           ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 15,
+      "title": "NodeRebooted — возраст узлов k3s",
+      "description": "Аптайм узлов k3s из node_boot_time_seconds. Падение ниже 10 минут (600 с) зажигает правило NodeRebooted. Одновременный сброс всех трёх узлов указывает на кратковременное отключение питания стенда.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 55
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min by (instance) (time() - node_boot_time_seconds{instance=~\"k3s-[0-9]+\"})",
+          "legendFormat": "{{instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "unit": "s",
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 16,
+      "title": "BackupStale — возраст бэкапов NAS",
+      "description": "Часов с последнего успешного ночного бэкапа NAS (vmbackup, grafana, jellyfin). Выше 26 часов горит правило BackupStale (пропуск или падение ночного задания бэкапа). Логи контейнеров бэкапа — на NAS.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "adnsc1wi03doga"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 55
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(time() - max by (backup) (last_over_time(nas_backup_last_success_timestamp_seconds[8d]))) / 3600",
+          "legendFormat": "{{backup}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "unit": "h",
+          "min": 0,
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 26
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
