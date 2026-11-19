@@ -231,6 +231,9 @@ pub(crate) fn build_ipv4_udp_packet(
 ) -> Result<Vec<u8>> {
     let udp_len = UDP_HEADER_LEN + payload.len();
     let total_len = IPV4_HEADER_LEN + udp_len;
+    if total_len > usize::from(u16::MAX) {
+        bail!("UDP packet total length exceeds u16::MAX");
+    }
     let mut packet = vec![0u8; total_len];
     packet[0] = 0x45;
     packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
@@ -251,6 +254,8 @@ pub(crate) fn build_ipv4_udp_packet(
         IPV6_NEXT_HEADER_UDP,
         &packet[udp_offset..udp_offset + udp_len],
     );
+    // RFC 768: if computed checksum is 0, it must be transmitted as 0xFFFF.
+    let udp_checksum = if udp_checksum == 0 { 0xffff } else { udp_checksum };
     packet[udp_offset + 6..udp_offset + 8].copy_from_slice(&udp_checksum.to_be_bytes());
     let header_checksum = checksum16(&packet[..IPV4_HEADER_LEN]);
     packet[10..12].copy_from_slice(&header_checksum.to_be_bytes());
@@ -265,6 +270,9 @@ pub(crate) fn build_ipv6_udp_packet(
     payload: &[u8],
 ) -> Result<Vec<u8>> {
     let udp_len = UDP_HEADER_LEN + payload.len();
+    if udp_len > usize::from(u16::MAX) {
+        bail!("UDP packet length exceeds u16::MAX");
+    }
     let total_len = IPV6_HEADER_LEN + udp_len;
     let mut packet = vec![0u8; total_len];
     packet[0] = 0x60;
@@ -286,6 +294,9 @@ pub(crate) fn build_ipv6_udp_packet(
         IPV6_NEXT_HEADER_UDP,
         &packet[udp_offset..udp_offset + udp_len],
     );
+    // RFC 8200 §8.1: unlike IPv4, IPv6 UDP checksum is mandatory. If computed
+    // as 0, it must be transmitted as 0xFFFF.
+    let udp_checksum = if udp_checksum == 0 { 0xffff } else { udp_checksum };
     packet[udp_offset + 6..udp_offset + 8].copy_from_slice(&udp_checksum.to_be_bytes());
     Ok(packet)
 }

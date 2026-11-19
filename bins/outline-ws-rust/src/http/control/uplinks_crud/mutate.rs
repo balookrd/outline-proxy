@@ -74,7 +74,7 @@ pub(super) async fn handle_create(
         if find_group_mut(doc, &body.group).is_none() {
             return Err(format!("uplink_group \"{}\" not found", body.group));
         }
-        let arr = get_or_init_outline_uplinks(doc);
+        let arr = get_or_init_outline_uplinks(doc)?;
         if find_outline_uplink_index(arr, &body.group, &name).is_some() {
             return Err(format!(
                 "uplink \"{name}\" already exists in group \"{}\" on disk",
@@ -149,7 +149,10 @@ pub(super) async fn handle_update(
             format!("uplink_group \"{}\" not found", body.group),
         );
     }
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = match get_or_init_outline_uplinks(&mut doc) {
+        Ok(a) => a,
+        Err(e) => return json_error_owned(StatusCode::BAD_REQUEST, e),
+    };
     let idx = match find_outline_uplink_index(arr, &body.group, &body.name) {
         Some(i) => i,
         None => {
@@ -210,7 +213,7 @@ pub(super) async fn handle_delete(
         if find_group_mut(doc, &group_name).is_none() {
             return Err(format!("uplink_group \"{group_name}\" not found"));
         }
-        let arr = get_or_init_outline_uplinks(doc);
+        let arr = get_or_init_outline_uplinks(doc)?;
         let idx = find_outline_uplink_index(arr, &group_name, &uplink_name).ok_or_else(|| {
             format!("uplink \"{uplink_name}\" not found in group \"{group_name}\"")
         })?;
@@ -264,7 +267,7 @@ pub(super) async fn handle_reorder(
         if find_group_mut(doc, &group_name).is_none() {
             return Err(format!("uplink_group \"{group_name}\" not found"));
         }
-        let arr = get_or_init_outline_uplinks(doc);
+        let arr = get_or_init_outline_uplinks(doc)?;
         apply_reorder(arr, &group_name, &uplink_name, to)
     })
     .await;
@@ -319,7 +322,9 @@ pub(crate) fn find_group_mut<'a>(doc: &'a mut DocumentMut, group: &str) -> Optio
 /// loader treats this top-level array as the source of truth: each entry
 /// carries a `group = "..."` discriminator that links it to a
 /// `[[uplink_group]]` table by name.
-pub(super) fn get_or_init_outline_uplinks(doc: &mut DocumentMut) -> &mut ArrayOfTables {
+pub(super) fn get_or_init_outline_uplinks(
+    doc: &mut DocumentMut,
+) -> Result<&mut ArrayOfTables, String> {
     if !doc.contains_key("outline") {
         let mut t = Table::new();
         t.set_implicit(true);
@@ -328,14 +333,14 @@ pub(super) fn get_or_init_outline_uplinks(doc: &mut DocumentMut) -> &mut ArrayOf
     let outline_tbl = doc
         .get_mut("outline")
         .and_then(Item::as_table_mut)
-        .expect("[outline] must be a table");
+        .ok_or_else(|| "[outline] must be a table".to_string())?;
     if !outline_tbl.contains_key("uplinks") {
         outline_tbl.insert("uplinks", Item::ArrayOfTables(ArrayOfTables::new()));
     }
     outline_tbl
         .get_mut("uplinks")
         .and_then(Item::as_array_of_tables_mut)
-        .expect("outline.uplinks must be array-of-tables after insert")
+        .ok_or_else(|| "outline.uplinks must be array-of-tables".to_string())
 }
 
 /// Locate an entry inside `[[outline.uplinks]]` matching both `group` and

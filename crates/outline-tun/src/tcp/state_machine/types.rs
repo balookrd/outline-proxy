@@ -630,6 +630,7 @@ mod tests;
 /// handles for the new uplink so emitted series match the per-call path
 /// bit-for-bit.
 pub(in crate::tcp) struct CachedFlowGauges {
+    pub(in crate::tcp) group: Arc<str>,
     pub(in crate::tcp) uplink: Arc<str>,
     pub(in crate::tcp) handles: outline_metrics::TunTcpFlowGauges,
 }

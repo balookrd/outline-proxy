@@ -16,7 +16,7 @@ use bytes::Bytes;
 use http::{HeaderMap, Method, Request, Version};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::client::conn::http2;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use outline_wire::early_shape::{EarlyShaper, ShapeDirection};
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -369,6 +369,9 @@ async fn driver_loop_h2_stream_one(
                 _ => unreachable!("checked Binary above"),
             });
             if frame_tx.send(framed).await.is_err() {
+                let _ = in_tx
+                    .send_control(Err(io_ws_err("xhttp stream-one uplink broken")))
+                    .await;
                 break;
             }
             continue;
@@ -425,6 +428,10 @@ where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let mut builder = http2::Builder::new(TokioExecutor::new());
+    builder
+        .timer(TokioTimer::new())
+        .keep_alive_interval(Some(crate::jittered(crate::h2::h2_keepalive_interval())))
+        .keep_alive_timeout(crate::h2::h2_keepalive_timeout());
     // SETTINGS of the dial's browser family (the dial fingerprint scope is
     // still active here, as for the TLS config); windows are the carrier's
     // defaults with the operator's `[h2]` windows on top.
@@ -592,12 +599,14 @@ async fn send_fin(
     base_headers: Arc<HeaderMap>,
     seq: u64,
 ) {
-    if send.ready().await.is_err() {
-        return;
-    }
     let headers = super::fin_post_headers(&base_headers);
-    let post = post_one(send, &uri_prefix, &headers, seq, Vec::new());
-    match timeout(super::FIN_TIMEOUT, post).await {
+    let send_fut = async {
+        if send.ready().await.is_err() {
+            return Ok(());
+        }
+        post_one(send, &uri_prefix, &headers, seq, Vec::new()).await
+    };
+    match timeout(super::FIN_TIMEOUT, send_fut).await {
         Ok(Ok(())) => {},
         Ok(Err(error)) => debug!(?error, seq, "xhttp FIN POST failed"),
         Err(_) => debug!(seq, "xhttp FIN POST timed out"),

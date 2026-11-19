@@ -374,3 +374,25 @@ fn gso_udp_assembles_multiple_segments_contiguously() {
     let full_csum = u16::from_be_bytes([full_udp[6], full_udp[7]]);
     assert_eq!(checksum16(&gso[IPV4_HEADER_LEN..]), full_csum);
 }
+
+#[test]
+fn udp_packet_checksum_zero_is_transmitted_as_ffff() {
+    let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+    let dst = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
+    // Construct a payload whose checksum would sum to 0xFFFF (complement 0x0000)
+    // Whatever the payload, verify the generated checksum is never 0x0000.
+    for payload in [b"".as_slice(), b"hello".as_slice(), &[0xff; 128]] {
+        let pkt = build_ipv6_udp_packet(src, dst, 1234, 5678, payload).unwrap();
+        let csum = u16::from_be_bytes([pkt[46], pkt[47]]);
+        assert_ne!(csum, 0x0000, "RFC 8200 requires non-zero UDP checksum in IPv6");
+    }
+}
+
+#[test]
+fn udp_packet_rejects_oversized_payload() {
+    let src = Ipv4Addr::new(192, 168, 1, 1);
+    let dst = Ipv4Addr::new(192, 168, 1, 2);
+    // Payload larger than u16::MAX - UDP_HEADER_LEN - IPV4_HEADER_LEN
+    let oversized = vec![0u8; 65536];
+    assert!(build_ipv4_udp_packet(src, dst, 1000, 2000, &oversized).is_err());
+}

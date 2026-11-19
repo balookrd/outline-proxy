@@ -15,15 +15,14 @@ pub mod metrics;
 #[cfg(any(feature = "control", feature = "metrics"))]
 pub(crate) mod serve;
 
-/// Secret comparison that does not leak the matching prefix length through
+/// Secret comparison that does not leak the length or matching prefix through
 /// timing. Used by the control plane's mandatory bearer token gate.
 #[cfg(feature = "control")]
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
+    let hash_a = blake3::hash(a);
+    let hash_b = blake3::hash(b);
     let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
+    for (x, y) in hash_a.as_bytes().iter().zip(hash_b.as_bytes().iter()) {
         diff |= x ^ y;
     }
     diff == 0

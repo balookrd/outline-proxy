@@ -14,14 +14,19 @@ use super::buffer::pending_server_bytes;
 /// Cheap `Arc::ptr_eq` check on the hot path; the 14 label-hash registry probes
 /// only run once per flow (or once per failover).
 fn ensure_flow_gauges(state: &mut TcpFlowState) {
+    let group = &state.routing.group_name;
     let uplink = &state.routing.uplink_name;
     let fresh = match &state.flow_gauges {
-        Some(cached) => Arc::ptr_eq(&cached.uplink, uplink),
+        Some(cached) => Arc::ptr_eq(&cached.group, group) && Arc::ptr_eq(&cached.uplink, uplink),
         None => false,
     };
     if !fresh {
-        let handles = metrics::tun_tcp_flow_gauges(&state.routing.group_name, uplink);
-        state.flow_gauges = Some(CachedFlowGauges { uplink: Arc::clone(uplink), handles });
+        let handles = metrics::tun_tcp_flow_gauges(group, uplink);
+        state.flow_gauges = Some(CachedFlowGauges {
+            group: Arc::clone(group),
+            uplink: Arc::clone(uplink),
+            handles,
+        });
     }
 }
 

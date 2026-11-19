@@ -148,3 +148,16 @@ async fn validate_rejects_route_that_fails_to_compile() {
 fn group_names_are_extracted() {
     assert_eq!(group_names_in_doc(&doc()), vec!["main".to_string()]);
 }
+
+#[test]
+fn apply_create_rejects_absolute_paths() {
+    let mut d = doc();
+    let err = apply_create(&mut d, &payload(r#"{"file":"/etc/passwd","via":"direct"}"#), Some(0))
+        .unwrap_err();
+    assert!(err.contains("absolute path"), "got: {err}");
+
+    let err_parent =
+        apply_create(&mut d, &payload(r#"{"file":"../secret.txt","via":"direct"}"#), Some(0))
+            .unwrap_err();
+    assert!(err_parent.contains("`..`"), "got: {err_parent}");
+}

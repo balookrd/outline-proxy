@@ -195,26 +195,34 @@ async fn ss2022_udp_replay_protection_rejects_duplicate_and_reorder() {
     let err = transport.read_packet().await.unwrap_err();
     assert!(is_replay_error(&err), "duplicate packet must be rejected: {err:#}");
 
-    // Reorder (same session, lower id 3 <= last-seen 5) is rejected.
-    channel.push(packet(0xAA, 3, b"old"));
+    // Reordered packet (same session, lower id 3 within sliding window) is accepted.
+    channel.push(packet(0xAA, 3, b"reordered"));
+    let out = transport.read_packet().await.unwrap();
+    assert_eq!(out.as_ref(), expect_tail(b"reordered").as_slice());
+
+    // Duplicate of the reordered packet is rejected.
+    channel.push(packet(0xAA, 3, b"reordered_dup"));
     let err = transport.read_packet().await.unwrap_err();
-    assert!(is_replay_error(&err), "reordered packet must be rejected: {err:#}");
+    assert!(is_replay_error(&err), "duplicate reordered packet must be rejected: {err:#}");
 
     // Forward progress (id 6 > 5) is accepted.
     channel.push(packet(0xAA, 6, b"second"));
     let out = transport.read_packet().await.unwrap();
     assert_eq!(out.as_ref(), expect_tail(b"second").as_slice());
 
-    // A new server session resets the per-session window: id 1 is accepted
-    // even though it is below the previous session's high-water mark.
+    // A packet from a different server session is rejected (prevents session rollback/hijack).
     channel.push(packet(0xBB, 1, b"newsess"));
-    let out = transport.read_packet().await.unwrap();
-    assert_eq!(out.as_ref(), expect_tail(b"newsess").as_slice());
-
-    // A duplicate within the new session is rejected.
-    channel.push(packet(0xBB, 1, b"newdup"));
     let err = transport.read_packet().await.unwrap_err();
-    assert!(is_replay_error(&err), "duplicate in new session must be rejected: {err:#}");
+    assert!(is_replay_error(&err), "different server session must be rejected: {err:#}");
+
+    // A packet far behind the window (e.g. forward to 200, then receive 5) is rejected.
+    channel.push(packet(0xAA, 200, b"advanced"));
+    let out = transport.read_packet().await.unwrap();
+    assert_eq!(out.as_ref(), expect_tail(b"advanced").as_slice());
+
+    channel.push(packet(0xAA, 2, b"too_old"));
+    let err = transport.read_packet().await.unwrap_err();
+    assert!(is_replay_error(&err), "packet outside replay window must be rejected: {err:#}");
 }
 
 // The classifier that keeps a corrupt datagram off the carrier-descent path

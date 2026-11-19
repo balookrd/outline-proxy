@@ -55,9 +55,13 @@ use super::{
     inbound_channel, outbound_channel,
 };
 
+use std::time::Duration;
+
 /// Same dial budget as the h2/h3 paths — keeps fallback windows
 /// uniform across carriers.
 use crate::dial_timeouts::fresh_connect_timeout;
+
+const POST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn h1_tls_config() -> Arc<rustls::ClientConfig> {
     // Cache + per-dial fingerprint selection live in `build_client_config`
@@ -378,17 +382,27 @@ async fn driver_loop_h1(
             break;
         }
         // Re-sent while the server answers busy (503, see `super::post_status`).
-        let mut retry = BusyRetry::new();
-        let result = loop {
-            let result =
-                post_one(&mut send, &uri_prefix, &base_headers, seq, bytes.clone(), profile).await;
-            if !retry.again(&result).await {
-                break result;
+        let attempts = async {
+            let mut retry = BusyRetry::new();
+            loop {
+                let result =
+                    post_one(&mut send, &uri_prefix, &base_headers, seq, bytes.clone(), profile)
+                        .await;
+                if !retry.again(&result).await {
+                    return result;
+                }
+                if let Err(error) = send.ready().await {
+                    return Err(anyhow::Error::new(error)
+                        .context("xhttp h1 uplink connection lost before a POST retry"));
+                }
             }
-            if let Err(error) = send.ready().await {
-                break Err(anyhow::Error::new(error)
-                    .context("xhttp h1 uplink connection lost before a POST retry"));
-            }
+        };
+        let result = match timeout(POST_TIMEOUT, attempts).await {
+            Ok(r) => r,
+            Err(_) => Err(anyhow::anyhow!(
+                "xhttp/h1 POST seq={seq} timed out after {}s",
+                POST_TIMEOUT.as_secs()
+            )),
         };
         if let Err(error) = result {
             warn!(?error, seq, "xhttp/h1 POST failed");
@@ -419,13 +433,15 @@ async fn send_fin(
     seq: u64,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) {
-    let mut send = up_send.lock().await;
-    if send.ready().await.is_err() {
-        return;
-    }
     let headers = super::fin_post_headers(&base_headers);
-    let post = post_one(&mut send, &uri_prefix, &headers, seq, bytes::Bytes::new(), profile);
-    match timeout(super::FIN_TIMEOUT, post).await {
+    let send_fut = async {
+        let mut send = up_send.lock().await;
+        if send.ready().await.is_err() {
+            return Ok(());
+        }
+        post_one(&mut send, &uri_prefix, &headers, seq, bytes::Bytes::new(), profile).await
+    };
+    match timeout(super::FIN_TIMEOUT, send_fut).await {
         Ok(Ok(())) => {},
         Ok(Err(error)) => debug!(?error, seq, "xhttp/h1 FIN POST failed"),
         Err(_) => debug!(seq, "xhttp/h1 FIN POST timed out"),

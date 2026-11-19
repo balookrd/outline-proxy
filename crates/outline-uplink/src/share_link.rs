@@ -193,7 +193,10 @@ fn pick_mode_and_scheme(
 ) -> Result<(TransportMode, &'static str, UrlTarget)> {
     let tls = match security {
         "none" | "" => false,
-        "tls" | "reality" => true,
+        "tls" => true,
+        "reality" => {
+            bail!("vless link security=reality is not supported (VLESS Reality is not implemented)")
+        },
         other => bail!("vless link security={other} is not supported"),
     };
 

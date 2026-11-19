@@ -697,6 +697,9 @@ async fn driver_loop_h3_stream_one<T, S>(
         }
     }
     if send_failed {
+        let _ = in_tx
+            .send_control(Err(io_ws_err("xhttp/h3 stream-one uplink broken")))
+            .await;
         // A failed write leaves h3-quinn's `writing` slot occupied, so the
         // GREASE frame `finish()` would emit is a second `send_data` into that
         // slot — h3 escalates the resulting misuse error to a connection-level
