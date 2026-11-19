@@ -330,6 +330,13 @@ Baseline — crates.io `quinn-proto 0.11.19`. Logical changes carried by
    value $N$ for the GREASE parameter ID (`31 * N + 27`) is drawn from a single random byte
    `0..=255`, exactly matching quic-go (Caddy). Consequently, the varint ID fits in 1 or 2
    bytes (`27..=7932`) instead of 8 bytes in upstream quinn-proto.
+10. `caddy-version-negotiation` (`src/endpoint.rs`) — when sending a Version Negotiation
+    packet (in response to an Initial packet carrying an unsupported version), a random
+    reserved version of the form `0x?a?a?a?a` (RFC 9000 §15) is dynamically generated
+    (`(rng.random::<u32>() & 0xf0f0_f0f0) | 0x0a0a_0a0a`) and inserted at a random position
+    in the supported version list, matching quic-go (Caddy). This eliminates Quinn's
+    static signature (`0x0a1a_2a3a` at index 0). Test:
+    `server::h3::tests::version_negotiation_greases_reserved_version_and_randomizes_position`.
 
 Conformance check: apply the patch to a clean copy of crates.io 0.11.19 and
 compare `diff -r src/` — byte-identical.

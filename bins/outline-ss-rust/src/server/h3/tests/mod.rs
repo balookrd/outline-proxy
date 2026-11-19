@@ -469,3 +469,83 @@ async fn datagrams_are_not_announced_without_udp_datagrams() -> Result<()> {
     assert!(observed.connection.max_datagram_size().is_none());
     Ok(())
 }
+
+#[tokio::test]
+async fn version_negotiation_greases_reserved_version_and_randomizes_position() -> Result<()> {
+    let listener = start_listener(false).await?;
+    let client_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+
+    let mut saw_grease_at_index_0 = false;
+    let mut saw_grease_at_index_1 = false;
+    let mut observed_greases = std::collections::HashSet::new();
+
+    // Send several probes with unsupported versions
+    for i in 0..20 {
+        let mut req = vec![0u8; 1200];
+        req[0] = 0xc0; // Long header (Initial)
+        let unsupp_ver = 0x1a2b_3c00u32 + i as u32;
+        req[1..5].copy_from_slice(&unsupp_ver.to_be_bytes());
+        req[5] = 8; // DCID len
+        req[6..14].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        req[14] = 8; // SCID len
+        req[15..23].copy_from_slice(&[8, 7, 6, 5, 4, 3, 2, 1]);
+
+        client_sock.send_to(&req, listener.addr).await?;
+
+        let mut resp = [0u8; 1500];
+        let n =
+            tokio::time::timeout(std::time::Duration::from_secs(2), client_sock.recv(&mut resp))
+                .await??;
+
+        assert!(resp[0] & 0x80 != 0, "must be long header");
+        assert_eq!(&resp[1..5], &[0, 0, 0, 0], "version must be 0 for Version Negotiation");
+        let dcid_len = resp[5] as usize;
+        let scid_len = resp[6 + dcid_len] as usize;
+        let versions_bytes = &resp[6 + dcid_len + 1 + scid_len..n];
+        assert_eq!(versions_bytes.len() % 4, 0, "versions payload must be multiple of 4 bytes");
+        let versions: Vec<u32> = versions_bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| u32::from_be_bytes(*chunk))
+            .collect();
+
+        // Must contain QUIC v1 and a GREASE version
+        assert_eq!(versions.len(), 2, "must contain exactly 2 versions: v1 and GREASE");
+        assert!(versions.contains(&0x0000_0001), "must contain QUIC v1");
+
+        let grease_pos = versions
+            .iter()
+            .position(|&v| v != 0x0000_0001)
+            .expect("must contain a GREASE version");
+        let grease_ver = versions[grease_pos];
+
+        // RFC 9000 §15: 0x?a?a?a?a
+        for (byte_idx, &b) in grease_ver.to_be_bytes().iter().enumerate() {
+            assert_eq!(
+                b & 0x0f,
+                0x0a,
+                "byte {byte_idx} of grease version {grease_ver:#010x} must end with 0xa"
+            );
+        }
+
+        if grease_pos == 0 {
+            saw_grease_at_index_0 = true;
+        } else {
+            saw_grease_at_index_1 = true;
+        }
+        observed_greases.insert(grease_ver);
+    }
+
+    // Over 20 iterations, both positions and multiple distinct grease values should be observed
+    assert!(
+        saw_grease_at_index_0 && saw_grease_at_index_1,
+        "GREASE version must be randomized in position (saw index 0: {saw_grease_at_index_0}, index 1: {saw_grease_at_index_1})"
+    );
+    assert!(
+        observed_greases.len() > 1,
+        "GREASE version must not be static (observed: {observed_greases:?})"
+    );
+
+    Ok(())
+}

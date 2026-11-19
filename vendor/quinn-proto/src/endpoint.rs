@@ -193,13 +193,23 @@ impl Endpoint {
                     dst_cid: src_cid,
                 }
                 .encode(buf);
-                // Grease with a reserved version
-                buf.write::<u32>(match version {
-                    0x0a1a_2a3a => 0x0a1a_2a4a,
-                    _ => 0x0a1a_2a3a,
-                });
-                for &version in &self.config.supported_versions {
-                    buf.write(version);
+                // Grease with a reserved version (RFC 9000 §15: 0x?a?a?a?a) inserted at a random
+                // position, matching quic-go / Caddy behavior rather than quinn's static 0x0a1a_2a3a at index 0.
+                let mut reserved_version =
+                    (self.rng.random::<u32>() & 0xf0f0_f0f0) | 0x0a0a_0a0a;
+                if reserved_version == version {
+                    reserved_version ^= 0x1000_0000;
+                }
+                let grease_index =
+                    self.rng.random_range(0..=self.config.supported_versions.len());
+                for (i, &v) in self.config.supported_versions.iter().enumerate() {
+                    if i == grease_index {
+                        buf.write(reserved_version);
+                    }
+                    buf.write(v);
+                }
+                if grease_index == self.config.supported_versions.len() {
+                    buf.write(reserved_version);
                 }
                 return Some(DatagramEvent::Response(Transmit {
                     destination: remote,
