@@ -201,9 +201,9 @@
     <string name="auto_wifi_title">Network Rules</string>
     <string name="auto_wifi_enabled">Automate by Wi-Fi network</string>
     <string name="auto_wifi_enabled_desc">Automatically control VPN connection based on the current Wi-Fi network.</string>
-    <string name="auto_wifi_tab_all">All Wi-Fi</string>
-    <string name="auto_wifi_tab_pause">Pause on</string>
-    <string name="auto_wifi_tab_connect">Connect on</string>
+    <string name="auto_wifi_tab_all">All networks</string>
+    <string name="auto_wifi_tab_pause">Trusted</string>
+    <string name="auto_wifi_tab_connect">Selective</string>
     <string name="auto_wifi_mode_title">Wi-Fi Automation Rule:</string>
     <string name="auto_wifi_mode_pause_all">Pause on all Wi-Fi networks</string>
     <string name="auto_wifi_mode_pause_all_desc">VPN pauses whenever connected to any Wi-Fi network and connects only on cellular data (e.g. roaming).</string>
