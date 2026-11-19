@@ -47,12 +47,17 @@ jobs:
       - id: vars
         name: Resolve workflow variables
         shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_CHECKOUT_REF: ${{ inputs.checkout_ref }}
+          INPUT_RELEASE_NAME: ${{ inputs.release_name }}
+          INPUT_VERSION_NAME: ${{ inputs.version_name }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag }}"
-          checkout_ref="${{ inputs.checkout_ref }}"
-          release_name="${{ inputs.release_name }}"
-          version_name="${{ inputs.version_name }}"
+          tag="$INPUT_TAG"
+          checkout_ref="$INPUT_CHECKOUT_REF"
+          release_name="$INPUT_RELEASE_NAME"
+          version_name="$INPUT_VERSION_NAME"
 
           [[ -z "$checkout_ref" ]] && checkout_ref="$tag"
           [[ -z "$release_name" ]] && release_name="Android $tag"
