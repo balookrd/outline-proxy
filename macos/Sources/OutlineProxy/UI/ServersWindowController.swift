@@ -9,6 +9,7 @@ public final class ServersWindowController: NSWindowController, NSTableViewDataS
     private var profiles: [ServerProfile] = []
     private let activateButton = NSButton()
     private let addButton = NSButton()
+    private let renameButton = NSButton()
     private let removeButton = NSButton()
 
     private init() {
@@ -99,6 +100,14 @@ public final class ServersWindowController: NSWindowController, NSTableViewDataS
 
         scrollView.documentView = tableView
 
+        // Table context menu
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Сделать активным", action: #selector(activateAction), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Переименовать...", action: #selector(renameAction), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Удалить", action: #selector(removeAction), keyEquivalent: ""))
+        tableView.menu = menu
+
         // Button bar
         activateButton.title = "Сделать активным"
         activateButton.bezelStyle = .rounded
@@ -110,12 +119,17 @@ public final class ServersWindowController: NSWindowController, NSTableViewDataS
         addButton.target = self
         addButton.action = #selector(addAction)
 
+        renameButton.title = "Переименовать"
+        renameButton.bezelStyle = .rounded
+        renameButton.target = self
+        renameButton.action = #selector(renameAction)
+
         removeButton.title = "Удалить"
         removeButton.bezelStyle = .rounded
         removeButton.target = self
         removeButton.action = #selector(removeAction)
 
-        let buttonStack = NSStackView(views: [activateButton, addButton, removeButton])
+        let buttonStack = NSStackView(views: [activateButton, addButton, renameButton, removeButton])
         buttonStack.orientation = .horizontal
         buttonStack.spacing = 10
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
@@ -243,6 +257,32 @@ public final class ServersWindowController: NSWindowController, NSTableViewDataS
             errorAlert.runModal()
             return
         }
+        reloadProfiles()
+    }
+
+    @objc private func renameAction() {
+        let row = tableView.selectedRow
+        guard row >= 0 && row < profiles.count else { return }
+        let profile = profiles[row]
+
+        let alert = NSAlert()
+        alert.messageText = "Переименовать сервер или подписку"
+        alert.informativeText = "Введите новое название для «\(profile.displayName)»:"
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
+        input.stringValue = profile.displayName
+        alert.accessoryView = input
+
+        alert.addButton(withTitle: "Сохранить")
+        alert.addButton(withTitle: "Отмена")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty else { return }
+
+        var updated = profile
+        updated.name = newName
+        ProfileStore.shared.updateProfile(updated)
         reloadProfiles()
     }
 
