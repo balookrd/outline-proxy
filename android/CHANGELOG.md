@@ -10,6 +10,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security & Robustness
+
+- **[H-22] Gated and authenticated external VPN control (`outline://`).** External control is now opt-in (`enabled = false` by default) and requires an authenticated non-empty secret token (randomly generated upon enabling). Requests with empty or blank tokens are rejected.
+- **[H-23] Disabled application backup (`android:allowBackup="false"`).** Prevents leaking server profiles, credentials, subscription URLs, and configs via `adb backup` or cloud backup.
+- **[H-24] Prevented routing loop on empty split-tunnel allowlist.** In `SplitMode.ALLOWLIST`, verified that at least one valid installed package was successfully added to the VPN builder; if 0 apps match, TUN interface establishment is aborted and an error notification is displayed, preventing self-capture routing loops.
+- **[H-20] Hardened TOML generation against injection in `ServerProfile`.** Emitted TOML strings (`name`, `transport`, and link parameters) are now escaped for all control characters, quotes, and newlines. Link `#remark` labels are sanitized to strip newline characters (`\r`, `\n`).
+- **[M-23] FFI and background receiver stability improvements:**
+  - Synchronously duplicated `tun_fd` via `fcntl(F_DUPFD_CLOEXEC)` in Rust `start()` before Tokio task spawn, eliminating descriptor races.
+  - Replaced mutex `.expect(...)` panics with safe mutex poison recovery across the FFI boundary.
+  - Released `ENGINE` mutex lock before blocking on `active_carriers()` in `tunnel_status()`.
+  - Offloaded blocking `stop()` and FFI operations from the main thread in `OutlineVpnService` to prevent ANRs.
+  - Added strict `intent.action` verification in `BootReceiver`.
+  - Added `android:usesCleartextTraffic="false"` in `AndroidManifest.xml`.
+  - Sanitized downloaded APK filenames in `UpdateChecker` to prevent path traversal (`../`).
+
 ### Added
 
 - **Auto-pause on all Wi-Fi networks (travel and roaming mode).** Added a new automation mode "Pause on all Wi-Fi networks" on the Network Rules screen. When enabled, the VPN automatically pauses whenever connected to any Wi-Fi network (such as hotels, cafes, or airports while abroad) and resumes only when switching to mobile data (cellular/roaming). This mode operates purely on network transport state without requiring location permissions (`ACCESS_FINE_LOCATION` or background location) or enabling system GPS, while still supporting manual connection override on the active Wi-Fi network.

@@ -399,12 +399,11 @@ adb shell am start -a android.intent.action.VIEW -d 'outline://connect'
 adb shell am start -a android.intent.action.VIEW -d 'outline://toggle?profile=Home&token=s3cret'
 ```
 
-Access is controlled on the **External Control** screen: a switch (on by
-default) and an optional token. Once a token is set, commands without a
-matching `?token=` are ignored; the comparison is constant-time
-(`MessageDigest.isEqual`). Any installed app, and any web page (the intent
-filter carries `BROWSABLE`), can fire these URIs, so set a token if an
-unexpected `disconnect` matters to you.
+Access is controlled on the **External Control** screen: a switch (off by
+default, opt-in) and a mandatory secret token (automatically generated upon
+enabling). Commands without a matching `?token=` are rejected; the comparison
+is constant-time (`MessageDigest.isEqual`). Working with empty tokens is
+disallowed to prevent unauthorized control from local apps or web pages.
 
 `ControlActivity` is a transparent activity that dispatches the command and
 finishes. It cannot be a receiver or an exported service: the system VPN

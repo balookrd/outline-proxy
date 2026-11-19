@@ -182,6 +182,21 @@ object UpdateChecker {
     }
 
     /**
+     * Sanitize an asset filename from GitHub to prevent path traversal or invalid names.
+     */
+    fun sanitizeFilename(raw: String): String {
+        val stripped = raw.substringAfterLast('/').substringAfterLast('\\')
+            .replace("..", "")
+            .filter { it.code >= 32 && it != '/' && it != '\\' }
+            .trim()
+        return if (stripped.endsWith(".apk", ignoreCase = true) && stripped.length > 4) {
+            stripped
+        } else {
+            "outline-proxy-update.apk"
+        }
+    }
+
+    /**
      * Publish the APK where the user can find and tap it. From API 29 that is
      * the shared Downloads collection through MediaStore, which needs no storage
      * permission; older devices would need `WRITE_EXTERNAL_STORAGE` for the same
@@ -195,10 +210,11 @@ object UpdateChecker {
         total: Long,
         onProgress: (Int) -> Unit,
     ): Download {
+        val safeName = sanitizeFilename(name)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val resolver = context.contentResolver
             val pending = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.DISPLAY_NAME, safeName)
                 put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive")
                 put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                 put(MediaStore.Downloads.IS_PENDING, 1)
@@ -212,12 +228,12 @@ object UpdateChecker {
                 copyReporting(body, out, total, onProgress)
             }
             resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
-            Log.i(TAG, "saved update to $uri ($name)")
+            Log.i(TAG, "saved update to $uri ($safeName)")
             return Download.Saved(uri.toString())
         }
         val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
             ?: throw IllegalStateException("no external files directory")
-        val file = java.io.File(dir, name)
+        val file = java.io.File(dir, safeName)
         file.outputStream().use { out -> copyReporting(body, out, total, onProgress) }
         Log.i(TAG, "saved update to ${file.absolutePath}")
         return Download.Saved(android.net.Uri.fromFile(file).toString())
