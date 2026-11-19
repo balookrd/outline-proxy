@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-DEFAULT_OUTPUT_DIR = Path("target/code-index")
+DEFAULT_OUTPUT_DIR = Path(".code-index")
 DETACHED_WORKSPACES = (Path("android/rust"),)
 VENDOR_PARTS = ("/vendor/",)
 

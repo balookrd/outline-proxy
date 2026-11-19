@@ -19,10 +19,10 @@ python3 scripts/code-index.py
 
 Outputs:
 
-- `target/code-index/repo-map.md` — compact Markdown map for humans and agents.
-- `target/code-index/symbols.json` — machine-readable package/file/symbol data.
+- `.code-index/repo-map.md` — compact Markdown map for humans and agents.
+- `.code-index/symbols.json` — machine-readable package/file/symbol data.
 
-`target/` is ignored by git, so the generated index stays local.
+`.code-index/` is ignored by git, so the generated index stays local and survives `cargo clean`.
 
 ## Options
 
@@ -31,7 +31,7 @@ Outputs:
 | `--package <name>` | all packages | limit the index to one package; repeat for several |
 | `--skip-detached` | off | skip detached workspaces (`android/rust`) |
 | `--include-vendor` | off | include vendored Rust sources (`vendor/`) |
-| `--output-dir <dir>` | `target/code-index` | where to write `repo-map.md` and `symbols.json`; a relative path is resolved against `--repo-root` |
+| `--output-dir <dir>` | `.code-index` | where to write `repo-map.md` and `symbols.json`; a relative path is resolved against `--repo-root` |
 | `--repo-root <dir>` | `.` (current directory) | repository root |
 
 Limit the index to the packages a task touches:
@@ -58,13 +58,13 @@ python3 scripts/code-index.py --include-vendor
 Find where a symbol is declared:
 
 ```bash
-rg 'poll_shutdown|H3DatagramChannel|Resume' target/code-index/repo-map.md
+rg 'poll_shutdown|H3DatagramChannel|Resume' .code-index/repo-map.md
 ```
 
 Inspect the JSON with `jq`:
 
 ```bash
-jq '.packages[] | select(.name == "outline-transport") | .source_files[] | select(.path | contains("/h3/")) | {path, module, symbols: [.symbols[].name]}' target/code-index/symbols.json
+jq '.packages[] | select(.name == "outline-transport") | .source_files[] | select(.path | contains("/h3/")) | {path, module, symbols: [.symbols[].name]}' .code-index/symbols.json
 ```
 
 Each symbol in `symbols.json` has `kind`, `name`, `line`, `visibility`, `module`
