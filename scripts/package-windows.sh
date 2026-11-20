@@ -15,9 +15,9 @@ CACHE_DIR="${REPO_ROOT}/.cache"
 CHECK_ONLY=false
 SKIP_UI=false
 
-WINTUN_VERSION="0.14"
+WINTUN_VERSION="0.14.1"
 WINTUN_URL="https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip"
-WINTUN_EXPECTED_SHA256="07c256185163253d5a1532462372f6630f9a941656519183884877478051a812"
+WINTUN_EXPECTED_SHA256="07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
 WINTUN_ZIP="${CACHE_DIR}/wintun-${WINTUN_VERSION}.zip"
 
 TARGET_TRIPLE="x86_64-pc-windows-msvc"
@@ -120,10 +120,52 @@ with zipfile.ZipFile(sys.argv[1], 'r') as z:
     fi
 }
 
+fetch_wintun() {
+    local dest_file="${1:-${OUTPUT_DIR}/wintun.dll}"
+    mkdir -p "${CACHE_DIR}"
+    mkdir -p "$(dirname "${dest_file}")"
+
+    local need_download=true
+    if [[ -f "${WINTUN_ZIP}" ]]; then
+        local actual_sha256
+        actual_sha256="$(compute_sha256 "${WINTUN_ZIP}")"
+        if [[ "${actual_sha256}" == "${WINTUN_EXPECTED_SHA256}" ]]; then
+            echo "    Переиспользование кэша: ${WINTUN_ZIP}"
+            need_download=false
+        else
+            echo "    Кэш поврежден (SHA256 не совпадает). Повторное скачивание..."
+            rm -f "${WINTUN_ZIP}"
+        fi
+    fi
+
+    if [[ "${need_download}" == "true" ]]; then
+        echo "    Скачивание ${WINTUN_URL}..."
+        curl -fSL "${WINTUN_URL}" -o "${WINTUN_ZIP}.tmp"
+        local downloaded_sha256
+        downloaded_sha256="$(compute_sha256 "${WINTUN_ZIP}.tmp")"
+        if [[ "${downloaded_sha256}" != "${WINTUN_EXPECTED_SHA256}" ]]; then
+            echo "Ошибка: контрольная сумма Wintun не совпадает!" >&2
+            echo "Ожидалось: ${WINTUN_EXPECTED_SHA256}" >&2
+            echo "Получено:   ${downloaded_sha256}" >&2
+            rm -f "${WINTUN_ZIP}.tmp"
+            return 1
+        fi
+        mv "${WINTUN_ZIP}.tmp" "${WINTUN_ZIP}"
+        echo "    Wintun успешно скачан и проверен."
+    fi
+
+    echo "    Извлечение wintun.dll (x86_64)..."
+    extract_wintun_dll "${WINTUN_ZIP}" "${dest_file}"
+}
+
 create_zip_archive() {
     local zip_name="$1"
     shift
     local files=("$@")
+
+    # Удаление предыдущего архива перед упаковкой для предотвращения
+    # попадания устаревших файлов из прошлых сборок (например, при --skip-ui)
+    rm -f "${OUTPUT_DIR}/${zip_name}"
 
     if command -v zip >/dev/null 2>&1; then
         (cd "${OUTPUT_DIR}" && zip -9 -q "${zip_name}" "${files[@]}")
@@ -227,6 +269,13 @@ if [[ "${CHECK_ONLY}" == "true" ]]; then
         ERRORS=$((ERRORS + 1))
     fi
 
+    # Проверка зависимостей node_modules для сборки UI
+    if [[ -d "${REPO_ROOT}/bins/outline-windows/node_modules" ]]; then
+        echo "[OK] Зависимости интерфейса: bins/outline-windows/node_modules"
+    else
+        echo "[ПРЕДУПРЕЖДЕНИЕ] bins/outline-windows/node_modules не найдены. Перед сборкой интерфейса выполните: (cd bins/outline-windows && pnpm install)"
+    fi
+
     # Проверка состояния кэша Wintun
     if [[ -f "${WINTUN_ZIP}" ]]; then
         ACTUAL_SHA256="$(compute_sha256 "${WINTUN_ZIP}")"
@@ -269,37 +318,9 @@ fi
 mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${CACHE_DIR}"
 
-# 2. Скачивание и валидация Wintun 0.14
+# 2. Скачивание и валидация Wintun ${WINTUN_VERSION}
 echo "==> [1/5] Проверка и подготовка Wintun ${WINTUN_VERSION}..."
-NEED_DOWNLOAD=true
-if [[ -f "${WINTUN_ZIP}" ]]; then
-    ACTUAL_SHA256="$(compute_sha256 "${WINTUN_ZIP}")"
-    if [[ "${ACTUAL_SHA256}" == "${WINTUN_EXPECTED_SHA256}" ]]; then
-        echo "    Переиспользование кэша: ${WINTUN_ZIP}"
-        NEED_DOWNLOAD=false
-    else
-        echo "    Кэш поврежден (SHA256 не совпадает). Повторное скачивание..."
-        rm -f "${WINTUN_ZIP}"
-    fi
-fi
-
-if [[ "${NEED_DOWNLOAD}" == "true" ]]; then
-    echo "    Скачивание ${WINTUN_URL}..."
-    curl -fSL "${WINTUN_URL}" -o "${WINTUN_ZIP}.tmp"
-    DOWNLOADED_SHA256="$(compute_sha256 "${WINTUN_ZIP}.tmp")"
-    if [[ "${DOWNLOADED_SHA256}" != "${WINTUN_EXPECTED_SHA256}" ]]; then
-        echo "Ошибка: контрольная сумма Wintun не совпадает!" >&2
-        echo "Ожидалось: ${WINTUN_EXPECTED_SHA256}" >&2
-        echo "Получено:   ${DOWNLOADED_SHA256}" >&2
-        rm -f "${WINTUN_ZIP}.tmp"
-        exit 1
-    fi
-    mv "${WINTUN_ZIP}.tmp" "${WINTUN_ZIP}"
-    echo "    Wintun успешно скачан и проверен."
-fi
-
-echo "    Извлечение wintun.dll (x86_64)..."
-extract_wintun_dll "${WINTUN_ZIP}" "${OUTPUT_DIR}/wintun.dll"
+fetch_wintun "${OUTPUT_DIR}/wintun.dll"
 
 # 3. Сборка сетевого ядра outline-ws-rust
 echo "==> [2/5] Компиляция сетевого ядра outline-ws-rust.exe (${TARGET_TRIPLE})..."

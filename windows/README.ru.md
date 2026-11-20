@@ -6,7 +6,7 @@ English version: [README.md](README.md).
 Клиент построен на архитектуре разделения обязанностей (separation of concerns):
 - **GUI-оболочка (Frontend & IPC)**: Tauri v2 + Svelte 5 + Tailwind CSS (минимальное потребление памяти, нативный рендеринг через WebView2).
 - **Сетевое ядро (Data Plane)**: высокопроизводительный сервис `outline-ws-rust.exe` (VLESS, Shadowsocks 2022 / AEAD, WebSocket, HTTP/3, padding, failover).
-- **L3 VPN-адаптер**: проверенный сетевой драйвер Wintun 0.14 (`wintun.dll`), предоставляющий виртуальный сетевой интерфейс TUN без создания лишних служб.
+- **L3 VPN-адаптер**: проверенный сетевой драйвер Wintun 0.14.1 (`wintun.dll`), предоставляющий виртуальный сетевой интерфейс TUN без создания лишних служб.
 
 ---
 
@@ -99,7 +99,7 @@ flowchart TD
    ./scripts/package-windows.sh
    ```
    Скрипт выполнит:
-   - Проверку наличия и скачивание официального архива `wintun-0.14.zip` с валидацией SHA256-хэша (`07c256185163253d5a1532462372f6630f9a941656519183884877478051a812`) и извлечение `wintun.dll`.
+   - Проверку наличия и скачивание официального архива `wintun-0.14.1.zip` с валидацией SHA256-хэша (`07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51`) и извлечение `wintun.dll`.
    - Сборку ядра `outline-ws-rust.exe` под таргет `x86_64-pc-windows-msvc` в режиме release.
    - Сборку фронтенда Svelte 5 / Vite (`pnpm build`).
    - Сборку GUI-приложения `OutlineProxy.exe` под `x86_64-pc-windows-msvc` в режиме release.
