@@ -12,6 +12,10 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ApplicationClose: H3_NO_ERROR` from HTTP/3 upstreams is now recognized as clean close instead of runtime failure.** When a peer cleanly closed an HTTP/3 connection (`0x0100 H3_NO_ERROR`), the client's stream readers surfaced an I/O error (`Connection error: Remote error: ApplicationClose: H3_NO_ERROR`), which failed `is_ws_closed` and `is_clean_ws_close` checks. The client treated the normal lifecycle event as a carrier fault (`CarrierFailure`), recorded a runtime failure with cooldown, capped `xhttp_h3 → xhttp_h2` for 60 seconds, and displayed a false error chip (`⚠`) in the dashboard. String classification now recognizes `"applicationclose: h3_no_error"` and `"h3_no_error"` across TCP session teardown and TUN UDP lifecycle, routing them to clean closure without penalty or carrier descent.
+
 ### Added
 
 - **Fingerprint profiles are picked by per-OS browser-share weights.** The weights are Linux — Chrome 70, Firefox 30; macOS — Chrome 60, Safari 30, Firefox 10; Android — Chrome. The seed is toolchain-stable (FNV-1a + splitmix64). New key `fingerprint_profile_pin = "chrome" | "firefox" | "safari"` pins the browser of `process_stable` (no version, survives profile refreshes; a browser missing from the host OS pool fails the config load). On upgrade some nodes switch browser identity once. Deploy the binary before adding the key: older binaries reject it (`deny_unknown_fields`). See `docs/UPLINK-CONFIGURATIONS.md`, "Weighted pick and pinning".
