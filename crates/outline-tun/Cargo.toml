@@ -38,6 +38,7 @@ shadowsocks-crypto = { path = "../shadowsocks-crypto" }
 socks5-proto = { path = "../socks5-proto" }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

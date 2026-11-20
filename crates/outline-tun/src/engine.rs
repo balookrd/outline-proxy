@@ -220,21 +220,29 @@ pub async fn spawn_tun_loop(
 
         // Collect uplink server IPs to install host routes through default gateway
         let mut server_ips = Vec::new();
-        for group in routing.registry().groups() {
-            for uplink in group.manager.uplinks() {
-                if let Some(url) = uplink.tcp_dial_url() {
-                    if let Some(host) = url.host_str() {
-                        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                            server_ips.push(ip);
-                        } else if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(
-                            host,
-                            url.port().unwrap_or(443),
-                        )) {
-                            for addr in addrs {
-                                server_ips.push(addr.ip());
-                            }
+        let mut collect_url = |url_opt: Option<&url::Url>| {
+            if let Some(url) = url_opt {
+                if let Some(host) = url.host_str() {
+                    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                        server_ips.push(ip);
+                    } else if let Ok(addrs) =
+                        std::net::ToSocketAddrs::to_socket_addrs(&(host, url.port().unwrap_or(443)))
+                    {
+                        for addr in addrs {
+                            server_ips.push(addr.ip());
                         }
                     }
+                }
+            }
+        };
+
+        for group in routing.registry().groups() {
+            for uplink in group.manager.uplinks() {
+                collect_url(uplink.tcp_dial_url());
+                collect_url(uplink.udp_dial_url());
+                for fb in &uplink.fallbacks {
+                    collect_url(fb.tcp_dial_url());
+                    collect_url(fb.udp_dial_url());
                 }
             }
         }
@@ -247,16 +255,25 @@ pub async fn spawn_tun_loop(
             &["1.1.1.1".parse().unwrap(), "8.8.8.8".parse().unwrap()],
         );
 
-        // 2. Setup routes: host routes to servers via physical gateway + default 0.0.0.0/1 and 128.0.0.0/1 via Wintun
-        let route_guard =
+        // 2. Setup routes: host routes to servers via physical gateway + default 0.0.0.0/1 and 128.0.0.0/1 via Wintun.
+        // Retry up to 3 times to account for Windows adapter IP assignment / DAD state transitions.
+        let mut route_guard = None;
+        for attempt in 1..=3 {
             match crate::routing::windows::setup_windows_routes_multi(&server_ips, wintun_if_index)
             {
-                Ok(guard) => Some(guard),
-                Err(e) => {
-                    warn!(error = %e, "failed to setup Windows routing for Wintun");
-                    None
+                Ok(guard) => {
+                    route_guard = Some(guard);
+                    break;
                 },
-            };
+                Err(e) if attempt < 3 => {
+                    tracing::warn!(attempt, error = %e, "Retrying setup_windows_routes_multi after delay");
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                },
+                Err(e) => {
+                    return Err(e).context("failed to setup Windows routing for Wintun");
+                },
+            }
+        }
 
         tokio::spawn(async move {
             let _route_guard_holder = route_guard;
