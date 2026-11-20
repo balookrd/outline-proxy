@@ -1,5 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+pub mod config_generator;
+pub mod profile_store;
+pub mod proxy_manager;
+
+#[cfg(test)]
+mod tests;
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
