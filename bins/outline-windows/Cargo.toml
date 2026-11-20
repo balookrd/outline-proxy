@@ -12,6 +12,20 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "process", "i
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 anyhow = { workspace = true }
+url = { workspace = true }
+base64 = { workspace = true, features = ["alloc"] }
+rand = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinInet",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [build-dependencies]
 tauri-build = { version = "2", default-features = false }
