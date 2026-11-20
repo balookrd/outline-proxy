@@ -1,0 +1,62 @@
+use std::sync::Arc;
+use tempfile::NamedTempFile;
+
+use crate::AppState;
+use crate::process_controller::{ProcessController, ProcessState};
+use crate::profile_store::{AppSettings, ProfileStore, ServerProfile};
+
+#[test]
+fn test_app_state_crud_and_settings() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let store = Arc::new(ProfileStore::open(temp_file.path().to_path_buf()).unwrap());
+    let controller = Arc::new(ProcessController::new());
+
+    let state = AppState {
+        profile_store: store.clone(),
+        process_controller: controller.clone(),
+    };
+
+    // 1. Initially no profiles
+    assert!(state.profile_store.profiles().is_empty());
+
+    // 2. Add profile
+    let profile = ServerProfile {
+        name: "Test Profile".to_string(),
+        link: "vless://test-uuid@1.2.3.4:443?type=ws#Test%20Profile".to_string(),
+        ..Default::default()
+    };
+    state.profile_store.add_profile(profile.clone()).unwrap();
+
+    let profiles = state.profile_store.profiles();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].id, profile.id);
+    assert_eq!(state.profile_store.active_profile_id().as_deref(), Some(profile.id.as_str()));
+
+    // 3. Settings update
+    let initial_settings = state.profile_store.settings();
+    assert_eq!(initial_settings.proxy_mode, "socks5");
+    assert!(!initial_settings.tcp_only);
+
+    let updated_settings = AppSettings {
+        proxy_mode: "tun".to_string(),
+        tcp_only: true,
+        socks_port: 1085,
+        autostart: true,
+        start_minimized: true,
+    };
+    state.profile_store.update_settings(updated_settings.clone()).unwrap();
+
+    let current_settings = state.profile_store.settings();
+    assert_eq!(current_settings, updated_settings);
+
+    // 4. Status response via controller
+    let status = state.process_controller.status_response(&state.profile_store);
+    assert_eq!(status.state, ProcessState::Stopped);
+    assert_eq!(status.mode, "tun");
+    assert!(status.tcp_only);
+    assert_eq!(status.active_profile_name.as_deref(), Some("Test Profile"));
+
+    // 5. Remove profile
+    state.profile_store.remove_profile(&profile.id).unwrap();
+    assert!(state.profile_store.profiles().is_empty());
+}
