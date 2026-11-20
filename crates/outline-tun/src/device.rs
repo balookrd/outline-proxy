@@ -13,7 +13,6 @@ pub use windows::{TunDevice, WintunDevice, open_tun_device, open_wintun_device};
 use std::fs::OpenOptions;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
-#[cfg(unix)]
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
