@@ -107,6 +107,31 @@ final class ActionPillButton: NSButton {
     private let iconImageView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
 
+    override var title: String {
+        get { titleLabel.stringValue }
+        set {
+            titleLabel.stringValue = newValue
+            super.title = ""
+        }
+    }
+
+    override var image: NSImage? {
+        get { iconImageView.image }
+        set {
+            iconImageView.image = newValue
+            iconImageView.isHidden = (newValue == nil)
+            super.image = nil
+        }
+    }
+
+    override var attributedTitle: NSAttributedString {
+        get { titleLabel.attributedStringValue }
+        set {
+            titleLabel.attributedStringValue = newValue
+            super.attributedTitle = NSAttributedString()
+        }
+    }
+
     init(title: String, icon: NSImage? = nil, font: NSFont = .systemFont(ofSize: 14, weight: .bold), cornerRadius: CGFloat = 20) {
         super.init(frame: .zero)
         self.isBordered = false
@@ -114,8 +139,10 @@ final class ActionPillButton: NSButton {
         self.wantsLayer = true
         self.layer?.cornerRadius = cornerRadius
         self.layer?.masksToBounds = true
-        self.title = ""
-        self.image = nil
+        super.title = ""
+        super.image = nil
+        super.alternateTitle = ""
+        super.alternateImage = nil
 
         contentStack.orientation = .horizontal
         contentStack.alignment = .centerY
@@ -151,6 +178,9 @@ final class ActionPillButton: NSButton {
     }
 
     func update(title: String, icon: NSImage?) {
+        super.title = ""
+        super.image = nil
+        super.attributedTitle = NSAttributedString()
         titleLabel.stringValue = title
         iconImageView.image = icon
         iconImageView.isHidden = (icon == nil)
@@ -173,6 +203,11 @@ final class ActionPillButton: NSButton {
             return self
         }
         return super.hitTest(point)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Suppress default NSButtonCell drawing (text/icon/bezel),
+        // as ActionPillButton renders strictly via dedicated layer and subviews.
     }
 }
 
@@ -1136,11 +1171,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
             statusLabel.stringValue = "Ошибка: \(msg)"
             statusLabel.textColor = palette.disconnectBg
 
-            actionButton.title = "  Повторить"
-            actionButton.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
-            actionButton.imagePosition = .imageLeading
-            actionButton.layer?.backgroundColor = palette.connectBg.cgColor
-            actionButton.contentTintColor = palette.connectText
+            let retryConfig = NSImage.SymbolConfiguration(pointSize: 14.5, weight: .bold)
+            let retryIcon = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)?.withSymbolConfiguration(retryConfig)
+            actionButton.update(title: "Повторить", icon: retryIcon)
+            actionButton.setCustomColors(bg: palette.connectBg, text: palette.connectText)
             actionButton.isEnabled = true
 
             statsContainer.isHidden = true
