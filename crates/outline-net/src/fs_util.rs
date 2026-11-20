@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+#[cfg(unix)]
 use tracing::warn;
 
 /// Write `bytes` to `path` atomically: first to a sibling `.{name}.tmp`, then

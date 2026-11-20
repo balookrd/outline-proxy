@@ -94,6 +94,10 @@ pub async fn spawn_tun_loop(
         let _ = preopened_fd;
         crate::device::open_wintun_device(&config).context("failed to open Wintun device")?
     };
+    #[cfg(windows)]
+    let wintun_if_index = device.if_index();
+    #[cfg(windows)]
+    info!(wintun_if_index, "Wintun TUN engine ready");
 
     #[cfg(unix)]
     let gso_enabled = gso.vnet_hdr;

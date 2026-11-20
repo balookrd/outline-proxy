@@ -12,6 +12,7 @@ use crate::device::TunGso;
 pub struct WintunDevice {
     pub session: Arc<wintun::Session>,
     pub read_event: windows_sys::Win32::Foundation::HANDLE,
+    pub if_index: u32,
 }
 
 // SAFETY: HANDLE is a Win32 kernel object handle which is thread-safe,
@@ -28,6 +29,10 @@ impl WintunDevice {
 
     pub fn read_event(&self) -> windows_sys::Win32::Foundation::HANDLE {
         self.read_event
+    }
+
+    pub fn if_index(&self) -> u32 {
+        self.if_index
     }
 
     /// Read a packet from the Wintun ring buffer into `buf`.
@@ -95,6 +100,10 @@ pub fn open_wintun_device(config: &TunConfig) -> Result<(WintunDevice, TunGso)> 
             .context("failed to create Wintun adapter")?,
     };
 
+    let if_index = adapter
+        .get_adapter_index()
+        .context("failed to get Wintun adapter index")?;
+
     // 4 MiB ring buffer session
     let session = Arc::new(
         adapter
@@ -106,10 +115,10 @@ pub fn open_wintun_device(config: &TunConfig) -> Result<(WintunDevice, TunGso)> 
         .get_read_wait_event()
         .context("failed to get Wintun read wait event")?;
 
-    info!(adapter = %adapter_name, mtu = config.mtu, "Wintun interface initialized");
+    info!(adapter = %adapter_name, if_index, mtu = config.mtu, "Wintun interface initialized");
 
     Ok((
-        WintunDevice { session, read_event },
+        WintunDevice { session, read_event, if_index },
         TunGso {
             vnet_hdr: false,
             tcp_gro: false,
