@@ -849,9 +849,9 @@ class OutlineVpnService : VpnService() {
         tunInterface = null
         serviceScope.launch(Dispatchers.IO) {
             try {
-                if (isRunning()) stop()
+                stop()
             } catch (e: Exception) {
-                Log.e(TAG, "error stopping client", e)
+                Log.d(TAG, "client stop result: ${e.message}")
             } finally {
                 try {
                     tun?.close()
@@ -868,10 +868,10 @@ class OutlineVpnService : VpnService() {
      * button) or stops the service outright (the default, unchanged behaviour).
      */
     private fun disconnect() {
-        val autoConfig = AutomationStore(this).load()
-        val keepStandby = KeepAliveState(this).persistentNotification || autoConfig.wifiAutomationEnabled
+        val keepStandby = KeepAliveState(this).persistentNotification
         teardownTunnel()
         if (keepStandby) {
+            val autoConfig = AutomationStore(this).load()
             if (autoConfig.wifiAutomationEnabled) registerWifiAutomationCallback()
             val autoState = AutomationState(this)
             val statusText = if (autoState.pausedByWifi) {
