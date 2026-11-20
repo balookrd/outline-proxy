@@ -26,6 +26,7 @@ done
 DEFAULT_OUTPUT_DIR="${REPO_ROOT}/dist/windows"
 OUTPUT_DIR="${DEFAULT_OUTPUT_DIR}"
 CACHE_DIR="${REPO_ROOT}/.cache"
+ZIP_ARCHIVE="OutlineProxy-x86_64.zip"
 
 CHECK_ONLY=false
 SKIP_UI=false
@@ -50,6 +51,7 @@ print_help() {
   -h, --help           Показать эту справку и выйти
   --check-only         Проверить окружение, наличие инструментов и исходников без сборки
   --output-dir <DIR>   Каталог вывода собранных файлов (по умолчанию: dist/windows)
+  --zip-name <NAME>    Имя формируемого zip-архива (по умолчанию: OutlineProxy-x86_64.zip)
   --skip-ui            Собрать только сетевое ядро (outline-ws-rust.exe) и wintun.dll без GUI
 
 Примеры:
@@ -80,6 +82,14 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        --zip-name)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "Ошибка: опция --zip-name требует указания имени архива" >&2
+                exit 1
+            fi
+            ZIP_ARCHIVE="$2"
             shift 2
             ;;
         *)
@@ -402,8 +412,7 @@ else
 fi
 
 # 5. Упаковка в ZIP-архив
-echo "==> [5/5] Формирование архива OutlineProxy-x86_64.zip..."
-ZIP_ARCHIVE="OutlineProxy-x86_64.zip"
+echo "==> [5/5] Формирование архива ${ZIP_ARCHIVE}..."
 create_zip_archive "${ZIP_ARCHIVE}" "${PACK_FILES[@]}"
 
 echo ""

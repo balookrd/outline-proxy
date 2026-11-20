@@ -341,7 +341,7 @@ jobs:
           retention-days: 7
 
   windows:
-    name: Windows check (outline-ws-rust)
+    name: Windows app + ZIP
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -351,10 +351,29 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 9
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: bins/outline-windows/pnpm-lock.yaml
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
-      - name: cargo check outline-ws-rust (windows-msvc)
-        run: cargo check -p outline-ws-rust --target x86_64-pc-windows-msvc
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          cd bins/outline-windows
+          pnpm install --frozen-lockfile
+      - name: Build Windows app and package ZIP
+        shell: bash
+        run: ./scripts/package-windows.sh --output-dir dist/windows
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: OutlineProxy-Windows-preview
+          path: dist/windows/*.zip
+          retention-days: 7
 
