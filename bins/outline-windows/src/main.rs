@@ -26,8 +26,7 @@ pub struct AppState {
 fn main() {
     let profile_store = Arc::new(ProfileStore::load().unwrap_or_else(|e| {
         tracing::warn!("Failed to load existing profiles, initializing empty: {e}");
-        ProfileStore::open(ProfileStore::default_storage_path())
-            .expect("critical error: failed to initialize profile store")
+        ProfileStore::empty(ProfileStore::default_storage_path())
     }));
     let process_controller = Arc::new(ProcessController::new());
 
