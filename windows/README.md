@@ -6,7 +6,7 @@ Native desktop client for Windows (x86_64 / amd64) living in the system tray.
 The client implements a clean separation of concerns architecture:
 - **GUI Shell (Frontend & IPC)**: Tauri v2 + Svelte 5 + Tailwind CSS (minimal memory footprint, native rendering via WebView2).
 - **Network Core (Data Plane)**: High-performance `outline-ws-rust.exe` service (VLESS, Shadowsocks 2022 / AEAD, WebSocket, HTTP/3, padding, failover).
-- **L3 VPN Adapter**: Battle-tested Wintun 0.14 network driver (`wintun.dll`), providing a lightweight virtual TUN interface without background service bloat.
+- **L3 VPN Adapter**: Battle-tested Wintun 0.14.1 network driver (`wintun.dll`), providing a lightweight virtual TUN interface without background service bloat.
 
 ---
 
@@ -99,7 +99,7 @@ The repository includes an automated build and packaging script: `scripts/packag
    ./scripts/package-windows.sh
    ```
    The script performs:
-   - Verification and download of the official `wintun-0.14.zip` archive with SHA256 verification (`07c256185163253d5a1532462372f6630f9a941656519183884877478051a812`) and extracts `wintun.dll`.
+   - Verification and download of the official `wintun-0.14.1.zip` archive with SHA256 verification (`07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51`) and extracts `wintun.dll`.
    - Release build of `outline-ws-rust.exe` for target `x86_64-pc-windows-msvc`.
    - Production build of the Svelte 5 / Vite frontend (`pnpm build`).
    - Release build of `OutlineProxy.exe` for `x86_64-pc-windows-msvc`.
