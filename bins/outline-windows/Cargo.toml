@@ -1,0 +1,20 @@
+[package]
+name = "outline-windows"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "process", "io-util"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+anyhow = { workspace = true }
+
+[build-dependencies]
+tauri-build = { version = "2", default-features = false }
+
+[lints]
+workspace = true
