@@ -10,24 +10,24 @@
 <header
   class="relative h-[86px] w-full rounded-[22px] border overflow-hidden transition-colors duration-200 select-none
     {theme === 'dark'
-      ? 'bg-neutral-900 border-neutral-700/60 shadow-lg shadow-black/30'
-      : 'bg-white border-neutral-200 shadow-md shadow-neutral-200/50'}"
+      ? 'bg-[#161C26] border-white/10 shadow-lg shadow-black/20'
+      : 'bg-white border-[#CBD5E1] shadow-sm'}"
 >
-  <!-- Full Banner Image -->
+  <!-- Full Banner Image matching macOS scaling -->
   <img
     src={theme === 'dark' ? '/brand_logo_dark.png' : '/brand_logo_light.png'}
     alt="Outline Proxy"
-    class="w-full h-full object-cover select-none pointer-events-none"
+    class="w-full h-full object-contain object-left select-none pointer-events-none"
   />
 
   <!-- Actions: Theme toggle (top-right) -->
   <button
     type="button"
     onclick={onToggleTheme}
-    class="absolute top-2.5 right-2.5 z-10 w-8 h-8 rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer border
+    class="absolute top-2.5 right-2.5 z-10 w-[30px] h-[30px] rounded-full flex items-center justify-center transition-all duration-150 cursor-pointer border
       {theme === 'dark'
-        ? 'bg-neutral-800/80 hover:bg-neutral-700 border-neutral-700 text-amber-400'
-        : 'bg-white/90 hover:bg-neutral-100 border-neutral-300 text-blue-700 shadow-sm'}"
+        ? 'bg-black/40 hover:bg-neutral-800 border-white/20 text-amber-400'
+        : 'bg-white hover:bg-neutral-100 border-[#CBD5E1] text-[#1E3A8A] shadow-sm'}"
     title={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
   >
     {#if theme === 'dark'}

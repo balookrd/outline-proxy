@@ -46,3 +46,8 @@ __pycache__/
 FLEET.local.md
 FLEET.md
 *.local.md
+
+# Local build artifacts and caches
+dist/
+.cache/
+

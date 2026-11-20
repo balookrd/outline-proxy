@@ -116,6 +116,15 @@ pub fn open_wintun_device(config: &TunConfig) -> Result<(WintunDevice, TunGso)> 
         .context("failed to get Wintun read wait event")?;
     let read_event = raw_event as windows_sys::Win32::Foundation::HANDLE;
 
+    // Assign static IPv4 to the Wintun adapter so Windows networking subsystem can bind routes to it
+    if let Err(err) = configure_wintun_ip(
+        if_index,
+        std::net::Ipv4Addr::new(10, 0, 85, 2),
+        std::net::Ipv4Addr::new(255, 255, 255, 0),
+    ) {
+        tracing::warn!(if_index, error = %err, "Failed to configure Wintun IP via netsh");
+    }
+
     info!(adapter = %adapter_name, if_index, mtu = config.mtu, "Wintun interface initialized");
 
     Ok((
@@ -127,6 +136,42 @@ pub fn open_wintun_device(config: &TunConfig) -> Result<(WintunDevice, TunGso)> 
             af_hdr: false,
         },
     ))
+}
+
+/// Configures static IPv4 address on the specified Wintun interface via netsh.
+pub fn configure_wintun_ip(
+    if_index: u32,
+    ip: std::net::Ipv4Addr,
+    mask: std::net::Ipv4Addr,
+) -> Result<()> {
+    let if_arg = format!("name={if_index}");
+    let addr_arg = format!("address={ip}");
+    let mask_arg = format!("mask={mask}");
+
+    let status = std::process::Command::new("netsh")
+        .args([
+            "interface",
+            "ipv4",
+            "set",
+            "address",
+            &if_arg,
+            "source=static",
+            &addr_arg,
+            &mask_arg,
+            "gateway=none",
+        ])
+        .status()
+        .with_context(|| {
+            format!("failed to execute netsh to assign IP to Wintun interface {if_index}")
+        })?;
+
+    if !status.success() {
+        tracing::warn!(if_index, %ip, %status, "netsh set address returned non-zero");
+    } else {
+        tracing::info!(if_index, %ip, "Assigned static IP to Wintun adapter");
+    }
+
+    Ok(())
 }
 
 /// Alias for `open_wintun_device` conforming to the generic interface.

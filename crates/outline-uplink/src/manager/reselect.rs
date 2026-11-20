@@ -182,7 +182,32 @@ fn local_day_and_secs() -> Option<(i64, u32)> {
     let secs = tm.tm_hour as u32 * 3600 + tm.tm_min as u32 * 60 + tm.tm_sec as u32;
     // tm_gmtoff is seconds east of UTC (POSIX/BSD/glibc).
     // Using local epoch days avoids phantom day jumps over year transitions (e.g. 366 factor).
+    #[cfg(unix)]
     let local_epoch_secs = (t as i64) + (tm.tm_gmtoff as i64);
+    #[cfg(windows)]
+    let local_epoch_secs = {
+        let mut gm_tm: libc::tm = unsafe { std::mem::zeroed() };
+        let gm_res = unsafe { libc::gmtime_s(&mut gm_tm, &t) };
+        if gm_res == 0 {
+            let local_secs_in_day =
+                (tm.tm_hour as i64) * 3600 + (tm.tm_min as i64) * 60 + (tm.tm_sec as i64);
+            let gm_secs_in_day =
+                (gm_tm.tm_hour as i64) * 3600 + (gm_tm.tm_min as i64) * 60 + (gm_tm.tm_sec as i64);
+            let mut diff = local_secs_in_day - gm_secs_in_day;
+            if tm.tm_mday != gm_tm.tm_mday {
+                if tm.tm_mday > gm_tm.tm_mday || (tm.tm_mday == 1 && gm_tm.tm_mday > 20) {
+                    diff += 86400;
+                } else {
+                    diff -= 86400;
+                }
+            }
+            (t as i64) + diff
+        } else {
+            t as i64
+        }
+    };
+    #[cfg(not(any(unix, windows)))]
+    let local_epoch_secs = t as i64;
     let day_key = local_epoch_secs.div_euclid(86400);
     Some((day_key, secs))
 }

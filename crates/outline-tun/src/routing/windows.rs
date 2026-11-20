@@ -535,9 +535,64 @@ pub fn setup_windows_routes_with_gateway(
     Ok(guard)
 }
 
+#[cfg(windows)]
+pub fn setup_windows_routes_multi(
+    server_ips: &[IpAddr],
+    wintun_if_index: u32,
+) -> Result<RouteGuard> {
+    let mut guard = RouteGuard::new();
+
+    // 1. Host route to each proxy server via original physical interface & gateway.
+    for &server_ip in server_ips {
+        if let Ok((orig_if_index, gateway)) = get_best_interface(server_ip) {
+            let host_prefix_len = if server_ip.is_ipv4() { 32 } else { 128 };
+            if let Ok(()) = add_route(server_ip, host_prefix_len, gateway, orig_if_index, 1) {
+                guard.push(RouteEntry {
+                    prefix: server_ip,
+                    prefix_len: host_prefix_len,
+                    nexthop: gateway,
+                    if_index: orig_if_index,
+                });
+            }
+        }
+    }
+
+    // 2. Pair of /1 routes covering all IPv4 (0.0.0.0/1 and 128.0.0.0/1) via Wintun interface.
+    let tunnel_routes = default_tunnel_routes_v4(wintun_if_index);
+    for entry in tunnel_routes {
+        if let Err(err) =
+            add_route(entry.prefix, entry.prefix_len, entry.nexthop, entry.if_index, 0)
+        {
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to add tunnel route {}/{} on interface {}",
+                    entry.prefix, entry.prefix_len, entry.if_index
+                )
+            });
+        }
+        guard.push(entry);
+    }
+
+    tracing::info!(
+        server_count = server_ips.len(),
+        wintun_if_index,
+        "Windows routes successfully installed for TUN"
+    );
+
+    Ok(guard)
+}
+
 #[cfg(not(windows))]
 pub fn setup_windows_routes(_server_ip: IpAddr, _wintun_if_index: u32) -> Result<RouteGuard> {
     bail!("setup_windows_routes is only supported on Windows")
+}
+
+#[cfg(not(windows))]
+pub fn setup_windows_routes_multi(
+    _server_ips: &[IpAddr],
+    _wintun_if_index: u32,
+) -> Result<RouteGuard> {
+    bail!("setup_windows_routes_multi is only supported on Windows")
 }
 
 #[cfg(not(windows))]

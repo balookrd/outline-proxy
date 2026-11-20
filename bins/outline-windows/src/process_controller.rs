@@ -35,6 +35,8 @@ pub struct ConnectionStatusResponse {
     pub mode: String, // "socks5" | "tun"
     pub tcp_only: bool,
     pub uptime_secs: Option<u64>,
+    pub tx_bytes: u64,
+    pub rx_bytes: u64,
 }
 
 #[cfg(windows)]
@@ -124,6 +126,7 @@ pub struct ProcessController {
     active_config_path: Arc<RwLock<Option<PathBuf>>>,
     child_handle: Arc<tokio::sync::Mutex<Option<RunningChild>>>,
     started_at: Arc<RwLock<Option<Instant>>>,
+    pub traffic_monitor: Arc<crate::traffic_monitor::TrafficMonitor>,
 }
 
 impl Default for ProcessController {
@@ -141,6 +144,7 @@ impl ProcessController {
             active_config_path: Arc::new(RwLock::new(None)),
             child_handle: Arc::new(tokio::sync::Mutex::new(None)),
             started_at: Arc::new(RwLock::new(None)),
+            traffic_monitor: Arc::new(crate::traffic_monitor::TrafficMonitor::new()),
         }
     }
 
@@ -188,6 +192,7 @@ impl ProcessController {
     pub fn status_response(&self, store: &ProfileStore) -> ConnectionStatusResponse {
         let active_profile = store.active_profile();
         let settings = store.settings();
+        let (tx_bytes, rx_bytes) = self.traffic_monitor.current_bytes();
 
         ConnectionStatusResponse {
             state: self.state(),
@@ -196,6 +201,8 @@ impl ProcessController {
             mode: settings.proxy_mode,
             tcp_only: settings.tcp_only,
             uptime_secs: self.uptime_secs(),
+            tx_bytes,
+            rx_bytes,
         }
     }
 
@@ -272,6 +279,7 @@ impl ProcessController {
                     let mut start_lock = self.started_at.write().unwrap();
                     *start_lock = Some(Instant::now());
                 }
+                self.traffic_monitor.start(tun_enabled);
 
                 // If SOCKS5 mode, enable system proxy
                 if !tun_enabled {
@@ -422,6 +430,9 @@ impl ProcessController {
             tracing::warn!("Failed to disable system proxy upon stop: {e}");
         }
 
+        // Stop network traffic monitoring
+        self.traffic_monitor.stop();
+
         // Remove temporary config
         self.cleanup_temp_config();
 
@@ -490,7 +501,7 @@ unsafe fn spawn_with_uac(
         .chain(std::iter::once(0))
         .collect();
 
-    let mut sei: SHELLEXECUTEINFOW = std::mem::zeroed();
+    let mut sei: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
     sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
     sei.fMask = SEE_MASK_NOCLOSEPROCESS;
     sei.lpVerb = verb.as_ptr();

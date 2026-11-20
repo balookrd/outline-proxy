@@ -12,6 +12,7 @@
     addProfile,
     removeProfile,
     selectProfile,
+    renameProfile,
     getLogs,
     getSettings,
     updateSettings,
@@ -102,6 +103,115 @@
     return activeProfile.transport.toUpperCase();
   });
 
+  // Dynamic Carrier / Protocol computation matching macOS parity (e.g. ss/ws/h2, vless/xhttp/h3, ws/h3, xhttp/h2, ss/tcp)
+  const carrierInfo = $derived.by(() => {
+    if (!isRunning || !activeProfile) {
+      return { tcp: '—', udp: '—' };
+    }
+
+    const isTcpOnly = settings.tcpOnly || activeProfile.tcpOnly;
+    const fullConfig = ((activeProfile.cachedToml || '') + (activeProfile.link || '')).toLowerCase();
+
+    // Determine primary protocol family: vless or ss
+    let family = 'vless';
+    const vlessIdx = fullConfig.indexOf('vless://');
+    const ssIdx = fullConfig.indexOf('ss://');
+    if (vlessIdx !== -1 && (ssIdx === -1 || vlessIdx < ssIdx)) {
+      family = 'vless';
+    } else if (ssIdx !== -1 && (vlessIdx === -1 || ssIdx < vlessIdx)) {
+      family = 'ss';
+    } else if ((activeProfile.transport || '').toLowerCase().includes('ss') || (activeProfile.transport || '').toLowerCase().includes('shadowsocks')) {
+      family = 'ss';
+    } else {
+      family = 'vless';
+    }
+
+    // Determine carrier HTTP version: h3, h2, h1
+    let version = isTcpOnly ? 'h2' : 'h3';
+    if (fullConfig.includes('alpn=h3') || fullConfig.includes('xhttp_h3') || fullConfig.includes('ws_h3')) {
+      version = isTcpOnly ? 'h2' : 'h3';
+    } else if (fullConfig.includes('alpn=h2') || fullConfig.includes('http/2') || fullConfig.includes('xhttp_h2') || fullConfig.includes('ws_h2')) {
+      version = 'h2';
+    } else if (
+      fullConfig.includes('http/1.1') ||
+      fullConfig.includes('ws_h1') ||
+      fullConfig.includes('xhttp_h1') ||
+      fullConfig.includes('alpn=http%2f1.1') ||
+      fullConfig.includes('alpn=http/1.1')
+    ) {
+      version = 'h1';
+    }
+
+    // Determine submode carrier: xhttp, ws, or match family (ignoring substring 'ws' in 'outline-ws-rust')
+    let subMode = family;
+    const xhttpMatches = [
+      fullConfig.indexOf('type=xhttp'),
+      fullConfig.indexOf('xhttp_h'),
+      fullConfig.indexOf('transport = "xhttp'),
+      fullConfig.indexOf("transport = 'xhttp"),
+    ].filter((p) => p !== -1);
+
+    const wsMatches = [
+      fullConfig.indexOf('type=ws'),
+      fullConfig.indexOf('ws_h'),
+      fullConfig.indexOf('protocol=ws'),
+      fullConfig.indexOf('transport = "ws'),
+      fullConfig.indexOf("transport = 'ws"),
+    ].filter((p) => p !== -1);
+
+    const firstXhttp = xhttpMatches.length > 0 ? Math.min(...xhttpMatches) : -1;
+    const firstWs = wsMatches.length > 0 ? Math.min(...wsMatches) : -1;
+
+    if (firstXhttp !== -1 && (firstWs === -1 || firstXhttp < firstWs)) {
+      subMode = 'xhttp';
+    } else if (firstWs !== -1 && (firstXhttp === -1 || firstWs < firstXhttp)) {
+      subMode = 'ws';
+    }
+
+    // Inspect live logs for active dialed connection mode (e.g. mode="ws_h2" or mode="xhttp_h3")
+    for (let i = logs.length - 1; i >= Math.max(0, logs.length - 60); i--) {
+      const line = logs[i];
+      if (line.includes('conn_life') || line.includes('connection opened') || line.includes('mode="')) {
+        const modeMatch = line.match(/mode="([^"]+)"/);
+        if (modeMatch) {
+          const rawMode = modeMatch[1].toLowerCase();
+          const parts = rawMode.split('_');
+          if (parts.length === 2) {
+            subMode = parts[0];
+            version = isTcpOnly ? 'h2' : parts[1];
+          }
+          if (line.includes('ss://') || line.includes('shadowsocks') || line.includes(':pss') || line.includes('pss')) {
+            family = 'ss';
+          } else if (line.includes('vless://') || line.includes('pvless') || line.includes('pxhttp')) {
+            family = 'vless';
+          }
+          break;
+        }
+      }
+    }
+
+    let tcpString = '';
+    let udpString = '';
+
+    const famUpper = family.toUpperCase();
+    const subUpper = subMode.toUpperCase();
+    const verUpper = version.toUpperCase();
+
+    if (subMode !== family) {
+      // e.g. VLESS/XHTTP/H3 or SS/WS/H2
+      tcpString = `${famUpper}/${subUpper}/${verUpper}`;
+      udpString = isTcpOnly ? '—' : `${famUpper}/${subUpper}/${verUpper}`;
+    } else if (family === 'ss') {
+      tcpString = 'SS/TCP';
+      udpString = isTcpOnly ? '—' : 'SS/UDP';
+    } else {
+      tcpString = `VLESS/${verUpper}`;
+      udpString = isTcpOnly ? '—' : `VLESS/${verUpper}`;
+    }
+
+    return { tcp: tcpString, udp: udpString };
+  });
+
   // Traffic and Duration Live Timer
   $effect(() => {
     let timer: any = null;
@@ -110,8 +220,8 @@
       if (sessionStartTimestamp === null) {
         const uptime = status?.uptimeSecs || status?.uptime_secs || 0;
         sessionStartTimestamp = Date.now() - uptime * 1000;
-        if (trafficUpBytes === 0) trafficUpBytes = 14200;
-        if (trafficDownBytes === 0) trafficDownBytes = 184500;
+        trafficUpBytes = 0;
+        trafficDownBytes = 0;
       }
 
       timer = setInterval(() => {
@@ -121,10 +231,8 @@
         const mins = String(Math.floor((diffSecs % 3600) / 60)).padStart(2, '0');
         const secs = String(diffSecs % 60).padStart(2, '0');
         sessionDuration = `${hrs}:${mins}:${secs}`;
-
-        // Gentle realistic traffic increment
-        trafficUpBytes += Math.floor(Math.random() * 800 + 200);
-        trafficDownBytes += Math.floor(Math.random() * 4500 + 1200);
+        // Live polling of system network traffic
+        refreshStatus();
       }, 1000);
     } else {
       sessionStartTimestamp = null;
@@ -150,6 +258,14 @@
   async function refreshStatus() {
     try {
       status = await getStatus();
+      if (status) {
+        const tx = status.txBytes ?? status.tx_bytes ?? 0;
+        const rx = status.rxBytes ?? status.rx_bytes ?? 0;
+        if (isRunning) {
+          trafficUpBytes = tx;
+          trafficDownBytes = rx;
+        }
+      }
     } catch (e) {
       console.warn('Failed to get status:', e);
     }
@@ -244,6 +360,17 @@
     }
   }
 
+  async function handleRenameProfile(id: string, name: string) {
+    try {
+      await renameProfile(id, name);
+      await refreshProfiles();
+      await refreshStatus();
+    } catch (err: any) {
+      console.error('Failed to rename profile:', err);
+      throw err;
+    }
+  }
+
   async function handleUpdateSubscription(id: string) {
     try {
       await updateSubscription(id);
@@ -315,17 +442,17 @@
 
 <main
   class="relative flex flex-col h-screen w-full transition-colors duration-200 select-none overflow-hidden p-4 justify-between
-    {theme === 'dark' ? 'bg-neutral-950 text-neutral-100' : 'bg-neutral-100 text-neutral-900'}"
+    {theme === 'dark' ? 'bg-[#0E1118] text-white' : 'bg-[#F8FAFC] text-[#0F172A]'}"
 >
   <!-- 1. Header Banner -->
   <Header {theme} onToggleTheme={toggleTheme} />
 
   <!-- 2. Status Card (with World Map & Status Ring) -->
   <section
-    class="relative rounded-[28px] border overflow-hidden transition-all duration-200 p-5 flex flex-col gap-4 shadow-xl cursor-pointer
+    class="relative rounded-[28px] border overflow-hidden transition-all duration-200 p-3.5 flex flex-col gap-2.5 shadow-sm cursor-pointer
       {theme === 'dark'
-        ? 'bg-neutral-900/90 border-neutral-700/60 shadow-black/40 hover:border-neutral-600'
-        : 'bg-white border-neutral-200 shadow-neutral-300/60 hover:border-neutral-300'}"
+        ? 'bg-[#161C26] border-white/10 hover:border-white/20'
+        : 'bg-[#EDF2F7] border-[#CBD5E1] hover:border-slate-400'}"
     onclick={() => showServers = true}
     role="button"
     tabindex="0"
@@ -333,52 +460,55 @@
       if (e.key === 'Enter' || e.key === ' ') showServers = true;
     }}
   >
-    <!-- Background World Map (Dotted with opacity) -->
+    <!-- Background World Map (Dotted with opacity & theme-matched mask) -->
     <div
-      class="absolute inset-0 pointer-events-none opacity-20 bg-center bg-no-repeat bg-contain"
-      style="background-image: url('/ic_worldmap.png');"
+      class="absolute inset-0 pointer-events-none"
+      style="
+        -webkit-mask-image: url('/ic_worldmap.png');
+        mask-image: url('/ic_worldmap.png');
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        background-color: {theme === 'dark' ? '#FFFFFF' : '#0F172A'};
+        opacity: {theme === 'dark' ? 0.22 : 0.14};
+      "
     ></div>
 
     <!-- Top Row: Ring Emblem + Server Details + Chevron -->
     <div class="relative z-10 flex items-center justify-between gap-3">
-      <!-- Status Ring Emblem -->
-      <div class="relative w-20 h-20 flex-shrink-0 flex items-center justify-center">
+      <!-- Status Ring Emblem (82x82) -->
+      <div class="relative w-[82px] h-[82px] flex-shrink-0 flex items-center justify-center">
         <!-- Brand Ring Image with pulse on connected -->
         <img
           src={theme === 'dark' ? '/brand_ring_dark.png' : '/brand_ring_light.png'}
           alt="Ring"
           class="w-full h-full object-contain transition-transform duration-500
-            {isRunning ? 'animate-pulse scale-105' : 'opacity-80'}"
+            {isRunning ? 'scale-105' : 'opacity-90'}"
         />
         <!-- Inner Status Dot -->
         <div class="absolute inset-0 flex items-center justify-center">
           <div
-            class="w-4 h-4 rounded-full transition-all duration-300 shadow-lg
+            class="w-3.5 h-3.5 rounded-full transition-all duration-300
               {isRunning
-                ? 'bg-emerald-400 shadow-emerald-400/80 animate-ping'
-                : (isBusy
-                    ? 'bg-amber-400 shadow-amber-400/60'
-                    : 'bg-neutral-500 shadow-neutral-500/40')}"
-          ></div>
-          <div
-            class="absolute w-3.5 h-3.5 rounded-full
-              {isRunning
-                ? 'bg-emerald-500'
-                : (isBusy ? 'bg-amber-400' : 'bg-neutral-500')}"
+                ? 'bg-[#059669] shadow-md shadow-emerald-500/50 animate-pulse'
+                : (isBusy ? 'bg-[#D9B706]' : 'bg-[#64748B]')}"
           ></div>
         </div>
       </div>
 
       <!-- Info Column -->
       <div class="flex-1 min-w-0 flex flex-col justify-center">
-        <!-- Status Label with Dot -->
+        <!-- Status Label with Dot (macOS title case: • Отключено / • Подключено) -->
         <div class="flex items-center gap-1.5">
           <span
             class="w-2 h-2 rounded-full
-              {isRunning ? 'bg-emerald-400 animate-pulse' : (isBusy ? 'bg-amber-400' : 'bg-neutral-400')}"
+              {isRunning ? 'bg-[#059669] animate-pulse' : (isBusy ? 'bg-[#D9B706]' : 'bg-[#64748B]')}"
           ></span>
-          <span class="text-xs font-semibold uppercase tracking-wider
-            {isRunning ? 'text-emerald-400' : (isBusy ? 'text-amber-400' : (theme === 'dark' ? 'text-neutral-400' : 'text-neutral-500'))}">
+          <span class="text-xs font-semibold
+            {isRunning ? 'text-[#059669]' : (isBusy ? 'text-[#D9B706]' : 'text-[#64748B]')}">
             {#if isRunning}
               Подключено
             {:else if isStarting}
@@ -391,130 +521,136 @@
           </span>
         </div>
 
-        <!-- Server Title (Huge bold font) -->
-        <h2 class="text-xl font-bold truncate mt-0.5 tracking-tight {theme === 'dark' ? 'text-white' : 'text-neutral-900'}">
+        <!-- Server Title (Huge bold font matching macOS) -->
+        <h2 class="text-xl font-bold truncate mt-0.5 tracking-tight {theme === 'dark' ? 'text-white' : 'text-[#0F172A]'}">
           {activeProfileName}
         </h2>
 
         <!-- Subtitle with Type and Active Badge -->
         <div class="flex items-center gap-2 mt-1">
-          <span class="text-xs {theme === 'dark' ? 'text-neutral-400' : 'text-neutral-500'}">
+          <span class="text-xs {theme === 'dark' ? 'text-[#94A3B8]' : 'text-[#475569]'}">
             {activeProfileBadge}
           </span>
-          <span class="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+          <span class="px-2 py-0.5 rounded-full text-[11px] font-semibold
+            {theme === 'dark' ? 'bg-[#1E293B] text-[#93C5FD]' : 'bg-[#DBE6FE] text-[#1E3A8A]'}">
             Активна
           </span>
+        </div>
+
+        <!-- Refresh subtitle matching macOS -->
+        <div class="text-[11px] text-[#64748B] mt-1">
+          Обновлено недавно · каждые 12 ч
         </div>
       </div>
 
       <!-- Chevron Button -->
-      <div class="text-neutral-400 hover:text-neutral-200 transition-colors pl-1">
+      <div class="text-[#64748B] hover:text-[#0F172A] dark:hover:text-white transition-colors pl-1">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
         </svg>
       </div>
     </div>
 
-    <!-- Stats Strip (Duration, Traffic, Protocol) -->
-    <div class="relative z-10 pt-3 border-t grid grid-cols-3 gap-2 text-left
-      {theme === 'dark' ? 'border-neutral-800' : 'border-neutral-100'}">
-      <!-- 1. Duration Column -->
-      <div class="flex flex-col">
-        <div class="flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase {theme === 'dark' ? 'text-neutral-400' : 'text-neutral-500'}">
-          <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          Длительность
-        </div>
-        <span class="text-xs font-mono font-bold mt-0.5 {theme === 'dark' ? 'text-neutral-200' : 'text-neutral-800'}">
-          {sessionDuration}
-        </span>
-        <span class="text-[9px] text-neutral-500">чч:мм:сс</span>
-      </div>
-
-      <!-- 2. Traffic Column -->
-      <div class="flex flex-col border-x px-2 {theme === 'dark' ? 'border-neutral-800' : 'border-neutral-200'}">
-        <div class="flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase {theme === 'dark' ? 'text-neutral-400' : 'text-neutral-500'}">
-          <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-          </svg>
-          Трафик
-        </div>
-        <div class="flex items-center gap-1 mt-0.5 text-[10px] font-mono">
-          <span class="text-emerald-400 font-bold">↑</span>
-          <span class="{theme === 'dark' ? 'text-neutral-300' : 'text-neutral-700'}">{formatBytes(trafficUpBytes)}</span>
-        </div>
-        <div class="flex items-center gap-1 text-[10px] font-mono">
-          <span class="text-cyan-400 font-bold">↓</span>
-          <span class="{theme === 'dark' ? 'text-neutral-300' : 'text-neutral-700'}">{formatBytes(trafficDownBytes)}</span>
-        </div>
-      </div>
-
-      <!-- 3. Protocol Column -->
-      <div class="flex flex-col pl-1">
-        <div class="flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase {theme === 'dark' ? 'text-neutral-400' : 'text-neutral-500'}">
-          <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-          </svg>
-          Протокол
-        </div>
-        <div class="flex items-center gap-1 mt-0.5 text-[10.5px]">
-          <span class="text-[9px] font-semibold px-1 rounded bg-neutral-700/50 text-neutral-300">TCP</span>
-          <span class="text-[10px] font-mono {theme === 'dark' ? 'text-neutral-300' : 'text-neutral-700'}">
-            {settings.tcpOnly ? 'H2/H1' : 'H3/H2'}
+    <!-- Stats Strip (Duration, Traffic, Protocol) - strictly when running (macOS parity) -->
+    {#if isRunning}
+      <div class="relative z-10 pt-2.5 border-t grid grid-cols-[1fr_1.05fr_1.45fr] gap-1 text-left
+        {theme === 'dark' ? 'border-white/10' : 'border-[#CBD5E1]'}">
+        <!-- 1. Duration Column -->
+        <div class="flex flex-col">
+          <div class="flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase {theme === 'dark' ? 'text-[#94A3B8]' : 'text-[#64748B]'}">
+            <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Длительность
+          </div>
+          <span class="text-xs font-mono font-bold mt-0.5 leading-tight {theme === 'dark' ? 'text-white' : 'text-[#0F172A]'}">
+            {sessionDuration}
           </span>
+          <span class="text-[9px] text-[#64748B] leading-none mt-0.5 pb-0.5">чч:мм:сс</span>
         </div>
-        <div class="flex items-center gap-1 text-[10.5px]">
-          <span class="text-[9px] font-semibold px-1 rounded bg-neutral-700/50 text-neutral-300">UDP</span>
-          <span class="text-[10px] font-mono {theme === 'dark' ? 'text-neutral-300' : 'text-neutral-700'}">
-            {settings.proxyMode === 'tun' ? 'TUN Nat' : 'Socks5'}
-          </span>
+
+        <!-- 2. Traffic Column -->
+        <div class="flex flex-col border-x px-2 {theme === 'dark' ? 'border-white/10' : 'border-[#CBD5E1]'}">
+          <div class="flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase {theme === 'dark' ? 'text-[#94A3B8]' : 'text-[#64748B]'}">
+            <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+            </svg>
+            Трафик
+          </div>
+          <div class="flex items-center gap-1 mt-0.5 text-[10px] font-mono">
+            <span class="text-[#059669] dark:text-[#22C55E] font-bold">↑</span>
+            <span class="{theme === 'dark' ? 'text-[#CBD5E1]' : 'text-[#0F172A]'}">{formatBytes(trafficUpBytes)}</span>
+          </div>
+          <div class="flex items-center gap-1 text-[10px] font-mono">
+            <span class="text-[#1E5EE8] dark:text-[#60A5FA] font-bold">↓</span>
+            <span class="{theme === 'dark' ? 'text-[#CBD5E1]' : 'text-[#0F172A]'}">{formatBytes(trafficDownBytes)}</span>
+          </div>
+        </div>
+
+        <!-- 3. Protocol Column -->
+        <div class="flex flex-col pl-1 min-w-0">
+          <div class="flex items-center gap-1 text-[9px] font-bold tracking-wider uppercase {theme === 'dark' ? 'text-[#94A3B8]' : 'text-[#64748B]'}">
+            <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+            Протокол
+          </div>
+          <div class="flex items-center gap-1 mt-0.5 text-[10.5px] min-w-0">
+            <span class="text-[9px] font-semibold px-1 rounded bg-neutral-700/50 text-neutral-300 shrink-0">TCP</span>
+            <span class="text-[9.5px] font-mono truncate {theme === 'dark' ? 'text-[#CBD5E1]' : 'text-[#0F172A]'}" title={carrierInfo.tcp}>
+              {carrierInfo.tcp}
+            </span>
+          </div>
+          <div class="flex items-center gap-1 text-[10.5px] min-w-0">
+            <span class="text-[9px] font-semibold px-1 rounded bg-neutral-700/50 text-neutral-300 shrink-0">UDP</span>
+            <span class="text-[9.5px] font-mono truncate {theme === 'dark' ? 'text-[#CBD5E1]' : 'text-[#0F172A]'}" title={carrierInfo.udp}>
+              {carrierInfo.udp}
+            </span>
+          </div>
         </div>
       </div>
-    </div>
+    {/if}
   </section>
 
   <!-- 3. Operational Mode Selector Card -->
   <section
-    class="rounded-[20px] border p-3 flex flex-col items-center gap-2 transition-colors
-      {theme === 'dark' ? 'bg-neutral-900/80 border-neutral-800' : 'bg-white border-neutral-200'}"
+    class="rounded-[18px] border p-3 flex flex-col items-center gap-2 transition-colors
+      {theme === 'dark' ? 'bg-[#161C26] border-white/10' : 'bg-[#EDF2F7] border-[#CBD5E1]'}"
   >
-    <div class="flex items-center gap-1.5 text-xs font-bold {theme === 'dark' ? 'text-neutral-300' : 'text-neutral-700'}">
-      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
-      <span>Режим перехвата трафика</span>
+    <div class="flex items-center gap-1.5 text-xs font-semibold {theme === 'dark' ? 'text-white' : 'text-[#0F172A]'}">
+      <span>🌐</span>
+      <span>Режим перехвата трафика:</span>
     </div>
 
     <!-- Toggle Buttons Row -->
-    <div class="w-full max-w-[270px] grid grid-cols-2 gap-1.5 bg-neutral-950/40 p-1 rounded-xl border {theme === 'dark' ? 'border-neutral-800' : 'border-neutral-200'}">
+    <div class="w-full max-w-[280px] grid grid-cols-2 gap-2 p-1">
       <button
         type="button"
         onclick={() => handleModeSelect('socks5')}
-        class="py-1.5 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer text-center
+        class="h-9 px-3 rounded-2xl text-xs font-semibold transition-all cursor-pointer text-center
           {settings.proxyMode === 'socks5'
-            ? 'bg-emerald-600 text-white shadow'
-            : (theme === 'dark' ? 'text-neutral-400 hover:text-white' : 'text-neutral-600 hover:text-black')}"
+            ? (theme === 'dark' ? 'bg-[#2563EB] text-white shadow-sm' : 'bg-[#1E5EE8] text-white shadow-sm')
+            : (theme === 'dark' ? 'bg-[#20293A] border border-white/10 text-white/75 hover:text-white' : 'bg-white border border-[#CBD5E1] text-[#475569] hover:text-[#0F172A]')}"
       >
         SOCKS5 (Прокси)
       </button>
       <button
         type="button"
         onclick={() => handleModeSelect('tun')}
-        class="py-1.5 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer text-center
+        class="h-9 px-3 rounded-2xl text-xs font-semibold transition-all cursor-pointer text-center
           {settings.proxyMode === 'tun'
-            ? 'bg-emerald-600 text-white shadow'
-            : (theme === 'dark' ? 'text-neutral-400 hover:text-white' : 'text-neutral-600 hover:text-black')}"
+            ? (theme === 'dark' ? 'bg-[#2563EB] text-white shadow-sm' : 'bg-[#1E5EE8] text-white shadow-sm')
+            : (theme === 'dark' ? 'bg-[#20293A] border border-white/10 text-white/75 hover:text-white' : 'bg-white border border-[#CBD5E1] text-[#475569] hover:text-[#0F172A]')}"
       >
         TUN (VPN)
       </button>
     </div>
 
-    <p class="text-[10px] text-center max-w-[280px] leading-tight {theme === 'dark' ? 'text-neutral-400' : 'text-neutral-500'}">
+    <p class="text-[11px] text-center max-w-[310px] leading-snug {theme === 'dark' ? 'text-[#94A3B8]' : 'text-[#475569]'}">
       {#if settings.proxyMode === 'socks5'}
-        Системный прокси 127.0.0.1:{settings.socksPort} для браузеров и приложений.
+        Системный SOCKS5-прокси 127.0.0.1:{settings.socksPort} для браузеров и приложений.
       {:else}
-        Полный VPN через Wintun-адаптер: направляет 100% сетевого трафика ПК.
+        L3 TUN VPN: туннель в 1 клик без пароля (DNS, игры, все приложения)
       {/if}
     </p>
   </section>
@@ -525,12 +661,12 @@
     <button
       type="button"
       onclick={() => showServers = true}
-      class="h-14 rounded-full border flex items-center justify-center gap-2 font-semibold text-xs transition-all cursor-pointer active:scale-98
+      class="h-12 rounded-full border flex items-center justify-center gap-2 font-semibold text-[13.5px] transition-all cursor-pointer active:scale-98
         {theme === 'dark'
-          ? 'bg-neutral-800/90 hover:bg-neutral-700/90 border-neutral-700 text-neutral-200 shadow-md shadow-black/30'
-          : 'bg-white hover:bg-neutral-100 border-neutral-300 text-neutral-800 shadow-sm'}"
+          ? 'bg-[#161C26] hover:bg-[#20293A] border-white/12 text-white shadow-sm'
+          : 'bg-white hover:bg-neutral-50 border-[#CBD5E1] text-[#0F172A] shadow-sm'}"
     >
-      <svg class="w-4 h-4 fill-current text-emerald-500" viewBox="0 0 20 20">
+      <svg class="w-4 h-4 fill-current {theme === 'dark' ? 'text-white' : 'text-[#0F172A]'}" viewBox="0 0 20 20">
         <path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd" />
       </svg>
       <span>Добавить сервер</span>
@@ -541,13 +677,15 @@
       type="button"
       onclick={handleToggleConnection}
       disabled={isBusy}
-      class="h-14 rounded-full flex items-center justify-center gap-2 font-bold text-xs uppercase tracking-wider text-white transition-all cursor-pointer shadow-lg active:scale-98 disabled:opacity-50
+      class="h-12 rounded-full flex items-center justify-center gap-2 font-bold text-[14px] transition-all cursor-pointer shadow-md active:scale-98 disabled:opacity-50
         {isRunning
-          ? 'bg-rose-600 hover:bg-rose-500 shadow-rose-600/30'
-          : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/30'}"
+          ? 'bg-[#DC2626] hover:bg-[#B91C1C] text-white shadow-red-500/25'
+          : (theme === 'dark'
+              ? 'bg-[#C7D7FD] hover:bg-[#B3C8FC] text-[#0F172A]'
+              : 'bg-[#1E5EE8] hover:bg-[#164EC2] text-white shadow-[#1E5EE8]/25')}"
     >
       {#if isBusy}
-        <svg class="w-4 h-4 animate-spin text-white" fill="none" viewBox="0 0 24 24">
+        <svg class="w-4 h-4 animate-spin text-current" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
         </svg>
@@ -566,29 +704,29 @@
     </button>
   </section>
 
-  <!-- 5. Quick Links Circles (matching AndroidQuickLinkItem) -->
+  <!-- 5. Quick Links (matching 2 bubbles on macOS) -->
   <section
-    class="rounded-[24px] border p-3.5 flex items-center justify-around transition-colors
-      {theme === 'dark' ? 'bg-neutral-900/80 border-neutral-800' : 'bg-white border-neutral-200'}"
+    class="rounded-[24px] border p-4 flex items-center justify-around transition-colors
+      {theme === 'dark' ? 'bg-[#161C26] border-white/10' : 'bg-[#EDF2F7] border-[#CBD5E1]'}"
   >
-    <!-- 1. Servers button -->
+    <!-- 1. Logs button -->
     <button
       type="button"
-      onclick={() => showServers = true}
-      class="flex flex-col items-center gap-1.5 group cursor-pointer"
+      onclick={() => showLogs = true}
+      class="flex flex-col items-center gap-2 group cursor-pointer"
     >
       <div
-        class="w-13 h-13 rounded-full flex items-center justify-center border transition-all duration-150 group-hover:scale-105
+        class="w-[52px] h-[52px] rounded-full flex items-center justify-center transition-all duration-150 group-hover:scale-105
           {theme === 'dark'
-            ? 'bg-neutral-800 border-neutral-700 text-neutral-300 group-hover:bg-neutral-700'
-            : 'bg-neutral-100 border-neutral-300 text-neutral-700 group-hover:bg-neutral-200'}"
+            ? 'bg-[#20293A] text-[#60A5FA] group-hover:bg-[#28354D]'
+            : 'bg-[#DBE6FE] text-[#1E5EE8] group-hover:bg-[#C7D7FD]'}"
       >
-        <svg class="w-6 h-6 fill-current" viewBox="0 0 20 20">
-          <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+        <svg class="w-6 h-6 fill-none stroke-current" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
       </div>
-      <span class="text-[11px] font-semibold {theme === 'dark' ? 'text-neutral-300' : 'text-neutral-700'}">
-        Серверы ({profiles.length})
+      <span class="text-xs font-semibold {theme === 'dark' ? 'text-white' : 'text-[#0F172A]'}">
+        Журнал (логи)
       </span>
     </button>
 
@@ -596,48 +734,27 @@
     <button
       type="button"
       onclick={() => showSettings = true}
-      class="flex flex-col items-center gap-1.5 group cursor-pointer"
+      class="flex flex-col items-center gap-2 group cursor-pointer"
     >
       <div
-        class="w-13 h-13 rounded-full flex items-center justify-center border transition-all duration-150 group-hover:scale-105
+        class="w-[52px] h-[52px] rounded-full flex items-center justify-center transition-all duration-150 group-hover:scale-105
           {theme === 'dark'
-            ? 'bg-neutral-800 border-neutral-700 text-neutral-300 group-hover:bg-neutral-700'
-            : 'bg-neutral-100 border-neutral-300 text-neutral-700 group-hover:bg-neutral-200'}"
+            ? 'bg-[#20293A] text-[#60A5FA] group-hover:bg-[#28354D]'
+            : 'bg-[#DBE6FE] text-[#1E5EE8] group-hover:bg-[#C7D7FD]'}"
       >
         <svg class="w-6 h-6 fill-current" viewBox="0 0 20 20">
           <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
         </svg>
       </div>
-      <span class="text-[11px] font-semibold {theme === 'dark' ? 'text-neutral-300' : 'text-neutral-700'}">
+      <span class="text-xs font-semibold {theme === 'dark' ? 'text-white' : 'text-[#0F172A]'}">
         Настройки
-      </span>
-    </button>
-
-    <!-- 3. Logs button -->
-    <button
-      type="button"
-      onclick={() => showLogs = true}
-      class="flex flex-col items-center gap-1.5 group cursor-pointer"
-    >
-      <div
-        class="w-13 h-13 rounded-full flex items-center justify-center border transition-all duration-150 group-hover:scale-105
-          {theme === 'dark'
-            ? 'bg-neutral-800 border-neutral-700 text-neutral-300 group-hover:bg-neutral-700'
-            : 'bg-neutral-100 border-neutral-300 text-neutral-700 group-hover:bg-neutral-200'}"
-      >
-        <svg class="w-6 h-6 fill-current" viewBox="0 0 20 20">
-          <path fill-rule="evenodd" d="M2 5a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm3.293 1.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 01-1.414-1.414L7.586 10 5.293 7.707a1 1 0 010-1.414zM11 12a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd" />
-        </svg>
-      </div>
-      <span class="text-[11px] font-semibold {theme === 'dark' ? 'text-neutral-300' : 'text-neutral-700'}">
-        Журнал ({logs.length})
       </span>
     </button>
   </section>
 
   <!-- 6. Version Footer -->
-  <footer class="text-center text-[11px] {theme === 'dark' ? 'text-neutral-500' : 'text-neutral-400'}">
-    Outline Proxy v1.0.0 · Windows Edition
+  <footer class="text-center text-[11px] text-[#64748B] hover:text-[#0F172A] dark:hover:text-white transition-colors cursor-pointer py-0.5">
+    nightly · vnightly (638262e3)
   </footer>
 
   <!-- Modal Components -->
@@ -651,6 +768,7 @@
     onAddProfile={handleAddProfile}
     onRemoveProfile={handleRemoveProfile}
     onUpdateSubscription={handleUpdateSubscription}
+    onRenameProfile={handleRenameProfile}
   />
 
   <SettingsModal

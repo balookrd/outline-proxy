@@ -115,6 +115,24 @@ pub async fn select_profile(
     Ok(())
 }
 
+/// Renames a server profile or subscription by ID.
+#[tauri::command]
+pub async fn rename_profile(
+    id: String,
+    name: String,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<ServerProfile, String> {
+    let profile = state
+        .profile_store
+        .rename_profile(&id, &name)
+        .map_err(|e| e.to_string())?;
+
+    let _ = crate::tray::update_tray_menu(&app, &state);
+    let _ = app.emit("profiles-updated", ());
+    Ok(profile)
+}
+
 /// Returns all log entries from the ring buffer.
 #[tauri::command]
 pub async fn get_logs(state: State<'_, AppState>) -> Result<Vec<String>, String> {

@@ -26,6 +26,12 @@
   let saveSuccess = $state(false);
   let errorMessage = $state<string | null>(null);
 
+  function handleKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && isOpen) {
+      onClose();
+    }
+  }
+
   // Synchronize local draft with current settings when modal opens
   $effect(() => {
     if (isOpen && settings) {
@@ -68,6 +74,8 @@
   }
 </script>
 
+<svelte:window onkeydown={handleKeyDown} />
+
 {#if isOpen}
   <!-- Backdrop -->
   <div
@@ -86,8 +94,8 @@
       <!-- Header -->
       <div class="flex items-center justify-between px-5 py-3.5 border-b {theme === 'dark' ? 'border-neutral-800' : 'border-neutral-200'}">
         <div class="flex items-center gap-2">
-          <!-- Gear Icon -->
-          <div class="w-7 h-7 rounded-full flex items-center justify-center {theme === 'dark' ? 'bg-neutral-800 text-neutral-300' : 'bg-neutral-100 text-neutral-700'}">
+          <!-- Gear Icon matching macOS -->
+          <div class="w-7 h-7 rounded-full flex items-center justify-center {theme === 'dark' ? 'bg-[#20293A] text-[#60A5FA]' : 'bg-[#DBE6FE] text-[#1E5EE8]'}">
             <svg class="w-4 h-4 fill-current" viewBox="0 0 20 20">
               <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
             </svg>
@@ -127,16 +135,20 @@
               onclick={() => localMode = 'socks5'}
               class="p-2.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between
                 {localMode === 'socks5'
-                  ? 'bg-emerald-600/15 border-emerald-500 text-emerald-400 font-bold shadow-sm shadow-emerald-950/20'
-                  : (theme === 'dark' ? 'bg-neutral-800/40 border-neutral-700/60 text-neutral-400 hover:bg-neutral-800/70' : 'bg-neutral-50 border-neutral-200 text-neutral-600 hover:bg-neutral-100')}"
+                  ? (theme === 'dark'
+                      ? 'bg-[#2563EB] border-[#3B82F6] text-white font-bold shadow-sm'
+                      : 'bg-[#1E5EE8] border-[#1E5EE8] text-white font-bold shadow-sm shadow-[#1E5EE8]/25')
+                  : (theme === 'dark'
+                      ? 'bg-neutral-800/40 border-neutral-700/60 text-neutral-400 hover:bg-neutral-800/70'
+                      : 'bg-white border-[#CBD5E1] text-[#475569] hover:bg-neutral-50')}"
             >
               <div class="flex items-center justify-between">
                 <span class="text-xs">SOCKS5</span>
                 {#if localMode === 'socks5'}
-                  <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  <span class="w-2 h-2 rounded-full bg-white"></span>
                 {/if}
               </div>
-              <span class="text-[10px] opacity-75 font-normal mt-1">Прокси системы</span>
+              <span class="text-[10px] {localMode === 'socks5' ? 'text-white/85' : 'opacity-75'} font-normal mt-1">Прокси системы</span>
             </button>
 
             <!-- TUN Button -->
@@ -145,16 +157,20 @@
               onclick={() => localMode = 'tun'}
               class="p-2.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between
                 {localMode === 'tun'
-                  ? 'bg-emerald-600/15 border-emerald-500 text-emerald-400 font-bold shadow-sm shadow-emerald-950/20'
-                  : (theme === 'dark' ? 'bg-neutral-800/40 border-neutral-700/60 text-neutral-400 hover:bg-neutral-800/70' : 'bg-neutral-50 border-neutral-200 text-neutral-600 hover:bg-neutral-100')}"
+                  ? (theme === 'dark'
+                      ? 'bg-[#2563EB] border-[#3B82F6] text-white font-bold shadow-sm'
+                      : 'bg-[#1E5EE8] border-[#1E5EE8] text-white font-bold shadow-sm shadow-[#1E5EE8]/25')
+                  : (theme === 'dark'
+                      ? 'bg-neutral-800/40 border-neutral-700/60 text-neutral-400 hover:bg-neutral-800/70'
+                      : 'bg-white border-[#CBD5E1] text-[#475569] hover:bg-neutral-50')}"
             >
               <div class="flex items-center justify-between">
                 <span class="text-xs">TUN (VPN)</span>
                 {#if localMode === 'tun'}
-                  <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                  <span class="w-2 h-2 rounded-full bg-white"></span>
                 {/if}
               </div>
-              <span class="text-[10px] opacity-75 font-normal mt-1">Весь трафик ПК</span>
+              <span class="text-[10px] {localMode === 'tun' ? 'text-white/85' : 'opacity-75'} font-normal mt-1">Весь трафик ПК</span>
             </button>
           </div>
 
@@ -182,7 +198,7 @@
             <input
               type="checkbox"
               bind:checked={localTcpOnly}
-              class="w-4 h-4 accent-emerald-500 cursor-pointer rounded"
+              class="w-4 h-4 accent-[#1E5EE8] dark:accent-[#2563EB] cursor-pointer rounded"
             />
           </label>
         </div>
@@ -202,8 +218,8 @@
               bind:value={localSocksPort}
               class="w-20 px-2 py-1 text-xs text-right rounded-lg border font-mono outline-none
                 {theme === 'dark'
-                  ? 'bg-neutral-900 border-neutral-700 text-white focus:border-emerald-500'
-                  : 'bg-white border-neutral-300 text-neutral-900 focus:border-emerald-600'}"
+                  ? 'bg-neutral-900 border-neutral-700 text-white focus:border-[#2563EB]'
+                  : 'bg-white border-neutral-300 text-neutral-900 focus:border-[#1E5EE8]'}"
             />
           </div>
           <span class="text-[10px] block {theme === 'dark' ? 'text-neutral-400' : 'text-neutral-500'}">
@@ -225,7 +241,7 @@
             <input
               type="checkbox"
               bind:checked={localAutostart}
-              class="w-4 h-4 accent-emerald-500 cursor-pointer rounded"
+              class="w-4 h-4 accent-[#1E5EE8] dark:accent-[#2563EB] cursor-pointer rounded"
             />
           </label>
 
@@ -236,7 +252,7 @@
             <input
               type="checkbox"
               bind:checked={localStartMinimized}
-              class="w-4 h-4 accent-emerald-500 cursor-pointer rounded"
+              class="w-4 h-4 accent-[#1E5EE8] dark:accent-[#2563EB] cursor-pointer rounded"
             />
           </label>
         </div>
@@ -245,7 +261,7 @@
           <p class="text-xs text-rose-400 font-medium">{errorMessage}</p>
         {/if}
         {#if saveSuccess}
-          <p class="text-xs text-emerald-400 font-medium">Настройки успешно сохранены!</p>
+          <p class="text-xs text-[#1E5EE8] dark:text-[#60A5FA] font-medium">Настройки успешно сохранены!</p>
         {/if}
       </div>
 
@@ -263,7 +279,10 @@
           type="button"
           onclick={handleSave}
           disabled={isSaving}
-          class="px-4 py-1.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white transition-all cursor-pointer shadow"
+          class="px-4 py-1.5 text-xs font-bold rounded-xl text-white transition-all cursor-pointer shadow-sm disabled:opacity-50
+            {theme === 'dark'
+              ? 'bg-[#2563EB] hover:bg-[#1D4ED8]'
+              : 'bg-[#1E5EE8] hover:bg-[#164EC2] shadow-[#1E5EE8]/25'}"
         >
           {#if isSaving}
             Сохранение...
