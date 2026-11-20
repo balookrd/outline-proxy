@@ -37,12 +37,21 @@ pub struct ConnectionStatusResponse {
     pub uptime_secs: Option<u64>,
 }
 
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug)]
+pub struct SafeHandle(pub windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+unsafe impl Send for SafeHandle {}
+#[cfg(windows)]
+unsafe impl Sync for SafeHandle {}
+
 /// Representation of an active background process.
 enum RunningChild {
     Tokio(tokio::process::Child),
     #[cfg(windows)]
     Win32Handle {
-        handle: windows_sys::Win32::Foundation::HANDLE,
+        handle: SafeHandle,
         pid: u32,
     },
 }
@@ -314,7 +323,7 @@ impl ProcessController {
                 // On Windows TUN requires administrative elevation (UAC prompt via runas)
                 match unsafe { spawn_with_uac(binary_path, config_path) } {
                     Ok((handle, pid)) => {
-                        return Ok((RunningChild::Win32Handle { handle, pid }, pid));
+                        return Ok((RunningChild::Win32Handle { handle: SafeHandle(handle), pid }, pid));
                     },
                     Err(e) => {
                         tracing::warn!(
@@ -503,10 +512,12 @@ unsafe fn spawn_with_uac(
 }
 
 #[cfg(windows)]
-unsafe fn kill_win32_process(handle: windows_sys::Win32::Foundation::HANDLE) {
+unsafe fn kill_win32_process(handle: SafeHandle) {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::TerminateProcess;
 
-    TerminateProcess(handle, 1);
-    CloseHandle(handle);
+    unsafe {
+        TerminateProcess(handle.0, 1);
+        CloseHandle(handle.0);
+    }
 }
