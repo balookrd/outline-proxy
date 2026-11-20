@@ -53,7 +53,7 @@ pub(super) async fn handle_alloc(
     json_response(StatusCode::OK, &report())
 }
 
-#[cfg(feature = "mimalloc")]
+#[cfg(any(feature = "mimalloc", windows))]
 fn report() -> AllocReport {
     let (stats, stats_error) = match stats_json() {
         Ok(value) => (Some(value), None),
@@ -73,7 +73,7 @@ fn report() -> AllocReport {
 /// pages not yet returned — is the fragmentation, measured rather than
 /// inferred. `retained` is address space kept mapped but decommitted, which
 /// costs no RSS.
-#[cfg(feature = "jemalloc")]
+#[cfg(all(feature = "jemalloc", not(windows)))]
 fn report() -> AllocReport {
     use tikv_jemalloc_ctl::{epoch, stats};
 
@@ -121,7 +121,7 @@ fn report() -> AllocReport {
     }
 }
 
-#[cfg(not(any(feature = "mimalloc", feature = "jemalloc")))]
+#[cfg(not(any(feature = "mimalloc", feature = "jemalloc", windows)))]
 fn report() -> AllocReport {
     AllocReport {
         allocator: "system",
@@ -131,7 +131,7 @@ fn report() -> AllocReport {
     }
 }
 
-#[cfg(feature = "mimalloc")]
+#[cfg(any(feature = "mimalloc", windows))]
 fn process_info() -> ProcessInfo {
     let mut info = [0usize; 8];
     // SAFETY: `mi_process_info` writes one `usize` per pointer and takes no
@@ -163,10 +163,10 @@ fn process_info() -> ProcessInfo {
 /// Buffer handed to `mi_stats_get_json`. The report is a few KiB; 256 KiB is
 /// slack enough that a future mimalloc adding counters cannot silently truncate
 /// it, and it is freed as soon as this function returns.
-#[cfg(feature = "mimalloc")]
+#[cfg(any(feature = "mimalloc", windows))]
 const STATS_BUF_BYTES: usize = 256 * 1024;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(any(feature = "mimalloc", windows))]
 fn stats_json() -> Result<serde_json::Value, String> {
     let mut buf = vec![0i8; STATS_BUF_BYTES];
     // SAFETY: mimalloc writes a NUL-terminated string of at most `buf.len()`

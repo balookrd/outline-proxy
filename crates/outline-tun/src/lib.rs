@@ -34,13 +34,22 @@ mod writer;
 mod tests;
 
 pub use config::{TunConfig, TunTcpConfig, empty_sniff_override};
-pub use engine::spawn_tun_loop;
+pub use engine::{PreopenedTunFd, spawn_tun_loop};
 pub use routing::{TunRoute, TunRouting};
 pub use sniff::{
     SniffOverrideWatcherGuard, normalize_domain_suffix, parse_domain_suffixes_from_str,
     reload_domain_suffixes_from_files, spawn_sniff_override_watcher,
 };
 pub use tcp::TunTcpEngine;
+
+#[cfg(windows)]
+pub use device::{TunDevice, WintunDevice, open_tun_device, open_wintun_device};
+#[cfg(windows)]
+pub use routing::windows::{
+    RouteEntry, RouteGuard, add_route, default_tunnel_routes_v4, delete_route, get_best_interface,
+    host_route, set_interface_dns, setup_windows_routes, setup_windows_routes_multi,
+    setup_windows_routes_with_gateway, validate_route_entry,
+};
 
 pub(crate) use writer::SharedTunWriter;
 

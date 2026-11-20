@@ -153,19 +153,61 @@ fn local_day_and_secs() -> Option<(i64, u32)> {
     // success before we read any of them (checked via the null-pointer
     // return first), so the zeroed value is never actually observed.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: `&t` and `&mut tm` are valid, non-aliasing, appropriately
-    // aligned pointers to stack locals that outlive this call. `localtime_r`
-    // is the thread-safe variant (unlike `localtime`, it does not write
-    // through a shared static buffer) and does not retain either pointer
-    // past its return, so there is no aliasing or lifetime hazard here.
-    let res = unsafe { libc::localtime_r(&t, &mut tm) };
-    if res.is_null() {
+    #[cfg(unix)]
+    {
+        // SAFETY: `&t` and `&mut tm` are valid, non-aliasing, appropriately
+        // aligned pointers to stack locals that outlive this call. `localtime_r`
+        // is the thread-safe variant (unlike `localtime`, it does not write
+        // through a shared static buffer) and does not retain either pointer
+        // past its return, so there is no aliasing or lifetime hazard here.
+        let res = unsafe { libc::localtime_r(&t, &mut tm) };
+        if res.is_null() {
+            return None;
+        }
+    }
+    #[cfg(windows)]
+    {
+        // SAFETY: On Windows MSVC, `localtime_s` takes the destination pointer
+        // first, then the time pointer. It returns 0 on success.
+        let res = unsafe { libc::localtime_s(&mut tm, &t) };
+        if res != 0 {
+            return None;
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = t;
         return None;
     }
     let secs = tm.tm_hour as u32 * 3600 + tm.tm_min as u32 * 60 + tm.tm_sec as u32;
     // tm_gmtoff is seconds east of UTC (POSIX/BSD/glibc).
     // Using local epoch days avoids phantom day jumps over year transitions (e.g. 366 factor).
+    #[cfg(unix)]
     let local_epoch_secs = (t as i64) + (tm.tm_gmtoff as i64);
+    #[cfg(windows)]
+    let local_epoch_secs = {
+        let mut gm_tm: libc::tm = unsafe { std::mem::zeroed() };
+        let gm_res = unsafe { libc::gmtime_s(&mut gm_tm, &t) };
+        if gm_res == 0 {
+            let local_secs_in_day =
+                (tm.tm_hour as i64) * 3600 + (tm.tm_min as i64) * 60 + (tm.tm_sec as i64);
+            let gm_secs_in_day =
+                (gm_tm.tm_hour as i64) * 3600 + (gm_tm.tm_min as i64) * 60 + (gm_tm.tm_sec as i64);
+            let mut diff = local_secs_in_day - gm_secs_in_day;
+            if tm.tm_mday != gm_tm.tm_mday {
+                if tm.tm_mday > gm_tm.tm_mday || (tm.tm_mday == 1 && gm_tm.tm_mday > 20) {
+                    diff += 86400;
+                } else {
+                    diff -= 86400;
+                }
+            }
+            (t as i64) + diff
+        } else {
+            t as i64
+        }
+    };
+    #[cfg(not(any(unix, windows)))]
+    let local_epoch_secs = t as i64;
     let day_key = local_epoch_secs.div_euclid(86400);
     Some((day_key, secs))
 }

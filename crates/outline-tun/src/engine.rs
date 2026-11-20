@@ -5,6 +5,7 @@
 //! loop that classifies each packet and dispatches it to the right engine
 //! (or synthesises a local ICMP reply).
 
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Weak};
@@ -12,7 +13,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use futures_util::FutureExt as _;
+#[cfg(unix)]
 use tokio::io::Interest;
+#[cfg(unix)]
 use tokio::io::unix::AsyncFd;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -23,6 +26,7 @@ use crate::carrier_slots::{CarrierSlots, carrier_flow_cap};
 use crate::classify::{PacketDisposition, classify_packet};
 use crate::config::TunConfig;
 use crate::defrag::{DefragmentedPacket, TunDefragmenter};
+#[cfg(unix)]
 use crate::device::{attach_preopened_fd, open_tun_device_with_retry, set_nonblocking};
 use crate::icmp::{build_icmp_echo_reply_packets, icmp_echo_destination};
 use crate::routing::{TunRoute, TunRouting};
@@ -36,6 +40,11 @@ use crate::vnet::{
 };
 use crate::wire::{L4Checksum, ip_to_target, recompute_transport_checksum};
 use crate::writer::SharedTunWriter;
+
+#[cfg(unix)]
+pub type PreopenedTunFd = RawFd;
+#[cfg(not(unix))]
+pub type PreopenedTunFd = std::os::raw::c_int;
 
 #[cfg(test)]
 #[path = "tests/engine.rs"]
@@ -64,12 +73,14 @@ pub async fn spawn_tun_loop(
     config: TunConfig,
     routing: TunRouting,
     dns_cache: Arc<outline_transport::DnsCache>,
-    preopened_fd: Option<RawFd>,
+    preopened_fd: Option<PreopenedTunFd>,
 ) -> Result<()> {
     let tun_path = config.path.clone();
     let tun_name = config.name.clone();
     let tun_mtu = config.mtu;
     let tun_path_for_task = tun_path.clone();
+
+    #[cfg(unix)]
     let (device, gso) = match preopened_fd {
         Some(fd) => attach_preopened_fd(fd)
             .with_context(|| format!("failed to attach preopened TUN fd {fd}"))?,
@@ -77,20 +88,38 @@ pub async fn spawn_tun_loop(
             .await
             .with_context(|| format!("failed to open TUN device {}", config.path.display()))?,
     };
-    // `vnet_hdr` (fd opened with IFF_VNET_HDR) governs the read/write vnet
-    // framing and lets the TCP engine emit downlink TSO super-segments; `udp_gso`
-    // (TUN_F_USO accepted) lets the UDP engine coalesce downlink datagrams.
+
+    #[cfg(windows)]
+    let (device, gso) = {
+        let _ = preopened_fd;
+        crate::device::open_wintun_device(&config).context("failed to open Wintun device")?
+    };
+    #[cfg(windows)]
+    let wintun_if_index = device.if_index();
+    #[cfg(windows)]
+    info!(wintun_if_index, "Wintun TUN engine ready");
+
+    #[cfg(unix)]
     let gso_enabled = gso.vnet_hdr;
+    #[cfg(windows)]
+    let gso_enabled = false;
+
+    #[cfg(unix)]
     set_nonblocking(&device).context("failed to set O_NONBLOCK on TUN device")?;
     // SAFETY: `device` is a `File` that solely owns its fd (a preopened fd is
     // dup'ed first), and the `AsyncFd` takes the `File` by value, so the fd
     // stays open and refers to the same file description until the `AsyncFd`
     // drops it; `File::as_raw_fd` always returns that same fd.
+    #[cfg(unix)]
     let async_fd = Arc::new(
         unsafe { AsyncFd::register_with_interest(device, Interest::READABLE | Interest::WRITABLE) }
             .context("failed to register TUN fd with tokio reactor")?,
     );
+    #[cfg(unix)]
     let writer = SharedTunWriter::from_async_fd(async_fd.clone(), gso_enabled, gso.af_hdr);
+
+    #[cfg(windows)]
+    let writer = SharedTunWriter::from_wintun_session(device.session.clone());
 
     let idle_timeout = config.idle_timeout;
     let max_flows = config.max_flows;
@@ -159,27 +188,112 @@ pub async fn spawn_tun_loop(
     if let Some(name) = tun_name.as_deref() {
         crate::device_stats::spawn_collector(name);
     }
-    let af_hdr_enabled = gso.af_hdr;
-    tokio::spawn(async move {
-        if let Err(error) = tun_read_loop(
-            async_fd,
-            writer,
-            udp_engine,
-            tcp_engine,
-            routing,
-            tun_mtu,
-            gso_enabled,
-            af_hdr_enabled,
-            defrag_max_total_bytes,
-            defrag_max_bytes_per_set,
-            defrag_max_fragment_sets,
-            defrag_max_fragments_per_set,
-        )
-        .await
-        {
-            warn!(path = %tun_path_for_task.display(), error = %format!("{error:#}"), "TUN loop stopped");
+    #[cfg(unix)]
+    {
+        let af_hdr_enabled = gso.af_hdr;
+        tokio::spawn(async move {
+            if let Err(error) = tun_read_loop(
+                async_fd,
+                writer,
+                udp_engine,
+                tcp_engine,
+                routing,
+                tun_mtu,
+                gso_enabled,
+                af_hdr_enabled,
+                defrag_max_total_bytes,
+                defrag_max_bytes_per_set,
+                defrag_max_fragment_sets,
+                defrag_max_fragments_per_set,
+            )
+            .await
+            {
+                warn!(path = %tun_path_for_task.display(), error = %format!("{error:#}"), "TUN loop stopped");
+            }
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2048);
+        spawn_wintun_reader_thread(device.session, device.read_event, tx);
+
+        // Collect uplink server IPs to install host routes through default gateway
+        let mut server_ips = Vec::new();
+        let mut collect_url = |url_opt: Option<&url::Url>| {
+            if let Some(url) = url_opt {
+                if let Some(host) = url.host_str() {
+                    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                        server_ips.push(ip);
+                    } else if let Ok(addrs) =
+                        std::net::ToSocketAddrs::to_socket_addrs(&(host, url.port().unwrap_or(443)))
+                    {
+                        for addr in addrs {
+                            server_ips.push(addr.ip());
+                        }
+                    }
+                }
+            }
+        };
+
+        for group in routing.registry().groups() {
+            for uplink in group.manager.uplinks() {
+                collect_url(uplink.tcp_dial_url());
+                collect_url(uplink.udp_dial_url());
+                for fb in &uplink.fallbacks {
+                    collect_url(fb.tcp_dial_url());
+                    collect_url(fb.udp_dial_url());
+                }
+            }
         }
-    });
+        server_ips.sort();
+        server_ips.dedup();
+
+        // 1. Setup DNS on Wintun adapter (Cloudflare + Google DNS)
+        let _ = crate::routing::windows::set_interface_dns(
+            wintun_if_index,
+            &["1.1.1.1".parse().unwrap(), "8.8.8.8".parse().unwrap()],
+        );
+
+        // 2. Setup routes: host routes to servers via physical gateway + default 0.0.0.0/1 and 128.0.0.0/1 via Wintun.
+        // Retry up to 3 times to account for Windows adapter IP assignment / DAD state transitions.
+        let mut route_guard = None;
+        for attempt in 1..=3 {
+            match crate::routing::windows::setup_windows_routes_multi(&server_ips, wintun_if_index)
+            {
+                Ok(guard) => {
+                    route_guard = Some(guard);
+                    break;
+                },
+                Err(e) if attempt < 3 => {
+                    tracing::warn!(attempt, error = %e, "Retrying setup_windows_routes_multi after delay");
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                },
+                Err(e) => {
+                    return Err(e).context("failed to setup Windows routing for Wintun");
+                },
+            }
+        }
+
+        tokio::spawn(async move {
+            let _route_guard_holder = route_guard;
+            if let Err(error) = wintun_read_loop(
+                rx,
+                writer,
+                udp_engine,
+                tcp_engine,
+                routing,
+                defrag_max_total_bytes,
+                defrag_max_bytes_per_set,
+                defrag_max_fragment_sets,
+                defrag_max_fragments_per_set,
+            )
+            .await
+            {
+                warn!(path = %tun_path_for_task.display(), error = %format!("{error:#}"), "Wintun read loop stopped");
+            }
+        });
+    }
 
     info!(
         path = %tun_path.display(),
@@ -197,6 +311,7 @@ pub async fn spawn_tun_loop(
     Ok(())
 }
 
+#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 async fn tun_read_loop(
     reader: Arc<AsyncFd<std::fs::File>>,
@@ -333,167 +448,265 @@ async fn tun_read_loop(
         } else {
             &buf_slice[..read_len]
         };
-        let version_nibble = input_packet[0] >> 4;
-        let owned_packet = {
-            let mut defragmenter = defragmenter.lock().await;
-            match defragmenter.push(input_packet) {
-                Ok(DefragmentedPacket::ReadyBorrowed) => None,
-                Ok(DefragmentedPacket::ReadyOwned(packet)) => {
-                    metrics::record_tun_packet(
-                        "up",
-                        ip_family_name(version_nibble),
-                        "fragment_reassembled",
-                    );
-                    Some(packet)
+
+        process_inbound_tun_packet(
+            input_packet,
+            read_checksum,
+            read_at,
+            &defragmenter,
+            &udp_engine,
+            &tcp_engine,
+            &routing,
+            &writer,
+        )
+        .await;
+    }
+}
+
+#[cfg(windows)]
+fn spawn_wintun_reader_thread(
+    session: Arc<wintun::Session>,
+    read_event: windows_sys::Win32::Foundation::HANDLE,
+    tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+) {
+    let event_val = read_event as usize;
+    std::thread::Builder::new()
+        .name("wintun-reader".to_string())
+        .spawn(move || {
+            let read_event = event_val as windows_sys::Win32::Foundation::HANDLE;
+            loop {
+                match session.try_receive() {
+                    Ok(Some(packet)) => {
+                        let bytes = packet.bytes().to_vec();
+                        if tx.blocking_send(bytes).is_err() {
+                            break;
+                        }
+                    },
+                    Ok(None) => {
+                        let wait_res = unsafe {
+                            windows_sys::Win32::System::Threading::WaitForSingleObject(
+                                read_event,
+                                windows_sys::Win32::System::Threading::INFINITE,
+                            )
+                        };
+                        if wait_res != windows_sys::Win32::Foundation::WAIT_OBJECT_0 {
+                            debug!(wait_res, "Wintun wait event returned non-zero, exiting reader");
+                            break;
+                        }
+                    },
+                    Err(err) => {
+                        warn!(error = %err, "Wintun receive error, exiting reader");
+                        break;
+                    },
+                }
+            }
+        })
+        .expect("failed to spawn wintun reader thread");
+}
+
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+async fn wintun_read_loop(
+    mut rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    writer: SharedTunWriter,
+    udp_engine: TunUdpEngine,
+    tcp_engine: TunTcpEngine,
+    routing: TunRouting,
+    defrag_max_total_bytes: usize,
+    defrag_max_bytes_per_set: usize,
+    defrag_max_fragment_sets: usize,
+    defrag_max_fragments_per_set: usize,
+) -> Result<()> {
+    let defragmenter = Arc::new(Mutex::new(TunDefragmenter::new(
+        defrag_max_total_bytes,
+        defrag_max_bytes_per_set,
+        defrag_max_fragment_sets,
+        defrag_max_fragments_per_set,
+    )));
+    spawn_tun_defragmenter_cleanup(Arc::downgrade(&defragmenter));
+
+    while let Some(packet) = rx.recv().await {
+        let read_at = Instant::now();
+        process_inbound_tun_packet(
+            &packet,
+            L4Checksum::Unverified,
+            read_at,
+            &defragmenter,
+            &udp_engine,
+            &tcp_engine,
+            &routing,
+            &writer,
+        )
+        .await;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_inbound_tun_packet(
+    input_packet: &[u8],
+    read_checksum: L4Checksum,
+    read_at: Instant,
+    defragmenter: &Mutex<TunDefragmenter>,
+    udp_engine: &TunUdpEngine,
+    tcp_engine: &TunTcpEngine,
+    routing: &TunRouting,
+    writer: &SharedTunWriter,
+) {
+    if input_packet.is_empty() {
+        return;
+    }
+    let version_nibble = input_packet[0] >> 4;
+    let owned_packet = {
+        let mut defragmenter = defragmenter.lock().await;
+        match defragmenter.push(input_packet) {
+            Ok(DefragmentedPacket::ReadyBorrowed) => None,
+            Ok(DefragmentedPacket::ReadyOwned(packet)) => {
+                metrics::record_tun_packet(
+                    "up",
+                    ip_family_name(version_nibble),
+                    "fragment_reassembled",
+                );
+                Some(packet)
+            },
+            Ok(DefragmentedPacket::Pending) => {
+                metrics::record_tun_packet(
+                    "up",
+                    ip_family_name(version_nibble),
+                    "fragment_buffered",
+                );
+                return;
+            },
+            Ok(DefragmentedPacket::Dropped(reason)) => {
+                metrics::record_tun_packet("up", ip_family_name(version_nibble), "fragment_drop");
+                debug!(reason, packet_len = input_packet.len(), "dropping fragmented TUN packet");
+                return;
+            },
+            Err(error) => {
+                metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
+                debug!(
+                    error = %format!("{error:#}"),
+                    packet_len = input_packet.len(),
+                    "dropping malformed fragmented TUN packet"
+                );
+                return;
+            },
+        }
+    };
+    let packet_checksum = packet_l4_checksum(read_checksum, owned_packet.is_some());
+    let packet_storage;
+    let packet = if let Some(packet) = owned_packet {
+        packet_storage = packet;
+        packet_storage.as_slice()
+    } else {
+        input_packet
+    };
+    let version_nibble = packet[0] >> 4;
+    let disposition = match classify_packet(packet) {
+        Ok(disposition) => disposition,
+        Err(error) => {
+            metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
+            debug!(error = %format!("{error:#}"), packet_len = packet.len(), "dropping malformed TUN packet");
+            return;
+        },
+    };
+    match disposition {
+        PacketDisposition::Udp => {
+            metrics::record_tun_packet("up", ip_family_name(version_nibble), "accepted");
+            let parsed = match parse_udp_packet(packet) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
+                    debug!(error = %format!("{error:#}"), packet_len = packet.len(), "dropping malformed UDP packet from TUN");
+                    return;
                 },
-                Ok(DefragmentedPacket::Pending) => {
+            };
+            if let Some(Err(error)) = guard_packet_dispatch(
+                udp_engine.handle_packet(parsed),
+                ip_family_name(version_nibble),
+                "udp_dispatch_panic",
+            )
+            .await
+            {
+                metrics::record_tun_udp_forward_error(classify_tun_udp_forward_error(&error));
+                metrics::record_tun_packet("up", ip_family_name(version_nibble), "udp_error");
+                warn!(
+                    error = %format!("{error:#}"),
+                    packet_len = packet.len(),
+                    "failed to forward UDP packet from TUN"
+                );
+            }
+        },
+        PacketDisposition::Tcp => {
+            metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_observed");
+            if let Some(Err(error)) = guard_packet_dispatch(
+                tcp_engine.handle_packet(packet, packet_checksum, read_at),
+                ip_family_name(version_nibble),
+                "tcp_dispatch_panic",
+            )
+            .await
+            {
+                metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_error");
+                warn!(
+                    error = %format!("{error:#}"),
+                    packet_len = packet.len(),
+                    "failed to handle TCP packet from TUN"
+                );
+            }
+        },
+        PacketDisposition::IcmpEchoRequest => {
+            if let Some(reason) = echo_reply_suppressed_for_down_group(routing, packet).await {
+                metrics::record_tun_packet(
+                    "up",
+                    ip_family_name(version_nibble),
+                    reason.metric_outcome(),
+                );
+                return;
+            }
+            match build_icmp_echo_reply_packets(packet) {
+                Ok(replies) => {
                     metrics::record_tun_packet(
                         "up",
                         ip_family_name(version_nibble),
-                        "fragment_buffered",
+                        "icmp_local_reply",
                     );
-                    continue;
-                },
-                Ok(DefragmentedPacket::Dropped(reason)) => {
-                    metrics::record_tun_packet(
-                        "up",
-                        ip_family_name(version_nibble),
-                        "fragment_drop",
-                    );
-                    debug!(reason, packet_len = read, "dropping fragmented TUN packet");
-                    continue;
+                    if replies.len() > 1 {
+                        debug!(
+                            reply_packet_len = replies.iter().map(Vec::len).sum::<usize>(),
+                            fragment_count = replies.len(),
+                            "fragmented local IPv6 ICMP echo reply to minimum MTU"
+                        );
+                    }
+                    if let Err(error) = writer.write_packets(&replies).await {
+                        metrics::record_tun_packet("down", ip_family_name(version_nibble), "error");
+                        warn!(
+                            error = %format!("{error:#}"),
+                            packet_len = packet.len(),
+                            "failed to write local ICMP echo reply to TUN"
+                        );
+                    } else {
+                        metrics::record_tun_icmp_local_reply(ip_family_name(version_nibble));
+                        metrics::record_tun_packet(
+                            "down",
+                            ip_family_name(version_nibble),
+                            "icmp_local_reply",
+                        );
+                    }
                 },
                 Err(error) => {
                     metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
                     debug!(
                         error = %format!("{error:#}"),
-                        packet_len = read,
-                        "dropping malformed fragmented TUN packet"
+                        packet_len = packet.len(),
+                        "dropping malformed ICMP packet from TUN"
                     );
-                    continue;
                 },
             }
-        };
-        let packet_checksum = packet_l4_checksum(read_checksum, owned_packet.is_some());
-        let packet_storage;
-        let packet = if let Some(packet) = owned_packet {
-            packet_storage = packet;
-            packet_storage.as_slice()
-        } else {
-            input_packet
-        };
-        let version_nibble = packet[0] >> 4;
-        let disposition = match classify_packet(packet) {
-            Ok(disposition) => disposition,
-            Err(error) => {
-                metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
-                debug!(error = %format!("{error:#}"), packet_len = read, "dropping malformed TUN packet");
-                continue;
-            },
-        };
-        match disposition {
-            PacketDisposition::Udp => {
-                metrics::record_tun_packet("up", ip_family_name(version_nibble), "accepted");
-                let parsed = match parse_udp_packet(packet) {
-                    Ok(parsed) => parsed,
-                    Err(error) => {
-                        metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
-                        debug!(error = %format!("{error:#}"), packet_len = read, "dropping malformed UDP packet from TUN");
-                        continue;
-                    },
-                };
-                if let Some(Err(error)) = guard_packet_dispatch(
-                    udp_engine.handle_packet(parsed),
-                    ip_family_name(version_nibble),
-                    "udp_dispatch_panic",
-                )
-                .await
-                {
-                    metrics::record_tun_udp_forward_error(classify_tun_udp_forward_error(&error));
-                    metrics::record_tun_packet("up", ip_family_name(version_nibble), "udp_error");
-                    warn!(
-                        error = %format!("{error:#}"),
-                        packet_len = read,
-                        "failed to forward UDP packet from TUN"
-                    );
-                    continue;
-                }
-            },
-            PacketDisposition::Tcp => {
-                metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_observed");
-                if let Some(Err(error)) = guard_packet_dispatch(
-                    tcp_engine.handle_packet(packet, packet_checksum, read_at),
-                    ip_family_name(version_nibble),
-                    "tcp_dispatch_panic",
-                )
-                .await
-                {
-                    metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_error");
-                    warn!(
-                        error = %format!("{error:#}"),
-                        packet_len = read,
-                        "failed to handle TCP packet from TUN"
-                    );
-                }
-            },
-            PacketDisposition::IcmpEchoRequest => {
-                if let Some(reason) = echo_reply_suppressed_for_down_group(&routing, packet).await {
-                    metrics::record_tun_packet(
-                        "up",
-                        ip_family_name(version_nibble),
-                        reason.metric_outcome(),
-                    );
-                    continue;
-                }
-                match build_icmp_echo_reply_packets(packet) {
-                    Ok(replies) => {
-                        metrics::record_tun_packet(
-                            "up",
-                            ip_family_name(version_nibble),
-                            "icmp_local_reply",
-                        );
-                        if replies.len() > 1 {
-                            debug!(
-                                reply_packet_len = replies.iter().map(Vec::len).sum::<usize>(),
-                                fragment_count = replies.len(),
-                                "fragmented local IPv6 ICMP echo reply to minimum MTU"
-                            );
-                        }
-                        if let Err(error) = writer.write_packets(&replies).await {
-                            metrics::record_tun_packet(
-                                "down",
-                                ip_family_name(version_nibble),
-                                "error",
-                            );
-                            warn!(
-                                error = %format!("{error:#}"),
-                                packet_len = read,
-                                "failed to write local ICMP echo reply to TUN"
-                            );
-                        } else {
-                            metrics::record_tun_icmp_local_reply(ip_family_name(version_nibble));
-                            metrics::record_tun_packet(
-                                "down",
-                                ip_family_name(version_nibble),
-                                "icmp_local_reply",
-                            );
-                        }
-                    },
-                    Err(error) => {
-                        metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
-                        debug!(
-                            error = %format!("{error:#}"),
-                            packet_len = read,
-                            "dropping malformed ICMP packet from TUN"
-                        );
-                    },
-                }
-            },
-            PacketDisposition::Unsupported(reason) => {
-                metrics::record_tun_packet("up", ip_family_name(version_nibble), "unsupported");
-                debug!(reason, packet_len = read, "ignoring unsupported TUN packet");
-            },
-        }
+        },
+        PacketDisposition::Unsupported(reason) => {
+            metrics::record_tun_packet("up", ip_family_name(version_nibble), "unsupported");
+            debug!(reason, packet_len = packet.len(), "ignoring unsupported TUN packet");
+        },
     }
 }
 
