@@ -21,6 +21,8 @@ use anyhow::bail;
 use anyhow::{Context, Result};
 use socket2::{Domain, Protocol as SocketProtocol, SockRef, Socket, TcpKeepalive, Type};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::net::TcpStream;
