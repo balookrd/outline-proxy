@@ -10,6 +10,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Persistent VPN status icon leak on pause or disconnect.** Fixed an issue where the system VPN key icon remained continuously active in the status bar while the tunnel was paused or turned off:
+  - Eliminated redundant `dup` of `tun_fd` in `android/rust` (since `outline_tun::engine` attaches and dups into its own managed `File`), preventing descriptor leaks from keeping `/dev/tun` open in the Linux kernel.
+  - Ensured `OutlineVpnService.teardownTunnel()` unconditionally stops the Rust engine runtime even if the client task has already exited.
+  - Corrected `OutlineVpnService.disconnect()` so the foreground service does not linger in standby with an ongoing notification when Wi-Fi automation is enabled if the user explicitly turned off the VPN and disabled persistent notifications.
+
 ### Security & Robustness
 
 - **[H-22] Gated and authenticated external VPN control (`outline://`).** External control is now opt-in (`enabled = false` by default) and requires an authenticated non-empty secret token (randomly generated upon enabling). Requests with empty or blank tokens are rejected.
@@ -17,7 +24,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - **[H-24] Prevented routing loop on empty split-tunnel allowlist.** In `SplitMode.ALLOWLIST`, verified that at least one valid installed package was successfully added to the VPN builder; if 0 apps match, TUN interface establishment is aborted and an error notification is displayed, preventing self-capture routing loops.
 - **[H-20] Hardened TOML generation against injection in `ServerProfile`.** Emitted TOML strings (`name`, `transport`, and link parameters) are now escaped for all control characters, quotes, and newlines. Link `#remark` labels are sanitized to strip newline characters (`\r`, `\n`).
 - **[M-23] FFI and background receiver stability improvements:**
-  - Synchronously duplicated `tun_fd` via `fcntl(F_DUPFD_CLOEXEC)` in Rust `start()` before Tokio task spawn, eliminating descriptor races.
   - Replaced mutex `.expect(...)` panics with safe mutex poison recovery across the FFI boundary.
   - Released `ENGINE` mutex lock before blocking on `active_carriers()` in `tunnel_status()`.
   - Offloaded blocking `stop()` and FFI operations from the main thread in `OutlineVpnService` to prevent ANRs.

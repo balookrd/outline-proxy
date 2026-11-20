@@ -67,26 +67,6 @@ fn acquire_last_error() -> std::sync::MutexGuard<'static, Option<String>> {
     })
 }
 
-#[cfg(unix)]
-fn dup_tun_fd(fd: i32) -> Result<i32, VpnError> {
-    // Duplicate the descriptor and set FD_CLOEXEC atomically before spawning Tokio task.
-    // This eliminates the race condition where Kotlin closes its ParcelFileDescriptor
-    // before the worker thread starts reading from tun_fd.
-    let dup_fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
-    if dup_fd < 0 {
-        let err = std::io::Error::last_os_error();
-        return Err(VpnError::Runtime {
-            msg: format!("failed to dup tun_fd {fd}: {err}"),
-        });
-    }
-    Ok(dup_fd)
-}
-
-#[cfg(not(unix))]
-fn dup_tun_fd(fd: i32) -> Result<i32, VpnError> {
-    Ok(fd)
-}
-
 /// Best-effort one-time logging setup. On Android, `tracing` is routed into
 /// logcat (tag `OutlineProxy`) via paranoid-android; elsewhere it goes to the
 /// plain fmt subscriber. Failures here are non-fatal.
@@ -151,15 +131,8 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
     outline_ws_rust::init_rustls_crypto_provider()
         .map_err(|e| VpnError::Runtime { msg: format!("crypto provider: {e:#}") })?;
 
-    // Duplicate tun_fd synchronously before launching Tokio task to eliminate FD race.
-    let duplicated_tun_fd = dup_tun_fd(tun_fd)?;
-
     let cfg_path = PathBuf::from(&work_dir).join("config.toml");
     if let Err(e) = std::fs::write(&cfg_path, config_toml) {
-        #[cfg(unix)]
-        unsafe {
-            libc::close(duplicated_tun_fd);
-        }
         return Err(VpnError::Config {
             msg: format!("write {}: {e}", cfg_path.display()),
         });
@@ -173,10 +146,6 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
     ]) {
         Ok(args) => args,
         Err(e) => {
-            #[cfg(unix)]
-            unsafe {
-                libc::close(duplicated_tun_fd);
-            }
             return Err(VpnError::Config { msg: format!("args: {e}") });
         },
     };
@@ -191,22 +160,17 @@ pub fn start(config_toml: String, work_dir: String, tun_fd: i32) -> Result<(), V
     {
         Ok(rt) => rt,
         Err(e) => {
-            #[cfg(unix)]
-            unsafe {
-                libc::close(duplicated_tun_fd);
-            }
             return Err(VpnError::Runtime { msg: format!("tokio runtime: {e}") });
         },
     };
 
     info!(
-        tun_fd = duplicated_tun_fd,
-        original_tun_fd = tun_fd,
+        tun_fd,
         %cfg_arg,
         "starting outline-ws-rust client with native TUN"
     );
 
-    let opts = RunOptions { tun_fd: Some(duplicated_tun_fd) };
+    let opts = RunOptions { tun_fd: Some(tun_fd) };
     let client_task = runtime.spawn(async move {
         if let Err(e) = outline_ws_rust::run_with_options(client_args, opts).await {
             let msg = format!("{e:#}");
