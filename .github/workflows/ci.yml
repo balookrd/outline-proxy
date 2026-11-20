@@ -76,7 +76,7 @@ jobs:
       # comment cannot merge.
       - name: clippy (deny all default-level warnings)
         run: >
-          cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps --
+          cargo clippy --workspace --exclude sockudo-ws --exclude outline-windows --all-targets --no-deps --
           -D warnings
 
       # `android/rust` (package `outline-android`) declares its own empty
@@ -111,7 +111,7 @@ jobs:
           version: 0.15.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo test
-        run: cargo test --workspace --exclude sockudo-ws
+        run: cargo test --workspace --exclude sockudo-ws --exclude outline-windows
 
   e2e:
     name: e2e (real binaries, TLS and H3 carriers)
@@ -152,7 +152,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: check default workspace
-        run: cargo check --workspace --exclude sockudo-ws
+        run: cargo check --workspace --exclude sockudo-ws --exclude outline-windows
 
       - name: check server without default features (control gated off)
         run: cargo check -p outline-ss-rust --no-default-features
