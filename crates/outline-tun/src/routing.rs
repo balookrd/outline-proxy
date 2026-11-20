@@ -281,6 +281,8 @@ pub(crate) fn is_ipsec_port(port: u16) -> bool {
     matches!(port, 500 | 4500)
 }
 
+pub mod windows;
+
 #[cfg(test)]
 #[path = "tests/routing.rs"]
 mod tests;
