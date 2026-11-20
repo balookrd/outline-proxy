@@ -15,9 +15,49 @@
     onClearLogs,
   }: Props = $props();
 
+  type LogFilter = 'all' | 'error' | 'warn' | 'info';
+
+  let currentFilter = $state<LogFilter>('all');
   let logContainer = $state<HTMLDivElement | null>(null);
   let autoScroll = $state(true);
   let copied = $state(false);
+
+  function matchesFilter(line: string, filter: LogFilter): boolean {
+    if (filter === 'all') return true;
+    const upper = line.toUpperCase();
+    if (filter === 'error') {
+      return upper.includes('ERROR') || upper.includes('PANIC') || upper.includes('CRITICAL');
+    }
+    if (filter === 'warn') {
+      return upper.includes('WARN');
+    }
+    if (filter === 'info') {
+      return upper.includes('INFO');
+    }
+    return false;
+  }
+
+  let filteredLogs = $derived.by<string[]>(() => {
+    if (currentFilter === 'all') return logs;
+    return logs.filter((line) => matchesFilter(line, currentFilter));
+  });
+
+  let counts = $derived.by(() => {
+    let error = 0;
+    let warn = 0;
+    let info = 0;
+    for (const l of logs) {
+      const u = l.toUpperCase();
+      if (u.includes('ERROR') || u.includes('PANIC') || u.includes('CRITICAL')) {
+        error++;
+      } else if (u.includes('WARN')) {
+        warn++;
+      } else if (u.includes('INFO')) {
+        info++;
+      }
+    }
+    return { all: logs.length, error, warn, info };
+  });
 
   // Auto-scroll when new log lines arrive if autoScroll is enabled
   $effect(() => {
@@ -34,7 +74,7 @@
 
   async function handleCopy() {
     try {
-      const allText = logs.join('\n');
+      const allText = filteredLogs.join('\n');
       await navigator.clipboard.writeText(allText);
       copied = true;
       setTimeout(() => {
@@ -90,7 +130,11 @@
           <div>
             <h2 class="text-xs font-bold tracking-tight">Журнал событий</h2>
             <span class="text-[10px] {theme === 'dark' ? 'text-neutral-400' : 'text-neutral-500'}">
-              {logs.length} {logs.length === 1 ? 'строка' : (logs.length >= 2 && logs.length <= 4 ? 'строки' : 'строк')}
+              {#if currentFilter === 'all'}
+                {logs.length} {logs.length === 1 ? 'строка' : (logs.length >= 2 && logs.length <= 4 ? 'строки' : 'строк')}
+              {:else}
+                {filteredLogs.length} из {logs.length}
+              {/if}
             </span>
           </div>
         </div>
@@ -108,18 +152,90 @@
         </button>
       </div>
 
+      <!-- Level Filter Tabs -->
+      <div class="px-4 py-2 border-b flex items-center gap-1.5 overflow-x-auto {theme === 'dark' ? 'border-neutral-800 bg-neutral-900/60' : 'border-neutral-200 bg-neutral-50/80'}">
+        <button
+          type="button"
+          onclick={() => currentFilter = 'all'}
+          class="px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1.5
+            {currentFilter === 'all'
+              ? (theme === 'dark' ? 'bg-neutral-700 text-white shadow-sm' : 'bg-neutral-300 text-neutral-900 font-bold shadow-sm')
+              : (theme === 'dark' ? 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800' : 'text-neutral-600 hover:text-black hover:bg-neutral-200/60')}"
+        >
+          <span>Все</span>
+          <span class="text-[9px] px-1 py-0.2 rounded-full {currentFilter === 'all' ? (theme === 'dark' ? 'bg-neutral-600 text-neutral-200' : 'bg-neutral-400/50 text-neutral-900') : (theme === 'dark' ? 'bg-neutral-800 text-neutral-400' : 'bg-neutral-200 text-neutral-600')}">
+            {counts.all}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onclick={() => currentFilter = 'error'}
+          class="px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1.5
+            {currentFilter === 'error'
+              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm'
+              : (theme === 'dark' ? 'text-neutral-400 hover:text-rose-300 hover:bg-neutral-800' : 'text-neutral-600 hover:text-rose-600 hover:bg-neutral-200/60')}"
+        >
+          <span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+          <span>Ошибки</span>
+          {#if counts.error > 0}
+            <span class="text-[9px] px-1 py-0.2 rounded-full bg-rose-500/30 text-rose-300">
+              {counts.error}
+            </span>
+          {/if}
+        </button>
+
+        <button
+          type="button"
+          onclick={() => currentFilter = 'warn'}
+          class="px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1.5
+            {currentFilter === 'warn'
+              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+              : (theme === 'dark' ? 'text-neutral-400 hover:text-amber-300 hover:bg-neutral-800' : 'text-neutral-600 hover:text-amber-600 hover:bg-neutral-200/60')}"
+        >
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+          <span>Предупреждения</span>
+          {#if counts.warn > 0}
+            <span class="text-[9px] px-1 py-0.2 rounded-full bg-amber-500/30 text-amber-300">
+              {counts.warn}
+            </span>
+          {/if}
+        </button>
+
+        <button
+          type="button"
+          onclick={() => currentFilter = 'info'}
+          class="px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1.5
+            {currentFilter === 'info'
+              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm'
+              : (theme === 'dark' ? 'text-neutral-400 hover:text-emerald-300 hover:bg-neutral-800' : 'text-neutral-600 hover:text-emerald-600 hover:bg-neutral-200/60')}"
+        >
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+          <span>Инфо</span>
+          {#if counts.info > 0}
+            <span class="text-[9px] px-1 py-0.2 rounded-full bg-emerald-500/30 text-emerald-300">
+              {counts.info}
+            </span>
+          {/if}
+        </button>
+      </div>
+
       <!-- Terminal Body -->
       <div
         bind:this={logContainer}
         onscroll={handleScroll}
         class="flex-1 bg-neutral-950 p-3 overflow-y-auto font-mono text-[10.5px] leading-relaxed select-text space-y-0.5 border-y border-neutral-800"
       >
-        {#if logs.length === 0}
+        {#if filteredLogs.length === 0}
           <div class="h-full flex items-center justify-center text-neutral-500 italic select-none">
-            Журнал пока пуст...
+            {#if logs.length === 0}
+              Журнал пока пуст...
+            {:else}
+              Нет записей уровня «{currentFilter === 'error' ? 'Ошибки (ERROR)' : currentFilter === 'warn' ? 'Предупреждения (WARN)' : 'Инфо (INFO)'}»
+            {/if}
           </div>
         {:else}
-          {#each logs as line, index}
+          {#each filteredLogs as line, index}
             <div class="break-all whitespace-pre-wrap {getLineClass(line)}">
               <span class="text-neutral-600 select-none mr-1.5">{index + 1}</span>{line}
             </div>

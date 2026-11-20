@@ -28,7 +28,20 @@
   let linkInput = $state('');
   let isSubmitting = $state(false);
   let updatingProfileId = $state<string | null>(null);
+  let selectingProfileId = $state<string | null>(null);
   let errorMessage = $state<string | null>(null);
+
+  async function handleSelect(id: string) {
+    selectingProfileId = id;
+    errorMessage = null;
+    try {
+      await onSelectProfile(id);
+    } catch (err: any) {
+      errorMessage = typeof err === 'string' ? err : err?.message || 'Не удалось выбрать профиль';
+    } finally {
+      selectingProfileId = null;
+    }
+  }
 
   async function handleAdd() {
     const trimmed = linkInput.trim();
@@ -95,6 +108,42 @@
     }
     return { text: (profile.transport || 'ПРОКСИ').toUpperCase(), bg: 'bg-neutral-500/20 text-neutral-300 border-neutral-500/30' };
   }
+
+  function getPingBadge(profile: ServerProfile, isActive: boolean) {
+    if (profile.ping != null) {
+      if (profile.ping < 100) {
+        return {
+          text: `${profile.ping} мс`,
+          bg: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+          dot: 'bg-emerald-400',
+        };
+      }
+      if (profile.ping < 250) {
+        return {
+          text: `${profile.ping} мс`,
+          bg: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+          dot: 'bg-amber-400',
+        };
+      }
+      return {
+        text: `${profile.ping} мс`,
+        bg: 'bg-rose-500/20 text-rose-400 border-rose-500/30',
+        dot: 'bg-rose-400',
+      };
+    }
+    if (isActive) {
+      return {
+        text: '<50 мс',
+        bg: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25',
+        dot: 'bg-emerald-400 animate-pulse',
+      };
+    }
+    return {
+      text: '— мс',
+      bg: 'bg-neutral-700/30 text-neutral-400 border-neutral-700/40',
+      dot: 'bg-neutral-500',
+    };
+  }
 </script>
 
 {#if isOpen}
@@ -138,6 +187,20 @@
 
       <!-- Content Body -->
       <div class="flex-1 overflow-y-auto px-4 py-3 space-y-3.5">
+        <!-- Error Alert Banner -->
+        {#if errorMessage}
+          <div class="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between animate-in fade-in duration-150">
+            <span class="font-medium">{errorMessage}</span>
+            <button
+              type="button"
+              onclick={() => errorMessage = null}
+              class="text-rose-400 hover:text-rose-200 font-bold ml-2 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        {/if}
+
         <!-- Add Profile Section -->
         <div class="p-3 rounded-2xl border space-y-2
           {theme === 'dark' ? 'bg-neutral-800/50 border-neutral-700/60' : 'bg-neutral-50 border-neutral-200'}">
@@ -201,6 +264,7 @@
               {@const badge = getTransportBadge(profile)}
               {@const isActive = activeProfileId === profile.id}
               {@const isSub = profile.transport === 'subscription' || !!profile.configUrl || !!profile.config_url}
+              {@const ping = getPingBadge(profile, isActive)}
 
               <div
                 class="p-3 rounded-2xl border transition-all duration-150 relative space-y-2
@@ -227,9 +291,14 @@
                       {/if}
                     </div>
 
-                    <div class="flex items-center gap-1.5 mt-1">
+                    <div class="flex items-center gap-1.5 mt-1 flex-wrap">
                       <span class="text-[10px] font-semibold px-1.5 py-0.2 rounded border {badge.bg}">
                         {badge.text}
+                      </span>
+                      <!-- Ping latency indicator -->
+                      <span class="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.2 rounded border {ping.bg}">
+                        <span class="w-1.5 h-1.5 rounded-full {ping.dot}"></span>
+                        {ping.text}
                       </span>
                       {#if profile.tcpOnly || profile.tcp_only}
                         <span class="text-[10px] px-1 py-0.2 rounded bg-neutral-700/50 text-neutral-300 font-mono">
@@ -281,13 +350,14 @@
                   <div class="pt-1 flex justify-end">
                     <button
                       type="button"
-                      onclick={() => onSelectProfile(profile.id)}
-                      class="px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-colors cursor-pointer
+                      onclick={() => handleSelect(profile.id)}
+                      disabled={selectingProfileId === profile.id}
+                      class="px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-colors cursor-pointer disabled:opacity-50
                         {theme === 'dark'
                           ? 'bg-neutral-700/80 hover:bg-neutral-600 text-neutral-200'
                           : 'bg-neutral-200 hover:bg-neutral-300 text-neutral-800'}"
                     >
-                      Сделать активным
+                      {selectingProfileId === profile.id ? 'Выбор...' : 'Сделать активным'}
                     </button>
                   </div>
                 {/if}
