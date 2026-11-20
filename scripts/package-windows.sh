@@ -8,6 +8,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Автоматическое обнаружение LLVM и LLD из Homebrew на macOS для cargo-xwin
+for llvm_candidate in /opt/homebrew/opt/llvm@* /opt/homebrew/opt/llvm /usr/local/opt/llvm@* /usr/local/opt/llvm; do
+    if [[ -d "${llvm_candidate}/bin" ]]; then
+        export PATH="${llvm_candidate}/bin:${PATH}"
+        break
+    fi
+done
+
+for lld_candidate in /opt/homebrew/opt/lld@* /opt/homebrew/opt/lld /usr/local/opt/lld@* /usr/local/opt/lld; do
+    if [[ -d "${lld_candidate}/bin" ]]; then
+        export PATH="${lld_candidate}/bin:${PATH}"
+        break
+    fi
+done
+
 DEFAULT_OUTPUT_DIR="${REPO_ROOT}/dist/windows"
 OUTPUT_DIR="${DEFAULT_OUTPUT_DIR}"
 CACHE_DIR="${REPO_ROOT}/.cache"
