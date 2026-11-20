@@ -277,13 +277,13 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<TunFd
             ipsec_bypass,
         );
         if let Some(tun) = config.tun.clone() {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone(), tun_fd)
                 .await
                 .context("failed to start TUN loop")?;
-            #[cfg(not(unix))]
+            #[cfg(not(any(unix, windows)))]
             {
-                let _ = tun_fd;
+                let _ = (tun, tun_routing, tun_fd);
                 return Err(anyhow::anyhow!("TUN is not supported on this platform"));
             }
         }
