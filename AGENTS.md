@@ -61,14 +61,14 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
 Workspace целиком:
 
 ```bash
-cargo check --workspace --exclude sockudo-ws   # vendored member исключён, как в CI
-cargo test --workspace --exclude sockudo-ws
+cargo check --workspace --exclude sockudo-ws --exclude outline-windows   # vendored member и Windows GUI исключены, как в CI
+cargo test --workspace --exclude sockudo-ws --exclude outline-windows
 cargo fmt --all          # затрагивает и vendor/* — откатывай format-only diff в vendor
 ```
 
-`sockudo-ws` — явный member workspace (см. комментарий в корневом `Cargo.toml`),
-поэтому голый `--workspace` его захватывает, а CI — нет; держи `--exclude`, чтобы
-локальный прогон совпадал с гейтом.
+`sockudo-ws` и `outline-windows` — явные members workspace (см. комментарий в корневом `Cargo.toml`),
+поэтому голый `--workspace` их захватывает, а CI на Linux — нет (`sockudo-ws` vendored, а `outline-windows`
+требует Windows/WebKitGTK); держи `--exclude`, чтобы локальный прогон совпадал с гейтом.
 
 Один бинарь / cross-build (через корневые `.cargo` aliases):
 
@@ -91,8 +91,8 @@ cargo fmt --check -p outline-ss-rust -p outline-ws-rust -p outline-ui \
   -p outline-metrics -p outline-net -p outline-routing -p outline-transport \
   -p outline-tun -p outline-uplink -p outline-wire \
   -p shadowsocks-crypto -p socks5-proto
-cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps -- -D warnings
-cargo test --workspace --exclude sockudo-ws
+cargo clippy --workspace --exclude sockudo-ws --exclude outline-windows --all-targets --no-deps -- -D warnings
+cargo test --workspace --exclude sockudo-ws --exclude outline-windows
 # e2e на настоящих бинарях (job `e2e`): без RUN_E2E_FAILOVER=1 каждый тест
 # молча выходит, без test-tls набор e2e_tls_carriers пуст — оба обязательны
 RUN_E2E_FAILOVER=1 cargo test -p outline-ws-rust --features test-tls --test 'e2e_*' -- --test-threads=1
@@ -104,8 +104,8 @@ RUN_E2E_FAILOVER=1 cargo test -p outline-ws-rust --features test-tls --test 'e2e
 Все четыре шага lint-джоба обязательны, и именно в этом порядке: `fmt` падает
 первым и маскирует собой clippy — «CI красный по формату» регулярно прячет за
 собой ещё и warning'и, которые всплывут вторым заходом. Явный список пакетов у
-`fmt`, `--exclude sockudo-ws` и `--no-deps` — не косметика: без них гейт лезет в
-vendored-крейты, которые держим в upstream-стиле.
+`fmt`, `--exclude sockudo-ws --exclude outline-windows` и `--no-deps` — не косметика: без них гейт лезет в
+vendored-крейты и платформозависимые GUI-пакеты.
 
 `android/rust` гоняется из своего каталога, потому что это detached workspace:
 явный список пакетов до него не достаёт, `--workspace` — тоже. `--all-targets`
