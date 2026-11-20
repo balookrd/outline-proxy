@@ -175,18 +175,20 @@ Each component is versioned and released independently through prefixed tags:
 | `ui-v<x.y.z>` | dashboard UI | *Tag Release (ui)* |
 | `android-v<x.y.z>` | Android app | *Tag Release (android)* |
 | `macos-v<x.y.z>` | macOS app | *Tag Release (macos)* |
+| `windows-v<x.y.z>` | Windows app | *Tag Release (windows)* |
 
 Pushes to `main` publish rolling `ss-nightly` / `ws-nightly` / `ui-nightly` /
-`android-nightly` / `macos-nightly` prereleases. Each nightly workflow has a
-path filter, so only the affected component rebuilds; the Android and macOS
-filters also cover the client and the shared crates and vendored crates their
-native code links.
+`android-nightly` / `macos-nightly` / `windows-nightly` prereleases. Each nightly
+workflow has a path filter, so only the affected component rebuilds; the Android,
+macOS and Windows filters also cover the client and the shared crates and vendored
+crates their native code links.
 
-The manual *Release (server|client|ui|android|macos)* workflows take a
+The manual *Release (server|client|ui|android|macos|windows)* workflows take a
 `MAJOR.MINOR` series, compute the next patch version from the existing tags,
 write it into the component's version file (`bins/*/Cargo.toml` for the three
 binaries, `android/rust/Cargo.toml` for Android, `macos/Resources/Info.plist`
-for macOS), push a `release: cut <tag>` commit to `main` and print the
+for macOS, `bins/outline-windows/tauri.conf.json` and `bins/outline-windows/Cargo.toml`
+for Windows), push a `release: cut <tag>` commit to `main` and print the
 `git tag -s <tag>` command to run locally. Pushing that signed tag starts the
 matching *Tag Release* workflow.
 

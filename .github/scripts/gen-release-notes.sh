@@ -2,7 +2,7 @@
 # Generate a GitHub release body for one component from Conventional Commits.
 #
 #   gen-release-notes.sh <component> <tag> <output-file>
-#     component : ss | ws | ui | android
+#     component : ss | ws | ui | android | macos | windows
 #     tag       : ss-v1.9.0 (release) or ss-nightly (rolling)
 #     output    : path to write the markdown body to
 #
@@ -39,6 +39,10 @@ case "$component" in
   macos)
     prefix="macos"
     paths=(macos bins/outline-ws-rust crates vendor)
+    ;;
+  windows)
+    prefix="windows"
+    paths=(bins/outline-windows bins/outline-ws-rust crates vendor)
     ;;
   *)
     echo "unknown component: $component" >&2

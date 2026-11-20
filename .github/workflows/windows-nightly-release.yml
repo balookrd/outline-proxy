@@ -1,0 +1,42 @@
+name: Nightly Release (windows)
+run-name: "${{ github.workflow }} — ${{ github.sha }}"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "bins/outline-windows/**"
+      - "bins/outline-ws-rust/**"
+      - "crates/**"
+      - "vendor/**"
+      - "scripts/package-windows.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+      - ".github/workflows/windows-nightly-release.yml"
+      - ".github/workflows/_windows-release-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-nightly-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      !startsWith(github.event.head_commit.message, 'release: cut ')
+    uses: ./.github/workflows/_windows-release-build.yml
+    with:
+      tag: windows-nightly
+      checkout_ref: ${{ github.sha }}
+      prerelease: true
+      make_latest: false
+      release_name: Windows Nightly
+      version_name: nightly
+      rolling_tag: true
+    secrets: inherit

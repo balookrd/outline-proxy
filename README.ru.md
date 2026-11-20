@@ -173,17 +173,19 @@ Android-клиент живёт в [`android/`](android/) как отдельн�
 | `ui-v<x.y.z>` | dashboard-UI | *Tag Release (ui)* |
 | `android-v<x.y.z>` | Android-приложение | *Tag Release (android)* |
 | `macos-v<x.y.z>` | приложение macOS | *Tag Release (macos)* |
+| `windows-v<x.y.z>` | приложение Windows | *Tag Release (windows)* |
 
 Push'и в `main` публикуют скользящие предрелизы `ss-nightly` / `ws-nightly` /
-`ui-nightly` / `android-nightly` / `macos-nightly`. У каждого nightly-workflow
-есть path-фильтр, поэтому пересобирается только затронутый компонент; фильтры
-Android и macOS дополнительно покрывают клиент, общие и vendored-крейты, которые
-линкует их нативный код.
+`ui-nightly` / `android-nightly` / `macos-nightly` / `windows-nightly`. У каждого
+nightly-workflow есть path-фильтр, поэтому пересобирается только затронутый
+компонент; фильтры Android, macOS и Windows дополнительно покрывают клиент, общие и
+vendored-крейты, которые линкует их код.
 
-Ручные workflow *Release (server|client|ui|android|macos)* принимают серию
+Ручные workflow *Release (server|client|ui|android|macos|windows)* принимают серию
 `MAJOR.MINOR`, вычисляют следующую patch-версию по существующим тегам,
 записывают её в файл версии компонента (`bins/*/Cargo.toml` для трёх бинарей,
-`android/rust/Cargo.toml` для Android, `macos/Resources/Info.plist` для macOS),
+`android/rust/Cargo.toml` для Android, `macos/Resources/Info.plist` для macOS,
+`bins/outline-windows/tauri.conf.json` и `bins/outline-windows/Cargo.toml` для Windows),
 пушат в `main` коммит `release: cut <tag>` и печатают команду `git tag -s <tag>`
 для локального запуска. Push этого подписанного тега запускает соответствующий
 *Tag Release*.
