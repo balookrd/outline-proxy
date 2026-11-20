@@ -8,6 +8,10 @@ This changelog covers the git release tags `v1.0.0` through `1.9.0` (the monorep
 
 ## Unreleased
 
+### Fixed
+
+- **HTTP/3 accept loop no longer drops active QUIC connections after 60 seconds.** The slowloris idle protection introduced in commit `b6a40c75` applied an artificial 60 s timeout on `h3_conn.accept()` for all requests following the first. In HTTP/3, `accept()` waits for *new* request streams on the connection; long-lived tunnels (such as WebSocket-over-H3, XHTTP stream-one, or UDP over H3 DATAGRAM) continue transmitting over already-established streams without opening new requests. The timeout caused the server to exit the connection loop and close the entire QUIC connection with `ApplicationClose: H3_NO_ERROR` while active tunnels were in-flight. The 15 s timeout is now strictly scoped to the initial request (`is_first_request`); subsequent streams are accepted without the artificial 60 s cap, relying on QUIC's protocol-level idle timeout and stream tracking.
+
 ### Added
 
 - **In-memory per-IP rate limiting for `http_root_auth`.** Brute-force protection on `GET /` now maintains an in-memory thread-safe LRU cache of remote IP addresses (up to 1024 concurrent addresses) with a 300-second lockout window, shared across both TCP (axum) and HTTP/3 listeners. Failed attempts are counted as `max(cookie_attempts, server_attempts)`: after 3 failures from the same IP (even if cookies are dropped or reset), the server immediately returns `403 Forbidden` for 5 minutes. Successful authentication clears the IP's failure history.
