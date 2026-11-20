@@ -25,7 +25,7 @@ with an English gloss.
 - Passwordless TUN start. The **Настроить в 1 клик...** ("Configure in 1
   click") button in Settings asks for the administrator password once, installs
   both `tun-runner.sh` and `outline-ws-rust` to `/Library/Application Support/OutlineProxy/`
-  with `root:wheel 0755` permissions, prepares `/var/run/outline-proxy` (`0700`),
+  with `root:wheel 0755` permissions, prepares `/var/run/outline-proxy` (`0755`),
   and writes a strictly scoped `NOPASSWD` rule for that runner path to
   `/etc/sudoers.d/outline-proxy`. The helper executes only the fixed system-installed
   binary, ignoring arbitrary CLI arguments. After that, TUN connect and disconnect

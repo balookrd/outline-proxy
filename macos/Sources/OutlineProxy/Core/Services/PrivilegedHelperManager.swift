@@ -83,7 +83,7 @@ public final class PrivilegedHelperManager: @unchecked Sendable {
         chown root:wheel \(qBinaryDst)
 
         mkdir -p \(qRunDir)
-        chmod 700 \(qRunDir)
+        chmod 755 \(qRunDir)
         chown root:wheel \(qRunDir)
 
         mkdir -p /etc/sudoers.d

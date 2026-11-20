@@ -38,7 +38,7 @@ check_binary() {
 
 init_run_dir() {
     mkdir -p "$RUN_DIR"
-    chmod 0700 "$RUN_DIR"
+    chmod 0755 "$RUN_DIR"
     chown root:wheel "$RUN_DIR" 2>/dev/null || true
 }
 
@@ -145,6 +145,7 @@ case "$ACTION" in
         "$SYSTEM_BIN" --config "$CONFIG" > "$LOG_FILE" 2>&1 &
         WS_PID=$!
         echo "$WS_PID" > "$PID_FILE"
+        chmod 0644 "$PID_FILE" "$LOG_FILE" 2>/dev/null || true
 
         # 5. Wait for utun device initialization (up to 3 seconds)
         READY=0
