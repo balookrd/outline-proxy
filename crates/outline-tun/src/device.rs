@@ -4,9 +4,16 @@
 //! EBUSY retry when another process is mid-detach, and `O_NONBLOCK` setup
 //! so the fd can be registered with the tokio reactor.
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+pub use windows::{TunDevice, WintunDevice, open_tun_device, open_wintun_device};
+
+#[cfg(all(unix, not(target_os = "macos")))]
 use std::fs::OpenOptions;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+#[cfg(unix)]
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -37,6 +44,7 @@ pub(crate) struct TunGso {
     pub(crate) af_hdr: bool,
 }
 
+#[cfg(unix)]
 pub(crate) fn set_nonblocking(file: &std::fs::File) -> Result<()> {
     let fd = file.as_raw_fd();
     // SAFETY: `file` borrows the fd for the whole call, so it cannot be closed
@@ -61,6 +69,7 @@ pub(crate) fn set_nonblocking(file: &std::fs::File) -> Result<()> {
 /// ([`TunGso`]): `vnet_hdr` when attached with `IFF_VNET_HDR` (write TSO / read
 /// GRO framing), and `udp_gso` when the kernel accepted `TUN_F_USO`. All-false
 /// on non-Linux.
+#[cfg(unix)]
 pub(crate) async fn open_tun_device_with_retry(
     config: &TunConfig,
 ) -> Result<(std::fs::File, TunGso)> {
@@ -463,7 +472,7 @@ fn open_macos_utun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)>
     ))
 }
 
-#[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
+#[cfg(all(unix, not(target_os = "linux"), not(target_os = "macos")))]
 fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
     let file = OpenOptions::new()
         .read(true)
@@ -473,6 +482,6 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
     Ok((file, TunGso::default()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "tests/device.rs"]
 mod tests;

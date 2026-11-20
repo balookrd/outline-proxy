@@ -5,12 +5,16 @@
 //! writability. Each `write(2)` delivers exactly one IP packet on TUN, so
 //! concurrent writers don't need a user-space lock in the async case.
 
-use std::io::{IoSlice, Write as _};
+#[cfg(unix)]
+use std::io::IoSlice;
+use std::io::Write as _;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
+#[cfg(unix)]
 use tokio::io::Interest;
+#[cfg(unix)]
 use tokio::io::unix::AsyncFd;
 
 use outline_metrics as metrics;
@@ -42,12 +46,16 @@ pub(crate) struct SharedTunWriter {
 
 #[derive(Clone)]
 enum SharedTunWriterInner {
+    #[cfg(unix)]
     Async(Arc<AsyncFd<std::fs::File>>),
+    #[cfg(windows)]
+    Wintun(Arc<wintun::Session>),
     #[cfg(test)]
     Blocking(Arc<parking_lot::Mutex<std::fs::File>>),
 }
 
 impl SharedTunWriter {
+    #[cfg(unix)]
     pub(crate) fn from_async_fd(
         fd: Arc<AsyncFd<std::fs::File>>,
         gso_enabled: bool,
@@ -57,6 +65,15 @@ impl SharedTunWriter {
             inner: SharedTunWriterInner::Async(fd),
             gso_enabled,
             af_hdr,
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn from_wintun_session(session: Arc<wintun::Session>) -> Self {
+        Self {
+            inner: SharedTunWriterInner::Wintun(session),
+            gso_enabled: false,
+            af_hdr: false,
         }
     }
 
@@ -82,10 +99,15 @@ impl SharedTunWriter {
         let vnet = self.gso_enabled.then_some(VirtioNetHdr::NONE);
         let af_hdr = self.af_hdr;
         match &self.inner {
+            #[cfg(unix)]
             SharedTunWriterInner::Async(fd) => fd
                 .async_io(Interest::WRITABLE, |f| write_tun_packet(f, packet, vnet, af_hdr))
                 .await
                 .context("failed to write packet to TUN"),
+            #[cfg(windows)]
+            SharedTunWriterInner::Wintun(session) => {
+                write_wintun_packet(session, packet).context("failed to write packet to Wintun")
+            },
             #[cfg(test)]
             SharedTunWriterInner::Blocking(mutex) => mutex
                 .lock()
@@ -109,10 +131,14 @@ impl SharedTunWriter {
         metrics::record_tun_packet("down", ip_family_str(packet), "tso_supersegment");
         let af_hdr = self.af_hdr;
         match &self.inner {
+            #[cfg(unix)]
             SharedTunWriterInner::Async(fd) => fd
                 .async_io(Interest::WRITABLE, |f| write_tun_packet(f, packet, Some(header), af_hdr))
                 .await
                 .context("failed to write GSO segment to TUN"),
+            #[cfg(windows)]
+            SharedTunWriterInner::Wintun(session) => write_wintun_packet(session, packet)
+                .context("failed to write GSO segment to Wintun"),
             #[cfg(test)]
             SharedTunWriterInner::Blocking(mutex) => mutex
                 .lock()
@@ -147,12 +173,18 @@ impl SharedTunWriter {
         };
         let af_hdr = self.af_hdr;
         match &self.inner {
+            #[cfg(unix)]
             SharedTunWriterInner::Async(fd) => fd
                 .async_io(Interest::WRITABLE, |f| {
                     write_tun_data_packet(f, header, payload, vnet, af_hdr)
                 })
                 .await
                 .context("failed to write data packet to TUN"),
+            #[cfg(windows)]
+            SharedTunWriterInner::Wintun(session) => {
+                write_wintun_data_packet(session, header, payload)
+                    .context("failed to write data packet to Wintun")
+            },
             #[cfg(test)]
             SharedTunWriterInner::Blocking(mutex) => {
                 let mut file = mutex.lock();
@@ -185,6 +217,7 @@ fn ip_family_str(packet: &[u8]) -> &'static str {
     }
 }
 
+#[cfg(unix)]
 fn write_tun_packet(
     file: &std::fs::File,
     packet: &[u8],
@@ -239,6 +272,7 @@ fn write_tun_packet(
 /// delivers the whole packet on TUN, exactly as the single-buffer paths do. The
 /// `iovec` is `[af_hdr?, vnet?, header, chunk0, …]`; the caller bounds the chunk count
 /// well below `IOV_MAX`.
+#[cfg(unix)]
 fn write_tun_data_packet(
     file: &std::fs::File,
     header: &[u8],
@@ -279,5 +313,38 @@ fn write_tun_data_packet(
             "short TUN data write: {written}/{expected} bytes"
         )));
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_wintun_packet(session: &wintun::Session, packet: &[u8]) -> Result<()> {
+    let size = u16::try_from(packet.len()).context("packet too large for Wintun")?;
+    let mut pkt = session
+        .allocate_send_packet(size)
+        .context("failed to allocate Wintun send packet")?;
+    pkt.bytes_mut().copy_from_slice(packet);
+    session.send_packet(pkt);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_wintun_data_packet(
+    session: &wintun::Session,
+    header: &[u8],
+    payload: &[Bytes],
+) -> Result<()> {
+    let total_len = header.len() + payload.iter().map(|c| c.len()).sum::<usize>();
+    let size = u16::try_from(total_len).context("data packet too large for Wintun")?;
+    let mut pkt = session
+        .allocate_send_packet(size)
+        .context("failed to allocate Wintun send packet")?;
+    let buf = pkt.bytes_mut();
+    buf[..header.len()].copy_from_slice(header);
+    let mut offset = header.len();
+    for chunk in payload {
+        buf[offset..offset + chunk.len()].copy_from_slice(chunk);
+        offset += chunk.len();
+    }
+    session.send_packet(pkt);
     Ok(())
 }
