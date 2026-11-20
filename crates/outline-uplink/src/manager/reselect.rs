@@ -153,13 +153,30 @@ fn local_day_and_secs() -> Option<(i64, u32)> {
     // success before we read any of them (checked via the null-pointer
     // return first), so the zeroed value is never actually observed.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: `&t` and `&mut tm` are valid, non-aliasing, appropriately
-    // aligned pointers to stack locals that outlive this call. `localtime_r`
-    // is the thread-safe variant (unlike `localtime`, it does not write
-    // through a shared static buffer) and does not retain either pointer
-    // past its return, so there is no aliasing or lifetime hazard here.
-    let res = unsafe { libc::localtime_r(&t, &mut tm) };
-    if res.is_null() {
+    #[cfg(unix)]
+    {
+        // SAFETY: `&t` and `&mut tm` are valid, non-aliasing, appropriately
+        // aligned pointers to stack locals that outlive this call. `localtime_r`
+        // is the thread-safe variant (unlike `localtime`, it does not write
+        // through a shared static buffer) and does not retain either pointer
+        // past its return, so there is no aliasing or lifetime hazard here.
+        let res = unsafe { libc::localtime_r(&t, &mut tm) };
+        if res.is_null() {
+            return None;
+        }
+    }
+    #[cfg(windows)]
+    {
+        // SAFETY: On Windows MSVC, `localtime_s` takes the destination pointer
+        // first, then the time pointer. It returns 0 on success.
+        let res = unsafe { libc::localtime_s(&mut tm, &t) };
+        if res != 0 {
+            return None;
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = t;
         return None;
     }
     let secs = tm.tm_hour as u32 * 3600 + tm.tm_min as u32 * 60 + tm.tm_sec as u32;
