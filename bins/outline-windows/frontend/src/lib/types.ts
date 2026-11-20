@@ -18,6 +18,7 @@ export interface ServerProfile {
   cached_toml?: string;
   updatedAt?: number;
   updated_at?: number;
+  ping?: number | null;
 }
 
 /**

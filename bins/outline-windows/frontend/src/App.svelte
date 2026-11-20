@@ -77,7 +77,7 @@
   let isStopping = $derived(isProcessStopping(currentState));
   let isBusy = $derived(isStarting || isStopping || actionLoading);
 
-  let activeProfile = $derived<ServerProfile | null>(() => {
+  let activeProfile = $derived.by<ServerProfile | null>(() => {
     const activeId = status?.activeProfileId || status?.active_profile_id;
     if (activeId) {
       const found = profiles.find((p) => p.id === activeId);
@@ -86,12 +86,12 @@
     return profiles[0] || null;
   });
 
-  let activeProfileName = $derived(() => {
+  let activeProfileName = $derived.by<string>(() => {
     if (activeProfile) return activeProfile.name || 'Сервер без имени';
     return status?.activeProfileName || status?.active_profile_name || 'Нет серверов';
   });
 
-  let activeProfileBadge = $derived(() => {
+  let activeProfileBadge = $derived.by<string>(() => {
     if (!activeProfile) return 'SOCKS5';
     if (activeProfile.transport === 'subscription' || activeProfile.configUrl || activeProfile.config_url) {
       return 'Подписка';
@@ -393,13 +393,13 @@
 
         <!-- Server Title (Huge bold font) -->
         <h2 class="text-xl font-bold truncate mt-0.5 tracking-tight {theme === 'dark' ? 'text-white' : 'text-neutral-900'}">
-          {activeProfileName()}
+          {activeProfileName}
         </h2>
 
         <!-- Subtitle with Type and Active Badge -->
         <div class="flex items-center gap-2 mt-1">
           <span class="text-xs {theme === 'dark' ? 'text-neutral-400' : 'text-neutral-500'}">
-            {activeProfileBadge()}
+            {activeProfileBadge}
           </span>
           <span class="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
             Активна
