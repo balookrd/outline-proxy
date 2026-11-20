@@ -282,12 +282,50 @@ impl ServerProfile {
     }
 }
 
+/// Application settings for Outline Proxy Windows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    #[serde(default = "default_proxy_mode")]
+    pub proxy_mode: String, // "socks5" | "tun"
+    #[serde(default)]
+    pub tcp_only: bool,
+    #[serde(default = "default_socks_port")]
+    pub socks_port: u16,
+    #[serde(default)]
+    pub autostart: bool,
+    #[serde(default)]
+    pub start_minimized: bool,
+}
+
+fn default_proxy_mode() -> String {
+    "socks5".to_string()
+}
+
+fn default_socks_port() -> u16 {
+    1080
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            proxy_mode: default_proxy_mode(),
+            tcp_only: false,
+            socks_port: default_socks_port(),
+            autostart: false,
+            start_minimized: false,
+        }
+    }
+}
+
 /// Serializable state for persistent profile storage.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileStoreData {
     pub profiles: Vec<ServerProfile>,
     pub selected_id: Option<String>,
+    #[serde(default)]
+    pub settings: AppSettings,
 }
 
 /// Thread-safe persistent profile store.
@@ -329,8 +367,13 @@ impl ProfileStore {
             let content = std::fs::read_to_string(&storage_path).with_context(|| {
                 format!("failed to read profiles from {}", storage_path.display())
             })?;
-            serde_json::from_str::<ProfileStoreData>(&content)
-                .with_context(|| format!("failed to parse JSON from {}", storage_path.display()))?
+            if content.trim().is_empty() {
+                ProfileStoreData::default()
+            } else {
+                serde_json::from_str::<ProfileStoreData>(&content).with_context(|| {
+                    format!("failed to parse JSON from {}", storage_path.display())
+                })?
+            }
         } else {
             ProfileStoreData::default()
         };
@@ -428,6 +471,21 @@ impl ProfileStore {
             if lock.selected_id.as_deref() == Some(id) {
                 lock.selected_id = lock.profiles.first().map(|p| p.id.clone());
             }
+        }
+        self.save()
+    }
+
+    /// Returns the current application settings.
+    pub fn settings(&self) -> AppSettings {
+        let lock = self.data.read().unwrap();
+        lock.settings.clone()
+    }
+
+    /// Updates the application settings and persists to disk.
+    pub fn update_settings(&self, settings: AppSettings) -> Result<()> {
+        {
+            let mut lock = self.data.write().map_err(|_| anyhow!("lock poisoned"))?;
+            lock.settings = settings;
         }
         self.save()
     }
