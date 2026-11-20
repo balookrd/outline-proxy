@@ -111,9 +111,10 @@ pub fn open_wintun_device(config: &TunConfig) -> Result<(WintunDevice, TunGso)> 
             .context("failed to start Wintun session")?,
     );
 
-    let read_event = session
+    let raw_event = session
         .get_read_wait_event()
         .context("failed to get Wintun read wait event")?;
+    let read_event = raw_event as windows_sys::Win32::Foundation::HANDLE;
 
     info!(adapter = %adapter_name, if_index, mtu = config.mtu, "Wintun interface initialized");
 

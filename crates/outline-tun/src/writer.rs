@@ -96,7 +96,9 @@ impl SharedTunWriter {
     pub(crate) async fn write_packet(&self, packet: &[u8]) -> Result<()> {
         // Single IP packet: GSO_NONE header when the fd carries a vnet header,
         // otherwise a bare write.
+        #[cfg(unix)]
         let vnet = self.gso_enabled.then_some(VirtioNetHdr::NONE);
+        #[cfg(unix)]
         let af_hdr = self.af_hdr;
         match &self.inner {
             #[cfg(unix)]
@@ -129,7 +131,10 @@ impl SharedTunWriter {
         // Downlink TSO signal: one super-segment the kernel splits per MSS —
         // how often the write path actually coalesced server→client data.
         metrics::record_tun_packet("down", ip_family_str(packet), "tso_supersegment");
+        #[cfg(unix)]
         let af_hdr = self.af_hdr;
+        #[cfg(windows)]
+        let _ = header;
         match &self.inner {
             #[cfg(unix)]
             SharedTunWriterInner::Async(fd) => fd
@@ -162,6 +167,7 @@ impl SharedTunWriter {
         payload: &[Bytes],
         gso: Option<VirtioNetHdr>,
     ) -> Result<()> {
+        #[cfg(unix)]
         let vnet = match gso {
             Some(vnet) => {
                 // Downlink TSO signal: one super-segment the kernel splits per
@@ -171,7 +177,10 @@ impl SharedTunWriter {
             },
             None => self.gso_enabled.then_some(VirtioNetHdr::NONE),
         };
+        #[cfg(unix)]
         let af_hdr = self.af_hdr;
+        #[cfg(windows)]
+        let _ = gso;
         match &self.inner {
             #[cfg(unix)]
             SharedTunWriterInner::Async(fd) => fd
@@ -317,7 +326,7 @@ fn write_tun_data_packet(
 }
 
 #[cfg(windows)]
-fn write_wintun_packet(session: &wintun::Session, packet: &[u8]) -> Result<()> {
+fn write_wintun_packet(session: &Arc<wintun::Session>, packet: &[u8]) -> Result<()> {
     let size = u16::try_from(packet.len()).context("packet too large for Wintun")?;
     let mut pkt = session
         .allocate_send_packet(size)
@@ -329,7 +338,7 @@ fn write_wintun_packet(session: &wintun::Session, packet: &[u8]) -> Result<()> {
 
 #[cfg(windows)]
 fn write_wintun_data_packet(
-    session: &wintun::Session,
+    session: &Arc<wintun::Session>,
     header: &[u8],
     payload: &[Bytes],
 ) -> Result<()> {
