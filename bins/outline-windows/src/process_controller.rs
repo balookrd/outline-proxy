@@ -323,7 +323,10 @@ impl ProcessController {
                 // On Windows TUN requires administrative elevation (UAC prompt via runas)
                 match unsafe { spawn_with_uac(binary_path, config_path) } {
                     Ok((handle, pid)) => {
-                        return Ok((RunningChild::Win32Handle { handle: SafeHandle(handle), pid }, pid));
+                        return Ok((
+                            RunningChild::Win32Handle { handle: SafeHandle(handle), pid },
+                            pid,
+                        ));
                     },
                     Err(e) => {
                         tracing::warn!(
@@ -507,7 +510,7 @@ unsafe fn spawn_with_uac(
         bail!("ShellExecuteExW succeeded but returned null process handle");
     }
 
-    let pid = GetProcessId(handle);
+    let pid = unsafe { GetProcessId(handle) };
     Ok((handle, pid))
 }
 

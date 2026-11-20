@@ -118,3 +118,18 @@ fn test_profile_store_crud_and_persistence() {
     assert_eq!(reloaded.profiles().len(), 1);
     assert_eq!(reloaded.active_profile_id(), Some("p1".to_string()));
 }
+
+#[test]
+fn test_profile_store_bom_handling() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file_path = temp_dir.path().join("profiles_bom.json");
+
+    // Write UTF-8 BOM followed by JSON
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(br#"{"profiles":[],"settings":{"proxyMode":"socks5","tcpOnly":false,"socksPort":1080,"autostart":false,"startMinimized":false}}"#);
+    std::fs::write(&file_path, bytes).unwrap();
+
+    let store = ProfileStore::open(file_path).expect("open store with BOM");
+    assert_eq!(store.profiles().len(), 0);
+    assert_eq!(store.settings().socks_port, 1080);
+}

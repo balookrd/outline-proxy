@@ -364,13 +364,14 @@ impl ProfileStore {
     /// Opens or initializes the profile store at a specific file path.
     pub fn open(storage_path: PathBuf) -> Result<Self> {
         let data = if storage_path.exists() {
-            let content = std::fs::read_to_string(&storage_path).with_context(|| {
+            let raw_content = std::fs::read_to_string(&storage_path).with_context(|| {
                 format!("failed to read profiles from {}", storage_path.display())
             })?;
+            let content = raw_content.strip_prefix('\u{feff}').unwrap_or(&raw_content);
             if content.trim().is_empty() {
                 ProfileStoreData::default()
             } else {
-                serde_json::from_str::<ProfileStoreData>(&content).with_context(|| {
+                serde_json::from_str::<ProfileStoreData>(content).with_context(|| {
                     format!("failed to parse JSON from {}", storage_path.display())
                 })?
             }
@@ -379,6 +380,14 @@ impl ProfileStore {
         };
 
         Ok(Self { storage_path, data: RwLock::new(data) })
+    }
+
+    /// Creates an empty profile store with default settings at a specific file path without reading from disk.
+    pub fn empty(storage_path: PathBuf) -> Self {
+        Self {
+            storage_path,
+            data: RwLock::new(ProfileStoreData::default()),
+        }
     }
 
     /// Saves the current profiles and selection to disk.
