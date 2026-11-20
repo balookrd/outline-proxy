@@ -15,7 +15,7 @@ quic = [
     "dep:quinn-proto",
     "dep:once_cell",
 ]
-h3 = ["quic", "dep:h3", "dep:h3-quinn", "sockudo-ws/http3", "outline-wire/h3-datagram"]
+h3 = ["quic", "dep:h3", "dep:h3-quinn", "dep:sockudo-ws", "sockudo-ws/http3", "outline-wire/h3-datagram"]
 metrics = ["outline-metrics/prometheus", "hyper/server"]
 # Exposes `install_test_tls_root` so cross-repo integration tests
 # (notably `outline-ss-rust/tests`) can pin a self-signed root for an
@@ -65,7 +65,7 @@ quinn = { workspace = true, features = ["runtime-tokio", "rustls-aws-lc-rs"], op
 # Patched-API types (transport-parameter order, version_information) and
 # RandomConnectionIdGenerator, which quinn does not re-export. Same
 # aws-lc-rs-only features as quinn.
-quinn-proto = { version = "0.11", default-features = false, features = ["rustls-aws-lc-rs"], optional = true }
+quinn-proto = { workspace = true, features = ["rustls-aws-lc-rs"], optional = true }
 rand = { workspace = true }
 # zstd certificate decompressor (`tls_hello.rs`), see `brotli-decompressor`.
 ruzstd = { version = "0.9", default-features = false, features = ["std"] }
@@ -73,7 +73,7 @@ rustls = { workspace = true, features = ["aws_lc_rs", "std"] }
 serde = { workspace = true, features = ["derive"] }
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }
 socks5-proto = { path = "../socks5-proto" }
-sockudo-ws = { path = "../../vendor/sockudo-ws", package = "sockudo-ws", default-features = false, features = ["rustls-webpki-roots", "aws_lc_rs", "fastrand"] }
+sockudo-ws = { path = "../../vendor/sockudo-ws", package = "sockudo-ws", default-features = false, features = ["rustls-webpki-roots", "aws_lc_rs", "fastrand"], optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-rustls = { workspace = true, features = ["aws_lc_rs", "tls12"] }
 tokio-util = { version = "0.7", default-features = false }

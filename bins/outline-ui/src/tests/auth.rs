@@ -9,7 +9,7 @@ use tower::ServiceExt as _;
 use super::*;
 
 fn app(token: &str) -> Router {
-    let state = AuthState { token: std::sync::Arc::from(token) };
+    let state = AuthState::new(token);
     Router::new()
         .route("/probe", get(|| async { "ok" }))
         .layer(middleware::from_fn_with_state(state, require_auth))

@@ -191,13 +191,17 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("state path {} has no file name", path.display()))?;
 
+    let pid = std::process::id();
+    static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
     let mut tmp_name = OsString::from(".");
     tmp_name.push(file_name);
-    tmp_name.push(".tmp");
+    tmp_name.push(format!(".{pid}.{count}.tmp"));
     let tmp_path: PathBuf = parent.join(&tmp_name);
 
     let mut opts = tokio::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     opts.mode(0o600);
     let mut file = opts
@@ -206,18 +210,24 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         .with_context(|| format!("open tmp {}", tmp_path.display()))?;
 
     use tokio::io::AsyncWriteExt;
-    file.write_all(bytes)
-        .await
-        .with_context(|| format!("write tmp {}", tmp_path.display()))?;
-    file.sync_all()
-        .await
-        .with_context(|| format!("fsync tmp {}", tmp_path.display()))?;
-    drop(file);
+    let write_res = async {
+        file.write_all(bytes)
+            .await
+            .with_context(|| format!("write tmp {}", tmp_path.display()))?;
+        file.sync_all()
+            .await
+            .with_context(|| format!("fsync tmp {}", tmp_path.display()))?;
+        drop(file);
+        tokio::fs::rename(&tmp_path, path)
+            .await
+            .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))
+    }
+    .await;
 
-    tokio::fs::rename(&tmp_path, path)
-        .await
-        .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))?;
-    Ok(())
+    if write_res.is_err() {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+    }
+    write_res
 }
 
 #[cfg(test)]

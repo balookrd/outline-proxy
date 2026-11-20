@@ -1039,7 +1039,16 @@ private fun ExternalControlScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(stringResource(R.string.ext_allow_commands), modifier = Modifier.weight(1f))
-                    Switch(checked = enabled, onCheckedChange = { enabled = it; persist() })
+                    Switch(
+                        checked = enabled,
+                        onCheckedChange = {
+                            enabled = it
+                            if (enabled && token.isBlank()) {
+                                token = generateSecureToken()
+                            }
+                            persist()
+                        },
+                    )
                 }
                 OutlinedTextField(
                     token,
@@ -1048,6 +1057,16 @@ private fun ExternalControlScreen(
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     label = { Text(stringResource(R.string.ext_token)) },
+                    trailingIcon = {
+                        if (enabled) {
+                            IconButton(onClick = {
+                                token = generateSecureToken()
+                                persist()
+                            }) {
+                                Icon(Icons.Filled.Refresh, contentDescription = stringResource(R.string.a11y_refresh))
+                            }
+                        }
+                    },
                     supportingText = {
                         Text(stringResource(R.string.ext_token_help))
                     },

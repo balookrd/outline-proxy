@@ -53,11 +53,46 @@ fn default_index(arr: &ArrayOfTables) -> Option<usize> {
     arr.iter().position(table_is_default)
 }
 
+fn validate_payload_paths(rule: &RoutePayload) -> Result<(), String> {
+    let check = |p: &str| -> Result<(), String> {
+        let path = Path::new(p);
+        if path.is_absolute() {
+            return Err(format!(
+                "absolute path \"{p}\" is not allowed in route files; specify a relative path"
+            ));
+        }
+        for comp in path.components() {
+            if matches!(comp, std::path::Component::ParentDir) {
+                return Err(format!("path \"{p}\" must not contain `..` components"));
+            }
+        }
+        Ok(())
+    };
+    if let Some(f) = &rule.file {
+        check(f)?;
+    }
+    if let Some(files) = &rule.files {
+        for f in files {
+            check(f)?;
+        }
+    }
+    if let Some(f) = &rule.domain_file {
+        check(f)?;
+    }
+    if let Some(files) = &rule.domain_files {
+        for f in files {
+            check(f)?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn apply_create(
     doc: &mut DocumentMut,
     rule: &RoutePayload,
     at_index: Option<usize>,
 ) -> Result<usize, String> {
+    validate_payload_paths(rule)?;
     let mut table = Some(payload_to_table(rule));
     let arr = route_array_mut(doc);
     // Default insert position: just before the default rule (so it stays the
@@ -90,6 +125,7 @@ pub(super) fn apply_update(
     index: usize,
     rule: &RoutePayload,
 ) -> Result<(), String> {
+    validate_payload_paths(rule)?;
     let arr = route_array_mut(doc);
     let existing = arr.get(index).ok_or_else(|| "route index not found".to_string())?;
     let was_default = table_is_default(existing);

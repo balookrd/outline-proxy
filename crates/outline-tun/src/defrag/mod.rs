@@ -182,6 +182,7 @@ impl TunDefragmenter {
             }
         }
 
+        self.recalculate_total_buffered_bytes();
         self.set_active_fragment_sets_metric(IpVersion::V4);
 
         if let Some(reason) = should_remove {
@@ -200,6 +201,7 @@ impl TunDefragmenter {
             .expect("complete IPv4 fragment set must exist")
             .build_packet()?;
         maybe_shrink_hash_map(&mut self.ipv4_sets);
+        self.recalculate_total_buffered_bytes();
         self.recalculate_total_buffered_bytes();
         self.set_active_fragment_sets_metric(IpVersion::V4);
         metrics::record_tun_ip_reassembly("ipv4", "success");
@@ -336,6 +338,7 @@ impl TunDefragmenter {
         });
         if ipv4_changed {
             maybe_shrink_hash_map(&mut self.ipv4_sets);
+            self.recalculate_total_buffered_bytes();
             self.set_active_fragment_sets_metric(IpVersion::V4);
         }
         if ipv6_changed {
@@ -362,6 +365,7 @@ impl TunDefragmenter {
     fn remove_ipv4_set(&mut self, key: Ipv4Key) {
         self.ipv4_sets.remove(&key);
         maybe_shrink_hash_map(&mut self.ipv4_sets);
+        self.recalculate_total_buffered_bytes();
         self.recalculate_total_buffered_bytes();
         self.set_active_fragment_sets_metric(IpVersion::V4);
     }

@@ -34,11 +34,57 @@ const MAX_UDP_SOCKET_PACKET_SIZE: usize = 65_507;
 /// for the AEAD framing that rides in front of it.
 const UDP_SOCKET_RECV_CAPACITY: usize = SHADOWSOCKS_MAX_PAYLOAD + 128;
 
+#[derive(Debug, Default)]
+struct ReplayFilter {
+    max_packet_id: Option<u64>,
+    window: u128,
+}
+
+impl ReplayFilter {
+    const WINDOW_SIZE: u64 = 128;
+
+    fn check_and_update(&mut self, packet_id: u64) -> bool {
+        match self.max_packet_id {
+            None => {
+                self.max_packet_id = Some(packet_id);
+                self.window = 1;
+                true
+            },
+            Some(max) => {
+                if packet_id > max {
+                    let diff = packet_id - max;
+                    if diff >= Self::WINDOW_SIZE {
+                        self.window = 0;
+                    } else {
+                        self.window <<= diff;
+                    }
+                    self.window |= 1;
+                    self.max_packet_id = Some(packet_id);
+                    true
+                } else {
+                    let diff = max - packet_id;
+                    if diff >= Self::WINDOW_SIZE {
+                        false
+                    } else {
+                        let mask = 1u128 << diff;
+                        if (self.window & mask) != 0 {
+                            false
+                        } else {
+                            self.window |= mask;
+                            true
+                        }
+                    }
+                }
+            },
+        }
+    }
+}
+
 struct Ss2022UdpState {
     client_session_id: u64,
     next_client_packet_id: u64,
     server_session_id: Option<u64>,
-    last_server_packet_id: Option<u64>,
+    replay_filter: ReplayFilter,
 }
 
 enum UdpTransport {
@@ -209,7 +255,7 @@ impl UdpWsTransport {
                     client_session_id: rand::random::<u64>(),
                     next_client_packet_id: 0,
                     server_session_id: None,
-                    last_server_packet_id: None,
+                    replay_filter: ReplayFilter::default(),
                 })
             }),
             recv_decoder: padding
@@ -283,7 +329,7 @@ impl UdpWsTransport {
                     client_session_id: rand::random::<u64>(),
                     next_client_packet_id: 0,
                     server_session_id: None,
-                    last_server_packet_id: None,
+                    replay_filter: ReplayFilter::default(),
                 })
             }),
             // Raw socket is not a WS carrier — never framed.
@@ -564,14 +610,16 @@ impl UdpWsTransport {
                 state.client_session_id,
                 bytes,
             )?;
-            if let Some(last_server_packet_id) = state.last_server_packet_id
-                && state.server_session_id == Some(session_id)
-                && packet_id <= last_server_packet_id
-            {
+            if let Some(expected_session) = state.server_session_id {
+                if session_id != expected_session {
+                    bail!(Ss2022Error::DuplicateOrOutOfOrderUdpPacket);
+                }
+            } else {
+                state.server_session_id = Some(session_id);
+            }
+            if !state.replay_filter.check_and_update(packet_id) {
                 bail!(Ss2022Error::DuplicateOrOutOfOrderUdpPacket);
             }
-            state.server_session_id = Some(session_id);
-            state.last_server_packet_id = Some(packet_id);
             return Ok(payload);
         }
         Ok(decrypt_udp_packet(self.cipher, &self.master_key, bytes)?)

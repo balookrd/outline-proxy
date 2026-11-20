@@ -59,17 +59,28 @@ fn trim_sack_scoreboard(scoreboard: &mut Vec<SequenceRange>, cumulative_ack: u32
     clipped
 }
 
+const MAX_SACK_SCOREBOARD_RANGES: usize = 32;
+
 fn update_sack_scoreboard(
     scoreboard: &mut Vec<SequenceRange>,
     cumulative_ack: u32,
+    server_seq: u32,
     sack_blocks: &[(u32, u32)],
 ) -> bool {
     // Fast path: skip blocks that the existing scoreboard already fully covers
-    // (or that fall entirely below the cumulative ACK). If nothing new comes in,
+    // (or that fall entirely below the cumulative ACK or beyond SND.NXT). If nothing new comes in,
     // we return without touching the scoreboard at all.
     let mut new_ranges: Vec<SequenceRange> = Vec::new();
     for (start, end) in sack_blocks {
         let mut range = SequenceRange { start: *start, end: *end };
+        // Blocks entirely in the future (not yet sent) must be ignored.
+        if seq_ge(range.start, server_seq) {
+            continue;
+        }
+        // Clip right edge to what we actually sent.
+        if seq_gt(range.end, server_seq) {
+            range.end = server_seq;
+        }
         if !seq_gt(range.end, cumulative_ack) {
             continue;
         }
@@ -88,7 +99,11 @@ fn update_sack_scoreboard(
     }
     let mut ranges = std::mem::take(scoreboard);
     ranges.append(&mut new_ranges);
-    *scoreboard = merge_sequence_ranges(ranges, cumulative_ack);
+    let mut merged = merge_sequence_ranges(ranges, cumulative_ack);
+    if merged.len() > MAX_SACK_SCOREBOARD_RANGES {
+        merged.truncate(MAX_SACK_SCOREBOARD_RANGES);
+    }
+    *scoreboard = merged;
     true
 }
 
@@ -287,8 +302,12 @@ pub(in crate::tcp) fn process_server_ack(
     // Trimming first would drop the range that still marks an already-SACKed
     // (already out-of-pipe) segment, so the pop loop would then see it as
     // un-SACKed and subtract it from the pipe a second time (underflow).
-    let scoreboard_advanced =
-        update_sack_scoreboard(&mut state.sack_scoreboard, acknowledgement_number, sack_blocks);
+    let scoreboard_advanced = update_sack_scoreboard(
+        &mut state.sack_scoreboard,
+        acknowledgement_number,
+        state.server_seq,
+        sack_blocks,
+    );
     // A new SACK block can move segments out of the pipe; rebuild the running
     // accounting once here (O(N)) rather than rescanning on every read. A
     // cumulative-only ACK (no new block) leaves every still-queued segment's

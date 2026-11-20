@@ -43,13 +43,15 @@ public final class ProcessController: @unchecked Sendable {
 
     /// Locates the `outline-ws-rust` binary executable.
     public func locateBinary() -> URL? {
-        // 1. Environment variable
+        #if DEBUG
+        // 1. Environment variable (debug builds only)
         if let envPath = ProcessInfo.processInfo.environment["OUTLINE_WS_BIN"] {
             let url = URL(fileURLWithPath: envPath)
             if FileManager.default.isExecutableFile(atPath: url.path) {
                 return url
             }
         }
+        #endif
 
         // 2. App Bundle Resources (when packaged)
         if let resURL = Bundle.main.resourceURL?.appendingPathComponent("outline-ws-rust"),
@@ -64,7 +66,14 @@ public final class ProcessController: @unchecked Sendable {
             return nextToExe
         }
 
-        // 4. Cargo target directories during local development
+        // 4. Installed system binary
+        let sysBin = URL(fileURLWithPath: PrivilegedHelperManager.systemBinaryPath)
+        if FileManager.default.isExecutableFile(atPath: sysBin.path) {
+            return sysBin
+        }
+
+        #if DEBUG
+        // 5. Cargo target directories during local development
         let possiblePaths = [
             FileManager.default.currentDirectoryPath + "/target/release/outline-ws-rust",
             FileManager.default.currentDirectoryPath + "/target/debug/outline-ws-rust",
@@ -80,6 +89,7 @@ public final class ProcessController: @unchecked Sendable {
                 return url
             }
         }
+        #endif
 
         return nil
     }
@@ -157,18 +167,20 @@ public final class ProcessController: @unchecked Sendable {
 
         onStateChanged?(.starting)
 
-        // Write config to application support directory
+        // Write config to application support directory with restricted permissions (0700 dir, 0600 file)
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("OutlineProxy")
-        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: appSupport.path)
         let configPath = appSupport.appendingPathComponent("current_config.toml")
         try toml.write(to: configPath, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath.path)
 
         switch mode {
         case .socks5:
             try startSocks5(binURL: binURL, configPath: configPath)
         case .tun:
-            try startTun(binURL: binURL, configPath: configPath, serverHost: serverHost ?? "", appSupport: appSupport)
+            try startTun(configPath: configPath, serverHost: serverHost ?? "")
         }
     }
 
@@ -234,7 +246,7 @@ public final class ProcessController: @unchecked Sendable {
 
     // MARK: - TUN Mode (Root privileged)
 
-    private func startTun(binURL: URL, configPath: URL, serverHost: String, appSupport: URL) throws {
+    private func startTun(configPath: URL, serverHost: String) throws {
         guard let runnerURL = locateTunRunner() else {
             let err = "Скрипт tun-runner.sh не найден в ресурсах приложения."
             stateLock.lock()
@@ -245,12 +257,8 @@ public final class ProcessController: @unchecked Sendable {
             throw NSError(domain: "ProcessController", code: 2, userInfo: [NSLocalizedDescriptionKey: err])
         }
 
-        let runDir = appSupport.appendingPathComponent("tun_run")
-        try? FileManager.default.createDirectory(at: runDir, withIntermediateDirectories: true)
-
-        let logPath = runDir.appendingPathComponent("tun.log")
-        // Truncate previous log
-        try? "".write(to: logPath, atomically: true, encoding: .utf8)
+        let runDir = URL(fileURLWithPath: PrivilegedHelperManager.systemRunDir)
+        let sanitizedHost = ServerProfile.sanitizeHost(serverHost) ?? ""
         lastLogOffset = 0
 
         do {
@@ -258,23 +266,29 @@ public final class ProcessController: @unchecked Sendable {
             if PrivilegedHelperManager.shared.isSudoersConfigured() {
                 appendLog("[INFO] Запуск TUN через беспарольный sudo (в 1 клик)...")
                 output = runCommand("/usr/bin/sudo", [
-                    runnerURL.path, "start", binURL.path, configPath.path, serverHost, runDir.path
+                    runnerURL.path, "start", configPath.path, sanitizedHost
                 ])
             } else {
                 appendLog("[INFO] Запрос прав администратора для создания L3 utun интерфейса...")
-                let cmd = "\"\(runnerURL.path)\" start \"\(binURL.path)\" \"\(configPath.path)\" \"\(serverHost)\" \"\(runDir.path)\""
-                output = try executeAsAdmin(command: cmd)
+                let qRunner = PrivilegedHelperManager.shellQuote(runnerURL.path)
+                let qConfig = PrivilegedHelperManager.shellQuote(configPath.path)
+                let qHost = PrivilegedHelperManager.shellQuote(sanitizedHost)
+                let cmd = "\(qRunner) start \(qConfig) \(qHost)"
+                output = try PrivilegedHelperManager.executeAsAdmin(command: cmd)
             }
             appendLog("[INFO] tun-runner: \(output)")
 
-            // Check PID file
+            // Check PID file in root-owned run directory
             let pidFile = runDir.appendingPathComponent("tun.pid")
-            let pid: Int32
-            if let pidStr = try? String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
-               let parsed = Int32(pidStr) {
-                pid = parsed
-            } else {
-                pid = 1
+            guard let pidStr = try? String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+                  let pid = Int32(pidStr), pid > 1 else {
+                let err = "Не удалось запустить TUN: файл PID отсутствует или невалиден в \(pidFile.path)"
+                stateLock.lock()
+                self.state = .error(err)
+                stateLock.unlock()
+                appendLog("[ERROR] \(err)")
+                onStateChanged?(.error(err))
+                throw NSError(domain: "ProcessController", code: 3, userInfo: [NSLocalizedDescriptionKey: err])
             }
 
             stateLock.lock()
@@ -366,8 +380,8 @@ public final class ProcessController: @unchecked Sendable {
         tunTimer = nil
     }
 
-    /// Stops the running `outline-ws-rust` process gracefully in either mode.
-    public func stop() {
+    /// Synchronously stops the running process and cleans up system routes/state.
+    public func stopSync(timeout: TimeInterval = 2.0) {
         stateLock.lock()
         let mode = activeMode
 
@@ -375,7 +389,9 @@ public final class ProcessController: @unchecked Sendable {
         case .socks5:
             guard let proc = process, proc.isRunning else {
                 state = .stopped
+                process = nil
                 stateLock.unlock()
+                appendLog("[INFO] outline-ws-rust (SOCKS5) уже остановлен.")
                 onStateChanged?(.stopped)
                 return
             }
@@ -387,25 +403,22 @@ public final class ProcessController: @unchecked Sendable {
             appendLog("[INFO] Остановка outline-ws-rust (SOCKS5)...")
             proc.terminate()
 
-            DispatchQueue.global().async { [weak self] in
-                let deadline = Date().addingTimeInterval(1.5)
-                while proc.isRunning && Date() < deadline {
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
-
-                if proc.isRunning {
-                    kill(proc.processIdentifier, SIGKILL)
-                }
-
-                self?.stateLock.lock()
-                self?.process = nil
-                self?.state = .stopped
-                let newState = self?.state ?? .stopped
-                self?.stateLock.unlock()
-
-                self?.appendLog("[INFO] outline-ws-rust (SOCKS5) остановлен.")
-                self?.onStateChanged?(newState)
+            let deadline = Date().addingTimeInterval(timeout)
+            while proc.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
             }
+
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+            }
+
+            stateLock.lock()
+            self.process = nil
+            self.state = .stopped
+            stateLock.unlock()
+
+            appendLog("[INFO] outline-ws-rust (SOCKS5) остановлен.")
+            onStateChanged?(.stopped)
 
         case .tun:
             stopTunMonitor()
@@ -415,51 +428,37 @@ public final class ProcessController: @unchecked Sendable {
 
             appendLog("[INFO] Остановка TUN VPN и очистка системных маршрутов...")
 
-            DispatchQueue.global().async { [weak self] in
-                guard let self = self else { return }
-                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                    .appendingPathComponent("OutlineProxy")
-                let runDir = appSupport.appendingPathComponent("tun_run")
-
-                if let runnerURL = self.locateTunRunner() {
-                    if PrivilegedHelperManager.shared.isSudoersConfigured() {
-                        _ = self.runCommand("/usr/bin/sudo", [runnerURL.path, "stop", runDir.path])
-                    } else {
-                        let cmd = "\"\(runnerURL.path)\" stop \"\(runDir.path)\""
-                        _ = try? self.executeAsAdmin(command: cmd)
-                    }
+            if let runnerURL = locateTunRunner() {
+                if PrivilegedHelperManager.shared.isSudoersConfigured() {
+                    _ = runCommand("/usr/bin/sudo", [runnerURL.path, "stop"])
+                } else {
+                    let qRunner = PrivilegedHelperManager.shellQuote(runnerURL.path)
+                    let cmd = "\(qRunner) stop"
+                    _ = try? PrivilegedHelperManager.executeAsAdmin(command: cmd)
                 }
-
-                self.stateLock.lock()
-                self.tunPid = nil
-                self.state = .stopped
-                let newState = self.state
-                self.stateLock.unlock()
-
-                self.appendLog("[INFO] TUN VPN успешно отключен.")
-                self.onStateChanged?(newState)
             }
+
+            stateLock.lock()
+            self.tunPid = nil
+            self.state = .stopped
+            stateLock.unlock()
+
+            appendLog("[INFO] TUN VPN успешно отключен.")
+            onStateChanged?(.stopped)
+        }
+    }
+
+    /// Stops the running `outline-ws-rust` process gracefully in either mode.
+    public func stop() {
+        DispatchQueue.global().async { [weak self] in
+            self?.stopSync()
         }
     }
 
     // MARK: - Admin Execution via AppleScript
 
     private func executeAsAdmin(command: String) throws -> String {
-        let escaped = command.replacingOccurrences(of: "\\", with: "\\\\")
-                             .replacingOccurrences(of: "\"", with: "\\\"")
-        let script = "do shell script \"\(escaped)\" with administrator privileges"
-
-        var errorDict: NSDictionary?
-        if let appleScript = NSAppleScript(source: script) {
-            let output = appleScript.executeAndReturnError(&errorDict)
-            if let error = errorDict {
-                let errorMsg = (error[NSAppleScript.errorMessage] as? String) ?? "Отказ в правах администратора"
-                throw NSError(domain: "ProcessController", code: 2, userInfo: [NSLocalizedDescriptionKey: errorMsg])
-            }
-            return output.stringValue ?? ""
-        } else {
-            throw NSError(domain: "ProcessController", code: 3, userInfo: [NSLocalizedDescriptionKey: "Не удалось инициализировать AppleScript"])
-        }
+        try PrivilegedHelperManager.executeAsAdmin(command: command)
     }
 
     private static let timeFormatter: DateFormatter = {

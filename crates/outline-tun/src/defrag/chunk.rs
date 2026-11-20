@@ -26,6 +26,9 @@ pub(super) fn insert_chunk(
     offset: usize,
     data: &[u8],
 ) -> ChunkInsertOutcome {
+    if data.is_empty() {
+        return ChunkInsertOutcome::DuplicateExact;
+    }
     let Some(end) = offset.checked_add(data.len()) else {
         return ChunkInsertOutcome::Overlap;
     };

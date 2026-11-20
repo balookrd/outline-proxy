@@ -19,13 +19,10 @@ pub use relay_buf::{RELAY_BUF_IDLE_GRACE, RelayReadBuf, STREAM_INITIAL_READ_CAPA
 #[cfg(not(target_os = "linux"))]
 use anyhow::bail;
 use anyhow::{Context, Result};
-use socket2::{Domain, Protocol as SocketProtocol, Socket, TcpKeepalive, Type};
-use std::mem::ManuallyDrop;
+use socket2::{Domain, Protocol as SocketProtocol, SockRef, Socket, TcpKeepalive, Type};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-#[cfg(unix)]
-use std::os::fd::{AsRawFd, FromRawFd};
-#[cfg(windows)]
-use std::os::windows::io::{AsRawSocket, FromRawSocket};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -423,13 +420,8 @@ fn apply_tcp_keepalive(
         .with_interval(Duration::from_secs(interval_secs));
     #[cfg(target_os = "linux")]
     let keepalive = keepalive.with_retries(retries);
-    // SAFETY: `ManuallyDrop` prevents socket2 from closing the fd, which
-    // remains owned by `stream` throughout.
-    #[cfg(unix)]
-    let raw_socket = ManuallyDrop::new(unsafe { Socket::from_raw_fd(stream.as_raw_fd()) });
-    #[cfg(windows)]
-    let raw_socket = ManuallyDrop::new(unsafe { Socket::from_raw_socket(stream.as_raw_socket()) });
-    raw_socket
+    let socket = SockRef::from(stream);
+    socket
         .set_tcp_keepalive(&keepalive)
         .with_context(|| format!("failed to enable TCP keepalive for {addr}"))
 }

@@ -416,8 +416,11 @@ impl SharedH3Connection {
         } else {
             h3_open_stream_timeout()
         };
+        let mut send_request = {
+            let guard = self.send_request.lock().await;
+            guard.clone()
+        };
         let mut stream: H3RequestStreamHandle = timeout(open_budget, async {
-            let mut send_request = self.send_request.lock().await;
             send_request
                 .send_request(request)
                 .await

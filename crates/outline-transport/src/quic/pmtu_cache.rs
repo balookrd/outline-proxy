@@ -208,7 +208,7 @@ impl PmtuCache {
         true
     }
 
-    /// Write the cache atomically (sibling `.tmp`, then rename). No-op in memory.
+    /// Write the cache atomically (sibling unique `.tmp`, then rename). No-op in memory.
     pub(crate) fn flush(&self) -> std::io::Result<()> {
         let Some(path) = &self.path else { return Ok(()) };
         let _flush = self.flush_lock.lock();
@@ -216,9 +216,16 @@ impl PmtuCache {
         for (key, entry) in self.entries.lock().iter() {
             text.push_str(&format!("{key}\t{}\t{}\n", entry.mtu, entry.confirmed_at));
         }
-        let tmp = path.with_extension("tmp");
-        write_private(&tmp, &text)?;
-        std::fs::rename(&tmp, path)
+        static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let pid = std::process::id();
+        let count = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let fname = path.file_name().and_then(|f| f.to_str()).unwrap_or("pmtu_cache");
+        let tmp = path.with_file_name(format!(".{fname}.{pid}.{count}.tmp"));
+        let res = write_private(&tmp, &text).and_then(|()| std::fs::rename(&tmp, path));
+        if res.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        res
     }
 }
 
@@ -226,13 +233,15 @@ impl PmtuCache {
 fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    options.open(path)?.write_all(text.as_bytes())
+    let mut file = options.open(path)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()
 }
 
 fn load(path: &std::path::Path) -> HashMap<String, Entry> {

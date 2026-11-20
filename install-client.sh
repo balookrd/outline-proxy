@@ -12,7 +12,8 @@ INSTALL_PATH="${INSTALL_PATH:-/usr/local/bin/${BINARY_NAME}}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/outline-ws-rust}"
 STATE_DIR="${STATE_DIR:-/var/lib/outline-ws-rust}"
-TMP_DIR="${TMP_DIR:-/tmp/${BINARY_NAME}-install}"
+TMP_DIR=""
+trap '[[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR"' EXIT
 
 CHANNEL="${CHANNEL:-stable}"   # stable | nightly
 VERSION="${VERSION:-}"         # stable: 1.0.0 or v1.0.0 ; nightly: nightly
@@ -292,7 +293,7 @@ asset_url_from_release() {
   local target="$1"
   local asset_pattern
 
-  asset_pattern="/${BINARY_NAME}-v[^/]*-${target}\\.tar\\.gz$"
+  asset_pattern="/${BINARY_NAME}-v?[^/]*-${target}\\.tar\\.gz$"
   grep -oE '"browser_download_url":[[:space:]]*"[^"]+"' \
     | sed -E 's/^"browser_download_url":[[:space:]]*"([^"]+)"$/\1/' \
     | grep -E "$asset_pattern" \
@@ -467,7 +468,10 @@ get_installed_version() {
 }
 
 # Убирает префикс 'v' из тега релиза для сравнения с выводом --version
-strip_v() { echo "${1#v}"; }
+strip_v() {
+  local ver="${1#"${TAG_PREFIX:-}"}"
+  echo "${ver#v}"
+}
 
 collect_active_units() {
   systemctl list-units --type=service --state=active --no-legend --no-pager \
@@ -642,6 +646,7 @@ main() {
   local target release_json release_tag release_name asset_url archive_path workdir
   local svc_tmp tpl_tmp
   target="$(map_arch_to_target)"
+  [[ -n "$TMP_DIR" ]] || TMP_DIR="$(mktemp -d -t outline-ws-rust-install.XXXXXX)"
   archive_path="${TMP_DIR}/${BINARY_NAME}.tar.gz"
   workdir="${TMP_DIR}/work"
   svc_tmp="${TMP_DIR}/${SERVICE_NAME}"

@@ -136,7 +136,7 @@ impl<'a> Iterator for Chunker<'a> {
         }
 
         let chunk_limit = if self.dynamic && self.bytes_sent < RECORD_SIZE_BOOST_THRESHOLD {
-            TCP_MSS_PAYLOAD
+            TCP_MSS_PAYLOAD.min(self.limit)
         } else {
             self.limit
         };
@@ -163,7 +163,7 @@ impl ExactSizeIterator for Chunker<'_> {
             let mut sent = self.bytes_sent;
             while rem > 0 {
                 let lim = if sent < RECORD_SIZE_BOOST_THRESHOLD {
-                    TCP_MSS_PAYLOAD
+                    TCP_MSS_PAYLOAD.min(self.limit)
                 } else {
                     self.limit
                 };

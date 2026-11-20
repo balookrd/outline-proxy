@@ -11,6 +11,7 @@ pub use shared::init_h2_keepalive;
 #[cfg(test)]
 pub(crate) use shared::{build_websocket_connect_request, websocket_h2_target_uri};
 pub(crate) use shared::{connect_websocket_h2, gc_shared_h2_connections};
+pub(crate) use shared::{h2_keepalive_interval, h2_keepalive_timeout};
 
 use std::sync::Arc;
 

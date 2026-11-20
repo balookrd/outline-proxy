@@ -209,7 +209,19 @@ public enum UpdateInstaller {
         let fm = FileManager.default
         let downloads = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
-        let destination = downloads.appendingPathComponent(assetName)
+
+        // Sanitize assetName: forbid path traversal characters and ensure valid .dmg filename
+        let trimmedName = assetName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty,
+              !trimmedName.contains("/"),
+              !trimmedName.contains("\\"),
+              !trimmedName.contains(".."),
+              trimmedName != ".",
+              trimmedName.lowercased().hasSuffix(".dmg") else {
+            throw failure("Недопустимое имя файла обновления: \(assetName)")
+        }
+
+        let destination = downloads.appendingPathComponent(trimmedName)
         try? fm.removeItem(at: destination)
         try fm.moveItem(at: dmg, to: destination)
         NSWorkspace.shared.open(destination)

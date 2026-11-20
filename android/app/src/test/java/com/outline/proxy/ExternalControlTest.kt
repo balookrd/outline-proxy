@@ -101,10 +101,28 @@ class ParseControlUriTest {
 class CheckAccessTest {
 
     @Test
-    fun `enabled without a token accepts anything`() {
-        val config = ExternalControlConfig(enabled = true, token = "")
-        assertNull(checkAccess(null, config))
-        assertNull(checkAccess("whatever", config))
+    fun `default config is disabled with empty token`() {
+        val config = ExternalControlConfig()
+        org.junit.Assert.assertFalse(config.enabled)
+        assertEquals("", config.token)
+    }
+
+    @Test
+    fun `enabled with empty or blank token rejects access`() {
+        val emptyConfig = ExternalControlConfig(enabled = true, token = "")
+        assertEquals(RejectReason.BAD_TOKEN, checkAccess(null, emptyConfig))
+        assertEquals(RejectReason.BAD_TOKEN, checkAccess("whatever", emptyConfig))
+
+        val blankConfig = ExternalControlConfig(enabled = true, token = "   ")
+        assertEquals(RejectReason.BAD_TOKEN, checkAccess(null, blankConfig))
+    }
+
+    @Test
+    fun `generateSecureToken produces unique hex strings`() {
+        val token1 = generateSecureToken()
+        val token2 = generateSecureToken()
+        assertEquals(32, token1.length)
+        org.junit.Assert.assertNotEquals(token1, token2)
     }
 
     @Test

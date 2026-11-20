@@ -348,4 +348,10 @@ impl StandbyPool {
             TransportKind::Udp => &self.udp,
         }
     }
+
+    /// Drops all pre-warmed TCP and UDP carriers from this pool.
+    pub(crate) async fn clear(&self) {
+        self.tcp.lock().await.clear();
+        self.udp.lock().await.clear();
+    }
 }

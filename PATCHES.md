@@ -150,7 +150,11 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
    a write — and that `queue_send` is itself a second `send_data` into the
    still-occupied slot. Guarding only the shutdown path left that hole open,
    and it was the one still collapsing carriers in production after the
-   `send_poisoned` flag first landed. (Note: the unused `Http3ServerStream` /
+   `send_poisoned` flag first landed. Furthermore, `poll_write` guards against writes after
+   shutdown has already started (`shutdown_started`), and caps the returned length
+   to `queued.min(buf.len())` to prevent buffer overflow on cancellation.
+   `poll_flush` explicitly drains any in-flight queued write via `poll_drain`.
+   (Note: the unused `Http3ServerStream` /
    `Http3ClientStream` wrappers in `src/http3/stream.rs` are left at upstream
    vanilla — the data plane never instantiates them, so the fix lives only in
    the one live stream type.)

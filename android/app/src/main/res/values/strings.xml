@@ -232,4 +232,5 @@
     <string name="auto_wifi_bg_permission_btn">Allow all the time</string>
     <string name="split_gemini_hint">Routes network traffic through the Google App</string>
     <string name="split_gemini_banner">Gemini sends network traffic through the Google App. The Google App was also selected.</string>
+    <string name="split_empty_allowlist_error">Cannot connect: no valid apps selected in split tunnel allowlist.</string>
 </resources>

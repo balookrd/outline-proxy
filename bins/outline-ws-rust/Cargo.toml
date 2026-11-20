@@ -54,6 +54,7 @@ test-tls = ["outline-transport/test-tls"]
 [dependencies]
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
+blake3 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, default-features = true, features = ["derive", "env"] }
 futures-util = { workspace = true, features = ["sink", "std"] }

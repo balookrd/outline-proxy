@@ -7,7 +7,10 @@ use super::mutate::{
     get_or_init_outline_uplinks,
 };
 use super::payload::{FallbackPayload, MutationResponse, UplinkPayload};
-use super::payload::{merge_patch_into_table, payload_to_section, payload_to_table, table_to_json};
+use super::payload::{
+    merge_patch_into_table, payload_to_section, payload_to_table, redact_uplink_config_json,
+    table_to_json,
+};
 
 fn sample_config() -> &'static str {
     r#"# Test config
@@ -42,7 +45,7 @@ fn finds_group_by_name() {
 #[test]
 fn finds_uplink_index_by_group_and_name() {
     let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     assert_eq!(find_outline_uplink_index(arr, "core", "u1"), Some(0));
     assert_eq!(find_outline_uplink_index(arr, "core", "u2"), Some(1));
     assert_eq!(find_outline_uplink_index(arr, "core", "u3"), None);
@@ -53,7 +56,7 @@ fn finds_uplink_index_by_group_and_name() {
 #[test]
 fn insert_appends_uplink_table() {
     let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let payload = UplinkPayload {
         name: Some("u3".into()),
         transport: Some("ws".into()),
@@ -75,7 +78,7 @@ fn insert_appends_uplink_table() {
 #[test]
 fn merge_patch_updates_existing_fields_only() {
     let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "u1").unwrap();
     let patch = UplinkPayload {
         password: Some("new-password".into()),
@@ -93,7 +96,7 @@ fn merge_patch_updates_existing_fields_only() {
 #[test]
 fn remove_drops_entry() {
     let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "u1").unwrap();
     arr.remove(idx);
     let rendered = doc.to_string();
@@ -104,7 +107,7 @@ fn remove_drops_entry() {
 #[test]
 fn count_uplinks_in_group_counts_only_matching_group() {
     let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     assert_eq!(count_uplinks_in_group(arr, "core"), 2);
     assert_eq!(count_uplinks_in_group(arr, "missing"), 0);
 }
@@ -112,7 +115,7 @@ fn count_uplinks_in_group_counts_only_matching_group() {
 #[test]
 fn enrich_round_trip_returns_uplink_fields() {
     let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "u1").unwrap();
     let json = table_to_json(arr.get(idx).unwrap()).expect("table_to_json");
     assert_eq!(json["name"], "u1");
@@ -199,7 +202,7 @@ vless_id = "11111111-2222-3333-4444-555555555555"
 "#
     .parse::<DocumentMut>()
     .unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "vx").unwrap();
     let patch = UplinkPayload {
         vless_xhttp_url: Some("https://new.example.com/B/xhttp".into()),
@@ -352,7 +355,7 @@ name = "core"
 "#
     .parse::<DocumentMut>()
     .unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     arr.push(payload_to_table(&payload));
     let rendered = doc.to_string();
     assert!(
@@ -385,7 +388,7 @@ tcp_ws_url = "wss://old.example.com:8388/tcp"
 "#
     .parse::<DocumentMut>()
     .unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "edge").unwrap();
     let tbl = arr.get_mut(idx).unwrap();
     let patch = UplinkPayload {
@@ -432,7 +435,7 @@ tcp_ws_url = "wss://old.example.com:8388/tcp"
 "#
     .parse::<DocumentMut>()
     .unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "edge").unwrap();
     let tbl = arr.get_mut(idx).unwrap();
     let patch = UplinkPayload {
@@ -469,7 +472,7 @@ tcp_ws_url = "wss://kept.example.com:8388/tcp"
 "#
     .parse::<DocumentMut>()
     .unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "edge").unwrap();
     let tbl = arr.get_mut(idx).unwrap();
     // Patch touches an unrelated field; fallbacks left out (None).
@@ -579,7 +582,7 @@ name = "core"
 "#
     .parse::<DocumentMut>()
     .unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     arr.push(payload_to_table(&payload));
     let rendered = doc.to_string();
     assert!(
@@ -618,7 +621,7 @@ tcp_ws_url = "wss://old.example.com:8388/tcp"
 "#
     .parse::<DocumentMut>()
     .unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "edge").unwrap();
     let tbl = arr.get_mut(idx).unwrap();
     let patch = UplinkPayload {
@@ -663,7 +666,7 @@ async fn write_document_atomic_preserves_mode_and_leaves_no_temp() {
 
     // A real control-plane mutation: patch u1's password, then persist.
     let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "u1").unwrap();
     merge_patch_into_table(
         arr.get_mut(idx).unwrap(),
@@ -722,7 +725,7 @@ password = "pw-c"
 #[test]
 fn reorder_changes_rendered_order_within_group() {
     let mut doc = three_uplink_config().parse::<DocumentMut>().unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     // Move "c" (index 2 in the group) to the front.
     apply_reorder(arr, "core", "c", 0).expect("reorder ok");
     // The RENDERED order must reflect the move — toml_edit encodes tables by
@@ -771,7 +774,7 @@ password = "pw-z"
 "#
     .parse::<DocumentMut>()
     .unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     // Swap a/b within "core"; "z" in "alt" must keep its slot.
     apply_reorder(arr, "core", "b", 0).expect("reorder ok");
     let rendered = doc.to_string();
@@ -787,7 +790,7 @@ password = "pw-z"
 #[test]
 fn reorder_rejects_unknown_uplink() {
     let mut doc = three_uplink_config().parse::<DocumentMut>().unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let err = apply_reorder(arr, "core", "ghost", 0).expect_err("unknown name");
     assert!(err.contains("ghost"), "got: {err}");
 }
@@ -795,7 +798,7 @@ fn reorder_rejects_unknown_uplink() {
 #[test]
 fn reorder_rejects_out_of_range_target() {
     let mut doc = three_uplink_config().parse::<DocumentMut>().unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let err = apply_reorder(arr, "core", "a", 3).expect_err("target out of range");
     assert!(err.contains("out of range"), "got: {err}");
 }
@@ -804,7 +807,7 @@ fn reorder_rejects_out_of_range_target() {
 fn reorder_same_position_is_noop() {
     let mut doc = three_uplink_config().parse::<DocumentMut>().unwrap();
     let before = doc.to_string();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     apply_reorder(arr, "core", "a", 0).expect("noop ok");
     assert_eq!(doc.to_string(), before, "moving to the same slot must not change the doc");
 }
@@ -857,7 +860,7 @@ padding = false
 "#
     .parse::<DocumentMut>()
     .unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "u-rot").unwrap();
 
     // 1. Update shuffle_wires, shuffle_timer, padding
@@ -874,7 +877,7 @@ padding = false
     assert!(rendered.contains("padding = true"));
 
     // 2. Clear shuffle_timer with empty string
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let clear_timer_patch = UplinkPayload {
         shuffle_timer: Some("".into()),
         ..Default::default()
@@ -924,7 +927,7 @@ password = "some-long-password"
 "#
     .parse::<DocumentMut>()
     .unwrap();
-    let arr = get_or_init_outline_uplinks(&mut doc);
+    let arr = get_or_init_outline_uplinks(&mut doc).unwrap();
     let idx = find_outline_uplink_index(arr, "core", "edge").unwrap();
     let tbl = arr.get_mut(idx).unwrap();
     let patch = UplinkPayload {
@@ -953,4 +956,40 @@ password = "some-long-password"
         .expect("the fallback is rendered as an array-of-tables entry");
     assert!(uplink.contains("disable_udp_gso = true"), "{rendered}");
     assert!(fallback.contains("disable_udp_gso = false"), "{rendered}");
+}
+
+#[test]
+fn redact_uplink_config_json_hides_sensitive_fields() {
+    let mut config = serde_json::json!({
+        "name": "secret-uplink",
+        "group": "core",
+        "transport": "ws",
+        "password": "super-secret-password",
+        "vless_id": "c19be163-9a92-4dc5-9bea-91922544e9a6",
+        "link": "vless://c19be163-9a92-4dc5-9bea-91922544e9a6@example.com:443?type=ws",
+        "ss_link": "ss://YWVzLTEyOC1nY206dGVzdA@1.2.3.4:8388",
+        "raw_ss_link": "ss://YWVzLTEyOC1nY206dGVzdA#tag",
+        "tcp_ws_url": "wss://user:pass@example.com/ws",
+        "fallbacks": [
+            {
+                "password": "fallback-password",
+                "link": "vless://another-uuid@example.com:443"
+            }
+        ]
+    });
+
+    redact_uplink_config_json(&mut config);
+
+    assert_eq!(config["password"], "[REDACTED]");
+    assert_eq!(config["vless_id"], "[REDACTED]");
+    assert_eq!(config["link"], "vless://[REDACTED]@example.com:443?type=ws");
+    assert_eq!(config["tcp_ws_url"], "wss://[REDACTED]@example.com/ws");
+    assert_eq!(config["fallbacks"][0]["password"], "[REDACTED]");
+    assert_eq!(config["fallbacks"][0]["link"], "vless://[REDACTED]@example.com:443");
+}
+
+#[test]
+fn get_or_init_outline_uplinks_rejects_non_table_outline() {
+    let mut doc = "outline = 42\n".parse::<DocumentMut>().unwrap();
+    assert!(get_or_init_outline_uplinks(&mut doc).is_err());
 }

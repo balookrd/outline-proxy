@@ -345,13 +345,14 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) -> RouteWatchersGuard {
                         continue;
                     }
                 }
+                let mut new_mtimes = Vec::with_capacity(watched.len());
                 let mut changed = false;
                 for (i, f) in watched.iter().enumerate() {
                     let mtime = tokio::fs::metadata(f).await.ok().and_then(|m| m.modified().ok());
                     if mtime != last_mtimes[i] {
-                        last_mtimes[i] = mtime;
                         changed = true;
                     }
+                    new_mtimes.push(mtime);
                 }
                 if !changed {
                     continue;
@@ -371,6 +372,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) -> RouteWatchersGuard {
                             );
                             continue;
                         }
+                        last_mtimes = new_mtimes;
                         let count_v4 = new_cidrs.v4_range_count();
                         let count_v6 = new_cidrs.v6_range_count();
                         let count_domains = new_domains.suffix_count();

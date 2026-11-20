@@ -10,8 +10,12 @@ use anyhow::{Context, Result};
 #[cfg(unix)]
 use tracing::warn;
 
-/// Write `bytes` to `path` atomically: first to a sibling `.{name}.tmp`, then
-/// rename over `path`. A reader either sees the previous file or the complete
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Write `bytes` to `path` atomically: first to a sibling unique temporary file,
+/// then rename over `path`. A reader either sees the previous file or the complete
 /// new one — never a truncated mix — and a crash mid-write leaves the target
 /// untouched.
 ///
@@ -29,7 +33,9 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_else(|| "config".to_owned());
-        t.set_file_name(format!(".{fname}.tmp"));
+        let pid = std::process::id();
+        let count = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        t.set_file_name(format!(".{fname}.{pid}.{count}.tmp"));
         t
     };
 
@@ -55,7 +61,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 /// target, and its mode is only relaxed to the target's afterwards.
 fn write_temp(tmp: &Path, bytes: &[u8]) -> Result<()> {
     let mut opts = fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;

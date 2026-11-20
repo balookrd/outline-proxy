@@ -91,3 +91,10 @@ fn parse_error_bad_addr() {
 fn parse_error_prefix_too_long() {
     assert!(CidrSet::parse(&["1.2.3.4/33".to_string()]).is_err());
 }
+
+#[test]
+fn ipv4_mapped_ipv6_matches_v4_rules() {
+    let s = set(&["192.168.0.0/16"]);
+    assert!(s.contains(&v6("::ffff:192.168.1.1")));
+    assert!(!s.contains(&v6("::ffff:10.0.0.1")));
+}

@@ -47,3 +47,34 @@ async fn tls_probe_silent_upstream_blocks_handshake() {
         "silent upstream must keep the TLS handshake parked until the caller's timeout fires"
     );
 }
+
+#[tokio::test]
+async fn tls_probe_invalid_upstream_data_fails_without_hang() {
+    let (mut writer, mut reader, _server) = spawn_vless_loopback(b"\x16\x03\x03\x00\x05garbage");
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let target_wire = target.to_wire_bytes().unwrap();
+    let bytes = BytesRecorder {
+        group: "g",
+        uplink: "u",
+        transport: "tcp",
+        probe: "tls",
+    };
+
+    let result = tokio::time::timeout(
+        Duration::from_millis(500),
+        drive_tls_handshake(
+            &mut writer,
+            &mut reader,
+            "example.com",
+            443,
+            &target_wire,
+            false,
+            &bytes,
+        ),
+    )
+    .await;
+
+    assert!(result.is_ok(), "probe should return within timeout, not hang in CPU loop");
+    assert!(result.unwrap().is_err(), "invalid TLS records must result in an error");
+}

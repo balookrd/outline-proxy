@@ -752,7 +752,7 @@ index ba00695..e305aab 100644
      }
  }
 diff --git a/src/connection/assembler.rs b/src/connection/assembler.rs
-index 93268e1..02627e6 100644
+index 93268e1..c7cb458 100644
 --- a/src/connection/assembler.rs
 +++ b/src/connection/assembler.rs
 @@ -103,8 +103,13 @@ impl Assembler {
@@ -798,7 +798,7 @@ index 93268e1..02627e6 100644
          // Small gapped frames hold over-allocation below the threshold, so bound the count too.
 -        if over_allocation > threshold || self.data.len() > COMPACT_THRESHOLD {
 -            self.defragment();
-+        if over_allocation > threshold || self.data.len() > COMPACT_FACTOR * max_chunks {
++        if over_allocation > threshold || self.data.len() > COMPACT_FACTOR.saturating_mul(max_chunks) {
 +            self.defragment_to(max_chunks);
              // ngtcp2 uses a threshold of 4000 -- try to be a little more conservative?
 -            if self.data.len() > MAX_CHUNKS {
@@ -806,7 +806,7 @@ index 93268e1..02627e6 100644
                  return Err(TooManyChunks);
              }
          }
-@@ -360,17 +376,38 @@ pub(crate) struct TooManyChunks;
+@@ -360,17 +376,40 @@ pub(crate) struct TooManyChunks;
  /// if compaction cannot get the count back down to this.
  const MAX_CHUNKS: usize = 1024;
  
@@ -821,9 +821,11 @@ index 93268e1..02627e6 100644
 +/// the read offset waits for the first retransmission, and the stream would be rejected.
 +/// Never below `MAX_CHUNKS`; the per-span overhead stays the same share of the window.
 +pub(super) fn chunk_limit(window: u64) -> usize {
++    const HARD_CEILING_CHUNKS: usize = 16384;
 +    usize::try_from(window / WINDOW_BYTES_PER_CHUNK)
 +        .unwrap_or(usize::MAX)
 +        .max(MAX_CHUNKS)
++        .min(HARD_CEILING_CHUNKS)
 +}
 +
  /// Minimum size of a defragmented chunk that is retained without coalescing.
@@ -848,7 +850,7 @@ index 93268e1..02627e6 100644
  
  #[cfg(test)]
  mod test {
-@@ -785,6 +822,49 @@ mod test {
+@@ -785,6 +824,49 @@ mod test {
          );
      }
  

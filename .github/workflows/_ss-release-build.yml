@@ -52,13 +52,18 @@ jobs:
       - id: vars
         name: Resolve workflow variables
         shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_CHECKOUT_REF: ${{ inputs.checkout_ref }}
+          INPUT_RELEASE_NAME: ${{ inputs.release_name }}
+          INPUT_ARTIFACT_VERSION: ${{ inputs.artifact_version }}
         run: |
           set -euo pipefail
 
-          tag="${{ inputs.tag }}"
-          checkout_ref="${{ inputs.checkout_ref }}"
-          release_name="${{ inputs.release_name }}"
-          artifact_version="${{ inputs.artifact_version }}"
+          tag="$INPUT_TAG"
+          checkout_ref="$INPUT_CHECKOUT_REF"
+          release_name="$INPUT_RELEASE_NAME"
+          artifact_version="$INPUT_ARTIFACT_VERSION"
 
           if [[ -z "$checkout_ref" ]]; then
             checkout_ref="$tag"

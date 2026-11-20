@@ -23,11 +23,17 @@ with an English gloss.
     itself) and default sub-routes through the `utun` peer `10.0.85.1`.
     This captures traffic of every process, including CLI tools and DNS.
 - Passwordless TUN start. The **Настроить в 1 клик...** ("Configure in 1
-  click") button in Settings asks for the administrator password once, copies
-  `tun-runner.sh` to `/Library/Application Support/OutlineProxy/tun-runner.sh`
-  and writes a `NOPASSWD` rule for that path to `/etc/sudoers.d/outline-proxy`.
-  After that, TUN connect and disconnect show no password dialog. The
-  **Удалить правило** ("Remove rule") button in the same card removes it.
+  click") button in Settings asks for the administrator password once, installs
+  both `tun-runner.sh` and `outline-ws-rust` to `/Library/Application Support/OutlineProxy/`
+  with `root:wheel 0755` permissions, prepares `/var/run/outline-proxy` (`0700`),
+  and writes a strictly scoped `NOPASSWD` rule for that runner path to
+  `/etc/sudoers.d/outline-proxy`. The helper executes only the fixed system-installed
+  binary, ignoring arbitrary CLI arguments. After that, TUN connect and disconnect
+  show no password dialog. The **Удалить правило** ("Remove rule") button in the
+  same card removes the rule and the system binaries.
+- IPv6 leak protection in TUN mode: while TUN is active, `tun-runner.sh` applies
+  IPv6 blackhole routes (`::/1` and `8000::/1`), preventing IPv6 traffic from bypassing
+  the tunnel on dual-stack networks.
 - Menu-bar item: connect/disconnect, status, mode and server selection.
 - "TCP only" mode (no HTTP/3), a switch in Settings and in the menu-bar menu.
   It rewrites the config so that `xhttp_h3` / `ws_h3` carriers become `xhttp_h2`
@@ -37,8 +43,8 @@ with an English gloss.
   connected reconnects the tunnel.
 - Profiles and subscriptions: import of `vless://` and `ss://` share links
   (also wrapped in `outline://`), from the clipboard as well, and of
-  subscription URLs (`https://`; the parser also accepts `http://`) that are
-  re-fetched automatically.
+  subscription URLs (strictly `https://` with response size limits and format checks)
+  that are re-fetched automatically.
 - Main menu (Файл, Правка, Вид, Окно, Справка — File, Edit, View, Window,
   Help) with shortcuts: `Cmd+Q` (quit, removing the system proxy and routes),
   `Cmd+W` (close window), `Cmd+,` (settings), `Cmd+O` (main window), `Cmd+L`

@@ -204,6 +204,6 @@ public final class AppState: ObservableObject {
 
     public func cleanupOnExit() {
         SystemProxyManager.shared.disableProxy()
-        ProcessController.shared.stop()
+        ProcessController.shared.stopSync(timeout: 2.0)
     }
 }

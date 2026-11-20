@@ -47,11 +47,16 @@ pub(in crate::proxy) async fn serve_udp_associate(
         // Optional socket for direct UDP packets with fwmark to prevent
         // loopback through TUN when all traffic is captured.
         let direct_socket = if direct_udp_possible(&config, &registry) {
+            let direct_bind = if bind_ip.is_ipv6() {
+                SocketAddr::from(([0u8; 16], 0))
+            } else {
+                SocketAddr::from(([0u8; 4], 0))
+            };
             let std_sock = outline_net::bind_udp_socket_direct(
-                SocketAddr::new(bind_ip, 0),
+                direct_bind,
                 config.direct_fwmark,
             )
-            .with_context(|| format!("failed to bind direct UDP socket on {}", bind_ip))?;
+            .with_context(|| format!("failed to bind direct UDP socket on {}", direct_bind))?;
             Some(Arc::new(UdpSocket::from_std(std_sock)?))
         } else {
             None
@@ -150,13 +155,16 @@ pub(in crate::proxy) async fn serve_udp_associate(
                         continue;
                     },
                     UdpPacketRoute::Direct => {
-                        send_udp_direct(
+                        if let Err(e) = send_udp_direct(
                             &direct_socket_uplink,
                             &datagram.target,
                             &datagram.payload[datagram.addr_len..],
                             &dns_cache_uplink,
                         )
-                        .await?;
+                        .await
+                        {
+                            debug!(target = %datagram.target, error = %e, "direct UDP send failed");
+                        }
                         continue;
                     },
                     UdpPacketRoute::Tunnel(name) => name,

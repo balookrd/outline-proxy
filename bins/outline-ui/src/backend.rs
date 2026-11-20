@@ -17,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, HOST};
 use http::{Method, Request, StatusCode};
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
@@ -189,6 +189,9 @@ fn instance_url(base: &str, path: &str) -> Result<Url> {
     Ok(url)
 }
 
+/// Caps the buffered control response size to protect against unbounded memory growth.
+const MAX_CONTROL_RESPONSE_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
+
 async fn exchange<T>(io: T, request: Request<Full<Bytes>>) -> Result<BackendResponse>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -205,10 +208,10 @@ where
     }));
     let response = sender.send_request(request).await.context("control request failed")?;
     let status = response.status();
-    let body = response
-        .into_body()
+    let body = Limited::new(response.into_body(), MAX_CONTROL_RESPONSE_BYTES)
         .collect()
         .await
+        .map_err(|error| anyhow::anyhow!("{error}"))
         .context("failed to read control response body")?
         .to_bytes();
     Ok(BackendResponse { status, body })
