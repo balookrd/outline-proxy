@@ -147,7 +147,11 @@ public final class ProcessController: @unchecked Sendable {
         serverHost: String? = nil
     ) throws {
         stateLock.lock()
-        guard case .stopped = state else {
+        if case .running = state {
+            stateLock.unlock()
+            return
+        }
+        if case .starting = state {
             stateLock.unlock()
             return
         }
@@ -212,8 +216,13 @@ public final class ProcessController: @unchecked Sendable {
             let reason = p.terminationReason
 
             self.stateLock.lock()
+            let isStopping = (self.state == .stopping)
             self.process = nil
-            self.state = (status == 0) ? .stopped : .error("Процесс завершился с кодом \(status)")
+            if isStopping || status == 0 || status == SIGTERM {
+                self.state = .stopped
+            } else {
+                self.state = .error("Процесс завершился с кодом \(status)")
+            }
             let currentState = self.state
             self.stateLock.unlock()
 
@@ -278,10 +287,19 @@ public final class ProcessController: @unchecked Sendable {
             }
             appendLog("[INFO] tun-runner: \(output)")
 
-            // Check PID file in root-owned run directory
+            // Check PID file in root-owned run directory with brief polling
             let pidFile = runDir.appendingPathComponent("tun.pid")
-            guard let pidStr = try? String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
-                  let pid = Int32(pidStr), pid > 1 else {
+            var resolvedPid: Int32?
+            for _ in 0..<15 {
+                if let pidStr = try? String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+                   let pid = Int32(pidStr), pid > 1 {
+                    resolvedPid = pid
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+
+            guard let pid = resolvedPid else {
                 let err = "Не удалось запустить TUN: файл PID отсутствует или невалиден в \(pidFile.path)"
                 stateLock.lock()
                 self.state = .error(err)
