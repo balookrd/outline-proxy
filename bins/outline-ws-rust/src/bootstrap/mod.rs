@@ -277,10 +277,17 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<TunFd
             ipsec_bypass,
         );
         if let Some(tun) = config.tun.clone() {
-            #[cfg(any(unix, windows))]
+            #[cfg(unix)]
             outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone(), tun_fd)
                 .await
                 .context("failed to start TUN loop")?;
+            #[cfg(windows)]
+            {
+                let _ = tun_fd;
+                outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone(), None)
+                    .await
+                    .context("failed to start TUN loop")?;
+            }
             #[cfg(not(any(unix, windows)))]
             {
                 let _ = (tun, tun_routing, tun_fd);
