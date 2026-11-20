@@ -45,6 +45,20 @@ fn dirty_read_error_is_not_clean() {
 }
 
 #[test]
+fn h3_no_error_reader_stop_classifies_as_clean_close() {
+    let err = anyhow!(
+        "websocket read failed: IO error: I/O error: Connection error: Remote error: ApplicationClose: H3_NO_ERROR"
+    );
+    let stop = ReaderStop::classify(&err);
+    assert!(
+        matches!(stop, ReaderStop::CleanClose),
+        "an H3_NO_ERROR close must classify as clean close, got {stop:?}",
+    );
+    assert!(!stop.escalates_to_carrier());
+    assert_eq!(stop.close_reason(), "closed");
+}
+
+#[test]
 fn corrupt_datagram_stops_the_flow_without_charging_the_carrier() {
     // A payload the AEAD could not open says nothing about the carrier that
     // delivered it. The flow still goes away (its SS2022 replay state is now
