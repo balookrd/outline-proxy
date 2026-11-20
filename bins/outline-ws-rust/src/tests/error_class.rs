@@ -24,6 +24,15 @@ fn tls_close_notify_missing_is_treated_as_closed() {
 }
 
 #[test]
+fn h3_no_error_remote_close_is_classified_as_clean_close() {
+    let error = anyhow!(
+        "websocket read failed: IO error: I/O error: Connection error: Remote error: ApplicationClose: H3_NO_ERROR: I/O error: Connection error: Remote error: ApplicationClose: H3_NO_ERROR"
+    );
+    assert!(is_ws_closed(&error));
+    assert!(!is_upstream_runtime_failure(&error));
+}
+
+#[test]
 fn typed_websocket_closed_is_detected() {
     use outline_transport::WsClosed;
     let error = anyhow::Error::from(WsClosed).context("websocket read failed");
