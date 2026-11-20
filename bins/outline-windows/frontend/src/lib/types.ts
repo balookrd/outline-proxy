@@ -45,6 +45,10 @@ export interface ConnectionStatusResponse {
   tcp_only?: boolean;
   uptimeSecs?: number | null;
   uptime_secs?: number | null;
+  txBytes?: number;
+  tx_bytes?: number;
+  rxBytes?: number;
+  rx_bytes?: number;
 }
 
 /**

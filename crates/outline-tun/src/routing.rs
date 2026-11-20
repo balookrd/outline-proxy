@@ -106,6 +106,10 @@ impl TunRouting {
         &self.default_group
     }
 
+    pub fn registry(&self) -> &UplinkRegistry {
+        &self.registry
+    }
+
     /// Current [`RoutingTable::version`] — `0` when no table is configured, in
     /// which case no rule can ever change and the constant is as valid as any
     /// snapshot. Callers that cache a routing *input* (e.g. the UDP engine's

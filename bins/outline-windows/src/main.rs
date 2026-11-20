@@ -8,6 +8,7 @@ pub mod config_generator;
 pub mod process_controller;
 pub mod profile_store;
 pub mod proxy_manager;
+pub mod traffic_monitor;
 pub mod tray;
 
 #[cfg(test)]
@@ -24,6 +25,14 @@ pub struct AppState {
 }
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        // Enforce Per-Monitor V2 DPI awareness to prevent Windows DWM bitmap stretching/blurring.
+        windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+    }
+
     let profile_store = Arc::new(ProfileStore::load().unwrap_or_else(|e| {
         tracing::warn!("Failed to load existing profiles, initializing empty: {e}");
         ProfileStore::empty(ProfileStore::default_storage_path())
@@ -48,6 +57,7 @@ fn main() {
             commands::add_profile,
             commands::remove_profile,
             commands::select_profile,
+            commands::rename_profile,
             commands::get_logs,
             commands::get_settings,
             commands::update_settings,

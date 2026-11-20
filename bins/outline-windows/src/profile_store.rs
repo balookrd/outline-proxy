@@ -459,6 +459,25 @@ impl ProfileStore {
         self.save()
     }
 
+    /// Renames a profile by ID and persists to disk.
+    pub fn rename_profile(&self, id: &str, new_name: &str) -> Result<ServerProfile> {
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() {
+            bail!("profile name cannot be empty");
+        }
+        let updated = {
+            let mut lock = self.data.write().map_err(|_| anyhow!("lock poisoned"))?;
+            if let Some(profile) = lock.profiles.iter_mut().find(|p| p.id == id) {
+                profile.name = trimmed.to_string();
+                profile.clone()
+            } else {
+                bail!("profile with id '{id}' not found for rename");
+            }
+        };
+        self.save()?;
+        Ok(updated)
+    }
+
     /// Updates an existing profile by matching `id` and persists.
     pub fn update_profile(&self, profile: ServerProfile) -> Result<()> {
         {

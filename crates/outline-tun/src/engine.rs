@@ -218,7 +218,48 @@ pub async fn spawn_tun_loop(
         let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2048);
         spawn_wintun_reader_thread(device.session, device.read_event, tx);
 
+        // Collect uplink server IPs to install host routes through default gateway
+        let mut server_ips = Vec::new();
+        for group in routing.registry().groups() {
+            for uplink in group.manager.uplinks() {
+                if let Some(url) = uplink.tcp_dial_url() {
+                    if let Some(host) = url.host_str() {
+                        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                            server_ips.push(ip);
+                        } else if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(
+                            host,
+                            url.port().unwrap_or(443),
+                        )) {
+                            for addr in addrs {
+                                server_ips.push(addr.ip());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        server_ips.sort();
+        server_ips.dedup();
+
+        // 1. Setup DNS on Wintun adapter (Cloudflare + Google DNS)
+        let _ = crate::routing::windows::set_interface_dns(
+            wintun_if_index,
+            &["1.1.1.1".parse().unwrap(), "8.8.8.8".parse().unwrap()],
+        );
+
+        // 2. Setup routes: host routes to servers via physical gateway + default 0.0.0.0/1 and 128.0.0.0/1 via Wintun
+        let route_guard =
+            match crate::routing::windows::setup_windows_routes_multi(&server_ips, wintun_if_index)
+            {
+                Ok(guard) => Some(guard),
+                Err(e) => {
+                    warn!(error = %e, "failed to setup Windows routing for Wintun");
+                    None
+                },
+            };
+
         tokio::spawn(async move {
+            let _route_guard_holder = route_guard;
             if let Err(error) = wintun_read_loop(
                 rx,
                 writer,

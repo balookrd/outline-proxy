@@ -14,17 +14,13 @@
       {
         "label": "main",
         "title": "Outline Proxy",
-        "width": 400,
-        "height": 600,
+        "width": 380,
+        "height": 730,
         "resizable": false,
         "decorations": true,
         "visible": false
       }
     ],
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "tooltip": "Outline Proxy"
-    },
     "security": {
       "csp": null
     }

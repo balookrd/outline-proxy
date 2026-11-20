@@ -113,6 +113,17 @@ fn test_profile_store_crud_and_persistence() {
         "Profile 1 Renamed"
     );
 
+    // Test rename_profile method directly
+    reloaded
+        .rename_profile("p1", "Renamed via helper")
+        .expect("rename p1");
+    assert_eq!(
+        reloaded.profiles().iter().find(|p| p.id == "p1").unwrap().name,
+        "Renamed via helper"
+    );
+    assert!(reloaded.rename_profile("p1", "   ").is_err(), "empty name should fail");
+    assert!(reloaded.rename_profile("nonexistent", "foo").is_err(), "missing id should fail");
+
     // Remove active profile 2
     reloaded.remove_profile("p2").expect("remove p2");
     assert_eq!(reloaded.profiles().len(), 1);

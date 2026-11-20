@@ -319,6 +319,17 @@ fi
 echo "=== Сборка Outline Proxy для Windows (${TARGET_TRIPLE}) ==="
 
 # 1. Проверка окружения перед выполнением сборки
+if [[ -d "/opt/homebrew/Cellar/llvm@22/22.1.8/bin" && -d "/opt/homebrew/Cellar/lld@22/22.1.8/bin" ]]; then
+    export PATH="/opt/homebrew/Cellar/llvm@22/22.1.8/bin:/opt/homebrew/Cellar/lld@22/22.1.8/bin:$PATH"
+fi
+
+XWIN_CACHE="${HOME}/Library/Caches/cargo-xwin/xwin"
+if [[ -d "${XWIN_CACHE}" ]]; then
+    export RUSTFLAGS="-C target-feature=+crt-static -Clink-arg=libucrt.lib -Lnative=${XWIN_CACHE}/crt/lib/x86_64 -Lnative=${XWIN_CACHE}/sdk/lib/um/x86_64 -Lnative=${XWIN_CACHE}/sdk/lib/ucrt/x86_64 ${RUSTFLAGS:-}"
+else
+    export RUSTFLAGS="-C target-feature=+crt-static ${RUSTFLAGS:-}"
+fi
+
 if [[ "${IS_WINDOWS}" == "true" ]]; then
     CARGO_CMD=("cargo" "build" "--target" "${TARGET_TRIPLE}" "--release")
 else

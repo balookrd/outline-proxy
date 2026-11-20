@@ -57,6 +57,13 @@ export async function selectProfile(id: string): Promise<void> {
 }
 
 /**
+ * Rename a profile or subscription by ID.
+ */
+export async function renameProfile(id: string, name: string): Promise<ServerProfile> {
+  return invoke<ServerProfile>('rename_profile', { id, name });
+}
+
+/**
  * Get the current in-memory log buffer.
  */
 export async function getLogs(): Promise<string[]> {
