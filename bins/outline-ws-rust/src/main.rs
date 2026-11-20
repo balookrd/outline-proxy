@@ -3,14 +3,14 @@ use clap::Parser;
 
 use outline_ws_rust::config::Args;
 
-#[cfg(all(feature = "mimalloc", feature = "jemalloc"))]
+#[cfg(all(not(windows), feature = "mimalloc", feature = "jemalloc"))]
 compile_error!("features `mimalloc` and `jemalloc` are mutually exclusive: pick one allocator");
 
-#[cfg(feature = "mimalloc")]
+#[cfg(any(windows, feature = "mimalloc"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[cfg(feature = "jemalloc")]
+#[cfg(all(not(windows), feature = "jemalloc"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -34,7 +34,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 ///
 /// jemalloc applies `MALLOC_CONF` from the environment after this symbol, so a
 /// node can retune without a rebuild.
-#[cfg(feature = "jemalloc")]
+#[cfg(all(not(windows), feature = "jemalloc"))]
 #[unsafe(export_name = "malloc_conf")]
 pub static MALLOC_CONF: &[u8] =
     b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:0,calloc_madvise_threshold:0\0";
@@ -43,7 +43,7 @@ pub static MALLOC_CONF: &[u8] =
 /// where post-burst RSS sits above `MemoryHigh` short (that window is where a
 /// low-RAM host livelocks); the heap walk itself is milliseconds, negligible
 /// at this cadence.
-#[cfg(feature = "mimalloc")]
+#[cfg(any(windows, feature = "mimalloc"))]
 const MIMALLOC_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Spawn a low-frequency background thread that forces mimalloc to return
@@ -58,7 +58,7 @@ const MIMALLOC_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// negligible next to the RSS it returns. mimalloc already decommits on
 /// purge by default (`mi_option_purge_decommits = 1`), so reclaimed pages
 /// are handed back to the kernel rather than merely reset.
-#[cfg(feature = "mimalloc")]
+#[cfg(any(windows, feature = "mimalloc"))]
 fn spawn_mimalloc_maintenance() {
     let spawned = std::thread::Builder::new()
         .name("mimalloc-purge".to_owned())
@@ -126,7 +126,7 @@ fn main() -> Result<()> {
         #[cfg(not(feature = "env-filter"))]
         tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).init();
 
-        #[cfg(feature = "mimalloc")]
+        #[cfg(any(windows, feature = "mimalloc"))]
         spawn_mimalloc_maintenance();
 
         #[cfg(all(unix, feature = "jemalloc"))]

@@ -22,7 +22,10 @@ use anyhow::{Context, Result};
 use socket2::{Domain, Protocol as SocketProtocol, Socket, TcpKeepalive, Type};
 use std::mem::ManuallyDrop;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawSocket, FromRawSocket};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -422,7 +425,10 @@ fn apply_tcp_keepalive(
     let keepalive = keepalive.with_retries(retries);
     // SAFETY: `ManuallyDrop` prevents socket2 from closing the fd, which
     // remains owned by `stream` throughout.
+    #[cfg(unix)]
     let raw_socket = ManuallyDrop::new(unsafe { Socket::from_raw_fd(stream.as_raw_fd()) });
+    #[cfg(windows)]
+    let raw_socket = ManuallyDrop::new(unsafe { Socket::from_raw_socket(stream.as_raw_socket()) });
     raw_socket
         .set_tcp_keepalive(&keepalive)
         .with_context(|| format!("failed to enable TCP keepalive for {addr}"))

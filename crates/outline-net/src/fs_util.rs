@@ -116,12 +116,19 @@ fn carry_target_metadata(_target: &Path, _tmp: &Path) -> Result<()> {
 /// filesystems reject `fsync` on a directory, and a config that is merely not
 /// yet durable is not worth failing a control-plane mutation over.
 fn sync_parent_dir(path: &Path) {
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    if let Err(err) = fs::File::open(parent).and_then(|dir| dir.sync_all()) {
-        warn!(dir = %parent.display(), error = %err, "could not fsync config directory");
+    #[cfg(unix)]
+    {
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        if let Err(err) = fs::File::open(parent).and_then(|dir| dir.sync_all()) {
+            warn!(dir = %parent.display(), error = %err, "could not fsync config directory");
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
 }
 
