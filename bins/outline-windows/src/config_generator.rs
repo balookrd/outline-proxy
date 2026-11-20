@@ -139,6 +139,7 @@ fn apply_mode_configuration(toml: &str, tun_enabled: bool, socks_port: u16) -> S
                     || trimmed.contains("'vpn'"))
             {
                 modified.push("name = \"OutlineProxy\"");
+                modified.push("path = \"wintun\"");
             } else {
                 modified.push(line);
             }

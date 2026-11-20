@@ -280,6 +280,13 @@ impl ProcessController {
                     *start_lock = Some(Instant::now());
                 }
                 self.traffic_monitor.start(tun_enabled);
+                Self::spawn_process_watcher(
+                    pid,
+                    self.state.clone(),
+                    self.logs.clone(),
+                    self.traffic_monitor.clone(),
+                    app_handle.cloned(),
+                );
 
                 // If SOCKS5 mode, enable system proxy
                 if !tun_enabled {
@@ -472,6 +479,68 @@ impl ProcessController {
             let _ = app.emit("status-changed", &state);
         }
     }
+    fn spawn_process_watcher(
+        pid: u32,
+        state: Arc<RwLock<ProcessState>>,
+        logs: Arc<RwLock<VecDeque<String>>>,
+        traffic_monitor: Arc<crate::traffic_monitor::TrafficMonitor>,
+        app_handle: Option<tauri::AppHandle>,
+    ) {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::CloseHandle;
+            use windows_sys::Win32::System::Threading::{
+                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+                PROCESS_SYNCHRONIZE, WaitForSingleObject,
+            };
+
+            tokio::task::spawn_blocking(move || {
+                let h_proc = unsafe {
+                    OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+                };
+                if h_proc.is_null() {
+                    return;
+                }
+
+                unsafe {
+                    WaitForSingleObject(h_proc, windows_sys::Win32::System::Threading::INFINITE);
+                    let mut exit_code: u32 = 0;
+                    GetExitCodeProcess(h_proc, &mut exit_code);
+                    CloseHandle(h_proc);
+
+                    let was_running = {
+                        let lock = state.read().unwrap();
+                        matches!(*lock, ProcessState::Running { pid: cur_pid } if cur_pid == pid)
+                    };
+
+                    if was_running {
+                        tracing::warn!(pid, exit_code, "outline-ws-rust exited unexpectedly");
+                        let err_msg =
+                            format!("Процесс прокси неожиданно завершился (код {exit_code})");
+                        {
+                            let mut lock = state.write().unwrap();
+                            *lock = ProcessState::Error(err_msg.clone());
+                        }
+                        traffic_monitor.stop();
+                        Self::append_log(
+                            &logs,
+                            format!(
+                                "Error: outline-ws-rust (PID {pid}) exited unexpectedly with code {exit_code}"
+                            ),
+                            app_handle.as_ref(),
+                        );
+                        if let Some(app) = app_handle.as_ref() {
+                            let _ = app.emit("status-changed", &ProcessState::Error(err_msg));
+                        }
+                    }
+                }
+            });
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (pid, state, logs, traffic_monitor, app_handle);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -528,10 +597,11 @@ unsafe fn spawn_with_uac(
 #[cfg(windows)]
 unsafe fn kill_win32_process(handle: SafeHandle) {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::TerminateProcess;
+    use windows_sys::Win32::System::Threading::{TerminateProcess, WaitForSingleObject};
 
     unsafe {
-        TerminateProcess(handle.0, 1);
+        let _ = TerminateProcess(handle.0, 1);
+        WaitForSingleObject(handle.0, 3000);
         CloseHandle(handle.0);
     }
 }

@@ -92,11 +92,10 @@ pub fn open_wintun_device(config: &TunConfig) -> Result<(WintunDevice, TunGso)> 
 
     let adapter_name = config.name.as_deref().unwrap_or("OutlineProxy");
     let pool_name = "OutlineProxyPool";
-    let guid = 0xdeadbeef_u128; // Deterministic GUID for stable interface
 
     let adapter = match wintun::Adapter::open(&wintun, adapter_name) {
         Ok(a) => a,
-        Err(_) => wintun::Adapter::create(&wintun, adapter_name, pool_name, Some(guid))
+        Err(_) => wintun::Adapter::create(&wintun, adapter_name, pool_name, None)
             .context("failed to create Wintun adapter")?,
     };
 
@@ -148,7 +147,7 @@ pub fn configure_wintun_ip(
     let addr_arg = format!("address={ip}");
     let mask_arg = format!("mask={mask}");
 
-    let status = std::process::Command::new("netsh")
+    let mut status = std::process::Command::new("netsh")
         .args([
             "interface",
             "ipv4",
@@ -166,9 +165,29 @@ pub fn configure_wintun_ip(
         })?;
 
     if !status.success() {
+        tracing::warn!(if_index, %ip, %status, "netsh set address with ifIndex returned non-zero, trying adapter name");
+        status = std::process::Command::new("netsh")
+            .args([
+                "interface",
+                "ipv4",
+                "set",
+                "address",
+                "name=\"OutlineProxy\"",
+                "source=static",
+                &addr_arg,
+                &mask_arg,
+                "gateway=none",
+            ])
+            .status()
+            .with_context(|| "failed to execute netsh fallback by adapter name")?;
+    }
+
+    if !status.success() {
         tracing::warn!(if_index, %ip, %status, "netsh set address returned non-zero");
     } else {
         tracing::info!(if_index, %ip, "Assigned static IP to Wintun adapter");
+        // Give Windows network stack a brief moment to finish Duplicate Address Detection (DAD)
+        std::thread::sleep(std::time::Duration::from_millis(150));
     }
 
     Ok(())
