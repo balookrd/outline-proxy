@@ -1,0 +1,41 @@
+[package]
+name = "outline-windows"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "custom-protocol"] }
+tauri-plugin-shell = "2"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "process", "io-util"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+anyhow = { workspace = true }
+url = { workspace = true }
+base64 = { workspace = true, features = ["alloc"] }
+rand = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinInet",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[build-dependencies]
+tauri-build = { version = "2", default-features = false }
+
+[lints]
+workspace = true

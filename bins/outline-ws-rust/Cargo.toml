@@ -66,8 +66,6 @@ libc = { workspace = true, default-features = true }
 libmimalloc-sys = { workspace = true, features = ["extended"], optional = true }
 lru = { workspace = true, optional = true }
 mimalloc = { workspace = true, optional = true }
-tikv-jemallocator = { workspace = true, features = ["background_threads", "stats", "unprefixed_malloc_on_supported_platforms"], optional = true }
-tikv-jemalloc-ctl = { workspace = true, features = ["stats"], optional = true }
 outline-metrics = { path = "../../crates/outline-metrics", default-features = false }
 outline-net = { path = "../../crates/outline-net" }
 outline-routing = { path = "../../crates/outline-routing" }
@@ -92,6 +90,14 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt", "tracing-log"] }
 url = { workspace = true, features = ["serde"] }
 webpki-roots = { workspace = true }
+
+[target.'cfg(not(windows))'.dependencies]
+tikv-jemallocator = { workspace = true, features = ["background_threads", "stats", "unprefixed_malloc_on_supported_platforms"], optional = true }
+tikv-jemalloc-ctl = { workspace = true, features = ["stats"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+mimalloc = { workspace = true }
+libmimalloc-sys = { workspace = true, features = ["extended"] }
 
 [dev-dependencies]
 outline-uplink = { path = "../../crates/outline-uplink", default-features = false, features = ["test-helpers"] }

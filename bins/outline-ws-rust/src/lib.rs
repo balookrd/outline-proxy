@@ -34,6 +34,7 @@ pub use bootstrap::run_with_config;
 pub use outline_transport::set_dial_timeout;
 pub use status::{Carrier, CarrierStatus, active_carriers, clear_active_registry};
 
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::time::Duration;
 
@@ -57,7 +58,10 @@ pub fn init_rustls_crypto_provider() -> Result<()> {
 /// handed in by an embedder (Android `VpnService`); desktop passes `None`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RunOptions {
+    #[cfg(unix)]
     pub tun_fd: Option<RawFd>,
+    #[cfg(not(unix))]
+    pub tun_fd: Option<()>,
 }
 
 pub async fn run(args: Args) -> Result<()> {

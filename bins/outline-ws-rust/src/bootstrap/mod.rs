@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::os::fd::RawFd;
 use std::sync::Arc;
 
@@ -36,7 +37,12 @@ fn any_process_stable(
         .any(|o| o.unwrap_or(global) == Fp::ProcessStable)
 }
 
-pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd>) -> Result<()> {
+#[cfg(unix)]
+pub type TunFd = RawFd;
+#[cfg(not(unix))]
+pub type TunFd = ();
+
+pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<TunFd>) -> Result<()> {
     // `tun_fd` is only read by the ingresses that can act on it (TUN itself,
     // and SOCKS5's Android-fd guard further down); silence the
     // unused-parameter warning when neither is compiled in.
@@ -271,9 +277,22 @@ pub async fn run_with_config(config: AppConfig, args: Args, tun_fd: Option<RawFd
             ipsec_bypass,
         );
         if let Some(tun) = config.tun.clone() {
+            #[cfg(unix)]
             outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone(), tun_fd)
                 .await
                 .context("failed to start TUN loop")?;
+            #[cfg(windows)]
+            {
+                let _ = tun_fd;
+                outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone(), None)
+                    .await
+                    .context("failed to start TUN loop")?;
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                let _ = (tun, tun_routing, tun_fd);
+                return Err(anyhow::anyhow!("TUN is not supported on this platform"));
+            }
         }
     }
 

@@ -106,6 +106,10 @@ impl TunRouting {
         &self.default_group
     }
 
+    pub fn registry(&self) -> &UplinkRegistry {
+        &self.registry
+    }
+
     /// Current [`RoutingTable::version`] — `0` when no table is configured, in
     /// which case no rule can ever change and the constant is as valid as any
     /// snapshot. Callers that cache a routing *input* (e.g. the UDP engine's
@@ -280,6 +284,8 @@ pub(crate) fn target_port(target: &TargetAddr) -> u16 {
 pub(crate) fn is_ipsec_port(port: u16) -> bool {
     matches!(port, 500 | 4500)
 }
+
+pub mod windows;
 
 #[cfg(test)]
 #[path = "tests/routing.rs"]
